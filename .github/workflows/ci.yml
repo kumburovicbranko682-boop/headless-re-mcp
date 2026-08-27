@@ -144,6 +144,77 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-portable-gates:
+    # The Android/Web/proxy/agent-workbench gates skip wherever their tools are
+    # missing, so on a bare runner they proved nothing: main carried a proxy
+    # that never released its port and a browser gate that could not run off
+    # one machine, both invisible to a unit-only lane. Every backend here is
+    # free and installable from public indexes (pip/apt/npm) -- no proprietary
+    # licenses -- so this lane provisions them and runs those gates for real.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # webcrack needs Node 22 or 24 (see backends/jsre).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install package and portable backends
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,web,android,browser]"
+          # mitmproxy is installed alone: its resolver pin (typing-extensions
+          # <=4.14 on Python < 3.13) contradicts the >=4.15 pydantic's stack
+          # needs, so a combined resolve would backtrack to an older mitmproxy
+          # instead of the one operators install today. The newer
+          # typing-extensions satisfies both at runtime; restore it after
+          # mitmproxy's downgrade.
+          python -m pip install "mitmproxy>=11"
+          python -m pip install -U "typing-extensions>=4.15"
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y wabt
+          npm install -g webcrack
+
+      - name: Backends really are present
+        # A missing backend makes its gate skip, and a lane whose provisioning
+        # broke would read exactly like a lane that passed (skip != pass), so
+        # presence is asserted before any gate gets the chance to skip.
+        run: |
+          python - <<'PY'
+          import shutil
+
+          import adbutils  # noqa: F401
+          import androguard  # noqa: F401
+          import frida  # noqa: F401
+          import mitmproxy  # noqa: F401
+          from playwright.sync_api import sync_playwright
+
+          for tool in ("webcrack", "wasm2wat", "wasm-objdump"):
+              assert shutil.which(tool), f"{tool} is not on PATH"
+          with sync_playwright() as playwright:
+              playwright.chromium.launch(headless=True).close()
+          print("portable backends present")
+          PY
+
+      - name: Portable integration gates
+        # -rs prints every skip reason; the only expected skip on Linux is the
+        # Windows-only handle-count check in the web lifecycle gate.
+        run: >-
+          python -m pytest
+          tests/integration/test_android_re_gate.py
+          tests/integration/test_proxy_lifecycle_gate.py
+          tests/integration/test_web_lifecycle_gate.py
+          tests/integration/test_web_re_gate.py
+          tests/integration/test_agent_browser_smoke.py
+          -q -rs --tb=short --timeout=180
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
