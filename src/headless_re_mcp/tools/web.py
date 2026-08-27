@@ -34,8 +34,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Launch a Chrome browser for the session and open a URL via CDP.
 
-        Answers with opened, url, title and headless. There is no session,
-        browser, ok or page field.
+        Answers with opened, url, title, headless and status (the HTTP status
+        of the opened URL's main response, null when no url was given or the
+        navigation was same-document). status is not ok: a 403 wall or 404 is a
+        completed navigation, so opened stays true and the code is in status.
+        There is no session, browser, ok or page field.
         """
         return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
 
@@ -47,7 +50,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Navigate the session's browser to a new URL.
 
-        Answers with url and title. There is no navigated, ok or page field.
+        Answers with url, title and status (the HTTP status of the navigation's
+        main response, null for a same-document navigation). status is not ok: a
+        403 or 404 is still a completed navigation, so read the code in status
+        rather than expecting a failure. There is no navigated, ok or page field.
         """
         return _dump(analysis.web_navigate(session_id, url, timeout=timeout))
 

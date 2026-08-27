@@ -53,6 +53,23 @@ class WebError(RuntimeError):
         self.details = details
 
 
+def _response_status(response: Any) -> int | None:
+    """HTTP status of a navigation's main response, or None when there was none.
+
+    ``page.goto`` returns ``None`` for a same-document navigation (and when no
+    url was opened at all); otherwise it hands back a Response whose ``status``
+    is the thing a caller needs to tell a 200 from a 403 anti-bot wall or a 404.
+    Guarded because a torn-down response can raise on attribute access.
+    """
+    if response is None:
+        return None
+    try:
+        status = getattr(response, "status", None)
+        return int(status) if status is not None else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     text = value if isinstance(value, str) else ("" if value is None else str(value))
     payload = text.encode("utf-8", errors="replace")
@@ -337,8 +354,11 @@ class WebBackend:
                 handle = _WebSession(pw, browser, context, page, cdp)
                 handle.driver_pid = pid
                 self._wire_events(handle)
-                if url:
+                response = (
                     page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                    if url
+                    else None
+                )
                 # Summarised here rather than by a second call: between the two,
                 # a browser exists that no session yet refers to, and a failure
                 # in that window would leave it with nothing able to close it.
@@ -347,6 +367,7 @@ class WebBackend:
                     "url": _bounded_metadata(page.url, _MAX_URL_BYTES)[0],
                     "title": _safe_title(page),
                     "headless": headless,
+                    "status": _response_status(response),
                 }
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
@@ -469,12 +490,15 @@ class WebBackend:
 
         def work() -> JsonObject:
             try:
-                handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                response = handle.page.goto(
+                    url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
+                )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
             return {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
+                "status": _response_status(response),
             }
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)

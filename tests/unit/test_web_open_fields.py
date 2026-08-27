@@ -44,6 +44,9 @@ def test_web_open_puts_the_result_in_opened_url_title_headless() -> None:
     assert '"url"' in returned
     assert '"title"' in returned
     assert '"headless"' in returned
+    # The HTTP status of the landing navigation is surfaced, not discarded: a
+    # 403 wall or 404 is a completed open, so the caller needs the code.
+    assert '"status"' in returned
     assert '"session"' not in returned
     assert '"browser"' not in returned
     assert '"ok"' not in returned
@@ -53,3 +56,4 @@ def test_web_open_puts_the_result_in_opened_url_title_headless() -> None:
     assert "url" in doc
     assert "title" in doc
     assert "headless" in doc
+    assert "status" in doc
