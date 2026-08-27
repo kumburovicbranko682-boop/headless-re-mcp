@@ -101,7 +101,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   server 对齐——这是防御性的,让 composition root 成为权威来源,不再依赖"agent 路由注册顺带设
   了它"这一副作用。补只读拒绝(403)、完全访问仍放行、白名单/confirm 门仍先答的回归测试。
 
-### 修复（生成 MCP 配置的秘密清洗）
+### 修复（apksigner 口令不再暴露在命令行）
+
+- **`apk.sign` 把 keystore 口令以 `--ks-pass pass:<pw>` 放在命令行上**。`/proc/<pid>/cmdline`
+  与 `ps` 对同机任意用户可读，签名进行期间自定义 keystore 的口令因此对所有本地用户可见——
+  而模块本来就刻意把口令从错误详情里擦掉，唯独漏了这条更直接的泄露路径。现改为经环境变量
+  传给 apksigner（`env:NAME`，`/proc/<pid>/environ` 只有属主可读）：复制一份进程环境注入口令、
+  绝不改动真实 `os.environ`，随后不带 keystore 的 verify 调用也不会继承该秘密。stderr 擦除保留
+  作纵深防御。新增回归测试钉住命令行不含口令、口令只经环境变量按引用传入、且服务自身环境与
+  verify 步骤都不沾染。
 
 - **`config generate` 的秘密词表补齐到与脱敏模块一致**：`_SECRET_KEYS`(精确键匹配,刻意如此以
   免误删 `token_count` 这类近似键)此前缺 `authorization`/`credential`/`passwd`/`private_key`/

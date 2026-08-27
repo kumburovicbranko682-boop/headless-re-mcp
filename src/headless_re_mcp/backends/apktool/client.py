@@ -2,8 +2,10 @@
 
 Both CLIs need a JRE and are user-provided, so a missing tool degrades to
 ``capability_unavailable`` instead of blocking readiness. Keystore passwords are
-never copied into error details: a failed sign reports the tool's stderr with
-the password argument withheld.
+kept out of two places they would otherwise leak: they reach apksigner through
+the environment (``env:`` source) rather than the argument vector, so they never
+appear in ``ps`` / ``/proc/<pid>/cmdline`` while the sign runs, and a failed
+sign reports the tool's stderr with the password scrubbed.
 """
 
 from __future__ import annotations
@@ -30,10 +32,10 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
-def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+def _run(cmd: list[str], *, timeout: float, env: Any = None) -> tuple[str, str, int]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
+        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
     except TimedOut as exc:
         # apktool and apksigner are scripts that start a JVM, so the deadline
         # has to bind the JVM too, not just the script that launched it.
@@ -163,6 +165,16 @@ class ApktoolClient:
                 "keystore_password and key_alias are required for a custom keystore",
             )
         out_apk.parent.mkdir(parents=True, exist_ok=True)
+        # Hand the password to apksigner through the environment, not argv:
+        # /proc/<pid>/cmdline (and `ps`) are world-readable, so `pass:<pw>` on
+        # the command line exposes a custom keystore password to every local
+        # user for the life of the sign, while /proc/<pid>/environ is readable
+        # only by the owner. Copy the process environment so the JVM keeps PATH
+        # etc., and never touch the real os.environ (the later verify call must
+        # not inherit the secret).
+        ks_pass_var = "HRE_APKSIGNER_KS_PASS"
+        sign_env = os.environ.copy()
+        sign_env[ks_pass_var] = password
         _, stderr, code = _run(
             [
                 str(self.apksigner),
@@ -170,16 +182,17 @@ class ApktoolClient:
                 "--ks",
                 str(store),
                 "--ks-pass",
-                f"pass:{password}",
+                f"env:{ks_pass_var}",
                 "--ks-key-alias",
                 alias,
                 "--key-pass",
-                f"pass:{password}",
+                f"env:{ks_pass_var}",
                 "--out",
                 str(out_apk),
                 str(apk),
             ],
             timeout=timeout,
+            env=sign_env,
         )
         if code != 0 or not out_apk.is_file():
             # stderr can echo the argument vector, so scrub the password if present.
