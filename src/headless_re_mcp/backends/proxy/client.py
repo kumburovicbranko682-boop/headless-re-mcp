@@ -679,7 +679,24 @@ class ProxyBackend:
         if resp_headers_cut:
             response["metadata_truncated"] = True
         response.update(_emit_body(_raw_body(resp), artifact_dir))
-        return {"id": flow_id, "request": request, "response": response}
+        result: JsonObject = {"id": flow_id, "request": request, "response": response}
+        # An errored flow (TLS refused, upstream unreachable, reset mid-request)
+        # is retained and retrievable like any other, but its response is null
+        # with an empty body -- indistinguishable from a real 0-byte 200 unless
+        # the cause is surfaced. The flow summary already carries error/error_msg
+        # for exactly this reason; flow.get dropped them, so inspecting the row
+        # the list flagged as an error showed a blank response with no
+        # explanation. Mirror the summary's shape (error, error_msg, and a
+        # metadata_truncated flag when the message is clipped).
+        err = getattr(flow, "error", None)
+        if err is not None:
+            message = str(getattr(err, "msg", None) or err or "flow error")
+            error_msg, error_cut = _bounded_metadata(message, _MAX_METADATA_BYTES)
+            result["error"] = True
+            result["error_msg"] = error_msg
+            if error_cut:
+                result["metadata_truncated"] = True
+        return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)
