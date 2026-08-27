@@ -14,6 +14,8 @@ a session is funnelled onto that session's own thread -- see ``_Runner``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import queue
 import threading
@@ -101,6 +103,17 @@ def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     return " ".join(parts), truncated
 
 
+def _reject_bad_artifact_name(filename: str, kind: str) -> None:
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+    ):
+        raise WebError("invalid_params", f"invalid {kind} artifact filename")
+
+
 def _spill_text(
     text: str,
     *,
@@ -125,14 +138,7 @@ def _spill_text(
         )
     if size <= _MAX_INLINE_BODY:
         return text, None, False
-    if (
-        not filename
-        or filename in {".", ".."}
-        or "/" in filename
-        or "\\" in filename
-        or Path(filename).name != filename
-    ):
-        raise WebError("invalid_params", f"invalid {kind} artifact filename")
+    _reject_bad_artifact_name(filename, kind)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     out = artifact_dir / filename
     out.write_bytes(payload)
@@ -146,6 +152,58 @@ def _spill_text(
         )
     preview = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
     return preview, out, True
+
+
+def _spill_base64_body(
+    b64_text: str,
+    *,
+    artifact_dir: Path,
+    filename: str,
+) -> tuple[str, Path | None, bool]:
+    """Spill a binary (CDP base64Encoded) response body as its *decoded* bytes.
+
+    ``Network.getResponseBody`` returns binary bodies base64-encoded. Passing that
+    text straight to ``_spill_text`` wrote the base64 *text* into a ``.bin``: the
+    artifact was 4/3 the real size and was not the resource -- a caller pulling a
+    WASM module, image or encrypted blob got a file they had to base64-decode
+    themselves, and the capture cap was measured against the inflated text. Decode
+    once so the artifact is the real bytes. The inline field stays a base64 prefix
+    (JSON cannot hold raw bytes, and ``base64_encoded`` already tells the caller),
+    and a spill happens exactly when that inline prefix is truncated, so the full
+    body is always recoverable from disk. Returns ``(inline, spill_path, truncated)``.
+    """
+    try:
+        raw = base64.b64decode(b64_text or "", validate=False)
+    except (binascii.Error, ValueError):
+        # Flagged base64 that will not decode: keep the text so nothing is lost.
+        return _spill_text(
+            b64_text, artifact_dir=artifact_dir, filename=filename, kind="response body"
+        )
+    inline = b64_text[:_MAX_INLINE_BODY]
+    if len(b64_text) <= _MAX_INLINE_BODY:
+        # Whole base64 fits inline; the caller can decode it directly.
+        return inline, None, False
+    size = len(raw)
+    if size > UNREGISTERED_CAPTURE_MAX_BYTES:
+        raise WebError(
+            "too_large",
+            "response body exceeds capture cap",
+            size=size,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    _reject_bad_artifact_name(filename, "response body")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    out = artifact_dir / filename
+    out.write_bytes(raw)
+    written, over = capped_file_size(out, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
+    if over:
+        raise WebError(
+            "too_large",
+            "response body exceeds capture cap",
+            size=written,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    return inline, out, True
 
 
 class _Runner:
@@ -544,12 +602,18 @@ class WebBackend:
             return {**entry, "body_error": str(exc)}
         if not isinstance(body, str):
             body = str(body)
-        inline, spill, cut = _spill_text(
-            body,
-            artifact_dir=artifact_dir,
-            filename=f"body-{uuid4().hex}.bin",
-            kind="response body",
-        )
+        if base64_encoded:
+            # A binary body: hand back the decoded resource on disk, not base64 text.
+            inline, spill, cut = _spill_base64_body(
+                body, artifact_dir=artifact_dir, filename=f"body-{uuid4().hex}.bin"
+            )
+        else:
+            inline, spill, cut = _spill_text(
+                body,
+                artifact_dir=artifact_dir,
+                filename=f"body-{uuid4().hex}.bin",
+                kind="response body",
+            )
         result = dict(entry)
         result["body"] = inline
         result["body_truncated"] = cut

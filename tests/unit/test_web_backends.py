@@ -203,6 +203,52 @@ class TestCapturesAreReachableAndReclaimable:
             service.close_all()
 
 
+class TestBinaryResponseBodySpill:
+    """CDP base64 bodies must reach disk as the decoded resource, not base64 text.
+
+    ``Network.getResponseBody`` returns binary bodies base64-encoded; the spill
+    path used to write that base64 *text* into the ``.bin`` artifact, handing the
+    caller a file 4/3 the real size that still needed decoding. These pin the
+    corrected contract without a browser.
+    """
+
+    def test_small_base64_body_stays_inline_and_round_trips(self, tmp_path: Path) -> None:
+        import base64
+
+        from headless_re_mcp.backends.web.client import _spill_base64_body
+
+        raw = bytes(range(256)) * 4  # 1024 bytes; base64 well under the inline cap
+        b64 = base64.b64encode(raw).decode("ascii")
+        inline, spill, cut = _spill_base64_body(b64, artifact_dir=tmp_path, filename="b.bin")
+        assert spill is None
+        assert cut is False
+        assert inline == b64
+        assert base64.b64decode(inline) == raw
+
+    def test_large_base64_body_spills_decoded_bytes_not_text(self, tmp_path: Path) -> None:
+        import base64
+
+        from headless_re_mcp.backends.web.client import _spill_base64_body
+
+        # 200 KB raw -> ~266 KB base64, above the 200 KB inline cap, so it spills.
+        raw = bytes((i * 5 + 1) & 0xFF for i in range(200_000))
+        b64 = base64.b64encode(raw).decode("ascii")
+        inline, spill, cut = _spill_base64_body(b64, artifact_dir=tmp_path, filename="body.bin")
+        assert spill is not None
+        assert cut is True
+        assert spill.read_bytes() == raw  # the resource, byte-for-byte
+        assert spill.read_bytes() != b64.encode("ascii")  # explicitly not base64 text
+        assert inline == b64[:200_000]  # inline stays a base64 prefix
+
+    def test_undecodable_base64_falls_back_to_text(self, tmp_path: Path) -> None:
+        from headless_re_mcp.backends.web.client import _spill_base64_body
+
+        inline, spill, cut = _spill_base64_body("abc", artifact_dir=tmp_path, filename="x.bin")
+        assert spill is None
+        assert cut is False
+        assert inline == "abc"
+
+
 class TestJsReDegradation:
     def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
         source = tmp_path / "a.js"

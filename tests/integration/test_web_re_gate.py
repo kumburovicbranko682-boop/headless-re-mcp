@@ -99,6 +99,49 @@ def _poll(fn: Callable[[], Any], predicate: Callable[[Any], bool], *, tries: int
     return result
 
 
+# A deterministic binary body big enough that its base64 (~4/3 the size) exceeds
+# the 200 KB inline cap and therefore spills to a file -- which is where the
+# base64-vs-bytes bug lived.
+_BLOB_BYTES = bytes((i * 7 + 3) & 0xFF for i in range(300_000))
+_BLOB_PATH = "/blob.bin"
+_BLOB_HTML = (
+    "<!doctype html><html><head><title>blob-gate</title></head><body>blob"
+    f"<script>fetch('{_BLOB_PATH}').then(r=>r.arrayBuffer()).then(()=>"
+    "{window.__blobdone=1;});</script></body></html>"
+)
+
+
+class _BlobHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:  # silence per-request logging
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path == _BLOB_PATH:
+            body, ctype = _BLOB_BYTES, "application/octet-stream"
+        else:
+            body, ctype = _BLOB_HTML.encode("utf-8"), "text/html"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextlib.contextmanager
+def _binary_site() -> Iterator[str]:
+    """Serve a page that fetches a binary blob, so CDP records a base64 body."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _BlobHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        server.server_close()
+
+
 @pytest.mark.integration
 def test_web_cdp_open_and_inspect() -> None:
     if not _browser_available():
@@ -219,6 +262,66 @@ def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None
                 assert har.ok, har.error
                 assert har.data["entry_count"] >= 1, har.data
                 assert Path(har.data["path"]).is_file(), har.data
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
+def test_web_network_get_spills_a_binary_body_as_real_bytes(tmp_path: Path) -> None:
+    """A binary response body must reach disk as the resource, not base64 text.
+
+    CDP returns binary bodies base64-encoded. network_get used to write that
+    base64 *text* into the ``.bin`` artifact, so an agent pulling a WASM module,
+    image or encrypted blob got a file 4/3 the real size that it still had to
+    decode. Fetch a 300 KB binary through the page (its base64 exceeds the inline
+    cap, so it spills), then assert base64_encoded is set and the spilled file is
+    byte-for-byte the origin's payload -- not its base64. skip != pass without a
+    browser.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    with _binary_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                # Wait for the fetch to be recorded *and* to have a response, so
+                # getResponseBody has a body to return.
+                listing = _poll(
+                    lambda: service.web_network_list(session_id, limit=200),
+                    lambda r: r.ok
+                    and any(
+                        str(x.get("url", "")).endswith(_BLOB_PATH) and x.get("status") == 200
+                        for x in r.data["requests"]
+                    ),
+                )
+                assert listing.ok, listing.error
+                blob = [
+                    x
+                    for x in listing.data["requests"]
+                    if str(x.get("url", "")).endswith(_BLOB_PATH)
+                ]
+                assert blob, listing.data["requests"]
+
+                got = service.web_network_get(session_id, str(blob[0]["requestId"]))
+                assert got.ok, got.error
+                assert got.data.get("base64_encoded") is True, got.data
+                spill = got.data.get("body_path")
+                assert spill, f"large binary body must spill to disk: {got.data}"
+                on_disk = Path(spill).read_bytes()
+                # The artifact is the real resource, byte-for-byte -- not base64.
+                assert on_disk == _BLOB_BYTES, (len(on_disk), len(_BLOB_BYTES))
             finally:
                 service.web_close(session_id)
         finally:
