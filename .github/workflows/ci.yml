@@ -3,7 +3,9 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    # ci-checkpoint branches let agents run the full suite against a pinned
+    # head without racing main's cancel-in-progress concurrency.
+    branches: [main, master, "cursor/ci-checkpoint-**"]
   pull_request:
 
 concurrency:
