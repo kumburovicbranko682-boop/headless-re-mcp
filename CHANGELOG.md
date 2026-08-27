@@ -57,7 +57,11 @@ gate 与 CI，并修掉两处只有在真后端下才暴露的缺陷。全部 ga
 - **Android 重打包与内容操作真机 gate。** `test_android_repack_gate.py`：apktool decode↔build 往返一枚
   真 APK（自带默认 framework，不需 Android SDK），apksigner 用默认调试 keystore 签名并独立验签。
   `test_android_re_gate.py` 补上对手搓的最小合法 DEX 跑 classes/methods/strings/xrefs，以及 jadx 反
-  编译该 DEX 到 Java。
+  编译该 DEX 到 Java。另补两块此前只对桩子跑过的面：`apk.native_libs` 对 manifest 不可解析的 APK 仍答
+  出 zip 内 so 列表（“元数据 op 拒绝、内容 op 照常”这条分界首次在真 androguard 上验证）；
+  `apk.certificates` 用 JDK 自带 keytool+jarsigner 对手搓 DEX APK 打真 v1 签名后走 androguard 真实的
+  PKCS7 解析（签名文件、debug 主体、序列号、SHA-256 指纹，未签名孪生答诚实空壳）——证书对象各字段
+  正是随 androguard 版本漂移的那类面（frida 17 同款），此前从未见过真签名。
 - **proxy 抓包 gate。** `test_proxy_capture_gate.py` 把一条真 HTTP 请求经 mitmproxy 路由，断言抓到 flow、
   能取回 body、能导出 HAR、能重放。
 - **adb 设备后端首次拿到真机 gate（无需真手机）。** `device.*` 工具此前全对着桩子跑，最易随 adbutils 版本

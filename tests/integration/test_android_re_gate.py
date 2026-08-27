@@ -10,7 +10,9 @@ the live-device parts, which have their own explicit skips).
 from __future__ import annotations
 
 import hashlib
+import shutil
 import struct
+import subprocess
 import zipfile
 import zlib
 from dataclasses import replace
@@ -282,6 +284,110 @@ def test_android_dex_operations_parse_a_real_dex(tmp_path: Path) -> None:
         assert uncalled.ok, uncalled.error
         assert uncalled.data["callers"] == []
         assert uncalled.data["count"] == 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_native_libs_answer_despite_an_unparseable_manifest(tmp_path: Path) -> None:
+    """apk.native_libs against androguard's real zip walk, junk manifest and all.
+
+    native_libs reads the archive listing (apk.get_files), not the manifest, so
+    it must keep answering on an APK whose AndroidManifest.xml androguard cannot
+    parse -- the exact archive apk.open refuses with backend_error. That split
+    (metadata ops refuse, content ops still work) only ever ran against stubs;
+    real androguard logs a manifest parse error while still serving the file
+    list, which is the behavior this pins (skip != pass without androguard).
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — native_libs Gate not run (skip != pass)")
+    apk = _build_dex_apk(tmp_path / "real.apk")
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        libs = service.apk_native_libs(session_id)
+        assert libs.ok, libs.error
+        assert libs.data["native_libs"] == ["lib/arm64-v8a/libnative.so"]
+        assert libs.data["abis"] == ["arm64-v8a"]
+        assert libs.data["count"] == 1
+        assert libs.data["has_more"] is False
+    finally:
+        service.close_all()
+
+
+def _sign_v1_in_place(apk: Path, workdir: Path) -> None:
+    """JAR-sign the APK with a throwaway debug key (keytool + jarsigner)."""
+    store = ["-keystore", str(workdir / "debug.keystore")]
+    store += ["-storepass", "android", "-keypass", "android"]
+    keytool = ["keytool", "-genkeypair", *store, "-alias", "androiddebugkey"]
+    keytool += ["-keyalg", "RSA", "-keysize", "2048", "-validity", "10000"]
+    keytool += ["-dname", "CN=Android Debug,O=Android,C=US"]
+    subprocess.run(keytool, check=True, capture_output=True, timeout=120)
+    jarsigner = ["jarsigner", *store, "-sigalg", "SHA256withRSA", "-digestalg", "SHA-256"]
+    jarsigner += [str(apk), "androiddebugkey"]
+    subprocess.run(jarsigner, check=True, capture_output=True, timeout=120)
+
+
+@pytest.mark.integration
+def test_apk_certificates_parse_a_real_v1_signature(tmp_path: Path) -> None:
+    """apk.certificates against a genuinely signed APK, and the unsigned negative.
+
+    The certificate op walks androguard's PKCS7 parse -- get_signature_names,
+    get_certificates, then per-certificate attribute extraction whose object
+    shape (subject/issuer/serial_number/sha256_fingerprint) varies by androguard
+    version, exactly the client-library drift that broke frida 17. It only ever
+    ran against hand-rolled fakes; the apksigner gate verifies its own signature
+    with apksigner, never through this op. A JAR (v1) signature from the JDK's
+    own keytool+jarsigner is precisely the META-INF/*.RSA layout the op reads,
+    so this signs the hand-assembled DEX APK with a throwaway debug key and
+    asserts the real parse: the .RSA signature file is found, v1_signed flips
+    true, and the one certificate comes back with its debug subject, serial and
+    fingerprint. The unsigned twin must answer the honest empty shape -- not an
+    error -- and the session metadata's stdlib signed_v1 sniff must agree with
+    androguard on both (skip != pass without androguard or a JDK).
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — certificates Gate not run (skip != pass)")
+    if not (shutil.which("keytool") and shutil.which("jarsigner")):
+        pytest.skip("JDK keytool/jarsigner missing — certificates Gate not run (skip != pass)")
+
+    unsigned = _build_dex_apk(tmp_path / "unsigned.apk")
+    signed = _build_dex_apk(tmp_path / "signed.apk")
+    _sign_v1_in_place(signed, tmp_path)
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(signed))
+        assert created.ok, created.error
+        assert created.data["session"]["metadata"]["apk"]["signed_v1"] is True
+        signed_id = created.data["session"]["id"]
+
+        certs = service.apk_certificates(signed_id)
+        assert certs.ok, certs.error
+        assert certs.data["v1_signed"] is True
+        assert len(certs.data["signature_files"]) == 1
+        assert certs.data["signature_files"][0].startswith("META-INF/")
+        assert certs.data["signature_files"][0].endswith(".RSA")
+        assert len(certs.data["certificates"]) == 1
+        cert = certs.data["certificates"][0]
+        # Self-signed debug key: the CN appears in both subject and issuer.
+        assert "Android Debug" in cert["subject"]
+        assert "Android Debug" in cert["issuer"]
+        assert cert["serial"].strip()
+        assert cert["sha256"].strip()
+        assert certs.data["has_more"] is False
+
+        created = service.create_session(str(unsigned))
+        assert created.ok, created.error
+        assert created.data["session"]["metadata"]["apk"]["signed_v1"] is False
+        plain = service.apk_certificates(created.data["session"]["id"])
+        assert plain.ok, plain.error
+        assert plain.data["v1_signed"] is False
+        assert plain.data["signature_files"] == []
+        assert plain.data["certificates"] == []
     finally:
         service.close_all()
 
