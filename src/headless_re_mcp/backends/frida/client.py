@@ -117,7 +117,10 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // NativePointer#readByteArray, not the long-removed Memory.readByteArray:
+    // the latter is gone in frida >=14 and throws "not a function", which made
+    // memory.read the one enum RPC that failed on every modern frida.
+    return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
   }
 };
 """
