@@ -524,6 +524,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_MAX_APK_ABIS=64`（与后端常量并列并加注释），达到上限即停止扫描；`dex_count`/`entry_count`/`signed_v1`
   等计数照旧反映真实归档。新增回归测试：3000 个不同 ABI 的样本在建会话读取时截到 64，正常样本原样返回。
 
+### 修复（恶意 APK 中央目录在建会话时被无界物化）
+
+- **`zipfile.ZipFile(path)` 打开归档的瞬间就按中央目录逐条物化 `ZipInfo`——先于任何
+  `namelist()` 调用，也先于上面两处派生集合的上限**。CPython 解析时恰好读取归档
+  end-of-central-directory 记录声明的目录字节数，因此一个刻意声明数百万条目的 APK
+  （每条目在盘上仅 46 字节起）能让 `classify_target` / `describe_apk` 在 `create_session`
+  阶段就额外分配数百 MB 乃至更多。现在打开前先经 ZipFile 自己信任的同一 stdlib 读取器
+  （`zipfile._EndRecData`，含 ZIP64；用同一份实现使预检与解析永远一致——自写读取器一旦
+  与 zipfile 分歧就恰是绕过口）读出声明的目录大小，超过 `_MAX_APK_CENTRAL_DIR_BYTES=16 MiB`
+  （约 20 万条目，数倍于最大的真实包）即拒绝：`describe_apk` 报带上限的 ValueError，
+  `_is_android_package` 返回 False 走 PE 默认分类。量不出大小时放行（fail-open）——
+  量不出的归档 ZipFile 同样打不开，由 zipfile 自己的报错说明问题；所有 APK 会话都必经
+  `describe_apk`，androguard 面因此被同一闸门覆盖。新增回归测试：手工打包的 22 字节 EOCD
+  声明 2 GiB 目录、ZIP64 记录声明 8 GiB（64 位字段若被跳过即是绕过路径）都在真实上限下
+  被拒于解析之前；200 条目的真归档在压低上限后按内容分类回落到 PE；正常包照常测量并描述；
+  空文件与非 zip 保持原有 "not a readable Android package" 报错。
+
 ### 修复（托管质量门）
 
 - 单测挂起不再吞掉全部日志：Windows quality job 曾在单测步骤挂满 30 分钟作业上限，
