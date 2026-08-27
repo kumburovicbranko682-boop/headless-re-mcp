@@ -97,6 +97,34 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.method_info")
+    def apk_method_info(
+        session_id: str,
+        class_name: str,
+        method_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Profile a class's method(s) by name: signature and connectivity.
+
+        The method-level companion to apk.class_info. apk.methods lists a
+        class's methods with descriptor and access but not how they connect;
+        apk.xrefs gives a caller list for a bare name; this gives, for each
+        overload of class_name.method_name, its descriptor, access, and the
+        counts that gauge its role: callers (incoming calls, how depended-on)
+        and callees (outgoing calls, how much it does). A name can have several
+        overloads, so rows are per descriptor. Accepts the dotted or Lsmali/form
+        class. matched is false when nothing matched (class or name absent)
+        rather than an error, so a probe is cheap. Answers with class_name,
+        method_name, methods (descriptor, access, callers, callees), count,
+        total, offset, has_more and matched; external methods are skipped.
+        """
+        return _dump(
+            analysis.apk_method_info(
+                session_id, class_name, method_name, offset=offset, limit=limit
+            )
+        )
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,

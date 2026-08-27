@@ -169,6 +169,45 @@ def test_strings_clamp_negative_offset(tmp_path: Path, monkeypatch: Any) -> None
     assert payload["has_more"] is False
 
 
+class _FakeMethodInfoMethod:
+    def __init__(self, descriptor: str) -> None:
+        self.class_name = "Lcom/example/Foo;"
+        self.name = "overloaded"
+        self.descriptor = descriptor
+        self.access = "public"
+
+    def is_external(self) -> bool:
+        return False
+
+    def get_xref_from(self) -> list[object]:
+        return []
+
+    def get_xref_to(self) -> list[object]:
+        return []
+
+
+class _FakeMethodInfoParsed:
+    def __init__(self, methods: list[_FakeMethodInfoMethod]) -> None:
+        self.analysis = self
+        self._methods = methods
+
+    def get_methods(self) -> list[_FakeMethodInfoMethod]:
+        return self._methods
+
+
+def test_method_info_clamp_oversized_limit(tmp_path: Path, monkeypatch: Any) -> None:
+    methods = [
+        _FakeMethodInfoMethod(f"(I{index:05d})V") for index in range(_MAX_METHODS_PAGE + 8)
+    ]
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeMethodInfoParsed(methods))
+    client = ApkClient()
+    payload = client.method_info(
+        tmp_path / "app.apk", "com.example.Foo", "overloaded", offset=0, limit=10**9
+    )
+    assert payload["count"] == _MAX_METHODS_PAGE
+    assert payload["has_more"] is True
+
+
 class _FakeXrefCall:
     def __init__(self, index: int) -> None:
         self.class_name = f"Lcom/example/Caller{index};"
@@ -229,5 +268,6 @@ def test_client_page_caps_match_the_tool_schema_maxima() -> None:
     """
     assert _limit_schema("apk.classes")["maximum"] == _MAX_CLASSES_PAGE
     assert _limit_schema("apk.methods")["maximum"] == _MAX_METHODS_PAGE
+    assert _limit_schema("apk.method_info")["maximum"] == _MAX_METHODS_PAGE
     assert _limit_schema("apk.strings")["maximum"] == _MAX_STRINGS_PAGE
     assert _limit_schema("apk.xrefs")["maximum"] == _MAX_XREFS_PAGE

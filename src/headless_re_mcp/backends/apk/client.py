@@ -451,6 +451,66 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def method_info(
+        self,
+        path: Path,
+        class_name: str,
+        method_name: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Profile a class's method(s) by name: signature and connectivity.
+
+        The method-level companion to apk.class_info. apk.methods lists a
+        class's methods with descriptor and access but not how they connect;
+        apk.xrefs and apk.callees give caller and callee lists for a bare name;
+        this gives, for each overload of class_name.method_name, its descriptor,
+        access flags, and the counts that gauge its role: callers (incoming
+        calls, how depended-on it is) and callees (outgoing calls, how much it
+        does). A name can have several overloads, so rows are returned per
+        descriptor. Accepts the dotted or Lsmali/form class. matched is false
+        when nothing matched (the class or the name is absent), rather than an
+        error, so a probe is cheap. Answers with class_name, method_name,
+        methods (descriptor, access, callers, callees), count, total, offset,
+        has_more and matched; external methods are skipped.
+        """
+        parsed = self._parsed(path)
+        target_class = class_name.strip()
+        target_method = method_name.strip()
+        if not target_class:
+            raise ApkError("invalid_params", "class_name is required")
+        if not target_method:
+            raise ApkError("invalid_params", "method_name is required")
+        smali = _dotted_to_smali(target_class)
+        rows: list[JsonObject] = []
+        for method in parsed.analysis.get_methods():
+            if method.is_external():
+                continue
+            if str(method.class_name) != smali or str(method.name) != target_method:
+                continue
+            rows.append(
+                {
+                    "descriptor": str(getattr(method, "descriptor", "")),
+                    "access": str(getattr(method, "access", "")),
+                    "callers": sum(1 for _ in method.get_xref_from()),
+                    "callees": sum(1 for _ in method.get_xref_to()),
+                }
+            )
+        rows.sort(key=lambda row: str(row["descriptor"]))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_METHODS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "class_name": smali,
+            "method_name": target_method,
+            "methods": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "matched": bool(rows),
+        }
+
 
 def _dotted_to_smali(name: str) -> str:
     """com.example.Foo -> Lcom/example/Foo; so either form resolves a class."""
