@@ -9,6 +9,7 @@ from threading import RLock
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.ghidra.mapping import enrich_ghidra_payload
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
@@ -254,6 +255,7 @@ class GhidraClient:
             ) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
+        payload = enrich_ghidra_payload(payload, binary=binary)
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload
