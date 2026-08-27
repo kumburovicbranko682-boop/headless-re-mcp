@@ -138,6 +138,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`knowledge.query` 的 kinds 分项只数了当前页而非全集）
+
+- `knowledge.query`(及底层 `list_knowledge`)回包里的 `kinds`(按类别计数的分项)与 `total`
+  并排,读起来是"这个会话每类发现各有多少",但两套实现都只用当前页的行来累计:分页时
+  `has_more` 为真,每一类都被少报——一个有 8 个 function、3 个 api 的会话翻到第二页时 `kinds`
+  只反映那一页的零头,而不是 8 + 3。现改为按整个匹配集计数:InMemory 版遍历分页前的完整过滤
+  列表,SQLite 版用 `GROUP BY kind` 对全部匹配行统计,于是 `kinds` 在任意页都与 `total` 一致
+  (`sum(kinds.values()) == total`);按 `kind` 过滤时 `total` 与 `kinds` 一并收敛到该类。
+  `knowledge.query` 工具说明写明 `kinds` 是全集分项、求和等于 `total`。新增一条跨 SQLite/内存
+  两种仓储的直测:整体分项为 `{"api": 3, "function": 8}`,只装得下 api 行的那一页仍报完整分项
+  且求和等于 `total`,按 function 过滤时 `total`/`kinds` 同时收敛。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
