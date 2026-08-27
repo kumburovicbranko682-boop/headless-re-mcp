@@ -286,6 +286,7 @@ jobs:
             tests/integration/test_web_har_export_gate.py \
             tests/integration/test_web_wasm_gate.py \
             tests/integration/test_web_wasm_static_chain_gate.py \
+            tests/integration/test_web_wasm_multi_module_gate.py \
             tests/integration/test_web_script_source_gate.py \
             tests/integration/test_m11_r2_live_gate.py \
             tests/integration/test_m11_r2_static_gate.py \
