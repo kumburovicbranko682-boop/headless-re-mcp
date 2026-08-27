@@ -247,11 +247,6 @@ def _capture_process(
             details={"executable": argv[0], "os_error": str(exc)},
         ) from exc
 
-    # start_new_session (POSIX) makes the runner its own group leader, so the
-    # session group id is the runner's pid. Used to reap a child a wrapper
-    # backgrounded and then orphaned, which the parent/child walk cannot see.
-    group_id = int(pid) if os.name != "nt" and pid else 0
-
     stdout_pipe = process.stdout
     stderr_pipe = process.stderr
     if stdout_pipe is None or stderr_pipe is None:
@@ -282,7 +277,6 @@ def _capture_process(
     deadline = monotonic() + timeout
     timed_out = False
     cancelled = False
-    clean_exit = False
     stop = active_bound_cancel()
     while True:
         if stop is not None and stop.is_set():
@@ -298,24 +292,16 @@ def _capture_process(
             _terminate_process(process)
             break
         if process.poll() is not None:
-            clean_exit = True
             break
         sleep(min(0.05, remaining))
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
-    if clean_exit:
-        # The configured path may be a wrapper that backgrounds a worker; reap
-        # anything it orphaned before reporting success.
-        from headless_re_mcp.core.process_tree import reap_orphaned_process_group
+    # A clean upx exit can still leave a wrapper's detached helper behind;
+    # sweep survivors so a successful call never leaks a process.
+    from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
 
-        if reap_orphaned_process_group(
-            process,
-            group_id,
-            readers_blocked=stdout_thread.is_alive() or stderr_thread.is_alive(),
-        ):
-            stdout_thread.join(timeout=2.0)
-            stderr_thread.join(timeout=2.0)
+    terminate_leftover_process_tree(process, wait_s=1.0)
     # The readers close their own pipes; only close here when the reader has
     # finished, so a reader still blocked on a survivor's pipe never wedges this
     # thread on close().

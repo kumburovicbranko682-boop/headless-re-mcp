@@ -16,7 +16,6 @@ import pytest
 from headless_re_mcp.core import capabilities_catalog
 from headless_re_mcp.core.capabilities_catalog import (
     _CORE_CAPABILITIES,
-    _probe_status,
     describe_capability,
     list_capabilities,
 )
@@ -66,6 +65,7 @@ def _stub_report() -> DoctorReport:
         probes=(
             Probe("ida_idalib", ProbeStatus.READY, "stub ready"),
             Probe("diec", ProbeStatus.MISSING, "stub missing"),
+            Probe("win32_ui", ProbeStatus.READY, "stub ready"),
         )
     )
 
@@ -80,13 +80,13 @@ def test_list_capabilities_maps_probe_status_and_honors_filters(
     # A ready probe surfaces as ready; a missing probe as missing.
     assert by_id["ida.idalib"]["status"] == "ready"
     assert by_id["detect.die"]["status"] == "missing"
-    # A capability whose probe is absent from the report falls back to missing
-    # rather than raising -- ui.win32 carries the win32_ui probe, which the stub
-    # does not emit.
-    assert by_id["ui.win32"]["status"] == "missing"
+    # ui.win32 is pinned to the win32_ui probe since Linux support landed, so
+    # its status follows the probe like every other capability.
+    assert by_id["ui.win32"]["status"] == "ready"
+    # A status_probe of None (no probe to consult) is always ready.
+    assert capabilities_catalog._probe_status(_stub_report(), None) == "ready"
+    # A probe absent from the report falls back to missing rather than raising.
     assert by_id["unpack.upx"]["status"] == "missing"
-    # The status_probe=None fallback (no capability uses it today) is ready.
-    assert _probe_status(_stub_report(), None) == "ready"
 
     # Backend filter returns only that backend's capabilities.
     apk = list_capabilities(backend="apk")
@@ -94,8 +94,7 @@ def test_list_capabilities_maps_probe_status_and_honors_filters(
 
     # Status filter returns only matching entries.
     ready = {cap["id"] for cap in list_capabilities(status="ready")}
-    assert "ida.idalib" in ready
-    assert "ui.win32" not in ready
+    assert "ida.idalib" in ready and "ui.win32" in ready
     assert "detect.die" not in ready
 
 

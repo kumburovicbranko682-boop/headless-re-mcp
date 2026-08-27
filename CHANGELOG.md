@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
+
+- die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
+  detached helper（`terminate_leftover_process_tree`：ppid 遍历 + 会话组扫描,按各自
+  `pgrp` 逐个击杀,避免组长 pid 复用误伤）。该行为随「Reap helpers after successful CLI
+  launches」引入,但在与 `_capture_process` 读者自闭管道范式收敛的合并中被覆盖丢失,
+  只有 de4dot 保留了等效逻辑;本次按现行 process_tree API 重建并接回三处。
+- `ui.screenshot` / `ui.ocr` 对路径穿越型 session id 现在在**任何平台**都返回
+  `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
+  `unsupported_on_platform`。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
@@ -118,6 +129,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 修复（托管质量门）
 
+- 单测挂起不再吞掉全部日志：Windows quality job 曾在单测步骤挂满 30 分钟作业上限，
+  runner 被强杀后连已完成步骤的日志都没有上传，挂在哪个测试无从查起。现在两个单测
+  步骤各带步骤级超时（Windows 25 分钟 / Linux 20 分钟；步骤失败但日志保留、覆盖率
+  照常上传），Linux 步骤补齐 `--timeout=120` 逐测试上限，并在 pytest 配置里加
+  `faulthandler_timeout = 300` + `faulthandler_exit_on_timeout`：pytest-timeout 的
+  thread 模式需要 GIL，卡死在 C 调用里的测试它拦不住，而 faulthandler 的 C 层看门狗
+  会先转储所有线程栈、点名卡住的测试再退出。
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
   `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。
   监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。

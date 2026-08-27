@@ -86,6 +86,16 @@ exclude = [
 testpaths = ["tests"]
 addopts = "-ra"
 asyncio_default_fixture_loop_scope = "function"
+# Backstop for hangs pytest-timeout cannot interrupt: its thread method needs
+# the GIL, so a test stuck inside a C call (ctypes, blocking wait) hangs the
+# whole run until the CI job deadline force-kills the runner and the log of
+# the hung step is lost with it. faulthandler's watchdog is a C-level timer
+# that fires without the GIL: after 300s it dumps every thread's stack and
+# exits, so the run fails *with* the stack trace naming the stuck test. 300s
+# sits above the 120s per-test budget CI passes to pytest-timeout, so the
+# friendlier per-test report still wins whenever it is able to fire.
+faulthandler_timeout = 300
+faulthandler_exit_on_timeout = true
 markers = [
   "integration: requires a locally installed analysis backend",
   "headless: verifies no analyzer window is created",
@@ -108,7 +118,10 @@ omit = [
 [tool.coverage.report]
 # Set just below the measured value so it ratchets. Raise it when real coverage
 # rises; never lower it to turn a red build green.
-fail_under = 64
+# Ratchet: raise when measured coverage rises, never lower to go green.
+# Floors measured on the 2026-08-27 green run: linux-quality 72.23%,
+# windows quality 73.21%; 71 leaves headroom for environment-driven skips.
+fail_under = 71
 show_missing = false
 skip_covered = true
 exclude_also = [
