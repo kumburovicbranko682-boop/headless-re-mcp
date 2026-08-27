@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（Agent 取消与线程数据面 Gate）
+
+- 新集成 Gate `tests/integration/test_agent_cancel_http_gate.py`（纯 Python,任何平台可跑,经真实
+  `serve-web` 子进程)钉住取消这条并发正确性面——取消在途 run 不是一次 CRUD,而是要打断一个正
+  阻塞读 provider 流的任务、把 run 落到终态 `cancelled`、在事件流上说出来、且不留半成品副作用:
+  - 用一个"开了 SSE 流却永不收尾"的 loopback provider 让 run 真正在途(先吐一个 assistant delta
+    确认进入 streaming、model 已被联系、非终态);`POST /api/agent/runs/{id}/cancel` 到达后 run
+    落地 `cancelled`,SSE 事件流带出 `run.cancelled` 后关闭;因停滞的那轮从未产出工具调用,
+    `/api/sessions` 为空(无半成品);对已终态 run 再取消是幂等 no-op 而非报错。
+  - 同一 Gate 钉住工作台数据面(无需模型):建线程、追加消息(空消息 400、超大消息 413 而非静默
+    截断或崩溃)、聚合读回线程与消息、列表可见、删除后 404 且重复删除仍 404、给不存在线程发消息
+    干净 404。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
