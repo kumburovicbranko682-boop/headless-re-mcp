@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+webcrack 线的单文件反混淆路径（`js.deobfuscate` 及其格式化别名 `js.beautify`，即 `webcrack <file>` 从 stdout 取回
+改写后的源码）首次有了对真实工具的执行覆盖。此前只有拆包路径（`js.n` / `unpack_bundle`，即 `webcrack -o <dir>`）
+有 live 覆盖；反混淆本身、stdout 捕获、以及外面按字节封边的包装都只对 mock webcrack 跑过。新增
+`tests/integration/test_webcrack_deobfuscate_live_gate.py`：喂一段真正被混淆的片段——十六进制转义的字符串数组、用
+十六进制下标经方括号成员访问取值——断言 webcrack 还原出可读代码：转义串解码为文本并在使用处内联、`obj['prop']`
+归一为 `obj.prop`、且结果是带换行的格式化代码而非原来的一行。断言特意用了负向条件（原文里的 `console['log']` 与
+`\x68` 必须消失），因此一个原样透传不可能蒙混过关。新增 `linux-webcrack-deobfuscate` CI job：装 Node 22 + webcrack、
+跑该 gate 并解析 junitxml，webcrack 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

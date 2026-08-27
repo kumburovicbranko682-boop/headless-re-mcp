@@ -152,6 +152,51 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-webcrack-deobfuscate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install webcrack
+        run: |
+          npm install -g webcrack
+          webcrack --version || true
+
+      - name: Install the package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: webcrack deobfuscate gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_webcrack_deobfuscate_live_gate.py \
+            -rs --tb=short --junitxml=webcrack-deobfuscate-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("webcrack-deobfuscate-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # webcrack (and Node 22) were just installed, so a skip here means the
+          # deobfuscate/beautify path could not rewrite a real snippet -- the
+          # false-green "skip != pass" warns about.
+          if not cases:
+              sys.exit("no webcrack-deobfuscate gate was collected")
+          if skipped:
+              sys.exit(f"webcrack-deobfuscate gate skipped despite an installed webcrack: {skipped}")
+          print(f"webcrack-deobfuscate gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
