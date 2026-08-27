@@ -20,6 +20,7 @@ from headless_re_mcp.detection import (
     scan_with_exeinfope,
 )
 from headless_re_mcp.detection import exeinfope as adapter
+from headless_re_mcp.detection.models import FindingSeverity
 
 
 def _fake_capture(
@@ -61,6 +62,72 @@ def test_parse_log_rejects_empty() -> None:
     with pytest.raises(ExeinfopeProtocolError) as caught:
         parse_exeinfope_log("\n\n")
     assert caught.value.code == ExeinfopeErrorCode.PROTOCOL_ERROR
+
+
+def test_parse_log_maps_every_category_bucket() -> None:
+    """Each classifier branch has to land in its own bucket in priority order.
+
+    Only packer/compiler/anomaly were exercised, so a regression in the
+    protector, obfuscator, installer, runtime, or file-format arms -- or in the
+    order they are tried -- would have gone unnoticed. Anomaly is the only
+    category that downgrades severity to a hint; the rest stay informational.
+    """
+    raw = "\n".join(
+        [
+            "s.exe -  Themida / WinLicense protector",
+            "s.exe -  Confuser .NET obfuscator",
+            "s.exe -  Inno Setup installer",
+            "s.exe -  Microsoft .NET Framework assembly",
+            "s.exe -  PE32 executable",
+            "s.exe -  totally unknown blob",
+        ]
+    )
+    findings = parse_exeinfope_log(raw)
+    assert [item.category for item in findings] == [
+        FindingCategory.PROTECTOR,
+        FindingCategory.OBFUSCATOR,
+        FindingCategory.INSTALLER,
+        FindingCategory.RUNTIME,
+        FindingCategory.FILE_FORMAT,
+        FindingCategory.ANOMALY,
+    ]
+    assert findings[-1].severity == FindingSeverity.HINT
+    assert all(item.severity == FindingSeverity.INFO for item in findings[:-1])
+
+
+def test_name_for_handles_multiword_names_and_token_fallbacks() -> None:
+    """The product regex, the token scan, and the last-resort literal all matter.
+
+    A two-word product name must survive as one token, a description with no
+    known product falls back to the first meaningful token (skipping arch/format
+    noise), and a description that is nothing but noise yields the literal
+    ``exeinfope`` rather than an empty name.
+    """
+    assert adapter._name_for("x64 Inno Setup installer") == "Inno Setup"
+    assert adapter._name_for("x64 exe SuperWidget blob") == "SuperWidget"
+    assert adapter._name_for("x64 exe dll pe") == "exeinfope"
+
+
+def test_parse_log_rejects_oversized_log() -> None:
+    with pytest.raises(ExeinfopeProtocolError) as caught:
+        parse_exeinfope_log("x" * (adapter.DEFAULT_MAX_LOG_SIZE + 1))
+    assert caught.value.code == ExeinfopeErrorCode.PROTOCOL_ERROR
+    assert caught.value.details["max_log_size"] == adapter.DEFAULT_MAX_LOG_SIZE
+
+
+def test_parse_log_rejects_too_many_lines() -> None:
+    raw = "\n".join(["a"] * (adapter._MAX_LOG_LINES + 1))
+    with pytest.raises(ExeinfopeProtocolError) as caught:
+        parse_exeinfope_log(raw)
+    assert caught.value.code == ExeinfopeErrorCode.PROTOCOL_ERROR
+    assert caught.value.details["max"] == adapter._MAX_LOG_LINES
+
+
+def test_parse_log_rejects_overlong_line() -> None:
+    with pytest.raises(ExeinfopeProtocolError) as caught:
+        parse_exeinfope_log("y" * (adapter._MAX_TEXT + 1))
+    assert caught.value.code == ExeinfopeErrorCode.PROTOCOL_ERROR
+    assert caught.value.details["index"] == 0
 
 
 def test_scan_builds_whitelisted_argv_and_reads_log(
