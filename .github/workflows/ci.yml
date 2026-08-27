@@ -230,8 +230,9 @@ jobs:
         # apksigner's standalone package is just apksigner.jar plus a wrapper (a
         # few MB), not the whole Android SDK; the sign gate builds the debug
         # keystore itself with keytool from the JDK above. mono-utils supplies
-        # monodis, an independent ECMA-335 parser the .NET gate cross-checks the
-        # pure-Python reader against.
+        # monodis (an independent ECMA-335 parser the metadata gate cross-checks
+        # the pure-Python reader against) and pedump (which decodes the CLI
+        # header, so the corflags gate cross-checks il_only/32-bit/strong-name).
         run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils
 
       - name: Install Ghidra for the headless analysis gate

@@ -36,6 +36,34 @@ def _native_pe() -> bytes:
     return bytes(dos) + coff + bytes(optional)
 
 
+def _cli_header_offset(raw: bytes) -> int:
+    """File offset of the COR20 (CLI) header, mapping its RVA through sections."""
+    e_lfanew = struct.unpack_from("<I", raw, 0x3C)[0]
+    optional = e_lfanew + 24
+    magic = struct.unpack_from("<H", raw, optional)[0]
+    directories = optional + (112 if magic == 0x20B else 96)
+    cli_rva = struct.unpack_from("<I", raw, directories + 14 * 8)[0]
+    coff = e_lfanew + 4
+    sections = struct.unpack_from("<H", raw, coff + 2)[0]
+    table = coff + 20 + struct.unpack_from("<H", raw, coff + 16)[0]
+    for index in range(sections):
+        base = table + index * 40
+        virtual_address = struct.unpack_from("<I", raw, base + 12)[0]
+        raw_size, raw_pointer = struct.unpack_from("<II", raw, base + 16)
+        if virtual_address <= cli_rva < virtual_address + max(raw_size, 1):
+            return raw_pointer + (cli_rva - virtual_address)
+    raise AssertionError("could not locate the CLI header in the fixture")
+
+
+def _fixture_with_corflags(tmp_path: Path, flags: int) -> Path:
+    """The committed assembly with its COR20 Flags field rewritten to ``flags``."""
+    raw = bytearray(_DOTNET_FIXTURE.read_bytes())
+    raw[_cli_header_offset(raw) + 16 : _cli_header_offset(raw) + 20] = struct.pack("<I", flags)
+    path = tmp_path / f"corflags_{flags:08x}.exe"
+    path.write_bytes(raw)
+    return path
+
+
 def test_reads_the_committed_dotnet_fixture() -> None:
     if not _DOTNET_FIXTURE.is_file():
         pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
@@ -45,6 +73,37 @@ def test_reads_the_committed_dotnet_fixture() -> None:
     assert info["metadata_version"] == "v4.0.30319"
     assert info["entry_point_token"] == 0x06000002
     assert info["il_only"] is True
+    # The fixture's COR20 Flags is ILONLY only (pedump: "ilonly, 32/64,
+    # no-trackdebug, notsigned"); the pedump gate cross-checks this.
+    assert info["requires_32bit"] is False
+    assert info["prefers_32bit"] is False
+    assert info["strong_name_signed"] is False
+
+
+def test_corflags_bits_are_decoded_from_the_cor20_header(tmp_path: Path) -> None:
+    if not _DOTNET_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+    # Each corflags bit must be read independently: rewrite only the Flags field
+    # of a real assembly and confirm the one fact it controls flips, nothing else.
+    ilonly = 0x00000001
+    cases = {
+        0x00000002: "requires_32bit",  # COMIMAGE_FLAGS_32BITREQUIRED
+        0x00020000: "prefers_32bit",  # COMIMAGE_FLAGS_32BITPREFERRED
+        0x00000008: "strong_name_signed",  # COMIMAGE_FLAGS_STRONGNAMESIGNED
+    }
+    for bit, fact in cases.items():
+        info = describe_pe_clr(_fixture_with_corflags(tmp_path, ilonly | bit))["dotnet"]
+        assert info[fact] is True, fact
+        assert info["il_only"] is True
+        for other in cases.values():
+            if other != fact:
+                assert info[other] is False, f"{fact} leaked into {other}"
+    # Flags cleared entirely: every posture bit, il_only included, reads False.
+    cleared = describe_pe_clr(_fixture_with_corflags(tmp_path, 0))["dotnet"]
+    assert cleared["il_only"] is False
+    assert cleared["requires_32bit"] is False
+    assert cleared["prefers_32bit"] is False
+    assert cleared["strong_name_signed"] is False
 
 
 def test_native_pe_has_no_dotnet_block(tmp_path: Path) -> None:

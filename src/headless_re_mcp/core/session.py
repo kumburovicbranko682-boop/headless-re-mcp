@@ -1810,6 +1810,13 @@ _PE_MAX_SECTIONS = 96
 _CLR_METADATA_MAGIC = b"BSJB"
 _CLR_MAX_VERSION_LEN = 256
 _COMIMAGE_FLAGS_ILONLY = 0x00000001
+# The rest of the COR20 header Flags field -- the corflags surface. 32BITREQUIRED
+# forces a 32-bit process; 32BITPREFERRED is the AnyCPU "prefer 32-bit" hint;
+# STRONGNAMESIGNED means the strong-name signature blob is present. Mono's
+# pedump decodes the same bits, so the .NET gate can cross-check them.
+_COMIMAGE_FLAGS_32BITREQUIRED = 0x00000002
+_COMIMAGE_FLAGS_STRONGNAMESIGNED = 0x00000008
+_COMIMAGE_FLAGS_32BITPREFERRED = 0x00020000
 
 
 def describe_pe_clr(path: Path) -> dict[str, Any]:
@@ -1874,6 +1881,18 @@ def describe_pe_clr(path: Path) -> dict[str, Any]:
             "metadata_version": metadata_version,
             "entry_point_token": entry_token,
             "il_only": bool(flags & _COMIMAGE_FLAGS_ILONLY) if flags is not None else False,
+            # The build-posture flags a corflags run would report: whether the
+            # image forces a 32-bit process, prefers 32-bit under AnyCPU, and
+            # carries a strong-name signature.
+            "requires_32bit": (
+                bool(flags & _COMIMAGE_FLAGS_32BITREQUIRED) if flags is not None else False
+            ),
+            "prefers_32bit": (
+                bool(flags & _COMIMAGE_FLAGS_32BITPREFERRED) if flags is not None else False
+            ),
+            "strong_name_signed": (
+                bool(flags & _COMIMAGE_FLAGS_STRONGNAMESIGNED) if flags is not None else False
+            ),
         }
     }
 
