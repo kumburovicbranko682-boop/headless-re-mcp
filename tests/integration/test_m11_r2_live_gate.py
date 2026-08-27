@@ -1,4 +1,4 @@
-"""M11 r2 live gate: Address-mapped functions. skip≠pass when r2 missing."""
+"""M11 r2 live gate: address mapping, disassembly, xrefs. skip≠pass when r2 missing."""
 
 from __future__ import annotations
 
@@ -47,3 +47,25 @@ def test_m11_r2_live_address_mapping() -> None:
     assert "va" in item["address"] or "rva" in item["address"]
     if "rva" in item["address"]:
         assert item["address"].get("module") == fixture.name
+
+    # Past function listing into the analysis core. disasm (pdj) at a real
+    # function entry runs the parameterized command past the whitelist, r2
+    # returns instructions, and the request address round-trips through the
+    # address mapping -- the surface a caller actually reverse-engineers with.
+    va = item["address"]["va"]
+    assert isinstance(va, int)
+    disasm = client.disasm(fixture, va, count=8, timeout=60.0)
+    assert disasm.get("parsed") is True
+    assert disasm.get("count", 0) >= 1
+    assert disasm.get("address_va") == va
+    assert disasm["address"]["va"] == va
+    instruction = disasm["items"][0]
+    assert "opcode" in instruction or "disasm" in instruction
+
+    # xrefs (axj) exercises the second parameterized whitelist command; the
+    # reference count is data-dependent, so only its shape and the round-tripped
+    # request address are asserted.
+    xrefs = client.xrefs(fixture, va, timeout=60.0)
+    assert xrefs.get("parsed") is True
+    assert isinstance(xrefs.get("count"), int)
+    assert xrefs.get("address_va") == va
