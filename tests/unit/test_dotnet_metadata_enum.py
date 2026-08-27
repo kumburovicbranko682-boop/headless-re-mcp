@@ -7,7 +7,13 @@ from pathlib import Path
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.dotnet.metadata_enum import CAPABILITY, _disassemble_il, enumerate_metadata
+from headless_re_mcp.dotnet.metadata_enum import (
+    CAPABILITY,
+    _disassemble_il,
+    _MetaCtx,
+    _table_row_size,
+    enumerate_metadata,
+)
 
 
 def _write_minimal_clr(path: Path) -> None:
@@ -113,3 +119,59 @@ def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     assert xrefs.ok
     assert xrefs.data is not None
     assert xrefs.data["kind"] == "xrefs"
+
+
+def _ctx(row_counts: dict[int, int], *, heap_sizes: int = 0) -> _MetaCtx:
+    """A metadata context carrying only what ``_table_row_size`` reads."""
+    return _MetaCtx(
+        path=Path("x"),
+        pe_data=b"",
+        layout=None,
+        meta=b"",
+        stream_map={},
+        tables=b"",
+        strings=b"",
+        heap_sizes=heap_sizes,
+        string_index_size=4 if heap_sizes & 0x01 else 2,
+        blob_index_size=4 if heap_sizes & 0x04 else 2,
+        guid_index_size=4 if heap_sizes & 0x02 else 2,
+        row_counts=dict(row_counts),
+        table_data_offset=0,
+    )
+
+
+def test_interfaceimpl_interface_column_is_a_coded_typedeforref_index() -> None:
+    """InterfaceImpl.Interface is a TypeDefOrRef coded index, not a MethodDef one.
+
+    The two widths only diverge past 2^14 rows, so a small assembly hides it: with
+    20,000 TypeRefs the TypeDefOrRef coded index is 4 bytes while MethodDef stays a
+    2-byte simple index. Sizing Interface as MethodDef would give 2 + 2 = 4; the
+    spec-correct row is Class(TypeDef, 2) + Interface(TypeDefOrRef, 4) = 6. A wrong
+    row here shifts every table after 0x09 -- MemberRef xrefs and IL token
+    resolution among them -- for exactly the large assemblies worth enumerating.
+    """
+    meta = _ctx({0x01: 20000})  # TypeRef count forces TypeDefOrRef to 4 bytes.
+    assert _table_row_size(meta, 0x09) == 6
+
+
+def test_nestedclass_both_columns_are_plain_typedef_indexes() -> None:
+    """NestedClass and EnclosingClass are both simple TypeDef indexes.
+
+    The buggy row sized EnclosingClass as an Implementation coded index. Pushing
+    the File table past 2^14 makes that coded index 4 bytes while the TypeDef
+    simple index stays 2, so the mistake would read 2 + 4 = 6; the spec-correct
+    row is TypeDef(2) + TypeDef(2) = 4.
+    """
+    meta = _ctx({0x26: 20000})  # File count forces the Implementation index to 4.
+    assert _table_row_size(meta, 0x29) == 4
+
+
+def test_small_row_counts_keep_every_index_two_bytes() -> None:
+    """Calibration: with small counts both fixed tables collapse to 2 + 2 = 4.
+
+    This is why the coding error stayed invisible on ordinary assemblies, and it
+    guards the fix from over-correcting the common case into a wider row.
+    """
+    meta = _ctx({0x02: 10, 0x01: 10, 0x06: 10, 0x26: 10})
+    assert _table_row_size(meta, 0x09) == 4
+    assert _table_row_size(meta, 0x29) == 4
