@@ -71,6 +71,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
+### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
+
+- `ghidra.decompile` 过去在给定地址不落在任何函数内时返回 `decompiled: ""`，与“确实反编译出空
+  函数体”无从区分，无人值守的一遍会把空串当成函数体。postScript 只有在 `getFunctionContaining`
+  命中时才写 `function`/`entry`。现由脚本显式写出 `found` 布尔，客户端在解析这份跨解释器 JSON 时
+  也会在缺字段时按 `function` 是否存在补齐 `found`：`found=false` 明确表示“该地址没有函数”，此时
+  空的 `decompiled` 是这个原因而非空函数体。
+
+
 - `error_boundary` 的行内脱敏(异常消息、事故日志、HTTP 500 体、CLI stderr 信封走的同一条
   正则)只覆盖 `api_key`/`token`/`secret`/`password` 与 `Authorization: Bearer`,而
   `redaction.py` 的结构化脱敏还把 `private_key`/`access_key`/`passwd`/`credential` 当作机密键。
