@@ -169,6 +169,25 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
+    @tools.tool(name="web.storage.origins")
+    def web_storage_origins(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    ) -> dict[str, Any]:
+        """Snapshot localStorage for every origin the context has visited.
+
+        Answers with origins (each: origin, local as name/value entries,
+        entry_count, entry_total, entries_truncated), count, total, offset,
+        has_more, and origins_capped so a page that filled the limit is not read
+        as every origin. This is localStorage across all origins in the context,
+        not just the top frame; value is bounded with value_truncated on a cut
+        entry, and entries sort by name. sessionStorage is not part of the
+        snapshot (use web.dom-side session state per tab) and cookies are omitted
+        (that is web.cookies). There is no cookies or sessionStorage field.
+        """
+        return _dump(analysis.web_storage_origins(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

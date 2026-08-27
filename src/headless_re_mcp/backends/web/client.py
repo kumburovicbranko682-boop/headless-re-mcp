@@ -41,6 +41,14 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Cross-origin localStorage snapshot (web.storage.origins). A context rarely
+# accumulates more than a handful of origins with storage; these caps bound a
+# pathological case (a page that touches thousands of origins, or one that
+# stuffs a megabyte into a key) without dropping any realistic data. The value
+# cap matches the per-cookie/per-entry ceiling used elsewhere.
+_MAX_STORAGE_ORIGINS = 500
+_MAX_STORAGE_ORIGIN_ENTRIES = 1000
+_MAX_ORIGIN_STORAGE_VALUE = 8192
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -781,6 +789,83 @@ class WebBackend:
             }
 
         return self._runner(handle).call(work)
+
+    def storage_origins(
+        self, session_id: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        """Snapshot localStorage for every origin the context has visited.
+
+        web.storage (when present) reads only the top frame's origin; an auth
+        flow that stashed a token under a different origin (an SSO/IdP host, an
+        embedded widget) leaves it there, unreachable from the current page.
+        Playwright's context.storage_state gathers localStorage per origin
+        across the whole browser context, which this exposes. Each origin is a
+        row with its localStorage entries (name/value), entry_count/entry_total
+        and entries_truncated when a single origin held more than the cap;
+        origins are sorted and entries sorted by name so paging is stable. This
+        is localStorage only -- sessionStorage is per page/tab and not part of
+        storage_state (use web.storage for the top frame's sessionStorage) --
+        and cookies are deliberately omitted (that is web.cookies).
+        """
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                state = handle.context.storage_state()
+            except WebError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - playwright raises many types
+                raise WebError("backend_error", f"cannot read storage state: {exc}") from exc
+            return state if isinstance(state, dict) else {}
+
+        state = self._runner(handle).call(work)
+        collected: list[JsonObject] = []
+        origins_capped = False
+        for item in state.get("origins") or []:
+            if not isinstance(item, dict):
+                continue
+            if len(collected) >= _MAX_STORAGE_ORIGINS:
+                origins_capped = True
+                break
+            origin, _ = _bounded_metadata(item.get("origin", ""), _MAX_URL_BYTES)
+            raw_local = item.get("localStorage")
+            raw_local = raw_local if isinstance(raw_local, list) else []
+            entries: list[JsonObject] = []
+            entries_truncated = False
+            for kv in raw_local:
+                if not isinstance(kv, dict):
+                    continue
+                if len(entries) >= _MAX_STORAGE_ORIGIN_ENTRIES:
+                    entries_truncated = True
+                    break
+                name, _ = _bounded_metadata(kv.get("name", ""), _MAX_METADATA_BYTES)
+                value, cut = _bounded_metadata(kv.get("value", ""), _MAX_ORIGIN_STORAGE_VALUE)
+                entry: JsonObject = {"name": name, "value": value}
+                if cut:
+                    entry["value_truncated"] = True
+                entries.append(entry)
+            entries.sort(key=lambda e: e["name"])
+            collected.append(
+                {
+                    "origin": origin,
+                    "local": entries,
+                    "entry_count": len(entries),
+                    "entry_total": len(raw_local),
+                    "entries_truncated": entries_truncated,
+                }
+            )
+        collected.sort(key=lambda o: o["origin"])
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_STORAGE_ORIGINS))
+        window = collected[start : start + cap]
+        return {
+            "origins": window,
+            "count": len(window),
+            "total": len(collected),
+            "offset": start,
+            "has_more": start + len(window) < len(collected),
+            "origins_capped": origins_capped,
+        }
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -23,6 +23,19 @@ CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去�
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
+
+### 新增（`web.storage.origins` 跨 origin 快照 localStorage）
+
+- 新增 `web.storage.origins`：快照浏览器 context 里**所有已访问 origin** 的 localStorage。
+  页面级的存储读取只覆盖顶层 frame 的 origin，而一段登录流程可能把 token 存到另一个
+  origin（SSO/IdP 主机、内嵌 widget）下，切回当前页后就再也够不着。本工具走 Playwright
+  的 `context.storage_state`，按 origin 汇总整份 context 的 localStorage。每个 origin 是一行，
+  带其 localStorage 条目（name/value）、`entry_count`/`entry_total`，单个 origin 条目超过上限时
+  置 `entries_truncated`；origin 之间排序、组内按 name 排序，分页稳定。仅限 localStorage——
+  sessionStorage 属于单个页面/标签、不在 `storage_state` 内；Cookie 也刻意不带（那是
+  `web.cookies`）。值按上限截断并在被截条目上标 `value_truncated`，origin 数封顶 500 并以
+  `origins_capped` 如实上报，`offset`/`limit`/`total`/`has_more` 与其余分页读取器一致。
+  只读，工具面 265→**266（149 只读 / 117 写）**。
 
 ### 新增（监控台工作台）
 
