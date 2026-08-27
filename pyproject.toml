@@ -122,14 +122,16 @@ omit = [
 # Set just below the measured value so it ratchets. Raise it when real coverage
 # rises; never lower it to turn a red build green.
 # Ratchet: raise when measured coverage rises, never lower to go green.
-# The non-PE lines grew platform-independent guard/error/honesty tests -- the
-# Web and JS/WASM service mixins, the apktool and radare2 CLI adapters, the
-# shared subprocess-lifecycle helpers -- lifting a local .[test,dev,web]
-# full-suite run (the CI extras: no android/browser/proxy backends installed)
-# from the prior 72.23% linux-quality floor to 76.53%. 76 locks in that gain
-# while leaving headroom for environment-driven skips (the windows quality job
-# historically measured ~1pt above linux-quality).
-fail_under = 76
+# The non-PE lines keep growing platform-independent guard/error/honesty tests:
+# the Web and JS/WASM service mixins, the apktool/radare2/jadx CLI adapters, the
+# web install-wizard steps, the OpenAI-compatible provider helpers, and the
+# shared subprocess-lifecycle helpers. A local .[test,dev,web] full-suite run
+# (the CI extras: no android/browser/proxy backends installed) now measures
+# 77.19% -- up from the 72.23% linux-quality floor of the last recorded green
+# run. 77 locks in that gain while leaving headroom for environment-driven skips
+# (the windows quality job historically measured ~1pt above linux-quality, and
+# these skips are platform/fixture-gated, so the linux number is deterministic).
+fail_under = 77
 show_missing = false
 skip_covered = true
 exclude_also = [
