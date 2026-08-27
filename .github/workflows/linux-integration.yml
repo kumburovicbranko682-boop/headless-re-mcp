@@ -74,6 +74,7 @@ jobs:
             tests/integration/test_web_re_gate.py \
             tests/integration/test_web_lifecycle_gate.py \
             tests/integration/test_proxy_lifecycle_gate.py \
+            tests/integration/test_proxy_capture_gate.py \
             tests/integration/test_m11_r2_live_gate.py \
             tests/integration/test_agent_browser_smoke.py \
             -rs --tb=short --timeout=300
