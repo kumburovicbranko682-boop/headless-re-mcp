@@ -15,6 +15,7 @@ import shutil
 import stat
 import threading
 import zipfile
+from contextlib import suppress
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
@@ -247,6 +248,15 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
     if not pids:
         return None
     return pids
+
+
+def _forward_local(item: Any) -> str | None:
+    """Local endpoint of one adb forward row, tolerant of tuple or object rows."""
+    value = getattr(item, "local", None)
+    if value is None and isinstance(item, (tuple, list)) and len(item) >= 2:
+        # adbutils ForwardItem is (serial, local, remote); older rows are 2-tuples.
+        value = item[-2]
+    return str(value) if value is not None else None
 
 
 def _file_mode_size(info: Any) -> tuple[int, int]:
@@ -588,6 +598,16 @@ class AdbBackend:
                 size=size,
                 cap=UNREGISTERED_CAPTURE_MAX_BYTES,
             )
+        if size == 0:
+            # A save that returns leaving a zero-byte file is not a screenshot:
+            # reporting a path and size 0 would send the caller to an empty PNG.
+            with suppress(OSError):
+                out_path.unlink()
+            raise AdbError(
+                "backend_error",
+                "screenshot produced an empty file",
+                path=str(out_path),
+            )
         return {
             "path": str(out_path),
             "serial": _check_serial(serial),
@@ -644,6 +664,39 @@ class AdbBackend:
             )
         return {"remote": remote_path, "local": str(local_path), "size": pulled}
 
+    def _verify_push(
+        self, dev: Any, remote_path: str, local_name: str, expected: int
+    ) -> tuple[bool | None, int | None]:
+        """Best-effort check that a pushed file actually landed with the right size.
+
+        Returns ``(pushed, remote_size)``. ``pushed`` is None when the remote
+        could not be stat'd at all (older adbutils, offline sync), False when
+        adb cannot see a file of the expected size, and True when the sizes
+        agree. adb sync is a byte-for-byte copy with no newline translation, so
+        a size match on the remote is a real landing signal, not a guess.
+        """
+        sync = getattr(dev, "sync", None)
+        stat_fn = getattr(sync, "stat", None) if sync is not None else None
+        if not callable(stat_fn):
+            return None, None
+        try:
+            info = _call(stat_fn, remote_path, timeout=_ADB_PROBE_TIMEOUT_S)
+        except Exception:  # noqa: BLE001
+            return None, None
+        mode, size = _file_mode_size(info)
+        if mode & stat.S_IFDIR:
+            # adb push <file> <dir> lands the file at <dir>/<basename>.
+            target = remote_path.rstrip("/") + "/" + local_name
+            try:
+                info = _call(stat_fn, target, timeout=_ADB_PROBE_TIMEOUT_S)
+            except Exception:  # noqa: BLE001
+                return None, None
+            mode, size = _file_mode_size(info)
+        if mode == 0:
+            # adbutils reports mode 0 for a path its sync stat cannot see.
+            return False, None
+        return size == expected, size
+
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:
         dev = self._device(serial)
         path = Path(local_path).expanduser()
@@ -670,7 +723,21 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
-        return {"local": str(path), "remote": remote_path, "size": size}
+        pushed, remote_size = self._verify_push(dev, remote_path, path.name, size)
+        result: JsonObject = {
+            "local": str(path),
+            "remote": remote_path,
+            "size": size,
+            "pushed": pushed,
+            "remote_size": remote_size,
+        }
+        if pushed is None:
+            result["note"] = "push returned; could not stat the remote path to verify it landed"
+        elif pushed is False:
+            result["note"] = (
+                "push returned; remote file is missing or its size does not match the source"
+            )
+        return result
 
     def ensure_frida_server(
         self,
@@ -765,7 +832,35 @@ class AdbBackend:
                     if key in self._forwards:
                         self._forwards.remove(key)
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
-        return {"local": local, "remote": remote}
+        listed = self._forward_listed(dev, local)
+        result: JsonObject = {"local": local, "remote": remote, "listed": listed}
+        if listed is None:
+            result["note"] = "forward returned; could not read the adb forward table to verify it"
+        elif listed is False:
+            result["note"] = (
+                "forward returned; the local endpoint is absent from the adb forward table"
+            )
+        return result
+
+    def _forward_listed(self, dev: Any, local: str) -> bool | None:
+        """Best-effort check that ``local`` is present in adb's forward table.
+
+        ``dev.forward(...)`` returning is not the same as adb holding the
+        forward: a stale server, a racing remove, or a device that dropped off
+        can all leave a call that returned without a live forward. Returns None
+        when the table cannot be read (older adbutils, offline server) so the
+        caller reports null rather than inventing a truth.
+        """
+        lister = getattr(dev, "forward_list", None)
+        if not callable(lister):
+            return None
+        try:
+            items = _call(lister, timeout=_ADB_PROBE_TIMEOUT_S)
+        except Exception:  # noqa: BLE001
+            return None
+        if items is None:
+            return None
+        return any(_forward_local(item) == local for item in items)
 
     def release_forwards(self) -> JsonObject:
         """Drop every forward this process created.
