@@ -11,18 +11,20 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import uvicorn
 
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.web.app import create_app
 
-# A top-level ``from playwright.sync_api import ...`` made this module fail to
-# import on any machine without playwright, which aborts collection of the
-# whole tests/integration directory rather than skipping this one gate -- worse
-# than the "skip != pass" contract every other backend follows. importorskip
-# turns a missing playwright into a clean module skip instead.
+# A top-level import of any optional dependency made this module fail to import
+# on a machine without it, which aborts collection of the whole tests/integration
+# directory rather than skipping this one gate -- worse than the "skip != pass"
+# contract every other backend follows. Every extra this gate needs (playwright,
+# and the web stack: uvicorn plus headless_re_mcp.web.app, which pulls fastapi)
+# goes through importorskip so a partial install skips just this module. The old
+# eager ``import uvicorn`` / ``from ...web.app import create_app`` sat above the
+# playwright guard and defeated it -- exactly the abort this comment warns of,
+# reproduced on a box with the web extra absent.
 _playwright_sync = pytest.importorskip(
     "playwright.sync_api",
     reason="playwright not installed — browser workbench Gate not run (skip != pass)",
@@ -30,6 +32,15 @@ _playwright_sync = pytest.importorskip(
 Response = _playwright_sync.Response
 expect = _playwright_sync.expect
 sync_playwright = _playwright_sync.sync_playwright
+
+uvicorn = pytest.importorskip(
+    "uvicorn",
+    reason="uvicorn not installed — browser workbench Gate needs the web extra (skip != pass)",
+)
+create_app = pytest.importorskip(
+    "headless_re_mcp.web.app",
+    reason="web extra not installed — browser workbench Gate not run (skip != pass)",
+).create_app
 
 JsonObject = dict[str, Any]
 

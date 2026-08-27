@@ -66,7 +66,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   androguard 缺席时明确 skip(skip != pass);linux-integration CI 装了 `[android]`,该 gate 在 CI
   上真跑。Android 线自此四条 DEX 内容操作全部有真后端回归护栏。
 
-### 修复（apk.open 遇畸形 manifest 泄漏原始 KeyError，被记成 internal_error 事故）
+### 修复（浏览器 smoke 的 eager import 让整个 tests/integration 收集直接崩，绕过了自己写的 skip != pass 护栏）
+
+- **`test_agent_browser_smoke.py` 顶层 `import uvicorn` 与 `from headless_re_mcp.web.app import create_app`
+  坐在 playwright 的 `importorskip` 护栏之上**,于是在缺 web extra(uvicorn/fastapi)的机器上,模块导入先炸,
+  `pytest tests/integration` 整个目录的收集被一条 ImportError 打断——这恰恰是该文件注释明明白白警告并声称已经
+  用 importorskip 解决掉的那种「一个 gate 缺依赖就拖垮整目录」。实测在没装 web extra 的环境里复现:收集报
+  `ImportError ... web.app`。修复把这套 gate 需要的每个可选依赖(playwright,以及 web 栈的 uvicorn 与
+  `headless_re_mcp.web.app`)统统改走 `importorskip`,`uvicorn` / `create_app` 都在函数体里才用、放到护栏之下
+  绑定即可。改完 `tests/integration` 在部分安装的机器上干净收齐(该模块单独 skip、给出明确原因),不再一条裸
+  导入错误让整目录收集中断——把注释写下的契约真正落到实处。
 
 - **`apk.open` 对一个 zip 合法、`AndroidManifest.xml` 却是垃圾的 APK 会崩**。实测 androguard 4.1.4 对解析不了的
   manifest 是**容忍**的——它照样构造出 APK 对象、只在日志里报错而不抛;但它的版本 getter 在这种情况下自相矛盾:
