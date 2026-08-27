@@ -41,6 +41,11 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# HAR enrichment: headers captured per request are metadata for the export, not
+# a mirror of the wire, so bound how many and how long each is kept resident.
+_MAX_HAR_HEADERS = 100
+_MAX_HAR_HEADER_VALUE = 4 * 1024
+_MAX_HAR_POST_DATA = 16 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -62,6 +67,144 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _without_har(entry: JsonObject) -> JsonObject:
+    """A shallow copy of a request entry with the internal ``_har`` key removed."""
+    return {key: value for key, value in entry.items() if key != "_har"}
+
+
+def _bounded_header_map(headers: Any) -> dict[str, str]:
+    """A CDP header map, capped in count and per-value length for HAR retention.
+
+    CDP hands headers as a plain ``{name: value}`` object; keep a bounded copy so
+    the export carries them without letting one pathological response pin
+    unbounded memory in the capture ring.
+    """
+    if not isinstance(headers, dict):
+        return {}
+    out: dict[str, str] = {}
+    for name, value in headers.items():
+        if len(out) >= _MAX_HAR_HEADERS:
+            break
+        out[str(name)] = _bounded_metadata(value, _MAX_HAR_HEADER_VALUE)[0]
+    return out
+
+
+def _map_header(headers: Any, name: str) -> str:
+    """Case-insensitive lookup in a CDP header map (plain ``{name: value}``)."""
+    if not isinstance(headers, dict):
+        return ""
+    lowered = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == lowered:
+            return str(value)
+    return ""
+
+
+def _cdp_timings(har_meta: JsonObject) -> tuple[float, JsonObject]:
+    """Derive HAR ``time`` and ``timings`` from CDP ResourceTiming.
+
+    CDP gives a ``requestTime`` baseline (monotonic seconds) and per-phase
+    offsets in milliseconds, plus ``loadingFinished.timestamp`` on the same
+    clock. HAR wants send/wait/receive (and optional dns/connect/ssl) in ms;
+    anything CDP did not measure stays -1 so a reader never mistakes an
+    unmeasured phase for an instant one.
+    """
+    timing = har_meta.get("timing")
+    finished_ts = har_meta.get("finished_ts")
+    request_time = har_meta.get("request_time")
+
+    base: float | None = None
+    if isinstance(timing, dict) and isinstance(timing.get("requestTime"), (int, float)):
+        base = float(timing["requestTime"])
+    elif isinstance(request_time, (int, float)):
+        base = float(request_time)
+
+    time_ms = 0.0
+    if base is not None and isinstance(finished_ts, (int, float)):
+        total = (float(finished_ts) - base) * 1000.0
+        if total >= 0.0:
+            time_ms = round(total, 3)
+
+    if not isinstance(timing, dict):
+        return time_ms, har_builder.timings(-1.0, -1.0, -1.0)
+
+    def offset(name: str) -> float | None:
+        value = timing.get(name)
+        return float(value) if isinstance(value, (int, float)) and value >= 0.0 else None
+
+    def span(start: float | None, end: float | None) -> float | None:
+        if start is None or end is None or end < start:
+            return None
+        return end - start
+
+    send = span(offset("sendStart"), offset("sendEnd"))
+    wait = span(offset("sendEnd"), offset("receiveHeadersEnd"))
+    dns = span(offset("dnsStart"), offset("dnsEnd"))
+    connect = span(offset("connectStart"), offset("connectEnd"))
+    ssl = span(offset("sslStart"), offset("sslEnd"))
+
+    receive: float | None = None
+    recv_headers_end = offset("receiveHeadersEnd")
+    if base is not None and isinstance(finished_ts, (int, float)) and recv_headers_end is not None:
+        candidate = (float(finished_ts) - base) * 1000.0 - recv_headers_end
+        receive = candidate if candidate >= 0.0 else None
+
+    return time_ms, har_builder.timings(
+        send if send is not None else -1.0,
+        wait if wait is not None else -1.0,
+        receive if receive is not None else -1.0,
+        dns=dns,
+        connect=connect,
+        ssl=ssl,
+    )
+
+
+def _cdp_entry_to_har(entry: JsonObject) -> JsonObject:
+    """Build one HAR entry from a captured CDP request entry and its ``_har`` meta.
+
+    The summary (method/url/status/mimeType) always exists; ``_har`` adds the
+    request/response headers, protocol, timing and byte count CDP reported. When
+    a request is still pending or its events were missed, the missing pieces are
+    simply absent, yielding a valid-but-sparse entry rather than a broken one.
+    """
+    har_meta = entry.get("_har") or {}
+    request_headers = har_meta.get("request_headers")
+    response_headers = har_meta.get("response_headers")
+    post_text = har_meta.get("post_data") or ""
+    body_size = har_meta.get("body_size")
+    body_size = int(body_size) if isinstance(body_size, (int, float)) else None
+    http_version = har_meta.get("http_version") or "HTTP/1.1"
+
+    request = har_builder.request_entry(
+        method=entry.get("method"),
+        url=entry.get("url"),
+        http_version=http_version,
+        headers=request_headers,
+        body=post_text.encode("utf-8", "replace"),
+        mime=_map_header(request_headers, "content-type"),
+    )
+    response = har_builder.response_entry(
+        status=entry.get("status") or 0,
+        status_text=har_meta.get("status_text") or "",
+        http_version=http_version,
+        headers=response_headers,
+        mime=entry.get("mimeType") or "",
+        redirect_url=_map_header(response_headers, "location"),
+        body_size=body_size,
+    )
+    time_ms, timings = _cdp_timings(har_meta)
+    ent = har_builder.entry(
+        started=har_meta.get("wall_time"),
+        time_ms=time_ms,
+        request=request,
+        response=response,
+        timings_obj=timings,
+    )
+    # resourceType is not a HAR field; keep it as a HAR-legal custom extension.
+    ent["_resourceType"] = entry.get("resourceType")
+    return ent
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -482,6 +625,21 @@ class WebBackend:
             resource_type, type_truncated = _bounded_metadata(
                 params.get("type"), _MAX_METADATA_BYTES
             )
+            # HAR enrichment kept out of the request summary (network.list stays
+            # lean) and read only by the HAR export. wallTime is the epoch clock
+            # for startedDateTime; timestamp is the monotonic clock the response
+            # timing and loadingFinished share, so durations can be derived.
+            post_data, post_truncated = _bounded_metadata(
+                req.get("postData"), _MAX_HAR_POST_DATA
+            )
+            har_meta: JsonObject = {
+                "request_headers": _bounded_header_map(req.get("headers")),
+                "wall_time": params.get("wallTime"),
+                "request_time": params.get("timestamp"),
+            }
+            if post_data:
+                har_meta["post_data"] = post_data
+                har_meta["post_data_truncated"] = post_truncated
             entry: JsonObject = {
                 "requestId": params.get("requestId"),
                 "url": url,
@@ -489,6 +647,7 @@ class WebBackend:
                 "resourceType": resource_type,
                 "status": None,
                 "mimeType": None,
+                "_har": har_meta,
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
@@ -503,6 +662,8 @@ class WebBackend:
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            protocol = _bounded_metadata(resp.get("protocol"), _MAX_METADATA_BYTES)[0]
+            status_text = _bounded_metadata(resp.get("statusText"), _MAX_METADATA_BYTES)[0]
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
@@ -510,6 +671,24 @@ class WebBackend:
                     entry["mimeType"] = mime_type
                     if mime_truncated:
                         entry["metadata_truncated"] = True
+                    har_meta = entry.setdefault("_har", {})
+                    har_meta["response_headers"] = _bounded_header_map(resp.get("headers"))
+                    har_meta["http_version"] = protocol
+                    har_meta["status_text"] = status_text
+                    timing = resp.get("timing")
+                    if isinstance(timing, dict):
+                        har_meta["timing"] = timing
+
+        def on_loading_finished(params: JsonObject) -> None:
+            # Network.loadingFinished carries the final byte count and the finish
+            # time on the same monotonic clock as the request/timing, which is
+            # what the HAR export needs to fill bodySize and the receive phase.
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is not None:
+                    har_meta = entry.setdefault("_har", {})
+                    har_meta["finished_ts"] = params.get("timestamp")
+                    har_meta["body_size"] = params.get("encodedDataLength")
 
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
@@ -547,6 +726,7 @@ class WebBackend:
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.loadingFinished", on_loading_finished)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,
@@ -607,7 +787,10 @@ class WebBackend:
             dropped = handle.requests_dropped
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
-        window = items[start : start + cap]
+        # ``_har`` is the internal HAR-enrichment payload (headers, timing); it
+        # is deliberately not part of the lean network.list row, so project it
+        # out without mutating the stored entry.
+        window = [_without_har(item) for item in items[start : start + cap]]
         return {
             "requests": window,
             "count": len(window),
@@ -632,7 +815,7 @@ class WebBackend:
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
         except Exception as exc:  # noqa: BLE001
-            return {**entry, "body_error": str(exc)}
+            return {**_without_har(entry), "body_error": str(exc)}
         if not isinstance(body, str):
             body = str(body)
         if base64_encoded:
@@ -647,7 +830,7 @@ class WebBackend:
                 filename=f"body-{uuid4().hex}.bin",
                 kind="response body",
             )
-        result = dict(entry)
+        result = _without_har(entry)
         result["body"] = inline
         result["body_truncated"] = cut
         if spill is not None:
@@ -796,25 +979,7 @@ class WebBackend:
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
-            entries = []
-            for e in handle.requests.values():
-                # CDP capture recorded only method/url/status/mimeType, so the
-                # entry is structurally-complete-but-sparse: valid HAR that a
-                # viewer can open, with empty headers/cookies and -1 for the
-                # sizes/timings that were never observed. resourceType is kept as
-                # a HAR-legal ``_``-prefixed custom field.
-                ent = har_builder.entry(
-                    started=None,
-                    time_ms=0.0,
-                    request=har_builder.request_entry(
-                        method=e.get("method"), url=e.get("url")
-                    ),
-                    response=har_builder.response_entry(
-                        status=e.get("status") or 0, mime=e.get("mimeType") or ""
-                    ),
-                )
-                ent["_resourceType"] = e.get("resourceType")
-                entries.append(ent)
+            entries = [_cdp_entry_to_har(e) for e in handle.requests.values()]
         import json
 
         har = har_builder.document(entries)

@@ -74,8 +74,32 @@ def duration_ms(start: float | None, end: float | None) -> float:
     return round(delta, 3) if delta >= 0.0 else -1.0
 
 
-def timings(send: float, wait: float, receive: float) -> JsonObject:
-    return {"send": send, "wait": wait, "receive": receive}
+def timings(
+    send: float,
+    wait: float,
+    receive: float,
+    *,
+    blocked: float | None = None,
+    dns: float | None = None,
+    connect: float | None = None,
+    ssl: float | None = None,
+) -> JsonObject:
+    """HAR ``timings``: send/wait/receive are required; the rest are optional.
+
+    The optional phases are included only when a caller actually knows them
+    (>= 0), so a source that cannot measure them -- the proxy -- keeps a lean
+    ``{send, wait, receive}`` while a richer source (CDP ResourceTiming) can add
+    dns/connect/ssl. ssl is only meaningful with connect, per the spec.
+    """
+    out: JsonObject = {
+        "send": round(send, 3),
+        "wait": round(wait, 3),
+        "receive": round(receive, 3),
+    }
+    for name, value in (("blocked", blocked), ("dns", dns), ("connect", connect), ("ssl", ssl)):
+        if value is not None and value >= 0.0:
+            out[name] = round(value, 3)
+    return out
 
 
 def total_time(*values: float) -> float:

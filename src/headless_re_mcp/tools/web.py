@@ -179,9 +179,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with path and entry_count, plus artifact_id when the HAR
         was registered. There is no har, entries or artifact field. The file is
-        valid HAR 1.2 a viewer can open; entries reflect what CDP captured
-        (method, url, status, mimeType), so headers and bodies are empty and
-        sizes/timings are -1 (not observed) rather than invented.
+        valid HAR 1.2 a viewer can open, carrying the request/response headers,
+        query string, HTTP version, status text, transfer size and per-phase
+        timings CDP observed. Response bodies are not inlined (fetch them with
+        web.network.get); a field CDP never reported stays -1 (not observed)
+        rather than invented.
         """
         return _dump(analysis.web_har_export(session_id))
 
