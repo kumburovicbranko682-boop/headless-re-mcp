@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, bound_cancel_scope
-from headless_re_mcp.core.limits import rebuild_would_exhaust_memory
+from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT, rebuild_would_exhaust_memory
 from headless_re_mcp.core.models import BackendKind, Result, RpcError, SessionState
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_detect import _detection_timeout
@@ -2052,7 +2052,16 @@ class UnpackMixin:
         timeout: float,
         open_ida: bool,
     ) -> UnpackSessionState:
-        tested = self.unpack_upx_test(session_id, timeout=timeout)
+        # ``timeout`` is unpack.start's whole-orchestration budget (schema allows
+        # up to 600s; check_timeout enforces it via the session's timeout_seconds).
+        # The two UPX CLI legs below each revalidate their own timeout through
+        # _detection_timeout, which refuses anything over MAX_WORKFLOW_TIMEOUT
+        # (300s) -- so handing them the raw budget turned an in-schema
+        # unpack.start(timeout=400) into a misleading upx_test_failed before UPX
+        # ever ran. Give each leg at most the gate's ceiling, the same way the
+        # plan leg above already receives min(timeout, 60).
+        cli_timeout = min(timeout, MAX_WORKFLOW_TIMEOUT)
+        tested = self.unpack_upx_test(session_id, timeout=cli_timeout)
         if not tested.ok:
             return fail_unpack_session(
                 state,
@@ -2075,7 +2084,7 @@ class UnpackMixin:
         state = checked
         unpacked = self.unpack_upx_unpack(
             session_id,
-            timeout=timeout,
+            timeout=cli_timeout,
             open_ida=open_ida,
         )
         if not unpacked.ok or unpacked.data is None:

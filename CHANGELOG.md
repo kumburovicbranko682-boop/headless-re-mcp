@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`unpack.start` 的整轮预算被当成 UPX CLI 单腿超时回放，合法的 timeout>300 直接把 UPX 路线打成假失败）
+
+- `unpack.start` 的 `timeout`（schema 允许到 600s）是**整轮编排预算**：`create_unpack_session`
+  把它存进 `timeout_seconds`、由 `check_timeout` 跨多次调用统一执行。但 `_run_upx_orchestration`
+  把这个原值直接喂给 `unpack_upx_test` / `unpack_upx_unpack` 两条 UPX CLI 单腿，而它们各自又用
+  `_detection_timeout` 复校、对超过 `MAX_WORKFLOW_TIMEOUT`（300s）的值直接抛
+  `invalid_argument`。于是一个完全合法的 `unpack.start(timeout=400)` 在 UPX 路线（加壳样本的主要
+  正路）上会在 UPX 还没启动前就被判成 `upx_test_failed`——同一个函数里紧邻的 plan 腿却早已用
+  `min(timeout, 60)` 收敛过。现让两条 CLI 腿各取 `min(timeout, MAX_WORKFLOW_TIMEOUT)`：会话仍持有
+  调用方要的完整预算，单腿则拿到各自 gate 接受的切片；预算本就 ≤300s 时原样透传、行为不变。新增回归
+  钉住「`timeout=600` 的 UPX 路线成功跑到 `verified`、会话 `timeout_seconds` 保留 600、两条 CLI 腿
+  各收到 300」，以及「小预算原样透传到两腿」。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
