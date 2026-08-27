@@ -7,7 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from headless_re_mcp.backends.adb.client import AdbBackend
+import pytest
+
+from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
 from headless_re_mcp.core.service_device import DeviceAnalysisMixin
 from headless_re_mcp.tools.device import build_device_tools
 
@@ -42,6 +44,24 @@ def _backend(message: str) -> AdbBackend:
         def connect(self, endpoint: str, timeout: float | None = None) -> str:
             del endpoint, timeout
             return outer.message
+
+    module.AdbClient = AdbClient  # type: ignore[attr-defined]
+    backend = AdbBackend()
+    backend._available = True
+    backend._adbutils = module
+    return backend
+
+
+def _raising_backend(exc: BaseException) -> AdbBackend:
+    module = type("FakeAdb", (), {})
+
+    class AdbClient:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        def connect(self, endpoint: str, timeout: float | None = None) -> str:
+            del endpoint, timeout
+            raise exc
 
     module.AdbClient = AdbClient  # type: ignore[attr-defined]
     backend = AdbBackend()
@@ -95,6 +115,33 @@ def test_already_connected_is_still_a_success() -> None:
     assert result.ok is True
     assert result.data is not None
     assert result.data["connected"] is True
+
+
+def test_a_connect_timeout_is_reported_as_timeout_not_backend_error() -> None:
+    """connect passes timeout=10.0 but skipped the _is_timeout mapping.
+
+    adbutils raises AdbTimeout when the connect deadline elapses. Every
+    sibling adb call maps a timeout to code "timeout"; connect alone flattened
+    it to backend_error. A caller retries a timeout -- a slow emulator that is
+    still coming up -- but treats backend_error as a hard fault and gives up.
+    Measured: code is timeout both at the client and through the mixin.
+    """
+    backend = _raising_backend(TimeoutError("connect timed out"))
+    with pytest.raises(AdbError) as caught:
+        backend.connect("127.0.0.1", 5555)
+    assert caught.value.code == "timeout"
+
+    result = _Harness(backend).device_connect("127.0.0.1", 5555)
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "timeout"
+
+
+def test_a_non_timeout_connect_failure_stays_backend_error() -> None:
+    backend = _raising_backend(ValueError("connection refused"))
+    with pytest.raises(AdbError) as caught:
+        backend.connect("127.0.0.1", 5555)
+    assert caught.value.code == "backend_error"
 
 
 def test_device_connect_names_connected_not_ok() -> None:

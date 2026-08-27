@@ -352,7 +352,14 @@ class AdbBackend:
         _check_serial(endpoint)
         try:
             message = client.connect(endpoint, timeout=10.0)
+        except AdbError:
+            raise
         except Exception as exc:  # noqa: BLE001
+            if _is_timeout(exc):
+                # adbutils raises AdbTimeout when the 10s connect deadline
+                # elapses; every sibling call maps that to "timeout", and a
+                # caller retries a timeout but not an opaque backend_error.
+                raise AdbError("timeout", "adb timed out after 10s") from exc
             raise AdbError("backend_error", f"connect failed: {exc}", endpoint=endpoint) from exc
         return {
             "endpoint": endpoint,
