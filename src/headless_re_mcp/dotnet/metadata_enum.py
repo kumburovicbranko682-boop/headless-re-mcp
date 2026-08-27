@@ -53,6 +53,7 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x1C: ("ldc.i4.6", 0),
     0x1D: ("ldc.i4.7", 0),
     0x1E: ("ldc.i4.8", 0),
+    0x1F: ("ldc.i4.s", 1),
     0x20: ("ldc.i4", 4),
     0x25: ("dup", 0),
     0x26: ("pop", 0),
@@ -72,14 +73,15 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x8C: ("box", 4),
 }
 
-# Branch targets (both the short 1-byte and long 4-byte forms) and the ldc.i4
-# constant carry signed operands; every other opcode with an operand here
+# Branch targets (both the short 1-byte and long 4-byte forms) and both ldc.i4
+# constant forms carry signed operands; every other opcode with an operand here
 # carries an unsigned metadata token. Only the short branches were read as
 # signed, so a long backward branch or a negative constant came back as its
 # two's-complement bit pattern -- br -10 printed as 4294967286 -- which misreads
-# the control flow the disassembly exists to show.
+# the control flow the disassembly exists to show. ldc.i4.s in particular is a
+# one-byte signed immediate, so ``ldc.i4.s -1`` must decode as -1, not 255.
 _SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
-    {"br.s", "brfalse.s", "brtrue.s", "br", "brfalse", "brtrue", "ldc.i4"}
+    {"br.s", "brfalse.s", "brtrue.s", "br", "brfalse", "brtrue", "ldc.i4", "ldc.i4.s"}
 )
 
 

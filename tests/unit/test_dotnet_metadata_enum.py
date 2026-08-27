@@ -148,6 +148,36 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
     assert partial is False
 
 
+def test_il_ldc_i4_s_reads_its_signed_byte_and_stays_in_sync() -> None:
+    """ldc.i4.s carries a one-byte signed operand; skipping it desyncs the body.
+
+    0x1F sits between ldc.i4.0..8 (0x16..0x1E) and ldc.i4 (0x20), the rest of a
+    family the decoder already covers, yet it was absent from the opcode table.
+    An absent opcode is treated as a zero-operand unknown, so the constant byte
+    after ldc.i4.s was read as the next instruction: the very common
+    ``ldc.i4.s <n>`` shifted every following opcode by one byte and turned the
+    rest of the method into garbage. Decoding its signed immediate keeps the
+    stream aligned and reads ``ldc.i4.s -1`` as -1 rather than 255.
+    """
+    il = (
+        bytes([0x1F])
+        + (10).to_bytes(1, "little", signed=True)  # ldc.i4.s 10
+        + bytes([0x1F])
+        + (-1).to_bytes(1, "little", signed=True)  # ldc.i4.s -1
+        + bytes([0x2A])  # ret -- only reached if the two operands were consumed
+    )
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    decoded = [(insn["mnemonic"], insn["operand"]) for insn in instructions]
+    assert decoded == [
+        ("ldc.i4.s", 10),
+        ("ldc.i4.s", -1),
+        ("ret", None),
+    ]
+    assert partial is False
+
+
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     binary = tmp_path / "empty_tables.exe"
     _write_minimal_clr(binary)
