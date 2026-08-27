@@ -147,7 +147,9 @@ def test_a_dump_that_shrinks_mid_read_is_rejected(
             )
         )
 
-    monkeypatch.setattr(service_unpack.os, "fstat", oversized_fstat)
+    # service_unpack calls the module-level os.fstat; patching the shared os
+    # module object reaches it without relying on a re-export.
+    monkeypatch.setattr(os, "fstat", oversized_fstat)
 
     with pytest.raises(PeRebuildError, match="changed size"):
         _read_dump_for_rebuild(dump)
