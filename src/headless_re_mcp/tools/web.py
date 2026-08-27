@@ -207,6 +207,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         wasm_only: bool = False,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        url_contains: str | None = None,
     ) -> dict[str, Any]:
         """List parsed scripts seen by the debugger, one page at a time.
 
@@ -217,10 +218,24 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         read count, not limit -- the result-size budget can trim the page
         (each url can be 16 KiB) so count falls below the requested limit.
         metadata_truncated marks bounded oversized script fields.
+
+        url_contains narrows a page that parsed hundreds of scripts to the one
+        worth reading: it is a case-insensitive substring of the script url, so
+        url_contains="app.js" finds it without paging the whole list. It is
+        ANDed with wasm_only. When it is set, total counts only the matches and
+        the reply adds filtered true and captured (the pre-filter ring size), so
+        page on has_more against the filtered view; wasm_only alone keeps its
+        existing flag-free shape. dropped stays the ring-eviction count
+        regardless. A blank or whitespace-only value is ignored rather than
+        matching everything.
         """
         return _dump(
             analysis.web_scripts(
-                session_id, wasm_only=wasm_only, offset=offset, limit=limit
+                session_id,
+                wasm_only=wasm_only,
+                offset=offset,
+                limit=limit,
+                url_contains=url_contains,
             )
         )
 

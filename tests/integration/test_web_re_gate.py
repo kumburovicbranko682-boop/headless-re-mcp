@@ -285,6 +285,25 @@ def test_web_cdp_captures_network_and_reads_a_body() -> None:
             assert none_match.data["total"] == 0
             assert none_match.data["requests"] == []
 
+            # web.scripts filter runs against the same live capture: the debugger
+            # parsed app.js, so a url substring keeps it and flags the narrowing,
+            # while a nonsense substring gives an empty filtered view. This pins
+            # the scripts url_contains path end to end, not only the unit fakes.
+            def _scripts_have_app() -> bool:
+                service.web_dom_snapshot(session_id)  # pump CDP events
+                res = service.web_scripts(session_id, url_contains="app.js")
+                assert res.ok, res.error
+                return res.data["filtered"] is True and any(
+                    "app.js" in str(row.get("url", "")) for row in res.data["scripts"]
+                )
+
+            assert _wait_until(_scripts_have_app), "app.js script was not captured over CDP"
+            miss_scripts = service.web_scripts(session_id, url_contains="no-such-script-xyz")
+            assert miss_scripts.ok, miss_scripts.error
+            assert miss_scripts.data["filtered"] is True
+            assert miss_scripts.data["total"] == 0
+            assert miss_scripts.data["scripts"] == []
+
             # web.cookies reads the browser's cookie store over CDP. The index
             # set an HttpOnly cookie, so a working read returns it with the value
             # and the http_only flag -- and getAllCookies surfacing an HttpOnly

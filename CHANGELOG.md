@@ -1369,6 +1369,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   空白串忽略且外部类仍排除;字符串 contains 大小写、子串在常量中部命中(证明是子串非前缀)、空白串忽略。实机 gate(`test_m11_android_apk_live_gate.py`)对真实 dex:`classes(contains="sample")` 留住 Sample 类并置
   `filtered`、无意义串给出空的已过滤列表;`strings(contains="MARKER")` 留住标记串并置 `filtered`——走真实 androguard 扫描而非 mock。
 
+- **`web.scripts` 只有 `wasm_only` 与 offset/limit,一页解析了几百个脚本时想按 URL 挑出关心的那个(如 app.js)只能整页翻——是 Web 列表面里最后一个还没有子串过滤的。** 现加一个 `url_contains`
+  (大小写不敏感的 URL 子串)过滤,与 `web.network.list` 同源,并与 `wasm_only` 相 AND:`url_contains="app.js"` 直接定位那个脚本。命中后 `total` 只计匹配数并新增 `filtered`(为真)与 `captured`
+  (过滤前环内条数),`has_more` 针对命中集翻页;`dropped` 仍是脚本环已淘汰数(与过滤无关)。刻意只让新的 `url_contains` 触发 `filtered`/`captured`:`wasm_only` 单用时保持原有无标记形态,故复用同一
+  代码路径的 `web.wasm.list` 回复逐字节不变。空白过滤串按「无过滤」处理。这是修改既有工具而非新增,工具面计数不变。单测(`test_web_scripts_fields.py`):url 子串大小写、落空给出空的已过滤列表、
+  与 `wasm_only` 相 AND 且 `captured` 为整环、空白串忽略、`wasm_only` 单用形态不变。实机 gate(`test_web_re_gate.py`)对真实 Chrome 解析出的 `app.js`:`url_contains="app.js"` 留住它并置 `filtered`、
+  无意义子串给出空的已过滤视图——端到端走真实 CDP 脚本捕获而非单测 fake。
+
 - **新增 `apk.disassemble`:直接从 androguard 读出某方法的 Dalvik 字节码指令,回答 `apk.xrefs` 只能指到而答不出的「这个方法到底做了什么」。** 现有反编译 `apk.decompile`(jadx,需 Java/JRE)与
   `apk.decode`(apktool 的 baksmali)都依赖外部工具,本机没装就用不了;本工具走 androguard 的 `EncodedMethod.get_instructions`,**不需要 jadx/JRE 或 apktool**,与 WASM 那套无依赖二进制读取同一思路。
   按 `class_name`+`method_name` 定位(类名接受点分 `com.example.X` 或 smali `Lcom/example/X;` 两种形式);方法名有重载时,`overloads` 列出该名下所有描述符、默认按描述符排序取第一个,传 `descriptor`

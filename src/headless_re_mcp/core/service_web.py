@@ -197,6 +197,8 @@ class WebAnalysisMixin:
         wasm_only: bool = False,
         offset: int = 0,
         limit: int = 100,
+        *,
+        url_contains: str | None = None,
     ) -> Result[JsonObject]:
         return self._web_wrap(
             session_id,
@@ -205,6 +207,7 @@ class WebAnalysisMixin:
             wasm_only=wasm_only,
             offset=offset,
             limit=limit,
+            url_contains=url_contains,
         )
 
     def web_wasm_list(

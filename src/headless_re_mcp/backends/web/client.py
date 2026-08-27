@@ -1087,12 +1087,18 @@ class WebBackend:
         wasm_only: bool = False,
         offset: int = 0,
         limit: int = 100,
+        url_contains: str | None = None,
     ) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
-            values = list(handle.scripts.values())
+            all_values = list(handle.scripts.values())
+        values = all_values
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
+        url_f = _norm_str_filter(url_contains)
+        if url_f is not None:
+            needle = url_f.casefold()
+            values = [s for s in values if needle in str(s.get("url") or "").casefold()]
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = values[start : start + cap]
@@ -1101,7 +1107,7 @@ class WebBackend:
         # windowed page can still outrun the budget and be discarded whole. See
         # network_list.
         window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
-        return {
+        result: JsonObject = {
             "scripts": window,
             "count": len(window),
             "total": len(values),
@@ -1109,6 +1115,14 @@ class WebBackend:
             "has_more": start + len(window) < len(values),
             "dropped": handle.scripts_dropped,
         }
+        if url_f is not None:
+            # total now counts only url matches, so flag the narrowing and report
+            # the pre-filter ring size -- mirroring network_list. wasm_only keeps
+            # its existing flag-free contract (web.wasm.list depends on it), so
+            # only the url substring filter surfaces filtered/captured here.
+            result["filtered"] = True
+            result["captured"] = len(all_values)
+        return result
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
