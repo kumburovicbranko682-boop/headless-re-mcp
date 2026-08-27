@@ -257,7 +257,19 @@ class WasmClient:
     def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
-        stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
+        # --enable-all, or wasm2wat parses only the MVP subset and bails with
+        # "unexpected opcode" on any post-MVP feature. That is not an edge case:
+        # emscripten emits C++ exceptions and pthreads (threads), Kotlin/Dart/Java
+        # target GC, functional compilers emit tail calls, and large apps use
+        # memory64 -- all off by default in wabt, all common in the wild. A
+        # reverse engineer hands over whatever module they captured, so wasm2wat
+        # has to decode whatever features it uses; enabling everything only widens
+        # the grammar wasm2wat accepts and never changes how an MVP module decodes.
+        # wasm-objdump (info) needs no such flag -- it already parses every
+        # feature and rejects --enable-all -- so only this path carries it.
+        stdout, stderr, code = _run(
+            [str(self._wasm2wat), "--enable-all", str(resolved)], timeout=timeout
+        )
         if code != 0 and not stdout:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]

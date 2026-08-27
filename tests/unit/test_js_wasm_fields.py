@@ -364,3 +364,37 @@ def test_wasm_wat_accepts_a_real_module(tmp_path: Path) -> None:
     with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
         payload = WasmClient(tool).wat(module)
     assert payload["wat"] == "(module)"
+
+
+def test_wasm_wat_enables_all_features(tmp_path: Path) -> None:
+    """wasm2wat runs with --enable-all so post-MVP modules decode, not bail.
+
+    Without the flag wasm2wat parses only the MVP subset and exits with
+    "unexpected opcode" on the first post-MVP feature (tail calls, exceptions,
+    threads, GC, memory64, ...) -- all common in emscripten/Rust/Kotlin output
+    that a reverse engineer captures. Pin the flag into the argv so the fix
+    cannot silently regress, and confirm it lands before the module path (a
+    trailing positional the child reads as the file).
+    """
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    launched: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        launched.append(list(cmd))
+        return Completed(0, b"(module (func $f (result i32) return_call 0))", b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).wat(module)
+
+    assert len(launched) == 1
+    argv = launched[0]
+    assert "--enable-all" in argv
+    # The module path is the trailing positional; the flag precedes it.
+    assert argv[-1] == str(module)
+    assert argv.index("--enable-all") < argv.index(str(module))
+    # The tool still returns the decoded text unchanged.
+    assert payload["wat"] == "(module (func $f (result i32) return_call 0))"
+    assert "--enable-all" in _tool_docstring("wasm.wat")

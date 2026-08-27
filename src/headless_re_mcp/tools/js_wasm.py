@@ -77,8 +77,11 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with wat and bytes, plus truncated when the text was cut at
         the buffer, and exit_code / tool_failed / stderr when wasm2wat exits
-        non-zero but still emitted text. An input over 16 MiB is refused as
-        too_large, and a file that is not a WebAssembly module as
+        non-zero but still emitted text. wasm2wat runs with --enable-all so a
+        module using a post-MVP feature (exceptions, threads, tail calls, GC,
+        SIMD, memory64, ...) decodes instead of failing with "unexpected
+        opcode"; an MVP module reads the same. An input over 16 MiB is refused
+        as too_large, and a file that is not a WebAssembly module as
         invalid_params, rather than handed to wasm2wat.
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))

@@ -199,3 +199,45 @@ jobs:
             throw "committed SPA is stale - run 'npm run build' in webui and commit src/headless_re_mcp/web/spa"
           }
           Write-Host "committed SPA matches webui/src"
+
+  linux-wasm-wat-features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web]"
+      - name: Install wabt (wasm2wat/wat2wasm)
+        run: |
+          set -euo pipefail
+          version=1.0.41
+          curl -sSL -o /tmp/wabt.tar.gz \
+            "https://github.com/WebAssembly/wabt/releases/download/${version}/wabt-${version}-linux-x64.tar.gz"
+          tar -xzf /tmp/wabt.tar.gz -C /tmp
+          echo "/tmp/wabt-${version}/bin" >> "$GITHUB_PATH"
+      - name: wasm2wat is on PATH
+        run: |
+          wasm2wat --version
+          wat2wasm --version
+      - name: wasm.wat post-MVP feature gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_wasm_wat_features_live_gate.py \
+            -rs --tb=short --junitxml=wasm-wat-features-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("wasm-wat-features-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          if not cases:
+              sys.exit("no wasm.wat feature gate was collected")
+          if skipped:
+              sys.exit(f"wasm.wat feature gate skipped despite an installed wabt: {skipped}")
+          print(f"wasm.wat feature gate ran for real: {[c.get('name') for c in cases]}")
+          PY

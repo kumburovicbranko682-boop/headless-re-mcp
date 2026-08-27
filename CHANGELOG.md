@@ -49,6 +49,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（wasm.wat 现在能解出用到 MVP 之后特性的真实模块）
+
+- `wasm.wat` 调 `wasm2wat` 时不带任何特性开关,而 wasm2wat 默认只认 WebAssembly MVP 子集——
+  一碰到 MVP 之后的特性就以 `error: unexpected opcode` 退出(退出码非 0)。这不是边角情形:
+  emscripten 编 C++ 会发异常处理(exceptions)、pthreads 会发 threads,Kotlin/Dart/Java 目标用
+  GC,函数式编译器发尾调用(tail-call),大应用用 memory64——这些在 wabt 里全是默认关闭、在真实
+  样本里却随处可见。逆向的人拿来的就是抓到的那个模块,`wasm2wat` 必须能解出它用到的任何特性。
+  改为传 `--enable-all`:wasm2wat 现在按启用全部特性来解析,上述模块都能落成 WAT 文本,而一个纯
+  MVP 模块解出来的结果与从前完全一致(开关只放宽 wasm2wat 接受的语法,绝不改变既有 opcode 的解读)。
+  `wasm.info`(走 `wasm-objdump`)无需改动——objdump 本就无条件解析全部特性,且根本不接受
+  `--enable-all`,故该开关只加在 `wat()` 这一条路径上。工具文档串已注明 wasm2wat 以 `--enable-all`
+  运行,MVP 之后的特性(exceptions/threads/tail-call/GC/SIMD/memory64…)可解而非报 unexpected
+  opcode。单测新增一条:抓 `wasm2wat` 的 argv,断言 `--enable-all` 落在模块路径(末尾位置参数)之前,
+  并确认返回文本原样透传;既有 MVP 用例继续覆盖不回归。新增 live gate
+  (`test_wasm_wat_features_live_gate.py`):用 `wat2wasm` 现造一个用到默认关闭特性(尾调用/异常/
+  memory64,取本机 wabt 能装配且裸 `wasm2wat` 会拒的第一个)的真实模块,先证裸 `wasm2wat` 确实拒解
+  (故通过意味着开关起了作用,而非该特性恰属 MVP),再驱动真实 `WasmClient.wat` 断言解出对应构造的
+  WAT。CI 新增 `linux-wasm-wat-features` job 下载 wabt release 跑该 gate,skip≠pass 守卫在 wabt
+  已装却仍 skip 时判失败。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
