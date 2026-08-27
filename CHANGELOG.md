@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 新增（官方 UPX CLI 解包路线在 Linux 端到端 Gate）
+
+- 内置侦测引擎会给打包件推荐 `unpack.upx.*` 路由，但那条路由本身此前在 Linux 上没有集成覆盖：`main` 上
+  的 UPX 解包测试绑在 Windows/x64dbg 的 unpack 会话上，Linux 整条跳过，纯 CLI 适配器
+  （`unpack.upx.test`/`unpack.upx.unpack`/`unpack.auto`）无人验证。新增
+  `tests/integration/test_upx_cli_unpack_gate.py`，用已提交的 UPX 打包件把 detect→unpack→verify-clean
+  整条闭环钉死：`upx -t` 校验通过且输入逐字节不变；`upx -d` 写出**新**产物（输入不动）——是更大的、同架构
+  的合法 PE，UPX 折叠掉的段与导入都还原了（本样本 3→6 段、12→59 导入），且用内置引擎对该产物再分类已
+  是 `none_detected`（不再是打包件）；`unpack.auto` 走到 `verified` 相位并登记 `upx_unpacked` 产物。
+  守卫一并钉死：未配置 upx 时降级为 `capability_unavailable` 而非伪造成功，关闭会话后回 `invalid_request`。
+  仅在缺 upx 时如实跳过，skip 不等于 pass。在一台装了官方 upx 5.2.1 的 Linux 上跑通 5/5。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
