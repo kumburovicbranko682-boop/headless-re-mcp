@@ -130,6 +130,93 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+class _ImportApi:
+    def imports(self, name: str, count: int) -> dict[str, Any]:
+        return {
+            "found": True,
+            "module": name,
+            "base": "0x1",
+            "imports": [
+                {
+                    "name": f"i{index}",
+                    "module": "libc.so",
+                    "address": "0x3",
+                    "type": "function",
+                }
+                for index in range(int(count))
+            ],
+        }
+
+
+class _ImportScript:
+    exports_sync = _ImportApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _ImportSession:
+    def create_script(self, source: str) -> _ImportScript:
+        return _ImportScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _ImportFrida:
+    def attach(self, pid: int) -> _ImportSession:
+        return _ImportSession()
+
+
+def test_frida_imports_says_when_the_page_is_not_the_whole_table() -> None:
+    """imports mirrors exports: a filled page must name has_more and the
+    source library each symbol resolves to.
+
+    Measured: 11 imports requested for a page of 10 -> count 10, has_more
+    True, each row carries module (the resolving library). An agent that
+    read the page as the whole import table had no field to notice the rest.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _ImportFrida()
+    payload = client.imports(1, "libapp.so", allowed_pid=1, limit=10)
+    assert payload["found"] is True
+    assert payload["module"] == "libapp.so"
+    assert payload["count"] == 10
+    assert len(payload["imports"]) == 10
+    assert payload["imports"][0]["module"] == "libc.so"
+    assert payload["imports"][0]["type"] == "function"
+    assert payload["has_more"] is True
+    doc = _tool_docstring("frida.imports")
+    assert "has_more" in doc
+    assert "imports" in doc
+
+
+def test_frida_imports_reports_a_missing_module_as_not_found() -> None:
+    """A module the target never loaded is found False with an empty list,
+    not an empty table that reads as 'imports nothing'."""
+
+    class _MissingApi:
+        def imports(self, name: str, count: int) -> dict[str, Any]:
+            del name, count
+            return {"found": False, "imports": []}
+
+    script = type("_S", (), {"exports_sync": _MissingApi(), "load": lambda self: None})()
+    session = type(
+        "_Sess",
+        (),
+        {"create_script": lambda self, source: script, "detach": lambda self: None},
+    )()
+    client = FridaClient()
+    client._available = True
+    client._frida = type("_F", (), {"attach": lambda self, pid: session})()
+    payload = client.imports(1, "nope.so", allowed_pid=1, limit=10)
+    assert payload["found"] is False
+    assert payload["imports"] == []
+    assert payload["count"] == 0
+    assert payload["has_more"] is False
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident

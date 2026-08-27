@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -42,6 +42,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （tmd/Themida/WinLicense → `themida`）；open/launch 省略参数时按映射自动写 ini。
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
+
+### 新增（`frida.imports` 列模块导入符号）
+
+- `frida.exports` 能列一个模块**导出**了哪些符号，却没有对应工具看它**导入**了哪些——而一个
+  native 库调用了哪些外部函数（`dlopen`、JNI、某个加密例程、某个反调试 syscall）往往比它导出
+  什么更能说明它在干什么。新增只读 `frida.imports`（`frida.exports` 的镜像）：在会话调试目标里对
+  指定模块跑 `enumerateImports` 探针，回 `found`、`module`、`base` 与 `imports`（`name`；`module`
+  为该符号解析到的来源库、未知时为空串；`address` 为解析地址、延迟绑定尚未解析时为空串；`type`），
+  并带 `count` 与 `has_more`，使填满 limit 的一页不被当成整张导入表。上限 512、按 `_page` 多取一个
+  判断是否还有；仅限本会话已授权的调试 pid，probe 结束即 detach。新增回归测试覆盖分页 has_more 与
+  字段命名。
 
 ### 变更（监控台检查器）
 

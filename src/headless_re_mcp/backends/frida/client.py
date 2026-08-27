@@ -116,6 +116,26 @@ rpc.exports = {
     }
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
+  imports: function (moduleName, limit) {
+    var mod = Process.findModuleByName(moduleName);
+    if (mod === null) {
+      return {found: false, imports: []};
+    }
+    var all = mod.enumerateImports();
+    var items = [];
+    for (var i = 0; i < all.length && items.length < limit; i++) {
+      var e = all[i];
+      // A lazily-bound import has no resolved address yet; module is the
+      // library the symbol resolves to when known.
+      items.push({
+        name: e.name,
+        module: e.module ? e.module : '',
+        address: e.address ? e.address.toString() : '',
+        type: e.type
+      });
+    }
+    return {found: true, module: mod.name, base: mod.base.toString(), imports: items};
+  },
   read: function (address, size) {
     // Read through the NativePointer method, not the legacy Memory.read* free
     // functions: frida 17 removed those globals, so the old form raised
@@ -397,6 +417,50 @@ class FridaClient:
                 "module": str(raw.get("module") or module_name),
                 "base": str(raw.get("base") or ""),
                 "exports": items,
+                "count": len(items),
+                "has_more": has_more,
+            }
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
+    def imports(
+        self,
+        pid: int,
+        module_name: str,
+        *,
+        allowed_pid: int,
+        limit: int = 64,
+    ) -> JsonObject:
+        self._require(pid, allowed_pid)
+        if not isinstance(module_name, str) or not module_name.strip():
+            raise FridaError("invalid_params", "module_name is required")
+        capped = max(1, min(int(limit), 512))
+        session = self._attach_local(pid)
+        try:
+            script = session.create_script(_ENUM_SCRIPT)
+            script.load()
+            raw = script.exports_sync.imports(module_name.strip(), capped + 1)
+            if not isinstance(raw, dict):
+                raise FridaError("backend_error", "unexpected frida imports payload")
+            page, has_more = _page(list(raw.get("imports") or []), capped)
+            items = []
+            for item in page:
+                if not isinstance(item, dict):
+                    continue
+                items.append(
+                    {
+                        "name": str(item.get("name", "")),
+                        "module": str(item.get("module", "")),
+                        "address": str(item.get("address", "")),
+                        "type": str(item.get("type", "")),
+                    }
+                )
+            return {
+                "found": bool(raw.get("found")),
+                "module": str(raw.get("module") or module_name),
+                "base": str(raw.get("base") or ""),
+                "imports": items,
                 "count": len(items),
                 "has_more": has_more,
             }

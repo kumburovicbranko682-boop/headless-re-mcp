@@ -56,6 +56,25 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 
+    @tools.tool(name="frida.imports")
+    def frida_imports(
+        session_id: str,
+        module_name: str,
+        limit: Annotated[int, Field(ge=1, le=512)] = 64,
+    ) -> dict[str, Any]:
+        """List imports of one named module in the session debuggee via a Frida probe.
+
+        The mirror of frida.exports: where exports are the symbols a module
+        provides, imports are the external functions and variables it calls
+        out to -- the surface where a native library reaches dlopen, JNI, a
+        crypto routine, or an anti-debug syscall. Answers with found, module,
+        base, and imports (name; module, the library each symbol resolves to
+        when known; address, empty for a lazily-bound import not yet resolved;
+        and type), plus count and has_more so a page that filled the limit is
+        not read as the whole import table. Limited to the debuggee pid.
+        """
+        return _dump(analysis.frida_imports(session_id, module_name, limit=limit))
+
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16
