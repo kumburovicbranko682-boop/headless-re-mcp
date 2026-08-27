@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.common.har import build_har, har_entry, serialize_har
+from headless_re_mcp.backends.common.har import _query_string, build_har, har_entry, serialize_har
 from headless_re_mcp.backends.proxy import client as proxy_client
 from headless_re_mcp.backends.proxy.client import ProxyBackend, ProxyError, _FlowRecorder
 from headless_re_mcp.backends.web import client as web_client
@@ -119,6 +119,20 @@ def test_har_entry_parses_the_query_string_from_the_url() -> None:
     _assert_valid_har(json.dumps(build_har([entry])))
     params = [(p["name"], p["value"]) for p in entry["request"]["queryString"]]
     assert params == [("q", "hello world"), ("tag", "a"), ("tag", "b"), ("flag", "")]
+
+
+def test_har_entry_survives_a_malformed_captured_url() -> None:
+    """A captured URL is untrusted server data and may be malformed enough that
+    urlsplit rejects it -- an unterminated IPv6 literal raises ValueError. That
+    must degrade to an empty queryString, not an exception that would poison the
+    whole export: one bad URL cannot take the entire HAR down with it.
+    """
+    assert _query_string("http://[::1") == []
+    entry = har_entry(method="GET", url="http://[::1", status=0, mime_type="")
+    # The entry is still spec-complete and the bad URL rides through verbatim.
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["request"]["url"] == "http://[::1"
+    assert entry["request"]["queryString"] == []
 
 
 def test_har_entry_reports_a_known_response_body_size() -> None:
