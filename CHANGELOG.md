@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dotnet.enumerate` 的 `#Strings` 枚举封顶后谎称完整）
+
+- `dotnet.enumerate(kind="strings")` 把整个 `#Strings` 堆物化再分页,`_iter_strings_heap`
+  在第 10000 条静默 `break`,而 `total`/`truncated` 都由这份被截断的列表推出。真实的大型
+  程序集(类型/方法/字段成千上万)`#Strings` 条目远超 1 万,于是翻页到封顶处 `truncated`
+  变成 `False`——工具声称已列全,实际上悄悄丢掉了后面成千上万条字符串。现改为
+  `_collect_strings_heap` 返回 `(条目, 是否被封顶)`:一旦堆里还有第 10001 条,`enumerate`
+  就把 `truncated` 置真并在 `note` 里写明「列表被封顶、total 少报」。封顶上限保留(避免
+  被构造的巨型堆撑爆内存),但不再假装完整。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
