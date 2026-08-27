@@ -166,9 +166,12 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
         ok=True,
         result_summary={"done": True},
     )
-    entries = repository.list_audit(session_id)["entries"]
-    contract_entry = next(item for item in entries if item["action"] == "contract.audit")
+    audit = repository.list_audit(session_id)
+    contract_entry = next(item for item in audit["entries"] if item["action"] == "contract.audit")
     assert contract_entry["params_summary"] == {"access_token": "***", "safe": 7}
+    # Nothing has been trimmed, so the audit log is complete and both shapes
+    # report zero loss the same way.
+    assert audit["dropped_total"] == 0
 
     written: list[Path] = []
 
@@ -216,6 +219,44 @@ def test_the_audit_log_is_trimmed_to_the_newest_entries(tmp_path: Path) -> None:
     assert len(actions) <= store.audit_retained_rows + store.audit_trim_interval
     assert actions[0] == "action-11"
     assert listed["total"] == len(actions)
+    # Every appended row is either still here or counted as dropped: the log
+    # never quietly loses a row it does not also account for. Twelve went in,
+    # five survive, seven were trimmed.
+    assert listed["total"] == 5
+    assert listed["dropped_total"] == 7
+    assert listed["total"] + listed["dropped_total"] == 12
+
+    # The count is durable: a fresh store over the same file still reports the
+    # loss rather than resetting it to zero on restart.
+    reopened = SqliteAnalysisRepository(tmp_path / "audit-quota")
+    assert reopened.list_audit("s1")["dropped_total"] == 7
+
+
+def test_inmemory_audit_reports_rows_the_cap_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-memory audit log discloses its loss like the SQLite store does.
+
+    The audit log is one global stream, so its dropped count is a single
+    cumulative number. Keep three rows, write eight, and the five that fell off
+    the front are reported rather than passed off as the whole log.
+    """
+    from headless_re_mcp.core import repository as repo_module
+
+    monkeypatch.setattr(repo_module, "AUDIT_RETAINED_ROWS", 3)
+    repository = InMemoryAnalysisRepository(tmp_path)
+    for index in range(8):
+        repository.append_audit(
+            session_id="s1",
+            action=f"action-{index}",
+            params_summary={},
+            ok=True,
+            result_summary={},
+        )
+    listed = repository.list_audit("s1")
+    assert listed["total"] == 3
+    assert listed["dropped_total"] == 5
+    assert listed["total"] + listed["dropped_total"] == 8
 
 
 def test_cleanly_closed_sessions_are_dropped_and_unclean_ones_are_not(tmp_path: Path) -> None:
