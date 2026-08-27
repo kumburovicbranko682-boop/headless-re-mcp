@@ -144,6 +144,55 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  # Real-backend coverage for the portable (non-Windows) lines. radare2 and
+  # wabt are hosted-runner installable, so their live gates run for real on
+  # Linux instead of skipping forever -- "skip != pass" only means something
+  # when the backend is actually present somewhere. gcc ships on ubuntu-latest,
+  # so the r2 gate builds its own ELF fixture rather than needing the Windows PE.
+  linux-portable-backends:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install portable backends
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y radare2 wabt
+          r2 -v
+          wasm2wat --version
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web]"
+
+      - name: Portable backend gates run for real (skip != pass)
+        run: |
+          python -m pytest \
+            tests/integration/test_m11_r2_live_gate.py \
+            "tests/integration/test_web_re_gate.py::test_wasm_wat_when_wabt_present" \
+            -rs --tb=short --junitxml=portable-gates.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("portable-gates.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # The backends were just installed, so a skip here means the gate could
+          # not reach them -- exactly the false-green "skip != pass" warns about.
+          if not cases:
+              sys.exit("no portable backend gates were collected")
+          if skipped:
+              sys.exit(f"portable backend gates skipped despite installed backends: {skipped}")
+          print(f"portable backend gates ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
