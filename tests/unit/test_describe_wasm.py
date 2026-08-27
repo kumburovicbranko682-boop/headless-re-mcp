@@ -66,6 +66,11 @@ def test_describe_wasm_reads_a_real_add_module(tmp_path: Path) -> None:
     assert info["imports"] == []
     # No producers custom section at all reads as None, not an empty record.
     assert info["producers"] is None
+    # And no name section: a stripped module has no module name, no function
+    # names, and a None count -- distinct from a present-but-empty name map.
+    assert info["module_name"] is None
+    assert info["function_name_count"] is None
+    assert info["function_names"] == []
 
 
 def test_describe_wasm_lists_import_and_export_names_with_kinds(tmp_path: Path) -> None:
@@ -161,6 +166,109 @@ def test_describe_wasm_reads_the_producers_toolchain(tmp_path: Path) -> None:
         "language": ["Rust"],  # an empty version joins away rather than dangling
         "processed-by": ["rustc 1.76.0", "wasm-bindgen 0.2.92"],
     }
+    assert info["well_formed"] is True
+
+
+def _name_subsec(sub_id: int, payload: bytes) -> bytes:
+    return bytes([sub_id]) + _leb(len(payload)) + payload
+
+
+def _name_section(subsections: list[bytes]) -> bytes:
+    return _section(0, _name("name") + b"".join(subsections))
+
+
+def _func_name_map(entries: list[tuple[int, str]], declared: int | None = None) -> bytes:
+    body = _leb(declared if declared is not None else len(entries))
+    for index, fname in entries:
+        body += _leb(index) + _name(fname)
+    return body
+
+
+def test_describe_wasm_reads_the_debug_names(tmp_path: Path) -> None:
+    """The name section's module and function names -- WASM's debug symbols.
+
+    An unstripped module carries its source-level function names here (not in
+    exports, which only name the public interface); reading them tool-free is
+    the WASM analogue of the ELF reader's stripped flag plus symbol names.
+    """
+    module = _module(
+        [
+            _name_section(
+                [
+                    _name_subsec(0, _name("demo")),
+                    _name_subsec(1, _func_name_map([(0, "host_log"), (1, "add_impl")])),
+                    # Local names (id 2): present in real wat2wasm output and
+                    # skipped by size, proving the walk is not derailed by
+                    # subsections it does not read.
+                    _name_subsec(2, _leb(1) + _leb(0) + _leb(0)),
+                ]
+            )
+        ]
+    )
+    path = tmp_path / "named.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["module_name"] == "demo"
+    assert info["function_name_count"] == 2
+    assert info["function_names"] == [
+        {"index": 0, "name": "host_log"},
+        {"index": 1, "name": "add_impl"},
+    ]
+    assert info["custom_sections"] == ["name"]
+    assert info["well_formed"] is True
+
+
+def test_function_names_without_a_module_name(tmp_path: Path) -> None:
+    # rustc and clang commonly emit function names with no module-name
+    # subsection at all; each fact stands alone.
+    module = _module([_name_section([_name_subsec(1, _func_name_map([(3, "main")]))])])
+    path = tmp_path / "funcs_only.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["module_name"] is None
+    assert info["function_name_count"] == 1
+    assert info["function_names"] == [{"index": 3, "name": "main"}]
+
+
+def test_name_map_with_a_hostile_count_keeps_what_parsed(tmp_path: Path) -> None:
+    # The map declares 1000 names but carries two; the reader keeps the real
+    # pairs, reports the declared count as the claim it is, and does not
+    # allocate for the lie -- the same posture as the producers reader.
+    module = _module(
+        [
+            _name_section(
+                [_name_subsec(1, _func_name_map([(0, "a"), (1, "b")], declared=1000))]
+            ),
+            _section(1, _leb(3) + b"\x00" * 6),
+        ]
+    )
+    path = tmp_path / "liar_names.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["function_name_count"] == 1000
+    assert info["function_names"] == [{"index": 0, "name": "a"}, {"index": 1, "name": "b"}]
+    assert info["type_count"] == 3  # the section after the liar still parsed
+
+
+def test_a_malformed_name_subsection_keeps_what_parsed(tmp_path: Path) -> None:
+    # The module name parses, then a subsection declares a size running past
+    # the section end: the walk stops there without poisoning the module-level
+    # facts -- custom section contents never flip well_formed.
+    module = _module(
+        [
+            _name_section(
+                [_name_subsec(0, _name("demo")), bytes([1]) + _leb(9999)]
+            ),
+            _section(1, _leb(2) + b"\x00" * 4),
+        ]
+    )
+    path = tmp_path / "torn_names.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["module_name"] == "demo"
+    assert info["function_name_count"] is None
+    assert info["function_names"] == []
+    assert info["type_count"] == 2
     assert info["well_formed"] is True
 
 

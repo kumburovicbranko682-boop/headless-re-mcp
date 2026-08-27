@@ -1273,6 +1273,11 @@ _WASM_EXTERNAL_KINDS = {0: "func", 1: "table", 2: "memory", 3: "global"}
 _WASM_MAX_PRODUCER_FIELDS = 8
 _WASM_MAX_PRODUCER_VALUES = 8
 _WASM_MAX_PRODUCER_CHARS = 256
+# The "name" custom section (core spec appendix) is WASM's debug-symbol store:
+# subsection 0 names the module, subsection 1 maps function indices to source
+# names. Its presence is the stripped/unstripped distinction for a module.
+_WASM_NAME_SUBSEC_MODULE = 0
+_WASM_NAME_SUBSEC_FUNCTIONS = 1
 
 
 def _read_leb_u32(data: bytes, pos: int) -> tuple[int, int, bool]:
@@ -1298,8 +1303,9 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     wasm2wat / wasm-objdump, so a module on a machine without wabt yields
     nothing at all. This walks the module's own section table -- a well-defined
     binary format -- to report the version, which sections are present, the
-    vector counts (types, imports, functions, exports, ...), and the import and
-    export names that identify what the module needs and exposes, the same way
+    vector counts (types, imports, functions, exports, ...), the import and
+    export names that identify what the module needs and exposes, and the
+    debug names (module / function) an unstripped build carries, the same way
     describe_apk does for a package.
 
     Fail-closed and bounded: a non-WASM or unreadable file returns ``{}``; a
@@ -1321,6 +1327,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     exports: list[dict[str, Any]] = []
     imports: list[dict[str, Any]] = []
     producers: dict[str, list[str]] | None = None
+    name_facts: dict[str, Any] = {}
     has_start = False
     well_formed = True
     pos = 8
@@ -1360,6 +1367,11 @@ def describe_wasm(path: Path) -> dict[str, Any]:
                 # Emscripten/clang and friends all emit it.
                 if cname == "producers" and producers is None:
                     producers = _wasm_producers(data, name_pos + name_len, body_end)
+                # "name" is the debug-symbol store: the module's own name and
+                # the function-index -> source-name map an unstripped build
+                # carries. Its absence is what "stripped" means for WASM.
+                elif cname == "name" and not name_facts:
+                    name_facts = _wasm_name_section(data, name_pos + name_len, body_end)
         pos = body_end
         walked += 1
     return {
@@ -1376,6 +1388,9 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             "has_start": has_start,
             "custom_sections": custom_sections,
             "producers": producers,
+            "module_name": name_facts.get("module_name"),
+            "function_name_count": name_facts.get("function_name_count"),
+            "function_names": name_facts.get("function_names", []),
             "exports": exports,
             "imports": imports,
             "well_formed": well_formed and not truncated,
@@ -1707,6 +1722,49 @@ def _wasm_producers(data: bytes, pos: int, body_end: int) -> dict[str, list[str]
             # position no longer sits at the next field; stop rather than
             # misread the remainder as field names.
             break
+    return out
+
+
+def _wasm_name_section(data: bytes, pos: int, body_end: int) -> dict[str, Any]:
+    """Module and function names from the "name" custom section.
+
+    The layout (core spec appendix) is a sequence of subsections, each an id
+    byte plus a LEB128 size: id 0 carries the module's own name, id 1 a name
+    map of (function index, name) pairs -- the debug symbols a reverser wants
+    before anything else. Other subsections (locals, and the extended-name
+    proposal's types/globals/...) are skipped by size. Bounded and fail-closed
+    like the producers reader: a malformed subsection keeps what parsed cleanly.
+    """
+    out: dict[str, Any] = {}
+    while pos < body_end:
+        sub_id = data[pos]
+        size, pos, ok = _read_leb_u32(data, pos + 1)
+        sub_end = pos + size
+        if not ok or sub_end > body_end:
+            break
+        if sub_id == _WASM_NAME_SUBSEC_MODULE and "module_name" not in out:
+            name, name_end = _read_wasm_name(data, pos)
+            if name is not None and name_end <= sub_end:
+                out["module_name"] = name[:_WASM_MAX_PRODUCER_CHARS]
+        elif sub_id == _WASM_NAME_SUBSEC_FUNCTIONS and "function_names" not in out:
+            count, entry_pos, counted = _read_leb_u32(data, pos)
+            if counted:
+                # The declared size of the map, like export_count for exports;
+                # the list below is the (bounded) sample actually read.
+                out["function_name_count"] = count
+                names: list[dict[str, Any]] = []
+                for _ in range(min(count, _WASM_MAX_NAMES)):
+                    index, entry_pos, ok = _read_leb_u32(data, entry_pos)
+                    if not ok:
+                        break
+                    fname, entry_pos = _read_wasm_name(data, entry_pos)
+                    if fname is None or entry_pos > sub_end:
+                        break
+                    names.append(
+                        {"index": index, "name": fname[:_WASM_MAX_PRODUCER_CHARS]}
+                    )
+                out["function_names"] = names
+        pos = sub_end
     return out
 
 

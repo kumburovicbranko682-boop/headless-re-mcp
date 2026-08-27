@@ -59,11 +59,32 @@ _RICH_WASM = bytes.fromhex(
     "0a09010700200020016a0b"  # code: local.get 0, local.get 1, i32.add
 )
 
+# The same rich module rebuilt by ``wat2wasm --debug-names``, which appends
+# the "name" custom section: module name "demo", function names host_log
+# (imported, index 0) and add_impl (defined, index 1), plus local- and
+# global-name subsections the tool-free reader must skip by size. Everything
+# before the name section is byte-identical to _RICH_WASM.
+_NAMED_WASM = _RICH_WASM + bytes.fromhex(
+    "0036046e616d65"  # custom section, name "name"
+    "00050464656d6f"  # subsec 0: module name "demo"
+    "0115020008686f73745f6c6f6701086164645f696d706c"  # subsec 1: 2 function names
+    "02050200000100"  # subsec 2: local names (none) -- skipped
+    "070a010007636f756e746572"  # subsec 7: global name "counter" -- skipped
+)
+
 # wasm2wat renders imports as (import "M" "N" (KIND ...)) and exports as
 # (export "N" (KIND ...)); KIND is func/memory/global/table -- the same
 # vocabulary describe_wasm reports, so the two views compare directly.
 _WAT_IMPORT_RE = re.compile(r'\(import "([^"]+)" "([^"]+)" \((func|memory|global|table)\b')
 _WAT_EXPORT_RE = re.compile(r'\(export "([^"]+)" \((func|memory|global|table)\b')
+# With a name section present, wasm2wat names the module ``(module $demo`` and
+# every function ``(func $name`` -- imported or defined -- straight from the
+# same subsections the tool-free reader parses. Declaration sites carry a
+# ``(type N)`` right after the name; export lines like (export "add" (func
+# $add_impl)) do not, so anchoring on it matches each function exactly once,
+# in index order (imports first).
+_WAT_MODULE_NAME_RE = re.compile(r"\(module \$([^\s()]+)")
+_WAT_FUNC_NAME_RE = re.compile(r"\(func \$([^\s()]+) \(type\b")
 
 
 def _browser_available() -> bool:
@@ -245,6 +266,55 @@ def test_wasm_tool_free_facts_agree_with_wabt(tmp_path: Path) -> None:
         assert wasm["global_count"] == 1
         assert wasm["has_start"] is True
         assert re.search(r"\(start\b", wat), wat
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_debug_names_agree_with_wabt(tmp_path: Path) -> None:
+    """The tool-free name-section reader and wabt must recover the same names.
+
+    The "name" custom section is WASM's debug-symbol store; describe_wasm now
+    parses it itself for the module name and the function-index -> name map.
+    But that parser and the unit fixtures are both ours, so nothing proved its
+    walk of the subsections matches an independent decoder. wasm2wat applies
+    the very same section when it names the module ``(module $demo`` and each
+    function ``(func $host_log`` / ``(func $add_impl``; this drives a real
+    ``wat2wasm --debug-names`` build through both and requires they agree name
+    for name -- including that the reader skipped the local- and global-name
+    subsections without corruption. Needs wabt; skip != pass when absent.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm2wat) not installed — WASM name cross-check not run (skip != pass)")
+    module = tmp_path / "named.wasm"
+    module.write_bytes(_NAMED_WASM)
+    service = AnalysisService()
+    try:
+        # Tool-free facts, straight off the name section at session creation.
+        created = service.create_session(str(module))
+        assert created.ok, created.error
+        wasm = created.data["session"]["metadata"]["wasm"]
+        assert "name" in wasm["custom_sections"]
+        reader_names = {(n["index"], n["name"]) for n in wasm["function_names"]}
+
+        # wabt's independent decode of the same bytes.
+        result = service.wasm_wat(str(module))
+        assert result.ok, result.error
+        wat = result.data["wat"]
+        module_match = _WAT_MODULE_NAME_RE.search(wat)
+        assert module_match, wat
+
+        # Both readers must agree on the module's own name...
+        assert wasm["module_name"] == "demo"
+        assert module_match.group(1) == "demo"
+        # ...and on every function name, index for index: wasm2wat prints
+        # functions in index order (imports first), so its $names line up with
+        # the reader's (index, name) pairs exactly.
+        wabt_names = set(enumerate(_WAT_FUNC_NAME_RE.findall(wat)))
+        expected = {(0, "host_log"), (1, "add_impl")}
+        assert reader_names == expected
+        assert wabt_names == expected
+        assert wasm["function_name_count"] == 2
     finally:
         service.close_all()
 
