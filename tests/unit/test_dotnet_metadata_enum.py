@@ -61,6 +61,24 @@ def test_enumerate_empty_tables_is_ok(tmp_path: Path) -> None:
     assert page.claims_universal_unpack is False
 
 
+def test_resources_parse_correctly_behind_the_assemblyref_table() -> None:
+    """The ManifestResource walk must step over AssemblyRef at its true width.
+
+    AssemblyRef (0x23) sits between Assembly and ManifestResource in the table
+    walk, and its row is NOT the Assembly row's shape: no leading HashAlgId,
+    but a trailing HashValue blob. The sizing used to copy Assembly's layout,
+    overshooting by two bytes per row with small heaps -- every table read
+    behind it (resources, File, ExportedType) landed offset. Every compiler
+    output carries AssemblyRef rows, so the committed fixture now does too;
+    reading the resource name cleanly behind it is the regression proof.
+    """
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    page = enumerate_metadata(fixture, "resources", limit=10)
+    assert page.total == 1
+    assert page.items[0]["name"] == "config.json"
+    assert page.items[0]["flags"] == 1
+
+
 def test_il_branch_and_constant_operands_are_signed() -> None:
     """A backward branch is a negative offset, not a four-billion one.
 

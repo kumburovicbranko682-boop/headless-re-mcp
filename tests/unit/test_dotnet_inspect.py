@@ -158,6 +158,67 @@ def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
     assert report.metadata_stats is not None
     assert report.metadata_stats.type_count == 2
     assert report.metadata_stats.method_count == 2
+    # The AssemblyRef table is the managed DT_NEEDED: which assemblies this one
+    # links against, with the version each was compiled for. The fixture
+    # references the runtime library the way every real compiler output does.
+    assert report.assembly_refs == ({"name": "mscorlib", "version": "4.0.0.0"},)
+    # And the report dict carries it for clients.
+    assert report.to_dict()["assembly_refs"] == [{"name": "mscorlib", "version": "4.0.0.0"}]
+
+
+def _assemblyref_rowcount_offset(raw: bytes) -> int:
+    """File offset of the AssemblyRef row count inside the fixture's #~ header.
+
+    Located from the file's own structures (CLI directory -> metadata root ->
+    #~ stream -> valid mask) rather than hardcoded, the same way the hostile
+    TypeDef mutation does, so it survives fixture regeneration.
+    """
+    e_lfanew = struct.unpack_from("<I", raw, 0x3C)[0]
+    optional = e_lfanew + 24
+    magic = struct.unpack_from("<H", raw, optional)[0]
+    directories = optional + (112 if magic == 0x20B else 96)
+    cli_rva = struct.unpack_from("<I", raw, directories + 14 * 8)[0]
+    # The fixture is a single-section PE: RVA 0x2000 maps to file 0x200.
+    cli = cli_rva - 0x2000 + 0x200
+    meta = struct.unpack_from("<I", raw, cli + 8)[0] - 0x2000 + 0x200
+    version_length = struct.unpack_from("<I", raw, meta + 12)[0]
+    cursor = meta + 16 + version_length
+    streams = struct.unpack_from("<H", raw, cursor + 2)[0]
+    cursor += 4
+    tilde = -1
+    for _ in range(streams):
+        offset = struct.unpack_from("<I", raw, cursor)[0]
+        name_start = cursor + 8
+        end = raw.index(b"\0", name_start)
+        cursor = name_start + ((end - name_start) // 4 + 1) * 4
+        if raw[name_start:end] == b"#~":
+            tilde = meta + offset
+    assert tilde >= 0, "no #~ stream in the fixture"
+    valid = struct.unpack_from("<Q", raw, tilde + 8)[0]
+    assert valid & (1 << 0x23), "fixture has no AssemblyRef table"
+    ordinal = bin(valid & ((1 << 0x23) - 1)).count("1")
+    return tilde + 24 + ordinal * 4
+
+
+def test_a_lying_assemblyref_count_stays_bounded(tmp_path: Path) -> None:
+    # The row count is attacker-controlled input; a claim of two billion refs
+    # must neither allocate for the claim nor crash the walk. What parses
+    # before the liar (Module and Assembly, both earlier tables) still comes
+    # back; the refs themselves cap at the honest-world bound.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+    if not fixture.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    raw = bytearray(fixture.read_bytes())
+    offset = _assemblyref_rowcount_offset(bytes(raw))
+    struct.pack_into("<I", raw, offset, 0x7FFFFFFF)
+    path = tmp_path / "liar_refs.exe"
+    path.write_bytes(bytes(raw))
+
+    report = inspect_dotnet(path)
+    assert report.verified_clr is True
+    assert report.module_name == "MyModule.dll"
+    assert report.assembly_name == "MyAssembly"
+    assert len(report.assembly_refs) <= 64
 
 
 def test_service_dotnet_inspect(tmp_path: Path) -> None:

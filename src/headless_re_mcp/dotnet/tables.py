@@ -124,7 +124,11 @@ def table_row_size(
         0x20: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # Assembly
         0x21: 4,  # AssemblyProcessor
         0x22: 12,  # AssemblyOS
-        0x23: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # AssemblyRef
+        # AssemblyRef (II.22.5): four u16 version parts, Flags(4), then
+        # PublicKeyOrToken(blob) + Name(str) + Culture(str) + HashValue(blob).
+        # Unlike Assembly it has no leading HashAlgId(4) and carries a trailing
+        # blob, so its width is NOT the Assembly row's with b/s swapped.
+        0x23: 2 + 2 + 2 + 2 + 4 + b + s + s + b,  # AssemblyRef
         0x24: 4 + simple_index_size(rc, 0x23),  # AssemblyRefProcessor
         0x25: 12 + simple_index_size(rc, 0x23),  # AssemblyRefOS
         0x26: 4 + s + implementation,  # File

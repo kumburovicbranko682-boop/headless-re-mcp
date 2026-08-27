@@ -36,6 +36,9 @@ _ASM_VERSION_RE = re.compile(r"^Version:\s+(.+?)\s*$", re.MULTILINE)
 _MODULE_RE = re.compile(r"^\d+:\s+(\S+)\s+\d+\s+\{([0-9A-Fa-f-]+)\}", re.MULTILINE)
 # "2: Sample (flist=1, mlist=1, flags=0x100001, extends=0x0)"
 _TYPEDEF_RE = re.compile(r"^\d+:\s+(.+?)\s+\(flist=", re.MULTILINE)
+# monodis --assemblyref prints each row as "1: Version=4.0.0.0" with the
+# referenced assembly's name on the following indented line.
+_ASSEMBLYREF_RE = re.compile(r"^\d+:\s+Version=(\S+)\s*\n\s+Name=(\S+)", re.MULTILINE)
 
 
 def _monodis(*args: str) -> str:
@@ -94,6 +97,14 @@ def test_pure_python_reader_agrees_with_monodis(tmp_path: Path) -> None:
     mono_types = {name for name in _TYPEDEF_RE.findall(typedef_dump) if name != "(null)"}
     assert mono_types, typedef_dump
 
+    # The AssemblyRef table -- the managed DT_NEEDED. Sizing this row wrong is
+    # an easy bug (it is NOT the Assembly row's shape), and every table walked
+    # behind it lands offset when it happens, so Mono's independent decode of
+    # name and version per row is the check that matters most here.
+    assemblyref_dump = _monodis("--assemblyref")
+    mono_refs = {(name, version) for version, name in _ASSEMBLYREF_RE.findall(assemblyref_dump)}
+    assert mono_refs, assemblyref_dump
+
     # The pure-Python reader, driven through the service exactly as a client
     # would reach it.
     service = _service(tmp_path)
@@ -109,6 +120,19 @@ def test_pure_python_reader_agrees_with_monodis(tmp_path: Path) -> None:
         assert facts["assembly_version"] == mono_version.group(1)
         assert facts["module_name"] == mono_module_name
         assert str(facts["mvid"]).lower() == mono_mvid
+        # The dependency list, ref for ref: name and compiled-against version
+        # must both match Mono's decode of the same AssemblyRef rows.
+        reader_refs = {(ref["name"], ref["version"]) for ref in facts["assembly_refs"]}
+        assert reader_refs == mono_refs
+
+        # The resource sits behind the AssemblyRef table in the walk, so its
+        # name coming back clean proves the reader stepped over those rows at
+        # their true width -- Mono's --manifest names the same resource.
+        manifest_dump = _monodis("--manifest")
+        enumerated_resources = service.dotnet_enumerate(session_id, "resources", limit=16)
+        assert enumerated_resources.ok, enumerated_resources.error
+        for resource in enumerated_resources.data["items"]:
+            assert f"'{resource['name']}'" in manifest_dump
 
         enumerated = service.dotnet_enumerate(session_id, "types", limit=64)
         assert enumerated.ok, enumerated.error

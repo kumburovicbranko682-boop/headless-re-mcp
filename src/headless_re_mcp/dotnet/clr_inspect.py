@@ -15,6 +15,9 @@ JsonObject = dict[str, Any]
 
 _DIRECTORY_COM_DESCRIPTOR = 14
 _CLR_METADATA_SIG = b"BSJB"
+# A real app references a few dozen assemblies at most; the cap bounds a
+# hostile row count without losing anything from an honest image.
+_MAX_ASSEMBLY_REFS = 64
 _FLAG_ILONLY = 0x00000001
 _FLAG_32BITREQUIRED = 0x00000002
 _FLAG_IL_LIBRARY = 0x00000004
@@ -86,6 +89,10 @@ class DotnetInspectReport:
     # fingerprint that changes on every recompile, which triage keys off.
     assembly_version: str | None = None
     mvid: str | None = None
+    # The AssemblyRef table: which assemblies this one links against, each with
+    # the version it was compiled for -- the managed analogue of an ELF's
+    # DT_NEEDED list or a Mach-O's dylibs.
+    assembly_refs: tuple[JsonObject, ...] = ()
 
     def to_dict(self) -> JsonObject:
         return {
@@ -106,6 +113,7 @@ class DotnetInspectReport:
             "assembly_name": self.assembly_name,
             "assembly_version": self.assembly_version,
             "mvid": self.mvid,
+            "assembly_refs": list(self.assembly_refs),
             "metadata_stats": (
                 self.metadata_stats.to_dict() if self.metadata_stats is not None else None
             ),
@@ -198,6 +206,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
     assembly_name: str | None = None
     assembly_version: str | None = None
     mvid: str | None = None
+    assembly_refs: tuple[JsonObject, ...] = ()
     metadata_stats: MetadataStats | None = None
     verified = False
     note = "COR20 present"
@@ -215,6 +224,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
                     assembly_name,
                     assembly_version,
                     mvid,
+                    assembly_refs,
                     metadata_stats,
                 ) = _parse_metadata_root(meta)
                 note = "verified COR20 + BSJB metadata"
@@ -242,6 +252,7 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
         assembly_name=assembly_name,
         assembly_version=assembly_version,
         mvid=mvid,
+        assembly_refs=assembly_refs,
         note=note,
         metadata_stats=metadata_stats,
     )
@@ -281,20 +292,27 @@ def _decode_flags(flags: int) -> tuple[str, ...]:
 def _parse_metadata_root(
     meta: bytes,
 ) -> tuple[
-    str | None, list[str], str | None, str | None, str | None, str | None, MetadataStats | None
+    str | None,
+    list[str],
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    tuple[JsonObject, ...],
+    MetadataStats | None,
 ]:
     if len(meta) < 16 or meta[:4] != _CLR_METADATA_SIG:
-        return None, [], None, None, None, None, None
+        return None, [], None, None, None, None, (), None
     version_len = int.from_bytes(meta[12:16], "little")
     if version_len < 0 or 16 + version_len > len(meta):
-        return None, [], None, None, None, None, None
+        return None, [], None, None, None, None, (), None
     version_raw = meta[16 : 16 + version_len]
     version = version_raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
     # Align version block to 4 bytes.
     version_padded = (version_len + 3) & ~3
     cursor = 16 + version_padded
     if cursor + 4 > len(meta):
-        return version, [], None, None, None, None, None
+        return version, [], None, None, None, None, (), None
     stream_count = int.from_bytes(meta[cursor + 2 : cursor + 4], "little")
     cursor += 4
     streams: list[str] = []
@@ -319,32 +337,37 @@ def _parse_metadata_root(
     assembly_name: str | None = None
     assembly_version: str | None = None
     mvid: str | None = None
+    refs: tuple[JsonObject, ...] = ()
     stats: MetadataStats | None = None
     try:
-        module_name, assembly_name, assembly_version, mvid, stats = _parse_tables_and_names(
-            meta, stream_map
+        module_name, assembly_name, assembly_version, mvid, refs, stats = (
+            _parse_tables_and_names(meta, stream_map)
         )
     except Exception:
         module_name = None
         assembly_name = None
         assembly_version = None
         mvid = None
+        refs = ()
         stats = None
-    return version, streams, module_name, assembly_name, assembly_version, mvid, stats
+    return version, streams, module_name, assembly_name, assembly_version, mvid, refs, stats
 
 
 def _parse_tables_and_names(
     meta: bytes,
     stream_map: dict[str, tuple[int, int]],
-) -> tuple[str | None, str | None, str | None, str | None, MetadataStats | None]:
+) -> tuple[
+    str | None, str | None, str | None, str | None, tuple[JsonObject, ...], MetadataStats | None
+]:
     """Best-effort Module/Assembly identity + table row counts from #~ + heaps.
 
-    Returns ``(module_name, assembly_name, assembly_version, mvid, stats)``.
+    Returns ``(module_name, assembly_name, assembly_version, mvid,
+    assembly_refs, stats)``.
     """
     tables_key = "#~" if "#~" in stream_map else ("#-" if "#-" in stream_map else None)
     strings_key = "#Strings" if "#Strings" in stream_map else None
     if tables_key is None:
-        return None, None, None, None, None
+        return None, None, None, None, (), None
     t_off, t_size = stream_map[tables_key]
     tables = meta[t_off : t_off + t_size]
     strings = b""
@@ -359,7 +382,7 @@ def _parse_tables_and_names(
         guids = meta[g_off : g_off + g_size]
     us_heap_bytes = stream_map["#US"][1] if "#US" in stream_map else None
     if len(tables) < 24:
-        return None, None, None, None, None
+        return None, None, None, None, (), None
     heap_sizes = tables[6]
     string_index_size = 4 if (heap_sizes & 0x01) else 2
     valid = int.from_bytes(tables[8:16], "little")
@@ -368,7 +391,7 @@ def _parse_tables_and_names(
     for bit in range(64):
         if valid & (1 << bit):
             if cursor + 4 > len(tables):
-                return None, None, None, None, None
+                return None, None, None, None, (), None
             row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
             cursor += 4
 
@@ -416,8 +439,9 @@ def _parse_tables_and_names(
     assembly_name: str | None = None
     assembly_version: str | None = None
     mvid: str | None = None
+    assembly_refs: list[JsonObject] = []
     if not strings:
-        return None, None, None, None, stats
+        return None, None, None, None, (), stats
     # Walk the tables in ascending order, sizing each one so the offset lands
     # on the next. The Module table (0x00) is first, but the Assembly table
     # (0x20) sits behind TypeDef/Field/MethodDef and friends -- an assembly
@@ -447,5 +471,25 @@ def _parse_tables_and_names(
             name_at = offset + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
             name_idx, _ = read_string_index(tables, name_at)
             assembly_name = string_at(name_idx)
+        elif bit == 0x23:  # AssemblyRef: the assemblies this one links against
+            for i in range(min(rows, _MAX_ASSEMBLY_REFS)):
+                at = offset + i * row_size
+                # Major/Minor/Build/Revision(2 each), Flags(4), then
+                # PublicKeyOrToken(blob) before the Name -- no HashAlgId here,
+                # unlike the Assembly row above.
+                version_parts = [
+                    int.from_bytes(tables[at + j : at + j + 2], "little") for j in (0, 2, 4, 6)
+                ]
+                name_at = at + 8 + 4 + blob_index_size
+                name_idx, _ = read_string_index(tables, name_at)
+                ref_name = string_at(name_idx)
+                if ref_name is None:
+                    continue
+                assembly_refs.append(
+                    {
+                        "name": ref_name,
+                        "version": ".".join(str(part) for part in version_parts),
+                    }
+                )
         offset += row_size * rows
-    return module_name, assembly_name, assembly_version, mvid, stats
+    return module_name, assembly_name, assembly_version, mvid, tuple(assembly_refs), stats

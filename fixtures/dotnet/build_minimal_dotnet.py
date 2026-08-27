@@ -35,6 +35,13 @@ METHOD_RUN = "Run"
 MEMBERREF_NAME = "WriteLine"
 RESOURCE_NAME = "config.json"
 RESOURCE_FLAGS = 0x0001  # Public
+# The AssemblyRef every real compiler emits: the runtime library the assembly
+# links against. Its row sits between Assembly (0x20) and ManifestResource
+# (0x28) in the table walk, so mis-sizing it (an easy bug: the AssemblyRef row
+# is NOT the Assembly row's shape) would corrupt every table read behind it --
+# with this row present, the resource enumeration doubles as a regression test.
+ASSEMBLY_REF_NAME = "mscorlib"
+ASSEMBLY_REF_VERSION = (4, 0, 0, 0)
 METADATA_VERSION = "v4.0.30319"
 ENTRY_POINT_TOKEN = 0x06000002  # Run
 CALL_TARGET_TOKEN = 0x0A000001  # MemberRef row 1
@@ -86,6 +93,7 @@ def build() -> bytes:
     i_field = add_string(FIELD_NAME)
     i_memberref = add_string(MEMBERREF_NAME)
     i_resource = add_string(RESOURCE_NAME)
+    i_asm_ref = add_string(ASSEMBLY_REF_NAME)
     i_ns = 0
     strings_heap = _pad4(bytes(strings))
 
@@ -114,9 +122,10 @@ def build() -> bytes:
         | (1 << 0x06)  # MethodDef
         | (1 << 0x0A)  # MemberRef
         | (1 << 0x20)  # Assembly
+        | (1 << 0x23)  # AssemblyRef
         | (1 << 0x28)  # ManifestResource
     )
-    row_counts = {0x00: 1, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 1, 0x20: 1, 0x28: 1}
+    row_counts = {0x00: 1, 0x02: 2, 0x04: 1, 0x06: 2, 0x0A: 1, 0x20: 1, 0x23: 1, 0x28: 1}
 
     tables = bytearray()
     tables += _u32(0)  # Reserved
@@ -146,6 +155,14 @@ def build() -> bytes:
         + _u16(1) + _u16(0) + _u16(0) + _u16(0)
         + _u32(0)
         + _u16(0) + _u16(i_asm) + _u16(0)
+    )
+    # AssemblyRef: Maj Min Build Rev Flags PublicKeyOrToken Name Culture Hash
+    # -- no leading HashAlgId, and a trailing HashValue blob, unlike Assembly.
+    ref_major, ref_minor, ref_build, ref_rev = ASSEMBLY_REF_VERSION
+    tables += (
+        _u16(ref_major) + _u16(ref_minor) + _u16(ref_build) + _u16(ref_rev)
+        + _u32(0)
+        + _u16(0) + _u16(i_asm_ref) + _u16(0) + _u16(0)
     )
     # ManifestResource: Offset Flags Name Implementation (null => embedded here)
     tables += _u32(0) + _u32(RESOURCE_FLAGS) + _u16(i_resource) + _u16(0)
