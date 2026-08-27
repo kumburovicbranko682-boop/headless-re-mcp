@@ -26,6 +26,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 抓包代理不再在启动时偶发自杀。每个会话一个 mitmproxy master、各跑在自己的线程和事件循环里，而 mitmproxy 并非为「一个进程内多 master 并发」设计：`keepserving` 与 `readfile`/`readfilestdin` 这几个只服务 `mitmdump -r <文件>` 回放、并在其 `running()` 钩子里读 `ctx.options.rfile` 的 CLI 专用 addon，在这种并发下 `ctx.options` 会偶发落到一个没注册过 `rfile` 的裸默认 Options 上，addon 抛 `No such option: rfile`，`errorcheck` 再把它升级成 `SystemExit(1)`——一条本来健康的抓包大约每六次启动就这么在启动阶段猝死一次（`test_close_all_releases_every_running_capture` 因此偶发翻红）。我们从不从文件回放，故 `_drop_cli_only_addons` 在 `master.run()` 前把这几个 addon（`rfile` 的唯二读者）摘掉，连带消除竞态，且完全不碰抓包/重放路径；新增单测钉住「这些 addon 被摘、`proxyserver`/`errorcheck` 保留、且摘除发生在启动之前」，实测下压测 20 次 0 失败（此前约 1/6）。
 
+Ghidra 这条线此前实为不可用，两处真机 Bug 都被 mock 掉的单测藏住了，直到拿真的 `analyzeHeadless` 压一个现编 ELF 才暴露。其一：导出用的 post-script 是 `@runtime Jython` 的 `ExportJson.py`，而 Ghidra 11.4 起移除了内置 Jython 解释器——脚本在当前任何 Ghidra 上都加载不了：`analyzeHeadless` 照样报「Analysis succeeded」，脚本却死于「Ghidra was not started with PyGhidra. Python is not available」，不写 JSON，于是 `ghidra.functions/symbols/xrefs/decompile` 全数以「export JSON missing after postScript」失败。现把它移植为 Java GhidraScript（`ExportJson.java`），由 Ghidra 自己编译（编到用户 osgi 缓存、不动只读的包目录），在所有版本上都能跑，且不引入 PyGhidra/Jep 原生依赖；产出的 JSON 与服务/测试既有契约逐字节一致（`mode/items/count/has_more`，decompile 另加 `function/entry/found/decompiled/truncated`），Gson 就在脚本 classpath 上，已在 Ghidra 12.1.3 实测 functions 列出夹具函数、decompile 还原出真实调用。其二：`_find_analyze_headless` 在 Linux 上先探 `analyzeHeadless.bat`——Ghidra 发行包里 POSIX shell 与 `.bat` 两个启动器并排放着，于是它选中 `.bat` 并以「Permission denied」启动失败，即便 `HEADLESS_RE_GHIDRA_HOME` 正确整条后端也够不着；现按 OS 择优（非 Windows 先 POSIX 启动器、Windows 先 `.bat`，只有 `.bat` 的目录仍可解析）。删去针对已删 `.py` 的 Jython 专属 ruff/mypy 豁免，脚本内容单测改钉 Java 标记，并补单测钉住启动器按 OS 选择。
+
+### 新增（Ghidra 反编译实测 Gate：还原出的调用就是二进制里的调用）
+
+- Ghidra 这条线此前零真机覆盖——每个 `ghidra.*` 测试都在压 mock 子进程，上面那两处后端 Bug 才能一路绿灯溜过。`test_ghidra_native_gate` 用系统编译器现编一个不 strip 的小 ELF（`gate_root` 直接调 `gate_leaf`），驱动真的 `analyzeHeadless`：`ghidra.functions` 必须列出夹具自己的函数（`main`、`gate_root`，且带 `entry`/`body_size` 而非 address/size），`ghidra.decompile` 反编译 `gate_root` 必须在还原出的 C 里认出对 `gate_leaf` 的具名调用——证明 Java post-script 既加载成功、又真读到了被分析的程序，而不只是「`analyzeHeadless` 跑过了」。同一原生会话上 PE 专属工具仍以 `target_mismatch` 拒绝（原生 target kind 不放松调试器闸）。Ghidra（`HEADLESS_RE_GHIDRA_HOME`）或 C 编译器缺失时诚实 skip（skip != pass）。`linux-integration.yml` 装 Temurin JDK 21 + 固定版本 Ghidra 公开发行包、导出 `HEADLESS_RE_GHIDRA_HOME` 并把此 Gate 纳入运行清单。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

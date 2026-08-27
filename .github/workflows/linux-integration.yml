@@ -7,11 +7,12 @@
 # non-PE lines depend on installs on a stock GitHub-hosted Ubuntu image
 # (radare2 + a C compiler for r2, wabt + webcrack for the JS/WASM statics,
 # Playwright's Chromium for the web driver, mitmproxy for the interception
-# proxy, and jadx + apktool -- both self-contained Java tools -- for the
-# Android decompile/repack lines), so the portable gates run for real on the
-# platform the project now calls a first-class core. apksigner is the one
-# Android tool left out: it ships only in the Android SDK build-tools, too
-# heavy for a hosted runner, and the sign path already has unit coverage.
+# proxy, jadx + apktool -- both self-contained Java tools -- for the Android
+# decompile/repack lines, and Ghidra's analyzeHeadless for the portable-static
+# decompiler), so the portable gates run for real on the platform the project
+# now calls a first-class core. apksigner is the one Android tool left out: it
+# ships only in the Android SDK build-tools, too heavy for a hosted runner, and
+# the sign path already has unit coverage.
 name: linux-integration
 
 on:
@@ -35,6 +36,30 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+
+      # Ghidra 12.x requires JDK 21+. Pinning it here also gives jadx/apktool a
+      # known-good JRE instead of whatever the image ships.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install Ghidra (portable-static decompiler)
+        env:
+          GHIDRA_VERSION: "12.1.3"
+          GHIDRA_ASSET: "ghidra_12.1.3_PUBLIC_20260817.zip"
+          GHIDRA_BUILD: "Ghidra_12.1.3_build"
+        run: |
+          # analyzeHeadless drives the ghidra.* tool surface. A pinned public
+          # release (not "latest") keeps the gate reproducible. Extracts to
+          # ghidra_<ver>_PUBLIC; HEADLESS_RE_GHIDRA_HOME is what Settings.load()
+          # reads, exactly like an operator install.
+          curl -fsSL -o /tmp/ghidra.zip \
+            "https://github.com/NationalSecurityAgency/ghidra/releases/download/${GHIDRA_BUILD}/${GHIDRA_ASSET}"
+          mkdir -p "$HOME/ghidra-dist"
+          unzip -q -d "$HOME/ghidra-dist" /tmp/ghidra.zip
+          echo "HEADLESS_RE_GHIDRA_HOME=$HOME/ghidra-dist/ghidra_${GHIDRA_VERSION}_PUBLIC" \
+            >> "$GITHUB_ENV"
 
       - name: Install portable backends
         env:
@@ -84,6 +109,9 @@ jobs:
           webcrack --version || true
           jadx --version || true
           apktool --version || true
+          java -version 2>&1 | head -n 1
+          test -x "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" \
+            && echo "ghidra analyzeHeadless present" || echo "ghidra MISSING"
           python -c "import androguard, adbutils; print('androguard+adbutils ok')"
           python -c "import mitmproxy; print('mitmproxy', mitmproxy.__version__)"
           python -c "import frida; print('frida', frida.__version__)"
@@ -105,5 +133,6 @@ jobs:
             tests/integration/test_proxy_lifecycle_gate.py \
             tests/integration/test_proxy_capture_gate.py \
             tests/integration/test_m11_r2_live_gate.py \
+            tests/integration/test_ghidra_native_gate.py \
             tests/integration/test_agent_browser_smoke.py \
             -rs --tb=short --timeout=300
