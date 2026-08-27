@@ -321,10 +321,10 @@ class ApkClient:
         offset: int = 0,
         limit: int = 100,
     ) -> JsonObject:
-        parsed = self._parsed(path)
-        target = class_name.strip()
+        target = class_name.strip() if isinstance(class_name, str) else ""
         if not target:
             raise ApkError("invalid_params", "class_name is required")
+        parsed = self._parsed(path)
         found = [
             klass
             for klass in parsed.analysis.get_classes()
@@ -380,10 +380,10 @@ class ApkClient:
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
-        parsed = self._parsed(path)
-        target = method_name.strip()
+        target = method_name.strip() if isinstance(method_name, str) else ""
         if not target:
             raise ApkError("invalid_params", "method_name is required")
+        parsed = self._parsed(path)
         cap = max(1, int(limit))
         callers: list[JsonObject] = []
         has_more = False

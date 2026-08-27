@@ -362,6 +362,50 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestApkRequiredArgsAreCheckedBeforeParsing:
+    """An empty class/method name is rejected before the DEX is analysed.
+
+    apk.methods and apk.xrefs run a full androguard analysis (seconds, tens of
+    MB) or degrade to capability_unavailable when androguard is absent. The
+    required-name check is cheap and can never pass, so it must run first: force
+    androguard unavailable and confirm an empty name still surfaces
+    invalid_params rather than the capability_unavailable (or wasted parse) that
+    would otherwise mask it, while a real name falls through to the missing
+    backend on any host (skip != pass).
+    """
+
+    def _unavailable_client(self) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        client = ApkClient()
+        client._available = False
+        client._androguard = None
+        return client
+
+    @pytest.mark.parametrize("op", ["methods", "xrefs"])
+    @pytest.mark.parametrize("bad", ["", "   "])
+    def test_empty_required_name_is_invalid_params(
+        self, tmp_path: Path, op: str, bad: str
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkError
+
+        client = self._unavailable_client()
+        with pytest.raises(ApkError) as info:
+            getattr(client, op)(tmp_path / "app.apk", bad)
+        assert info.value.code == "invalid_params"
+
+    @pytest.mark.parametrize("op", ["methods", "xrefs"])
+    def test_a_real_name_falls_through_to_the_missing_backend(
+        self, tmp_path: Path, op: str
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkError
+
+        client = self._unavailable_client()
+        with pytest.raises(ApkError) as info:
+            getattr(client, op)(tmp_path / "app.apk", "decrypt")
+        assert info.value.code == "capability_unavailable"
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 
