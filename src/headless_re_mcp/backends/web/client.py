@@ -86,6 +86,26 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
+def _js_console_scalar(raw: Any) -> str:
+    """Render a CDP console arg ``value`` as the JS literal the page logged.
+
+    A RemoteObject's primitive ``value`` arrives as a plain Python object, so a
+    JS boolean or ``null`` becomes ``True``/``False``/``None`` under ``str()`` --
+    Python spellings in a capture whose whole job is to show what the page
+    actually logged (``null`` read as ``None`` is the confusing one). Map those
+    three back to their JS forms; strings and numbers already render faithfully.
+    Identity checks, not ``==``, so the string ``"True"`` or the number ``0`` is
+    left untouched.
+    """
+    if raw is True:
+        return "true"
+    if raw is False:
+        return "false"
+    if raw is None:
+        return "null"
+    return raw if isinstance(raw, str) else str(raw)
+
+
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     """Join console args, stopping at ``_MAX_CONSOLE_TEXT``.
 
@@ -108,7 +128,7 @@ def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
             raw = argument["description"]
         else:
             raw = argument.get("type", "")
-        piece = raw if isinstance(raw, str) else str(raw)
+        piece = _js_console_scalar(raw)
         if parts:
             if remaining <= 1:
                 truncated = True

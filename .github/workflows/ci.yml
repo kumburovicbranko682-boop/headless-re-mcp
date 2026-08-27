@@ -152,6 +152,42 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-web-console:
+    # Drives web console capture against a real headless Chromium: a page logs
+    # JS primitives (true/false/null) and the gate asserts they are recorded with
+    # their JS spelling, not Python's True/False/None. The renderer only sees a
+    # real CDP RemoteObject value here -- the unit tests feed pre-built strings.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,browser]"
+
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+
+      - name: web console primitives live gate (skip != pass)
+        # The gate skips honestly when Playwright/Chromium is missing. This job
+        # installs both, so a skip here is a real regression -- treat it as a
+        # failure rather than a green run that tested nothing.
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          python -m pytest tests/integration/test_web_console_primitives_live_gate.py \
+            -q -rs -p no:cacheprovider --tb=short | tee web_console_gate.log
+          if grep -qiE "skipped" web_console_gate.log; then
+            echo "::error::web console gate skipped — Playwright/Chromium missing in CI"
+            exit 1
+          fi
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

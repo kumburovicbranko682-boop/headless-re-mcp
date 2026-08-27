@@ -24,6 +24,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（Web 控制台把 JS 的 `true`/`false`/`null` 记成 Python 的 `True`/`False`/`None`）
+
+- **`web.console` 抓取会把 JS 基本类型渲染成 Python 写法**。CDP 的
+  `Runtime.consoleAPICalled` 把参数以 RemoteObject 交回，其 `value` 是一个原生 Python 对象；
+  抓取路径用 `str()` 拼接，于是页面 `console.log(true, false, null)` 被记成
+  `True False None`——把 `null` 读成 `None` 尤其容易误导正在把控制台输出与源码对应的分析者。
+  单测只喂过预制字符串，真正的布尔/null RemoteObject 从未走过渲染器，缺陷因此一直藏着
+  （与之前 APK 证书 DN 被渲染成对象 repr 是同一类盲点）。
+- 现新增 `_js_console_scalar`，用**恒等判断**把这三者映射回 JS 写法（`true`/`false`/`null`），
+  因此字符串 `"True"` 与数字 `0` 不受影响（`0` 不会被当成 `false`）。实测
+  `console.log("s",42,true,false,null,undefined)` 现抓成 `s 42 true false null undefined`。
+- 新增 `tests/integration/test_web_console_primitives_live_gate.py`：对真实 headless Chromium
+  断言上面这行原样抓回、且整段抓取里不再出现 `True`/`False`/`None`；另一行 `0, false` 抓成
+  `0 false`，钉住“按恒等而非相等映射、`0` 不与 `false` 混淆”。Skip != pass：Playwright/Chromium
+  缺失时按原因显式 skip。新增 CI job `linux-web-console` 安装 `.[test,dev,web,browser]` 与
+  `playwright install --with-deps chromium` 跑该 gate，带 skip 守卫，CI 里一旦 skip 即判失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
