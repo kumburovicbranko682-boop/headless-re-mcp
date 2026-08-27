@@ -17,6 +17,7 @@ from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
+_BUNDLE_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "webpack_bundle.js"
 
 _DATA_URL = (
     "data:text/html,"
@@ -95,6 +96,34 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
         # deobfuscation ran rather than the tool merely echoing the input.
         assert "H3adl3ss" in code, code[:400]
         assert "\\x48" not in code, "hex escapes should be decoded, not passed through"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present() -> None:
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    assert _BUNDLE_FIXTURE.is_file(), f"fixture missing: {_BUNDLE_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_BUNDLE_FIXTURE))
+        assert result.ok, result.error
+        data = result.data
+        # Unbundling splits the webpack runtime into one file per module, so a
+        # real unpack lands more than a single output file.
+        assert data["file_count"] >= 2, data
+        output_dir = Path(data["output_dir"])
+        emitted = list(output_dir.rglob("*"))
+        assert emitted, f"webcrack wrote nothing to {output_dir}"
+        # The helper module must come back out as extracted source, with its
+        # body intact -- proof the bundle was taken apart, not just reformatted.
+        blob = "\n".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in emitted
+            if path.is_file()
+        )
+        assert "webpack-gate-module" in blob, sorted(p.name for p in emitted)
     finally:
         service.close_all()
 
