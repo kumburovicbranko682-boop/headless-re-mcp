@@ -62,7 +62,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         response_size), count, total, offset, has_more, and dropped.
         response_size is the decoded response body length in bytes (0 when the
         response had no body). body_omitted is set on a row whose
-        request/response body was over the retain cap. The list field is flows,
+        request/response body was over the retain cap. A flow mitmproxy could
+        not complete (TLS refused, upstream unreachable, connection reset) is
+        captured too, carrying error=true and error_msg with a null status;
+        such flows were previously dropped entirely. A completed flow always
+        carries a numeric status and no error field. The list field is flows,
         not items or requests, and the type column is content_type. dropped is
         how many the capture ring already evicted; a page that filled the limit
         is not the whole log. metadata_truncated marks bounded oversized summary
@@ -72,12 +76,17 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
-        """Fetch one flow's headers and body (large bodies spill to an artifact).
+        """Fetch one flow's headers and bodies (large or binary bodies spill).
 
         Answers with id, request (method, url, headers) and response (status,
-        headers, size). A body at most 200000 bytes is response.body; anything
-        larger is response.body_path and there is no body key. There are no
-        top-level headers or body fields.
+        headers). Both request and response carry the body: size, and either
+        body (UTF-8 text at most 200000 bytes) or body_path plus spill_reason
+        (too_large or binary) when the body was spilled to an artifact rather
+        than decoded lossily. A spilled body also carries artifact_id. Headers
+        are bounded in count and size; metadata_truncated on request or
+        response marks a clipped header map or field. There is no top-level
+        headers or body field, and a binary body is never returned as a
+        mojibake body string.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
