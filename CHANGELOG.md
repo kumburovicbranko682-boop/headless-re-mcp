@@ -43,6 +43,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 新增（官方 UPX 解包路线首个在 Linux 上真跑的 Gate）
+
+- `unpack.upx.test/unpack.upx.unpack/unpack.auto` 这条官方 UPX CLI 解包路线此前没有任何在 Linux 上
+  真跑的 Gate:仅有的两条解包 Gate（`test_m5_unpack_live_gate.py` / `test_unpack_live_gate.py`）都绑死
+  x64dbg/headless,除非在配好的 Windows 盒子上否则整条跳过,可 UPX 路线只是拉起官方 `upx` CLI、根本
+  不需要调试器;它的适配器此前只有单测。现新增 `tests/integration/test_upx_unpack_gate.py`,经
+  `AnalysisService` 跑在已提交、真被 UPX 打包的 `console_fixture-x64.upx.exe` 上:断言核的都是真实的
+  解包结果而非信封——`upx -t` 通过且原件保持逐字节不变;`upx -d` 把 PE 重建出来（UPX0/UPX1 段还原成
+  原始各段、被折叠的导入表被恢复,故段数与导入函数数都变多）并写到会话产物树里一个独立文件;而后
+  与侦测引擎闭环:对解包产物再跑 `packer.classify` 得 `none_detected`——这才证明“打包被真正解除”,而
+  非只是写出了字节。`unpack.auto` 把同一路线推进到 `verified` 阶段并落一枚 `upx_unpacked` 产物。缺
+  upx 时按明确的 skip != pass 跳过（`settings.upx` 从 PATH 自动发现 `upx`）;关闭会话
+  （`invalid_request`,状态先于后端检查）与未配置降级（`capability_unavailable`）两条恒跑。基于
+  upx 4.2.2 在 Linux 实测。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
