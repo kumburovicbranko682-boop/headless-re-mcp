@@ -81,6 +81,29 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.intent_filters")
+    def apk_intent_filters(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List activity/service/receiver intent filters with pagination.
+
+        Answers the other half of the attack surface: apk.components says
+        which components are exported, this says what intents reach them --
+        the deep-link schemes and hosts (in data) and the actions a receiver
+        listens for. Each entry has component, type, actions, categories, and
+        data (each a dict of the scheme/host/port/path/mimeType attributes
+        present). Answers with intent_filters, count, total, offset, and
+        has_more so a page that filled the limit is not read as every filter;
+        components with no filter are omitted, and providers are not included
+        (they use authorities, not filters). names_capped is present when the
+        component scan hit its cap, parse_errors when a component's filters
+        could not be read and was skipped, so an empty page is not misread as
+        no attack surface. There is no filters or components field.
+        """
+        return _dump(analysis.apk_intent_filters(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,

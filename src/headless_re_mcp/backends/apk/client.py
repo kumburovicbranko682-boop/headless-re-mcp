@@ -34,6 +34,7 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+_MAX_INTENT_FILTERS_PAGE = 1000
 
 
 class ApkError(RuntimeError):
@@ -301,6 +302,67 @@ class ApkClient:
             "main_activity": apk.get_main_activity(),
             "has_more": a_more or s_more or r_more or p_more,
         }
+
+    def intent_filters(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        apk = self._apk(path)
+        # Providers are excluded: they are reached through authorities and
+        # grant-uri-permission, not intent-filters, so get_intent_filters has
+        # nothing for them. Component names are capped per type and the scan
+        # order is deterministic (sorted) so a page is stable across calls.
+        names_capped = False
+        catalog: list[tuple[str, str]] = []
+        for tag, getter in (
+            ("activity", apk.get_activities),
+            ("service", apk.get_services),
+            ("receiver", apk.get_receivers),
+        ):
+            names, capped = _cap_names(getter(), _MAX_COMPONENT_NAMES)
+            names_capped = names_capped or capped
+            catalog.extend((tag, name) for name in names)
+        catalog.sort()
+        entries: list[JsonObject] = []
+        scan_errors = 0
+        for tag, name in catalog:
+            try:
+                raw = apk.get_intent_filters(tag, name) or {}
+            except Exception:  # noqa: BLE001 - hostile manifest can trip the walk
+                # Count rather than drop: a component whose filters could not be
+                # read must not read as a component with no filters (a closed
+                # door), which is the wrong direction on the attack surface.
+                scan_errors += 1
+                continue
+            actions = [str(a) for a in raw.get("action", [])]
+            categories = [str(c) for c in raw.get("category", [])]
+            data = [
+                {str(key): str(value) for key, value in item.items()}
+                for item in raw.get("data", [])
+                if isinstance(item, dict)
+            ]
+            if not (actions or categories or data):
+                continue
+            entries.append(
+                {
+                    "component": name,
+                    "type": tag,
+                    "actions": actions,
+                    "categories": categories,
+                    "data": data,
+                }
+            )
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_INTENT_FILTERS_PAGE)
+        window = entries[start : start + cap]
+        result: JsonObject = {
+            "intent_filters": window,
+            "count": len(window),
+            "total": len(entries),
+            "offset": start,
+            "has_more": start + len(window) < len(entries),
+        }
+        if names_capped:
+            result["names_capped"] = True
+        if scan_errors:
+            result["parse_errors"] = scan_errors
+        return result
 
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
