@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（js.unpack_bundle 在 webcrack 2.x 上必然失败）
+
+- `unpack_bundle` 先 `out_dir.mkdir(parents=True, exist_ok=True)` 建好目录，再把同一路径交给
+  `webcrack -o`。但 webcrack 2.x 对已存在的 `-o` 目录一律拒绝（打印 `output directory already
+  exists`、退出码 1），目录不存在时它自己创建。于是每一次拆包都在写出任何文件前就被 webcrack
+  回绝，`unpack_bundle` 看到非零退出加空目录，便统一报成 `backend_error: webcrack unpack failed`
+  ——用真实 webcrack 2.16.0 复现：走 `main` 代码 100% 失败，stderr 恰是 `output directory already
+  exists`。现只 `out_dir.parent.mkdir(...)` 保证父目录在，叶子目录留给 webcrack 自己建，拆包恢复
+  正常。新增回归：一个模拟 webcrack「目录已存在即拒绝、否则自建」契约的 `_run` 桩，断言
+  `unpack_bundle` 交给它的是尚不存在的叶子路径（旧代码上此桩会触发 `backend_error`）；既有两条
+  分页测试的桩也改为像 webcrack 那样自建目录，顺带钉住「不得预建 `-o` 目录」这一契约。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

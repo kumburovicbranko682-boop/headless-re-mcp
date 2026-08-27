@@ -199,7 +199,13 @@ class JsClient:
         limit: int = 100,
     ) -> JsonObject:
         resolved = self._require_input(path)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack 2.x refuses a -o directory that already exists ("output
+        # directory already exists", exit 1) and creates it itself when absent.
+        # Pre-creating it with exist_ok=True therefore broke every unpack: the
+        # child bailed before writing anything and the empty tree surfaced as a
+        # backend_error. Ensure only the parent exists and hand webcrack a fresh
+        # leaf path to create.
+        out_dir.parent.mkdir(parents=True, exist_ok=True)
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)],
             timeout=timeout,

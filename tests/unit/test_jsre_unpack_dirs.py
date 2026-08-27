@@ -94,25 +94,70 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     ) -> tuple[str, str, int]:
         del timeout, maximum
         out_dir = Path(cmd[cmd.index("-o") + 1])
-        if not any(out_dir.iterdir()):
-            for index in range(250):
-                (out_dir / f"mod-{index:03d}.js").write_text("x", encoding="utf-8")
+        # webcrack creates its own -o directory and refuses a pre-existing one,
+        # so unpack_bundle must hand it a leaf that does not yet exist.
+        assert not out_dir.exists(), "unpack_bundle pre-created webcrack's -o dir"
+        out_dir.mkdir(parents=True)
+        for index in range(250):
+            (out_dir / f"mod-{index:03d}.js").write_text("x", encoding="utf-8")
         return "", "", 0
 
     monkeypatch.setattr(jsre_client, "_run", fake_run)
     bundle = tmp_path / "app.js"
     bundle.write_text("bundle", encoding="utf-8")
-    out = tmp_path / "out"
     client = JsClient(executable=Path("/bin/true"))
-    page = client.unpack_bundle(bundle, out, offset=0, limit=10)
+    # Distinct fresh leaves per call: the same 250 deterministic names are
+    # written each time, so the paged windows stay comparable without reusing a
+    # directory webcrack would have refused.
+    page = client.unpack_bundle(bundle, tmp_path / "out-a", offset=0, limit=10)
     assert page["count"] == 10
     assert page["total"] == 250
     assert page["file_count"] == 250
     assert page["has_more"] is True
-    tail = client.unpack_bundle(bundle, out, offset=240, limit=20)
+    tail = client.unpack_bundle(bundle, tmp_path / "out-b", offset=240, limit=20)
     assert tail["count"] == 10
     assert tail["has_more"] is False
     assert set(page["files"]) & set(tail["files"]) == set()
+
+
+def test_unpack_hands_webcrack_a_dir_it_can_create_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """webcrack 2.x exits 1 with "output directory already exists" if -o exists.
+
+    unpack_bundle used to pre-create out_dir with ``mkdir(exist_ok=True)`` before
+    handing that same path to ``webcrack -o``. Against webcrack 2.x every unpack
+    then bailed before writing a file and surfaced as a ``backend_error`` with an
+    empty tree. This fake stands in for webcrack -- refusing a pre-existing -o and
+    otherwise creating it -- so the contract is pinned against the real CLI. The
+    nested leaf also proves unpack_bundle makes the *parent* (webcrack needs it)
+    without making the *leaf* (webcrack refuses it).
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    def fake_webcrack(
+        cmd: list[str], *, timeout: float, maximum: float = 0.0
+    ) -> tuple[str, str, int]:
+        del timeout, maximum
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        if out_dir.exists():
+            return "", "output directory already exists", 1
+        out_dir.mkdir(parents=True)
+        (out_dir / "deobfuscated.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_webcrack)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    client = JsClient(executable=Path("/bin/true"))
+    out = tmp_path / "jsre" / "unpack-deadbeef"
+    result = client.unpack_bundle(bundle, out, offset=0, limit=10)
+
+    assert result["file_count"] == 1
+    assert result["files"] == ["deobfuscated.js"]
+    assert "tool_failed" not in result
+    assert "exit_code" not in result
 
 
 @pytest.mark.parametrize(
@@ -135,9 +180,10 @@ def test_bounded_unpack_listing_finishes_at_the_last_readable_page(
     ) -> tuple[str, str, int]:
         del timeout, maximum
         out_dir = Path(cmd[cmd.index("-o") + 1])
-        if not any(out_dir.iterdir()):
-            for index in range(files_written):
-                (out_dir / f"mod-{index}.js").write_text("x", encoding="utf-8")
+        assert not out_dir.exists(), "unpack_bundle pre-created webcrack's -o dir"
+        out_dir.mkdir(parents=True)
+        for index in range(files_written):
+            (out_dir / f"mod-{index}.js").write_text("x", encoding="utf-8")
         return "", "", 0
 
     monkeypatch.setattr(jsre_client, "_run", fake_run)
