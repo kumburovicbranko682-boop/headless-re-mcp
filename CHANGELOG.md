@@ -635,6 +635,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **APK 解析缓存在会话关闭后不释放**。上限 4 份，但每份完整 DEX 分析可达数百 MB，空闲进程会
   一直占着。会话关闭时按路径显式回收。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
+- **本机 Frida 探针的 `script.load` 与同步 RPC 没有截止时间**。`frida.modules` /
+  `frida.exports` / `frida.memory_read` 只给 `_attach_local` 的 attach 阶段设了上限，
+  随后的 `script.load()` 和 `exports_sync.*` 却裸跑——而这些调用是在目标进程里执行的，
+  遇到被暂停的调试目标或没有 JIT 的进程会永久阻塞，工作线程就此卡死、脚本还一直挂在目标里。
+  设备侧的 `java_enumerate` 早已用 `_run_deadline` 兜住同一类挂起，这次把三个本机探针也接上：
+  超时按 spawn / Java 探针的做法 detach 掉会话并抛 `timeout`。回归测试对三者各钉一条：
+  永不返回的 `modules` / `exports` / `read` 都在自然阻塞远未结束时抛 `timeout` 且会话被 detach。
 - **Watchdog 字段名对不上，每次巡检都会崩**。代码读 `_reported_disconnected`（set），
   字段却声明成 `_disconnected_streak`。未捕获时整次巡检变成 `watchdog_failed`。
 - **杀进程树被 UI 页大小卡住**。`collect_descendants` 要 64 个，直接子进程枚举硬封 16，
