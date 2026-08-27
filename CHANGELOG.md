@@ -102,6 +102,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   消息条数),与其余读取器口径一致;仍回最新的尾部,且因 limit 上限等于环容量、一次即可取完
   整个缓冲,故不需要 offset。文档串同步说明,并扩展回归测试断言 `total`。
 
+### 修复（`web.network.list` 请求/响应关联与逐出走真实事件处理器时无测试守住）
+
+- 一条被抓取的请求由**两个**独立的 CDP 事件在 `_wire_events` 里拼成:`Network.requestWillBeSent` 建行
+  (url/method/resourceType,`status`/`mimeType` 先留 `None`),`Network.responseReceived` 之后按 requestId
+  把状态与 mime 填回**同一行**。既有测试触碰的都是手工造出来的状态:直接给 `requests_dropped` 赋值、
+  在测试体里复刻逐出循环,或只验证 `network.list` 会**报**某个计数——从不驱动处理器真正去关联、限长或逐出。
+  真实入库路径上四条行为因此无守护,而同质夹具(一条请求、它自己的响应、不溢出)分不出它们与损坏版:
+  响应要按 id 就地填回其请求(破坏关联则每行永远 `status: null`);请求不在缓冲里的响应要静默无操作
+  (`if entry is not None` 守住 join miss——删掉守卫则处理器对 `None` 解引用,抓包监听线程当场死掉,或凭空
+  冒出一条只有 status、没有 url/method 的幽灵行);响应的 mime 要像请求字段一样按 `_MAX_METADATA_BYTES`
+  限长并打标(服务器可控 `Content-Type`,不能每请求存一条无界串);缓冲要 `popitem(last=False)` 最旧先逐出
+  且每逐一条 `requests_dropped` 加一(逐新则近期有价值的请求消失、旧的滞留,漏计则 `dropped` 说谎)。新增
+  回归:用假 CDP 直接驱动已接线的处理器、断言在面向调用方的 `network.list` 上——关联填回、join miss 静默、
+  被逐请求的迟到响应也无操作、超大 `Content-Type` 限长打标、以及最旧先逐+计数如实;逐条破坏后各由相应测试捕获。
+
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
