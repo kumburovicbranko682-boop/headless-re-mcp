@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
+from headless_re_mcp.backends.jsre import (
+    JsClient,
+    JsReError,
+    WasmClient,
+    parse_wasm_imports,
+)
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.limits import (
@@ -138,6 +143,17 @@ class JsReAnalysisMixin:
                 Path(path), timeout=timeout
             )
             return _success(data, backend="wabt")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def wasm_imports(
+        self, path: str, offset: int = 0, limit: int = 100
+    ) -> Result[JsonObject]:
+        try:
+            data = parse_wasm_imports(Path(path), offset=offset, limit=limit)
+            return _success(data, backend="jsre")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:

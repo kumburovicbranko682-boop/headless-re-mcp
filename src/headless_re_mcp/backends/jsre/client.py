@@ -40,6 +40,15 @@ _MAX_INPUT_BYTES = 16 * 1024 * 1024
 # subprocess into a precise invalid_params -- the same reason the size cap
 # refuses input up front rather than handing it to the child.
 _WASM_MAGIC = b"\x00asm"
+# wasm.imports parses the module's import section in pure Python, so it works
+# with no wabt installed. Bounded like every other scan: a collect cap on
+# distinct entries, a page cap matching the tool schema and a per-name clamp.
+_MAX_WASM_IMPORTS_COLLECT = 5000
+_MAX_WASM_IMPORTS_PAGE = 1000
+_MAX_WASM_NAME_LEN = 512
+# import descriptor kind byte -> external-kind name (WASM core spec).
+_WASM_IMPORT_KINDS = {0: "func", 1: "table", 2: "memory", 3: "global"}
+_WASM_IMPORT_SECTION_ID = 2
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -99,6 +108,167 @@ def _looks_like_wasm(path: Path) -> bool:
             return handle.read(4) == _WASM_MAGIC
     except OSError:
         return False
+
+
+class _WasmParseError(Exception):
+    """A read ran past the buffer or hit a byte the grammar does not allow.
+
+    Raised only inside the WASM parser and always caught there: a malformed or
+    truncated module yields the entries decoded so far with truncated=true,
+    never a stack trace or a misaligned tail read as real imports.
+    """
+
+
+def _read_uleb(data: bytes, pos: int) -> tuple[int, int]:
+    """Decode one LEB128 unsigned int (u32 range) at pos; return (value, next)."""
+    result = 0
+    shift = 0
+    while True:
+        if pos >= len(data):
+            raise _WasmParseError("unexpected end of buffer")
+        byte = data[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return result, pos
+        shift += 7
+        if shift > 35:
+            raise _WasmParseError("leb128 too long for u32")
+
+
+def _read_wasm_name(data: bytes, pos: int) -> tuple[str, int]:
+    """Read a WASM name (u32 length prefix + UTF-8 bytes); clamp its length."""
+    length, pos = _read_uleb(data, pos)
+    end = pos + length
+    if length < 0 or end > len(data):
+        raise _WasmParseError("name runs past the buffer")
+    text = data[pos:end].decode("utf-8", errors="replace")
+    return text[:_MAX_WASM_NAME_LEN], end
+
+
+def _skip_wasm_limits(data: bytes, pos: int) -> int:
+    """Skip a limits record (flag byte, min, optional max) for table/memory."""
+    if pos >= len(data):
+        raise _WasmParseError("limits truncated")
+    flag = data[pos]
+    pos += 1
+    _, pos = _read_uleb(data, pos)
+    if flag & 0x01:
+        _, pos = _read_uleb(data, pos)
+    return pos
+
+
+def _skip_import_desc(data: bytes, pos: int, kind: int) -> int:
+    """Consume the kind-specific descriptor so the next entry stays aligned."""
+    if kind == 0:  # func: typeidx
+        _, pos = _read_uleb(data, pos)
+        return pos
+    if kind == 1:  # table: reftype byte, then limits
+        if pos >= len(data):
+            raise _WasmParseError("table type truncated")
+        return _skip_wasm_limits(data, pos + 1)
+    if kind == 2:  # memory: limits
+        return _skip_wasm_limits(data, pos)
+    if kind == 3:  # global: valtype byte + mutability byte
+        if pos + 2 > len(data):
+            raise _WasmParseError("global type truncated")
+        return pos + 2
+    raise _WasmParseError(f"unknown import kind {kind}")
+
+
+def _parse_import_section(data: bytes) -> tuple[list[JsonObject], bool, bool]:
+    """Parse an import section body into rows; return (rows, scan_more, truncated)."""
+    rows: list[JsonObject] = []
+    scan_more = False
+    try:
+        count, pos = _read_uleb(data, 0)
+        for _ in range(count):
+            if len(rows) >= _MAX_WASM_IMPORTS_COLLECT:
+                scan_more = True
+                break
+            module, pos = _read_wasm_name(data, pos)
+            name, pos = _read_wasm_name(data, pos)
+            if pos >= len(data):
+                raise _WasmParseError("import kind truncated")
+            kind = data[pos]
+            pos += 1
+            pos = _skip_import_desc(data, pos, kind)
+            rows.append(
+                {
+                    "module": module,
+                    "name": name,
+                    "kind": _WASM_IMPORT_KINDS.get(kind, "unknown"),
+                }
+            )
+    except _WasmParseError:
+        return rows, scan_more, True
+    return rows, scan_more, False
+
+
+def parse_wasm_imports(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a WebAssembly module's imports (the JS<->WASM boundary), wabt-free.
+
+    Reads the .wasm binary directly in pure Python, so unlike wasm.info / wasm
+    .wat it needs no wabt installed. Imports are what a module pulls from its
+    host -- the JS functions, memories, tables and globals it cannot run without
+    -- and reading them is the fastest way to see what a module actually does
+    (a memory import plus env.emscripten_* says one thing; a lone crypto shim
+    says another). Each row is module, name and kind (func, table, memory or
+    global) in binary order, which is the order that assigns each import its
+    index. Returns imports, count, total, offset and has_more so a filled page
+    is not read as every import; total is capped at 5000 with scan_capped when
+    more may exist, and truncated is true when a malformed or short module cut
+    the parse (the entries read so far are still returned). A file that is not a
+    WebAssembly module is refused as invalid_params, and one over 16 MiB as
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    rows: list[JsonObject] = []
+    scan_more = False
+    truncated = False
+    section_body: bytes | None = None
+    try:
+        pos = 8  # 4-byte magic + 4-byte version
+        total = len(raw)
+        while pos < total:
+            sec_id = raw[pos]
+            pos += 1
+            size, pos = _read_uleb(raw, pos)
+            end = pos + size
+            if end > total:
+                truncated = True
+                break
+            if sec_id == _WASM_IMPORT_SECTION_ID:
+                section_body = raw[pos:end]
+                break
+            pos = end
+    except _WasmParseError:
+        truncated = True
+    if section_body is not None:
+        rows, scan_more, body_truncated = _parse_import_section(section_body)
+        truncated = truncated or body_truncated
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_IMPORTS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "imports": window,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
 
 
 def _run(

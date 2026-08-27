@@ -69,6 +69,30 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="wasm.imports")
+    def wasm_imports(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List a WebAssembly module's imports (the JS<->WASM boundary), wabt-free.
+
+        Reads the .wasm binary directly in pure Python, so unlike wasm.info /
+        wasm.wat it needs no wabt installed. Imports are what a module pulls from
+        its host -- the JS functions, memories, tables and globals it cannot run
+        without -- and reading them is the fastest way to see what a module does
+        (a memory import plus env.emscripten_* says one thing; a lone crypto
+        shim says another). Each row is module, name and kind (func, table,
+        memory or global) in binary order, which is the order that assigns each
+        import its index. Answers with imports, count, total, offset and
+        has_more so a filled page is not read as every import; total is capped at
+        5000 with scan_capped when more may exist, and truncated is true when a
+        malformed or short module cut the parse (entries read so far are still
+        returned). A file that is not a WebAssembly module is refused as
+        invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_imports(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
