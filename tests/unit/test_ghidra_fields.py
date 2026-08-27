@@ -81,3 +81,26 @@ def test_ghidra_export_tools_name_the_artifact_they_register() -> None:
         assert "export_path" in doc, name
         assert "project_dir" in doc, name
         assert "artifact_id" in doc, name
+
+
+def test_ghidra_decompile_names_the_resolved_function() -> None:
+    """decompile resolves the address to a containing function and names it.
+
+    ExportJson.py's decompile branch emits function and entry (the resolved
+    function and its entry point) whenever a function contains the address --
+    primary output, since the requested address may sit inside the body rather
+    than at its entry -- but the catalog named only decompiled/found/truncated.
+    """
+    script = (
+        Path(service_ext.__file__).parents[1]
+        / "backends"
+        / "ghidra"
+        / "scripts"
+        / "ExportJson.py"
+    ).read_text(encoding="utf-8")
+    decompile_branch = script[script.index('mode == "decompile"') :]
+    assert 'payload["function"]' in decompile_branch
+    assert 'payload["entry"]' in decompile_branch
+
+    doc = _tool_docstring("ghidra.decompile")
+    assert "function and entry" in doc
