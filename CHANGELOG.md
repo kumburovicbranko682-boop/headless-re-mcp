@@ -132,6 +132,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   也会在缺字段时按 `function` 是否存在补齐 `found`：`found=false` 明确表示“该地址没有函数”，此时
   空的 `decompiled` 是这个原因而非空函数体。
 
+### 修复（`apk.xrefs` 同名方法的调用点不再无声合并）
+
+- `apk.xrefs` 按**裸方法名**匹配,于是 `get_methods()` 里同名的多个方法(不同类里的同名方法、
+  或签名不同的重载)会被一并遍历,它们的调用点全落进同一个 `callers` 列表。此前回包只点名
+  `callers`,于是「decrypt 的 xref」根本无从区分「某一个方法的调用点」与「一打叫 decrypt 的方法
+  的调用点被无声合并成一串」——无人值守的一遍会把合并后的列表当成单个方法的交叉引用来推断。
+- 现在回包附带 `matched_methods`(该裸名命中的方法总数)与 `matched`(逐个方法的 `class` 与
+  `descriptor`,以 `_MAX_XREFS_MATCHED` 为上限;`matched_methods` 可大于 `len(matched)` 表示名字
+  被大量共享),调用者据此看出列表跨了几个不同方法。`callers` 本身不变(仍按方法遍历序、停在
+  `limit` 上并以 `has_more` 标识截断),`matched_methods` 即便分页填满也照数全部命中,不被分页截短。
+- 新增回归:两个同名方法的调用点合并且 `matched` 齐备、唯一名报 `matched_methods=1`、分页填满时
+  `matched_methods` 仍数全、`matched` 受 `_MAX_XREFS_MATCHED` 约束而 `matched_methods` 报真实总数,
+  以及 `apk.xrefs` 的描述点名 `matched_methods` / `matched`。
+
 
 - `error_boundary` 的行内脱敏(异常消息、事故日志、HTTP 500 体、CLI stderr 信封走的同一条
   正则)只覆盖 `api_key`/`token`/`secret`/`password` 与 `Authorization: Bearer`,而

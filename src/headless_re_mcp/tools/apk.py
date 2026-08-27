@@ -142,6 +142,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with callers (class and method), method_name, count, and
         has_more so a page that filled the limit is not read as the whole list.
+        matched_methods is how many distinct methods share this bare name and
+        matched lists their class and descriptor (bounded), so callers spanning
+        several overloads or same-named methods in different classes is visible
+        rather than silently merged into one list.
         """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 

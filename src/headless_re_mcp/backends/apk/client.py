@@ -34,6 +34,10 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+# A bare method name can be shared by several methods; the disclosure lists
+# their identities so a merged caller page is not read as one method's, bounded
+# so a name shared by hundreds does not inflate one reply.
+_MAX_XREFS_MATCHED = 100
 
 
 class ApkError(RuntimeError):
@@ -424,9 +428,30 @@ class ApkClient:
             raise ApkError("invalid_params", "method_name is required")
         _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
         callers: list[JsonObject] = []
+        matched: list[JsonObject] = []
+        matched_methods = 0
         has_more = False
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
+                continue
+            # method_name is a bare name, so several distinct methods -- the
+            # same name in different classes, or overloads with different
+            # descriptors -- can match, and their callers all land in one list.
+            # Count them (and record their identities, bounded) so a caller can
+            # tell "callers of one method" from "callers of any of N methods
+            # sharing this name", instead of reading a silently merged list as
+            # one method's cross-references.
+            matched_methods += 1
+            if len(matched) < _MAX_XREFS_MATCHED:
+                matched.append(
+                    {
+                        "class": str(getattr(method, "class_name", "")),
+                        "descriptor": str(getattr(method, "descriptor", "")),
+                    }
+                )
+            if has_more:
+                # The page is already full; keep counting matches (cheap) but do
+                # not walk any further callers -- the caller list is unchanged.
                 continue
             for _, call, _ in method.get_xref_from():
                 if len(callers) >= cap:
@@ -440,12 +465,15 @@ class ApkClient:
                         "method": str(call.name),
                     }
                 )
-            if has_more:
-                break
         return {
             "method_name": target,
             "callers": callers,
             "count": len(callers),
+            # matched_methods is the full count of methods this bare name hit;
+            # matched lists them (class + descriptor), bounded. matched_methods
+            # can exceed len(matched) when the name is shared very widely.
+            "matched_methods": matched_methods,
+            "matched": matched,
             # A caller deciding "these are all the callers" has to know whether
             # the enumeration ended or merely stopped.
             "has_more": has_more,
