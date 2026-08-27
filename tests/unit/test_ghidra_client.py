@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 import headless_re_mcp.backends.ghidra.client as ghidra_client
-from headless_re_mcp.backends.common.bounded_run import Completed
+from headless_re_mcp.backends.common.bounded_run import Completed, TimedOut
 from headless_re_mcp.tools.ghidra import build_ghidra_tools
 
 
@@ -548,6 +548,71 @@ def test_pyghidra_analyze_drives_a_probe_script_instead_of_a_bare_repl(
     assert any(arg.endswith("ExportJson.py") for arg in cmd)
     assert any(arg.endswith("_analyze_probe.json") for arg in cmd)
     # The throwaway pyghidra project is cleaned up after the analyze run.
+    assert not (project / "pyghidra_project").exists()
+
+
+def test_pyghidra_timeout_is_classified_and_cleans_up_the_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PyGhidra run that outlasts its deadline is a timeout, and it still cleans up.
+
+    run_bounded raises TimedOut when the JVM analysis outruns the bound; the
+    adapter must report timeout carrying the pids it had to kill -- so an
+    operator sees the JVM was stopped, not leaked holding a core -- and the
+    finally must still delete the throwaway project. A timeout that left the
+    project dir behind would strand a lock and a half-written database that the
+    next run trips over. The analyzeHeadless twin of this path is already
+    covered; the PyGhidra branch (modern Ghidra's only launch route) was not.
+    """
+    monkeypatch.setattr(ghidra_client.importlib.util, "find_spec", lambda name: object())
+    home = _fake_pyghidra_home(tmp_path)
+    client = ghidra_client.GhidraClient(home=home)
+    client.java = tmp_path / "java"
+    client.java.write_bytes(b"")
+    assert client.uses_pyghidra is True
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del cmd, kwargs
+        raise TimedOut(300.0, [4321])
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    project = tmp_path / "project"
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), project, limit=8)
+    assert caught.value.code == "timeout"
+    assert "pyghidra" in caught.value.message
+    assert caught.value.details.get("killed_pids") == [4321]
+    assert not (project / "pyghidra_project").exists()
+
+
+def test_pyghidra_launch_failure_is_backend_error_and_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PyGhidra that cannot be spawned is a backend problem, not an internal fault.
+
+    An OSError from run_bounded -- the interpreter gone, pyghidra unimportable at
+    exec time, a permissions fault -- would otherwise surface as an
+    internal_error incident. The adapter classifies it as backend_error naming
+    pyghidra, the same mapping its analyzeHeadless twin uses, and the finally
+    still removes the throwaway project so a failed launch leaves nothing behind.
+    """
+    monkeypatch.setattr(ghidra_client.importlib.util, "find_spec", lambda name: object())
+    home = _fake_pyghidra_home(tmp_path)
+    client = ghidra_client.GhidraClient(home=home)
+    client.java = tmp_path / "java"
+    client.java.write_bytes(b"")
+    assert client.uses_pyghidra is True
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del cmd, kwargs
+        raise OSError("interpreter is not executable")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    project = tmp_path / "project"
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), project, limit=8)
+    assert caught.value.code == "backend_error"
+    assert "failed to launch pyghidra" in caught.value.message
     assert not (project / "pyghidra_project").exists()
 
 
