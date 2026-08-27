@@ -148,6 +148,19 @@ class _FakeOpenAI:
                 self.wfile.write(payload)
                 self.wfile.flush()
 
+            def do_GET(self) -> None:  # noqa: N802 - stdlib name
+                if not self.path.rstrip("/").endswith("/models"):
+                    self.send_error(404)
+                    return
+                payload = json.dumps(
+                    {"data": [{"id": "fake-model"}, {"id": "fake-model-mini"}]}
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = int(self._server.server_address[1])
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -528,3 +541,66 @@ def test_mission_queued_over_http_runs_unattended_to_completion(tmp_path: Path) 
             # And the ops surface the operator would check answers honestly.
             watchdog = http.get("/api/agent/watchdog").json()
             assert watchdog["ok"] is True and "policy" in watchdog
+
+
+@pytest.mark.integration
+@pytest.mark.headless
+def test_provider_control_plane_configures_and_probes_over_http(tmp_path: Path) -> None:
+    """An operator can read, write, and probe provider profiles over HTTP.
+
+    The listing never echoes an API key back; a saved profile really lands in
+    the providers file the next boot would read; the model probe is the server
+    itself calling the provider's ``/models`` endpoint and remembering the
+    result; and a probe against a dead endpoint fails as an honest 502 rather
+    than a success with an empty list.
+    """
+    with _FakeOpenAI(str(_PE_FIXTURE)) as fake:
+        provider_base_url = f"http://127.0.0.1:{fake.port}"
+        with (
+            _serve_web(tmp_path, provider_base_url) as base_url,
+            httpx.Client(base_url=base_url, headers={"Authorization": f"Bearer {_TOKEN}"}) as http,
+        ):
+            listing = http.get("/api/providers")
+            assert listing.status_code == 200
+            assert listing.json()["current"] == "default"
+            assert {item["id"] for item in listing.json()["profiles"]} == {"default"}
+            # The seeded secret must not leak through the read surface.
+            assert "loopback-key" not in listing.text
+
+            saved = http.put(
+                "/api/providers/lab",
+                json={
+                    "base_url": provider_base_url,
+                    "model": "fake-model",
+                    "api_key": "lab-secret-key",
+                },
+            )
+            assert saved.status_code == 200, saved.text
+            assert "lab-secret-key" not in saved.text
+
+            probed = http.post("/api/providers/lab/models")
+            assert probed.status_code == 200, probed.text
+            assert probed.json()["models"] == ["fake-model", "fake-model-mini"]
+
+            # Durable: the file the next boot reads has the profile, its key,
+            # the probed models, and the new current selection.
+            on_disk = json.loads((tmp_path / "providers.json").read_text(encoding="utf-8"))
+            assert on_disk["current"] == "lab"
+            lab = on_disk["profiles"]["lab"]
+            assert lab["api_key"] == "lab-secret-key"
+            assert lab["model"] == "fake-model"
+            assert lab["known_models"] == ["fake-model", "fake-model-mini"]
+
+            # A dead endpoint is a 502 with the cause, not a silent success.
+            http.put(
+                "/api/providers/dead",
+                json={
+                    "base_url": f"http://127.0.0.1:{_free_port()}",
+                    "model": "fake-model",
+                    "api_key": "dead-key",
+                    "make_current": False,
+                },
+            ).raise_for_status()
+            failed = http.post("/api/providers/dead/models")
+            assert failed.status_code == 502
+            assert failed.json()["detail"].startswith("provider_probe_failed:")

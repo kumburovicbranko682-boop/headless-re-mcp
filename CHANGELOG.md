@@ -47,6 +47,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   以 `MISSION_COMPLETE` 开头的最终回复判定完成——全程只经 HTTP 任务 API 观察
   (`scheduler_running=true`、状态 pending→completed、`runs_used=1`、run 事件史含
   `tool.completed(session.create, ok)`、`/api/sessions` 确有该会话、watchdog 端点如实应答)。
+- 同一 Gate 第四条钉住 provider 配置控制面:`GET /api/providers` 读面不回显 API key;
+  `PUT /api/providers/{id}` 保存的档案真落到下次启动会读的 providers.json(含密钥、模型、
+  current 切换);`POST .../models` 是服务器自己出网调 provider 的 `/models` 并把结果记进
+  `known_models`;对死端点探测得到带原因的 502 `provider_probe_failed:...`,而非空列表假成功。
 
 ### 新增（监控台工作台）
 
