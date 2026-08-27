@@ -345,6 +345,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
   空的合法远端文件仍会作为 0 字节正常返回。
 
+### 修复（device.screenshot 写不出文件时不再报成 size 0 的成功）
+
+- `device.screenshot` 与 `device.pull` 同病：PIL 的 `image.save()` 成功回 None，但被拒绝时回
+  False 且不写文件，随后 `capped_file_size` 对缺失文件返回 0，于是回包是 `{size: 0}` 的成功，
+  无人值守的 agent 会把它当成一张可打开的截图。现在截图后本地文件缺失或为 0 字节即报
+  `backend_error`（`captured: False`），超过 64 MiB 上限仍先按 `too_large` 删除并拒绝。
+
 ### 修复（`frida.java.methods` 分不清「类没加载」与「类无自有方法」)
 
 - `frida.java.methods` 此前只回一个方法名数组。脚本里 `Java.use(className)` 对未加载的类会抛异常,

@@ -158,7 +158,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with path, serial and size. The file is not a registered artifact
         -- artifacts.read cannot open it -- only the newest 32 device captures
-        are kept, and a file over 64 MiB is deleted and refused.
+        are kept, and a file over 64 MiB is deleted and refused. A capture that
+        wrote no file is a backend error, not a size-0 screenshot.
         """
         return _dump(analysis.device_screenshot(serial))
 
