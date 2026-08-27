@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（抓包停止后端口不释放）
+
+- `proxy.stop` / `proxy.close_all` 及关闭 Web 会话时，mitmproxy 12.x 下监听端口**停不掉**：
+  `master.shutdown()` 会让运行线程退出、事件循环关闭，但 proxyserver 的监听 socket 仍然绑定，
+  端口停在 LISTEN。于是 `stop` 看起来成功、`status` 报 `running:false`，下一次 `proxy.start`
+  却因端口占用而失败——无人值守里表现为一次抓包之后再也起不来。此前的兜底只取消挂起任务再关闭
+  loop，并不会关掉 proxyserver 持有的 socket（依赖版本行为，mitmproxy 11 恰好清掉、12 不清）。
+  现在停止时先在仍在运行的 loop 上逐个 `await` proxyserver 实例的 `stop()` 真正关闭监听 socket，
+  再 `master.shutdown()`；线程 finally 里保留同样的关闭作为异常退出的兜底。按 `is_running` 跳过
+  已停实例（mitmproxy 的 `stop()` 二次调用是断言失败而非空操作），并对缺 addon / 缺属性做防御。
+  端口释放由 `test_proxy_lifecycle_gate` 用真实 mitmproxy 验证；另加不依赖 mitmproxy 的单元回归
+  钉住「先关 socket 再 shutdown」的顺序与幂等跳过，使该性质在纯单元 CI 也能守住。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

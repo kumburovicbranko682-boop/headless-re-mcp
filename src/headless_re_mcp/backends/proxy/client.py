@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import inspect
 import logging
 import os
 import socket
@@ -348,16 +349,57 @@ class _ProxyInstance:
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound
-            # and the next capture could never start. Unwind the tasks first.
+            # and the next capture could never start. Close the proxy servers,
+            # then unwind the remaining tasks. This is a backstop for an
+            # abnormal exit that stop() never drove; on the normal path the
+            # servers are already stopped, so is_running skips them here.
             if loop is not None:
+                master = self._master
+                if master is not None and not loop.is_closed():
+                    with contextlib.suppress(Exception):
+                        loop.run_until_complete(self._astop_servers(master))
                 with contextlib.suppress(Exception):
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
+
+    @staticmethod
+    async def _astop_servers(master: Any) -> None:
+        """Close the proxyserver addon's listening sockets.
+
+        ``master.shutdown()`` stops the run loop but, as of mitmproxy 12.x, does
+        not close the proxy's listening sockets: the run thread exits and the
+        loop closes with the socket still bound, so the port stays in LISTEN and
+        the next capture cannot rebind it -- ``stop()`` looked like it worked
+        while the port never came back. Each proxyserver instance owns that
+        socket and exposes an async ``stop()``; awaiting it before shutdown is
+        what actually frees the port. Version-defensive: a missing addon or
+        attribute, and a server already stopped (``is_running`` is False, and
+        a redundant ``stop()`` asserts rather than no-ops), are skipped.
+        """
+        addons = getattr(master, "addons", None)
+        getter = getattr(addons, "get", None)
+        proxyserver = getter("proxyserver") if getter is not None else None
+        for server in list(getattr(proxyserver, "servers", None) or []):
+            stop = getattr(server, "stop", None)
+            if stop is None or not getattr(server, "is_running", True):
+                continue
+            with contextlib.suppress(Exception):
+                result = stop()
+                if inspect.isawaitable(result):
+                    await result
 
     def stop(self) -> None:
         master = self._master
         loop = self._loop
         if master is not None and loop is not None:
+            # Close the listening sockets on the loop while it is still running;
+            # master.shutdown() alone leaves them bound on mitmproxy 12.x.
+            if loop.is_running():
+                with contextlib.suppress(Exception):
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._astop_servers(master), loop
+                    )
+                    future.result(timeout=10.0)
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(master.shutdown)
         if self._thread is not None:

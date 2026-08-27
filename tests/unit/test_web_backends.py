@@ -249,6 +249,117 @@ class TestProxyScoping:
         assert info.value.code == "invalid_params"
 
 
+class _FakeProxyServer:
+    """Stands in for a mitmproxy proxyserver instance with an async stop()."""
+
+    def __init__(self, *, running: bool = True) -> None:
+        self.is_running = running
+        self.stop_calls = 0
+
+    async def stop(self) -> None:
+        # mitmproxy's real stop() asserts on a second call rather than no-oping,
+        # so a caller that stops an already-stopped server is a defect here too.
+        assert self.is_running, "stop() called on a server that was not running"
+        self.stop_calls += 1
+        self.is_running = False
+
+
+class _FakeAddons:
+    def __init__(self, mapping: dict) -> None:  # type: ignore[type-arg]
+        self._mapping = mapping
+
+    def get(self, name: str) -> object:
+        return self._mapping.get(name)
+
+
+class _FakeMaster:
+    def __init__(self, servers: list, *, order: list) -> None:  # type: ignore[type-arg]
+        self.addons = _FakeAddons(
+            {"proxyserver": type("PS", (), {"servers": servers})()}
+        )
+        self._order = order
+
+    def shutdown(self) -> None:
+        self._order.append("shutdown")
+
+
+class TestProxyStopReleasesTheListener:
+    """master.shutdown() alone leaves the port bound on mitmproxy 12.x.
+
+    The lifecycle gate proves the port comes back with a real mitmproxy; these
+    pin the mechanism it depends on without needing the package installed, so a
+    refactor that dropped the explicit server close would fail in unit CI too.
+    """
+
+    def test_astop_servers_stops_running_and_skips_already_stopped(self) -> None:
+        import asyncio
+
+        from headless_re_mcp.backends.proxy.client import _ProxyInstance
+
+        running = _FakeProxyServer(running=True)
+        stopped = _FakeProxyServer(running=False)
+        master = _FakeMaster([running, stopped], order=[])
+        asyncio.run(_ProxyInstance._astop_servers(master))
+        assert running.stop_calls == 1 and running.is_running is False
+        # An already-stopped server is skipped, not stopped a second time.
+        assert stopped.stop_calls == 0
+
+    def test_astop_servers_is_defensive_about_shape(self) -> None:
+        import asyncio
+
+        from headless_re_mcp.backends.proxy.client import _ProxyInstance
+
+        # No addons, no proxyserver, and a proxyserver with no servers must all
+        # be no-ops rather than raising: this runs inside stop()'s cleanup.
+        asyncio.run(_ProxyInstance._astop_servers(object()))
+        asyncio.run(_ProxyInstance._astop_servers(_FakeMaster([], order=[])))
+
+    def test_stop_closes_the_listener_before_calling_shutdown(self) -> None:
+        import asyncio
+        import threading
+        import time
+
+        from headless_re_mcp.backends.proxy.client import _ProxyInstance
+
+        order: list[str] = []
+
+        class _OrderedServer:
+            def __init__(self) -> None:
+                self.is_running = True
+
+            async def stop(self) -> None:
+                order.append("server_stop")
+                self.is_running = False
+
+        server = _OrderedServer()
+        loop = asyncio.new_event_loop()
+
+        class _StoppingMaster(_FakeMaster):
+            def shutdown(self) -> None:
+                super().shutdown()
+                loop.call_soon_threadsafe(loop.stop)
+
+        master = _StoppingMaster([server], order=order)
+        thread = threading.Thread(target=loop.run_forever, name="fake-proxy", daemon=True)
+        thread.start()
+        while not loop.is_running():
+            time.sleep(0.01)
+
+        inst = _ProxyInstance("127.0.0.1", 1)
+        inst._master = master
+        inst._loop = loop
+        inst._thread = thread
+        inst.stop()
+
+        # The socket-owning server is closed before the run loop is told to exit,
+        # which is the ordering that frees the port instead of leaking it.
+        assert order == ["server_stop", "shutdown"]
+        assert server.is_running is False
+        assert thread.is_alive() is False
+        assert inst._master is None and inst._loop is None
+        loop.close()
+
+
 class _TrackingWebBackend:
     def __init__(self) -> None:
         self.live: set[str] = set()
