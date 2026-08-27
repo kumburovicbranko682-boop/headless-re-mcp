@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **273（156 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **274（157 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1372,6 +1372,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   真·lxml 清单树形制):只列有 filter 的组件、深链接 flag 与 data 属性读出、MAIN/LAUNCHER 不算深链接、`exported="false"` 压过 filter 但 filter 仍报出且 `deep_link` 仍为真、receiver 归到 receivers、无 filter
   清单为空、清单抛错降级为空。实机 gate(`test_m11_android_apk_live_gate.py`)对真实 AXML:本夹具 MainActivity 无 intent-filter,故读回空组件列表与 `total` 0——证明遍历在真实解码路径上跑通且诚实降级
   (空而非崩),与上面导出检查同一层级;填充形态由 crafted 清单单测覆盖。
+
+- **新增 `wasm.sections`:结构化列出一个 `.wasm` 模块的段布局——即模块的二进制骨架,是逆向一枚 WASM 时最先要看的「地图」。** 此前段布局只有 `wasm.info` 能给,而它回的是 `wasm-objdump -h -x`
+  的原始文本、且**需要装 wabt**(本环境正是没有的情形);想按 id/大小/条数分流只能自己 parse 那段文本。新工具承接 `wasm.imports`/`exports`/`names` 的二进制读取思路,直接走模块顶层段、**不需要
+  wabt**、不随其版本漂移。每行含 `id`、`name`(well-known 段名:`type`/`import`/`function`/`table`/`memory`/`global`/`export`/`start`/`element`/`code`/`data`/`data_count`/`custom`,未知 id 以十六进制字节
+  可见而非丢弃)、`size`(段体声明的字节长度)、`offset`(段体在文件中的起始偏移)。自定义段(id 0)另带 `custom_name`——因所有自定义段共用 id 0,只能靠各自开头自带的段名区分是 `name`/`producers`/`.debug_*`
+  中的哪一个。带向量计数的段(type/import/function/table/memory/global/export/element/code/data)与 data_count 段另带 `count`,即段头声明的条目数,只从段体开头那个整数廉价读出而不解码整段(注意此每行
+  `count` 是段内条目数,区别于顶层 `count` 即本页行数)。回 `sections`/`count`/`total`/`offset`/`has_more`/`incomplete`:某段声明的大小越过缓冲区或触达段数上限时 `incomplete` 为真,故部分地图不被读成完整布局;
+  读段自身开头的 name/count 隔离在该段体内(已被切片边界核查),故某段谎报内部长度只会让该行省略 `custom_name`/`count`,不污染顶层遍历。工具面 273→**274**(156→**157** 只读,写不变)。单测
+  (`test_wasm_imports_exports.py`):type+import+export 三段地图带正确 id/name/count 与偏移不越界、自定义 `name`/`producers` 段按 `custom_name` 区分且不带 `count`、data_count 段读出其单一计数、未知 id 以
+  十六进制呈现、段越界置 `incomplete` 且只保留已成功走完的段、非模块硬报错、WasmClient 无 wabt 也能分页读盘、缺文件报 `not_found`。实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对真实
+  wat2wasm 产物读回 type/export/code 段与各自条数、段按文件序升序且不越界,并对带 name 段的模块经 `custom_name` 认出自定义 "name" 段。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

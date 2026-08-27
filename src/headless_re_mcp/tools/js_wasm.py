@@ -89,6 +89,35 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
+    @tools.tool(name="wasm.sections")
+    def wasm_sections(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Map a .wasm module's section layout (its binary structure at a glance).
+
+        Reads the module's top-level sections directly, so it needs no wabt and
+        cannot drift with a wabt version; an input over 16 MiB is refused as
+        too_large. This is the structured, dependency-free form of the section
+        table wasm.info only prints as wasm-objdump text. Answers with sections,
+        count, total, offset, has_more and incomplete. Each row has id, name (the
+        well-known section name -- "type", "import", "function", "table",
+        "memory", "global", "export", "start", "element", "code", "data",
+        "data_count", "custom" -- or the byte in hex for an unknown id), size
+        (declared body length in bytes) and offset (where the body starts in the
+        file). A custom row adds custom_name (which custom section it is, e.g.
+        "name" or "producers"), since all custom sections share id 0. A vector-
+        prefixed section and data_count add count, the number of entries the
+        section header declares -- note this per-row count is the section's entry
+        count, distinct from the top-level count, which is rows on this page.
+        incomplete is true when a section overran the buffer or the section cap
+        was hit, so a partial map is not read as the whole layout. count may be
+        below limit when the result-size budget trimmed the page, so read count,
+        not limit, and page on has_more. The list field is sections, not items.
+        """
+        return _dump(analysis.wasm_sections(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.imports")
     def wasm_imports(
         path: str,

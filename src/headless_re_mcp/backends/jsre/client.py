@@ -20,6 +20,7 @@ from headless_re_mcp.backends.jsre.wasm_format import (
     parse_exports,
     parse_imports,
     parse_names,
+    parse_sections,
 )
 
 JsonObject = dict[str, Any]
@@ -265,6 +266,34 @@ class WasmClient:
         return _note_nonzero_exit(
             _bounded_output(stdout, "objdump", include_bytes=False), code=code, stderr=stderr
         )
+
+    def sections(
+        self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT
+    ) -> JsonObject:
+        """Structured section map of a .wasm module (id/name/size/offset[/count]).
+
+        Reads the module's top-level section layout directly from the binary, so
+        it needs no wabt and cannot drift with a wabt version; an input over
+        16 MiB is refused as too_large. This is the dependency-free equivalent of
+        the section table wasm.info prints as wasm-objdump text.
+        """
+        data = self._read_module(path)
+        try:
+            entries, incomplete = parse_sections(data)
+        except WasmParseError as exc:
+            raise JsReError("backend_error", str(exc), path=str(path)) from exc
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _WASM_ENTRY_CAP))
+        window = entries[start : start + cap]
+        window, _dropped, _budget_cut = fit_json_list(window)
+        return {
+            "sections": window,
+            "count": len(window),
+            "total": len(entries),
+            "offset": start,
+            "has_more": start + len(window) < len(entries),
+            "incomplete": incomplete,
+        }
 
     def imports(
         self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT

@@ -6,7 +6,9 @@ real tool returned something the client mishandled. This drives both tools
 against a tiny embedded module -- an exported ``add`` function plus a memory --
 and asserts the WAT round-trips with that export and the objdump lists the
 sections. Portable: it resolves wabt from settings/PATH exactly as the service
-does and skips (skip != pass) when wabt is absent.
+does and skips (skip != pass) when wabt is absent. The dependency-free readers
+(imports/exports/names/sections) run in a second test that never skips, since
+they read the module bytes in-process with no wabt.
 """
 
 from __future__ import annotations
@@ -106,6 +108,18 @@ def test_m11_wasm_imports_exports_read_from_bytes(tmp_path: Path) -> None:
     # The export-only module has no Import section at all -> empty, complete.
     assert client.imports(export_only)["total"] == 0
 
+    # wasm.sections: the structural map reads the same real module with no wabt,
+    # in file order, naming each section and carrying its declared entry count.
+    smap = client.sections(export_only)
+    assert smap["incomplete"] is False
+    by_id = {row["id"]: row for row in smap["sections"]}
+    assert by_id[1]["name"] == "type" and by_id[1]["count"] == 1
+    assert by_id[7]["name"] == "export" and by_id[7]["count"] == 2  # add + mem
+    assert by_id[10]["name"] == "code"
+    offsets = [row["offset"] for row in smap["sections"]]
+    assert offsets == sorted(offsets)  # sections map in ascending file order
+    assert all(r["offset"] + r["size"] <= len(_WASM) for r in smap["sections"])
+
     with_imports = tmp_path / "imports.wasm"
     with_imports.write_bytes(_WASM_WITH_IMPORTS)
     imports = client.imports(with_imports)
@@ -141,3 +155,11 @@ def test_m11_wasm_imports_exports_read_from_bytes(tmp_path: Path) -> None:
     stripped = client.names(export_only)  # the wat2wasm module carries no names
     assert stripped["present"] is False
     assert stripped["function_names"] == []
+
+    # The named module's section map surfaces the custom "name" section by its
+    # own name (all custom sections share id 0), which is how wasm.sections tells
+    # apart "name"/"producers"/".debug_*" for triage.
+    named_sections = client.sections(named)["sections"]
+    custom = next(row for row in named_sections if row["id"] == 0)
+    assert custom["name"] == "custom"
+    assert custom["custom_name"] == "name"

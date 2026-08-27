@@ -343,3 +343,134 @@ def test_wasm_import_export_docstrings_name_their_fields() -> None:
     exports_doc = _tool_docstring("wasm.exports")
     for token in ("exports", "declared", "incomplete", "index", "kind"):
         assert token in exports_doc
+
+
+def test_parse_sections_maps_layout_with_names_and_vector_counts() -> None:
+    """The section map lists each section in file order with id/name/size/count.
+
+    Measured on a type+import+export module: three rows named type/import/export,
+    each vector-prefixed section carrying its entry count (type 1, import 2,
+    export 1), the type section's body starting just past the 8-byte header and
+    its own 2-byte section header (offset 10), and incomplete False.
+    """
+    imp1 = _name("env") + _name("a") + b"\x00" + b"\x00"
+    imp2 = _name("env") + _name("b") + b"\x00" + b"\x00"
+    exp = _name("run") + b"\x00" + b"\x00"
+    module = _module(
+        _TYPE_SECTION,
+        _import_section(imp1, imp2),
+        _export_section(exp),
+    )
+    sections, incomplete = wf.parse_sections(module)
+    assert incomplete is False
+    assert [(s["id"], s["name"], s.get("count")) for s in sections] == [
+        (1, "type", 1),
+        (2, "import", 2),
+        (7, "export", 1),
+    ]
+    type_row = sections[0]
+    assert type_row["offset"] == 10  # 8-byte module header + 2-byte section header
+    assert type_row["size"] == len(_TYPE_SECTION) - 2  # body only, not the header
+    # Every declared body sits within the file, in order, with no overlap.
+    for row in sections:
+        assert row["offset"] >= 0
+        assert row["offset"] + row["size"] <= len(module)
+
+
+def test_parse_sections_reads_a_custom_section_name() -> None:
+    """A custom section is id 0 named "custom", tagged by its own custom_name.
+
+    The two custom sections share id 0 and are told apart only by custom_name;
+    neither carries a vector count, so count is absent on those rows.
+    """
+    module = _module(
+        _TYPE_SECTION,
+        _custom_section("name", b"\x00"),
+        _custom_section("producers", b"\x00"),
+    )
+    sections, incomplete = wf.parse_sections(module)
+    assert incomplete is False
+    customs = [s for s in sections if s["id"] == 0]
+    assert [s["name"] for s in customs] == ["custom", "custom"]
+    assert [s["custom_name"] for s in customs] == ["name", "producers"]
+    assert all("count" not in s for s in customs)
+
+
+def test_parse_sections_reads_the_data_count_section_value() -> None:
+    """The data_count section (id 12) is a single count, surfaced as count."""
+    module = _module(_TYPE_SECTION, _section(12, b"\x05"))
+    sections, _incomplete = wf.parse_sections(module)
+    data_count = next(s for s in sections if s["id"] == 12)
+    assert data_count["name"] == "data_count"
+    assert data_count["count"] == 5
+
+
+def test_parse_sections_renders_an_unknown_id_as_hex() -> None:
+    """A nonstandard section id is visible as its hex byte, not dropped."""
+    module = _module(_TYPE_SECTION, _section(200, b"\x00"))
+    sections, incomplete = wf.parse_sections(module)
+    assert incomplete is False
+    unknown = next(s for s in sections if s["id"] == 200)
+    assert unknown["name"] == "0xc8"
+    assert "count" not in unknown  # only known vector/data_count rows carry count
+
+
+def test_parse_sections_flags_a_section_overrunning_the_buffer() -> None:
+    """A section whose declared size runs past the file stops and flags incomplete.
+
+    The type section parses whole, then a function section (id 3) claims 50 bytes
+    it does not have; the walk returns the rows it gathered with incomplete True
+    rather than reading past the buffer.
+    """
+    module = _module(_TYPE_SECTION) + bytes([3, 50])  # id 3, size 50, no body
+    sections, incomplete = wf.parse_sections(module)
+    assert incomplete is True
+    assert [s["id"] for s in sections] == [1]  # only the type section survived
+
+
+def test_parse_sections_rejects_a_non_module() -> None:
+    """Bytes without the wasm magic are not a module at all (hard error)."""
+    for bad in (b"", b"not wasm here", b"\x00asm"):
+        with pytest.raises(wf.WasmParseError):
+            wf.parse_sections(bad)
+
+
+def test_wasm_client_sections_pages_and_needs_no_wabt(tmp_path: Path) -> None:
+    """WasmClient.sections reads a file, pages the map, and works with no wabt.
+
+    Measured: a three-section module through WasmClient(None) -> total 3; limit 2
+    -> count 2, has_more True, list field sections (not items); offset 2 -> the
+    export row, has_more False.
+    """
+    imp = _name("env") + _name("a") + b"\x00" + b"\x00"
+    exp = _name("run") + b"\x00" + b"\x00"
+    module = _module(_TYPE_SECTION, _import_section(imp), _export_section(exp))
+    path = tmp_path / "m.wasm"
+    path.write_bytes(module)
+
+    client = WasmClient(None)  # no wabt path; sections must still work
+    first = client.sections(path, limit=2)
+    assert first["total"] == 3
+    assert first["incomplete"] is False
+    assert first["count"] == 2
+    assert len(first["sections"]) == 2
+    assert first["has_more"] is True
+    assert "items" not in first
+    second = client.sections(path, offset=2, limit=2)
+    assert second["count"] == 1
+    assert second["offset"] == 2
+    assert second["has_more"] is False
+    assert second["sections"][0]["id"] == 7  # the export section
+
+
+def test_wasm_client_sections_missing_file_is_not_found(tmp_path: Path) -> None:
+    """A missing module is not_found, not a crash or a fabricated empty map."""
+    with pytest.raises(JsReError) as info:
+        WasmClient(None).sections(tmp_path / "nope.wasm")
+    assert info.value.code == "not_found"
+
+
+def test_wasm_sections_docstring_names_its_fields() -> None:
+    doc = _tool_docstring("wasm.sections")
+    for token in ("sections", "custom_name", "count", "offset", "size", "incomplete"):
+        assert token in doc

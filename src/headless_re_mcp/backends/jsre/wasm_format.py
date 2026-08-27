@@ -18,6 +18,7 @@ file that is not a WebAssembly module at all.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -35,6 +36,28 @@ _VALTYPES = {
     0x6F: "externref",
 }
 _KINDS = {0: "func", 1: "table", 2: "memory", 3: "global"}
+# Well-known top-level section ids (WASM spec through 2.0). An unknown id renders
+# as its hex byte so a future/nonstandard section is visible, not dropped.
+_SECTION_NAMES = {
+    0: "custom",
+    1: "type",
+    2: "import",
+    3: "function",
+    4: "table",
+    5: "memory",
+    6: "global",
+    7: "export",
+    8: "start",
+    9: "element",
+    10: "code",
+    11: "data",
+    12: "data_count",
+}
+# Sections whose body begins with a LEB128 vector count, so a cheap leading read
+# yields how many entries the section declares. custom(0) leads with a name,
+# start(8) is a single funcidx, and data_count(12) is itself a single count --
+# all handled apart from this set.
+_VECTOR_SECTIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11})
 
 # Bounds. These sit far above any real module's import/export/type counts, so a
 # legitimate module is parsed whole; they exist only to cap a hostile count.
@@ -359,3 +382,68 @@ def parse_names(data: bytes) -> tuple[bool, str | None, list[JsonObject], bool]:
         incomplete = True
     function_names.sort(key=lambda row: row["index"])
     return True, module_name, function_names, incomplete
+
+
+def parse_sections(data: bytes) -> tuple[list[JsonObject], bool]:
+    """``(sections, incomplete)`` for the module's top-level section layout.
+
+    This is the module's structural map, in file order: each row has id, name
+    (the well-known section name, or the byte in hex for an unknown id), size
+    (the declared body length in bytes) and offset (where that body starts in
+    the file). A custom section (id 0) also carries custom_name -- which custom
+    section it is ("name", "producers", a ".debug_*" section, ...) -- since all
+    custom sections share id 0 and are told apart only by that leading name. A
+    vector-prefixed section (type, import, function, table, memory, global,
+    export, element, code, data) and the data_count section add count, the
+    number of entries the section header declares, read cheaply from the body's
+    leading integer without decoding the whole section.
+
+    ``incomplete`` is true when a section's declared size ran past the buffer or
+    the section cap was hit before the module ended -- a truncated or hostile
+    module -- so the map is read as partial rather than the whole layout. Reads
+    of a section's own leading name/count are isolated to that section's body, so
+    a section that lies about its internal length just omits custom_name/count
+    rather than corrupting the top-level walk. Reading the bytes needs no wabt,
+    so this is the dependency-free equivalent of the section table wasm.info
+    prints as wasm-objdump text.
+    """
+    reader = _module_reader(data)
+    sections: list[JsonObject] = []
+    incomplete = False
+    try:
+        while not reader.at_end():
+            section_id = reader.byte()
+            size = reader.uleb()
+            body_offset = reader.pos
+            # take() raises _Truncated when the declared size overruns the
+            # buffer, ending the walk with what we gathered rather than misread.
+            body = reader.take(size)
+            entry: JsonObject = {
+                "id": section_id,
+                "name": _SECTION_NAMES.get(section_id, f"0x{section_id:02x}"),
+                "size": size,
+                "offset": body_offset,
+            }
+            # A section can declare its size honestly yet lie about its own
+            # leading name/count; reading those from a sub-reader over the body
+            # (already bounds-checked by take) keeps such a lie from corrupting
+            # the top-level walk -- we just omit the optional field for that row.
+            sub = _Reader(body)
+            if section_id == 0:  # custom: body leads with the section's own name
+                with suppress(_Truncated):
+                    entry["custom_name"] = sub.name()
+            elif section_id == 12 or section_id in _VECTOR_SECTIONS:
+                # data_count(12) is a single count; the vector sections lead with
+                # their entry count. Either way the first integer is the count.
+                with suppress(_Truncated):
+                    entry["count"] = sub.uleb()
+            sections.append(entry)
+            if len(sections) >= _MAX_ENTRIES:
+                # A real module has a handful of sections, but custom sections
+                # are unbounded in number; cap the map like the sibling parsers
+                # and flag the truncation when bytes remain.
+                incomplete = not reader.at_end()
+                break
+    except _Truncated:
+        incomplete = True
+    return sections, incomplete
