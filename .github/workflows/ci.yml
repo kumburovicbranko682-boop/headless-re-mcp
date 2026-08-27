@@ -170,10 +170,12 @@ jobs:
           # Ghidra 11.2.x requires JDK 21; the Jython export script runs inside it.
           java-version: "21"
 
-      - name: Install portable backends (radare2, wabt, webcrack)
+      - name: Install portable backends (radare2, wabt, webcrack, apktool, apksigner)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends radare2 wabt
+          # apktool + apksigner drive the Android repack/sign gate; keytool for its
+          # throwaway keystore comes from the JDK setup-java installed above.
+          sudo apt-get install -y --no-install-recommends radare2 wabt apktool apksigner
           sudo npm install -g webcrack
 
       - name: Cache Ghidra
@@ -240,6 +242,8 @@ jobs:
           test -x "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" && echo "ghidra analyzeHeadless present"
           "$HEADLESS_RE_JADX" --version
           javac -version
+          apktool --version
+          apksigner --version
           python -c "import androguard, adbutils, mitmproxy, playwright; print('android/proxy/web imports ok')"
 
       - name: Non-PE integration gates
