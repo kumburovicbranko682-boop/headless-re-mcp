@@ -34,11 +34,13 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_modules(
         session_id: str, limit: Annotated[int, Field(ge=1, le=256)] = 64
     ) -> dict[str, Any]:
-        """List modules in the session debuggee via a short-lived Frida probe.
+        """List loaded modules in the session target via a short-lived Frida probe.
 
         Answers with modules (name, base, size, path), count for this page,
         total, and has_more so a page that filled the limit is not read as
-        the whole list. Limited to the debuggee pid.
+        the whole list. A device session (APK/web) reads its last authorized
+        pid -- the native .so modules loaded in the app; a PE session reads
+        the local debuggee.
         """
         return _dump(analysis.frida_modules(session_id, limit=limit))
 
@@ -48,11 +50,12 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         module_name: str,
         limit: Annotated[int, Field(ge=1, le=512)] = 64,
     ) -> dict[str, Any]:
-        """List exports of one named module in the session debuggee via a Frida probe.
+        """List exports of one named module in the session target via a Frida probe.
 
         Answers with found, module, base, and exports (name, address, type),
         plus count and has_more so a page that filled the limit is not read
-        as the whole export table. Limited to the debuggee pid.
+        as the whole export table. A device session (APK/web) reads its last
+        authorized pid; a PE session reads the local debuggee.
         """
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 
@@ -60,12 +63,13 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16
     ) -> dict[str, Any]:
-        """Read up to 256 KiB from the session debuggee via a Frida probe.
+        """Read up to 256 KiB from the session target via a Frida probe.
 
         Answers with data holding the hex string and encoding naming the form,
         alongside address, size (bytes actually returned), requested (the bytes
         asked for) and complete (size == requested; false when the region was
-        short or unreadable). Limited to the debuggee pid.
+        short or unreadable). A device session (APK/web) reads its last
+        authorized pid; a PE session reads the local debuggee.
         """
         return _dump(analysis.frida_memory_read(session_id, address, size))
 

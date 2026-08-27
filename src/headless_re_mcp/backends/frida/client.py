@@ -182,6 +182,75 @@ def _page(values: Any, limit: int) -> tuple[list[Any], bool]:
     return items, False
 
 
+def _shape_modules(raw: Any, capped: int) -> JsonObject:
+    """Normalise the enum script's module payload into the tool contract.
+
+    Shared by the local and device reads so the two cannot drift: both must
+    report ``total`` and a ``has_more`` computed against it, or a page that
+    filled the cap reads as the whole module list.
+    """
+    if isinstance(raw, dict):
+        held = list(raw.get("modules") or [])
+        total = int(raw.get("total") or len(held))
+    else:
+        held = list(raw or [])
+        total = len(held)
+    items = [
+        {
+            "name": str(item.get("name", "")),
+            "base": str(item.get("base", "")),
+            "size": int(item.get("size", 0) or 0),
+            "path": str(item.get("path", "")),
+        }
+        for item in held[:capped]
+        if isinstance(item, dict)
+    ]
+    return {
+        "modules": items,
+        "count": len(items),
+        "total": total,
+        "has_more": total > len(items),
+    }
+
+
+def _shape_exports(raw: Any, module_name: str, capped: int) -> JsonObject:
+    """Normalise the enum script's export payload; page against limit+1."""
+    if not isinstance(raw, dict):
+        raise FridaError("backend_error", "unexpected frida exports payload")
+    page, has_more = _page(list(raw.get("exports") or []), capped)
+    items = []
+    for item in page:
+        if not isinstance(item, dict):
+            continue
+        items.append(
+            {
+                "name": str(item.get("name", "")),
+                "address": str(item.get("address", "")),
+                "type": str(item.get("type", "")),
+            }
+        )
+    return {
+        "found": bool(raw.get("found")),
+        "module": str(raw.get("module") or module_name),
+        "base": str(raw.get("base") or ""),
+        "exports": items,
+        "count": len(items),
+        "has_more": has_more,
+    }
+
+
+def _shape_memory(data: bytes, address: int, size: int) -> JsonObject:
+    """Report bytes actually returned, not bytes requested (see memory_read)."""
+    return {
+        "address": address,
+        "size": len(data),
+        "requested": size,
+        "complete": len(data) == size,
+        "encoding": "hex",
+        "data": data.hex(),
+    }
+
+
 class FridaError(RuntimeError):
     def __init__(self, code: str, message: str, **details: object) -> None:
         super().__init__(message)
@@ -326,29 +395,7 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             capped = max(1, min(int(limit), 256))
-            raw = script.exports_sync.modules(capped)
-            if isinstance(raw, dict):
-                held = list(raw.get("modules") or [])
-                total = int(raw.get("total") or len(held))
-            else:
-                held = list(raw or [])
-                total = len(held)
-            items = [
-                {
-                    "name": str(item.get("name", "")),
-                    "base": str(item.get("base", "")),
-                    "size": int(item.get("size", 0) or 0),
-                    "path": str(item.get("path", "")),
-                }
-                for item in held[:capped]
-                if isinstance(item, dict)
-            ]
-            return {
-                "modules": items,
-                "count": len(items),
-                "total": total,
-                "has_more": total > len(items),
-            }
+            return _shape_modules(script.exports_sync.modules(capped), capped)
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001 - a probe failure is not an internal fault
@@ -380,28 +427,7 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             raw = script.exports_sync.exports(module_name.strip(), capped + 1)
-            if not isinstance(raw, dict):
-                raise FridaError("backend_error", "unexpected frida exports payload")
-            page, has_more = _page(list(raw.get("exports") or []), capped)
-            items = []
-            for item in page:
-                if not isinstance(item, dict):
-                    continue
-                items.append(
-                    {
-                        "name": str(item.get("name", "")),
-                        "address": str(item.get("address", "")),
-                        "type": str(item.get("type", "")),
-                    }
-                )
-            return {
-                "found": bool(raw.get("found")),
-                "module": str(raw.get("module") or module_name),
-                "base": str(raw.get("base") or ""),
-                "exports": items,
-                "count": len(items),
-                "has_more": has_more,
-            }
+            return _shape_exports(raw, module_name, capped)
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001 - a probe failure is not an internal fault
@@ -427,14 +453,7 @@ class FridaClient:
             # unreadable or short region yields fewer (or zero) bytes, and a
             # caller reading `size` to know how much it got must not be handed
             # the request. `complete` says whether the whole span was readable.
-            return {
-                "address": address,
-                "size": len(data),
-                "requested": size,
-                "complete": len(data) == size,
-                "encoding": "hex",
-                "data": data.hex(),
-            }
+            return _shape_memory(data, address, size)
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001 - a probe failure is not an internal fault
@@ -783,6 +802,116 @@ class FridaClient:
             if _is_timeout(exc):
                 raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"java enumeration failed: {exc}") from exc
+
+    def _run_enum_script_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        allowed_pids: Iterable[int],
+        fn: Callable[[Any], T],
+        *,
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> T:
+        """Load ``_ENUM_SCRIPT`` on an authorized device pid and run ``fn`` on it.
+
+        The native reads (modules/exports/memory) had no device path, so an
+        Android session could hook Java and inject templates but never inspect
+        the loaded ``.so`` modules or read process memory of the app it was
+        analysing. This is the same bounded attach/detach the Java enumeration
+        uses; ``fn`` receives ``script.exports_sync`` inside the attached scope.
+        """
+        self._authorize(pid, allowed_pids)
+        device = self._resolve_device(device_id)
+        deadline = _bound_timeout(timeout)
+        sessions: list[Any] = []
+
+        def work() -> T:
+            try:
+                session = _invoke(device.attach, pid, timeout=deadline)
+            except Exception as exc:  # noqa: BLE001
+                if _is_timeout(exc):
+                    raise _timeout_error(deadline) from exc
+                raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+            sessions.append(session)
+            try:
+                script = session.create_script(_ENUM_SCRIPT)
+                script.load()
+                return fn(script.exports_sync)
+            finally:
+                with contextlib.suppress(Exception):
+                    session.detach()
+
+        try:
+            return _run_deadline(
+                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
+            )
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _detach_all(sessions)
+            if _is_timeout(exc):
+                raise _timeout_error(deadline) from exc
+            raise FridaError("backend_error", f"device probe failed: {exc}", pid=pid) from exc
+
+    def modules_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        *,
+        allowed_pids: Iterable[int],
+        limit: int = 64,
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        capped = max(1, min(int(limit), 256))
+        return self._run_enum_script_device(
+            device_id,
+            pid,
+            allowed_pids,
+            lambda api: _shape_modules(api.modules(capped), capped),
+            timeout=timeout,
+        )
+
+    def exports_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        module_name: str,
+        *,
+        allowed_pids: Iterable[int],
+        limit: int = 64,
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        if not isinstance(module_name, str) or not module_name.strip():
+            raise FridaError("invalid_params", "module_name is required")
+        name = module_name.strip()
+        capped = max(1, min(int(limit), 512))
+        return self._run_enum_script_device(
+            device_id,
+            pid,
+            allowed_pids,
+            lambda api: _shape_exports(api.exports(name, capped + 1), name, capped),
+            timeout=timeout,
+        )
+
+    def memory_read_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        address: int,
+        size: int,
+        *,
+        allowed_pids: Iterable[int],
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        if type(size) is not int or not 1 <= size <= 256 * 1024:
+            raise FridaError("invalid_params", "size must be 1..262144")
+        return self._run_enum_script_device(
+            device_id,
+            pid,
+            allowed_pids,
+            lambda api: _shape_memory(bytes(api.read(int(address), int(size))), address, size),
+            timeout=timeout,
+        )
 
     def hook_template_device(
         self,
