@@ -162,18 +162,44 @@ def _close_proxy_servers(
 
 
 def _message_body(message: Any) -> bytes:
-    """The decoded body of a mitmproxy request/response, or empty.
+    """The content-encoding-decoded body of a mitmproxy request/response.
 
-    ``raw_content`` is the retained bytes; a message with no body (a GET, a
-    bodiless response) or one that raises while decoding yields ``b""`` so the
-    caller never has to guard.
+    ``raw_content`` is the on-the-wire body, which for a gzip/br/deflate/zstd
+    response stays compressed -- returning it means an analyst reading a
+    captured API response gets compressed bytes, not the JSON. ``get_content``
+    applies the Content-Encoding decode (and ``strict=False`` hands back the
+    raw bytes rather than raising when the encoding is unknown or the stream is
+    truncated), which is what mitmproxy's own views show. A message with no
+    body (a GET, a bodiless response) or one that fails outright yields ``b""``
+    so the caller never has to guard.
     """
     if message is None:
         return b""
+    getter = getattr(message, "get_content", None)
+    if getter is not None:
+        try:
+            decoded = getter(strict=False)
+            if isinstance(decoded, bytes | bytearray):
+                return bytes(decoded)
+        except Exception:  # noqa: BLE001 - fall back to the raw bytes below
+            pass
     try:
         return message.raw_content or b""
     except Exception:  # noqa: BLE001 - a malformed capture must not crash the read
         return b""
+
+
+def _content_encoding(message: Any) -> str:
+    """The Content-Encoding a message arrived with (``""`` when identity/none)."""
+    headers = getattr(message, "headers", None)
+    if headers is None:
+        return ""
+    try:
+        value = headers.get("content-encoding", "") or ""
+    except Exception:  # noqa: BLE001 - odd header containers must not crash the read
+        return ""
+    value = str(value).strip()
+    return "" if value.lower() in ("", "identity") else value
 
 
 def _attach_body(section: JsonObject, body: bytes, artifact_dir: Path, *, prefix: str) -> None:
@@ -835,6 +861,14 @@ class ProxyBackend:
                 "size": len(resp_body),
             },
         }
+        # size is the decoded length; note the wire encoding so a caller knows
+        # the body was decompressed (and that size != the Content-Length header).
+        req_encoding = _content_encoding(req)
+        if req_encoding:
+            result["request"]["content_encoding"] = req_encoding
+        resp_encoding = _content_encoding(resp)
+        if resp_encoding:
+            result["response"]["content_encoding"] = resp_encoding
         # The request body is often the point of the capture (POST params, a
         # JSON payload, credentials); it used to be dropped, leaving only the
         # response. Both are now returned, inline when small and spilled to an

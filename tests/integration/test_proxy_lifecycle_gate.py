@@ -76,6 +76,38 @@ def _origin_server() -> Iterator[str]:
         thread.join(timeout=5.0)
 
 
+_GZIP_PLAINTEXT = b'{"marker":"gzip-gate","numbers":[1,2,3,4,5],"nested":{"a":true}}'
+
+
+@contextmanager
+def _gzip_origin_server() -> Iterator[str]:
+    """An origin that gzips its response, like most real APIs on the wire."""
+    import gzip as _gz
+
+    compressed = _gz.compress(_GZIP_PLAINTEXT)
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(compressed)))
+            self.end_headers()
+            self.wfile.write(compressed)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/api/gz"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
 _TLS_ORIGIN_BODY = b'{"ok":true,"tls":true,"who":"origin"}'
 
 
@@ -290,6 +322,50 @@ def test_proxy_actually_intercepts_and_records_a_request() -> None:
             assert post_detail["response"]["status"] == 201
         finally:
             backend.stop("gate-capture")
+
+
+@pytest.mark.integration
+def test_proxy_decodes_a_gzip_response_body() -> None:
+    """A gzip'd upstream response must reach the analyst as the payload.
+
+    Most real APIs gzip their responses; capturing raw_content handed back
+    compressed bytes, so the captured body read as binary garbage. Drive a
+    real gzip response through the proxy and assert flow_get returns the
+    decoded JSON, size is the decoded length, and content_encoding records the
+    wire encoding.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy gzip Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _gzip_origin_server() as origin_url:
+        backend.start("gate-gzip", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            # urllib does not gunzip on its own, so the client sees the raw
+            # compressed bytes -- proof the origin really encoded on the wire.
+            req = urllib.request.Request(origin_url, headers={"Accept-Encoding": "gzip"})
+            with opener.open(req, timeout=10) as response:
+                raw = response.read()
+            assert raw[:2] == b"\x1f\x8b", "the origin did not actually gzip"
+            assert raw != _GZIP_PLAINTEXT
+
+            def _captured() -> dict[str, Any] | None:
+                for flow in backend.flows("gate-gzip")["flows"]:
+                    if str(flow.get("url", "")).endswith("/api/gz"):
+                        return flow
+                return None
+
+            flow = _poll(_captured)
+            assert flow is not None, "the gzip request through the proxy was never recorded"
+            detail = backend.flow_get("gate-gzip", flow["id"], Path(tempfile.mkdtemp()))
+            assert detail["response"]["body"] == _GZIP_PLAINTEXT.decode("utf-8")
+            assert detail["response"]["size"] == len(_GZIP_PLAINTEXT)
+            assert detail["response"]["content_encoding"] == "gzip"
+        finally:
+            backend.stop("gate-gzip")
 
 
 @pytest.mark.integration

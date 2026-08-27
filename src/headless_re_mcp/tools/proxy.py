@@ -100,6 +100,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         is that side's body_path and there is no body key. There are no
         top-level headers or body fields.
 
+        Bodies are content-encoding decoded: a gzip/br/deflate/zstd response
+        comes back as the real payload (the JSON), not compressed bytes, and
+        size is the decoded length -- not the Content-Length header. When a
+        side arrived compressed, that side also carries content_encoding (the
+        wire encoding) so the decode is visible.
+
         For a WebSocket upgrade the reply also carries websocket with messages
         (each from_client, size, text, truncated and binary when non-UTF-8),
         returned, message_count and truncated -- the duplex frames that follow

@@ -247,6 +247,60 @@ def test_proxy_flow_get_returns_the_request_body(tmp_path: Path, monkeypatch: An
     assert "request body" in doc
 
 
+def test_proxy_flow_get_decodes_a_gzip_response_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """A gzip'd response must come back as the payload, not compressed bytes.
+
+    flow.get used to hand back raw_content, so a gzip/br/deflate/zstd API
+    response read as binary garbage. Driven with a real mitmproxy Response
+    whose raw body is gzip: the returned body is the decoded JSON, size is the
+    decoded length, and content_encoding names the wire encoding.
+    """
+    from mitmproxy.http import Request, Response
+
+    payload = b'{"token":"s3cr3t","items":[1,2,3]}'
+    request = Request.make("GET", "http://x/api", b"", {})
+    response = Response.make(
+        200,
+        payload,
+        {"Content-Encoding": "gzip", "Content-Type": "application/json"},
+    )
+    # Sanity: the wire body really is compressed and not the plaintext.
+    assert response.raw_content[:2] == b"\x1f\x8b"
+    assert response.raw_content != payload
+    flow = SimpleNamespace(request=request, response=response, error=None)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+        def websocket(self, flow_id: str) -> Any:
+            return None
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    result = backend.flow_get("s", "f1", tmp_path)
+    assert result["response"]["body"] == payload.decode()
+    assert result["response"]["size"] == len(payload)
+    assert result["response"]["size"] != len(response.raw_content)
+    assert result["response"]["content_encoding"] == "gzip"
+    # A plaintext request carries no content_encoding key.
+    assert "content_encoding" not in result["request"]
+    # Guard against re-compressing the file when a decoded body spills.
+    big = b'{"k":"' + b"a" * 400_000 + b'"}'
+    response.set_content(big)
+    response.headers["Content-Encoding"] = "gzip"
+    assert response.raw_content[:2] == b"\x1f\x8b"
+    spilled = backend.flow_get("s", "f1", tmp_path)
+    assert "body" not in spilled["response"]
+    assert Path(str(spilled["response"]["body_path"])).read_bytes() == big
+    assert spilled["response"]["size"] == len(big)
+
+    doc = _tool_docstring("proxy.flow.get")
+    assert "content_encoding" in doc
+
+
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
     """The catalog said how many flows and never named the count field.
 

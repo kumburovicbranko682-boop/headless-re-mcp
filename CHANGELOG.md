@@ -311,6 +311,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「已 bind 但从不 listen」的回环端口（内核直接拒连）发一次请求，断言该 flow 被标 `failed`、带非空 `error`、
   `status` 为 null、且 `flow.get` 如实回报失败（缺 mitmproxy 时 skip≠pass）；单测直接驱动 `error`，覆盖新建失败行、
   `flow.get` 透出失败、以及「响应后再报错只标注不重复建行」。
+- **抓包把响应体按在线字节原样返回，gzip/br 压缩的 API 响应读出来是二进制乱码**。`_message_body` 取的是
+  `message.raw_content`——即在线字节，对 `Content-Encoding: gzip/br/deflate/zstd` 的响应仍是压缩态；docstring 甚至写着
+  「decoded body」，其实根本没解。绝大多数现代 API 都压缩响应，于是 `proxy.flow.get` 读回的 `body`/`body_path`、连同
+  `size`，全是压缩后的字节，分析者拿到的不是 JSON 而是一堆乱码（与刚修的 web 二进制体、更早的 wasm bytecode 同类）。
+  改用 mitmproxy 自己的 `get_content(strict=False)`：按 Content-Encoding 解码（未知编码或流截断时回落到原始字节、不抛），
+  正是 mitmproxy 各视图展示的口径；`size` 随之变为解码后长度。内存记账仍按 `raw_content`（保留的在线字节）不变。
+  `flow.get` 另在压缩的那一侧补 `content_encoding`（在线编码），让「已解压、且 `size` 不等于 Content-Length」一目了然。
+  活体门用本地 gzip origin 经代理跑一遍，断言客户端看到的是压缩字节（证明确实在线 gzip）、而 `flow.get` 回读的是解码后
+  的 JSON、`size` 为解码长度、`content_encoding` 为 `gzip`（缺 mitmproxy 时 skip≠pass）；单测用真实 mitmproxy Response
+  驱动 gzip 解码、大体解压后落盘不被二次压缩、明文请求不带 `content_encoding`。
 - **`web.network.get` 把二进制响应体当基64文本落盘，`body_path` 里根本不是那份资源**。CDP 的
   `Network.getResponseBody` 对图片/字体/wasm/protobuf/任何 gzip 或非文本响应回 `base64Encoded=true`、`body`
   是基64字符串——过去代码只把这串基64当普通文本走 `_spill_text` 写进 `body-*.bin`，于是 `body_path` 存的是基64、
