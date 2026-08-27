@@ -115,6 +115,42 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     assert set(page["files"]) & set(tail["files"]) == set()
 
 
+def test_unpack_passes_force_so_webcrack_overwrites_the_dir_we_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: webcrack refuses an existing -o target, and we pre-create it.
+
+    The client mkdirs the output dir, then hands the same path to webcrack.
+    Recent webcrack errors ("output directory already exists", exit 1) unless
+    --force is passed, so without the flag every unpack fails. This mocks the
+    subprocess and pins that --force reaches the argv, since the bug was
+    invisible to every test that mocked _run without inspecting the command.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(
+        cmd: list[str], *, timeout: float, maximum: float = 0.0
+    ) -> tuple[str, str, int]:
+        del timeout, maximum
+        seen["cmd"] = list(cmd)
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        (out_dir / "mod-0.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    client = JsClient(executable=Path("/bin/true"))
+
+    client.unpack_bundle(bundle, tmp_path / "out", offset=0, limit=10)
+
+    cmd = seen["cmd"]
+    assert "--force" in cmd or "-f" in cmd, cmd
+
+
 @pytest.mark.parametrize(
     ("files_written", "listing_truncated"),
     [(5, False), (6, True)],

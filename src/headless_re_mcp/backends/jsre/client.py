@@ -200,8 +200,15 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack refuses to write into a directory that already exists ("output
+        # directory already exists", exit 1) and creates the -o target itself.
+        # We pre-create that target (it is a per-call artifact dir we own), so
+        # without --force every unpack fails. --force tells webcrack to overwrite
+        # the dir we just made; it is a documented CLI flag on every Node 22/24
+        # webcrack, and the guard that rejects an existing dir was added in the
+        # same place, so a build that errors without it is a build that has it.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)],
+            [str(self.executable), str(resolved), "-o", str(out_dir), "--force"],
             timeout=timeout,
             maximum=_MAX_UNPACK_TIMEOUT_S,
         )

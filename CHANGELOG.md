@@ -49,6 +49,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`js.unpack_bundle` 因预建输出目录被现版 webcrack 拒绝而全数失败）
+
+- `JsClient.unpack_bundle` 先 `out_dir.mkdir(parents=True, exist_ok=True)` 建好这一
+  次调用专属的产物目录，再把同一路径交给 webcrack 的 `-o`。但现行 webcrack（Node 22/24
+  版，实测 2.16.0）在目标目录已存在时直接报 `output directory already exists` 并以退出码
+  1 失败——它坚持由自己创建该目录。于是每一次 `js.unpack_bundle` 都被 `_run` 判为
+  `code != 0 且无文件`，抛 `backend_error: webcrack unpack failed`，拆包能力对现版 webcrack
+  完全不可用。之所以一直没暴露：唯一的实测门只覆盖 `js.deobfuscate`/`wasm.*`，而所有单测都
+  mock 掉 `_run` 且不检查 argv。现在给拆包调用补上 `--force`（webcrack 记录在案的 CLI 开关，
+  与「拒绝已存在目录」的守卫是同一处 `options.force || !existsSync(output)` 判断，故凡会因此
+  报错的版本必定支持它），让 webcrack 覆盖我们刚建好的目录。
+- 新增单测 `test_unpack_passes_force_so_webcrack_overwrites_the_dir_we_made`，在 mock 的
+  `_run` 上钉住 `--force` 进入 argv，堵住这类「只 mock 不看命令行」而漏过的回归。
+- 新增实测门 `tests/integration/test_js_unpack_bundle_gate.py`：拿一份提交的两模块 webpack
+  夹具真跑 webcrack，凭 webcrack 自己的 `bundle.json` 模块图证明入口模块与其依赖被拆成**不同
+  文件**、入口保留了标记串与指向依赖文件的 `require` 边、依赖文件带着自己的函数体；并钉住返回
+  文件清单的分页契约（`total` / `has_more` / offset 窗口不重叠）。webcrack 缺席时按
+  skip != pass 明确跳过。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
