@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（把 workflows/lifecycle 的守卫与边缘分支补到 99%）
+
+- `workflows/lifecycle.py`（模块生命周期状态机）在既有 `test_workflow_lifecycle.py` 只覆盖了主干路径
+  （卸载、重载需刷新、截断名匹配、丢事件、进程创建/退出）后仍停在 80%。新增
+  `test_workflow_lifecycle_branches.py` 补齐那些从没被走到的守卫与边缘分支：`TrackedModule` 与
+  `ModuleLifecycleState` 两组 `__post_init__` 不变量（空 key、非正 base/size、非法 sha256、负 revision、
+  负 cursor/generation、重复 key）、`untrack_module`（兄弟文件甚至没 import 它——空 key、未跟踪、成功摘除
+  并 bump generation 三条）、`refresh_modules` 的三条支路（无事可做时原对象返回、拒绝未跟踪 key、
+  部分刷新时把不在解析表里的模块原样留下）、`_loaded_event_might_match` 的按-base 选择器命中/落空、
+  事件缺名时回落到 runtime base、按-path 选择器用 basename 匹配，以及每个事件处理器「目标状态已达成便跳过」
+  的那一支（二次丢事件不重复置 STALE、`debug.init` 跳过已 STALE、`module.unloaded` 对不属于自己的 base
+  只登记不改状态、`process.exited` 对已 UNLOADED 只登记 base 不重复失效）与未识别事件种类的 no-op 回落；
+  另加 `module.unloaded` 带非整数 base 时的畸形事件守卫。全部行为化地经 `consume_module_events` 触发而非
+  直插私有 helper。lifecycle.py 覆盖率由 80% 升至 99%（仅剩 `_loaded_event_might_match` 里
+  `selector` 三字段皆为 None 时回落 `runtime.name` 的一行——`ModuleSelector.require_locator` 禁止这种
+  选择器，属不可达的防御分支）。纯测试新增，无产品行为变更；24 条用例、`ruff` 与 `mypy` 均通过。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
