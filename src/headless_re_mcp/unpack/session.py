@@ -33,6 +33,17 @@ _TERMINAL_PHASES = frozenset(
 )
 
 
+def is_terminal_unpack_phase(phase: UnpackPhase) -> bool:
+    """True when ``phase`` is a terminal unpack phase (failed/cancelled/reanalyzed).
+
+    Single source of truth for the terminal set so the write-side monotonicity
+    guard in the state owner does not have to duplicate it. The only legal moves
+    out of a terminal phase are terminal->terminal (reanalyzed -> failed/cancelled
+    per ``_FORWARD``); a terminal session must never regress to an active phase.
+    """
+    return phase in _TERMINAL_PHASES
+
+
 _FORWARD: dict[UnpackPhase, frozenset[UnpackPhase]] = {
     UnpackPhase.DETECTED: frozenset(
         {

@@ -187,6 +187,36 @@ class UnpackStateOwner(Generic[UnpackT]):
         with self.lock:
             self.sessions[session_id] = state
 
+    def put_monotonic(
+        self,
+        session_id: str,
+        state: UnpackT,
+        *,
+        is_terminal: Callable[[UnpackT], bool],
+    ) -> UnpackT:
+        """Store ``state`` unless doing so would revive a terminal session.
+
+        A terminal unpack session may only be overwritten by another terminal
+        state (e.g. reanalyzed -> failed); it must never regress to an active
+        phase. This is the write-side guard that keeps the phase lifecycle
+        monotonic under concurrency: ``offload`` runs each tool on a worker
+        thread with ``abandon_on_cancel=True``, so a slow dump/rebuild that hits
+        the catalog timeout (or whose client disconnected) keeps running after
+        the framework returned. That abandoned worker and a fresh ``unpack.cancel``
+        then both do a non-atomic get/mutate/put; without this check the worker,
+        having read a pre-terminal snapshot, could store an active phase on top
+        of the cancel and resurrect the session. The compare-and-set here is
+        atomic under the owner lock, so the decision uses the *currently stored*
+        phase rather than the caller's stale snapshot. Returns the state that is
+        actually stored (the retained terminal state when a write is rejected).
+        """
+        with self.lock:
+            current = self.sessions.get(session_id)
+            if current is not None and is_terminal(current) and not is_terminal(state):
+                return current
+            self.sessions[session_id] = state
+            return state
+
     def get_protection_snapshot(
         self,
         session_id: str,
