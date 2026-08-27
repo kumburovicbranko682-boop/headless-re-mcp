@@ -83,8 +83,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
-        not truncated. A body over the capture cap is refused rather than
-        written to disk.
+        not truncated. When CDP has no body for the request (a redirect, or a
+        body already evicted from its cache) body is empty and body_error says
+        why, while body, base64_encoded and body_truncated stay present. A body
+        over the capture cap is refused rather than written to disk.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
