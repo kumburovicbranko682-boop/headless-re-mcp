@@ -8,11 +8,15 @@ reported as a running capture.
 
 from __future__ import annotations
 
+import base64
 import datetime
+import hashlib
 import ipaddress
 import json
+import os
 import socket
 import ssl
+import struct
 import tempfile
 import threading
 import time
@@ -417,6 +421,156 @@ def test_proxy_export_har_serialises_the_capture(tmp_path: Path) -> None:
             ), "the captured GET is missing from the HAR"
         finally:
             backend.stop("gate-har")
+
+
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_accept(key: str) -> str:
+    digest = hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()  # noqa: S324 - RFC 6455
+    return base64.b64encode(digest).decode("ascii")
+
+
+def _ws_recv_frame(sock: socket.socket) -> tuple[int, bytes] | None:
+    header = sock.recv(2)
+    if len(header) < 2:
+        return None
+    opcode = header[0] & 0x0F
+    masked = header[1] & 0x80
+    length = header[1] & 0x7F
+    if length == 126:
+        length = struct.unpack(">H", sock.recv(2))[0]
+    elif length == 127:
+        length = struct.unpack(">Q", sock.recv(8))[0]
+    mask = sock.recv(4) if masked else b""
+    data = b""
+    while len(data) < length:
+        data += sock.recv(length - len(data))
+    if masked:
+        data = bytes(data[i] ^ mask[i % 4] for i in range(len(data)))
+    return opcode, data
+
+
+def _ws_send_frame(sock: socket.socket, payload: bytes, *, mask: bool, opcode: int = 0x1) -> None:
+    length = len(payload)
+    header = bytes([0x80 | opcode])
+    marker = length if length < 126 else (126 if length < 65536 else 127)
+    header += bytes([marker | (0x80 if mask else 0)])
+    if 126 <= length < 65536:
+        header += struct.pack(">H", length)
+    elif length >= 65536:
+        header += struct.pack(">Q", length)
+    if mask:
+        key = os.urandom(4)
+        header += key
+        payload = bytes(payload[i] ^ key[i % 4] for i in range(length))
+    sock.sendall(header + payload)
+
+
+@contextmanager
+def _ws_echo_server() -> Iterator[int]:
+    """A raw WebSocket echo server (no third-party dependency) on a free port."""
+    ready = threading.Event()
+    holder: dict[str, int] = {}
+
+    def serve() -> None:
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        holder["port"] = int(listener.getsockname()[1])
+        ready.set()
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
+        request = b""
+        while b"\r\n\r\n" not in request:
+            chunk = conn.recv(1024)
+            if not chunk:
+                return
+            request += chunk
+        key = ""
+        for line in request.split(b"\r\n"):
+            if line.lower().startswith(b"sec-websocket-key:"):
+                key = line.split(b":", 1)[1].decode().strip()
+        conn.sendall(
+            (
+                "HTTP/1.1 101 Switching Protocols\r\n"
+                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Accept: {_ws_accept(key)}\r\n\r\n"
+            ).encode()
+        )
+        while True:
+            frame = _ws_recv_frame(conn)
+            if frame is None or frame[0] == 0x8:
+                break
+            _ws_send_frame(conn, b"echo:" + frame[1], mask=False)
+        conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    ready.wait(timeout=5.0)
+    try:
+        yield holder["port"]
+    finally:
+        thread.join(timeout=1.0)
+
+
+@pytest.mark.integration
+def test_proxy_captures_websocket_frames() -> None:
+    """WebSocket frames were dropped -- only the 101 handshake was recorded.
+
+    A MITM proxy that cannot see WebSocket traffic is blind to every realtime
+    app (chat, trading, game and streaming APIs), so this drives a real ws://
+    upgrade and duplex frames through the proxy and asserts flow.get returns the
+    frames with direction and payload, and the summary flags the socket.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy WebSocket Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _ws_echo_server() as origin_port:
+        backend.start("gate-ws", host="127.0.0.1", port=port)
+        client = socket.create_connection(("127.0.0.1", port), timeout=10)
+        try:
+            key = base64.b64encode(os.urandom(16)).decode("ascii")
+            client.sendall(
+                (
+                    f"GET http://127.0.0.1:{origin_port}/socket HTTP/1.1\r\n"
+                    f"Host: 127.0.0.1:{origin_port}\r\n"
+                    "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                    f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                ).encode()
+            )
+            handshake = b""
+            while b"\r\n\r\n" not in handshake:
+                handshake += client.recv(1024)
+            assert b"101" in handshake.split(b"\r\n")[0], handshake[:80]
+
+            _ws_send_frame(client, b'{"hello":"ws"}', mask=True)
+            reply = _ws_recv_frame(client)
+            assert reply is not None and reply[1] == b'echo:{"hello":"ws"}'
+
+            def _ws_flow() -> dict[str, Any] | None:
+                for flow in backend.flows("gate-ws")["flows"]:
+                    if flow.get("is_websocket"):
+                        return flow
+                return None
+
+            summary = _poll(_ws_flow)
+            assert summary is not None, "no flow was flagged as a WebSocket upgrade"
+            assert summary["websocket_messages"] >= 2
+
+            detail = backend.flow_get("gate-ws", summary["id"], Path(tempfile.mkdtemp()))
+            websocket = detail.get("websocket")
+            assert websocket is not None, "flow.get did not carry the WebSocket frames"
+            texts = [(m["from_client"], m["text"]) for m in websocket["messages"]]
+            assert (True, '{"hello":"ws"}') in texts, texts
+            assert (False, 'echo:{"hello":"ws"}') in texts, texts
+        finally:
+            client.close()
+            backend.stop("gate-ws")
 
 
 @pytest.mark.integration

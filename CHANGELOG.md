@@ -266,6 +266,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`proxy.export_har` 也没有活体门**。抓包导 HAR 是把实时捕获交给 HAR 查看器/下游重放工具的标准出口。新增
   `test_proxy_export_har_serialises_the_capture`：抓一条 GET 后导出，断言落盘的是合法 HAR 1.2 日志、且其中一条
   entry 带上该请求的 `GET` 方法与 URL（缺 mitmproxy 时 skip≠pass）。
+- **抓包看不到 WebSocket 帧**。`_FlowRecorder` 只实现了 `response` 钩子，只记下 101 升级握手那条 flow，之后的
+  WebSocket 帧（`websocket_message` 钩子）整份丢弃——而聊天、交易、行情、推流这些实时应用几乎全靠 WebSocket，
+  一个看不到 WS 的 MITM 代理对它们是瞎的。现在新增 `websocket_message` 钩子把每帧按 `from_client`、`size`、
+  `text`（非 UTF-8 标 `binary`）、`truncated` 记入按 flow 归组的环，`proxy.flow.get` 对升级过的 flow 多回一个
+  `websocket`（`messages` / `returned` / `message_count` / `truncated`），`proxy.flows` 摘要标 `is_websocket` 与
+  `websocket_messages` 计数。内存四面设限：单帧内容、每 socket 环长、并发 socket 数、总字节都有上限，并把 mitmproxy
+  自己那份「永不释放」的帧列表裁到很短的尾巴——否则我们持有的那条 flow 会随一个话痨 socket 撑爆内存。活体门用
+  自搓的原始 WebSocket echo server + 原始客户端（不引第三方依赖）经代理跑通一次真正的 `ws://` 双工，断言
+  `flow.get` 能按方向取回帧、摘要正确标记；另加不依赖 mitmproxy 的单测直接驱动 `websocket_message`，覆盖截断、
+  计数、标记与裁列表。
 - **`web.screenshot` / `web.har.export` 两个取证工具没有活体门**。二者都以 mock 挡不住的方式跨 Playwright 边界：
   截图走 `page.screenshot()`、必须真落一个 PNG 文件并登记为可下载产物；HAR 要把会话记录的请求序列化成合法的
   HAR 1.2 日志、含首文档与子资源。Playwright API 漂移会静默弄坏其一。新增

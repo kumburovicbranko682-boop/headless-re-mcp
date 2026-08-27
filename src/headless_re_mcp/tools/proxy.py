@@ -75,8 +75,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         count, total, offset, has_more, and dropped. A row that carried a
         request payload is flagged has_request_body, so flow.get can be pointed
         at the ones whose request body is the target. body_omitted is set on a
-        row whose request/response body was over the retain cap. The list
-        field is flows, not items or requests, and the type column is
+        row whose request/response body was over the retain cap. A WebSocket
+        upgrade is flagged is_websocket with a websocket_messages count, so
+        flow.get can be pointed at the sockets whose frames are the target.
+        The list field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;
         a page that filled the limit is not the whole log. metadata_truncated
         marks bounded oversized summary fields.
@@ -93,6 +95,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         side a body at most 200000 bytes is that side's body; anything larger
         is that side's body_path and there is no body key. There are no
         top-level headers or body fields.
+
+        For a WebSocket upgrade the reply also carries websocket with messages
+        (each from_client, size, text, truncated and binary when non-UTF-8),
+        returned, message_count and truncated -- the duplex frames that follow
+        the 101, which are not in the response body.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

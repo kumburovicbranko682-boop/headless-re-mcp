@@ -9,6 +9,8 @@ from typing import Any
 
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOWS,
+    _MAX_WS_STORED_MSG,
+    _MITM_WS_TAIL,
     ProxyBackend,
     _FlowRecorder,
 )
@@ -166,6 +168,9 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
         def raw(self, flow_id: str) -> Any:
             return flow
 
+        def websocket(self, flow_id: str) -> Any:
+            return None
+
     backend = ProxyBackend()
     monkeypatch.setattr(
         backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
@@ -216,6 +221,9 @@ def test_proxy_flow_get_returns_the_request_body(tmp_path: Path, monkeypatch: An
     class _Recorder:
         def raw(self, flow_id: str) -> Any:
             return flow
+
+        def websocket(self, flow_id: str) -> Any:
+            return None
 
     backend = ProxyBackend()
     monkeypatch.setattr(
@@ -308,3 +316,55 @@ def test_proxy_export_har_names_path_and_entry_count(
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+
+
+def _ws_flow(flow_id: str, messages: list[Any]) -> Any:
+    return SimpleNamespace(id=flow_id, websocket=SimpleNamespace(messages=messages))
+
+
+def test_proxy_records_websocket_frames_and_flags_the_flow() -> None:
+    """websocket_message must capture frames, flag the flow, and stay bounded.
+
+    Feed a handshake, then frames the way mitmproxy delivers them (the newest on
+    flow.websocket.messages), and assert the recorder stores direction/size/text,
+    flags the summary is_websocket with a running count, truncates an oversized
+    frame, and trims mitmproxy's own ever-growing list to a short tail.
+    """
+    recorder = _FlowRecorder(capacity=10)
+    handshake = SimpleNamespace(status_code=101, headers={"content-type": ""})
+    request = SimpleNamespace(method="GET", pretty_url="http://x/socket", host="x")
+    recorder.response(SimpleNamespace(id="ws", request=request, response=handshake))
+
+    messages: list[Any] = []
+    messages.append(SimpleNamespace(from_client=True, content=b'{"cmd":"hi"}'))
+    recorder.websocket_message(_ws_flow("ws", messages))
+    messages.append(SimpleNamespace(from_client=False, content=b"pong"))
+    recorder.websocket_message(_ws_flow("ws", messages))
+    # An oversized binary frame must be truncated and marked, not stored whole.
+    messages.append(SimpleNamespace(from_client=True, content=b"\xff" * (_MAX_WS_STORED_MSG + 50)))
+    recorder.websocket_message(_ws_flow("ws", messages))
+
+    captured = recorder.websocket("ws")
+    assert captured is not None
+    assert captured["message_count"] == 3
+    assert captured["returned"] == 3
+    first = captured["messages"][0]
+    assert first["from_client"] is True
+    assert first["text"] == '{"cmd":"hi"}'
+    assert first["size"] == len(b'{"cmd":"hi"}')
+    big = captured["messages"][2]
+    assert big["truncated"] is True
+    assert big["binary"] is True
+    assert big["size"] == _MAX_WS_STORED_MSG + 50
+
+    summary = next(f for f in recorder.snapshot() if f["id"] == "ws")
+    assert summary["is_websocket"] is True
+    assert summary["websocket_messages"] == 3
+
+    # mitmproxy keeps every frame forever; the recorder must trim the shared list.
+    assert len(messages) <= _MITM_WS_TAIL
+
+    # A non-WebSocket flow has no websocket payload.
+    assert recorder.websocket("missing") is None
+    doc = _tool_docstring("proxy.flow.get")
+    assert "websocket" in doc

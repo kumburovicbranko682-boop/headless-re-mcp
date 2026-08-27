@@ -35,6 +35,15 @@ _MAX_METADATA_BYTES = 1024
 # artifact so a single fetch cannot return a multi-megabyte string.
 _MAX_INLINE_BODY = 200_000
 _OMITTED_BODY = object()
+# WebSocket message capture is bounded on every axis: per-message content, the
+# ring length per socket, the number of sockets tracked, and total bytes held.
+# mitmproxy keeps every frame on flow.websocket.messages forever, so a chatty
+# socket we retain would be the same overnight OOM the body caps guard against.
+_MAX_WS_STORED_MSG = 8 * 1024
+_MAX_WS_MESSAGES = 500
+_MAX_WS_FLOWS = 64
+_MAX_WS_RETAINED_BYTES = 16 * 1024 * 1024
+_MITM_WS_TAIL = 4
 
 
 class ProxyError(RuntimeError):
@@ -311,7 +320,20 @@ class _FlowRecorder:
         self._raw: OrderedDict[str, Any] = OrderedDict()
         self._raw_sizes: dict[str, int] = {}
         self._retained_bytes = 0
+        self._ws: OrderedDict[str, deque[JsonObject]] = OrderedDict()
+        self._ws_bytes = 0
         self._lock = threading.RLock()
+
+    @staticmethod
+    def _ws_msg_bytes(record: JsonObject) -> int:
+        return len(str(record.get("text", "")).encode("utf-8", errors="ignore"))
+
+    def _drop_ws(self, flow_id: str) -> None:
+        bucket = self._ws.pop(flow_id, None)
+        if bucket is None:
+            return
+        for record in bucket:
+            self._ws_bytes -= self._ws_msg_bytes(record)
 
     def _omit_retained(self, flow_id: str) -> None:
         retained = self._raw.get(flow_id)
@@ -357,6 +379,7 @@ class _FlowRecorder:
             while len(self._raw) > self._capacity:
                 evicted_id, _ = self._raw.popitem(last=False)
                 self._retained_bytes -= self._raw_sizes.pop(evicted_id, 0)
+                self._drop_ws(evicted_id)
             entry: JsonObject = {
                 "id": flow_id,
                 "seq": self._seq,
@@ -377,6 +400,67 @@ class _FlowRecorder:
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
 
+    def websocket_message(self, flow: Any) -> None:  # mitmproxy calls this per frame
+        ws = getattr(flow, "websocket", None)
+        messages = getattr(ws, "messages", None) if ws is not None else None
+        if not messages:
+            return
+        msg = messages[-1]
+        content = bytes(getattr(msg, "content", b"") or b"")
+        size = len(content)
+        stored = content[:_MAX_WS_STORED_MSG]
+        try:
+            text = stored.decode("utf-8")
+            binary = False
+        except UnicodeDecodeError:
+            text = stored.decode("utf-8", errors="replace")
+            binary = True
+        record: JsonObject = {
+            "from_client": bool(getattr(msg, "from_client", False)),
+            "size": size,
+            "text": text,
+            "truncated": size > len(stored),
+        }
+        if binary:
+            record["binary"] = True
+        with self._lock:
+            flow_id = str(getattr(flow, "id", None) or "")
+            if not flow_id:
+                return
+            bucket = self._ws.get(flow_id)
+            if bucket is None:
+                bucket = deque(maxlen=_MAX_WS_MESSAGES)
+                self._ws[flow_id] = bucket
+            else:
+                self._ws.move_to_end(flow_id)
+            if bucket.maxlen is not None and len(bucket) == bucket.maxlen:
+                self._ws_bytes -= self._ws_msg_bytes(bucket[0])
+            bucket.append(record)
+            self._ws_bytes += self._ws_msg_bytes(record)
+            for summary in reversed(self.flows):
+                if summary.get("id") == flow_id:
+                    summary["is_websocket"] = True
+                    summary["websocket_messages"] = int(summary.get("websocket_messages", 0)) + 1
+                    break
+            while self._ws_bytes > _MAX_WS_RETAINED_BYTES and self._ws:
+                oldest_id = next(iter(self._ws))
+                oldest = self._ws[oldest_id]
+                if oldest:
+                    self._ws_bytes -= self._ws_msg_bytes(oldest.popleft())
+                if not oldest:
+                    self._ws.pop(oldest_id, None)
+            while len(self._ws) > _MAX_WS_FLOWS:
+                _, dropped = self._ws.popitem(last=False)
+                for stale in dropped:
+                    self._ws_bytes -= self._ws_msg_bytes(stale)
+        # mitmproxy retains every frame on the flow forever; since we hold that
+        # flow object, trim its list to a short tail so the capture we keep does
+        # not grow without bound behind our own accounting.
+        with contextlib.suppress(Exception):
+            extra = len(messages) - _MITM_WS_TAIL
+            if extra > 0:
+                del messages[:extra]
+
     def snapshot(self) -> list[JsonObject]:
         with self._lock:
             return list(self.flows)
@@ -384,6 +468,24 @@ class _FlowRecorder:
     def raw(self, flow_id: str) -> Any | None:
         with self._lock:
             return self._raw.get(flow_id)
+
+    def websocket(self, flow_id: str) -> JsonObject | None:
+        with self._lock:
+            bucket = self._ws.get(flow_id)
+            if bucket is None:
+                return None
+            messages = list(bucket)
+            total = len(messages)
+            for summary in self.flows:
+                if summary.get("id") == flow_id:
+                    total = int(summary.get("websocket_messages", total))
+                    break
+            return {
+                "messages": messages,
+                "returned": len(messages),
+                "message_count": total,
+                "truncated": total > len(messages),
+            }
 
     def count(self) -> int:
         with self._lock:
@@ -676,6 +778,12 @@ class ProxyBackend:
         # artifact when large, symmetrically.
         _attach_body(result["request"], req_body, artifact_dir, prefix="flow-req")
         _attach_body(result["response"], resp_body, artifact_dir, prefix="flow")
+        # A WebSocket upgrade's payload is not in the 101 response -- it is the
+        # frames that follow, captured separately. Surface them so an analyst
+        # sees the actual duplex traffic, not just the handshake.
+        websocket = inst.recorder.websocket(flow_id)
+        if websocket is not None:
+            result["websocket"] = websocket
         return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
