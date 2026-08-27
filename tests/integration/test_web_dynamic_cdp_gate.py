@@ -12,6 +12,9 @@ every DevTools surface can be checked against real traffic:
                          their status/mime, and the script body is fetchable.
 * ``web.scripts`` /
   ``web.script_source``-- the external script is parsed and its source retrievable.
+* ``web.wasm_list``   -- a live-instantiated WebAssembly module is enumerated
+                         (and shown to have actually executed), and ``wasm_only``
+                         is proven to be a real filter, not a passthrough.
 * ``web.screenshot``  -- a non-empty PNG is written and registered.
 * ``web.har_export``  -- the captured flows serialize to a HAR referencing them.
 
@@ -22,6 +25,7 @@ they are absent, rather than passing vacuously.
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import time
@@ -55,6 +59,70 @@ _INDEX_HTML = (
 )
 
 
+# Canonical minimal add.wasm -- (func (param i32 i32) (result i32) -> a + b),
+# base64-embedded so the page instantiates it with no extra fetch. The page logs
+# the computed sum, so the console proves the module actually *ran*; CDP reports
+# the compiled module as a WebAssembly script for web.wasm_list to enumerate.
+_WASM_SUM = 42  # add(19, 23)
+_WASM_READY = "WASM_READY"
+_WASM_ADD_B64 = base64.b64encode(
+    bytes(
+        (
+            0x00,
+            0x61,
+            0x73,
+            0x6D,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x07,
+            0x01,
+            0x60,
+            0x02,
+            0x7F,
+            0x7F,
+            0x01,
+            0x7F,
+            0x03,
+            0x02,
+            0x01,
+            0x00,
+            0x07,
+            0x07,
+            0x01,
+            0x03,
+            0x61,
+            0x64,
+            0x64,
+            0x00,
+            0x00,
+            0x0A,
+            0x09,
+            0x01,
+            0x07,
+            0x00,
+            0x20,
+            0x00,
+            0x20,
+            0x01,
+            0x6A,
+            0x0B,
+        )
+    )
+).decode()
+_WASM_INSTANTIATE = (
+    f"const b=Uint8Array.from(atob('{_WASM_ADD_B64}'),c=>c.charCodeAt(0));"
+    "WebAssembly.instantiate(b).then("
+    f"r=>{{console.log('{_WASM_READY} '+r.instance.exports.add(19,23));}});"
+)
+_WASM_HTML = (
+    f"<!doctype html><html><head><meta charset=utf-8><title>{_TITLE}</title>"
+    f"<script>{_WASM_INSTANTIATE}</script></head><body>wasm</body></html>"
+)
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args: Any) -> None:  # silence stderr spam
         pass
@@ -73,9 +141,22 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class _WasmHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - required name
+        body = _WASM_HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 @contextmanager
-def _origin() -> Iterator[str]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+def _origin(handler: type[BaseHTTPRequestHandler] = _Handler) -> Iterator[str]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -219,6 +300,40 @@ def test_web_dynamic_network_capture_and_har(_service: AnalysisService) -> None:
         parsed = json.loads(har_text)
         urls = {e["request"]["url"] for e in parsed["log"]["entries"]}
         assert url + "app.js" in urls, sorted(urls)
+
+
+def test_web_dynamic_enumerates_a_live_wasm_module(_service: AnalysisService) -> None:
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web dynamic CDP gate not run (skip != pass)")
+    with _origin(_WasmHandler) as url:
+        session_id = _open_on(_service, url)
+
+        # The module actually ran: the page logged add(19, 23) over CDP. This
+        # proves execution, not merely that a wasm blob was downloaded/compiled.
+        def _wasm_ran() -> bool:
+            res = _service.web_console(session_id)
+            return res.ok and any(
+                f"{_WASM_READY} {_WASM_SUM}" in str(e.get("text", "")) for e in res.data["console"]
+            )
+
+        assert _wait_until(_wasm_ran), "wasm module never executed / logged its result"
+
+        # web.wasm_list enumerates the compiled module V8 reported over CDP.
+        def _wasm_scripts() -> list[dict[str, Any]]:
+            res = _service.web_wasm_list(session_id)
+            return list(res.data["scripts"]) if res.ok else []
+
+        assert _wait_until(lambda: len(_wasm_scripts()) >= 1), "no WebAssembly module enumerated"
+        modules = _wasm_scripts()
+        assert all(str(m.get("language", "")).lower() == "webassembly" for m in modules), modules
+        assert any(str(m.get("url", "")).startswith("wasm://") for m in modules), modules
+
+        # wasm_only is a real filter: the unfiltered listing still carries the
+        # page's plain-JS script, which the wasm-only view excluded above.
+        every = _service.web_scripts(session_id, wasm_only=False)
+        assert every.ok, every.error
+        langs = {str(s.get("language", "")).lower() for s in every.data["scripts"]}
+        assert "javascript" in langs, langs
 
 
 def test_web_dynamic_screenshot_is_a_real_png(_service: AnalysisService) -> None:
