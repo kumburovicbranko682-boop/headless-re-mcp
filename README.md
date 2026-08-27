@@ -390,10 +390,16 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 88 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 95 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、androguard APK
-  静态面端到端）
+  静态面端到端、apktool/apksigner/jadx 这条 JVM 工具链端到端）
+- APK JVM 工具链 Gate（`test_apk_jvm_tools_gate.py`，在装了 apktool 3.0.3 + apksigner 31.0.2 +
+  jadx 1.5.6 + JDK 21 的 Linux 上实测）：对提交的已签名 APK 夹具跑
+  `apk.decode/repack/sign` 与 `apk.decompile/export_sources`——decode 落出 smali+manifest、
+  repack 重建为合法 zip、sign 以 debug keystore 签名并经独立 apksigner 校验、jadx 反编译回含
+  `MainActivity`/`getMarker` marker 字符串的 Java；缺对应工具（或缺 debug keystore）时按 skip != pass
+  跳过，关闭会话与工具全缺降级两条始终运行
 - androguard APK 静态 Gate（`test_androguard_apk_gate.py`，在装了 androguard 4.1.4 的 Linux 上实测）：
   对提交的真实 v1 已签名 APK 夹具（`fixtures/android/gate_fixture.apk`，由旁边源树用 apktool + jarsigner
   可复现）跑 `apk.open/manifest/permissions/components/certificates/native_libs/classes/methods/strings/xrefs`，

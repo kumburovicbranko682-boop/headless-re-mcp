@@ -43,6 +43,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 新增（apktool / apksigner / jadx 这条 JVM 工具链首个真跑的 Linux Gate）
+
+- APK 分析的另一半——`apk.decode`/`apk.repack`（apktool）、`apk.sign`（apksigner）、
+  `apk.decompile`/`apk.export_sources`（jadx）——此前没有任何真跑外部工具的测试：所有单测都打桩
+  `run_bounded`，从没有一次真正的 apktool decode→repack 往返、真正的 apksigner 签名、真正的 jadx
+  反编译，而这些恰是最容易被工具新版本或夹具怪癖打断的地方。新增
+  `tests/integration/test_apk_jvm_tools_gate.py`，对提交的已签名 APK 夹具驱动 AnalysisService 全链路：
+  `apk.decode` 落出 smali 树与解码后的 manifest；`apk.repack` 把解码树重建为合法（未签名）zip；
+  `apk.sign` 用 Android debug keystore 签名并在独立的 apksigner 调用下通过校验；jadx 把 DEX 反编译回
+  含 `MainActivity` 与 `getMarker()` marker 字符串的 Java。每条真跑测试在对应工具未配置时按明确的
+  skip != pass 跳过（sign 另在缺 debug keystore 时跳过），关闭会话（`invalid_request`）与工具全缺降级
+  （`capability_unavailable`）两条无需工具，始终运行。基于 apktool 3.0.3、apksigner 31.0.2、jadx 1.5.6
+  在 OpenJDK 21/Linux 实测。
+- 顺带把 APK 夹具（`fixtures/android/gate_fixture.apk`）补上一张极小的 `res/values/strings.xml` 资源表：
+  没有 `resources.arsc` 时 apktool 解码不会在 `apktool.yml` 记录 `usesFramework`，重建时 aapt2 便无法解析
+  manifest 的 `android:*` 属性而以“attribute android:name not found”失败——这是夹具局限（真实 APK 必带
+  资源表），非 apktool 缺陷。androguard 那条 Gate 的断言不受影响，已复跑确认。
+
 ### 新增（androguard APK 静态面首个真跑的 Linux Gate）
 
 - `apk.open/manifest/permissions/components/certificates/native_libs/classes/methods/strings/xrefs`
