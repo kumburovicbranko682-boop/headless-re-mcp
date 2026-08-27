@@ -156,10 +156,10 @@ jobs:
   # real backends are present. linux-quality installs none of them, so those
   # gates were never exercised in CI and their maturity rested on unit tests
   # alone. This job installs the portable backends -- radare2 (static),
-  # wabt + webcrack + Playwright Chromium (web), androguard plus the jadx Java
-  # decompiler on a JRE (android), mitmproxy (shared proxy) -- and runs the
-  # integration gates so a regression in any of those lines fails here instead
-  # of in production.
+  # wabt + webcrack + Playwright Chromium (web), androguard plus the jadx
+  # decompiler and apktool on a JRE (android), mitmproxy (shared proxy) -- and
+  # runs the integration gates so a regression in any of those lines fails here
+  # instead of in production.
   linux-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -176,14 +176,15 @@ jobs:
 
       - name: Install portable backends
         env:
-          # Pinned so the jadx line is reproducible; bump deliberately.
+          # Pinned so the Java-toolchain lines are reproducible; bump deliberately.
           JADX_VERSION: "1.5.6"
+          APKTOOL_VERSION: "3.0.3"
         run: |
           sudo apt-get update
           # radare2: portable static analysis. wabt: wasm2wat/wasm-objdump.
           # adb: Android device bridge. upx-ucl: the upx CLI. build-essential:
           # the C compiler the portable r2 ELF gate builds its fixture with.
-          # default-jre-headless: the JRE jadx runs on. unzip: to unpack jadx.
+          # default-jre-headless: the JRE jadx/apktool run on. unzip: to unpack jadx.
           sudo apt-get install -y --no-install-recommends \
             radare2 wabt adb upx-ucl build-essential default-jre-headless unzip
           # webcrack drives JS deobfuscation/unpacking for the web line.
@@ -197,6 +198,16 @@ jobs:
           mkdir -p "$HOME/jadx"
           unzip -q -o /tmp/jadx.zip -d "$HOME/jadx"
           echo "$HOME/jadx/bin" >> "$GITHUB_PATH"
+          # apktool (smali decode/repack) is the other half of that Java line. Its
+          # wrapper looks for apktool.jar beside itself, so drop both in one dir on
+          # PATH; which() then finds it the same way.
+          mkdir -p "$HOME/apktool"
+          curl -fsSL -o "$HOME/apktool/apktool" \
+            https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool
+          curl -fsSL -o "$HOME/apktool/apktool.jar" \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"
+          chmod +x "$HOME/apktool/apktool"
+          echo "$HOME/apktool" >> "$GITHUB_PATH"
 
       - name: Install package with Android/Web/portable extras
         run: |
