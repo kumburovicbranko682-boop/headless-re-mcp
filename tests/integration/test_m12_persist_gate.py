@@ -1,4 +1,14 @@
-"""M12 Gate: SQLite artifacts/timeline/audit and unclean session marking."""
+"""M12 Gate: SQLite artifacts/timeline/audit and unclean session marking.
+
+Everything here is pure Python over the session store -- no debugger, IDA, or
+Win32 surface -- so the gate runs on any platform. It used to sit on the
+Windows-only skip list and require the locally built ``headless_fixture.exe``,
+which meant the persistence semantics it pins (rows surviving a service
+restart, unclean marking for a session nobody closed) were only ever exercised
+on a machine with the full Windows toolchain. Any committed PE works as the
+session target, so the built fixture is preferred but the checkout's own
+UPX fixture keeps the gate running everywhere else.
+"""
 
 from __future__ import annotations
 
@@ -12,11 +22,19 @@ from headless_re_mcp.core.service import AnalysisService
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _session_fixture() -> Path:
+    built = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "headless_fixture.exe"
+    if built.is_file():
+        return built
+    committed = _PROJECT_ROOT / "fixtures" / "upx" / "console_fixture-x64.pre-upx.exe"
+    if committed.is_file():
+        return committed
+    pytest.skip("no PE fixture available (neither built nor committed)")
+
+
 @pytest.mark.integration
 def test_m12_session_artifact_timeline_roundtrip(tmp_path: Path) -> None:
-    fixture = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "headless_fixture.exe"
-    if not fixture.is_file():
-        pytest.skip("fixture missing")
+    fixture = _session_fixture()
     settings = Settings(
         ida_home=None,
         x64dbg_source=None,
