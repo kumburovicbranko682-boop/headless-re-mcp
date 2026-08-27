@@ -440,7 +440,12 @@ class FridaClient:
         sessions: list[Any] = []
 
         def work() -> JsonObject:
-            session = _invoke(self._frida.attach, pid, timeout=deadline)
+            try:
+                session = _invoke(self._frida.attach, pid, timeout=deadline)
+            except Exception as exc:  # noqa: BLE001
+                if _is_timeout(exc):
+                    raise _timeout_error(deadline) from exc
+                raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
             sessions.append(session)
             try:
                 script = session.create_script(source)
@@ -461,10 +466,15 @@ class FridaClient:
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
+            # Mirror hook_template_device: a script.load() failure (the android
+            # templates raise on a non-ART process) must reach the caller as the
+            # backend_error envelope the template docstring promises, not leak as
+            # a raw exception the service files as an internal_error incident --
+            # the way the sibling reads already do through _attach_local.
+            _detach_all(sessions)
             if _is_timeout(exc):
-                _detach_all(sessions)
                 raise _timeout_error(deadline) from exc
-            raise
+            raise FridaError("backend_error", f"hook template failed: {exc}") from exc
 
     def _attach_local(self, pid: int, *, timeout: float = _PROBE_TIMEOUT_S) -> Any:
         deadline = _bound_timeout(timeout)
@@ -607,7 +617,12 @@ class FridaClient:
         *,
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
-        device = self._resolve_device(device_id)
+        # Validate the package before resolving a device, the way
+        # hook_template_device checks its template and java_enumerate authorizes
+        # its pid first: _resolve_device can spend up to _PROBE_TIMEOUT_S on a USB
+        # probe or churn the device manager, and a malformed package id never
+        # needed a device to be rejected. Same fast-fail order as apk.sign/decode
+        # validating their input is a zip before starting a JVM.
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
         pkg = package.strip()
@@ -617,6 +632,7 @@ class FridaClient:
                 "package must be an Android package id",
                 package=pkg,
             )
+        device = self._resolve_device(device_id)
         deadline = _bound_timeout(timeout)
         pids: list[int] = []
 
