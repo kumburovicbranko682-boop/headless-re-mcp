@@ -386,6 +386,8 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 **Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。
 
+非 PE 那几条线的便携后端现在有一条自助 CI 通路：`.github/workflows/linux-integration.yml`（手动触发，对齐 `windows-integration.yml`）在 GitHub 自带的 Ubuntu 镜像上装齐 radare2 + C 编译器（portable-static）、wabt + webcrack（JS/WASM 静态）、Playwright Chromium（浏览器）、mitmproxy（抓包），再按非 PE 范围跑对应 Gate。portable-static（r2）此前只有 Windows PE 夹具、在 Linux/macOS 完全没有实测覆盖，现补了一条用系统编译器现编 ELF/Mach-O 小夹具的实测 Gate；抓包代理也补了「把经过它的流量真的录进环形缓冲并可取回/导 HAR」的实测 Gate。
+
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
