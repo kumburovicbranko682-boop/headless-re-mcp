@@ -390,7 +390,9 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 80 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+  Agent 事件流密钥脱敏经真实 HTTP+SSE 端到端（工具参数里的 api_key/password/token 与字符串内 bearer
+  在实时 SSE 与持久 history 里都被遮蔽、明文金丝雀全程不泄漏、审批 hash 基于原始参数故遮蔽不削弱授权,恒跑）、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
