@@ -116,7 +116,6 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
-<<<<<<< HEAD
     assert "v2_signed" in doc
     assert "sha1" in doc
 
