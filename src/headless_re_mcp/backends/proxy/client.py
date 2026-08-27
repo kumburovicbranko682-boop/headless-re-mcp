@@ -221,10 +221,15 @@ class _FlowRecorder:
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
-        # The decoded response body length is known here, before the flow may be
+        # The response body length is measured here, before the flow may be
         # dropped from the retain ring, so the summary keeps it even for a flow
         # whose body was not retained -- and the HAR export can report a real
-        # content size instead of the -1 "unknown" sentinel.
+        # content size instead of the -1 "unknown" sentinel. It is the length
+        # of raw_content, the bytes as transferred: mitmproxy's ``content``
+        # property inflates on access, so sizing a compressed body through it
+        # would decompress an untrusted payload -- gigabytes for a gzip bomb --
+        # just to report a number. For a compressed response this figure is
+        # therefore smaller than the decoded length, and says so in the docs.
         response_size = _content_len(resp)
         with self._lock:
             self._seq += 1

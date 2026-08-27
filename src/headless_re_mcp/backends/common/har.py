@@ -96,8 +96,12 @@ def har_entry(
     -- empty cookie/header arrays, -1 sizes, unknown timings -- because omitting
     them makes a strict consumer reject the entire log rather than the one
     absent field. ``queryString`` is parsed from the URL, and when the capture
-    knows the decoded response body length (``response_body_size``) it fills
-    ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
+    measured a response body length (``response_body_size``) it fills
+    ``content.size`` and ``response.bodySize`` instead of the -1 sentinel. The
+    proxy capture measures bytes as transferred -- it never decompresses an
+    untrusted body just to size it -- so for a compressed response the spec's
+    ``bodySize`` (raw) is exact and ``content.size`` (decoded) understates;
+    the entry comment already tells the consumer bodies were not captured.
     ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
     browser capture keeps that hint.
     """
