@@ -194,6 +194,29 @@ class WebAnalysisMixin:
                     source="web.script.source",
                     payload=data,
                 )
+            # A WebAssembly script also spills its raw module bytes; register that
+            # .wasm so the caller can pull it (artifacts.read) and hand it to
+            # wasm.wat / wasm.info / ghidra, and so retention reclaims it. This
+            # registers under its own key so it never clobbers the source spill's
+            # artifact_id: a WASM script can have both a spilled WAT and a module.
+            wasm_spill = data.get("wasm_bytecode_path")
+            if isinstance(wasm_spill, str):
+                source_artifact_id = data.get("artifact_id")
+                data = _register_capture(
+                    self,
+                    session_id,
+                    Path(wasm_spill),
+                    kind="web_wasm_module",
+                    source="web.script.source",
+                    payload=data,
+                )
+                wasm_artifact_id = data.get("artifact_id")
+                if source_artifact_id is not None:
+                    data["artifact_id"] = source_artifact_id
+                else:
+                    data.pop("artifact_id", None)
+                if wasm_artifact_id is not None:
+                    data["wasm_bytecode_id"] = wasm_artifact_id
             return _success(data, session_id=session_id, backend="web")
         except WebError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)

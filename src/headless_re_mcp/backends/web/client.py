@@ -206,6 +206,38 @@ def _spill_base64_body(
     return inline, out, True
 
 
+def _spill_wasm_bytecode(
+    b64_bytecode: str,
+    *,
+    artifact_dir: Path,
+    filename: str,
+) -> tuple[Path, int]:
+    """Write a WASM module's raw bytes to a .wasm the static tools can read.
+
+    ``Debugger.getScriptSource`` returns two things for a WebAssembly script: a
+    WAT-text ``scriptSource`` (readable, but no tool round-trips it) and the
+    module's actual bytes as base64 ``bytecode``. Only the text was ever kept,
+    so a module seen live in a page could not be handed to wasm.wat / wasm.info
+    / ghidra.decompile, which all take a ``.wasm`` path. Decode the bytecode once
+    to a real module on disk. Always spills (raw bytes are not JSON-inlineable
+    and the WAT already covers the readable form); returns ``(path, byte_len)``.
+    """
+    raw = base64.b64decode(b64_bytecode or "", validate=False)
+    size = len(raw)
+    if size > UNREGISTERED_CAPTURE_MAX_BYTES:
+        raise WebError(
+            "too_large",
+            "wasm module exceeds capture cap",
+            size=size,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    _reject_bad_artifact_name(filename, "wasm module")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    out = artifact_dir / filename
+    out.write_bytes(raw)
+    return out, size
+
+
 class _Runner:
     """Own one thread and run every Playwright call for one session on it.
 
@@ -676,10 +708,15 @@ class WebBackend:
         source = resp.get("scriptSource", "")
         if not isinstance(source, str):
             source = str(source)
+        # A WebAssembly script carries its module bytes as base64 ``bytecode``
+        # alongside the WAT-text ``scriptSource``. The text spills as .wat; the
+        # bytes become a real .wasm below so static analysis can pick them up.
+        bytecode = resp.get("bytecode")
+        is_wasm = isinstance(bytecode, str) and bytecode != ""
         inline, spill, cut = _spill_text(
             source,
             artifact_dir=artifact_dir,
-            filename=f"script-{uuid4().hex}.js",
+            filename=f"script-{uuid4().hex}.{'wat' if is_wasm else 'js'}",
             kind="script source",
         )
         result: JsonObject = {
@@ -690,6 +727,15 @@ class WebBackend:
         }
         if spill is not None:
             result["source_path"] = str(spill)
+        if is_wasm:
+            result["language"] = "WebAssembly"
+            wasm_path, wasm_bytes = _spill_wasm_bytecode(
+                bytecode,
+                artifact_dir=artifact_dir,
+                filename=f"module-{uuid4().hex}.wasm",
+            )
+            result["wasm_bytecode_path"] = str(wasm_path)
+            result["wasm_bytes"] = wasm_bytes
         return result
 
     def dom_snapshot(self, session_id: str) -> JsonObject:

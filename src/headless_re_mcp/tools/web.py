@@ -130,6 +130,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         source_path when the text was cut at the buffer. There is no code
         or text field. A source over the capture cap is refused rather
         than written to disk.
+
+        For a WebAssembly script, source is the WAT text and language is
+        WebAssembly; the module's raw bytes are written to a real .wasm at
+        wasm_bytecode_path (wasm_bytes long) and registered as
+        wasm_bytecode_id, so it can be pulled and handed to wasm.wat,
+        wasm.info or ghidra rather than being stuck as text in the page.
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -9,10 +10,42 @@ import pytest
 from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
 from headless_re_mcp.backends.web import WebBackend, WebError
+from headless_re_mcp.backends.web import client as web_client
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
 from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandTransport
+
+# A minimal but structurally valid WASM module: the 8-byte header (magic +
+# version) is enough for wasm2wat/ghidra to recognise the format.
+_WASM_HEADER = b"\x00asm\x01\x00\x00\x00"
+
+
+class TestWasmBytecodeSpill:
+    """The raw .wasm bytes CDP hands back, written as a module tools can read."""
+
+    def test_decodes_base64_to_the_real_module_bytes(self, tmp_path: Path) -> None:
+        module = _WASM_HEADER + bytes(range(32))
+        encoded = base64.b64encode(module).decode("ascii")
+        path, size = web_client._spill_wasm_bytecode(
+            encoded, artifact_dir=tmp_path, filename="module.wasm"
+        )
+        assert path.is_file()
+        # The artifact is the module itself, not the base64 text of it.
+        assert path.read_bytes() == module
+        assert size == len(module)
+        assert path.suffix == ".wasm"
+
+    def test_refuses_a_module_over_the_capture_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(web_client, "UNREGISTERED_CAPTURE_MAX_BYTES", 8)
+        encoded = base64.b64encode(_WASM_HEADER + b"\x00" * 64).decode("ascii")
+        with pytest.raises(WebError) as info:
+            web_client._spill_wasm_bytecode(
+                encoded, artifact_dir=tmp_path, filename="big.wasm"
+            )
+        assert info.value.code == "too_large"
 
 
 class TestNoArbitraryExecution:
@@ -199,6 +232,105 @@ class TestCapturesAreReachableAndReclaimable:
             assert "artifact_id" not in result.data
             assert "repository is down" in result.data["artifact_error"]
             assert Path(result.data["path"]).is_file()
+        finally:
+            service.close_all()
+
+
+class _WasmScriptBackend:
+    """A script_source that returns a WASM script: WAT text + a spilled .wasm."""
+
+    def __init__(self, *, spill_source: bool) -> None:
+        self.spill_source = spill_source
+
+    def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> dict:  # type: ignore[type-arg]
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        module = artifact_dir / f"module-{script_id}.wasm"
+        module.write_bytes(_WASM_HEADER + bytes(range(16)))
+        result: dict = {  # type: ignore[type-arg]
+            "scriptId": script_id,
+            "bytes": 12,
+            "source": "(module)",
+            "truncated": False,
+            "language": "WebAssembly",
+            "wasm_bytecode_path": str(module),
+            "wasm_bytes": module.stat().st_size,
+        }
+        if self.spill_source:
+            wat = artifact_dir / f"script-{script_id}.wat"
+            wat.write_text("(module\n" + "  (func)\n" * 200 + ")", encoding="utf-8")
+            result["source_path"] = str(wat)
+            result["truncated"] = True
+        return result
+
+    def close_all(self) -> None:
+        return None
+
+
+class TestWasmModuleExtraction:
+    """A WASM module seen in a page must reach disk as a real .wasm, registered.
+
+    ``Debugger.getScriptSource`` returns a WASM script's WAT text and, separately,
+    its module bytes as base64. Only the text was kept before, so a module could
+    be listed but never handed to wasm.wat / wasm.info / ghidra, all of which take
+    a ``.wasm`` path. These pin that the bytes are now spilled and tracked.
+    """
+
+    def _service(self, tmp_path: Path, *, spill_source: bool) -> AnalysisService:
+        from dataclasses import replace
+
+        from headless_re_mcp.config import Settings
+
+        settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+        service = AnalysisService(settings)
+        service._web_backend = _WasmScriptBackend(spill_source=spill_source)  # type: ignore[assignment]
+        return service
+
+    def test_wasm_module_is_registered_and_readable(self, tmp_path: Path) -> None:
+        service = self._service(tmp_path, spill_source=False)
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+
+            result = service.web_script_source(session_id, "7")
+            assert result.ok, result.error
+            assert result.data is not None
+            module_id = result.data["wasm_bytecode_id"]
+            assert module_id
+            # No source spill, so no generic artifact_id was left dangling.
+            assert "artifact_id" not in result.data
+
+            listed = service.repository.list_artifacts(session_id)
+            kinds = {item["kind"] for item in listed["artifacts"]}
+            assert kinds == {"web_wasm_module"}
+
+            read = service.artifacts_read(str(module_id), offset=0, limit=8)
+            assert read.ok and read.data is not None
+            # The registered bytes are the module header, not base64 text of it.
+            assert read.data["data"].startswith("0061736d")
+        finally:
+            service.close_all()
+
+    def test_spilled_wat_and_module_are_both_registered_distinctly(
+        self, tmp_path: Path
+    ) -> None:
+        """A big WAT text and the module are two artifacts; neither clobbers the other."""
+        service = self._service(tmp_path, spill_source=True)
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+
+            result = service.web_script_source(session_id, "9")
+            assert result.ok, result.error
+            assert result.data is not None
+            source_id = result.data["artifact_id"]
+            module_id = result.data["wasm_bytecode_id"]
+            assert source_id and module_id and source_id != module_id
+
+            listed = service.repository.list_artifacts(session_id)
+            by_kind = {item["kind"]: item["id"] for item in listed["artifacts"]}
+            assert by_kind.keys() == {"web_script_source", "web_wasm_module"}
+            assert by_kind["web_script_source"] == source_id
+            assert by_kind["web_wasm_module"] == module_id
         finally:
             service.close_all()
 

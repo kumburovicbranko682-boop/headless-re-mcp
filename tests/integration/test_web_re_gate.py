@@ -142,6 +142,49 @@ def _binary_site() -> Iterator[str]:
         server.server_close()
 
 
+_WASM_PATH = "/add.wasm"
+# The page instantiates a real WASM module so V8 registers a WebAssembly script
+# the Debugger domain reports; that is the only way to exercise the live
+# module-bytes extraction path in web.script.source.
+_WASM_HTML = (
+    "<!doctype html><html><head><title>wasm-gate</title></head><body>wasm"
+    f"<script>fetch('{_WASM_PATH}').then(r=>r.arrayBuffer())"
+    ".then(b=>WebAssembly.instantiate(b)).then(()=>{window.__wasmdone=1;});"
+    "</script></body></html>"
+)
+
+
+class _WasmHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:  # silence per-request logging
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path == _WASM_PATH:
+            body, ctype = _WASM_FIXTURE.read_bytes(), "application/wasm"
+        else:
+            body, ctype = _WASM_HTML.encode("utf-8"), "text/html"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextlib.contextmanager
+def _wasm_site() -> Iterator[str]:
+    """Serve a page that instantiates a WASM module from loopback."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _WasmHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        server.server_close()
+
+
 @pytest.mark.integration
 def test_web_cdp_open_and_inspect() -> None:
     if not _browser_available():
@@ -322,6 +365,84 @@ def test_web_network_get_spills_a_binary_body_as_real_bytes(tmp_path: Path) -> N
                 on_disk = Path(spill).read_bytes()
                 # The artifact is the real resource, byte-for-byte -- not base64.
                 assert on_disk == _BLOB_BYTES, (len(on_disk), len(_BLOB_BYTES))
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
+def test_web_script_source_extracts_a_live_wasm_module_for_static_analysis(
+    tmp_path: Path,
+) -> None:
+    """A WASM module seen in a page must come out as a real .wasm the tools accept.
+
+    CDP hands a WebAssembly script back as WAT text plus base64 module bytes;
+    only the text used to be kept, so a module could be listed via web.wasm.list
+    yet never fed to wasm.wat / wasm.info / ghidra, which all take a .wasm path.
+    This instantiates a real module in the page, extracts it through
+    web.script.source, and proves the spilled bytes are a genuine module by
+    round-tripping them through wasm.wat. skip != pass without a browser.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    if not _WASM_FIXTURE.is_file():
+        pytest.skip(f"wasm fixture missing: {_WASM_FIXTURE} — skip != pass")
+    with _wasm_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                # V8 registers the WebAssembly script asynchronously once the
+                # module instantiates; poll web.wasm.list until it shows up. A
+                # cold browser can take longer than the default window to fetch,
+                # compile and instantiate, so allow extra tries here.
+                listing = _poll(
+                    lambda: service.web_wasm_list(session_id, limit=200),
+                    lambda r: r.ok and bool(r.data["scripts"]),
+                    tries=80,
+                )
+                assert listing.ok, listing.error
+                wasm_scripts = listing.data["scripts"]
+                assert wasm_scripts, "no WebAssembly script was reported by the page"
+
+                source = service.web_script_source(
+                    session_id, str(wasm_scripts[0]["scriptId"])
+                )
+                assert source.ok, source.error
+                data = source.data
+                assert data.get("language") == "WebAssembly", data
+                module_path = data.get("wasm_bytecode_path")
+                assert module_path, f"no module bytes extracted: {data}"
+                assert data.get("wasm_bytes", 0) > 0, data
+                assert data.get("wasm_bytecode_id"), data
+
+                on_disk = Path(module_path).read_bytes()
+                # The artifact is a genuine module: the WASM magic, real bytes.
+                assert on_disk[:4] == b"\x00asm", on_disk[:8]
+
+                # The registered id resolves to those same bytes.
+                read = service.artifacts_read(
+                    str(data["wasm_bytecode_id"]), offset=0, limit=4
+                )
+                assert read.ok and read.data is not None, read.error
+                assert read.data["data"].startswith("0061736d"), read.data
+
+                # The whole point: the extracted module round-trips through the
+                # static WASM tooling. Only assert the handoff when wabt is present.
+                if WasmClient().available:
+                    wat = service.wasm_wat(module_path)
+                    assert wat.ok, wat.error
+                    assert "module" in (wat.data.get("wat") or ""), wat.data
             finally:
                 service.web_close(session_id)
         finally:
