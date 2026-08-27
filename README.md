@@ -390,7 +390,9 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 **Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。
 
-Android 静态分析（androguard 进程内）现有一个不依赖设备/SDK 的真机 Gate：仓库里提交了一个用真实 Java 编出、已签名的 `fixtures/android/sample.apk`（构建脚本见同目录 `build.sh`），`tests/integration/test_android_static_deep_gate.py` 用它跑通 `apk.open/manifest/permissions/certificates/components/native_libs/classes/methods/strings/xrefs` 全套——包含 DEX 类/方法/字符串与方法间交叉引用，只要装了 `android` extra（androguard）即执行。radare2 的 live Gate 也已可移植到非 Windows：缺 PE 夹具时会就地用 `cc` 编一个原生 ELF 来跑。
+Android 静态分析（androguard 进程内）现有一个不依赖设备/SDK 的真机 Gate：仓库里提交了一个用真实 Java 编出、已签名的 `fixtures/android/sample.apk`（构建脚本见同目录 `build.sh`），`tests/integration/test_android_static_deep_gate.py` 用它跑通 `apk.open/manifest/permissions/certificates/components/native_libs/classes/methods/strings/xrefs` 全套——包含 DEX 类/方法/字符串与方法间交叉引用，只要装了 `android` extra（androguard）即执行。
+
+radare2 侧此前的真机 Gate（`test_m11_r2_live_gate.py`）只开 Windows PE 夹具、只查一个函数的地址映射，在 Linux 上缺夹具就跳过，于是 r2 后端的解析面（`aflj`/`izj`/`iij`/`pdj`/`axj` 经 `enrich_r2_payload` 归一化）从没在这里真跑过。新增的 `tests/integration/test_r2_static_gate.py` 不依赖任何提交夹具:现场用 `cc` 编一个原生 ELF,对真实 r2 跑通整条读取面——`aflj` 列出编进去的 `add`/`compute`/`main`/`marker` 四个函数、`izj` 找到标记字符串、`iij` 列出 `printf` 等 libc 导入、`pdj` 反汇编 `compute` 出真实指令、`axj` 解析交叉引用(并断言请求地址被回显为归一化 Address)。既有的 PE Gate 仍覆盖 rva/module 映射那一面。依赖 r2/rizin 与 C 编译器,缺则如实跳过(skip ≠ pass)。
 
 Android 写侧（重打包与反编译）也各有一个基于同一个 `sample.apk` 的真机 Gate：`test_android_repack_gate.py` 用 apktool 把 APK 拆成 smali、重新打包、再用 apksigner 以临时 keystore 签名，最后由 androguard 重新打开验证包身份不变；`test_android_decompile_gate.py` 用 jadx 把整个 APK 反编译回 Java，断言四个类都在、并且指定类的源码里保留了编译进去的标记字符串。这两条依赖 apktool/apksigner/jadx（PATH 探针，缺则如实跳过）。
 
