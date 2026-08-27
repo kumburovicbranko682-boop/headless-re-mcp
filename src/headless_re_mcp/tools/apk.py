@@ -154,10 +154,14 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decompile one class to Java via jadx (requires jadx + JRE).
 
         Answers with class_name, path and source, plus truncated when the
-        Java was cut at the buffer. There is no java, code or text field. If
-        jadx exited non-zero on the whole-APK pass but still wrote this class,
-        the reply carries exit_code, tool_failed and stderr so a partial
-        decompile is not read as complete.
+        Java was cut at the buffer. When truncated, the full class source is
+        registered as an artifact and the reply carries artifact_id (with
+        hint=full_source_in_artifact) so the cut-off remainder is retrievable
+        via artifacts.read rather than lost with the bare on-disk path -- page
+        offset forward there until the whole source is read. There is no java,
+        code or text field. If jadx exited non-zero on the whole-APK pass but
+        still wrote this class, the reply carries exit_code, tool_failed and
+        stderr so a partial decompile is not read as complete.
         """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 
