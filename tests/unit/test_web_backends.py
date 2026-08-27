@@ -224,6 +224,48 @@ class TestJsReDegradation:
             client.wat(module)
         assert info.value.code == "capability_unavailable"
 
+    def test_configured_but_missing_webcrack_reports_capability_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A misconfigured path must degrade, not fail every call at launch.
+
+        HEADLESS_RE_WEBCRACK pointing at a path that is not there (a typo, or set
+        before the install finished) used to leave available True and every call
+        dying at Popen with backend_error -- the opposite of the module's
+        capability_unavailable contract. With no webcrack on PATH to fall back
+        to, the client is unavailable and the contract holds.
+        """
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._discover_webcrack", lambda: None
+        )
+        source = tmp_path / "a.js"
+        source.write_text("var a=1;", encoding="utf-8")
+        client = JsClient(tmp_path / "missing-webcrack")
+        assert client.available is False
+        with pytest.raises(JsReError) as info:
+            client.deobfuscate(source)
+        assert info.value.code == "capability_unavailable"
+
+    def test_missing_configured_webcrack_falls_back_to_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Like doctor's probe_optional_tool: a bad configured path still uses PATH."""
+        on_path = tmp_path / "path-webcrack"
+        on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._discover_webcrack", lambda: on_path
+        )
+        client = JsClient(tmp_path / "missing-webcrack")
+        assert client.available is True
+        assert client.executable == on_path
+
+    def test_configured_webcrack_that_exists_is_used(self, tmp_path: Path) -> None:
+        tool = tmp_path / "webcrack"
+        tool.write_text("#!/bin/sh\n", encoding="utf-8")
+        client = JsClient(tool)
+        assert client.available is True
+        assert client.executable == tool
+
 
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
