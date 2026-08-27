@@ -412,6 +412,13 @@ class FridaClient:
         self, pid: int, address: int, size: int, *, allowed_pid: int
     ) -> JsonObject:
         self._require(pid, allowed_pid)
+        # Validate the address the way size and pid are checked, and before the
+        # attach: unlike those, it was passed straight to int() and into the
+        # frida read, so a bool (int(True) == 1), a negative, or a non-int did
+        # not read as invalid_params here -- it reached frida and surfaced as an
+        # internal_error incident, the same miscasting ghidra/r2 reject up front.
+        if type(address) is not int or address < 0:
+            raise FridaError("invalid_params", "address must be a non-negative integer")
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
         session = self._attach_local(pid)

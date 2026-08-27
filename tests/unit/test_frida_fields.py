@@ -151,6 +151,66 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+class _MemReadApi:
+    def read(self, address: int, size: int) -> list[int]:
+        del address
+        return [0xAB] * int(size)
+
+
+class _MemReadScript:
+    exports_sync = _MemReadApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _MemReadSession:
+    def create_script(self, source: str) -> _MemReadScript:
+        return _MemReadScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _MemReadFrida:
+    def __init__(self) -> None:
+        self.attaches = 0
+
+    def attach(self, pid: int) -> _MemReadSession:
+        del pid
+        self.attaches += 1
+        return _MemReadSession()
+
+
+def test_frida_memory_read_validates_the_address_before_attaching() -> None:
+    """A bad address is invalid_params, refused before the attach ever runs.
+
+    memory_read checked size and pid with ``type(x) is not int`` but passed
+    address straight to int() and into the frida read. A bool (int(True) == 1),
+    a negative, or a non-int then reached frida and surfaced as an
+    internal_error incident instead of the invalid_params the ghidra/r2 address
+    checks return up front. The counting fake proves nothing attached for a bad
+    address, and that a good one still reads.
+    """
+    client = FridaClient()
+    client._available = True
+    frida = _MemReadFrida()
+    client._frida = frida
+
+    for bad in (-1, True, 1.5, "0x1000"):
+        with pytest.raises(FridaError) as caught:
+            client.memory_read(1, bad, 16, allowed_pid=1)  # type: ignore[arg-type]
+        assert caught.value.code == "invalid_params"
+    assert frida.attaches == 0
+
+    payload = client.memory_read(1, 0x1000, 4, allowed_pid=1)
+    assert payload["address"] == 0x1000
+    assert payload["size"] == 4
+    assert payload["encoding"] == "hex"
+    assert payload["data"] == "abababab"
+    assert frida.attaches == 1
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident
