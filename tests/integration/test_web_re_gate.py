@@ -7,6 +7,7 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import replace
@@ -79,12 +80,17 @@ _NET_INDEX_HTML = (
     b"<!doctype html><html><head><title>net-gate</title>"
     b'<script src="app.js"></script></head><body>hi</body></html>'
 )
+_NET_PAGE2_HTML = (
+    b"<!doctype html><html><head><title>page-two</title></head><body>second</body></html>"
+)
 
 
 class _NetHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         if self.path.startswith("/app.js"):
             body, ctype = _NET_APP_JS, "application/javascript"
+        elif self.path.startswith("/page2"):
+            body, ctype = _NET_PAGE2_HTML, "text/html"
         else:
             body, ctype = _NET_INDEX_HTML, "text/html"
         self.send_response(200)
@@ -152,6 +158,87 @@ def test_web_cdp_network_capture_and_body(tmp_path: Path) -> None:
             # The healthy path: a real body, not the body_error degrade branch.
             assert "body_error" not in got.data, got.data.get("body_error")
             assert "gate-net-asset" in got.data["body"]
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+        server.shutdown()
+
+
+@pytest.mark.integration
+def test_web_cdp_source_screenshot_har_and_navigate(tmp_path: Path) -> None:
+    """script.source, screenshot, har.export and navigate on a real page.
+
+    test_web_cdp_open_and_inspect lists scripts but never fetches a source, and
+    screenshot / har.export / navigate had no live coverage at all -- only unit
+    stubs. script.source in particular is the sibling network_get was aligned to
+    (both re-raise WebError for a wedged session), yet its healthy CDP
+    getScriptSource path had never run against a real browser. This drives all
+    four on one loaded page.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP source Gate not run (skip != pass)")
+    server = HTTPServer(("127.0.0.1", 0), _NetHandler)
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, name="web-src-gate", daemon=True)
+    thread.start()
+    service = AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+    try:
+        created = service.create_session(f"http://127.0.0.1:{port}/", target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                "chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            # script.source: find the external app.js among parsed scripts and
+            # fetch its source through Debugger.getScriptSource.
+            deadline = time.monotonic() + 15.0
+            script: dict[str, Any] | None = None
+            scripts: list[dict[str, Any]] = []
+            while time.monotonic() < deadline:
+                listed = service.web_scripts(session_id)
+                assert listed.ok, listed.error
+                scripts = listed.data["scripts"]
+                script = next(
+                    (s for s in scripts if str(s.get("url", "")).endswith("/app.js")),
+                    None,
+                )
+                if script is not None:
+                    break
+                time.sleep(0.2)
+            assert script is not None, f"app.js script was never parsed: {scripts}"
+            source = service.web_script_source(session_id, script["scriptId"])
+            assert source.ok, source.error
+            assert "gate-net-asset" in source.data["source"]
+            assert source.data["truncated"] is False
+
+            # screenshot: a real PNG artifact, not a zero-byte file.
+            shot = service.web_screenshot(session_id)
+            assert shot.ok, shot.error
+            shot_path = Path(shot.data["path"])
+            assert shot_path.is_file()
+            assert shot_path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+            assert shot.data["size"] > 0
+
+            # har.export: the captured requests, with the sub-resource among them.
+            har = service.web_har_export(session_id)
+            assert har.ok, har.error
+            assert har.data["entry_count"] >= 1
+            har_doc = json.loads(Path(har.data["path"]).read_text(encoding="utf-8"))
+            har_urls = [entry["request"]["url"] for entry in har_doc["log"]["entries"]]
+            assert any(str(u).endswith("/app.js") for u in har_urls)
+
+            # navigate: a second document, and the title must follow the move.
+            moved = service.web_navigate(
+                session_id, f"http://127.0.0.1:{port}/page2", timeout=30.0
+            )
+            assert moved.ok, moved.error
+            assert moved.data["title"] == "page-two"
         finally:
             service.web_close(session_id)
     finally:
