@@ -101,6 +101,72 @@ def test_command_loop_gate_rejects_analyzer_window(
     assert result.analyzer_windows == ("x32dbg analyzer window",)
 
 
+def test_command_loop_gate_timeout_shares_one_cleanup_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-timeout pipe drain and monitor join must not stack to seven seconds."""
+    executable = tmp_path / "headless.exe"
+    _write_minimal_pe(executable, 0x8664)
+    clock = [0.0]
+    cleanup_timeouts: list[float] = []
+
+    class _TimedOutProcess:
+        pid = 4242
+        returncode: int | None = None
+
+        def communicate(
+            self,
+            input: str | None = None,
+            timeout: float | None = None,
+        ) -> tuple[str, str]:
+            del input
+            budget = float(timeout or 0.0)
+            cleanup_timeouts.append(budget)
+            clock[0] += budget
+            raise gate_module.subprocess.TimeoutExpired("headless.exe", budget)
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    class _StuckMonitor:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            budget = float(timeout or 0.0)
+            cleanup_timeouts.append(budget)
+            clock[0] += budget
+
+    process = _TimedOutProcess()
+    monkeypatch.setattr(gate_module.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(gate_module, "Thread", _StuckMonitor)
+    monkeypatch.setattr(gate_module, "describe_process_windows", lambda _pid: ())
+    monkeypatch.setattr(gate_module, "monotonic", lambda: clock[0], raising=False)
+    monkeypatch.setattr(
+        gate_module,
+        "terminate_process_tree",
+        lambda child: child.kill(),
+    )
+
+    result = gate_module.run_command_loop_gate(
+        executable,
+        Architecture.X64,
+        timeout=0.1,
+    )
+
+    assert result.ok is False
+    # The gate's own wait got the caller budget; everything after the timeout
+    # (pipe drain plus monitor join, each simulated as fully stuck) must fit in
+    # the single five-second cleanup budget instead of stacking to seven.
+    assert cleanup_timeouts[0] == 0.1
+    assert sum(cleanup_timeouts[1:]) <= 5.0
+    assert clock[0] <= 5.1
+
+
 def test_command_loop_gate_rejects_wrong_architecture(tmp_path: Path) -> None:
     executable = tmp_path / "headless.exe"
     _write_minimal_pe(executable, 0x014C)
