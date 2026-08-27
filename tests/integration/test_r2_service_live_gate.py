@@ -140,8 +140,14 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
     service = AnalysisService(Settings.load())
     created = service.create_session(str(elf))
     assert created.ok and created.data is not None, created.error
-    assert created.data["session"].get("target") == "native"
-    session_id = str(created.data["session"]["id"])
+    session = created.data["session"]
+    assert session.get("target") == "native"
+    # Native identity rides along at creation (stdlib header parse, no r2 yet).
+    native = session.get("metadata", {}).get("native", {})
+    assert native.get("format") == "elf"
+    assert native.get("bits") in {32, 64}
+    assert isinstance(native.get("machine"), str) and native["machine"]
+    session_id = str(session["id"])
     try:
         assert service.r2_open(session_id, timeout=60.0).ok
 

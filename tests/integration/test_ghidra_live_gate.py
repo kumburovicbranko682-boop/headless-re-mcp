@@ -255,8 +255,10 @@ def test_ghidra_analyzes_a_native_elf_through_the_service(tmp_path: Path) -> Non
     service = AnalysisService(Settings.load())
     created = service.create_session(str(elf))
     assert created.ok and created.data is not None, created.error
-    assert created.data["session"].get("target") == "native"
-    session_id = str(created.data["session"]["id"])
+    session = created.data["session"]
+    assert session.get("target") == "native"
+    assert session.get("metadata", {}).get("native", {}).get("format") == "elf"
+    session_id = str(session["id"])
     try:
         funcs = service.ghidra_functions(session_id, timeout=_TIMEOUT)
         assert funcs.ok and funcs.data is not None, funcs.error

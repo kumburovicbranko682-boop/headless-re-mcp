@@ -122,6 +122,11 @@ class SessionRegistry:
                 architecture = detect_pe_architecture(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
+            elif kind is TargetKind.NATIVE:
+                # Cheap header identity, mirroring describe_apk: stdlib-only, so
+                # a native session is first-class (arch, bitness, format) without
+                # standing up r2/Ghidra just to answer "what is this".
+                architecture, metadata = describe_native(path)
             session = Session(
                 target=kind,
                 binary=path,
@@ -463,6 +468,120 @@ def describe_apk(path: Path) -> dict[str, Any]:
             ),
         }
     }
+
+
+# ELF e_machine -> human name. Only x86/x86-64 map to the Architecture enum
+# (the only values it has); the rest are reported by name so the identity is
+# still legible without over-claiming a machine type the model does not model.
+_ELF_MACHINES: dict[int, str] = {
+    0x02: "sparc",
+    0x03: "x86",
+    0x08: "mips",
+    0x14: "ppc",
+    0x15: "ppc64",
+    0x16: "s390",
+    0x28: "arm",
+    0x2A: "superh",
+    0x32: "ia64",
+    0x3E: "x86-64",
+    0xB7: "aarch64",
+    0xF3: "riscv",
+}
+_ELF_TYPES: dict[int, str] = {
+    0: "none",
+    1: "relocatable",
+    2: "executable",
+    3: "shared-object",
+    4: "core",
+}
+# Mach-O magics -> (bit width, byte order of the fields that follow).
+_MACHO_HEADERS: dict[bytes, tuple[int, str]] = {
+    b"\xfe\xed\xfa\xce": (32, "big"),
+    b"\xfe\xed\xfa\xcf": (64, "big"),
+    b"\xce\xfa\xed\xfe": (32, "little"),
+    b"\xcf\xfa\xed\xfe": (64, "little"),
+}
+_MACHO_CPUS: dict[int, str] = {
+    7: "x86",
+    0x01000007: "x86-64",
+    12: "arm",
+    0x0100000C: "arm64",
+    18: "ppc",
+    0x01000012: "ppc64",
+}
+_MACHO_FILETYPES: dict[int, str] = {
+    1: "object",
+    2: "executable",
+    4: "core",
+    6: "dylib",
+    7: "dylinker",
+    8: "bundle",
+}
+
+
+def describe_native(path: Path) -> tuple[Architecture | None, dict[str, Any]]:
+    """Read cheap identity facts from an ELF/Mach-O header, no external tool.
+
+    Returns the machine type (only when it is one the Architecture enum models,
+    i.e. x86/x86-64) and a ``{"native": {...}}`` metadata block, mirroring
+    describe_apk. Deliberately stdlib-only and header-only: session creation
+    must not depend on radare2 or Ghidra being installed, and a malformed or
+    unrecognised header degrades to a minimal block rather than raising.
+    """
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(64)
+    except OSError:
+        return None, {"native": {"format": "unknown"}}
+    if head.startswith(b"\x7fELF"):
+        return _describe_elf(head)
+    macho = _MACHO_HEADERS.get(head[:4])
+    if macho is not None:
+        return _describe_macho(head, macho)
+    return None, {"native": {"format": "unknown"}}
+
+
+def _describe_elf(head: bytes) -> tuple[Architecture | None, dict[str, Any]]:
+    order: str = "little" if len(head) > 5 and head[5] == 1 else "big"
+    bits = {1: 32, 2: 64}.get(head[4]) if len(head) > 4 else None
+    e_type = int.from_bytes(head[16:18], order) if len(head) >= 18 else None  # type: ignore[arg-type]
+    e_machine = int.from_bytes(head[18:20], order) if len(head) >= 20 else None  # type: ignore[arg-type]
+    machine_name = _ELF_MACHINES.get(e_machine) if e_machine is not None else None
+    arch: Architecture | None = None
+    if e_machine == 0x03:
+        arch = Architecture.X86
+    elif e_machine == 0x3E:
+        arch = Architecture.X64
+    info: dict[str, Any] = {
+        "format": "elf",
+        "bits": bits,
+        "endianness": order,
+        "type": _ELF_TYPES.get(e_type) if e_type is not None else None,
+        "machine": machine_name or (f"0x{e_machine:x}" if e_machine is not None else None),
+    }
+    return arch, {"native": info}
+
+
+def _describe_macho(
+    head: bytes, header: tuple[int, str]
+) -> tuple[Architecture | None, dict[str, Any]]:
+    bits, order = header
+    cputype = int.from_bytes(head[4:8], order, signed=True) if len(head) >= 8 else None  # type: ignore[arg-type]
+    filetype = int.from_bytes(head[12:16], order) if len(head) >= 16 else None  # type: ignore[arg-type]
+    arch: Architecture | None = None
+    if cputype == 7:
+        arch = Architecture.X86
+    elif cputype == 0x01000007:
+        arch = Architecture.X64
+    machine_name = _MACHO_CPUS.get(cputype) if cputype is not None else None
+    info: dict[str, Any] = {
+        "format": "macho",
+        "bits": bits,
+        "endianness": order,
+        "type": _MACHO_FILETYPES.get(filetype) if filetype is not None else None,
+        "machine": machine_name or (f"0x{cputype:x}" if cputype is not None else None),
+    }
+    return arch, {"native": info}
 
 
 def detect_pe_architecture(path: Path) -> Architecture:
