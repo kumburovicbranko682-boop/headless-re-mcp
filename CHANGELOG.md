@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **272（155 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **273（156 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1361,6 +1361,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   单测(`test_apk_fields.py`):callee 的两条指令带正确代码单元偏移与 marker 操作数、点分类名解析到 smali 类、重载列全并由 `descriptor` 选定、未知方法 `not_found`、空参 `invalid_params`、长方法分页。
   实机 gate(`test_m11_android_apk_live_gate.py`)对真实 dex:`callee` 反汇编含 `const-string` 且操作数带 `APK_GATE_MARKER_STRING`、首指令 `addr` 为 0、`overloads` 恰一条;`caller` 反汇编含 `invoke` 且操作数
   指向 `callee`——读的是真实 `EncodedMethod.get_instructions` 路径,而非 mock。
+
+- **新增 `apk.intent_filters`:列出各组件声明的 intent-filter——Android 的深链接/IPC 入口面,即 `apk.components` 只回答「谁被导出」之外的「怎么被触达」。** 深链接劫持与导出组件是 Android 最典型的攻击面,
+  但此前只能拿到导出组件名,拿不到到达它们的 action/scheme/host/path。androguard 无结构化 intent-filter getter,故沿用 `_exported_components` 那套:从解码后的清单树(`get_android_manifest_xml`)遍历每个
+  声明了 `<intent-filter>` 的组件,记录组件 FQN、类别(activities/services/receivers/providers)、是否导出(有 filter 即导出,除非显式 `android:exported="false"`——显式属性优先),以及每条 filter 的 `actions`、
+  `categories`、`data`(每个 `<data>` 元素声明的 android:* 属性:scheme/host/port/path/pathPrefix/pathPattern/mimeType/ssp 等,原样按元素报出而不猜测 Android 的跨元素合并,故调用方看到的是清单真正声明的
+  scheme/host,而非拼出的可能错误的 scheme://host)。每条 filter 另带 `deep_link`:当它是典型可浏览 Web 入口(VIEW action + BROWSABLE category + 带 scheme 的 data)时为真——最该先看的劫持面。仅列出至少有
+  一条 filter 的组件;回 `components`/`count`/`total`/`offset`/`has_more`/`scan_capped`,`total` 上限 256(超出置 `scan_capped`),`count` 可能因结果预算裁剪低于 `limit`,按 `has_more` 翻页。清单不可解析时降级为
+  空列表而非抛错;抽象等无关组件不出现。这是纯清单读取(不触 DEX),用 `_apk` 轻量对象。工具面 272→**273**(155→**156** 只读,写不变)。单测(`test_apk_intent_filters.py`,复用导出组件测试的
+  真·lxml 清单树形制):只列有 filter 的组件、深链接 flag 与 data 属性读出、MAIN/LAUNCHER 不算深链接、`exported="false"` 压过 filter 但 filter 仍报出且 `deep_link` 仍为真、receiver 归到 receivers、无 filter
+  清单为空、清单抛错降级为空。实机 gate(`test_m11_android_apk_live_gate.py`)对真实 AXML:本夹具 MainActivity 无 intent-filter,故读回空组件列表与 `total` 0——证明遍历在真实解码路径上跑通且诚实降级
+  (空而非崩),与上面导出检查同一层级;填充形态由 crafted 清单单测覆盖。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
