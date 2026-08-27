@@ -60,8 +60,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with flows (id, seq, method, url, host, status, content_type,
         response_size), count, total, offset, has_more, and dropped.
-        response_size is the decoded response body length in bytes (0 when the
-        response had no body). body_omitted is set on a row whose
+        response_size is the received (on-wire) response body length in bytes
+        (0 when the response had no body); it is the compressed length for an
+        encoded response, so proxy.flow.get, which decompresses the body, can
+        report a larger size. body_omitted is set on a row whose
         request/response body was over the retain cap. A flow mitmproxy could
         not complete (TLS refused, upstream unreachable, connection reset) is
         captured too, carrying error=true and error_msg with a null status;
@@ -82,11 +84,16 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         headers). Both request and response carry the body: size, and either
         body (UTF-8 text at most 200000 bytes) or body_path plus spill_reason
         (too_large or binary) when the body was spilled to an artifact rather
-        than decoded lossily. A spilled body also carries artifact_id. Headers
-        are bounded in count and size; metadata_truncated on request or
-        response marks a clipped header map or field. There is no top-level
-        headers or body field, and a binary body is never returned as a
-        mojibake body string.
+        than decoded lossily. A spilled body also carries artifact_id. The body
+        is content-encoding decoded -- a gzip, brotli or deflate response comes
+        back as its real bytes, not the opaque compressed blob that would
+        otherwise spill as binary -- so size is the decompressed length (it can
+        exceed the on-wire response_size that proxy.flows reports). A body whose
+        encoding cannot be decoded (corrupt or unsupported) falls back to the raw
+        wire bytes rather than being dropped. Headers are bounded in count and
+        size; metadata_truncated on request or response marks a clipped header
+        map or field. There is no top-level headers or body field, and a binary
+        body is never returned as a mojibake body string.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

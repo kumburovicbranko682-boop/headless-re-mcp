@@ -215,21 +215,38 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
-def _raw_body(part: Any) -> bytes:
-    """The raw bytes of a request/response, or empty when there is no body.
+def _decoded_body(part: Any) -> bytes:
+    """The content-encoding-decoded body (gzip/br/deflate decompressed).
 
-    mitmproxy decodes ``raw_content`` lazily and can raise while doing so; a
-    failure there is not a reason to fail the whole fetch, so it reads as an
-    empty body the same way a bodyless message does.
+    mitmproxy keeps two views of a body: ``raw_content`` is the bytes exactly as
+    they crossed the wire, and ``content`` is those bytes with any
+    ``Content-Encoding`` undone. Modern responses are almost always gzip- or
+    brotli-compressed, so ``raw_content`` is opaque compressed bytes -- handing
+    those to :func:`_emit_body` could only spill a ``.bin`` (``spill_reason``
+    "binary"), hiding the very JSON or HTML an analyst opened ``flow.get`` to
+    read. Prefer ``content`` so the caller gets the real payload.
+
+    ``content`` raises on a corrupt or unsupported encoding; fall back to the
+    raw wire bytes then so a body is still surfaced (spilled) rather than
+    dropped, and to ``b""`` only when there is no body or it cannot be read at
+    all. Decoding happens on demand for one explicitly fetched flow, and only
+    retained flows (bodies within the stored-body cap) ever reach here, so this
+    never decompresses on the capture thread or for an omitted giant.
     """
     if part is None:
         return b""
     try:
-        content = part.raw_content
-    except Exception:  # noqa: BLE001 - a decode failure is an empty body here
+        decoded = part.content
+    except Exception:  # noqa: BLE001 - undecodable encoding; fall back to the wire bytes
+        decoded = None
+    if isinstance(decoded, (bytes, bytearray)):
+        return bytes(decoded)
+    try:
+        raw = part.raw_content
+    except Exception:  # noqa: BLE001 - no readable body at all
         return b""
-    if isinstance(content, (bytes, bytearray)):
-        return bytes(content)
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw)
     return b""
 
 
@@ -364,10 +381,15 @@ class _FlowRecorder:
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
-        # The decoded response body length is known here, before the flow may be
-        # dropped from the retain ring, so the summary keeps it even for a flow
-        # whose body was not retained -- and the HAR export can report a real
-        # content size instead of the -1 "unknown" sentinel.
+        # The received (on-wire) response body length is known here, before the
+        # flow may be dropped from the retain ring, so the summary keeps it even
+        # for a flow whose body was not retained -- and the HAR export can report
+        # a real content size instead of the -1 "unknown" sentinel. This is the
+        # compressed length as it crossed the wire; ``flow.get`` decompresses the
+        # body it returns, so its reported size can be larger for an encoded body.
+        # Measuring the wire length stays cheap and never decompresses on
+        # mitmproxy's event-loop thread (nor risks a decompression bomb) the way
+        # decoding every captured flow here would.
         response_size = _content_len(resp)
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
@@ -670,15 +692,16 @@ class ProxyBackend:
             request["metadata_truncated"] = True
         # The request body is what an agent reverse-engineering an API most
         # wants to see -- what was actually POSTed -- and used to be dropped
-        # entirely, leaving only the response.
-        request.update(_emit_body(_raw_body(req), artifact_dir))
+        # entirely, leaving only the response. It is decompressed here so a
+        # gzip'd body reads as its real bytes rather than an opaque blob.
+        request.update(_emit_body(_decoded_body(req), artifact_dir))
         response: JsonObject = {
             "status": getattr(resp, "status_code", None),
             "headers": resp_headers,
         }
         if resp_headers_cut:
             response["metadata_truncated"] = True
-        response.update(_emit_body(_raw_body(resp), artifact_dir))
+        response.update(_emit_body(_decoded_body(resp), artifact_dir))
         return {"id": flow_id, "request": request, "response": response}
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:

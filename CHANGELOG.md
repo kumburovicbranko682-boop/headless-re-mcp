@@ -24,6 +24,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（proxy.flow.get 返回解压后的响应体,而非线上的 gzip 原始字节）
+
+- `proxy.flow.get` 取正文时读的是 mitmproxy 的 `raw_content`——即**线上原样字节**。现代 HTTP 响应几乎都带
+  `Content-Encoding: gzip`(或 brotli/deflate),于是 `raw_content` 是压缩后的二进制,`_emit_body` 只能把它当
+  "非文本"落盘成一个打不开的 `.bin`(`spill_reason` 为 `binary`)——逆向的人打开 `flow.get` 想读的正是那段
+  JSON/HTML,却拿到一坨压缩字节。改为优先读 `content`(mitmproxy 已按 `Content-Encoding` 解压的视图):gzip/br
+  响应体现在按真实字节返回,可直接内联为文本;只有当某种编码无法解码(损坏或不支持,`content` 抛异常)时才回退到
+  线上原始字节,而不是把正文丢空。解压只在显式取某一条流时按需发生,且只有被保留(正文在 stored-body 上限内)的流
+  才会走到这里,绝不会在 mitmproxy 的事件循环线程上、或对被省略的超大流做解压。请求体同样解压——`flow.get` 现在
+  能读到真正被 POST 出去的解压后 payload。`proxy.flows` 的 `response_size` 保持为**线上(压缩)字节数**(每条流都
+  要算,保持廉价且不触发解压炸弹),故 `flow.get` 报的解压后 `size` 可能大于它——两处文档串已据此更正:`flow.get`
+  说明正文按 content-encoding 解码、`size` 是解压后长度,`flows` 说明 `response_size` 是线上(压缩)长度。单测新增
+  六条(gzip 响应体/请求体解压内联、损坏编码回退到二进制落盘或可读原文、无编码正文原样、无正文为空、两条文档串
+  断言),以模拟 mitmproxy content/raw_content 双视图的假件驱动(单测泳道无需装 mitmproxy)。新增 live gate
+  (`test_proxy_flow_get_decoded_body_live_gate.py`):起一个总是 gzip 编码 JSON 的本地源站,经真实 mitmproxy 常规
+  代理转发一次客户端请求,再取回捕获的流,断言返回正文是可读 JSON、解压后 `size` 大于线上 `response_size`(证明确有
+  压缩、修复非空转)。CI 新增 `linux-proxy-decoded-body` job 装 mitmproxy 跑该 gate,skip≠pass 守卫在 mitmproxy
+  已装却仍 skip 时判失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
