@@ -433,6 +433,41 @@ class _FlowRecorder:
             return self._retained_bytes
 
 
+# mitmproxy keeps the "current" master and its options in process-wide module
+# globals (mitmproxy.master.Master.__init__ assigns mitmproxy.ctx.master /
+# .options), because upstream runs exactly one master per process. This service
+# runs one master per session, each on its own thread. A master is built by
+# registering addons one at a time, and each addon's load() adds its options to
+# ctx.options -- so a master that is still constructing exposes a half-populated
+# ctx.options to the whole process. Meanwhile a sibling master that is already
+# starting fires its running() hooks, several of which read ctx.options
+# (readfile reads rfile, keepserving reads rfile/client_replay/server_replay,
+# ...). If a running() hook lands in another master's construction window it
+# reads an option that is not registered yet and raises "No such option: rfile";
+# mitmproxy's ErrorCheck addon escalates that logged error to a fatal exit, and
+# the master dies during startup with its listen socket already bound -- a leaked
+# port that the next start() cannot rebind. Serialize the construct-through-
+# running window so only one master ever touches those globals at a time.
+_STARTUP_LOCK = threading.Lock()
+
+
+class _StartupGate:
+    """A trailing addon whose running() hook marks the end of a master's startup.
+
+    Added last, so trigger_event (which walks the addon chain in order) invokes
+    it only after every built-in addon's running() hook has already read the
+    shared ctx globals. Releasing the startup lock here -- rather than when the
+    port merely binds, which happens earlier in the chain -- is what guarantees a
+    sibling master does not begin construction until this one is done with ctx.
+    """
+
+    def __init__(self, on_running: Any) -> None:
+        self._on_running = on_running
+
+    def running(self) -> None:
+        self._on_running()
+
+
 class _ProxyInstance:
     def __init__(self, host: str, port: int) -> None:
         self.host = host
@@ -495,11 +530,32 @@ class _ProxyInstance:
             # versions. Catching TypeError around run() too would treat a bug
             # inside a running proxy as a signature mismatch and start a second
             # DumpMaster on the same port.
+            # mitmproxy keeps ctx.master/ctx.options as process-wide globals, so
+            # a master under construction (its addons register options one at a
+            # time) must not overlap a sibling master's startup hooks, which read
+            # those globals. Hold the lock across construction and release it only
+            # once this master's own running() hooks have all fired -- see
+            # _STARTUP_LOCK. The event guards the double release (running hook vs
+            # the finally backstop for a startup that never reaches running()).
+            _STARTUP_LOCK.acquire()
+            startup_done = threading.Event()
+
+            def _release_startup() -> None:
+                if not startup_done.is_set():
+                    startup_done.set()
+                    with contextlib.suppress(RuntimeError):
+                        _STARTUP_LOCK.release()
+
             try:
                 master = DumpMaster(opts, loop=loop, with_termlog=False, with_dumper=False)
             except TypeError:
                 master = DumpMaster(opts)
             master.addons.add(self.recorder)
+            # Appended last so its running() hook runs after every built-in
+            # addon's (trigger_event walks the chain in order): that is the point
+            # where mitmproxy has finished touching the shared ctx globals for
+            # this master and the next one is free to build.
+            master.addons.add(_StartupGate(_release_startup))
             self._master = master
             self._started.set()
             loop.run_until_complete(master.run())
@@ -507,6 +563,10 @@ class _ProxyInstance:
             self._error = exc
             self._started.set()
         finally:
+            # A startup that crashes before running() (e.g. a busy port) never
+            # fires the gate, so release here too or the next start() would hang.
+            with contextlib.suppress(NameError):
+                _release_startup()
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound

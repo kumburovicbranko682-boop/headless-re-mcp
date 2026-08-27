@@ -24,6 +24,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（多个 mitmproxy 代理并发启动时相互踩坏共享全局，偶发启动失败/端口泄漏）
+
+- **同时开多个 `proxy.start`（每会话一个 mitmproxy master）会以约一成的概率有 master 启动即死、
+  端口还被占着。** mitmproxy 把「当前」master 及其 options 存在进程级模块全局里
+  （`mitmproxy.master.Master.__init__` 写 `mitmproxy.ctx.master` / `.options`），因为上游设定就是
+  一个进程只跑一个 master；本服务却是一会话一个 master、各跑在自己线程上。一个还在构造的 master
+  会把它自己「装了一半」的 options 暴露给整个进程（各 addon 的 `load()` 是一个个往 `ctx.options`
+  里加选项的），而另一个正在启动的 master 的 `running()` 钩子又会去读这些全局——`readfile` 读
+  `rfile`、`keepserving` 读 `rfile`/`client_replay`/`server_replay`……只要某个 `running()` 恰好落在
+  别的 master 的构造窗口里，就读到尚未注册的选项、抛 `No such option: rfile`，mitmproxy 的
+  `ErrorCheck` addon 再把这条日志升级成致命退出，于是 master 在监听 socket 已经绑上之后死于启动，
+  留下一个下次 `start()` 再也绑不上的端口。真机复现：旧代码整组 gate 跑 25 次挂 3 次；8 路并发启动
+  几乎必挂。现用一把进程级锁把「构造→`running()` 钩子全部跑完」这段串行化：新增末位 addon
+  `_StartupGate`，它的 `running()` 排在链尾（`trigger_event` 按 addon 链顺序逐个 await），跑到它就
+  说明本 master 已不再碰共享全局，此时才放锁让下一个 master 开工；启动中途崩溃（如端口被占）走
+  `finally` 兜底放锁，绝不把后续 `start()` 卡死。真机验证：修复后整组 gate 跑 50 次全绿、8 路并发
+  gate 跑 6 次全绿，端到端仍能拦到 GET 并记成 flow。新增
+  `tests/integration/test_proxy_lifecycle_gate.py::test_concurrent_starts_survive_the_shared_mitmproxy_globals`
+  （8 路并发起停）确定性地钉住这条：旧客户端上跑 8 次挂 8 次，修复后稳过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
