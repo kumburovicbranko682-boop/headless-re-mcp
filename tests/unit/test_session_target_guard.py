@@ -34,7 +34,9 @@ def test_require_pe_accepts_a_pe_session_and_returns_its_binary(tmp_path: Path) 
     assert session.require_target(TargetKind.PE) == binary
 
 
-@pytest.mark.parametrize("wrong", [TargetKind.ELF, TargetKind.APK, TargetKind.WEB])
+@pytest.mark.parametrize(
+    "wrong", [TargetKind.ELF, TargetKind.MACHO, TargetKind.APK, TargetKind.WEB]
+)
 def test_require_pe_refuses_non_pe_sessions_with_a_structured_mismatch(
     wrong: TargetKind, tmp_path: Path
 ) -> None:
@@ -49,12 +51,13 @@ def test_require_pe_refuses_non_pe_sessions_with_a_structured_mismatch(
     assert error.details["expected_targets"] == [TargetKind.PE.value]
 
 
-def test_require_binary_serves_an_elf_session_like_any_local_binary(tmp_path: Path) -> None:
-    """An ELF session is file-backed, so require_binary returns it -- the r2 and
-    Ghidra tool surfaces reach ELF targets without a PE-only guard refusing them.
+@pytest.mark.parametrize("kind", [TargetKind.ELF, TargetKind.MACHO])
+def test_require_binary_serves_a_non_pe_local_binary(kind: TargetKind, tmp_path: Path) -> None:
+    """An ELF or Mach-O session is file-backed, so require_binary returns it --
+    the r2 and Ghidra tool surfaces reach those targets without a PE-only guard.
     """
     binary = tmp_path / "a.out"
-    session = _session(TargetKind.ELF, binary=binary)
+    session = _session(kind, binary=binary)
     assert session.require_binary() == binary
 
 
@@ -67,10 +70,11 @@ def test_require_binary_explains_a_locator_only_session() -> None:
 
     assert caught.value.code == "target_mismatch"
     assert caught.value.details["actual_target"] == TargetKind.WEB.value
-    # A PE, an ELF or an APK is the thing that would have a local file.
+    # A PE, an ELF, a Mach-O or an APK is the thing that would have a local file.
     assert set(caught.value.details["expected_targets"]) == {
         TargetKind.PE.value,
         TargetKind.ELF.value,
+        TargetKind.MACHO.value,
         TargetKind.APK.value,
     }
 
