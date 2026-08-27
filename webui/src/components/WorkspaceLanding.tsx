@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { WorkspaceProfile } from "../lib/inspectorSurface";
+import { WORKSPACE_PROFILE_KEY, type WorkspaceProfile } from "../lib/inspectorSurface";
 
 export type { WorkspaceProfile };
 
@@ -36,7 +36,7 @@ export function WorkspaceLanding({
     setError(null);
     try {
       await api("/api/workspace/mode", { method: "POST", body: JSON.stringify({ profile }) });
-      window.localStorage.setItem("headless_ws_profile", profile);
+      window.localStorage.setItem(WORKSPACE_PROFILE_KEY, profile);
       onChoose(profile);
     } catch (err) {
       setError(String(err));

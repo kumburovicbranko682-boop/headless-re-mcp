@@ -49,6 +49,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（工作台读 localStorage 里的方向不校验、且读取抛异常会拖垮整台控制台）
+
+- `webui` 工作台在挂载时用 `useState` 惰性初始化器从 `localStorage` 读 `headless_ws_profile`，
+  但直接 `stored as WorkspaceProfile` 强转、既不校验取值也不裹 `try/catch`——与同仓 `theme.ts`
+  的既有约定（`readTheme` 只认 `"dark"/"light"`、并 `try/catch` 兜底）相悖，埋了两处隐患。其一：
+  `localStorage.getItem` 本身会抛（Safari 隐私模式、存储被禁用、被沙箱化的 iframe）；这段代码跑在
+  render 期的 `useState` 初始化器里，一抛就是渲染期异常，整台控制台直接挂不出来。其二：落地页
+  是否弹出由 `landingOpen = workspaceProfile === null` 决定，只要存了个**非 null**的陌生值（典型是
+  跨版本升级后，`localStorage` 里还留着本版本已不认识的旧方向名），就被当成合法方向：方向选择
+  落地页被跳过，`openFormMode`/`createTargetForProfile`/`inspectorSurface` 对未知值统统回落到 PE，
+  用户被无声锁死在纯 PE 工具面，而服务端的活动方向从没被设置过，前后端就此错位。现按 `theme.ts`
+  的范式收敛：新增 `readStoredWorkspaceProfile()`——`try/catch` 兜底、只认 `PROFILE_LABEL` 里在册的
+  四个方向（用 `hasOwnProperty` 而非 `in`，防 `toString`/`constructor` 冒充），其余一律回落 `null`
+  让落地页照常弹出；工作台初始化器改用它，`headless_ws_profile` 这个键也抽成 `WORKSPACE_PROFILE_KEY`
+  常量供读写两处共用。
+- 新增五条组件直测：`isWorkspaceProfile` 只接受四个在册方向、拒空串/`null`/原型链属性；
+  `readStoredWorkspaceProfile` 对合法值返回该方向、对缺失与陌生值返回 `null`、在 `getItem` 抛异常时
+  不抛并返回 `null`。前端 68 条测试与 `tsc --noEmit` 均通过，提交的 SPA 产物已重建。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

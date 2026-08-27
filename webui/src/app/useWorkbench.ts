@@ -3,7 +3,7 @@ import { readApprovalMode, type ApprovalMode, type AutonomyResponse } from "../a
 import { initialState, reducer, type Message, type RunEvent, type Thread } from "../agent/state";
 import type { LostSample } from "../components/SessionReconnect";
 import { api, bootstrapToken, streamEvents } from "../api/client";
-import { createTargetForProfile, openFormMode, type WorkspaceProfile } from "../lib/inspectorSurface";
+import { createTargetForProfile, openFormMode, readStoredWorkspaceProfile, type WorkspaceProfile } from "../lib/inspectorSurface";
 import { rememberSample, recallSample } from "../lib/sampleMemory";
 import { asFileName, readSession, type ListedSession } from "../lib/sessionLabel";
 import { boundSessionId } from "../lib/threadBadge";
@@ -35,10 +35,7 @@ export function useWorkbench() {
   const [mcpOpen, setMcpOpen] = useState(false);
   const [nav, setNav] = useState<StudioNav>("sessions");
   const [inspectorOpen, setInspectorOpen] = useState(true);
-  const [workspaceProfile, setWorkspaceProfile] = useState<WorkspaceProfile | null>(() => {
-    const stored = typeof window !== "undefined" ? window.localStorage.getItem("headless_ws_profile") : null;
-    return (stored as WorkspaceProfile | null) ?? null;
-  });
+  const [workspaceProfile, setWorkspaceProfile] = useState<WorkspaceProfile | null>(readStoredWorkspaceProfile);
   const [landingOpen, setLandingOpen] = useState(workspaceProfile === null);
   const abortRef = useRef<AbortController | null>(null);
   const cursorRef = useRef(0);

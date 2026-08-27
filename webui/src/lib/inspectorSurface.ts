@@ -68,3 +68,29 @@ export const PROFILE_LABEL: Record<WorkspaceProfile, string> = {
   android: "Android",
   full: "全部工具",
 };
+
+export const WORKSPACE_PROFILE_KEY = "headless_ws_profile";
+
+export function isWorkspaceProfile(value: unknown): value is WorkspaceProfile {
+  // Tie validity to PROFILE_LABEL, whose Record<WorkspaceProfile, …> type the
+  // compiler forces to hold exactly the union's keys. hasOwnProperty (not `in`)
+  // so a stored "toString"/"constructor" cannot masquerade as a profile.
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(PROFILE_LABEL, value);
+}
+
+export function readStoredWorkspaceProfile(): WorkspaceProfile | null {
+  // Runs inside a useState initializer during render, so it must never throw:
+  // localStorage.getItem raises in Safari private mode, when storage is
+  // disabled, or in a sandboxed iframe, and an unguarded throw here would take
+  // down the whole console mount. A stale or foreign value (e.g. a profile name
+  // this build no longer knows, surviving across an app update) falls back to
+  // null so the direction-picker landing shows rather than silently stranding
+  // the user in a PE-only surface with the server profile left unset.
+  try {
+    if (typeof window === "undefined") return null;
+    const stored = window.localStorage.getItem(WORKSPACE_PROFILE_KEY);
+    return isWorkspaceProfile(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}

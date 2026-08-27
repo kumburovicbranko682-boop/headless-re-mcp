@@ -1,4 +1,13 @@
-import { createTargetForProfile, inspectorSurface, isSessionLive, openFormMode, peLiveMonitors } from "./inspectorSurface";
+import {
+  WORKSPACE_PROFILE_KEY,
+  createTargetForProfile,
+  inspectorSurface,
+  isSessionLive,
+  isWorkspaceProfile,
+  openFormMode,
+  peLiveMonitors,
+  readStoredWorkspaceProfile,
+} from "./inspectorSurface";
 
 describe("inspector surface", () => {
   it("uses the bound session target even when the workspace profile differs", () => {
@@ -26,5 +35,50 @@ describe("inspector surface", () => {
     expect(openFormMode("android")).toBe("apk");
     expect(openFormMode("pe")).toBe("file");
     expect(openFormMode("full")).toBe("file");
+  });
+
+  it("accepts only the known workspace profiles", () => {
+    expect(isWorkspaceProfile("pe")).toBe(true);
+    expect(isWorkspaceProfile("web")).toBe(true);
+    expect(isWorkspaceProfile("android")).toBe(true);
+    expect(isWorkspaceProfile("full")).toBe(true);
+    expect(isWorkspaceProfile("mobile")).toBe(false);
+    expect(isWorkspaceProfile("")).toBe(false);
+    expect(isWorkspaceProfile(null)).toBe(false);
+    // A property that lives on Object.prototype must not pass as a profile.
+    expect(isWorkspaceProfile("toString")).toBe(false);
+    expect(isWorkspaceProfile("constructor")).toBe(false);
+  });
+});
+
+describe("readStoredWorkspaceProfile", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("returns a valid stored profile", () => {
+    window.localStorage.setItem(WORKSPACE_PROFILE_KEY, "android");
+    expect(readStoredWorkspaceProfile()).toBe("android");
+  });
+
+  it("falls back to null for a missing value so the landing shows", () => {
+    expect(readStoredWorkspaceProfile()).toBeNull();
+  });
+
+  it("falls back to null for a stale/foreign value rather than trusting it", () => {
+    // A profile name a past/future build wrote that this build no longer knows.
+    window.localStorage.setItem(WORKSPACE_PROFILE_KEY, "mobile");
+    expect(readStoredWorkspaceProfile()).toBeNull();
+  });
+
+  it("returns null instead of throwing when localStorage access throws", () => {
+    // Safari private mode / disabled storage / sandboxed iframe. This runs in a
+    // useState initializer during render, so a throw would crash the mount.
+    vi.spyOn(window.localStorage, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    expect(() => readStoredWorkspaceProfile()).not.toThrow();
+    expect(readStoredWorkspaceProfile()).toBeNull();
   });
 });
