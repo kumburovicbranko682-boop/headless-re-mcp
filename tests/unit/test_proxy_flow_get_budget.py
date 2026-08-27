@@ -51,3 +51,57 @@ def test_flow_get_spills_a_quote_heavy_body_that_encodes_past_the_budget(
     assert payload["response"]["size"] == 180_000
     encoded = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
     assert encoded <= RESULT_BUDGET_BYTES
+
+
+def _flow_with(req_headers: Any, resp_headers: Any, body: bytes) -> Any:
+    request = SimpleNamespace(method="GET", pretty_url="http://x/1", headers=req_headers)
+    response = SimpleNamespace(
+        status_code=200, headers=resp_headers, raw_content=body
+    )
+    return SimpleNamespace(request=request, response=response)
+
+
+def _backend_returning(flow: Any, monkeypatch: Any) -> ProxyBackend:
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            del flow_id
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    return backend
+
+
+def test_flow_get_bounds_a_flood_of_response_headers(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # 200 headers of ~4000 chars each is ~800 KB -- far past the budget. The
+    # header map must be trimmed to its slice, flagged, and the reply must fit.
+    resp_headers = {f"x-h{index}": "v" * 4000 for index in range(200)}
+    flow = _flow_with({"accept": "*/*"}, resp_headers, b"ok")
+    backend = _backend_returning(flow, monkeypatch)
+
+    payload = backend.flow_get("s", "f1", tmp_path)
+
+    assert 0 < len(payload["response"]["headers"]) < 200
+    assert payload["response"]["headers_truncated"] is True
+    encoded = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    assert encoded <= RESULT_BUDGET_BYTES
+
+
+def test_flow_get_coerces_byte_header_values_to_json_safe_strings(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # Some mitmproxy versions expose raw bytes; a bytes value would crash the
+    # JSON serializer. It must come back as a str and json.dumps must succeed.
+    flow = _flow_with(
+        {"accept": "*/*"}, {"x-bin": b"\xff\xfe raw-bytes"}, b"ok"
+    )
+    backend = _backend_returning(flow, monkeypatch)
+
+    payload = backend.flow_get("s", "f1", tmp_path)
+
+    assert isinstance(payload["response"]["headers"]["x-bin"], str)
+    json.dumps(payload, ensure_ascii=False)  # must not raise

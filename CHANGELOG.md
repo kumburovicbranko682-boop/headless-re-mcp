@@ -1164,6 +1164,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   落盘、小文本/二进制内联路径行为如常)。新测(`test_proxy_flow_get_budget.py`):18 万全引号文本体(**短于字符上限**故只能靠编码闸)断言 `body`
   不在、`body_path` 存在且落盘字节与原文一致、`size`=180000、整条编码体不超预算。
 
+- **`proxy.flow.get` 的请求/响应头原样返回,既不强制类型也不限体积。**
+  接上一条 `flow_get` 正文的收敛:头部之前是 `dict(req.headers)`/`dict(resp.headers)` 直出。头部键值由对端控制,既没类型强制也没体积上限——恶意
+  服务器可发几 MB 头部(即便正文已落盘,也足以把回复顶过 262144 预算被整条丢弃),且某些 mitmproxy 版本给的是原始 `bytes`,JSON 序列化器根本编码
+  不了(直接崩成 `internal_error`)。新增 `_bounded_headers`:每个键/值都强制成 `str`(`bytes` 按 UTF-8 解码),单值封到 4KiB,整张头表按 JSON 编码
+  体积裁进各自 16KiB 的配额——两张头表加上已兜住的 `url` 正好落在正文编码检查为「非正文字段」预留的余量内。头表被裁时在对应的 request/response 上置
+  `headers_truncated`。既有 flow_get 测试不变(小头表照常直出)。新测:200 个 ~4000 字符的响应头(约 800KB)断言头表被裁到 200 条以下、
+  `headers_truncated` 真、整条编码体不超预算;一个 `bytes` 头值断言回来是 `str` 且 `json.dumps` 不抛。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的
