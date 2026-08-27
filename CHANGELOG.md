@@ -127,6 +127,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_MAX_ABIS=64`（真实 APK 只有寥寥几个 ABI，64 是绝不触及的余量）：`native_libs` 把 ABI 截断
   并入 `has_more`，`open` 的 `native_abis` 同样封顶。新增回归测试：5000 个不同 ABI 的病态 APK
   在两处都截到 64、`has_more` 置位、结果有序去重，而正常的三 ABI 应用原样返回、`has_more` 为假。
+- **同一无上限模式还出现在 `core/session.py` 的 `describe_apk`——且触发点更早**。它在建会话时对任何
+  被识别为 APK 的文件跑（不依赖 androguard），从 `namelist()` 直接用 `{parts[1] for name in names ...}`
+  构造 `native_abis`，条目名同样受构造者控制，于是一个恶意 APK 样本能在 `create_session` 阶段就把该集合
+  撑大。为保持这条路径「仅用标准库、不牵扯 androguard 后端」的既有设计，就地加本地上限
+  `_MAX_APK_ABIS=64`（与后端常量并列并加注释），达到上限即停止扫描；`dex_count`/`entry_count`/`signed_v1`
+  等计数照旧反映真实归档。新增回归测试：3000 个不同 ABI 的样本在建会话读取时截到 64，正常样本原样返回。
 
 ### 修复（托管质量门）
 

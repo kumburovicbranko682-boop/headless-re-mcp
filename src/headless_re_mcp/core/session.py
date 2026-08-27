@@ -361,6 +361,11 @@ _WEB_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".wasm", ".html", ".htm", ".ha
 _APK_MANIFEST = "AndroidManifest.xml"
 # Enough for every magic number below without pulling a large header into memory.
 _MAGIC_BYTES = 8
+# Real APKs ship a handful of ABIs; this mirrors backends.apk.client._MAX_ABIS.
+# The entry names are attacker-controlled, and describe_apk runs at session
+# creation, so the derived set is bounded there too -- kept stdlib-local so this
+# path never depends on the androguard backend.
+_MAX_APK_ABIS = 64
 
 
 def is_http_url(reference: str) -> bool:
@@ -421,16 +426,19 @@ def describe_apk(path: Path) -> dict[str, Any]:
         raise ValueError(f"not a readable Android package: {path}") from exc
     if _APK_MANIFEST not in names:
         raise ValueError(f"archive has no {_APK_MANIFEST}: {path}")
-    abis = sorted(
-        {
-            parts[1]
-            for name in names
-            if name.startswith("lib/") and len(parts := name.split("/")) >= 3 and parts[1]
-        }
-    )
+    abis: set[str] = set()
+    for name in names:
+        if not name.startswith("lib/"):
+            continue
+        parts = name.split("/")
+        if len(parts) < 3 or not parts[1] or parts[1] in abis:
+            continue
+        if len(abis) >= _MAX_APK_ABIS:
+            break
+        abis.add(parts[1])
     return {
         "apk": {
-            "native_abis": abis,
+            "native_abis": sorted(abis),
             "dex_count": sum(1 for name in names if name.endswith(".dex")),
             "entry_count": len(names),
             "signed_v1": any(
