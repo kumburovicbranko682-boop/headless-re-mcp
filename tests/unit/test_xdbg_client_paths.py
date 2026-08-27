@@ -208,6 +208,7 @@ def _bare_client() -> XdbgClient:
     client._observed_windows_dropped = 0
     client._debuggee_pid = None
     client._desktop = None
+    client._transport = None
     return client
 
 
@@ -890,3 +891,279 @@ def test_request_notes_the_debuggee_pid_from_a_result(
     result = client._request("debug.state", {}, timeout=1)
     assert result == {"process_id": 24680}
     assert client._debuggee_pid == 24680
+
+
+# --------------------------------------------------------------------------- #
+# small helpers, properties, and public request() guards
+# --------------------------------------------------------------------------- #
+
+
+def test_rpc_error_from_payload_handles_non_dict_and_dict() -> None:
+    fallback = XdbgRpcError.from_payload("nope")
+    assert fallback.code == "rpc_protocol_error"
+
+    structured = XdbgRpcError.from_payload(
+        {"code": "bad", "message": "boom", "details": {"k": 1}, "retryable": True}
+    )
+    assert structured.code == "bad"
+    assert structured.details == {"k": 1}
+    assert structured.retryable is True
+
+    # A non-dict "details" is coerced to an empty mapping.
+    coerced = XdbgRpcError.from_payload({"code": "x", "details": "not-a-dict"})
+    assert coerced.details == {}
+
+
+def test_seed_headless_event_settings_writes_once(tmp_path: Path) -> None:
+    path = client_module.seed_headless_event_settings(tmp_path)
+    assert path.read_text(encoding="utf-8").startswith("[Events]")
+    # A second call must not overwrite an operator's edited ini.
+    path.write_text("edited", encoding="utf-8")
+    again = client_module.seed_headless_event_settings(tmp_path)
+    assert again.read_text(encoding="utf-8") == "edited"
+
+
+def test_client_properties_read_through() -> None:
+    client = _bare_client()
+    client._capabilities = frozenset({"events.read"})
+    client._metadata = {"desktop": {}}
+    client._user_directory = TemporaryDirectory(prefix="headless-re-xdbg-prop-")
+    assert client.pid == client._process.pid
+    assert client.exit_code is None
+    assert client.runtime_directory == Path(client._user_directory.name)
+    assert client.capabilities == frozenset({"events.read"})
+    assert client.metadata == {"desktop": {}}
+    assert client.transport_connected is False
+    client._user_directory.cleanup()
+
+
+def test_public_request_refuses_once_closed() -> None:
+    client = _bare_client()
+    client._closed = True
+    with pytest.raises(XdbgRpcError, match="closed"):
+        client.request("events.read")
+
+
+def test_public_request_reports_a_dead_worker() -> None:
+    client = _bare_client()
+    client._process.returncode = 5
+    with pytest.raises(XdbgRpcError) as exc:
+        client.request("events.read")
+    assert exc.value.code == "worker_exited"
+
+
+def test_public_request_rejects_an_unavailable_capability() -> None:
+    client = _bare_client()
+    client._capabilities = frozenset({"events.read"})
+    with pytest.raises(XdbgRpcError) as exc:
+        client.request("patches.apply")
+    assert exc.value.code == "capability_unavailable"
+    assert exc.value.details == {"capability": "patches.apply"}
+
+
+# --------------------------------------------------------------------------- #
+# desktop snapshot / capture routing
+# --------------------------------------------------------------------------- #
+
+
+def test_desktop_snapshot_uses_the_input_desktop_without_a_hidden_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _bare_client()
+    monkeypatch.setattr(
+        "headless_re_mcp.core.windows.snapshot_input_desktop",
+        lambda *, allowed_pids=None: {"desktop": "input"},
+    )
+    assert client.desktop_snapshot() == {"desktop": "input"}
+
+
+def test_desktop_snapshot_prefers_a_hidden_desktop() -> None:
+    client = _bare_client()
+    client._desktop = type(
+        "D", (), {"snapshot": lambda self, *, allowed_pids=None: {"desktop": "hidden"}}
+    )()
+    assert client.desktop_snapshot() == {"desktop": "hidden"}
+
+
+def test_desktop_capture_authorizes_against_the_input_desktop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _bare_client()
+    monkeypatch.setattr(
+        "headless_re_mcp.core.windows.list_input_desktop_windows",
+        lambda *, allowed_pids: [{"hwnd": 4321}],
+    )
+    monkeypatch.setattr(
+        "headless_re_mcp.core.ui_win32.capture_hwnd_screenshot",
+        lambda hwnd, allowed_pids, output_path: {"path": str(output_path)},
+    )
+    out = tmp_path / "cap.png"
+    result = client.desktop_capture(4321, allowed_pids=frozenset({1}), output_path=out)
+    assert result == {"path": str(out)}
+
+    with pytest.raises(XdbgRpcError) as exc:
+        client.desktop_capture(9999, allowed_pids=frozenset({1}), output_path=out)
+    assert exc.value.code == "window_not_authorized"
+
+
+def test_desktop_capture_prefers_a_hidden_desktop(tmp_path: Path) -> None:
+    client = _bare_client()
+    client._desktop = type(
+        "D",
+        (),
+        {"capture": lambda self, hwnd, *, allowed_pids, output_path: {"hwnd": hwnd}},
+    )()
+    result = client.desktop_capture(7, allowed_pids=frozenset({1}), output_path=tmp_path / "c.png")
+    assert result == {"hwnd": 7}
+
+
+# --------------------------------------------------------------------------- #
+# remaining close / terminate / monitor / finish branches
+# --------------------------------------------------------------------------- #
+
+
+def test_note_debuggee_pid_ignores_a_non_positive_string() -> None:
+    client = _bare_client()
+    client._debuggee_pid = None
+    client._note_debuggee_pid({"process_id": "0"})
+    assert client._debuggee_pid is None
+
+
+def test_trace_stop_skips_validation_when_uninitialized() -> None:
+    client = _bare_client()
+    client.request = lambda method, params=None, *, timeout=10.0: {"initialized": False}  # type: ignore[method-assign,assignment]
+    assert client.trace_stop() == {"initialized": False}
+
+
+def test_monitor_windows_handles_no_windows_without_a_desktop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _bare_client()
+    client._desktop = None
+
+    class _StopTwice:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def wait(self, timeout: float) -> bool:
+            self.n += 1
+            return self.n > 1
+
+    client._monitor_stop = _StopTwice()  # type: ignore[assignment]
+    monkeypatch.setattr(client, "_describe_analyzer_windows", lambda: [])
+    client._monitor_windows()
+    assert client.analyzer_windows == ()
+
+
+def test_finish_threads_tolerates_missing_threads_and_helpers() -> None:
+    client = object.__new__(XdbgClient)
+    client._monitor_stop = Event()
+    client._desktop = None
+    client._isolation_job = None
+    client._finish_threads()  # no thread attrs, no user_directory: must not raise
+    assert client._monitor_stop.is_set()
+
+
+def test_close_skips_work_when_the_process_already_exited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _bare_client()
+    client._process.returncode = 0
+    client._transport = None
+    client._monitor_stop = Event()
+    monkeypatch.setattr(client, "_finish_threads", lambda: None)
+    client.close()  # poll() is not None -> the trace/debug block is skipped
+    assert client._closed is True
+
+
+def test_close_swallows_a_trace_status_rpc_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _ErroringTransport(EnvelopeTransport):
+        def write_all(self, data: bytes, *, timeout: float) -> None:
+            request = json.loads(data[4:])
+            self.methods.append(request["method"])
+            if request["method"] == "trace.status":
+                encoded = json.dumps(
+                    {
+                        "protocol": "headless-re-xdbg",
+                        "version": 1,
+                        "id": request["id"],
+                        "ok": False,
+                        "error": {"code": "backend_error", "message": "no trace subsystem"},
+                    },
+                    separators=(",", ":"),
+                ).encode()
+                self._reads.extend((len(encoded).to_bytes(4, "little"), encoded))
+                return
+            super().write_all(data, timeout=timeout)
+
+    transport = _ErroringTransport({"debug.state": {"debugging": False, "state": "idle"}})
+    client = _bare_client()
+    client._capabilities = frozenset({"trace.status"})
+    client._transport = transport  # type: ignore[assignment]
+    client._monitor_stop = Event()
+    monkeypatch.setattr(client, "_describe_analyzer_windows", lambda: [])
+    monkeypatch.setattr(client, "_finish_threads", lambda: None)
+    client.close()
+    # The trace.status error is caught by the shared guard, which abandons the
+    # rest of the graceful-stop block; teardown in the finally still completes.
+    assert transport.methods == ["trace.status"]
+    assert client._process.stdin is not None
+    assert client._process.stdin.value == "exit\n"
+    assert transport.closed is True
+    assert client._closed is True
+
+
+def test_close_skips_trace_stop_when_not_recording(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = EnvelopeTransport(
+        {
+            "trace.status": {"recording": False},
+            "debug.state": {"debugging": False, "state": "idle"},
+        }
+    )
+    client = _bare_client()
+    client._capabilities = frozenset({"trace.status", "trace.stop", "debug.stop"})
+    client._transport = transport  # type: ignore[assignment]
+    client._monitor_stop = Event()
+    monkeypatch.setattr(client, "_describe_analyzer_windows", lambda: [])
+    monkeypatch.setattr(client, "_finish_threads", lambda: None)
+    client.close()
+    # Not recording: trace.stop is skipped; debug.state runs but nothing is
+    # debugging, so debug.stop is skipped too.
+    assert transport.methods == ["trace.status", "debug.state"]
+    assert client._closed is True
+
+
+def test_terminate_without_a_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _bare_client()
+    client._transport = None
+    order: list[str] = []
+    monkeypatch.setattr(client, "_terminate_process", lambda: order.append("kill"))
+    monkeypatch.setattr(client, "_finish_threads", lambda: order.append("finish"))
+    client.terminate()
+    assert order == ["kill", "finish"]
+    assert client._closed is True
+
+
+def test_connect_transport_closes_a_previous_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _bare_client()
+    old = EnvelopeTransport()
+    client._transport = old  # type: ignore[assignment]
+    client._pipe_name = r"\\.\pipe\headless-re-test"
+    client._token = "token"
+    client._architecture = Architecture.X64
+    client._startup_timeout = 5.0
+    monkeypatch.setattr(client, "_describe_analyzer_windows", lambda: [])
+    new = FlexHandshake(server_pid=9911, hello_pid=9911, capabilities=["events.read"])
+    monkeypatch.setattr(
+        client_module._NamedPipeTransport,
+        "connect",
+        classmethod(lambda cls, pipe_name, *, timeout, process: new),
+    )
+    hello = client._connect_transport(5.0)
+    assert old.closed is True
+    assert client._transport is new
+    assert hello["capabilities"] == ["events.read"]
