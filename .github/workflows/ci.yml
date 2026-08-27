@@ -152,6 +152,67 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-jadx-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      JADX_VERSION: "1.5.1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          # One JDK serves both roles: jadx needs a JRE to run, and the gate
+          # needs javac/jar to build the fixture it decompiles.
+          java-version: "21"
+
+      - name: Cache jadx release
+        id: jadx-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/jadx
+          key: jadx-${{ env.JADX_VERSION }}
+
+      - name: Install jadx
+        if: steps.jadx-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/jadx
+          url="https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"
+          curl -fsSL -o /tmp/jadx.zip "$url"
+          unzip -q /tmp/jadx.zip -d ~/jadx
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: jadx gate runs for real (skip != pass)
+        run: |
+          export HEADLESS_RE_JADX="$HOME/jadx/bin/jadx"
+          "$HEADLESS_RE_JADX" --version
+          python -m pytest tests/integration/test_jadx_live_gate.py \
+            -rs --tb=short --junitxml=jadx-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("jadx-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # jadx and a JDK were just installed, so a skip here means the gate
+          # could not reach them -- the false-green "skip != pass" warns about.
+          if not cases:
+              sys.exit("no jadx gate was collected")
+          if skipped:
+              sys.exit(f"jadx gate skipped despite an installed jadx: {skipped}")
+          print(f"jadx gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

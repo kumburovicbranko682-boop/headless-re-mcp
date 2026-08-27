@@ -5,6 +5,14 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+jadx 反编译线首次有了真实执行覆盖：新增 `tests/integration/test_jadx_live_gate.py`，
+用 `javac`/`jar` 现场编出一个真实 JAR（jadx 的一等输入，无需 Android SDK 构建
+DEX/APK），驱动 `JadxClient.export_sources` / `decompile` 走完整的子进程与回读路径，
+并断言反编译源码里恢复出了具名方法（`addNumbers` / `greet`），而不只是"有输出文件"。
+此前 Android gate 只用合成压缩包断言优雅降级，jadx 从未被端到端跑过。CI 新增
+`linux-jadx-live` job：装 Temurin 21（同时供 jadx 运行与夹具编译）、缓存 jadx 1.5.1
+发行包，运行该 gate 并解析 junitxml——jadx 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
