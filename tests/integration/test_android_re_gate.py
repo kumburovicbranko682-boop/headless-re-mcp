@@ -9,8 +9,10 @@ the live-device parts, which have their own explicit skips).
 
 from __future__ import annotations
 
+import hashlib
 import struct
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,9 @@ _ANDROID_URI = "http://schemas.android.com/apk/res/android"
 _APK_PACKAGE = "com.example.gate"
 _APK_PERMISSION = "android.permission.INTERNET"
 _APK_ACTIVITY = "com.example.gate.MainActivity"
+_DEX_CLASS = "Lcom/example/gate/Sample;"
+_DEX_METHOD = "helper"
+_DEX_STRING = "gate-secret-marker"
 
 
 def _build_synthetic_apk(path: Path) -> Path:
@@ -171,6 +176,135 @@ def _build_valid_apk(path: Path) -> Path:
     return path
 
 
+# --- Minimal *valid* classes.dex ------------------------------------------
+#
+# The valid manifest above lets androguard read the metadata, but the whole DEX
+# side of the static line -- classes/methods/strings/xrefs -- still had no live
+# coverage, because none of the fixtures carry a real DEX. Compiling one
+# normally needs the Android build tools (d8/dx); to stay self-contained we
+# hand-encode the DEX container the same way we do the AXML manifest. The result
+# is one class (Lcom/example/gate/Sample;) with one static method helper()V
+# whose body is `const-string v0, "gate-secret-marker"; return-void`, so
+# androguard's analysis has a class to list, a method to enumerate, a string to
+# surface and a call graph to walk. The Adler-32 checksum and SHA-1 signature
+# are computed over the finished bytes exactly as the format requires, so a
+# strict parser accepts it.
+def _uleb128(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _build_classes_dex() -> bytes:
+    # DEX requires string_ids sorted by code point; keep the source list sorted.
+    strings = [_DEX_CLASS, "Ljava/lang/Object;", "V", _DEX_STRING, _DEX_METHOD]
+    assert strings == sorted(strings)
+    s_void, s_marker, s_name = 2, 3, 4  # indices into `strings`
+    # type_ids -> string index, itself sorted by string index: Sample, Object, V.
+    type_to_str = [0, 1, 2]
+    t_sample, t_object, t_void = 0, 1, 2
+
+    header_size = 112
+    string_ids_off = header_size
+    type_ids_off = string_ids_off + 4 * len(strings)
+    proto_ids_off = type_ids_off + 4 * len(type_to_str)
+    method_ids_off = proto_ids_off + 12  # one proto ()V
+    class_defs_off = method_ids_off + 8  # one method
+    data_off = class_defs_off + 32  # one class_def
+
+    def align4(pos: int) -> tuple[bytes, int]:
+        pad = (-pos) % 4
+        return b"\x00" * pad, pos + pad
+
+    cursor = data_off
+    string_data_offsets: list[int] = []
+    string_data = bytearray()
+    for value in strings:
+        string_data_offsets.append(cursor)
+        chunk = _uleb128(len(value)) + value.encode("utf-8") + b"\x00"
+        string_data += chunk
+        cursor += len(chunk)
+
+    pad, cursor = align4(cursor)
+    string_data += pad
+    code_off = cursor
+    # const-string v0, string@marker ; return-void  (3 code units)
+    insns = struct.pack("<HHH", 0x001A, s_marker, 0x000E)
+    code_item = struct.pack("<HHHH", 1, 0, 0, 0) + struct.pack("<II", 0, 3) + insns
+    cursor += len(code_item)
+
+    class_data_off = cursor
+    class_data = (
+        _uleb128(0) + _uleb128(0) + _uleb128(1) + _uleb128(0)  # static/instance/direct/virtual
+        + _uleb128(0) + _uleb128(0x9) + _uleb128(code_off)  # method_idx_diff, public|static, code
+    )
+    cursor += len(class_data)
+
+    map_pad, cursor = align4(cursor)
+    map_off = cursor
+    map_items = [
+        (0x0000, 1, 0),
+        (0x0001, len(strings), string_ids_off),
+        (0x0002, len(type_to_str), type_ids_off),
+        (0x0003, 1, proto_ids_off),
+        (0x0005, 1, method_ids_off),
+        (0x0006, 1, class_defs_off),
+        (0x2002, len(strings), data_off),
+        (0x2001, 1, code_off),
+        (0x2000, 1, class_data_off),
+        (0x1000, 1, map_off),
+    ]
+    map_list = struct.pack("<I", len(map_items))
+    for mtype, count, off in map_items:
+        map_list += struct.pack("<HHII", mtype, 0, count, off)
+    cursor += len(map_list)
+
+    file_size = cursor
+    string_ids = b"".join(struct.pack("<I", off) for off in string_data_offsets)
+    type_ids = b"".join(struct.pack("<I", idx) for idx in type_to_str)
+    proto_ids = struct.pack("<III", s_void, t_void, 0)
+    method_ids = struct.pack("<HHI", t_sample, 0, s_name)
+    class_defs = struct.pack(
+        "<IiIIiIII", t_sample, 0x1, t_object, 0, -1, 0, class_data_off, 0
+    )
+
+    header = bytearray(112)
+    header[0:8] = b"dex\n035\x00"
+    fields = [
+        (32, file_size), (36, header_size), (40, 0x12345678), (44, 0), (48, 0),
+        (52, map_off), (56, len(strings)), (60, string_ids_off),
+        (64, len(type_to_str)), (68, type_ids_off), (72, 1), (76, proto_ids_off),
+        (80, 0), (84, 0), (88, 1), (92, method_ids_off), (96, 1), (100, class_defs_off),
+        (104, file_size - data_off), (108, data_off),
+    ]
+    for pos, val in fields:
+        struct.pack_into("<I", header, pos, val)
+
+    body = bytearray(
+        bytes(header) + string_ids + type_ids + proto_ids + method_ids + class_defs
+        + bytes(string_data) + code_item + bytes(class_data) + map_pad + map_list
+    )
+    assert len(body) == file_size, (len(body), file_size)
+    body[12:32] = hashlib.sha1(bytes(body[32:])).digest()
+    struct.pack_into("<I", body, 8, zlib.adler32(bytes(body[12:])) & 0xFFFFFFFF)
+    return bytes(body)
+
+
+def _build_apk_with_dex(path: Path) -> Path:
+    """A valid APK carrying a real, analyzable classes.dex."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AndroidManifest.xml", _build_axml_manifest())
+        archive.writestr("classes.dex", _build_classes_dex())
+        archive.writestr("resources.arsc", b"")
+    return path
+
+
 @pytest.mark.integration
 def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
     apk = _build_synthetic_apk(tmp_path / "sample.apk")
@@ -255,6 +389,57 @@ def test_valid_apk_androguard_reads_real_static_facts(tmp_path: Path) -> None:
         assert components.ok, components.error
         assert _APK_ACTIVITY in components.data["activities"]
         assert components.data["main_activity"] == _APK_ACTIVITY
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_valid_apk_androguard_analyzes_the_dex(tmp_path: Path) -> None:
+    """Live DEX coverage: androguard lists the class, method and string we encoded.
+
+    The metadata gate proves the manifest side; this one drives the DEX side of
+    the same static line (apk.classes / apk.methods / apk.strings / apk.xrefs),
+    which had no live coverage because no fixture carried a real DEX. The APK
+    embeds a hand-encoded classes.dex (no Android build tools) whose single class
+    Lcom/example/gate/Sample; has one method helper() that references the string
+    "gate-secret-marker", and we assert androguard's analysis surfaces exactly
+    those facts rather than merely failing cleanly.
+    """
+    from headless_re_mcp.backends.apk import ApkClient
+
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK DEX gate not run (skip != pass)")
+    apk = _build_apk_with_dex(tmp_path / "withdex.apk")
+    assert classify_target(apk) is TargetKind.APK
+
+    service = AnalysisService()
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+
+        classes = service.apk_classes(session_id)
+        assert classes.ok, classes.error
+        assert _DEX_CLASS in classes.data["classes"]
+        assert classes.data["total"] >= 1
+
+        methods = service.apk_methods(session_id, _DEX_CLASS)
+        assert methods.ok, methods.error
+        assert _DEX_METHOD in [m["name"] for m in methods.data["methods"]]
+
+        # A dotted class name resolves the same class as the smali descriptor.
+        dotted = service.apk_methods(session_id, "com.example.gate.Sample")
+        assert dotted.ok, dotted.error
+        assert dotted.data["class_name"] == _DEX_CLASS
+
+        strings = service.apk_strings(session_id)
+        assert strings.ok, strings.error
+        assert _DEX_STRING in strings.data["strings"]
+
+        # xrefs of an uncalled method is a structured, empty result, not a crash.
+        xrefs = service.apk_xrefs(session_id, _DEX_METHOD)
+        assert xrefs.ok, xrefs.error
+        assert xrefs.data["method_name"] == _DEX_METHOD
+        assert xrefs.data["has_more"] is False
+        assert isinstance(xrefs.data["callers"], list)
     finally:
         service.close_all()
 

@@ -103,6 +103,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (纯 stdlib `struct`+`zipfile`,不需要 Android SDK/aapt),现造一个 androguard 真能解析的 APK,断言
   `apk.open`/`manifest`/`permissions`/`components` 读回真实编码进去的包名、INTERNET 权限与启动
   Activity。合成包的敌意输入 Gate 保留,两者互补(真解析 vs 结构化失败)。仅当 androguard 缺失时 skip。
+- Android **DEX** 侧首次有活体覆盖:此前静态线的 `apk.classes`/`methods`/`strings`/`xrefs` 没有任何
+  真机 Gate,因为没有夹具带真实 DEX(现编需要 d8/dx 之类 Android 构建工具)。照 AXML 的路子手工编码
+  一个最小**合法** `classes.dex`(纯 stdlib,Adler-32 校验和与 SHA-1 签名按格式算好),内含单类
+  `Lcom/example/gate/Sample;` 与一个方法 `helper()`——其字节码 `const-string`+`return-void` 引用字符串
+  `gate-secret-marker`。断言 androguard 的分析真的列出该类、枚举出该方法(点号类名与 smali 描述符
+  都能解析到同一个类)、在字符串表里带回该常量,且对未被调用方法的 `xrefs` 给出结构化空结果而非崩。
+  仅当 androguard 缺失时 skip。
 - Web CDP Gate 扩到产物/导航类读工具:`test_web_cdp_open_and_inspect` 只驱动 scripts/console/dom,
   而 `web.screenshot`(真 PNG 落盘)、`web.script.source`(经 `Debugger.getScriptSource` 取到至少
   一个已解析脚本的源码)、`web.navigate`(结果标题与随后 DOM 快照同步变到目标页)、`web.har.export`
