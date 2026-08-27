@@ -856,6 +856,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拒绝。`device.push` 同样拒绝超过上限的本地文件。
 - **`proxy.replay` 把命令排进代理线程就算成功**。循环已死或命令稍后失败时，调用方仍拿到
   `replayed: True`。现在等到 mitmproxy 真正执行完（15 秒上限）才回成功。
+- **`proxy.replay` 对无法重放的流仍报 `replayed: True`**。mitmproxy 的 `replay.client`
+  对过不了 `check` 的流（存活中、被拦截、WebSocket、缺 request/正文）只记一条 warning 就
+  跳过并正常返回，于是一个从未发出的请求也被当成重放成功。现在先用同一个 clientplayback
+  addon 问一遍 `check`，过不了就按 `invalid_request` 连原因一起报错；重放成功时额外回
+  `replayed_flow_id`——重放是带新 id 的新流，调用方据此在 `proxy.flows` 里找回它的响应，
+  而不用在一堆条目里猜。
 - **`frida.java.classes` 会在设备上把已加载类全部列一遍**。`enumerateLoadedClassesSync`
   先物化全集再截断；加壳应用可以有十几万个类，这一次 RPC 就能把目标拖死。改为边枚举边停。
 - **jadx 反编译会把整个 .java 读进内存再切**。生成器吐出的单文件可以到几十 MB。按上限读。
