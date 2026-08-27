@@ -92,6 +92,75 @@ def test_scan_tolerates_diec_notice_prefix_before_json(
     assert any(finding.name == "UPX" for finding in result.findings)
 
 
+def test_a_brace_heavy_reply_is_refused_without_going_quadratic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The JSON scan runs after capture, outside the subprocess timeout.
+
+    _parse_json walks stdout trying to decode an object at each '{'. Every
+    failed attempt costs O(len) -- ``text[index:]`` copies the tail, and the
+    index form instead pays for the line/column count JSONDecodeError runs
+    from the buffer start -- so trying every brace is O(n^2). stdout is only
+    bounded (4 MiB), not small, and its bytes are influenced by the sample, so
+    a reply that is almost all '{' turned a bounded capture into minutes of
+    work with no deadline. Capping the number of decode attempts makes the
+    flood linear: one megabyte of braces was ~100s on the old path and is
+    milliseconds now, and a reply whose only object hides behind a megabyte of
+    junk is refused rather than chased. The 20s bound separates the two
+    without being flaky.
+    """
+    import time
+
+    executable = tmp_path / "fake-diec.exe"
+    executable.write_bytes(b"fake")
+    sample = tmp_path / "sample.bin"
+    sample.write_bytes(b"MZ")
+
+    flood = "{" * (1024 * 1024) + json.dumps(_payload())
+
+    def fake_capture(
+        argv: list[str], *, timeout: float, max_output_size: int
+    ) -> die_adapter._ProcessCapture:
+        del argv, timeout, max_output_size
+        return _fake_capture(flood)
+
+    monkeypatch.setattr(die_adapter, "_capture_process", fake_capture)
+    started = time.perf_counter()
+    with pytest.raises(DieProtocolError):
+        scan_with_die(executable, sample)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 20.0, f"brace-heavy JSON scan took {elapsed:.1f}s"
+
+
+def test_json_object_is_still_found_after_a_notice_line_with_a_stray_brace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The attempt cap must not break the reason the scan tries many braces.
+
+    A notice line can carry its own '{' before the real document, so the scan
+    still has to walk past a false brace to the object. The cap sits far above
+    any real preamble, so this keeps working.
+    """
+    executable = tmp_path / "fake-diec.exe"
+    executable.write_bytes(b"fake")
+    sample = tmp_path / "sample.bin"
+    sample.write_bytes(b"MZ")
+
+    notice = "[!] Heuristic scan is disabled; try '{--flag}' to enable\n"
+
+    def fake_capture(
+        argv: list[str], *, timeout: float, max_output_size: int
+    ) -> die_adapter._ProcessCapture:
+        del argv, timeout, max_output_size
+        return _fake_capture(notice + json.dumps(_payload()))
+
+    monkeypatch.setattr(die_adapter, "_capture_process", fake_capture)
+    result = scan_with_die(executable, sample)
+    assert any(finding.name == "UPX" for finding in result.findings)
+
+
 @pytest.mark.parametrize(
     ("mode", "flag"),
     [
@@ -259,6 +328,54 @@ def test_process_capture_timeout_kills_child(monkeypatch: pytest.MonkeyPatch) ->
         )
     assert process.killed
     assert caught.value.code == DieErrorCode.TIMEOUT
+
+
+def test_process_capture_cleanup_shares_one_drain_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stuck reader threads must not add seconds of joins after a timeout."""
+    clock = [0.0]
+    join_timeouts: list[float] = []
+
+    class _TimedOutProcess(_FakeProcess):
+        def wait(self, timeout: float | None = None) -> int:
+            budget = float(timeout or 0.0)
+            clock[0] += budget
+            if self.killed:
+                self._returncode = -9
+                return self._returncode
+            raise subprocess.TimeoutExpired("fake-diec", budget)
+
+    class _StuckThread:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def start(self) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            # Model a reader wedged on an orphaned grandchild's pipe so the
+            # cleanup path exercises every join instead of closing early.
+            return True
+
+        def join(self, timeout: float | None = None) -> None:
+            budget = float(timeout or 0.0)
+            join_timeouts.append(budget)
+            clock[0] += budget
+
+    process = _TimedOutProcess(b"", hangs=True)
+    monkeypatch.setattr(die_adapter.subprocess, "Popen", lambda *a, **k: process)
+    monkeypatch.setattr(die_adapter, "Thread", _StuckThread)
+    monkeypatch.setattr(die_adapter, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(die_adapter, "_terminate_process", lambda child: child.kill())
+
+    with pytest.raises(DieTimeoutError):
+        die_adapter._capture_process(
+            ["fake-diec"], timeout=0.1, max_output_size=32
+        )
+
+    assert join_timeouts, "cleanup should join the reader threads"
+    assert sum(join_timeouts) <= 1.0
 
 
 def test_process_failure_is_structured(
