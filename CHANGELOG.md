@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（de4dot 适配器 fail-closed 合同）
+
+- `dotnet/de4dot.py` 的共享 `_capture_process` 已由跨适配器捕获测试覆盖,但核心
+  `run_de4dot` 的 argv 白名单、不覆盖输入规则、运行前后摘要校验与部分产物回收仍未测。
+  新增 `tests/unit/test_de4dot_adapter.py`:校验类错误在执行前抛出,故跨平台运行(缺可执行
+  文件、目录型输入、超过 `max_file_size`、输出已存在、运行前摘要变更);需要真实子进程的
+  诚实性检查用脚本化假 CLI(`#!/usr/bin/env python3`,POSIX 专属):干净运行返回带双摘要的
+  结果、工具篡改原始输入被 `INPUT_MUTATED` 拦截、stdout 洪泛触发 `OUTPUT_LIMIT` 并删除
+  部分产物、非零退出记 `PROCESS_FAILED` 且删除产物并标记 retryable、报成功却无产物文件记
+  `OUTPUT_MISSING`;`probe_de4dot_version` 覆盖缺文件、含 de4dot 横幅、无横幅的干净退出、
+  不可执行文件逐形态 OSError 兜底、所有 argv 形态都非 de4dot 时保持 fail-closed。行覆盖
+  66% → 92%(余量为 Windows 专有的创建标志/后代枚举与捕获内部边界分支)。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
