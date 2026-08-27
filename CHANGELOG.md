@@ -314,6 +314,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `ret` 落在正确 ip、高位置位的 token 仍解为无符号、`ldc.i8` 解为有符号且跨过 8 字节、
   `ldc.r8` 占满 8 字节不错位；每个操作码值都对照 ECMA-335 单字节表核对。变异验证：抽掉
   这批行后四条即失配。
+- 补上双字节（`0xFE` 前缀）操作码族：过去只把 `0xFE` 识别成一条 `prefix.fe`，前进 1 字节、
+  把整段余下标为 partial，再让子操作码字节落回顶层操作码分支被当作独立指令解码。对带操作数的
+  双字节指令——`ldloc`/`ldarg`/`starg`/`stloc`（2 字节槽位号）、`ldftn`/`ldvirtftn`/`initobj`/
+  `constrained.`/`sizeof`（4 字节 token）、`unaligned.`/`no.`（1 字节）——其操作数字节随后又被
+  当成指令，方法余下部分错位。这些并不罕见：`ceq`/`cgt`/`clt` 出现在每个比较表达式，`initobj`
+  出现在每次结构体构造与 `default(T)`，`constrained.` 出现在每次对类型形参的泛型调用，`ldftn`
+  出现在每次委托创建。现新增 `_OPCODES_FE`（按子操作码字节索引），`_disassemble_il` 把前缀、
+  子操作码、操作数作为一个整体读取：已知双字节操作码干净解出、不再一律置 partial；只有前缀
+  后无子操作码或 token 被截断才仍记 partial。`0xFE` 操作数一律无符号（槽位号或 token），未并入
+  有符号集；未分配的子操作码按 `fe_xx` 吞掉两个字节而非一个。新增六条直测：`ceq`/`initobj`/
+  `ldloc` 各自整解且 `ret` 落在正确 ip、`constrained.`+`callvirt` 都解出、uint16 槽位保持无符号、
+  未知子操作码前进两字节、两种截断记 partial；每个子操作码值都对照 ECMA-335 多字节表核对。
+  变异验证：退回旧的 `prefix.fe` 处理后这六条即失配。
 
 ### 修复（内存版仓库时间线无界增长）
 
