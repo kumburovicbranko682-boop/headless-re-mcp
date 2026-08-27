@@ -453,3 +453,75 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def test_ghidra_data_passes_the_data_mode_and_parses_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """client.data drives the 'data' postScript mode and keeps every field.
+
+    Measured against ExportJson.py's data mode: each item carries address,
+    label, type, length and value, with value_truncated when the default
+    representation was over the 256-char cap. Looking for a 'data' list field
+    after a successful call reads as no defined data; the field is items.
+    """
+    calls: list[list[str]] = []
+    payload = (
+        '{"mode": "data", "items": ['
+        '{"address": "00405000", "label": "g_key", "type": "char[16]",'
+        ' "length": 16, "value": "\\"secret\\"", "value_truncated": true},'
+        '{"address": "00405020", "label": "", "type": "dword",'
+        ' "length": 4, "value": "0x2a"}'
+        '], "count": 2, "has_more": true}'
+    )
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        calls.append([str(part) for part in cmd])
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text(payload, encoding="utf-8")
+        return Completed(0, b"analyze ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    listed = client.data(_binary(tmp_path), tmp_path / "project", limit=2)
+
+    assert "data" not in listed
+    assert listed["count"] == 2
+    assert listed["has_more"] is True
+    assert listed["items"][0] == {
+        "address": "00405000",
+        "label": "g_key",
+        "type": "char[16]",
+        "length": 16,
+        "value": '"secret"',
+        "value_truncated": True,
+    }
+    assert listed["items"][1]["label"] == ""
+    assert "value_truncated" not in listed["items"][1]
+    # The postScript was invoked with the 'data' mode argument.
+    assert any("data" in argv for argv in calls)
+
+
+def test_data_mode_uses_get_defined_data_and_caps_the_value() -> None:
+    """The Jython script cannot run in CI, so guard its content statically."""
+    scripts_dir = Path(ghidra_client.__file__).resolve().parent / "scripts"
+    source = (scripts_dir / "ExportJson.py").read_text(encoding="utf-8")
+    data_block = source[source.index('elif mode == "data":') :]
+    data_block = data_block[: data_block.index("else:")]
+    assert "getDefinedData(True)" in data_block
+    for field in ('"address"', '"label"', '"type"', '"length"', '"value"'):
+        assert field in data_block
+    assert "value[:256]" in data_block
+    assert "value_truncated" in data_block
+
+
+def test_ghidra_data_description_names_its_fields() -> None:
+    doc = _tool_docstring("ghidra.data")
+    assert "label" in doc
+    assert "length" in doc
+    assert "value_truncated" in doc
+    assert "has_more" in doc
+    assert "items, not data" in doc

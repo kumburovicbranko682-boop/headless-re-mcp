@@ -100,6 +100,30 @@ elif mode == "decompile":
     payload["found"] = found
     payload["decompiled"] = text[:200000]
     payload["truncated"] = len(text) > 200000
+elif mode == "data":
+    items = []
+    for data in listing.getDefinedData(True):
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        try:
+            value = data.getDefaultValueRepresentation()
+        except Exception:
+            value = ""
+        if value is None:
+            value = ""
+        label = data.getLabel()
+        entry = {
+            "address": str(data.getAddress()),
+            "label": label if label is not None else "",
+            "type": str(data.getDataType().getName()),
+            "length": int(data.getLength()),
+            "value": value[:256],
+        }
+        if len(value) > 256:
+            entry["value_truncated"] = True
+        items.append(entry)
+    payload["items"] = items
 else:
     payload["error"] = "unknown mode"
 

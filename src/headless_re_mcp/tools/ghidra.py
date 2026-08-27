@@ -61,6 +61,28 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.data")
+    def ghidra_data(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """Defined data Ghidra typed -- globals, tables, constants, typed bytes.
+
+        Reads the listing's defined-data items, the ones ghidra.functions
+        (code) and ghidra.symbols (labels only) leave out and that
+        ghidra.strings would show only for the string-typed subset. Answers
+        with items, each carrying address, label (the primary symbol at that
+        address, empty when the item is unlabeled), type (the Ghidra data type
+        name, e.g. char[16], dword, pointer), length (bytes) and value (the
+        item's default representation, capped at 256 chars with value_truncated
+        set when the representation was longer -- a large array does not blow
+        the payload). count and has_more so a page that filled the limit is not
+        read as every defined datum. A failed export is an error, not a binary
+        with no data. The list field is items, not data.
+        """
+        return _dump(analysis.ghidra_data(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.xrefs")
     def ghidra_xrefs(
         session_id: str,
