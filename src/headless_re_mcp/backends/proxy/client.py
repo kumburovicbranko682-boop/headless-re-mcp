@@ -207,17 +207,40 @@ class _FlowRecorder:
                 break
 
     def response(self, flow: Any) -> None:  # mitmproxy calls this on each response
-        req = flow.request
-        resp = flow.response
+        self._record(flow)
+
+    def error(self, flow: Any) -> None:  # mitmproxy calls this when a flow errors
+        # A flow that never produced a response -- TLS handshake refused,
+        # upstream unreachable, connection reset mid-request -- otherwise
+        # vanishes: only `response` was wired, so the capture silently dropped
+        # every failed request. That is the opposite of what an RE session
+        # wants, where "this host refused the handshake" is often the finding.
+        # Record it, marked with error/error_msg, so it is captured like any
+        # other flow but stays distinguishable from a completed one (which
+        # always carries a numeric status; an errored flow's status is null).
+        err = getattr(flow, "error", None)
+        message = str(getattr(err, "msg", None) or err or "flow error")
+        self._record(flow, error_msg=message)
+
+    def _record(self, flow: Any, *, error_msg: str | None = None) -> None:
+        req = getattr(flow, "request", None)
+        resp = getattr(flow, "response", None)
         stored_bytes = _flow_stored_bytes(flow)
         omitted = stored_bytes > _MAX_STORED_BODY
-        method, method_truncated = _bounded_metadata(req.method, _MAX_METADATA_BYTES)
-        url, url_truncated = _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)
-        host, host_truncated = _bounded_metadata(req.host, _MAX_METADATA_BYTES)
+        method, method_truncated = _bounded_metadata(
+            getattr(req, "method", ""), _MAX_METADATA_BYTES
+        )
+        url, url_truncated = _bounded_metadata(
+            getattr(req, "pretty_url", ""), _MAX_URL_BYTES
+        )
+        host, host_truncated = _bounded_metadata(
+            getattr(req, "host", ""), _MAX_METADATA_BYTES
+        )
         content_type, type_truncated = _bounded_metadata(
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
+        error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
@@ -250,7 +273,16 @@ class _FlowRecorder:
             }
             if omitted:
                 entry["body_omitted"] = True
-            if method_truncated or url_truncated or host_truncated or type_truncated:
+            if error_msg is not None:
+                entry["error"] = True
+                entry["error_msg"] = error_text
+            if (
+                method_truncated
+                or url_truncated
+                or host_truncated
+                or type_truncated
+                or error_truncated
+            ):
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
 
