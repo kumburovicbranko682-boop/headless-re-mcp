@@ -34,8 +34,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Launch a Chrome browser for the session and open a URL via CDP.
 
-        Answers with opened, url, title and headless. There is no session,
-        browser, ok or page field.
+        An explicit url must be http, https or data; omit it to open the
+        session's own locator. Answers with opened, url, title and headless.
+        There is no session, browser, ok or page field.
         """
         return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
 
@@ -45,7 +46,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         url: str,
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """Navigate the session's browser to a new URL.
+        """Navigate the session's browser to a new http, https or data URL.
 
         Answers with url and title. There is no navigated, ok or page field.
         """

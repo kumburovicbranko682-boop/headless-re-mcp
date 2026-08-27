@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends.web import WebBackend, WebError
@@ -25,6 +26,32 @@ JsonObject = dict[str, Any]
 
 def _as_rpc(exc: WebError) -> XdbgRpcError:
     return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+
+
+_ALLOWED_NAVIGATION_SCHEMES = frozenset({"http", "https", "data"})
+
+
+def _check_navigation_url(url: object) -> None:
+    """Refuse caller-supplied navigation targets that are not web resources.
+
+    The browser these sessions drive has local file access, so a file://,
+    chrome:// or view-source: target turns web.open/web.navigate into an
+    arbitrary local-file reader, and javascript: is the in-page execution this
+    surface deliberately refuses to expose as web.evaluate. Only the caller's
+    explicit url is held to this: a session's own locator was bound at
+    session.create and may legitimately be a downloaded page on disk.
+    """
+    text = url.strip() if isinstance(url, str) else ""
+    if not text:
+        raise WebError("invalid_params", "a url is required")
+    scheme = urlsplit(text).scheme.lower()
+    if scheme not in _ALLOWED_NAVIGATION_SCHEMES:
+        raise WebError(
+            "invalid_params",
+            "url scheme must be http, https, or data",
+            url=text[:256],
+            scheme=scheme,
+        )
 
 
 class WebAnalysisMixin:
@@ -85,7 +112,10 @@ class WebAnalysisMixin:
                 raise InvalidStateTransition(
                     f"web.open cannot run in {session.state.value} state"
                 )
-            target = url.strip() or (session.locator or "")
+            requested = url.strip() if isinstance(url, str) else ""
+            if requested:
+                _check_navigation_url(requested)
+            target = requested or (session.locator or "")
             if session.target is not TargetKind.WEB and not target:
                 raise WebError("invalid_params", "a url is required for a non-web session")
             data = self._web.open(session_id, target, headless=headless, timeout=timeout)
@@ -112,6 +142,10 @@ class WebAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def web_navigate(self, session_id: str, url: str, timeout: float = 30.0) -> Result[JsonObject]:
+        try:
+            _check_navigation_url(url)
+        except WebError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
         return self._web_wrap(session_id, "navigate", session_id, url, timeout=timeout)
 
     def web_close(self, session_id: str) -> Result[JsonObject]:

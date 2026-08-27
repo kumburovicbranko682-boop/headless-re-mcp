@@ -28,6 +28,112 @@ class TestNoArbitraryExecution:
         assert not {"evaluate", "eval", "run_code"} & public
 
 
+class TestNavigationSchemeAllowlist:
+    """Caller-supplied urls must be web resources, checked before the browser.
+
+    The browser has local file access, so file://, chrome:// or view-source:
+    turns web.open/web.navigate into an arbitrary local-file reader, and
+    javascript: is the in-page execution web.evaluate refuses to offer. The
+    check lives in the service ahead of the backend, so it is enforced -- and
+    asserted here -- even on a machine without Playwright (skip != pass).
+    """
+
+    _HOSTILE = [
+        "file:///etc/passwd",
+        "FILE:///etc/passwd",
+        "chrome://version",
+        "view-source:https://example.com",
+        "javascript:alert(1)",
+        "ftp://example.com/drop",
+        "about:blank",
+        "blob:https://example.com/uuid",
+        "//example.com/protocol-relative",
+        "example.com/no-scheme",
+    ]
+
+    @pytest.mark.parametrize("hostile", _HOSTILE)
+    def test_web_open_rejects_a_non_web_url(self, hostile: str) -> None:
+        service = AnalysisService()
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = str(created.data["session"]["id"])
+            result = service.web_open(session_id, url=hostile)
+            assert result.ok is False
+            assert result.error is not None
+            assert result.error.code == "invalid_params"
+        finally:
+            service.close_all()
+
+    @pytest.mark.parametrize("hostile", [*_HOSTILE, "", "   "])
+    def test_web_navigate_rejects_a_non_web_url(self, hostile: str) -> None:
+        service = AnalysisService()
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = str(created.data["session"]["id"])
+            result = service.web_navigate(session_id, hostile)
+            assert result.ok is False
+            assert result.error is not None
+            assert result.error.code == "invalid_params"
+        finally:
+            service.close_all()
+
+    @pytest.mark.parametrize(
+        "allowed",
+        ["https://example.com/app", "http://127.0.0.1:8080/", "data:text/html,<p>x</p>"],
+    )
+    def test_a_web_scheme_passes_validation_and_reaches_the_backend(
+        self, allowed: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Allowed schemes fall through to the backend, never to invalid_params.
+
+        The backend is pinned unavailable so the test proves ordering without
+        launching a browser: a hostile url would have been rejected before this
+        error could be produced.
+        """
+        service = AnalysisService()
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = str(created.data["session"]["id"])
+
+            def _gated() -> None:
+                raise WebError("capability_unavailable", "playwright is not installed")
+
+            monkeypatch.setattr(service._web, "_check_available", _gated)  # noqa: SLF001
+            result = service.web_open(session_id, url=allowed)
+            assert result.ok is False
+            assert result.error is not None
+            assert result.error.code == "capability_unavailable"
+        finally:
+            service.close_all()
+
+    def test_the_session_locator_fallback_is_not_scheme_checked(self, tmp_path: Path) -> None:
+        """web.open with no url keeps working for a session bound to a page on disk.
+
+        The locator was authorized at session.create; only caller-supplied urls
+        are held to the scheme allowlist. The backend is pinned unavailable so
+        the outcome shows the file-path locator survived validation: it reached
+        the backend gate instead of being rejected as invalid_params.
+        """
+        page = tmp_path / "sample.html"
+        page.write_text("<html><body>sample</body></html>", encoding="utf-8")
+        service = AnalysisService()
+        try:
+            created = service.create_session(str(page), target="web")
+            assert created.ok, created.error
+            session_id = str(created.data["session"]["id"])
+
+            def _gated() -> None:
+                raise WebError("capability_unavailable", "playwright is not installed")
+
+            service._web._check_available = _gated  # type: ignore[method-assign]  # noqa: SLF001
+            result = service.web_open(session_id)
+            assert result.ok is False
+            assert result.error is not None
+            assert result.error.code == "capability_unavailable"
+        finally:
+            service.close_all()
+
+
 class TestWebSessionScoping:
     def test_operations_require_an_open_session(self) -> None:
         backend = WebBackend()
