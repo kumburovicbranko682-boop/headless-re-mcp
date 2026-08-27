@@ -32,15 +32,20 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.modules")
     def frida_modules(
-        session_id: str, limit: Annotated[int, Field(ge=1, le=256)] = 64
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=256)] = 64,
+        name_filter: str = "",
     ) -> dict[str, Any]:
         """List modules in the session debuggee via a short-lived Frida probe.
 
         Answers with modules (name, base, size, path), count for this page,
         total, and has_more so a page that filled the limit is not read as
-        the whole list. Limited to the debuggee pid.
+        the whole list. name_filter keeps only modules whose name contains
+        that substring (case-sensitive), applied before the cap so total is
+        the match count -- the only way to reach a module past the first 256,
+        and the name frida.exports then needs. Limited to the debuggee pid.
         """
-        return _dump(analysis.frida_modules(session_id, limit=limit))
+        return _dump(analysis.frida_modules(session_id, limit=limit, name_filter=name_filter))
 
     @tools.tool(name="frida.exports")
     def frida_exports(

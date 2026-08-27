@@ -408,6 +408,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   共用的 `_store_raw_locked` 承载 raw 存储/驱逐，`response()` 行为逐字不变），故 `proxy.flow.get` 仍能取回「当时
   试图发出的请求」（含请求体），其空响应段现在会带上 `failed`/`error_text` 说明缘由，而非被读成一次零长响应的成功
   抓取。`_flow_stored_bytes` / `_content_len` 本就容忍 `response=None`，字段照 `_MAX_METADATA_BYTES` 有界。
+- **`frida.modules` 是唯一没有过滤器的枚举器，第 256 个之后的模块无从触达**。`frida.exports` 按 `module_name`
+  过滤、`frida.java.classes` 按 `name_filter` 过滤，唯独 `frida.modules` 只有 `limit`（上限 256）、既无 offset 也无
+  过滤——一个模块数超过 256 的进程，枚举序靠后的模块在任何页都看不到；而 `frida.exports` 又要求精确的 `module_name`，
+  于是「第一页里找不到的模块」连它的导出都查不了。现在 `frida.modules` 加 `name_filter`：agent 端（`_ENUM_SCRIPT`）
+  在截断前按子串 `m.name.indexOf(filter) !== -1` 过滤（与 `classes` 同一范式，大小写敏感），返回的 `total` 是匹配数、
+  `has_more` 据此计算，故按名字即可把任意模块捞进页内、进而拿到精确名喂给 `frida.exports`。JS 仍最多 push `cap` 条、
+  `total` 走计数，不会把整张模块表序列化成一坨 JSON。`frida.modules` 的既有无过滤行为不变（`name_filter` 默认空）。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`
   按数量、`UNREGISTERED_CAPTURE_MAX_BYTES` 按总量，比只裁数量更全），那个函数与常量遂再无调用方，只剩

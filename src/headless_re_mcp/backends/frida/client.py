@@ -93,15 +93,22 @@ rpc.exports = { ping: function () { return 'root_bypass_loaded'; } };
 
 _ENUM_SCRIPT = """
 rpc.exports = {
-  modules: function (limit) {
+  modules: function (filter, limit) {
     var all = Process.enumerateModules();
     var items = [];
     var cap = Math.max(0, limit);
-    for (var i = 0; i < all.length && items.length < cap; i++) {
+    var total = 0;
+    for (var i = 0; i < all.length; i++) {
       var m = all[i];
-      items.push({name: m.name, base: m.base.toString(), size: m.size, path: m.path});
+      if (filter && m.name.indexOf(filter) === -1) {
+        continue;
+      }
+      total++;
+      if (items.length < cap) {
+        items.push({name: m.name, base: m.base.toString(), size: m.size, path: m.path});
+      }
     }
-    return {modules: items, total: all.length};
+    return {modules: items, total: total};
   },
   exports: function (moduleName, limit) {
     var mod = Process.findModuleByName(moduleName);
@@ -315,14 +322,22 @@ class FridaClient:
             with contextlib.suppress(Exception):
                 session.detach()
 
-    def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
+    def modules(
+        self, pid: int, *, allowed_pid: int, limit: int = 64, name_filter: str = ""
+    ) -> JsonObject:
         self._require(pid, allowed_pid)
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             capped = max(1, min(int(limit), 256))
-            raw = script.exports_sync.modules(capped)
+            # A substring name filter, applied in-agent before the cap, is the
+            # only way to reach a module past the first 256 in enumeration order
+            # (there is no offset), and frida.exports needs the exact name -- so
+            # without it a module you cannot see in the first page is unqueryable.
+            # Mirrors the filter frida.java.classes already takes.
+            needle = name_filter.strip() if isinstance(name_filter, str) else ""
+            raw = script.exports_sync.modules(needle, capped)
             if isinstance(raw, dict):
                 held = list(raw.get("modules") or [])
                 total = int(raw.get("total") or len(held))

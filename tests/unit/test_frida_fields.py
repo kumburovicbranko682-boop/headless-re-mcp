@@ -33,12 +33,16 @@ def _tool_docstring(name: str) -> str:
 
 
 class _Exports:
-    def modules(self, limit: int = 64) -> list[dict[str, Any]]:
-        del limit
-        return [
+    def modules(self, name_filter: str = "", limit: int = 64) -> dict[str, Any]:
+        # Mirror the agent: filter first, then cap, and report the match count
+        # as total so has_more reflects the filtered view.
+        rows = [
             {"name": f"m{index}", "base": "0x1", "size": 1, "path": ""}
             for index in range(25)
         ]
+        if name_filter:
+            rows = [row for row in rows if name_filter in row["name"]]
+        return {"modules": rows[: max(0, int(limit))], "total": len(rows)}
 
 
 class _Script:
@@ -78,6 +82,26 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.modules")
     assert "has_more" in doc
+    assert "name_filter" in doc
+
+
+def test_frida_modules_name_filter_reaches_past_the_page() -> None:
+    """Without a filter a module past the cap is unreachable (no offset).
+
+    Measured against the 25-module fake: filter 'm2' matches m2 and m20..m24
+    -> total 6, and the page is drawn only from matches, so a module the
+    unfiltered first page would never show becomes both listable and, via its
+    exact name, queryable by frida.exports.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+    payload = client.modules(1, allowed_pid=1, limit=64, name_filter="m2")
+    names = {row["name"] for row in payload["modules"]}
+    assert names == {"m2", "m20", "m21", "m22", "m23", "m24"}
+    assert payload["total"] == 6
+    assert payload["count"] == 6
+    assert payload["has_more"] is False
 
 class _ExportApi:
     def exports(self, name: str, count: int) -> dict[str, Any]:

@@ -4306,8 +4306,13 @@ class TestFridaModuleEnumerationCapsRpc:
     def test_module_script_does_not_serialize_the_whole_table(self) -> None:
         from headless_re_mcp.backends.frida.client import _ENUM_SCRIPT
 
-        assert "return {modules: items, total: all.length}" in _ENUM_SCRIPT
+        # Still bounded: at most `cap` items are pushed and total is a running
+        # count, so the whole module table is never mapped into one JSON blob.
+        assert "return {modules: items, total: total}" in _ENUM_SCRIPT
+        assert "items.length < cap" in _ENUM_SCRIPT
         assert ".map(function (m)" not in _ENUM_SCRIPT
+        # The name filter that makes modules past the cap reachable.
+        assert "m.name.indexOf(filter) === -1" in _ENUM_SCRIPT
 
 
 class TestIsolationKillsWhatItStarted:
