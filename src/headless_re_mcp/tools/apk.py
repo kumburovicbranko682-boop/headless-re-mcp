@@ -89,6 +89,30 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_components(session_id))
 
+    @tools.tool(name="apk.security")
+    def apk_security(session_id: str) -> dict[str, Any]:
+        """The <application> element's security posture -- the triage flags.
+
+        apk.components maps the exported attack surface; this reads the flags on
+        the <application> element itself that an analyst checks first and that
+        otherwise meant hand-parsing apk.manifest. Answers with debuggable (a
+        live debugger can attach), allow_backup (adb backup can pull the private
+        data dir off an unrooted device), uses_cleartext_traffic (plaintext HTTP
+        allowed), network_security_config (a custom NSC is present -- it can pin
+        certs, or trust user CAs and open the app to interception),
+        application_class (the custom Application subclass, android:name, where
+        startup/licensing/anti-tamper hooks live), plus min_sdk and target_sdk.
+
+        Each boolean is tri-state: true/false when the manifest sets the
+        attribute, null when unset -- distinguishing "declared secure" from
+        "left at the platform default". The defaults an unset value takes depend
+        on the target SDK: allow_backup historically defaults on;
+        uses_cleartext_traffic defaults on below target 28 and off at or above
+        it -- read those against target_sdk. There is no findings or score
+        field; these are the raw facts.
+        """
+        return _dump(analysis.apk_security(session_id))
+
     @tools.tool(name="apk.native_libs")
     def apk_native_libs(session_id: str) -> dict[str, Any]:
         """List bundled native libraries and their ABIs.

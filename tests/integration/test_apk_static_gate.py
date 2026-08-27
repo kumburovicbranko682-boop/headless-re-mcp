@@ -91,7 +91,14 @@ def _build_manifest_axml() -> bytes:
         ("end", "uses-permission", []),
         ("start", "uses-permission", [(android, "name", "android.permission.CAMERA")]),
         ("end", "uses-permission", []),
-        ("start", "application", [(android, "label", "HeadlessRE Test")]),
+        ("start", "application", [
+            (android, "label", "HeadlessRE Test"),
+            (android, "name", "com.example.headlessre.App"),
+            (android, "debuggable", "true"),
+            (android, "allowBackup", "false"),
+            (android, "usesCleartextTraffic", "true"),
+            (android, "networkSecurityConfig", "@xml/network_security_config"),
+        ]),
         ("start", "activity", [(android, "name", "com.example.headlessre.MainActivity")]),
         ("start", "intent-filter", []),
         ("start", "action", [(android, "name", "android.intent.action.MAIN")]),
@@ -429,6 +436,19 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
             "receivers": [],
             "providers": ["com.example.headlessre.DataProvider"],
         }
+
+        # apk.security reads the <application> element's triage flags straight
+        # off the real binary manifest. The fixture ships them deliberately
+        # risky -- debuggable, backup-able, cleartext-permitting, with a custom
+        # NSC and Application class -- so each flag must round-trip as the
+        # concrete value, not as the null an unparsed manifest would give.
+        security = service.apk_security(session_id)
+        assert security.ok, security.error
+        assert security.data["debuggable"] is True
+        assert security.data["allow_backup"] is False
+        assert security.data["uses_cleartext_traffic"] is True
+        assert security.data["network_security_config"] == "@xml/network_security_config"
+        assert security.data["application_class"] == "com.example.headlessre.App"
 
         libs = service.apk_native_libs(session_id)
         assert libs.ok, libs.error

@@ -119,6 +119,16 @@ def _android_bool(value: str | None) -> bool | None:
     return value.strip().lower() == "true"
 
 
+def _to_int_or_none(value: Any) -> int | None:
+    """Coerce an androguard SDK getter's return (often a decimal string) to int."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _effective_target_sdk(apk: Any) -> int | None:
     """The app's effective targetSdk, falling back to minSdk, as an int.
 
@@ -437,6 +447,75 @@ class ApkClient:
             "v3_signed": v3_signed,
             "signed": v1_signed or v2_signed or v3_signed,
             "has_more": certs_more or files_more,
+        }
+
+    @staticmethod
+    def _application_element(apk: Any) -> Any | None:
+        """The single ``<application>`` element from the parsed manifest tree.
+
+        Best-effort, exactly like ``_component_elements``: a manifest androguard
+        cannot re-parse into an lxml tree (malformed, or an old build lacking the
+        getter) yields ``None`` and the caller reports every flag as unknown
+        rather than failing the call.
+        """
+        getter = getattr(apk, "get_android_manifest_xml", None)
+        if getter is None:
+            return None
+        try:
+            root = getter()
+        except Exception:  # noqa: BLE001 - androguard raises raw types on bad AXML
+            return None
+        if root is None:
+            return None
+        try:
+            for element in root.iter("application"):
+                return element
+        except Exception:  # noqa: BLE001 - defensive against non-lxml stand-ins
+            return None
+        return None
+
+    @_guard_androguard
+    def security(self, path: Path) -> JsonObject:
+        """The ``<application>`` element's security posture -- the triage flags.
+
+        components() maps the exported attack surface, but the first things an
+        analyst checks live on the ``<application>`` element itself and were only
+        reachable by hand-parsing the apk.manifest XML: whether the app ships
+        debuggable (a live debugger can attach and dump memory), whether
+        android:allowBackup lets ``adb backup`` pull the private data dir off an
+        unrooted device, whether cleartext HTTP is permitted, whether a custom
+        network-security-config is present (it can pin certs -- or, the reverse,
+        trust user-added CAs and open the app to interception), and the custom
+        Application subclass (android:name) where startup, licensing and
+        anti-tamper hooks usually sit.
+
+        Each boolean is Android's tri-state: true/false when the manifest sets
+        the attribute, null when it is unset -- so a caller can tell "declared
+        secure" from "left at the platform default". The platform defaults an
+        unset value falls back to are documented on the tool, not baked in here,
+        because they turn on the target SDK (allowBackup historically defaults on;
+        usesCleartextTraffic defaults on below target 28 and off at/above it), so
+        min_sdk and target_sdk are returned alongside for that judgement.
+        """
+        apk = self._apk(path)
+        app = self._application_element(apk)
+        if app is not None:
+            debuggable = _android_bool(_android_attr(app, "debuggable"))
+            allow_backup = _android_bool(_android_attr(app, "allowBackup"))
+            uses_cleartext = _android_bool(_android_attr(app, "usesCleartextTraffic"))
+            network_security_config = _android_attr(app, "networkSecurityConfig")
+            application_class = _android_attr(app, "name")
+        else:
+            debuggable = allow_backup = uses_cleartext = None
+            network_security_config = application_class = None
+        return {
+            "debuggable": debuggable,
+            "allow_backup": allow_backup,
+            "uses_cleartext_traffic": uses_cleartext,
+            "network_security_config": network_security_config,
+            "application_class": application_class,
+            "min_sdk": _to_int_or_none(apk.get_min_sdk_version()),
+            "target_sdk": _to_int_or_none(apk.get_target_sdk_version()),
         }
 
     @staticmethod

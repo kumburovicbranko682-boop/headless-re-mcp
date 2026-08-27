@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **288（168 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **289（169 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -604,6 +604,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   合上限，并回 `truncated`/`size`。活体门经真代理打一个带 query 串和自定义头的请求，断言导出的 entry 有
   startedDateTime/timings/cache、请求头里回得出该自定义头、queryString 被解析、响应侧带 status 与 content-type 头；
   单测另钉合规整形与失败流的 status 0 + `_error`。工具面不变（仍 288）。
+- **`apk.components` 看的是对外暴露的组件，可 `<application>` 元素本身那几项「安全体检」标志没有任何工具能读**。
+  分析者拿到 APK 第一眼要看的——是否 `android:debuggable`（调试器能直接 attach、dump 内存）、是否 `android:allowBackup`
+  （`adb backup` 能把私有数据目录从未 root 的设备上拉出来）、是否允许明文 HTTP、有没有自定义 network-security-config
+  （能固定证书，反过来也能信任用户 CA、把 App 敞开给中间人）、以及自定义 Application 子类（`android:name`，启动/授权/
+  反篡改钩子常年住在这儿）——过去全都只能手扒 `apk.manifest` 的 XML。新增只读的 `apk.security`：从解析后的 manifest 树
+  读 `<application>` 元素，回 `debuggable`、`allow_backup`、`uses_cleartext_traffic`、`network_security_config`、
+  `application_class`，外加 `min_sdk` 与 `target_sdk`。每个布尔是三态：清单设了就 true/false，没设为 null——好把「明示安全」
+  和「用平台默认」区分开；而未设时的平台默认取决于 target SDK（allowBackup 历来默认开；usesCleartextTraffic 在 target<28
+  默认开、≥28 默认关），所以默认值不写死在代码里，而是把 SDK 一并回出交调用方自行判断。没有 findings/score 字段，只给原始事实。
+  清单不可重解析时（畸形或老构建缺 getter）各标志优雅降级为 null，而不碰树的 SDK getter 照常返回。活体门在真二进制清单上
+  把夹具的 `<application>` 刻意设成高危（debuggable、不可备份、允许明文、带自定义 NSC 与 Application 类），断言每个标志按
+  具体值原样还原、而非空值；单测另覆盖全未设→全 null 的三态、不可解析清单的降级、以及 docstring 形状。该工具计入读效果，
+  工具面因此 288→289。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`
