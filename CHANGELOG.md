@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（web 页面摘要静默截断 url/title，不像抓包那样标记）
+
+- 抓包对被截断的 url/method/mimeType 会打 `metadata_truncated`（proxy 的 `flow.get` 对 header
+  同理），但页面级摘要——`web.open`、`web.navigate`、`web.status`、`web.dom.snapshot`——把
+  `page.url` 同样按 16 KiB、title 按元数据上限截断后，却把截断标志丢了（都取
+  `_bounded_metadata(...)[0]`、`_safe_title` 只回文本）。于是经由超长 `data:`/`blob:` url，或把
+  状态编码进 fragment 的 SPA 到达的页面，回来的是一个被悄悄剪短、读起来却像完整地址的 url。
+- 现在 `_safe_title` 一并回是否截断，新增 `_page_url_title` 把 url/title 的边界截断合成一个标志，
+  四个摘要在任一被剪时补 `metadata_truncated`，与抓包口径一致；`dom.snapshot` 的 `metadata_truncated`
+  与既有的 `truncated`（html 被剪）语义分开，互不遮蔽。新增回归覆盖 `navigate`/`status`/`dom.snapshot`：
+  超长 url 或超长 title 触发标志、正常 url/title 不触发、html 未被剪时 `truncated` 仍为 false；四条正例
+  在改前均失败。（顺带修掉本次改动初稿在 `navigate`/`open` 闭包里用 `url` 作局部名遮蔽了同名入参、
+  被回归测试当场抓出的 `UnboundLocalError`。）
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

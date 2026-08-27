@@ -347,11 +347,11 @@ class WebBackend:
             return {"open": False}
 
         def work() -> JsonObject:
-            return {
-                "open": True,
-                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
-                "title": _safe_title(handle.page),
-            }
+            url, title, meta_cut = _page_url_title(handle.page)
+            result: JsonObject = {"open": True, "url": url, "title": title}
+            if meta_cut:
+                result["metadata_truncated"] = True
+            return result
 
         return self._runner(handle).call(work)
 
@@ -413,12 +413,15 @@ class WebBackend:
                 # Summarised here rather than by a second call: between the two,
                 # a browser exists that no session yet refers to, and a failure
                 # in that window would leave it with nothing able to close it.
+                page_url, title, meta_cut = _page_url_title(page)
                 summary = {
                     "opened": True,
-                    "url": _bounded_metadata(page.url, _MAX_URL_BYTES)[0],
-                    "title": _safe_title(page),
+                    "url": page_url,
+                    "title": title,
                     "headless": headless,
                 }
+                if meta_cut:
+                    summary["metadata_truncated"] = True
                 status = _response_status(response)
                 if status is not None:
                     summary["status"] = status
@@ -549,10 +552,10 @@ class WebBackend:
                 )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
-            result: JsonObject = {
-                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
-                "title": _safe_title(handle.page),
-            }
+            page_url, title, meta_cut = _page_url_title(handle.page)
+            result: JsonObject = {"url": page_url, "title": title}
+            if meta_cut:
+                result["metadata_truncated"] = True
             status = _response_status(response)
             if status is not None:
                 result["status"] = status
@@ -773,12 +776,16 @@ class WebBackend:
                 raise WebError("backend_error", "dom snapshot returned no document")
             html = clipped.get("html")
             text = html if isinstance(html, str) else ""
-            return {
-                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
-                "title": _safe_title(handle.page),
+            url, title, meta_cut = _page_url_title(handle.page)
+            result: JsonObject = {
+                "url": url,
+                "title": title,
                 "html": text[:_MAX_INLINE_BODY],
                 "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
             }
+            if meta_cut:
+                result["metadata_truncated"] = True
+            return result
 
         return self._runner(handle).call(work)
 
@@ -841,11 +848,28 @@ class WebBackend:
                 self.close(session_id)
 
 
-def _safe_title(page: Any) -> str:
+def _safe_title(page: Any) -> tuple[str, bool]:
+    """Bounded page title, plus whether it was clipped at the metadata cap."""
     try:
-        return _bounded_metadata(page.title(), _MAX_METADATA_BYTES)[0]
+        return _bounded_metadata(page.title(), _MAX_METADATA_BYTES)
     except Exception:  # noqa: BLE001
-        return ""
+        return "", False
+
+
+def _page_url_title(page: Any) -> tuple[str, str, bool]:
+    """Bounded url and title for a page summary, flagging either truncation.
+
+    The network capture marks a clipped url/method/mimeType with
+    ``metadata_truncated`` (and the proxy flow.get does the same for headers),
+    but the page-level summaries -- open, navigate, status, dom.snapshot --
+    bounded the url the same 16 KiB way yet dropped the flag. A page reached via
+    a long ``data:``/``blob:`` url, or an SPA that encodes state in the fragment,
+    then came back with a silently clipped url that reads as the whole address.
+    Return the flag so those summaries can disclose it like every other capture.
+    """
+    url, url_cut = _bounded_metadata(page.url, _MAX_URL_BYTES)
+    title, title_cut = _safe_title(page)
+    return url, title, url_cut or title_cut
 
 
 def _response_status(response: Any) -> int | None:
