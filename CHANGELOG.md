@@ -115,6 +115,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   失败范式。直接调后端的 apk.decode / apk.sign 单测相应改用真实（极小）zip 作输入，并新增直测钉住
   非 zip 输入在开进程前即被拒、有效 zip 仍照常交给工具。
 
+### 测试（apk.decode 的 `smali_dirs` 派生与 `has_resources`）
+
+- 既有 decode 字段测试只建一个 `smali` 目录、无 `res`,于是钉死 `smali_dirs == ["smali"]` 与
+  `has_resources is False`——这份同质树让
+
+      smali_dirs = sorted(str(p.name) for p in out_dir.glob("smali*") if p.is_dir())
+      "has_resources": (out_dir / "res").is_dir()
+
+  里的每个判别式都成了惰性:单目录分不清真实多 dex 树(`smali`/`smali_classes2`/`smali_classes3`)
+  是否被整表收下并排序、`smali*` glob 是否把 `original`/`unknown`/`build` 挡在外、`is_dir()` 是否把
+  一个只是名字像 `smali*` 的**文件**挡在外,也从没让资源标志读出过 True。agent 正是据这份列表决定去
+  改哪些 smali 根,漏一个是漏改、混进一个非目录项是无效改。新增回归:多 dex 三目录(倒序创建)被整表
+  收下且排序、`res/` 在场时 `has_resources` 为 True;名字像 smali 目录的文件不入列(`is_dir()` 守住);
+  `original`/`unknown`/`build` 不泄漏进 `smali_dirs`、无 `res/` 时 `has_resources` 为 False;每项都是
+  裸目录名而非绝对路径。
+- 变异验证:把 `glob("smali*")` 放成 `glob("*")`、去掉 `is_dir()` 过滤、去掉 `sorted(...)`、把
+  `has_resources` 写死 False,均分别只被对应新测试逮住;源树零改动(仅新增测试与本条目)。
+
 ### 修复（apk.repack 不再把空/损坏产物报成重打包成功）
 
 - `apk.repack`（apktool `b`）过去只要退出码为零且输出文件存在就报成功并回填 `size`；但 apktool
