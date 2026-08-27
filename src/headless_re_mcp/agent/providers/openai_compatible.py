@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
 
@@ -21,6 +22,17 @@ _MAX_TOOL_CALL_BUFFER_BYTES = 4 * 1024 * 1024
 # still fits inside one SSE line after the JSON envelope.
 _MAX_SSE_LINE_BYTES = _MAX_TOOL_CALL_BUFFER_BYTES + 64 * 1024
 _MAX_TOOL_CALLS = 128
+# A chat-completions call id is ~30 characters and OpenAI caps function names
+# at 64, so nothing legitimate approaches these. They exist because the id and
+# name fields are deduplicated with a substring scan over everything received
+# so far: without a field bound, the scan haystack grows toward the 4 MiB
+# stream budget and each fragment re-pays it. Measured: 100k novel 8-byte name
+# fragments (750 KB, well inside the budget) took 19.4s of event-loop CPU,
+# quadrupling per doubling -- the full budget extrapolates to minutes. A field
+# past this size is garbage, and a truncated id or name would address a
+# different call, so refuse rather than cut.
+_MAX_TOOL_CALL_ID_CHARS = 512
+_MAX_TOOL_CALL_NAME_CHARS = 512
 _reported_bad_proxy_env = False
 _ssl_context: Any = None
 _ssl_lock = Lock()
@@ -125,9 +137,25 @@ def _sse_payload(line: str) -> str | None:
     return None
 
 
+@dataclass(slots=True)
+class _ToolCallDraft:
+    """One tool call under assembly from streamed fragments.
+
+    ``arguments`` stays a list of fragments until the stream completes: ``+=``
+    on a str re-copies everything received so far for every fragment, and a
+    peer that streams the 4 MiB budget one byte at a time turns that into
+    terabytes of copying with no single chunk ever tripping a bound. One join
+    at the end is linear.
+    """
+
+    id: str = ""
+    name: str = ""
+    arguments: list[str] = field(default_factory=list)
+
+
 def _ingest_tool_calls(
     calls: Any,
-    tool_fragments: dict[int, dict[str, str]],
+    tool_fragments: dict[int, _ToolCallDraft],
     tool_buffer_bytes: int,
 ) -> tuple[int, list[str]]:
     """Accumulate streamed or snapshot tool calls. Returns (bytes, output pieces)."""
@@ -143,7 +171,7 @@ def _ingest_tool_calls(
                 "provider tool-call count exceeded "
                 f"{_MAX_TOOL_CALLS} while assembling index {index}"
             )
-        item = tool_fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
+        item = tool_fragments.setdefault(index, _ToolCallDraft())
         call_id = raw_call.get("id")
         if isinstance(call_id, str) and call_id:
             tool_buffer_bytes += len(call_id.encode("utf-8"))
@@ -152,8 +180,16 @@ def _ingest_tool_calls(
                     "provider tool-call buffer exceeded "
                     f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
                 )
-            if call_id not in item["id"]:
-                item["id"] += call_id
+            if call_id not in item.id:
+                # The field bound keeps the ``not in`` dedup scan cheap: it is
+                # what stops the haystack -- and the per-append re-copy --
+                # from growing toward the whole stream budget.
+                if len(item.id) + len(call_id) > _MAX_TOOL_CALL_ID_CHARS:
+                    raise ValueError(
+                        "provider tool-call id exceeded "
+                        f"{_MAX_TOOL_CALL_ID_CHARS} characters at index {index}"
+                    )
+                item.id += call_id
         function_value = raw_call.get("function")
         function: dict[str, Any] = function_value if isinstance(function_value, dict) else {}
         function_name = function.get("name")
@@ -164,8 +200,13 @@ def _ingest_tool_calls(
                     "provider tool-call buffer exceeded "
                     f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
                 )
-            if function_name not in item["name"]:
-                item["name"] += function_name
+            if function_name not in item.name:
+                if len(item.name) + len(function_name) > _MAX_TOOL_CALL_NAME_CHARS:
+                    raise ValueError(
+                        "provider tool-call name exceeded "
+                        f"{_MAX_TOOL_CALL_NAME_CHARS} characters at index {index}"
+                    )
+                item.name += function_name
                 pieces.append(function_name)
         fragment = _tool_argument_fragment(function.get("arguments"))
         if fragment:
@@ -175,7 +216,7 @@ def _ingest_tool_calls(
                     "provider tool-call buffer exceeded "
                     f"{_MAX_TOOL_CALL_BUFFER_BYTES} bytes while assembling index {index}"
                 )
-            item["arguments"] += fragment
+            item.arguments.append(fragment)
             pieces.append(fragment)
     return tool_buffer_bytes, pieces
 
@@ -341,7 +382,7 @@ class OpenAICompatibleProvider:
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
         url = f"{self.profile.base_url}/chat/completions"
-        tool_fragments: dict[int, dict[str, str]] = {}
+        tool_fragments: dict[int, _ToolCallDraft] = {}
         tool_buffer_bytes = 0
         finish_reason: str | None = None
         output_tokens: int | None = None
@@ -430,12 +471,12 @@ class OpenAICompatibleProvider:
         calls_out: list[ProviderToolCall] = []
         for index, item in sorted(tool_fragments.items()):
             try:
-                arguments = json.loads(item["arguments"] or "{}")
+                arguments = json.loads("".join(item.arguments) or "{}")
             except json.JSONDecodeError as exc:
                 raise ValueError(f"provider emitted invalid tool arguments at index {index}") from exc
-            if not isinstance(arguments, dict) or not item["name"]:
+            if not isinstance(arguments, dict) or not item.name:
                 raise ValueError(f"provider emitted incomplete tool call at index {index}")
-            calls_out.append(ProviderToolCall(item["id"] or f"call_{index}", item["name"], arguments))
+            calls_out.append(ProviderToolCall(item.id or f"call_{index}", item.name, arguments))
         yield ProviderEvent(
             "completed",
             tool_calls=tuple(calls_out),

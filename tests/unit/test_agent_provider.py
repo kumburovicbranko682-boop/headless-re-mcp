@@ -626,6 +626,113 @@ async def test_tool_call_stream_caps_distinct_calls(
             pass
 
 
+def _tool_call_chunk_body(calls: list[dict[str, object]]) -> str:
+    chunks = [{"choices": [{"delta": {"tool_calls": [call]}}]} for call in calls]
+    lines = "".join(f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" for chunk in chunks)
+    return f"{lines}data: [DONE]\n\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flooded_field", ["id", "name"])
+async def test_a_flood_of_novel_id_or_name_fragments_is_refused_at_the_field_bound(
+    flooded_field: str,
+) -> None:
+    """The id/name dedup scan must not grow toward the whole stream budget.
+
+    ``call_id not in item.id`` re-scans everything received so far for every
+    fragment, and the haystack was bounded only by the 4 MiB stream budget.
+    Measured: 100k novel 8-byte name fragments -- 750 KB, well inside that
+    budget -- took 19.4s of event-loop CPU, quadrupling per doubling. A real id
+    is ~30 characters and OpenAI caps names at 64, so a field past 512 is
+    garbage and the stream is refused there, before the scan can compound.
+    """
+    fragments = [f"{index:08x}" for index in range(80)]  # 640 chars of novelty
+
+    def flooding(request: httpx.Request) -> httpx.Response:
+        calls: list[dict[str, object]] = []
+        for fragment in fragments:
+            if flooded_field == "id":
+                calls.append({"index": 0, "id": fragment})
+            else:
+                calls.append({"index": 0, "function": {"name": fragment}})
+        return httpx.Response(200, text=_tool_call_chunk_body(calls))
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(flooding),
+    )
+
+    with pytest.raises(ValueError, match=f"tool-call {flooded_field} exceeded 512 characters"):
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_provider_resending_id_and_name_never_trips_the_field_bound() -> None:
+    """Snapshot-style streams resend the complete id and name in every chunk.
+
+    The dedup keeps only the first copy, so a long stream of resends must stay
+    far below the field bound and assemble the same single call. This is the
+    legitimate traffic the new bound must not break.
+    """
+    call_id = "call_" + "a" * 27  # the ~32-character shape real providers use
+    calls: list[dict[str, object]] = [
+        {
+            "index": 0,
+            "id": call_id,
+            "function": {"name": "session.get", "arguments": fragment},
+        }
+        for fragment in ('{"session_', 'id":"s"}')
+    ]
+    # Arguments arrive once as deltas; the id and name ride along on every
+    # later chunk, which is the resend pattern the dedup exists for.
+    calls.extend(
+        {"index": 0, "id": call_id, "function": {"name": "session.get"}} for _ in range(80)
+    )
+
+    def snapshotting(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=_tool_call_chunk_body(calls))
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(snapshotting),
+    )
+
+    completed = None
+    async for event in provider.stream_chat(messages=[], tools=[], model="m"):
+        if event.type == "completed":
+            completed = event
+    assert completed is not None
+    assert len(completed.tool_calls) == 1
+    call = completed.tool_calls[0]
+    assert call.id == call_id
+    assert call.name == "session.get"
+    assert call.arguments == {"session_id": "s"}
+
+
+def test_argument_fragments_assemble_in_linear_time() -> None:
+    """A one-byte-at-a-time arguments stream must not re-copy the whole buffer.
+
+    ``item["arguments"] += fragment`` copied everything received so far on
+    every fragment: 400k one-byte fragments -- a tenth of the 4 MiB budget --
+    is ~80 GB of memcpy, several seconds of event-loop CPU with no single
+    chunk ever tripping a bound. Fragments are kept as a list and joined once,
+    so the same flood is one pass.
+    """
+    import time
+
+    from headless_re_mcp.agent.providers.openai_compatible import _ingest_tool_calls
+
+    count = 400_000
+    calls = [{"index": 0, "function": {"arguments": "x"}} for _ in range(count)]
+    fragments: dict[int, openai_compatible._ToolCallDraft] = {}
+    started = time.perf_counter()
+    _buffer_bytes, _pieces = _ingest_tool_calls(calls, fragments, 0)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 3.0, f"argument assembly took {elapsed:.2f}s for {count} fragments"
+    assert "".join(fragments[0].arguments) == "x" * count
+
+
 def test_protecting_provider_config_does_not_hang_when_icacls_is_a_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
