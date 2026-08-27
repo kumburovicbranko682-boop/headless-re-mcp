@@ -207,6 +207,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   构造时统一持有。
 - **APK 解析缓存在会话关闭后不释放**。上限 4 份，但每份完整 DEX 分析可达数百 MB，空闲进程会
   一直占着。会话关闭时按路径显式回收。
+- **`device.install` 读包名时会整段解压 `AndroidManifest.xml`**。`_apk_package_name`
+  用 `archive.read("AndroidManifest.xml")[:65536]`——`read(name)` 先把整个成员解压进内存再切片，
+  一个把 manifest 压成压缩炸弹的敌意 APK（实测 16 KB 压缩、解压 45 MiB）足以在安装校验时打爆内存。
+  全仓其它文件读取一律走 `stream.read(_MAX+1)` 的有界流式范式,唯独这里例外;改为
+  `archive.open(...).read(_MANIFEST_SCAN_BYTES)`,只解压前 64 KiB。回归测试用 tracemalloc
+  钉住:合法 manifest 仍取到包名,压缩炸弹下峰值内存从 45 MiB 降到 0.2 MiB。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
 - **本机 Frida 探针的 `script.load` 与同步 RPC 没有截止时间**。`frida.modules` /
   `frida.exports` / `frida.memory_read` 只给 `_attach_local` 的 attach 阶段设了上限，

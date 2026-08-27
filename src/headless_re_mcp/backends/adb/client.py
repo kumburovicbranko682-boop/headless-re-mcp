@@ -32,6 +32,10 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
+# A real AndroidManifest sits in the first pages; the package id is near the
+# top. Read a bounded prefix from the decompressing stream so a hostile APK
+# cannot bomb the host by shipping a manifest that inflates to gigabytes.
+_MANIFEST_SCAN_BYTES = 65536
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -184,8 +188,12 @@ def _device_info_row(info: Any) -> JsonObject:
 def _apk_package_name(path: Path) -> str | None:
     """Best-effort package id from the APK, without pulling androguard in."""
     try:
-        with zipfile.ZipFile(path) as archive:
-            data = archive.read("AndroidManifest.xml")[:65536]
+        with zipfile.ZipFile(path) as archive, archive.open("AndroidManifest.xml") as member:
+            # read(n) on the decompressing stream stops after n bytes;
+            # archive.read(name) would inflate the whole member into memory
+            # first, so a compressed-bomb manifest OOMs the host on any APK a
+            # caller hands to install().
+            data = member.read(_MANIFEST_SCAN_BYTES)
     except Exception:  # noqa: BLE001
         return None
     try:

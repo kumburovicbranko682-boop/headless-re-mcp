@@ -12,7 +12,13 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_package, _check_serial
+from headless_re_mcp.backends.adb.client import (
+    AdbBackend,
+    AdbError,
+    _apk_package_name,
+    _check_package,
+    _check_serial,
+)
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.core.models import TargetKind
@@ -77,6 +83,45 @@ class TestAdbArgumentValidation:
         with pytest.raises(AdbError) as info:
             backend.list_devices()
         assert info.value.code == "capability_unavailable"
+
+
+class TestApkPackageNameBounds:
+    def test_package_name_read_from_a_plaintext_manifest(self, tmp_path: Path) -> None:
+        apk = tmp_path / "app.apk"
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b'<manifest package="com.example.plain">')
+        assert _apk_package_name(apk) == "com.example.plain"
+
+    def test_missing_manifest_returns_none(self, tmp_path: Path) -> None:
+        apk = tmp_path / "empty.apk"
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("classes.dex", b"dex\n035\x00")
+        assert _apk_package_name(apk) is None
+
+    def test_manifest_read_is_memory_bounded_against_a_zip_bomb(self, tmp_path: Path) -> None:
+        """A compressed-bomb AndroidManifest must not inflate wholesale.
+
+        ``archive.read(name)`` decompressed the entire member before the slice,
+        so a manifest that expands to gigabytes OOMed the host during install().
+        The package id is near the top, so a bounded stream read finds it while
+        touching only the first pages. Measured with a 16 MiB manifest that
+        deflates to a few KB: the old path peaks above 16 MiB, the bounded read
+        stays well under 2 MiB.
+        """
+        import tracemalloc
+
+        bomb = b'<manifest package="com.example.bounded">' + b" " * (16 * 1024 * 1024)
+        apk = tmp_path / "bomb.apk"
+        with zipfile.ZipFile(apk, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("AndroidManifest.xml", bomb)
+        tracemalloc.start()
+        try:
+            name = _apk_package_name(apk)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert name == "com.example.bounded"
+        assert peak < 2 * 1024 * 1024
 
 
 class TestFridaTargetAuthorization:
