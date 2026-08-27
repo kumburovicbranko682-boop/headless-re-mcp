@@ -292,8 +292,15 @@ class FridaClient:
     # ------------------------------------------------------------------
     def attach(self, pid: int, *, allowed_pid: int,
                timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
-        if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+        # pid shape and authorization are properties of the request, so they are
+        # settled before the capability gate -- the ordering _authorize documents
+        # and the device path already uses. With the gate first (as this method
+        # had it), a frida-less host answered capability_unavailable for a
+        # malformed or unauthorized pid that a host with frida rejects as
+        # invalid_params / permission_denied: one bad request, two verdicts, and
+        # the permission contract hidden from every run without the optional
+        # module. Same "input/authorization before the gate" rule as _require and
+        # java_enumerate's mode/class_name.
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
         if pid != allowed_pid:
@@ -303,6 +310,8 @@ class FridaClient:
                 pid=pid,
                 allowed_pid=allowed_pid,
             )
+        if not self._available or self._frida is None:
+            raise FridaError("capability_unavailable", "frida Python module is not installed")
         session = self._attach_local(pid, timeout=timeout)
         try:
             return {
@@ -576,7 +585,12 @@ class FridaClient:
         *,
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
-        device = self._resolve_device(device_id)
+        # Validate the package before the capability gate and device resolution,
+        # the ordering spawn's siblings java_enumerate/hook_template_device use
+        # for their mode/class_name/template. Left after _resolve_device, a
+        # frida-less host answered capability_unavailable for a package malformed
+        # on its face -- a different verdict for the same bad input than a host
+        # with frida, which rejects it as invalid_params.
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
         pkg = package.strip()
@@ -586,6 +600,7 @@ class FridaClient:
                 "package must be an Android package id",
                 package=pkg,
             )
+        device = self._resolve_device(device_id)
         deadline = _bound_timeout(timeout)
         pids: list[int] = []
 

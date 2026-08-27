@@ -342,6 +342,76 @@ class TestFridaJavaEnumerateInputContract:
         assert info.value.code == "capability_unavailable"
 
 
+class TestFridaLocalAttachInputContract:
+    """frida.attach settles pid shape and authorization before the gate.
+
+    attach used to check the capability gate first, so a frida-less host
+    answered capability_unavailable for a malformed or unauthorized pid that a
+    host with frida rejects as invalid_params / permission_denied -- one bad
+    request, two verdicts, and the very permission contract _authorize documents
+    hidden from every run without the optional module. The order is now shape ->
+    auth -> gate, matching the device path; a well-formed authorized pid still
+    reaches the gate and reports the capability there.
+    """
+
+    def _unavailable_client(self) -> FridaClient:
+        client = FridaClient()
+        client._frida = None
+        client._available = False
+        return client
+
+    @pytest.mark.parametrize("pid", [0, -1, "5", 5.0, None])
+    def test_a_malformed_pid_is_invalid_params_before_the_gate(self, pid: Any) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.attach(pid, allowed_pid=pid if isinstance(pid, int) else 5)
+        assert info.value.code == "invalid_params"
+
+    def test_an_unauthorized_pid_is_permission_denied_before_the_gate(self) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.attach(4242, allowed_pid=7)
+        assert info.value.code == "permission_denied"
+
+    def test_a_well_formed_authorized_pid_reaches_the_capability_gate(self) -> None:
+        """The reorder does not smother the real capability gap."""
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.attach(5, allowed_pid=5)
+        assert info.value.code == "capability_unavailable"
+
+
+class TestFridaSpawnInputContract:
+    """frida.spawn settles the package before the capability gate.
+
+    spawn resolved the device (the gate, via _resolve_device -> _need) before
+    validating the package, unlike its siblings java_enumerate and
+    hook_template_device which judge mode/class_name/template first. So a
+    frida-less host answered capability_unavailable for a package malformed on
+    its face, while a host with frida rejects it as invalid_params. The package
+    now settles first; a well-formed package still reaches the gate.
+    """
+
+    def _unavailable_client(self) -> FridaClient:
+        client = FridaClient()
+        client._frida = None
+        client._available = False
+        return client
+
+    @pytest.mark.parametrize("package", ["", "   ", "not a package", "com.x/../y", "-rf"])
+    def test_a_bad_package_is_invalid_params_before_the_gate(self, package: str) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.spawn("usb", package)
+        assert info.value.code == "invalid_params"
+
+    def test_a_well_formed_package_reaches_the_capability_gate(self) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.spawn("usb", "com.example.app")
+        assert info.value.code == "capability_unavailable"
+
+
 class _FakeScript:
     def __init__(self) -> None:
         self.loaded = False

@@ -62,6 +62,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（frida.attach 的 pid 形态/授权与 frida.spawn 的 package 校验移到能力门之前）
+
+- 同一份文件里 `_authorize` 用一大段注释立了规矩——授权与请求形态先于能力门结算，好让「没装 frida 的机器」
+  与「装了的机器」对同一个坏请求给同一个判词——但两个方法自己没照做：`attach` 把能力门放在**最前面**（门 →
+  pid 形态 → 授权），于是没装 frida 时一个越权或畸形 pid 回的是 `capability_unavailable`，而装了 frida 的机器
+  回 `permission_denied`/`invalid_params`，恰恰是 `_authorize` 注释说要消灭的「权限契约对没装可选依赖的运行
+  隐身」；`spawn` 则先 `_resolve_device`（经 `_need` 触门）再校验 `package`，与它的兄弟 `java_enumerate`、
+  `hook_template_device`（先判 mode/class_name/template 再解析设备）不一致，于是一个一眼可辨的畸形包名在没装
+  frida 时被判 `capability_unavailable`。现 `attach` 改成 pid 形态 → 授权 → 门，`spawn` 把 package 的必填与
+  Android 包名正则校验挪到 `_resolve_device` 之前。回归在「装作没装 frida」的客户端上钉住：`attach` 对畸形 pid
+  回 `invalid_params`、对越权 pid 回 `permission_denied`、对合法授权 pid 才回 `capability_unavailable`；`spawn`
+  对空/畸形包名回 `invalid_params`、对合法包名才触达门——证明重排没有顺手吞掉真正的能力缺失。纯排序修复，
+  合法输入路径与返回结构不变。
+
 ### 修复（adb 的 serial/package/port 校验移到 adbutils 能力门之前，与 forward 看齐）
 
 - adb 后端里 `_device(serial)` 先过 `_client()` 能力门、再 `_check_serial(serial)`；`connect` 先过门再判
