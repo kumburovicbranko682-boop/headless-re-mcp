@@ -100,6 +100,54 @@ def test_workspace_mode_get_and_set_roundtrip(tmp_path, monkeypatch) -> None:
         analysis.close_all()
 
 
+def test_workspace_mode_get_captures_an_unexpected_error(tmp_path, monkeypatch) -> None:
+    """A surprise while summarising the profile becomes a failure envelope.
+
+    workspace_mode_get is a read, but it still funnels any exception into the
+    ok/data/error contract rather than letting it escape the MCP boundary. Make
+    the summary blow up and assert the reply is a clean failure.
+    """
+
+    def _boom(_profile: str) -> dict[str, object]:
+        raise RuntimeError("summary blew up")
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_workspace.profile_summary", _boom
+    )
+    analysis = _service_with_profile(tmp_path, "full")
+    try:
+        result = analysis.workspace_mode_get()
+    finally:
+        analysis.close_all()
+    assert not result.ok
+    assert result.error is not None
+
+
+def test_workspace_mode_set_captures_a_persist_failure(tmp_path, monkeypatch) -> None:
+    """A failure persisting the choice is reported, and the view is not moved.
+
+    The valid-profile branch only mutates the in-process settings after the
+    config write succeeds. If the write raises, workspace_mode_set must answer
+    with a failure and leave the running profile untouched, so a client is not
+    told a switch stuck when it did not.
+    """
+
+    def _boom(_values: dict[str, object]) -> None:
+        raise RuntimeError("config write failed")
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_workspace.update_config_values", _boom
+    )
+    analysis = _service_with_profile(tmp_path, "full")
+    try:
+        result = analysis.workspace_mode_set("android")
+        assert not result.ok
+        assert result.error is not None
+        assert analysis.settings.workspace_profile == "full"
+    finally:
+        analysis.close_all()
+
+
 def test_profile_helpers_are_consistent() -> None:
     assert excluded_prefixes("full") == ()
     assert is_tool_visible("apk.open", "web") is False
