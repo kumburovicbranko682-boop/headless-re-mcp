@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（切换线程丢失进行中的 run）
+
+- 停在批准上的 run 服务端是持久的，但监控台只会重连自己手里已有 id 的 run（`history.state`
+  里那一个）。从侧栏点开这条线程只拿得到转录：批准卡片不见了，事件流也没接上，除非撞巧重载
+  否则无从应答。现在 `GET /api/agent/threads/{id}` 回传该线程仍在跑的 run（`active_run`，
+  终态与已请求取消的 run 不算，见 `store.active_run_for_thread`），`selectThread` 据此重放
+  它的事件并重连流；切换线程时也会先掐断上一条线程的事件流，事件不再串台。
+  `tests/unit/test_agent_web_api.py` 钉住 `active_run` 的取值生命周期，
+  `useWorkbench.resume.test.ts` 断言选中线程后批准卡片与活跃 run 都回来了。
+
 ### 修复（监控台重载后对话空白）
 
 - 运行中重载监控台会丢掉整段对话。恢复逻辑能从 `history.state` 认出还在跑的 run、重放它的
