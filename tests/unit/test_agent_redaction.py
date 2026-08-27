@@ -121,3 +121,22 @@ def test_the_credential_test_itself_cannot_be_made_to_recurse_away() -> None:
     assert "***REDACTED***" in str(redact({"api_key": deep})), "a deep value under a secret name"
     assert "***REDACTED***" not in str(redact({"harmless": deep})), "but not under an ordinary one"
     assert redact({"call_tokens": [1, 2, 3]}) == {"call_tokens": [1, 2, 3]}
+
+
+def test_a_credential_string_inside_a_list_under_a_secret_key_is_masked() -> None:
+    """The all-numeric list above pins one side of the list rule; this the other.
+
+    Whether a value under a secret-looking key is masked turns on whether *any*
+    element of a list can carry text: an all-numeric list stays visible as
+    analysis (call_tokens=[1, 2, 3]), while a list holding even one credential
+    string is masked whole. Only the surviving side was pinned. With the secret
+    placed after the integers, a check that looked at just the first element --
+    or that stopped treating lists as credential-bearing -- would leak it while
+    the all-numeric case still passed.
+    """
+    masked = redact({"api_key": [1, 2, 3, "sk-live-DEADBEEF"]})
+
+    assert "sk-live-DEADBEEF" not in str(masked)
+    assert masked == {"api_key": "***REDACTED***"}
+    # The analysis side must stay intact under the very same kind of key.
+    assert redact({"call_tokens": [1, 2, 3]}) == {"call_tokens": [1, 2, 3]}
