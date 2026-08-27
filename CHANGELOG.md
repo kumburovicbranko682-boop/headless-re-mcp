@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **267（150 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **268（151 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -572,6 +572,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `exports/count/total/offset/has_more`，`total` 上限 5000、越限置 `scan_capped`；`truncated` 在模块
   畸形或被截断时为 true（已读到的条目照常返回）。非 WebAssembly 文件按 `invalid_params` 拒绝，超过
   16 MiB 按 `too_large` 拒绝。
+- `wasm.sections`：纯 Python 遍历 .wasm 的段表（模块的目录），**不需要 wabt**，是先读的结构总览，
+  为 `wasm.imports`/`wasm.exports` 的深挖划定范围。每行是 `id`、`name`（custom/type/import/function/
+  table/memory/global/export/start/element/code/data/data_count；规范未定义的 id 记 `unknown`）、
+  `offset`（段 id 字节的位置）与 `size`（声明的段体字节数）。段体以向量开头的段（除 start 与 custom
+  外）另带 `entries`，即该向量长度（条目数，data_count 则是声明的数据段数）；custom 段改带
+  `custom_name`，即该段自己的名字（如 `name`、`producers`、`.debug_info`），这是不用反编译器就能发现
+  调试与工具元数据的途径。返回 `sections/count/total/offset/has_more`，`total` 上限 5000、越限置
+  `scan_capped`；`truncated` 在某段声明的大小越过模块尾部或某长度畸形时为 true（已读到的段——含那段
+  短段——照常返回）。非 WebAssembly 文件按 `invalid_params` 拒绝，超过 16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

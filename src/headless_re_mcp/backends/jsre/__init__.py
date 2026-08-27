@@ -6,6 +6,7 @@ from headless_re_mcp.backends.jsre.client import (
     WasmClient,
     parse_wasm_exports,
     parse_wasm_imports,
+    parse_wasm_sections,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "JsReError",
     "parse_wasm_imports",
     "parse_wasm_exports",
+    "parse_wasm_sections",
 ]

@@ -55,6 +55,29 @@ _WASM_IMPORT_SECTION_ID = 2
 _MAX_WASM_EXPORTS_COLLECT = 5000
 _MAX_WASM_EXPORTS_PAGE = 1000
 _WASM_EXPORT_SECTION_ID = 7
+# wasm.sections walks the whole section table (the module's table of contents).
+# Section id -> canonical name (WASM core spec, binary section order).
+_WASM_SECTION_NAMES = {
+    0: "custom",
+    1: "type",
+    2: "import",
+    3: "function",
+    4: "table",
+    5: "memory",
+    6: "global",
+    7: "export",
+    8: "start",
+    9: "element",
+    10: "code",
+    11: "data",
+    12: "data_count",
+}
+# Sections whose body begins with a vec(...) length (or, for data_count, is that
+# length): reading that leading u32 gives the entry count cheaply. start (8) is
+# a single funcidx and custom (0) is a name+bytes, so neither is listed here.
+_WASM_VEC_SECTION_IDS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12})
+_MAX_WASM_SECTIONS_COLLECT = 5000
+_MAX_WASM_SECTIONS_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -365,6 +388,114 @@ def parse_wasm_exports(path: Path, *, offset: int = 0, limit: int = 100) -> Json
     window = rows[start : start + cap]
     return {
         "exports": window,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _section_entry_count(body: bytes) -> int | None:
+    """Read the leading vec length of a section body; None if it cannot be read."""
+    try:
+        count, _ = _read_uleb(body, 0)
+        return count
+    except _WasmParseError:
+        return None
+
+
+def _custom_section_name(body: bytes) -> str | None:
+    """Read a custom section's leading name; None if it cannot be read."""
+    try:
+        name, _ = _read_wasm_name(body, 0)
+        return name
+    except _WasmParseError:
+        return None
+
+
+def parse_wasm_sections(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a WebAssembly module's sections (its table of contents), wabt-free.
+
+    The structural overview to read first: it walks the section table in pure
+    Python, so unlike wasm.info / wasm.wat it needs no wabt installed, and it
+    frames what wasm.imports and wasm.exports then drill into. Each row is id,
+    name (custom, type, import, function, table, memory, global, export, start,
+    element, code, data or data_count -- unknown for an id the spec does not
+    define), offset (the byte position of the section's id byte) and size (the
+    declared body length in bytes). Sections whose body starts with a vector --
+    everything but start and custom -- also carry entries, that vector's length
+    (for type/function/... the item count, for data_count the declared data-
+    segment count); a custom section instead carries custom_name, the section's
+    own name (e.g. "name", "producers", ".debug_info"), which is how debug and
+    tooling metadata is spotted without a decompiler. Sections keep binary
+    order, which for the known ids is ascending except that custom sections may
+    sit between any two. Returns sections, count, total, offset and has_more so
+    a filled page is not read as the whole table; total is capped at 5000 with
+    scan_capped when more may exist, and truncated is true when a section's
+    declared size runs past the module or a length is malformed (the sections
+    read so far, including the short one, are still returned). A file that is
+    not a WebAssembly module is refused as invalid_params, one over 16 MiB as
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    rows: list[JsonObject] = []
+    scan_more = False
+    truncated = False
+    try:
+        pos = 8  # 4-byte magic + 4-byte version
+        total = len(raw)
+        while pos < total:
+            if len(rows) >= _MAX_WASM_SECTIONS_COLLECT:
+                scan_more = True
+                break
+            sec_start = pos
+            sec_id = raw[pos]
+            pos += 1
+            size, pos = _read_uleb(raw, pos)
+            body_start = pos
+            end = body_start + size
+            row: JsonObject = {
+                "id": sec_id,
+                "name": _WASM_SECTION_NAMES.get(sec_id, "unknown"),
+                "offset": sec_start,
+                "size": size,
+            }
+            if end > total:
+                # The header parsed but the body is short: record what we saw
+                # and stop rather than slice past the buffer.
+                truncated = True
+                rows.append(row)
+                break
+            body = raw[body_start:end]
+            if sec_id == 0:
+                cname = _custom_section_name(body)
+                if cname is not None:
+                    row["custom_name"] = cname
+            elif sec_id in _WASM_VEC_SECTION_IDS:
+                entries = _section_entry_count(body)
+                if entries is not None:
+                    row["entries"] = entries
+            rows.append(row)
+            pos = end
+    except _WasmParseError:
+        truncated = True
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_SECTIONS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "sections": window,
         "count": len(window),
         "total": len(rows),
         "offset": start,

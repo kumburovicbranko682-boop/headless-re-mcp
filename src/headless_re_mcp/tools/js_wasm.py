@@ -149,4 +149,33 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
+    @tools.tool(name="wasm.sections")
+    def wasm_sections(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List a WebAssembly module's sections (its table of contents), wabt-free.
+
+        The structural overview to read first: it walks the section table in
+        pure Python, so unlike wasm.info / wasm.wat it needs no wabt installed,
+        and it frames what wasm.imports and wasm.exports drill into. Each row is
+        id, name (custom, type, import, function, table, memory, global, export,
+        start, element, code, data or data_count -- unknown for an id the spec
+        does not define), offset (the byte position of the section's id byte)
+        and size (the declared body length). Sections whose body starts with a
+        vector -- everything but start and custom -- also carry entries, that
+        vector's length (the item count, or for data_count the declared data-
+        segment count); a custom section instead carries custom_name, its own
+        name (e.g. "name", "producers", ".debug_info"), which is how debug and
+        tooling metadata is spotted without a decompiler. Answers with sections,
+        count, total, offset and has_more so a filled page is not read as the
+        whole table; total is capped at 5000 with scan_capped when more may
+        exist, and truncated is true when a section's declared size runs past
+        the module or a length is malformed (sections read so far, including the
+        short one, are still returned). A file that is not a WebAssembly module
+        is refused as invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_sections(path, offset=offset, limit=limit))
+
     return tools.bindings
