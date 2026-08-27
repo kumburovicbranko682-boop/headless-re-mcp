@@ -152,6 +152,52 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  # Real-backend coverage for the radare2 exports dedup. radare2's iEj merges
+  # the dynamic and static symbol tables, so a non-stripped .so lists every
+  # export twice; the gate builds a real shared object with gcc (present on
+  # ubuntu-latest) and asserts the duplicates collapse. "skip != pass" only
+  # means something when the backend is present somewhere.
+  linux-r2-exports-dedup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install radare2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y radare2
+          r2 -v
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: r2 exports dedup gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_r2_exports_dedup_live_gate.py \
+            -rs --tb=short --junitxml=r2-dedup-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("r2-dedup-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # radare2 and gcc were just provisioned, so a skip here means the gate
+          # could not reach them -- the false-green "skip != pass" warns about.
+          if not cases:
+              sys.exit("no r2 dedup gate was collected")
+          if skipped:
+              sys.exit(f"r2 dedup gate skipped despite installed radare2/gcc: {skipped}")
+          print(f"r2 dedup gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

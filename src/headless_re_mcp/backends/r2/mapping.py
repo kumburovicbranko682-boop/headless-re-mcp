@@ -125,6 +125,17 @@ def parse_r2_json(raw: str) -> Any | None:
     return None
 
 
+def _dedup_signature(entry: JsonObject) -> str:
+    """A stable signature of an entry ignoring its ``ordinal``.
+
+    r2 numbers each symbol-table row with an ``ordinal``; the same symbol listed
+    under two ordinals is one symbol, so the ordinal is what we drop to tell the
+    duplicates apart from genuinely distinct rows.
+    """
+    reduced = {key: value for key, value in entry.items() if key != "ordinal"}
+    return json.dumps(reduced, sort_keys=True, default=str)
+
+
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
@@ -179,8 +190,26 @@ def enrich_r2_payload(
 
     items: list[JsonObject] = []
     if isinstance(parsed, list):
-        available = len(parsed)
-        for entry in parsed[:_MAX_ITEMS]:
+        # r2 lists the same symbol under several ordinals when it merges the
+        # dynamic and static symbol tables -- an ELF shared object's iEj shows
+        # every export twice (identical but for `ordinal`), so `count` read
+        # double and a reader saw each export listed once per table. Collapse
+        # rows that are identical except for their ordinal before counting or
+        # capping; only rows that actually carry an ordinal are considered, so
+        # functions, xrefs and disassembly (which have none) are never touched.
+        deduped: list[Any] = []
+        seen: set[str] = set()
+        dropped = 0
+        for entry in parsed:
+            if isinstance(entry, dict) and "ordinal" in entry:
+                signature = _dedup_signature(entry)
+                if signature in seen:
+                    dropped += 1
+                    continue
+                seen.add(signature)
+            deduped.append(entry)
+        available = len(deduped)
+        for entry in deduped[:_MAX_ITEMS]:
             if not isinstance(entry, dict):
                 continue
             item = dict(entry)
@@ -202,6 +231,11 @@ def enrich_r2_payload(
             items.append(item)
         out["items"] = items
         out["count"] = len(items)
+        if dropped:
+            # Said out loud like the truncation beside it: a caller comparing
+            # `count` against another tool's export table should know r2's raw
+            # listing was longer only because it repeated the same symbols.
+            out["items_deduplicated"] = dropped
         if available > _MAX_ITEMS:
             # Said out loud, like the raw-output cut beside it. A list that
             # stopped at the cap looks exactly like a list that ended, and a

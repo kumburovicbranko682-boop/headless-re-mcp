@@ -95,8 +95,11 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with items, each carrying name, vaddr and address
         (va/rva/module), plus count. There is no integer address field.
         Read items_truncated, items_total and items_limit when the
-        list filled the cap (4096). There is no exports, truncated or
-        has_more field.
+        list filled the cap (4096). radare2 merges the dynamic and static
+        symbol tables, so it lists an export once per table; rows identical
+        except for their ordinal are collapsed, and items_deduplicated says
+        how many such duplicates were dropped. There is no exports, truncated
+        or has_more field.
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 

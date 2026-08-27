@@ -928,6 +928,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   其余三处回 `has_more`——frida 那几个改为向脚本多要一条，因而不必数完全部就能区分"没有了"和
   "只给了这一页"；恰好填满一页而后面确实没有了的情况不会被误标为不完整。r2 原始输出的截断早已
   如实披露，这几处只是补齐同一条规矩。
+- **`r2.exports` 把每个导出数成两个**。radare2 的 `iEj` 同时从 `.dynsym`（动态符号表）与
+  `.symtab`（静态符号表）读导出，于是一个未 strip 的 ELF 共享库里每个导出都被列两遍——两行除
+  `ordinal` 外完全相同。实测（radare2 6.2.0，gcc 编的 libt.so）：3 个导出报成 `count=6`，
+  `exported_add`、`msg` 各出现两次；agent 据此点数或比对导出表时会得到翻倍的错值。现在
+  `enrich_r2_payload` 在计数与截断之前，把「除 ordinal 外逐字节相同」的行折叠掉，并以
+  `items_deduplicated` 如实说明丢弃了几行（上例 3 个导出、丢 3 行、`count=3`）。折叠是保守的：
+  只认「仅 ordinal 不同」的完全重复行，因此同名不同址的别名、以及 bind 等其它字段有差异的行都会
+  各自保留；只有带 `ordinal` 的符号表行会被考察，`aflj` 函数、`axj` 交叉引用、`pdj` 反汇编（都
+  没有 ordinal）一律不受影响。新增单测用真实 `iEj` 载荷钉住折叠、别名不误折、非 ordinal 列表不动、
+  以及折叠先于 4096 上限；`linux-r2-exports-dedup` gate 用 gcc 现编一个真 .so、跑真 radare2，断言
+  导出经处理后不再重复（skip ≠ pass）。
 - **过大的 finding 会被静默改成另一个东西**。`knowledge.record` 的 value 以 JSON 文本存储、
   在 8000 字符处截断——截断后它不再是合法 JSON，于是读回来的是一段**字符串碎片**而不是写进去的
   对象，而写入时返回的是 ok=True。findings 正是无人值守运行跨会话的记忆，后续判断因此建立在
