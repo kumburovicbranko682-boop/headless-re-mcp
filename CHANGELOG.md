@@ -24,6 +24,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（原生 ELF/Mach-O 会话：r2 工具面在其老家平台真正可达）
+
+- 新增 `TargetKind.NATIVE`：按魔数把 ELF 与瘦 Mach-O（32/64 位、大小端）认成原生会话。此前它们在
+  `classify_target` 落到 PE 分支、再被 `detect_pe_architecture` 以 `not a PE file` 顶回，于是
+  `r2.open/info/functions/strings/imports/exports/disasm/xrefs` 这些只要 `require_binary()` 的工具，在
+  Linux/macOS 实际发行的二进制格式上根本建不了会话、全都够不着；PE 专属工具（调试器 `dynamic.launch` 等，走
+  `require_pe()`）仍以 `target_mismatch` 拒绝原生会话，即原生会话不放松任何 PE 守卫。0xCAFEBABE 的胖/通用
+  二进制与 Java `.class` 首字节相同，为免误判故意不认，落回原行为。
+- 原生会话用纯 stdlib 的 `describe_native` 从头 64 字节解析出 `{format, bits, endian, type, arch}` 身份
+  （与 PE 的 `architecture`、APK 的 `describe_apk` 同构），`get_session` 一眼看出是「64 位 x86-64 ELF 可执行」；
+  只有 x86/x86-64 映成 `Architecture`（x86→x86、x86-64→x64），ARM/MIPS 等仅作展示、`session.architecture` 留空。
+- 这份架构一路串进 r2 工具输出：`enrich_r2_payload` 过去只从 PE 头推架构，ELF 没 PE 头就什么都不标；现把
+  `session.architecture` 从服务层（`_r2_request` / `r2.disasm` / `r2.xrefs`）经 `R2Client.run/disasm/xrefs`
+  串到 enrich（PE 侧同值、零回归），ELF 的 `r2.functions/disasm/xrefs` 输出这才和 PE 一样带上 `architecture`。
+  `r2.info` 文档串同步更正：架构来自会话身份（PE 读 PE 头、原生读 ELF/Mach-O 头），`image_base` 仍是 PE 专属。
+- 新增实测 Gate（`test_native_r2_gate.py`）：现编不 strip 的 ELF→建原生会话→`r2.open/functions/strings/
+  imports/disasm` 逐一断言（`gate_*` 函数、printf 导入、marker 字符串、架构串联），并验 PE 专属工具以
+  `target_mismatch` 拒绝；无 r2 或无 C 编译器时诚实 skip（skip != pass）。单测覆盖 NATIVE 分类、`describe_native`
+  （含截断头与非原生拒绝）、PE 工具在原生会话上的 `target_mismatch`，以及非 PE 的 r2 架构串联。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

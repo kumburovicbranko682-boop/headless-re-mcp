@@ -142,7 +142,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 
 ### 目标类型与工作方向
 
-`session.create` 按扩展名与魔数自动判定目标类型（MZ→PE、含 `AndroidManifest.xml` 的 zip→APK、`http(s)`/`.js`/`.wasm`→Web），也可显式传 `target`。PE 专属工具对非 PE 会话返回结构化 `target_mismatch`，不会深入后端才失败。
+`session.create` 按扩展名与魔数自动判定目标类型（MZ→PE、`\x7fELF`/瘦 Mach-O→原生 ELF/Mach-O、含 `AndroidManifest.xml` 的 zip→APK、`http(s)`/`.js`/`.wasm`→Web），也可显式传 `target`。原生（ELF/Mach-O）会话与 PE 一样是文件型、可直接走 radare2/Ghidra 等格式无关工具，并从头部解析出 `{format, bits, endian, type, arch}` 身份（x86/x86-64 会映成会话 `architecture` 并串进 r2 输出）；此前 ELF/Mach-O 会落到 PE 分支被 `not a PE file` 顶回，整条 `r2.*` 在 Linux/macOS 老家平台够不着。PE 专属工具对非 PE（含原生）会话返回结构化 `target_mismatch`，不会深入后端才失败。
 
 未干净关闭的会话会按同一 ID 从 `sessions.db` 水合回来（`state=created`，`metadata.restored=true`），不自动拉起 IDA/x64dbg。监控台重启后继续用旧 id，不要再 `session.create` 一条新的。
 
