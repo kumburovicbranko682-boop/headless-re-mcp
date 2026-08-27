@@ -188,8 +188,11 @@ def test_serialize_har_leaves_a_small_capture_intact() -> None:
 
 
 class _WebHandle:
-    def __init__(self, count: int) -> None:
+    def __init__(self, count: int, *, dropped: int = 0) -> None:
         self.lock = Lock()
+        # har_export reads requests_dropped under the handle lock, just like the
+        # real _WebSession; model it so the fake carries the same interface.
+        self.requests_dropped = dropped
         self.requests = {
             str(index): {
                 "requestId": str(index),
@@ -212,6 +215,7 @@ def test_web_har_export_writes_a_valid_har_that_carries_every_request(
     payload = backend.har_export("s", out)
     assert payload["entry_count"] == 3
     assert payload["truncated"] is False
+    assert payload["dropped"] == 0
     doc = _assert_valid_har(out.read_text(encoding="utf-8"))
     urls = {entry["request"]["url"] for entry in doc["log"]["entries"]}
     assert urls == {"https://example.com/0", "https://example.com/1", "https://example.com/2"}
@@ -230,11 +234,33 @@ def test_web_har_export_is_bounded_by_the_capture_cap(
     assert payload["truncated"] is True
     assert payload["entry_count"] < 400
     assert out.stat().st_size <= 4096
+    # truncated is the file-size cut; the 400 requests all fit the ring, so none
+    # were evicted -- dropped and truncated are independent signals.
+    assert payload["dropped"] == 0
     doc = _assert_valid_har(out.read_text(encoding="utf-8"))
     kept = [int(entry["request"]["url"].rsplit("/", 1)[1]) for entry in doc["log"]["entries"]]
     # The oldest requests are dropped; the newest that fit are kept.
     assert kept[-1] == 399
     assert min(kept) > 0
+
+
+def test_web_har_export_reports_requests_evicted_from_the_ring(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A ring that shed requests before export says so, distinct from truncated.
+
+    The HAR carries only what the request ring still holds; requests it evicted
+    are simply absent. Reporting dropped keeps a reader from taking the entries
+    for the whole session's traffic -- the same honesty web.network.list gives.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _WebHandle(3, dropped=6))
+    out = tmp_path / "capture.har"
+    payload = backend.har_export("s", out)
+    assert payload["entry_count"] == 3
+    # Under the byte cap (no file cut), yet six requests are missing and flagged.
+    assert payload["truncated"] is False
+    assert payload["dropped"] == 6
 
 
 def test_web_har_export_refuses_when_even_an_empty_har_exceeds_the_cap(
@@ -275,6 +301,7 @@ def test_proxy_export_har_writes_a_valid_har(tmp_path: Path) -> None:
     payload = backend.export_har("s", out)
     assert payload["entry_count"] == 4
     assert payload["truncated"] is False
+    assert payload["dropped"] == 0
     doc = _assert_valid_har(out.read_text(encoding="utf-8"))
     assert len(doc["log"]["entries"]) == 4
 
@@ -314,11 +341,36 @@ def test_proxy_export_har_is_now_bounded_by_the_capture_cap(
     assert payload["truncated"] is True
     assert payload["entry_count"] < 400
     assert out.stat().st_size <= 4096
+    # 400 flows fit the 2000-slot ring, so nothing was evicted: the loss here is
+    # the file-size cut (truncated), not ring eviction (dropped).
+    assert payload["dropped"] == 0
     doc = _assert_valid_har(out.read_text(encoding="utf-8"))
     kept = [int(entry["request"]["url"].rsplit("/", 1)[1]) for entry in doc["log"]["entries"]]
     # The oldest flows are dropped; the newest that fit are kept.
     assert kept[-1] == 399
     assert min(kept) > 0
+
+
+def test_proxy_export_har_reports_flows_evicted_from_the_ring(tmp_path: Path) -> None:
+    """A capture that outran the ring exports only what remains, and says how
+    many it lost -- entry_count is what is present, dropped what the ring shed,
+    truncated stays False because the loss was eviction, not a file-size cut."""
+    recorder = _FlowRecorder(capacity=4)
+    for index in range(10):
+        request = SimpleNamespace(method="GET", pretty_url=f"http://x/{index}", host="x")
+        response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+    out = tmp_path / "capture.har"
+    payload = backend.export_har("s", out)
+    assert payload["entry_count"] == 4
+    assert payload["dropped"] == 6
+    assert payload["truncated"] is False
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    assert len(doc["log"]["entries"]) == 4
 
 
 def test_proxy_export_har_refuses_when_even_an_empty_har_exceeds_the_cap(

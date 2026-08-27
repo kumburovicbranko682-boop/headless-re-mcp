@@ -777,6 +777,12 @@ class ProxyBackend:
             "entry_count": serialized.entry_count,
             "truncated": serialized.truncated,
             "size": serialized.size,
+            # dropped is distinct from truncated: truncated means the HAR *file*
+            # was cut to the byte cap during serialization, while dropped is how
+            # many flows the capture ring evicted before the export ran and so
+            # are absent from these entries. A nonzero dropped is the signal that
+            # this HAR is not the whole session's traffic.
+            "dropped": inst.recorder.dropped(),
         }
 
     def ca_cert_path(self) -> Path | None:

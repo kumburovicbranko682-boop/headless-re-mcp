@@ -997,6 +997,9 @@ class WebBackend:
                 )
                 for e in handle.requests.values()
             ]
+            # Read the eviction count under the same lock as the entries, so the
+            # "how much is missing" figure matches exactly the rows exported.
+            dropped = handle.requests_dropped
         serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
         if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
             raise WebError(
@@ -1012,6 +1015,10 @@ class WebBackend:
             "entry_count": serialized.entry_count,
             "truncated": serialized.truncated,
             "size": serialized.size,
+            # Distinct from truncated (the HAR file hit the byte cap): dropped is
+            # how many requests the capture ring evicted before the export and so
+            # are absent here -- nonzero means this HAR is not the whole session.
+            "dropped": dropped,
         }
 
     def close_all(self) -> None:

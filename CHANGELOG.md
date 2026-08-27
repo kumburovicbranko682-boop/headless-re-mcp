@@ -24,6 +24,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 可观测性（proxy/web 的 HAR 导出补报 dropped，区分“环丢弃”与“文件截断”）
+
+- `proxy.export_har` / `web.har.export` 都从各自的抓包环(proxy ≤2000 flow、web ≤3000 request)取条目导出,只返回
+  `truncated`——而 `truncated` 仅指 HAR *文件* 为了压进字节上限被裁剪,与“环在导出前就已淘汰旧条目”是两码事。抓包一旦
+  超环容量,最旧的条目根本不在导出里,消费方看到 N 条且 `truncated=false` 便当成“全部流量”,正是全仓处处防的
+  “这就是全部”误判。现两处导出都补返回 `dropped`(proxy 用 `_FlowRecorder.dropped()`,web 在持锁内与条目一起读
+  `requests_dropped`,口径与条目完全对齐),docstring 同步说明二者正交:`truncated` 是文件裁剪、`dropped` 是环淘汰,
+  `dropped>0` 即“此 HAR 不是整个会话的流量”。(新增字段,向后兼容。)
+
 ### 可观测性（proxy.status 增加 dropped 字段，抓包环开始丢弃时可提前预警）
 
 - `proxy.status` 本就是抓包健康快照(报 `flow_count` / `retained_bytes` 及各上限),却唯独不报已被环形缓冲淘汰的
