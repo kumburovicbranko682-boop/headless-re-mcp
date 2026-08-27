@@ -41,6 +41,7 @@ class _Handle:
             "resourceType": "XHR",
         }
     }
+    websockets: dict[str, dict[str, Any]] = {}
 
 
 def test_web_har_export_puts_the_file_in_path_not_har(
