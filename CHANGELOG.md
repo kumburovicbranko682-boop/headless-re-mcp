@@ -58,6 +58,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+### 改进（`apk.certificates` 补上签名证书的 SHA-1 指纹,可与主流威胁情报库对齐)
+
+- `apk.certificates` 每份证书只回 `sha256` 指纹。而在 Android 侧,签名证书的 **SHA-1** 才是各威胁情报平台
+  (VirusTotal、Koodous、AndroZoo,乃至 Google Play App Signing)统一编入索引、用于归因与关联的主键;
+  一个「识别签名者」的工具却唯独不给这个字段,逆向者据它拿到的 sha256 无法直接去这些库里检索同签名者的其它
+  样本。asn1crypto 的证书对象本就带 `sha1_fingerprint`(与 `sha256_fingerprint` 同格式、同来源),取用零成本。
+- 现在每份证书同时回 `sha1` 与 `sha256`,`sha1` 用 `hasattr` 守卫(个别 androguard/asn1crypto 版本若缺该属性
+  则回空串,与 sha256 的容错一致),不改变既有 `sha256`/`subject`/`issuer`/`serial` 字段。`apk.certificates`
+  描述点明两份指纹的用途(sha1 对齐威胁情报、sha256 为更强摘要)。
+- 新增回归:伪证书带 `sha1_fingerprint` → 结果里 `sha1`/`sha256` 均如实填充,并断言描述里点名 `sha1`。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 

@@ -55,13 +55,14 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_certificates(session_id: str) -> dict[str, Any]:
         """List signing certificates and the signature schemes in force.
 
-        Answers with certificates (subject, issuer, serial, sha256),
+        Answers with certificates (subject, issuer, serial, sha1, sha256),
         signature_files, and has_more so a list that filled the cap is not read
-        as every signer. Scheme flags v1_signed, v2_signed, v3_signed and
-        v31_signed plus a combined signed tell an unsigned APK from a modern one
-        that dropped the v1 JAR signature for APK Signature Scheme v2/v3 --
-        v1_signed alone would read as unsigned. There is no certs or signatures
-        field.
+        as every signer. Both fingerprints are given: sha1 is the identifier
+        Android threat-intel indexes on, sha256 the stronger digest. Scheme
+        flags v1_signed, v2_signed, v3_signed and v31_signed plus a combined
+        signed tell an unsigned APK from a modern one that dropped the v1 JAR
+        signature for APK Signature Scheme v2/v3 -- v1_signed alone would read
+        as unsigned. There is no certs or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 

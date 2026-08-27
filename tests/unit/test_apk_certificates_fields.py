@@ -33,6 +33,7 @@ class _Cert:
         self.subject = f"CN={index}"
         self.issuer = "CN=i"
         self.serial_number = index
+        self.sha1_fingerprint = f"S1:{index}"
         self.sha256_fingerprint = "aa"
 
 
@@ -99,6 +100,7 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert "signature_files" in doc
     assert "has_more" in doc
     assert "v2_signed" in doc
+    assert "sha1" in doc
 
 
 def test_apk_certificates_reports_v2_v3_when_v1_is_absent() -> None:
@@ -117,3 +119,20 @@ def test_apk_certificates_reports_v2_v3_when_v1_is_absent() -> None:
     assert payload["v3_signed"] is True
     assert payload["v31_signed"] is False
     assert payload["signed"] is True
+
+
+def test_apk_certificates_reports_both_sha1_and_sha256_fingerprints() -> None:
+    """Each cert carries sha1 (the threat-intel pivot) alongside sha256.
+
+    A signer-identification tool that only gave sha256 could not be
+    cross-referenced against VirusTotal/Koodous/AndroZoo, which index Android
+    signing certs by SHA-1. Both must be present and populated.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    first = payload["certificates"][0]
+    assert first["sha1"] == "S1:0"
+    assert first["sha256"] == "aa"
+    doc = _tool_docstring("apk.certificates")
+    assert "sha1" in doc
