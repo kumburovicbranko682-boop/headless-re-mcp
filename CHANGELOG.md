@@ -144,6 +144,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
+### 修复（`report.generate` 的「最近操作」被 `audit_limit` 截断却不声明）
+
+- Markdown 报告是有人留存并据以行动的产物，`reporting.py` 已用 `_note_if_partial`
+  给「结论」与「制品」两节标注「Showing X of Y…」——但「最近操作」（audit）一节漏了这个
+  声明。`report.generate` 按 `audit_limit`（默认 30）截取 audit，`list_audit` 同时回了真实
+  `total`；于是一个跑了上百次工具调用的会话，报告只列出末尾 30 条却读起来像完整历史，一条报告
+  没提到的操作与从未发生过的操作无从区分。现在「最近操作」一节复用同一 `_note_if_partial`，
+  在 `total` 超出所示条数时附上「Showing 30 of 152 actions. The rest are in the session, not in
+  this report.」，与「结论」「制品」口径一致；未截断时不加声明。补回归测试钉住截断的 audit 会声明、
+  完整的 audit 不声明。
+
 ### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
 - Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
