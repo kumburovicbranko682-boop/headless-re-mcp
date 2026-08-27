@@ -31,6 +31,10 @@ JsonObject = dict[str, Any]
 _MAX_IDA_STARTUP_SECONDS = 240.0
 _MAX_DIAGNOSTIC_LINE_CHARS = 16 * 1024
 _MAX_RPC_LINE_CHARS = 8 * 1024 * 1024
+# An analyzer window's title can differ on every retried gate (progress
+# percentages, file names).  Keep enough distinct sightings for diagnostics
+# without retaining a session-long log of every title ever seen.
+_MAX_OBSERVED_WINDOWS = 128
 
 
 def next_receive_deadline(
@@ -139,6 +143,7 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         self._metadata: JsonObject = {}
         self._capabilities: frozenset[str] = frozenset()
         self._observed_windows: set[str] = set()
+        self._observed_windows_dropped = 0
 
         assert self._process.stdout is not None
         assert self._process.stderr is not None
@@ -351,14 +356,21 @@ class IdaWorkerClient(ManagedSubprocessMixin):
     def _observe_windows(self) -> None:
         """Refuse the call while a window is up, without latching on history.
 
-        ``analyzer_windows`` stays cumulative so a gate still fails on a window
-        that opened and closed mid-analysis. Refusing on that history instead
+        ``analyzer_windows`` stays cumulative (capped at ``_MAX_OBSERVED_WINDOWS``
+        distinct sightings) so a gate still fails on a window that opened and
+        closed mid-analysis. Refusing on that history instead
         would retire the worker permanently over a dialog that is already gone.
         """
         windows = describe_process_windows(self._process.pid)
         if not windows:
             return
-        self._observed_windows.update(windows)
+        for window in windows:
+            if window in self._observed_windows:
+                continue
+            if len(self._observed_windows) < _MAX_OBSERVED_WINDOWS:
+                self._observed_windows.add(window)
+            else:
+                self._observed_windows_dropped += 1
         raise IdaWorkerError(
             "analyzer_window_detected",
             "IDA worker has an analyzer window open",
@@ -380,4 +392,6 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             "stdout": list(self._stdout_log),
             "stderr": list(self._stderr_log),
             "analyzer_windows": sorted(self._observed_windows),
+            "analyzer_window_capacity": _MAX_OBSERVED_WINDOWS,
+            "analyzer_windows_dropped": self._observed_windows_dropped,
         }

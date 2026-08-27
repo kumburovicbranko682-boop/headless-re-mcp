@@ -47,6 +47,10 @@ _MAX_DISPATCH_TIMEOUT_MS = 30_000
 _RECONNECT_TIMEOUT_SECONDS = 30.0
 _MAX_JSON_INTEGER = (1 << 63) - 1
 _MAX_DIAGNOSTIC_LINE_CHARS = 16 * 1024
+# A progress-bearing window title can change on every 50 ms monitor tick, which
+# would grow the history by more than a million entries per day.  Keep enough
+# distinct sightings for gate diagnostics without a session-long log.
+_MAX_OBSERVED_WINDOWS = 128
 
 
 class XdbgRpcError(RuntimeError):
@@ -378,6 +382,7 @@ class XdbgClient:
         self._window_lock = Lock()
         self._monitor_stop = Event()
         self._observed_windows: set[str] = set()
+        self._observed_windows_dropped = 0
         self._stdout_log: deque[str] = deque(maxlen=200)
         self._stderr_log: deque[str] = deque(maxlen=200)
         self._request_id = 0
@@ -1233,10 +1238,19 @@ class XdbgClient:
         while not self._monitor_stop.wait(0.05):
             windows = self._describe_analyzer_windows()
             if windows:
-                with self._window_lock:
-                    self._observed_windows.update(windows)
+                self._record_observed_windows(windows)
             if self._desktop is not None:
                 self._suppress_input_desktop_leaks()
+
+    def _record_observed_windows(self, windows: list[str]) -> None:
+        with self._window_lock:
+            for window in windows:
+                if window in self._observed_windows:
+                    continue
+                if len(self._observed_windows) < _MAX_OBSERVED_WINDOWS:
+                    self._observed_windows.add(window)
+                else:
+                    self._observed_windows_dropped += 1
 
     def _note_debuggee_pid(self, payload: JsonObject) -> None:
         if "process_id" not in payload and "debuggee_pid" not in payload:
@@ -1266,8 +1280,9 @@ class XdbgClient:
     def _observe_windows(self) -> None:
         """Refuse the call while a window is up, without latching on history.
 
-        ``analyzer_windows`` stays cumulative because a gate has to fail on a
-        window that appeared and closed between two calls. Refusing on that same
+        ``analyzer_windows`` stays cumulative (capped at ``_MAX_OBSERVED_WINDOWS``
+        distinct sightings) because a gate has to fail on a window that appeared
+        and closed between two calls. Refusing on that same
         history would be a different rule: the passive monitor records windows
         the request path never saw, so one dialog x64dbg opened and dismissed on
         its own would kill the next call and every call after it, against a
@@ -1276,8 +1291,7 @@ class XdbgClient:
         windows = self._describe_analyzer_windows()
         if not windows:
             return
-        with self._window_lock:
-            self._observed_windows.update(windows)
+        self._record_observed_windows(windows)
         raise XdbgRpcError(
             "analyzer_window_detected",
             "x64dbg has a top-level analyzer window open",
@@ -1346,4 +1360,6 @@ class XdbgClient:
             "stdout": list(self._stdout_log),
             "stderr": list(self._stderr_log),
             "analyzer_windows": list(self.analyzer_windows),
+            "analyzer_window_capacity": _MAX_OBSERVED_WINDOWS,
+            "analyzer_windows_dropped": self._observed_windows_dropped,
         }
