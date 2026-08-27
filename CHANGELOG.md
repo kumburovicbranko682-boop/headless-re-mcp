@@ -57,6 +57,15 @@ gate 与 CI，并修掉两处只有在真后端下才暴露的缺陷。全部 ga
   编译该 DEX 到 Java。
 - **proxy 抓包 gate。** `test_proxy_capture_gate.py` 把一条真 HTTP 请求经 mitmproxy 路由，断言抓到 flow、
   能取回 body、能导出 HAR、能重放。
+- **adb 设备后端首次拿到真机 gate（无需真手机）。** `device.*` 工具此前全对着桩子跑，最易随 adbutils 版本
+  漂移而崩的那层——AdbClient 构造（`socket_timeout` kwarg 及旧版回退）、`list()`/`device_list()` 形状回退、
+  connect 状态串启发式、以及「未知设备」到结构化错误的映射——从未跑过真 adbutils（正是 frida 17 那类
+  客户端库 API 漂移，桩子复现不出）。adbutils 自带 adb 二进制并自动拉起本地 server，故整条 server 通信层
+  在无手机的机器上即可跑：`test_adb_live_gate.py` 断言设备列表为空的分页形态、对死端口 connect 返回结构化
+  `connected: False`（不抛异常）、越界端口与含空格/叹号的 serial 均 `invalid_params`、未知 serial 是
+  `backend_error`（非裸 adbutils 异常）；service 层再验 `device_list` 回 ok 空壳、`device_connect` 把
+  adbutils 不抛的“未连上”升级成 backend_error 失败信封、`device_info` 未知设备回失败信封。gate 结束用自带
+  adb `kill-server` 收掉自己拉起的 server，不留守护进程；adbutils 缺席或真机在场时明确 skip。
 - **radare2 ELF 与 web CDP gate 面加厚。** r2 侧补 `pdj` 反汇编（含带方括号内存操作数的解析）与 `izj`
   字符串到 `vaddr` 的映射；web 侧补 CDP 网络抓取/取体、`script.source`、截图、HAR 导出、导航、
   `wasm.list`，以及 wasm `wat`/`info`。

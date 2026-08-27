@@ -11,7 +11,9 @@
 #                  end to end (classes/methods/strings/xrefs), jadx decompiling
 #                  that DEX to Java, apktool decode/build round-tripping a real
 #                  APK, apksigner signing the rebuilt APK, frida attaching a
-#                  local process (attach/modules/exports/memory.read/hook), and
+#                  local process (attach/modules/exports/memory.read/hook), the
+#                  adb device server layer via adbutils' bundled adb (empty list,
+#                  refused connect, hostile-input and missing-device errors), and
 #                  safe degradation with no device
 #   * Static    -- radare2 against a locally built ELF (the non-PE mapping path)
 # tests/integration/conftest.py skips the Windows-only gates by name, and -rs
