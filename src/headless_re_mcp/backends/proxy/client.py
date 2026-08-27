@@ -60,6 +60,32 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
+def _close_proxy_servers(master: Any, loop: asyncio.AbstractEventLoop) -> None:
+    """Stop the proxyserver addon's listeners so the OS reclaims the port.
+
+    mitmproxy's ``Master.run()`` teardown (the ``DoneHook``) does *not* close the
+    proxy server sockets -- upstream reclaims them by exiting the process, and
+    the ``proxyserver`` addon has no ``done`` hook. Embedded in a long-lived
+    service we have to free the port ourselves, or a stopped session keeps its
+    listener bound (mitmproxy 12 runs it in the ``mitmproxy_rs`` core, so it
+    survives the Python loop) and the next ``start()`` on that port is refused.
+
+    Must run on ``loop`` while it is still open (before ``_shutdown_loop``
+    closes it), because ``ServerInstance.stop()`` is a coroutine on that loop.
+    ``servers.update([])`` removes every mode, awaiting each instance's stop.
+    """
+    if master is None:
+        return
+    ps = None
+    with contextlib.suppress(Exception):
+        ps = master.addons.get("proxyserver")
+    servers = getattr(ps, "servers", None)
+    if servers is None:
+        return
+    with contextlib.suppress(Exception):
+        loop.run_until_complete(servers.update([]))
+
+
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     """True when something is listening and accepting on host:port."""
     with contextlib.suppress(OSError), socket.socket() as probe:
@@ -348,8 +374,12 @@ class _ProxyInstance:
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound
-            # and the next capture could never start. Unwind the tasks first.
+            # and the next capture could never start. Tear the servers down
+            # explicitly (run()'s own teardown does not) and then unwind the
+            # remaining tasks, both while the loop is still open.
             if loop is not None:
+                with contextlib.suppress(Exception):
+                    _close_proxy_servers(self._master, loop)
                 with contextlib.suppress(Exception):
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)

@@ -366,6 +366,84 @@ class TestFailedProxyStartLeavesNothingBehind:
             logging.getLogger().removeHandler(other)
 
 
+class TestProxyStopActuallyFreesThePort:
+    """mitmproxy's ``Master.run()`` teardown does not close the proxy servers.
+
+    The ``proxyserver`` addon has no ``done`` hook, and mitmproxy 12 runs the
+    listener in the ``mitmproxy_rs`` core, so it outlives the Python loop. A
+    stopped session that keeps its listener bound means the next ``start()`` on
+    that port is refused -- the live gate proves the real socket is freed, and
+    this proves the teardown call is wired without needing mitmproxy installed.
+    """
+
+    def test_close_proxy_servers_awaits_update_to_the_empty_modes(self) -> None:
+        import asyncio
+
+        from headless_re_mcp.backends.proxy.client import _close_proxy_servers
+
+        calls: list[list[Any]] = []
+
+        class _Servers:
+            async def update(self, modes: Any) -> bool:
+                calls.append(list(modes))
+                return True
+
+        class _Addons:
+            def __init__(self, addon: Any) -> None:
+                self._addon = addon
+
+            def get(self, name: str) -> Any:
+                return self._addon if name == "proxyserver" else None
+
+        class _Proxyserver:
+            servers = _Servers()
+
+        class _Master:
+            addons = _Addons(_Proxyserver())
+
+        loop = asyncio.new_event_loop()
+        try:
+            _close_proxy_servers(_Master(), loop)
+        finally:
+            loop.close()
+        # Emptying the mode list is what stops every ServerInstance and frees
+        # the bound ports; anything else would leave the listener up.
+        assert calls == [[]]
+
+    def test_close_proxy_servers_tolerates_a_master_without_the_addon(self) -> None:
+        import asyncio
+
+        from headless_re_mcp.backends.proxy.client import _close_proxy_servers
+
+        class _Addons:
+            def get(self, name: str) -> Any:
+                return None
+
+        class _Master:
+            addons = _Addons()
+
+        loop = asyncio.new_event_loop()
+        try:
+            # A master missing the proxyserver addon (or None) must not raise:
+            # teardown runs in a finally where a second failure hides the first.
+            _close_proxy_servers(_Master(), loop)
+            _close_proxy_servers(None, loop)
+        finally:
+            loop.close()
+
+    def test_run_closes_servers_before_it_closes_the_loop(self) -> None:
+        """Order matters: ``ServerInstance.stop()`` is a coroutine on the loop,
+        so it must run before ``_shutdown_loop`` closes that loop."""
+        import inspect
+
+        from headless_re_mcp.backends.proxy import client as proxy_client
+
+        source = inspect.getsource(proxy_client._ProxyInstance._run)
+        close_servers = source.index("_close_proxy_servers")
+        shutdown_loop = source.index("_shutdown_loop")
+        assert close_servers < shutdown_loop
+
+
 class TestConcurrentStartDoesNotLeakABackend:
     def test_two_proxy_starts_for_one_session_only_keep_one_instance(
         self, monkeypatch: Any
