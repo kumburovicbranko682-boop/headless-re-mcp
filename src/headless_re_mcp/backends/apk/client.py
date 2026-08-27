@@ -451,6 +451,58 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def search_methods(
+        self, path: Path, query: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        """Find methods whose name contains query, across every class.
+
+        The entry point for the callers/callees pair: apk.methods needs an exact
+        class and apk.xrefs / apk.callees need an exact method name, but triage
+        usually starts from a fragment ("decrypt", "token", "sign") with no idea
+        which class it lives in. This scans every non-external method and keeps
+        the ones whose name contains query (case-insensitive substring, not a
+        regex), so the caller can then feed an exact name into the xref tools.
+        Matching is on the method name only, not the class or descriptor. Results
+        carry class, method and descriptor, are sorted for stable paging, and
+        total is the match count (capped, with scan_capped when more matched than
+        the collection ceiling).
+        """
+        parsed = self._parsed(path)
+        needle = query.strip()
+        if not needle:
+            raise ApkError("invalid_params", "query is required")
+        lowered = needle.lower()
+        matches: list[JsonObject] = []
+        scan_more = False
+        for method in parsed.analysis.get_methods():
+            if method.is_external():
+                continue
+            name = str(method.name)
+            if lowered not in name.lower():
+                continue
+            if len(matches) >= _MAX_METHODS_COLLECT:
+                scan_more = True
+                break
+            matches.append(
+                {
+                    "class": str(method.class_name),
+                    "method": name,
+                    "descriptor": str(getattr(method, "descriptor", "")),
+                }
+            )
+        matches.sort(key=lambda m: (m["class"], m["method"], m["descriptor"]))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_METHODS_PAGE)
+        window = matches[start : start + cap]
+        return {
+            "query": needle,
+            "methods": window,
+            "count": len(window),
+            "total": len(matches),
+            "offset": start,
+            "has_more": start + len(window) < len(matches),
+            "scan_capped": scan_more,
+        }
+
 
 def _dotted_to_smali(name: str) -> str:
     """com.example.Foo -> Lcom/example/Foo; so either form resolves a class."""

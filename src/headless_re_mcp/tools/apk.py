@@ -145,6 +145,29 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 
+    @tools.tool(name="apk.method_search")
+    def apk_method_search(
+        session_id: str,
+        query: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Find methods whose name contains query, across every class.
+
+        The entry point for the callers/callees pair: apk.methods needs an exact
+        class and apk.xrefs / apk.callees need an exact method name, but triage
+        usually starts from a fragment ("decrypt", "token", "sign"). Matches the
+        method name only (case-insensitive substring, not a regex; class and
+        descriptor are not searched). Answers with methods (class, method,
+        descriptor), query, count, total, offset, and has_more; total is the
+        match count capped at 2000, with scan_capped true when more matched than
+        the ceiling. has_more only means a larger offset still has collected
+        rows.
+        """
+        return _dump(
+            analysis.apk_method_search(session_id, query, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,
