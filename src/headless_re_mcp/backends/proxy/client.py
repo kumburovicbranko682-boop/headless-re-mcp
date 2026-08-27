@@ -731,18 +731,36 @@ class ProxyBackend:
         inst = self._get(session_id)
         import json
 
-        from headless_re_mcp.backends.common.har import har_document, har_entry
+        from headless_re_mcp.backends.common.har import (
+            har_document,
+            har_entry,
+            har_headers,
+        )
 
-        entries = [
-            har_entry(
-                started_at=f.get("started_at"),
-                method=f.get("method"),
-                url=f.get("url"),
-                status=f.get("status"),
-                mime_type=f.get("content_type"),
+        entries = []
+        for f in inst.recorder.snapshot():
+            # The summary carries method/url/status; the retained raw flow still
+            # holds the real request/response headers -- the auth tokens,
+            # content types and Set-Cookie lines that make a HAR worth opening.
+            # A flow evicted or body-omitted from the ring has no raw object; its
+            # headers stay empty rather than fabricated.
+            raw = inst.recorder.raw(str(f.get("id") or ""))
+            req_headers: list[JsonObject] = []
+            resp_headers: list[JsonObject] = []
+            if raw is not None and raw is not _OMITTED_BODY:
+                req_headers = har_headers(getattr(getattr(raw, "request", None), "headers", None))
+                resp_headers = har_headers(getattr(getattr(raw, "response", None), "headers", None))
+            entries.append(
+                har_entry(
+                    started_at=f.get("started_at"),
+                    method=f.get("method"),
+                    url=f.get("url"),
+                    status=f.get("status"),
+                    mime_type=f.get("content_type"),
+                    request_headers=req_headers,
+                    response_headers=resp_headers,
+                )
             )
-            for f in inst.recorder.snapshot()
-        ]
         har = har_document(entries)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(har, ensure_ascii=False)

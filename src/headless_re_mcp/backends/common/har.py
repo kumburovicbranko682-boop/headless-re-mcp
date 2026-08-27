@@ -8,10 +8,10 @@ object, and ``timings``. The proxy and web exporters used to emit only
 method/url/status/mimeType, which Chrome DevTools and other HAR tools reject as
 malformed -- a file that opens nowhere is not an export. These builders fill
 every required field, using the real capture timestamp when one was recorded,
-the request parameters recovered from the URL for ``queryString``, and honest
-"unknown" sentinels (``-1`` sizes, empty arrays) where the capture did not
-retain that detail, so the document loads while never claiming data it does not
-have.
+the request parameters recovered from the URL for ``queryString``, the raw
+request/response headers when the capture retained them, and honest "unknown"
+sentinels (``-1`` sizes, empty arrays) where the capture did not retain that
+detail, so the document loads while never claiming data it does not have.
 """
 
 from __future__ import annotations
@@ -28,6 +28,38 @@ _CREATOR: JsonObject = {"name": "headless-re-mcp"}
 # A captured URL is already length-bounded upstream, but cap the parsed list so
 # a pathologically parameter-dense query cannot bloat a single entry.
 _MAX_QUERY_PARAMS = 512
+# Headers are copied verbatim from a retained flow; cap the count and each
+# name/value so one header-heavy entry cannot dominate the export.
+_MAX_HEADERS = 200
+_MAX_HEADER_LEN = 8 * 1024
+
+
+def _clip(value: object, limit: int) -> str:
+    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    return text if len(text) <= limit else text[:limit]
+
+
+def har_headers(headers: Any) -> list[JsonObject]:
+    """A mapping of headers as HAR ``{"name","value"}`` objects, bounded.
+
+    Accepts a mitmproxy ``Headers`` (which can repeat a name, so ``items(multi=
+    True)`` is preferred) or a plain dict. The count and each field are clipped
+    so a hostile server's header flood cannot bloat one entry, and any oddly
+    shaped mapping degrades to an empty list rather than breaking the export.
+    """
+    if headers is None:
+        return []
+    try:
+        try:
+            items = list(headers.items(multi=True))
+        except TypeError:
+            items = list(headers.items())
+    except Exception:  # noqa: BLE001
+        return []
+    return [
+        {"name": _clip(name, _MAX_HEADER_LEN), "value": _clip(value, _MAX_HEADER_LEN)}
+        for name, value in items[:_MAX_HEADERS]
+    ]
 
 
 def query_string(url: str | None) -> list[JsonObject]:
@@ -74,15 +106,20 @@ def har_entry(
     status: int | None,
     mime_type: str | None,
     http_version: str = "HTTP/1.1",
+    request_headers: list[JsonObject] | None = None,
+    response_headers: list[JsonObject] | None = None,
     extra: JsonObject | None = None,
 ) -> JsonObject:
-    """One spec-complete HAR entry from the little a capture summary retains.
+    """One spec-complete HAR entry from what a capture retained.
 
-    Only method/url/status/mimeType and an optional start time are known here;
-    every other required member is emitted with a valid empty/unknown value so
-    the entry is well-formed, except ``queryString``, which is recovered from the
-    URL (see ``query_string``). ``extra`` carries custom ``_``-prefixed fields
-    (e.g. the web capture's resource type), which HAR permits.
+    method/url/status/mimeType and an optional start time are always known;
+    ``queryString`` is recovered from the URL (see ``query_string``). A capture
+    that also kept the raw headers can pass ``request_headers`` / ``response_
+    headers`` (build them with ``har_headers``) so the viewer's Headers tab is
+    populated; a capture that only kept summaries omits them and the lists stay
+    empty. Every remaining required member is emitted with a valid empty/unknown
+    value so the entry is well-formed. ``extra`` carries custom ``_``-prefixed
+    fields (e.g. the web capture's resource type), which HAR permits.
     """
     entry: JsonObject = {
         "startedDateTime": iso8601(started_at),
@@ -94,7 +131,7 @@ def har_entry(
             "url": url or "",
             "httpVersion": http_version,
             "cookies": [],
-            "headers": [],
+            "headers": request_headers or [],
             "queryString": query_string(url),
             "headersSize": -1,
             "bodySize": -1,
@@ -104,7 +141,7 @@ def har_entry(
             "statusText": "",
             "httpVersion": http_version,
             "cookies": [],
-            "headers": [],
+            "headers": response_headers or [],
             "content": {"size": 0, "mimeType": mime_type or ""},
             "redirectURL": "",
             "headersSize": -1,

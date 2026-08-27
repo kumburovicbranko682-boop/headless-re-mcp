@@ -18,6 +18,7 @@ from typing import Any
 from headless_re_mcp.backends.common.har import (
     har_document,
     har_entry,
+    har_headers,
     iso8601,
     query_string,
 )
@@ -114,6 +115,56 @@ def test_har_entry_populates_query_string_from_the_url() -> None:
     ]
 
 
+class _MultiHeaders:
+    """Stands in for mitmproxy Headers, which can repeat a name."""
+
+    def __init__(self, pairs: list[tuple[str, str]]) -> None:
+        self._pairs = pairs
+
+    def items(self, multi: bool = False) -> list[tuple[str, str]]:
+        if not multi:
+            raise TypeError("multi is required for the repeated form")
+        return list(self._pairs)
+
+
+def test_har_headers_converts_a_dict_to_name_value_objects() -> None:
+    out = har_headers({"Authorization": "Bearer x", "Accept": "*/*"})
+    assert {"name": "Authorization", "value": "Bearer x"} in out
+    assert {"name": "Accept", "value": "*/*"} in out
+
+
+def test_har_headers_prefers_the_repeated_form_and_keeps_duplicates() -> None:
+    headers = _MultiHeaders([("set-cookie", "a=1"), ("set-cookie", "b=2")])
+    assert har_headers(headers) == [
+        {"name": "set-cookie", "value": "a=1"},
+        {"name": "set-cookie", "value": "b=2"},
+    ]
+
+
+def test_har_headers_degrades_and_bounds() -> None:
+    assert har_headers(None) == []
+    assert har_headers(object()) == []
+    flood = {f"h{i}": "v" for i in range(1000)}
+    assert len(har_headers(flood)) == 200
+    long = har_headers({"x": "y" * 100_000})
+    assert len(long[0]["value"]) == 8 * 1024
+
+
+def test_har_entry_populates_headers_when_the_capture_kept_them() -> None:
+    entry = har_entry(
+        started_at=1_700_000_000.0,
+        method="GET",
+        url="https://x/a",
+        status=200,
+        mime_type="text/html",
+        request_headers=[{"name": "authorization", "value": "Bearer t"}],
+        response_headers=[{"name": "content-type", "value": "text/html"}],
+    )
+    _assert_entry_is_spec_valid(entry)
+    assert entry["request"]["headers"] == [{"name": "authorization", "value": "Bearer t"}]
+    assert entry["response"]["headers"] == [{"name": "content-type", "value": "text/html"}]
+
+
 def test_har_document_wraps_entries_in_the_log_envelope() -> None:
     doc = har_document([har_entry(
         started_at=None, method="GET", url="https://x", status=0, mime_type="",
@@ -128,7 +179,7 @@ def _proxy_flow(started: float) -> SimpleNamespace:
         method="GET",
         pretty_url="https://x/a?token=abc&id=7",
         host="x",
-        headers={},
+        headers={"authorization": "Bearer secret", "user-agent": "curl"},
         raw_content=b"",
         timestamp_start=started,
     )
@@ -160,6 +211,9 @@ def test_proxy_export_har_is_spec_valid(tmp_path: Path, monkeypatch: Any) -> Non
         {"name": "token", "value": "abc"},
         {"name": "id", "value": "7"},
     ]
+    # The retained flow's real headers reached the HAR, on both sides.
+    assert {"name": "authorization", "value": "Bearer secret"} in entry["request"]["headers"]
+    assert {"name": "content-type", "value": "text/html"} in entry["response"]["headers"]
 
 
 class _WebHandle:

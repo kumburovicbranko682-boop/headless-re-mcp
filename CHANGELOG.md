@@ -218,6 +218,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`proxy.export_har` 丢掉了它明明留着的请求/响应头**。导出只用 recorder 的摘要
+  （method/url/status/content_type）建 entry，可 recorder 的 raw flow 里完整保留着请求头与响应头——
+  Authorization/Cookie/Set-Cookie/Content-Type 这些正是把 HAR 拿去 DevTools 看 Headers 页时最想要的东西，
+  `proxy.flow.get` 早就逐条暴露了它们，唯独 HAR 里全空。现在 `har_entry` 新增可选的 `request_headers` /
+  `response_headers`（用新加的 `har_headers` 从 mitmproxy `Headers` 或 dict 转成 spec 的 name/value 列表，
+  数量上限 200、单条 8 KiB，畸形映射退化成空表），`export_har` 按 flow id 回捞 raw flow 填入两侧头部；
+  已被 ring 淘汰或正文被省略（无 raw 对象）的 flow 头部留空而非伪造。web 侧 ring 只存摘要不留头部，
+  故 `web.har.export` 仍是空头部，如实反映各自捕获到的东西。
 - **HAR 导出的 `request.queryString` 恒为空，明明 URL 里就带着查询参数**。`proxy.export_har` /
   `web.har.export` 走同一套 `har_entry`，每条 entry 的 `queryString` 一律发空数组——可这正是逆向者
   打开 HAR 最想看的请求参数，而数据本就在同一条 entry 的 `url` 里（HAR 是 spec-valid 的，只是这个必填
