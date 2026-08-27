@@ -194,6 +194,43 @@ def test_truncated_matching_module_name_is_invalidated_conservatively() -> None:
     assert transition.refresh_required == {"payload"}
 
 
+def test_event_marked_stale_module_lowers_stream_reliable() -> None:
+    state = _tracked_state()
+
+    transition = consume_module_events(
+        state,
+        _batch(
+            0,
+            _event(
+                1,
+                "module.loaded",
+                {
+                    "base": 0x7FF900000000,
+                    "size": 0x5000,
+                    "name": "event_fixture.dll",
+                },
+            ),
+        ),
+    )
+
+    module = transition.state.get("payload")
+    assert module is not None
+    assert module.status == ModuleBindingStatus.STALE
+    # A STALE module means the recorded base is no longer trustworthy, so the
+    # snapshot must not simultaneously claim stream_reliable -- that is exactly
+    # how track_module/untrack_module/refresh_modules already report the flag.
+    assert transition.state.stream_reliable is False
+
+    # The same stale condition must not flip depending on which mutator ran last.
+    after_track = track_module(
+        transition.state,
+        "helper",
+        ModuleSelector(base=0x71000000),
+        _mapping(0x71000000, name="helper.dll", path=r"C:\sample\fixtures\helper.dll"),
+    )
+    assert after_track.stream_reliable is False
+
+
 def test_event_loss_marks_every_tracked_module_stale() -> None:
     state = track_module(
         _tracked_state(),

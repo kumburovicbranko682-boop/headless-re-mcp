@@ -229,6 +229,16 @@ def consume_module_events(
         invalidated.update(event_invalidated)
         unloaded_bases.update(event_unloaded)
 
+    # A tracked module that an event just marked STALE means the recorded base is
+    # no longer trustworthy until a refresh -- the same condition track_module,
+    # untrack_module, and refresh_modules all report as stream_reliable=False.
+    # Only the dropped branch above lowered the flag before, so a matching
+    # module.loaded/debug.init/process.created left stream_reliable=True next to a
+    # STALE module, a snapshot that contradicted itself and the other mutators.
+    stream_reliable = stream_reliable and not any(
+        module.status == ModuleBindingStatus.STALE for module in modules.values()
+    )
+
     next_state = ModuleLifecycleState(
         modules=_ordered_modules(modules.values()),
         cursor=batch.next_cursor,
