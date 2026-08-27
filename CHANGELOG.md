@@ -91,6 +91,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不存在的类，`apk.decompile` 干净地返回 `not_found`。jadx 从 `HEADLESS_RE_JADX` 或 PATH 解析，缺它时
   如实跳过（skip 不等于 pass）。
 
+### 测试（Android apktool 反汇编/重打包线首次有真解码的实测 Gate）
+
+- apktool（`apk.decode` / `apk.repack`）此前在现场 gate 里同样只被要求“优雅降级”，从未证明它真能反汇编
+  或重打包。新增 `tests/integration/test_android_apktool_gate.py`，无需 Android SDK，只要一个 JRE 加
+  apktool CLI：复用同一份手工编码的合法 `classes.dex`，经真实工具面驱动并断言**反汇编出的 smali** 与
+  一个真被重建出来的归档：`apk.decode`（用 `--no-res`，因为 fixture 的 `resources.arsc` 是占位符，本
+  gate 证的是 smali 往返而非资源解码）写出的 `smali/` 树里，`Gate.smali` 带有类、两个方法、apktool
+  逐字保留的 `const-string v0, "gate-secret-marker"`（jadx 会把它当死代码消掉，这里却在），以及
+  `gateCaller` 到 `gateSecret` 的 `invoke-static` 调用边——证明 apktool 真把 DEX baksmali 了，而不只是
+  冒出些文件；`apk.repack` 再从该树重建出一个仍含 `classes.dex` 的合法（未签名）zip APK；另有一条反向
+  直测钉住“没 decode 就 repack”返回结构化错误而非崩。apktool 从 `HEADLESS_RE_APKTOOL` 或 PATH 解析，
+  缺它时如实跳过（skip 不等于 pass）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
