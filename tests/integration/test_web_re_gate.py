@@ -93,6 +93,65 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
         service.close_all()
 
 
+# A minimal but genuine webpack bundle: a runtime that indexes a module array,
+# an entry module that requires module 1, and module 1 exporting a marker.
+_BUNDLE_MARKER = "hello-from-module-one-9b2c"
+_WEBPACK_BUNDLE = """(function (modules) {
+  var installedModules = {};
+  function __webpack_require__(moduleId) {
+    if (installedModules[moduleId]) {
+      return installedModules[moduleId].exports;
+    }
+    var module = installedModules[moduleId] = { i: moduleId, l: false, exports: {} };
+    modules[moduleId].call(module.exports, module, module.exports, __webpack_require__);
+    module.l = true;
+    return module.exports;
+  }
+  __webpack_require__.s = 0;
+  return __webpack_require__(0);
+})([
+  function (module, exports, __webpack_require__) {
+    var greeting = __webpack_require__(1);
+    console.log(greeting.message);
+  },
+  function (module, exports) {
+    module.exports = { message: "hello-from-module-one-9b2c" };
+  }
+]);
+"""
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_splits_a_real_webpack_bundle(tmp_path: Path) -> None:
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS bundle Gate not run (skip != pass)")
+    bundle = tmp_path / "bundle.js"
+    bundle.write_text(_WEBPACK_BUNDLE, encoding="utf-8")
+
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(bundle))
+        # This exercised the exact path that was broken: the client pre-creates
+        # the output directory and webcrack refuses a directory that already
+        # exists, so before --force every unpack failed. A green result here
+        # means real modules were written, not that the tool merely ran.
+        assert result.ok, result.error
+        out_dir = Path(result.data["output_dir"])
+        assert result.data["file_count"] >= 2, result.data
+
+        written = {p.name: p.read_text(encoding="utf-8", errors="replace")
+                   for p in out_dir.rglob("*") if p.is_file()}
+        # The two modules are split into separate files; the entry's webpack
+        # require is rewritten to a relative CommonJS require, and the marker
+        # exported by module 1 survives into its own file.
+        assert any(name.endswith("1.js") for name in written), list(written)
+        assert any(_BUNDLE_MARKER in text for text in written.values()), written
+        entry = written.get("index.js", "")
+        assert "require(" in entry and "1.js" in entry, entry
+    finally:
+        service.close_all()
+
+
 def _assemble_wasm(tmp_path: Path) -> Path | None:
     """Assemble a one-function module with wat2wasm, or None if it is absent."""
     wat2wasm = shutil.which("wat2wasm")
