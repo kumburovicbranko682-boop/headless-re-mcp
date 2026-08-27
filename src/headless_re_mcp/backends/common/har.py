@@ -10,8 +10,9 @@ malformed -- a file that opens nowhere is not an export. These builders fill
 every required field, using the real capture timestamp when one was recorded,
 the request parameters recovered from the URL for ``queryString``, the raw
 request/response headers when the capture retained them, the request body as
-``postData`` when the capture held it, the redirect target recovered from the
-response ``Location`` header for ``redirectURL``, the request/response
+``postData`` when the capture held it, the request/response ``cookies`` parsed
+from the ``Cookie``/``Set-Cookie`` headers, the redirect target recovered from
+the response ``Location`` header for ``redirectURL``, the request/response
 ``bodySize`` recovered from the ``Content-Length`` header, and honest "unknown"
 sentinels (``-1`` sizes, empty arrays) where the capture did not retain that
 detail, so the document loads while never claiming data it does not have.
@@ -41,6 +42,9 @@ _MAX_HEADER_LEN = 8 * 1024
 # is the outer ceiling that also bounds the proxy's decoded flow content.
 _MAX_POST_TEXT = 256 * 1024
 _MAX_POST_PARAMS = 512
+# Cookies parsed out of the Cookie / Set-Cookie headers; cap the count so a
+# cookie-heavy exchange cannot bloat one entry.
+_MAX_COOKIES = 200
 
 
 def _clip(value: object, limit: int) -> str:
@@ -81,6 +85,84 @@ def content_length(headers: list[JsonObject] | None) -> int:
         return int(raw)
     except ValueError:
         return -1
+
+
+def request_cookies(headers: list[JsonObject] | None) -> list[JsonObject]:
+    """HAR ``request.cookies`` parsed from the ``Cookie`` header(s).
+
+    ``cookies`` is a required request member and is what an analyst reads a HAR
+    to see (the session token a page sends), yet it was always emitted empty.
+    The ``Cookie`` header is a ``name=value; name2=value2`` list, so it is split
+    into the spec's name/value objects from the headers already retained. A
+    valueless segment keeps an empty value rather than being dropped, and the
+    list is capped so a cookie flood cannot bloat one entry.
+    """
+    out: list[JsonObject] = []
+    for header in headers or []:
+        if not isinstance(header, dict) or str(header.get("name", "")).lower() != "cookie":
+            continue
+        for segment in str(header.get("value", "")).split(";"):
+            pair = segment.strip()
+            if not pair:
+                continue
+            name, sep, value = pair.partition("=")
+            name = name.strip()
+            if not name:
+                continue
+            out.append({"name": name, "value": value.strip() if sep else ""})
+            if len(out) >= _MAX_COOKIES:
+                return out
+    return out
+
+
+def _parse_set_cookie(raw: str) -> JsonObject | None:
+    """One ``Set-Cookie`` value as a HAR cookie, or None when it has no name.
+
+    The first ``name=value`` is the cookie; the rest are attributes. Only the
+    members HAR defines are surfaced -- ``path``/``domain`` and the security
+    flags ``httpOnly``/``secure``, which are exactly the triage signals for a
+    session cookie. ``expires`` is deliberately not emitted: Set-Cookie carries
+    an HTTP-date, and HAR wants ISO 8601, so a raw copy would risk a strict
+    viewer rejecting the log.
+    """
+    parts = raw.split(";")
+    name, sep, value = parts[0].strip().partition("=")
+    name = name.strip()
+    if not name:
+        return None
+    cookie: JsonObject = {"name": name, "value": value.strip() if sep else ""}
+    for attribute in parts[1:]:
+        key, _, val = attribute.strip().partition("=")
+        low = key.strip().lower()
+        if low == "path":
+            cookie["path"] = val.strip()
+        elif low == "domain":
+            cookie["domain"] = val.strip()
+        elif low == "httponly":
+            cookie["httpOnly"] = True
+        elif low == "secure":
+            cookie["secure"] = True
+    return cookie
+
+
+def response_cookies(headers: list[JsonObject] | None) -> list[JsonObject]:
+    """HAR ``response.cookies`` parsed from the ``Set-Cookie`` header(s).
+
+    Each ``Set-Cookie`` is one cookie (``har_headers`` already unfolds repeats
+    into separate entries), so the list mirrors what the server set, with the
+    ``HttpOnly``/``Secure`` flags an analyst checks. Bounded like the request
+    side; a nameless header is skipped rather than emitted malformed.
+    """
+    out: list[JsonObject] = []
+    for header in headers or []:
+        if not isinstance(header, dict) or str(header.get("name", "")).lower() != "set-cookie":
+            continue
+        cookie = _parse_set_cookie(str(header.get("value", "")))
+        if cookie is not None:
+            out.append(cookie)
+        if len(out) >= _MAX_COOKIES:
+            return out
+    return out
 
 
 def post_data(body: str | bytes | None, mime_type: str | None) -> JsonObject | None:
@@ -197,9 +279,11 @@ def har_entry(
     ``queryString`` is recovered from the URL (see ``query_string``). A capture
     that also kept the raw headers can pass ``request_headers`` / ``response_
     headers`` (build them with ``har_headers``) so the viewer's Headers tab is
-    populated; a capture that kept the request body can pass ``request_post_
-    data`` (build it with ``post_data``) so the Request payload is shown; a
-    capture that only kept summaries omits them and those members stay empty.
+    populated and the request/response ``cookies`` are parsed from the
+    ``Cookie``/``Set-Cookie`` headers; a capture that kept the request body can
+    pass ``request_post_data`` (build it with ``post_data``) so the Request
+    payload is shown; a capture that only kept summaries omits them and those
+    members stay empty.
     Every remaining required member is emitted with a valid empty/unknown value
     so the entry is well-formed. ``extra`` carries custom ``_``-prefixed fields
     (e.g. the web capture's resource type), which HAR permits.
@@ -208,7 +292,7 @@ def har_entry(
         "method": method or "",
         "url": url or "",
         "httpVersion": http_version,
-        "cookies": [],
+        "cookies": request_cookies(request_headers),
         "headers": request_headers or [],
         "queryString": query_string(url),
         "headersSize": -1,
@@ -226,7 +310,7 @@ def har_entry(
             "status": int(status or 0),
             "statusText": "",
             "httpVersion": http_version,
-            "cookies": [],
+            "cookies": response_cookies(response_headers),
             "headers": response_headers or [],
             "content": {"size": 0, "mimeType": mime_type or ""},
             # The HAR spec's redirectURL is the Location response header; both

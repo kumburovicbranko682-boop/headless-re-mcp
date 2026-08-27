@@ -110,7 +110,8 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         response, timings and startedDateTime members, its queryString recovered
         from the request URL, the request/response headers and the request body
         (as request.postData) from the retained flow (empty for a flow the ring
-        already evicted or whose body was omitted), redirectURL recovered
+        already evicted or whose body was omitted), request/response cookies
+        parsed from the Cookie/Set-Cookie headers, redirectURL recovered
         from the response Location header, and request/response bodySize
         recovered from Content-Length, with fields the capture did
         not retain left empty/`-1` rather

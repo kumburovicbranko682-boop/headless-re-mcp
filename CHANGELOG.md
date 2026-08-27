@@ -218,6 +218,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **HAR 导出的 `request.cookies`/`response.cookies` 恒为空**。`cookies` 是 HAR 请求/响应的必填成员，也是分析者最关心的内容
+  （页面带的会话令牌、服务端下发的 Cookie 及其安全标志），却一直为空。新增 `request_cookies`（拆分 `Cookie` 头的
+  `name=value` 列表）与 `response_cookies`/`_parse_set_cookie`（逐条 `Set-Cookie` 解析出 name/value 及 `path`/`domain`/
+  `HttpOnly`/`Secure`——正是会话 Cookie 的定级信号），全部取自 `har_entry` 已收到的头部，web 与 proxy 两侧同时受益；
+  `expires` 刻意不输出（Set-Cookie 是 HTTP-date，而 HAR 要 ISO 8601，原样拷贝会让严格查看器拒绝整个日志），数量另有上限。
 - **`apk.components` 只列组件名，不标注哪些是导出的（对外攻击面）**。一个 `android:exported="true"`（或属性缺省时按平台
   隐式规则：activity/service/receiver 含 `<intent-filter>`、provider 目标 SDK < 17）且没有 `android:permission` 保护的
   组件，可被任意已安装应用直接拉起，是 Android 恶意样本/安全分析的首要信号。新增 `_exported_components` 直接解析清单 XML 树

@@ -223,7 +223,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         request/response, timings and startedDateTime members, its queryString
         recovered from the request URL, the request/response headers CDP
         reported, the request body (as request.postData) for a row whose POST
-        payload CDP inlined at send time, redirectURL recovered from the
+        payload CDP inlined at send time, request/response cookies parsed from
+        the Cookie/Set-Cookie headers, redirectURL recovered from the
         response Location header, and request/response bodySize recovered from
         Content-Length, with unknown fields left as empty/`-1` rather than
         omitted.

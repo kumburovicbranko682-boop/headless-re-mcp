@@ -24,6 +24,8 @@ from headless_re_mcp.backends.common.har import (
     iso8601,
     post_data,
     query_string,
+    request_cookies,
+    response_cookies,
 )
 from headless_re_mcp.backends.proxy.client import ProxyBackend
 from headless_re_mcp.backends.web.client import WebBackend
@@ -151,6 +153,73 @@ def test_har_headers_degrades_and_bounds() -> None:
     assert len(har_headers(flood)) == 200
     long = har_headers({"x": "y" * 100_000})
     assert len(long[0]["value"]) == 8 * 1024
+
+
+def test_request_cookies_split_the_cookie_header_into_pairs() -> None:
+    cookies = request_cookies(
+        [
+            {"name": "Cookie", "value": "sid=abc; theme=dark; flag"},
+            {"name": "content-type", "value": "text/html"},
+        ]
+    )
+    assert cookies == [
+        {"name": "sid", "value": "abc"},
+        {"name": "theme", "value": "dark"},
+        {"name": "flag", "value": ""},
+    ]
+
+
+def test_request_cookies_is_empty_without_a_cookie_header() -> None:
+    assert request_cookies(None) == []
+    assert request_cookies([{"name": "accept", "value": "*/*"}]) == []
+
+
+def test_response_cookies_capture_name_value_and_security_flags() -> None:
+    """Each Set-Cookie is one cookie; HttpOnly/Secure are the triage signals."""
+    cookies = response_cookies(
+        [
+            {
+                "name": "set-cookie",
+                "value": "sid=xyz; Path=/; Domain=x.test; HttpOnly; Secure",
+            },
+            {"name": "set-cookie", "value": "plain=1"},
+            {"name": "content-type", "value": "text/html"},
+        ]
+    )
+    assert cookies == [
+        {
+            "name": "sid",
+            "value": "xyz",
+            "path": "/",
+            "domain": "x.test",
+            "httpOnly": True,
+            "secure": True,
+        },
+        {"name": "plain", "value": "1"},
+    ]
+    # expires is deliberately omitted (HTTP-date vs the ISO 8601 HAR wants).
+    assert "expires" not in cookies[0]
+
+
+def test_response_cookies_skips_a_nameless_set_cookie() -> None:
+    assert response_cookies([{"name": "set-cookie", "value": "=orphan; Path=/"}]) == []
+
+
+def test_har_entry_populates_cookies_from_the_headers() -> None:
+    entry = har_entry(
+        started_at=1_700_000_000.0,
+        method="GET",
+        url="https://x",
+        status=200,
+        mime_type="text/html",
+        request_headers=[{"name": "Cookie", "value": "sid=abc"}],
+        response_headers=[{"name": "Set-Cookie", "value": "sid=new; HttpOnly"}],
+    )
+    _assert_entry_is_spec_valid(entry)
+    assert entry["request"]["cookies"] == [{"name": "sid", "value": "abc"}]
+    assert entry["response"]["cookies"] == [
+        {"name": "sid", "value": "new", "httpOnly": True}
+    ]
 
 
 def test_content_length_reads_the_declared_body_size() -> None:
