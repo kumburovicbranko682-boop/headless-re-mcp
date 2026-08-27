@@ -8,7 +8,7 @@ from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.detection.models import ScanMode
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
-from headless_re_mcp.tools.limits import ExternalToolTimeout, RunControlTimeout
+from headless_re_mcp.tools.limits import RunControlTimeout
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -442,8 +442,12 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         use_die: bool = True,
         open_ida: bool = False,
         baseline_session_id: str | None = None,
-        # Wider than run control: open_ida can sit through a full idalib analysis.
-        timeout: ExternalToolTimeout = 60.0,
+        # This bounds only the optional DIE rescan, which the service caps at 300s
+        # via _detection_timeout; the open_ida idalib reopen runs on open_static's
+        # own timeout, not this one. Advertising le=600 here let an in-schema 400
+        # through only to be refused downstream as "at most 300 seconds", so the
+        # ceiling matches the enforced cap.
+        timeout: RunControlTimeout = 60.0,
         expect_window_title: str | None = None,
         expect_window_class: str | None = None,
         ui_pid: int | None = None,
