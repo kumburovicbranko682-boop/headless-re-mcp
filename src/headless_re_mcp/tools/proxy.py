@@ -70,12 +70,15 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
-        """Fetch one flow's headers and body (large bodies spill to an artifact).
+        """Fetch one flow's headers and bodies (large or binary bodies spill).
 
         Answers with id, request (method, url, headers) and response (status,
-        headers, size). A body at most 200000 bytes is response.body; anything
-        larger is response.body_path and there is no body key. There are no
-        top-level headers or body fields.
+        headers). Both request and response carry the body: size, and either
+        body (UTF-8 text at most 200000 bytes) or body_path plus spill_reason
+        (too_large or binary) when the body was spilled to an artifact rather
+        than decoded lossily. A spilled body also carries artifact_id. There is
+        no top-level headers or body field, and a binary body is never returned
+        as a mojibake body string.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
