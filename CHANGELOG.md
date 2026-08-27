@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（取消一个任务会误杀同线程另一任务在飞的 run）
+
+- `AgentStore.cancel_mission` 过去把线程上**所有**未终结的 run 都置 `cancel_requested=1`
+  （`_mark_runs_cancel_requested(thread_id=...)`）。但 run 表只有 `thread_id`、没有
+  `mission_id`，而一个线程可以挂多个 mission——`/api/agent/missions` 允许传入既有
+  `thread_id`，让新目标复用同一分析线程（会话与对话得以延续）。于是在共享线程上取消目标 B
+  时，目标 A 正在跑的 run 也被打上取消位，被调度器的 `_await_run` 当即中止：取消 B 却把 A
+  跑一半的 run 弄停了。改为只标记该 mission 自己的 `last_run_id`——串行调度下它是唯一可能
+  正在执行本目标的 run（`note_mission_run` 逐个记录），既足够停掉本目标在飞的 run，又不再
+  波及同线程的兄弟目标。单 mission 单线程的常见情形行为不变（其 `last_run_id` 就是该线程唯
+  一在飞的 run）。回归测试在同一线程放两个各自在飞的 mission，取消其一后断言：被取消者的 run
+  置位、另一个的 run 保持未取消、两个 mission 状态各自正确。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

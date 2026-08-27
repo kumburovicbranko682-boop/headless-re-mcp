@@ -236,6 +236,43 @@ def test_cancel_mission_marks_active_runs_and_claim_skips_them(tmp_path: Path) -
     assert nxt is not None and nxt.id == other.id
 
 
+def test_cancel_mission_leaves_a_sibling_missions_run_running(tmp_path: Path) -> None:
+    """Cancelling one mission must not stop another that shares the thread.
+
+    The API lets a new objective reuse an existing analysis thread (so the
+    session and conversation persist), so two missions can live on one thread.
+    Runs carry a thread id but no mission id, and cancel_mission used to flag
+    every non-terminal run on the thread -- which cancelled the sibling's
+    in-flight run the moment either objective was cancelled. Only the
+    cancelled mission's own last run may be stopped.
+    """
+    store = AgentStore(tmp_path / "sibling-cancel.db")
+    thread = store.create_thread()
+    keep = store.create_mission(thread.id, "keep working")
+    drop = store.create_mission(thread.id, "cancel me")
+
+    # Each mission has a run of its own in flight on the shared thread.
+    run_keep = store.create_run(
+        thread.id, provider_profile="default", model=None, deadline_seconds=60
+    )
+    store.note_mission_run(keep.id, run_keep.id)
+    store.transition(run_keep.id, RunStatus.STREAMING)
+    run_drop = store.create_run(
+        thread.id, provider_profile="default", model=None, deadline_seconds=60
+    )
+    store.note_mission_run(drop.id, run_drop.id)
+    store.transition(run_drop.id, RunStatus.STREAMING)
+
+    store.cancel_mission(drop.id)
+
+    dropped_run = store.get_run(run_drop.id)
+    kept_run = store.get_run(run_keep.id)
+    assert dropped_run is not None and dropped_run.cancel_requested is True
+    assert kept_run is not None and kept_run.cancel_requested is False
+    assert store.get_mission(drop.id).status is MissionStatus.CANCELLED
+    assert store.get_mission(keep.id).status is not MissionStatus.CANCELLED
+
+
 def test_consume_approval_refuses_a_cancelled_run(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "approval-cancel.db")
     thread = store.create_thread()
