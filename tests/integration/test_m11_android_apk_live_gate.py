@@ -111,6 +111,15 @@ def test_m11_androguard_apk_surface() -> None:
 
     components = client.components(_APK)
     assert "com.example.gate.MainActivity" in components["activities"], components
+    # The exported subset is computed off the real decoded manifest, not a crafted
+    # tree: the fixture's MainActivity declares no intent-filter and no
+    # android:exported, so it is not reachable by other apps and every exported
+    # group must be empty. A drifted read that fabricated an export (or crashed on
+    # the real manifest and blanked the field) is caught here, not in unit mocks.
+    exported = components["exported"]
+    assert set(exported) == {"activities", "services", "receivers", "providers"}, exported
+    assert "com.example.gate.MainActivity" not in exported["activities"], exported
+    assert all(names == [] for names in exported.values()), exported
 
     # permissions() and native_libs() are the remaining manifest-side reads: the
     # first parses <uses-permission> out of the AXML, the second walks the APK's

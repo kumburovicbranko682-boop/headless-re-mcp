@@ -1238,6 +1238,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   base64、超大请求体落盘、以及「100KB 请求体内联 + 180KB 响应体」这组断言响应体因预算核算而落盘、整条不超预算。实机 gate(`test_proxy_lifecycle_gate.py`)
   给 origin 加 `do_POST`、经代理发一条 JSON POST,断言 `flow_get` 从真实 mitmproxy flow 的 `request.raw_content` 读回请求体(size 与正文都对得上)。
 
+- **`apk.components` 只列四类组件名,却不标哪些被导出,而「导出组件」正是一个 App 对外的攻击面——Android 静态审查最先要问的一件事。** 过去 payload 只有
+  `activities`/`services`/`receivers`/`providers`(全部组件名)、`main_activity` 与 `has_more`,分析者无法从中区分「仅内部可达」与「任何其他 App 都能拉起」。
+  androguard 没有逐组件的导出判定 getter,故新增 `exported` 字段:按类别(同样四组)给出被导出组件的 FQN 子集,判定直接读解码后的清单树
+  (`get_android_manifest_xml`)——显式 `android:exported="true"` 记为导出;未声明该属性但带 `intent-filter` 也记为导出(Android 12 之前的隐式导出规则,
+  与 MobSF/drozer 一致);`android:exported="false"` 一律不导出(显式优先于隐式)。未声明+无 filter 不导出。清单名按 Android 规则解析成 FQN,与扁平列表对齐;
+  整条端到端 `try` 兜底——清单解析不了则退化为四组空列表而非让 `components()` 失败。唯一不推断的边角是「`targetSdk < 17` 的未声明 provider 默认导出」这一遗留默认,
+  已在工具描述里注明可能少报。单测(`test_apk_exported_components.py`)用手工构造的 lxml 清单覆盖:显式 true、隐式(filter)、`false` 压过 filter、未声明+无 filter 不导出、
+  按类别分组、`exported` 恒为扁平列表子集、清单抛错时退化空组,以及名字解析与判定规则本身。实机 gate(`test_m11_android_apk_live_gate.py`)对真实夹具断言 MainActivity(无
+  filter、无 `android:exported`)不在任何导出组里、四组皆空——证明该判定跑在真实 androguard 解码的清单上,而非只在 mock 里。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

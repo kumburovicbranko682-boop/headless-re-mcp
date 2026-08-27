@@ -38,6 +38,17 @@ _MAX_MANIFEST_CHARS = 200_000
 # XML is bounded by encoded size; both are tiny, so a small reserve leaves nearly
 # the whole budget for the manifest itself.
 _MANIFEST_FIELD_RESERVE = 8 * 1024
+# android: attribute namespace, and the manifest tags that declare an exportable
+# component -- read straight off the decoded manifest tree since androguard has no
+# per-component exported getter.
+_ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
+_COMPONENT_TAGS: tuple[tuple[str, str], ...] = (
+    ("activity", "activities"),
+    ("activity-alias", "activities"),
+    ("service", "services"),
+    ("receiver", "receivers"),
+    ("provider", "providers"),
+)
 
 
 class ApkError(RuntimeError):
@@ -190,6 +201,88 @@ def _manifest_flag(apk: Any, attribute: str) -> bool | None:
     if text == "false":
         return False
     return None
+
+
+def _resolve_component_name(package: str, name: str) -> str:
+    """Fully-qualify a manifest ``android:name`` the way Android resolves it.
+
+    A name beginning with ``.`` is relative to the package, a bare name with no
+    dot at all is likewise package-relative, and an already-dotted name is
+    absolute. Matching this to androguard's ``get_activities()``/etc. output is
+    what lets the exported subset names line up with the flat component lists --
+    a manifest that writes ``.MainActivity`` must read back as the same FQN the
+    flat list reports, or an analyst cross-referencing the two sees a phantom
+    mismatch.
+    """
+    if not name:
+        return name
+    if name.startswith("."):
+        return package + name
+    if "." not in name:
+        return package + "." + name
+    return name
+
+
+def _component_is_exported(exported_attr: str | None, has_intent_filter: bool) -> bool:
+    """Decide whether a manifest component is exported (its attack surface).
+
+    An explicit ``android:exported`` wins outright ("true"/"false"). When it is
+    absent, a component counts as exported iff it declares an intent-filter --
+    the pre-Android-12 implicit-export default, and the same rule MobSF/drozer
+    apply. The unset+filter case is deliberately biased toward *exported*: for a
+    security read, flagging a possible entry point an analyst can dismiss beats
+    hiding one. The rare legacy provider default (an unset provider is exported
+    when ``targetSdk < 17``) is intentionally not inferred here; such a provider
+    reads as not exported unless it says otherwise, which the caller doc notes.
+    """
+    if exported_attr is not None:
+        return exported_attr.strip().lower() == "true"
+    return has_intent_filter
+
+
+def _exported_components(apk: Any) -> dict[str, list[str]]:
+    """Names of exported components, grouped by kind, from the manifest tree.
+
+    androguard has no per-component exported getter, so the decoded manifest XML
+    (``get_android_manifest_xml``) is the source of truth: for each component tag
+    read ``android:exported`` and whether it declares an intent-filter, then apply
+    :func:`_component_is_exported`. Guarded end to end -- a manifest that will not
+    parse (older androguard, a malformed tree) yields empty groups rather than
+    failing ``components()``. Names are resolved to FQNs to line up with the flat
+    lists, de-duplicated, sorted for a stable reply, and capped like them.
+    """
+    groups: dict[str, list[str]] = {
+        "activities": [],
+        "services": [],
+        "receivers": [],
+        "providers": [],
+    }
+    try:
+        root = apk.get_android_manifest_xml()
+        package = str(apk.get_package() or "")
+    except Exception:  # noqa: BLE001 - manifest access varies by version
+        return groups
+    if root is None:
+        return groups
+    for tag, key in _COMPONENT_TAGS:
+        try:
+            elements = list(root.iter(tag))
+        except Exception:  # noqa: BLE001 - odd tree shapes iterate poorly
+            continue
+        for el in elements:
+            name = el.get(_ANDROID_NS + "name")
+            if not name:
+                continue
+            exported_attr = el.get(_ANDROID_NS + "exported")
+            try:
+                has_filter = len(el.findall("intent-filter")) > 0
+            except Exception:  # noqa: BLE001 - findall varies by tree impl
+                has_filter = False
+            if _component_is_exported(exported_attr, has_filter):
+                groups[key].append(_resolve_component_name(package, str(name)))
+    for key, names in groups.items():
+        groups[key] = sorted(set(names))[:_MAX_COMPONENT_NAMES]
+    return groups
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
@@ -452,6 +545,7 @@ class ApkClient:
             "receivers": receivers,
             "providers": providers,
             "main_activity": apk.get_main_activity(),
+            "exported": _exported_components(apk),
             "has_more": a_more or s_more or r_more or p_more,
         }
 
