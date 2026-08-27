@@ -186,9 +186,22 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             if on_windows
             else windows_only("scylla", "Scylla dump/IAT adapter requires Windows")
         ),
-        probe_optional_tool("radare2", current, "r2", ("r2", "rizin")),
+        probe_optional_tool(
+            "radare2",
+            current,
+            "r2",
+            ("r2", "rizin"),
+            install_hint=(
+                "Install radare2 and put r2 on PATH (e.g. apt install radare2, "
+                "brew install radare2)."
+            ),
+        ),
         probe_ghidra(current),
-        probe_python_module("frida", "frida"),
+        probe_python_module(
+            "frida",
+            "frida",
+            install_hint="pip install 'headless-re-mcp[android]' (or pip install frida).",
+        ),
         probe_command("java", ("java",)),
         (
             probe_command("windbg", ("cdb", "windbg", "windbgx"))
@@ -196,11 +209,35 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             else windows_only("windbg", "WinDbg/cdb requires Windows")
         ),
         # Android reverse-engineering (all optional; missing only degrades).
-        probe_python_module("androguard", "androguard"),
-        probe_python_module("adbutils", "adbutils"),
-        probe_optional_tool("adb", current, "adb", ("adb",)),
+        probe_python_module(
+            "androguard",
+            "androguard",
+            install_hint="pip install 'headless-re-mcp[android]' (or pip install androguard).",
+        ),
+        probe_python_module(
+            "adbutils",
+            "adbutils",
+            install_hint="pip install 'headless-re-mcp[android]' (or pip install adbutils).",
+        ),
         probe_optional_tool(
-            "jadx", current, "jadx", ("jadx", "jadx.bat"), needs_runtime=("java", "a JRE")
+            "adb",
+            current,
+            "adb",
+            ("adb",),
+            install_hint=(
+                "Install Android platform-tools and put adb on PATH (e.g. apt install adb)."
+            ),
+        ),
+        probe_optional_tool(
+            "jadx",
+            current,
+            "jadx",
+            ("jadx", "jadx.bat"),
+            needs_runtime=("java", "a JRE"),
+            install_hint=(
+                "Install jadx from https://github.com/skylot/jadx/releases and put it "
+                "on PATH (needs a JRE)."
+            ),
         ),
         probe_optional_tool(
             "apktool",
@@ -208,6 +245,9 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             "apktool",
             ("apktool", "apktool.bat"),
             needs_runtime=("java", "a JRE"),
+            install_hint=(
+                "Install apktool and a JRE, then put apktool on PATH (e.g. apt install apktool)."
+            ),
         ),
         probe_optional_tool(
             "apksigner",
@@ -215,14 +255,35 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             "apksigner",
             ("apksigner", "apksigner.bat"),
             needs_runtime=("java", "a JRE"),
+            install_hint=(
+                "Install the Android build-tools apksigner and a JRE, then put apksigner "
+                "on PATH (e.g. apt install apksigner)."
+            ),
         ),
         # Web reverse-engineering (all optional).
         probe_playwright(),
-        probe_python_module("mitmproxy", "mitmproxy"),
-        probe_optional_tool(
-            "webcrack", current, "webcrack", ("webcrack",), needs_runtime=("node", "Node.js")
+        probe_python_module(
+            "mitmproxy",
+            "mitmproxy",
+            install_hint="pip install 'headless-re-mcp[proxy]' (or pip install mitmproxy).",
         ),
-        probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
+        probe_optional_tool(
+            "webcrack",
+            current,
+            "webcrack",
+            ("webcrack",),
+            needs_runtime=("node", "Node.js"),
+            install_hint="Install Node.js and webcrack (npm install -g webcrack).",
+        ),
+        probe_optional_tool(
+            "wabt",
+            current,
+            "wabt",
+            ("wasm2wat",),
+            install_hint=(
+                "Install wabt so wasm2wat is on PATH (e.g. apt install wabt, brew install wabt)."
+            ),
+        ),
     ]
     return DoctorReport(
         probes=tuple(probes),
@@ -1103,6 +1164,7 @@ def probe_optional_tool(
     commands: tuple[str, ...],
     *,
     needs_runtime: tuple[str, str] | None = None,
+    install_hint: str | None = None,
 ) -> Probe:
     """Detect an optional CLI from its configured path or PATH, never blocking.
 
@@ -1144,13 +1206,23 @@ def probe_optional_tool(
             found,
             remediation,
         )
-    return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+    return Probe(
+        name,
+        ProbeStatus.MISSING,
+        f"Optional {name} tool is not installed",
+        remediation=install_hint,
+    )
 
 
-def probe_python_module(name: str, module: str) -> Probe:
+def probe_python_module(name: str, module: str, *, install_hint: str | None = None) -> Probe:
     spec = importlib.util.find_spec(module)
     if spec is None:
-        return Probe(name, ProbeStatus.MISSING, f"Optional Python module {module} is not installed")
+        return Probe(
+            name,
+            ProbeStatus.MISSING,
+            f"Optional Python module {module} is not installed",
+            remediation=install_hint,
+        )
     return Probe(
         name,
         ProbeStatus.DETECTED,
@@ -1215,7 +1287,13 @@ def probe_playwright() -> Probe:
     spec = importlib.util.find_spec("playwright")
     if spec is None:
         return Probe(
-            "playwright", ProbeStatus.MISSING, "Optional Python module playwright is not installed"
+            "playwright",
+            ProbeStatus.MISSING,
+            "Optional Python module playwright is not installed",
+            remediation=(
+                "pip install 'headless-re-mcp[browser]' (or pip install playwright), "
+                "then python -m playwright install chromium."
+            ),
         )
     has_browser = _playwright_has_chromium()
     details: dict[str, Any] = {"origin": spec.origin}

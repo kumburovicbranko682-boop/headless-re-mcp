@@ -293,6 +293,49 @@ def test_run_doctor_emits_a_probe_for_every_nonpe_backend(tmp_path: Path) -> Non
     assert not missing, f"doctor stopped reporting these non-PE backends: {sorted(missing)}"
 
 
+def test_missing_nonpe_backends_carry_install_remediation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A MISSING optional non-PE backend must tell the operator how to install it.
+
+    doctor is documented as printing each missing item with its fix command, and
+    the PE probes (IDA, x64dbg) all carry one -- but the optional non-PE backends
+    used to report a bare 'not installed' with remediation=None, leaving a Linux
+    operator bringing up the Android/Web lines with no next step. Force every
+    optional backend absent (nothing on PATH, no importable module, no configured
+    path) and assert each names an install route. These run cross-platform, so the
+    hints stay package-manager-agnostic ('e.g. apt ...') or use pip/npm, which are
+    correct everywhere; the assertion is only that a hint exists and points at the
+    backend, not its exact wording.
+    """
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    monkeypatch.setattr(doctor_module.importlib.util, "find_spec", lambda _name: None)
+
+    report = run_doctor(_settings(None, tmp_path / "artifacts"))
+    probes = {probe.name: probe for probe in report.probes}
+
+    # ghidra/java/frida are covered by their own probes with dedicated
+    # remediation tests; this pins the optional launchers and importable
+    # backends whose MISSING path previously carried nothing.
+    expected_backends = {
+        "radare2",
+        "adb",
+        "wabt",
+        "apktool",
+        "apksigner",
+        "jadx",
+        "webcrack",
+        "androguard",
+        "adbutils",
+        "mitmproxy",
+        "playwright",
+    }
+    for name in expected_backends:
+        probe = probes[name]
+        assert probe.status is ProbeStatus.MISSING, f"{name}: {probe.status}"
+        assert probe.remediation, f"{name} is MISSING with no install remediation"
+
+
 def test_x64dbg_source_probe_requires_official_target(tmp_path: Path) -> None:
     source = tmp_path / "x64dbg"
     (source / "src" / "headless").mkdir(parents=True)
@@ -854,7 +897,10 @@ def test_playwright_probe_is_missing_when_the_module_is_absent(
     probe = probe_playwright()
 
     assert probe.status == ProbeStatus.MISSING
-    assert probe.remediation is None
+    # A wholly absent module now names its install route, like the other non-PE
+    # backends: the browser step alone is useless with no module to drive it.
+    assert probe.remediation
+    assert "pip install" in probe.remediation
 
 
 def test_playwright_probe_flags_a_missing_browser_build(
