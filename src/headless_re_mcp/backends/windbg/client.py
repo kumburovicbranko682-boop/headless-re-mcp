@@ -131,11 +131,21 @@ class WindbgClient:
 
     def threads(self, dump: Path, *, timeout: float = 60.0) -> JsonObject:
         data = self._run_dump(dump, ["~*"], timeout=timeout)
-        return {"dump": str(dump), "threads": data.get("output", ""), **_carried(data)}
+        return {
+            "dump": str(dump),
+            "threads": data.get("output", ""),
+            "exit_code": data.get("exit_code"),
+            **_carried(data),
+        }
 
     def modules(self, dump: Path, *, timeout: float = 60.0) -> JsonObject:
         data = self._run_dump(dump, ["lm"], timeout=timeout)
-        return {"dump": str(dump), "modules": data.get("output", ""), **_carried(data)}
+        return {
+            "dump": str(dump),
+            "modules": data.get("output", ""),
+            "exit_code": data.get("exit_code"),
+            **_carried(data),
+        }
 
     def disasm(
         self,
@@ -163,6 +173,7 @@ class WindbgClient:
             "address": addr,
             "length": length,
             "disasm": data.get("output", ""),
+            "exit_code": data.get("exit_code"),
             **_carried(data),
         }
 
@@ -184,11 +195,21 @@ class WindbgClient:
 
     def live_threads(self, pid: int, *, allowed_pid: int, timeout: float = 30.0) -> JsonObject:
         data = self._run_process(pid, ["~*"], allowed_pid=allowed_pid, timeout=timeout)
-        return {"pid": pid, "threads": data.get("output", ""), **_carried(data)}
+        return {
+            "pid": pid,
+            "threads": data.get("output", ""),
+            "exit_code": data.get("exit_code"),
+            **_carried(data),
+        }
 
     def live_modules(self, pid: int, *, allowed_pid: int, timeout: float = 30.0) -> JsonObject:
         data = self._run_process(pid, ["lm"], allowed_pid=allowed_pid, timeout=timeout)
-        return {"pid": pid, "modules": data.get("output", ""), **_carried(data)}
+        return {
+            "pid": pid,
+            "modules": data.get("output", ""),
+            "exit_code": data.get("exit_code"),
+            **_carried(data),
+        }
 
     def live_disasm(
         self,
@@ -216,6 +237,7 @@ class WindbgClient:
             "address": addr,
             "length": length,
             "disasm": data.get("output", ""),
+            "exit_code": data.get("exit_code"),
             **_carried(data),
         }
 
@@ -301,6 +323,17 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
+        if completed.returncode not in {0, 1} and not out:
+            # Mirror _run_process: cdb that cannot open or read the dump exits
+            # nonzero with nothing on stdout. Without this the empty output
+            # flowed back as a clean success, so threads/modules/disasm answered
+            # ok with an empty listing for a dump cdb never actually processed.
+            raise WindbgError(
+                "backend_error",
+                "cdb dump analysis failed",
+                exit_code=completed.returncode,
+                stderr=err[:2000],
+            )
         return {
             "dump": str(dump),
             "output": out,

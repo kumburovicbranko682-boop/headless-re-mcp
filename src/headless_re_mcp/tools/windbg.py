@@ -44,8 +44,10 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Thread list of a crash dump, as cdb prints it.
 
-        Answers with threads holding that text, plus dump, and truncated,
-        output_chars and returned_chars when the session was cut at the buffer.
+        Answers with threads holding that text, plus dump and exit_code, and
+        truncated, output_chars and returned_chars when the session was cut at
+        the buffer. A dump cdb could not open or read (nonzero exit, no output)
+        answers backend_error rather than an empty thread list.
         """
         return _dump(analysis.windbg_threads(dump_path, timeout=timeout))
 
@@ -55,8 +57,10 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Loaded module list of a crash dump, as cdb prints it.
 
-        Answers with modules holding that text, plus dump, and truncated,
-        output_chars and returned_chars when the session was cut at the buffer.
+        Answers with modules holding that text, plus dump and exit_code, and
+        truncated, output_chars and returned_chars when the session was cut at
+        the buffer. A dump cdb could not open or read (nonzero exit, no output)
+        answers backend_error rather than an empty module list.
         """
         return _dump(analysis.windbg_modules(dump_path, timeout=timeout))
 
@@ -69,9 +73,11 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Disassemble length instructions at address inside a crash dump.
 
-        Answers with disasm holding that text, plus dump, address and length,
-        and truncated, output_chars and returned_chars when the session was
-        cut at the 500_000-character buffer. There is no output field.
+        Answers with disasm holding that text, plus dump, address, length and
+        exit_code, and truncated, output_chars and returned_chars when the
+        session was cut at the 500_000-character buffer. There is no output
+        field. A dump cdb could not open or read (nonzero exit, no output)
+        answers backend_error rather than empty disassembly.
         """
         return _dump(analysis.windbg_disasm(dump_path, address, length=length, timeout=timeout))
 
@@ -95,9 +101,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Thread list of this session's live debuggee, read non-invasively.
 
-        Answers with threads holding the cdb text, plus pid, and truncated,
-        output_chars and returned_chars when the session was cut at the
-        500_000-character buffer. There is no process_id or output field.
+        Answers with threads holding the cdb text, plus pid and exit_code, and
+        truncated, output_chars and returned_chars when the session was cut at
+        the 500_000-character buffer. There is no process_id or output field.
         """
         return _dump(analysis.windbg_live_threads(session_id, timeout=timeout))
 
@@ -107,9 +113,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Loaded module list of this session's live debuggee, read non-invasively.
 
-        Answers with modules holding the cdb text, plus pid, and truncated,
-        output_chars and returned_chars when the session was cut at the
-        500_000-character buffer. There is no process_id or output field.
+        Answers with modules holding the cdb text, plus pid and exit_code, and
+        truncated, output_chars and returned_chars when the session was cut at
+        the 500_000-character buffer. There is no process_id or output field.
         """
         return _dump(analysis.windbg_live_modules(session_id, timeout=timeout))
 
@@ -122,10 +128,10 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Disassemble length instructions at address in this session's live debuggee.
 
-        Answers with disasm holding that text, plus pid, address and length,
-        and truncated, output_chars and returned_chars when the session was
-        cut at the 500_000-character buffer. There is no process_id or
-        output field.
+        Answers with disasm holding that text, plus pid, address, length and
+        exit_code, and truncated, output_chars and returned_chars when the
+        session was cut at the 500_000-character buffer. There is no process_id
+        or output field.
         """
         return _dump(
             analysis.windbg_live_disasm(session_id, address, length=length, timeout=timeout)
