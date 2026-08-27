@@ -5,11 +5,53 @@ from pathlib import Path
 
 import pytest
 
+import headless_re_mcp.backends.jadx.client as jadx_client
 from headless_re_mcp.backends.jadx.client import (
     JadxClient,
     JadxError,
     _class_to_java_path,
 )
+
+
+def test_configured_but_missing_jadx_falls_back_to_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale HEADLESS_RE_JADX must not hide a jadx that is on PATH.
+
+    __init__ kept any configured path verbatim, so a typo'd or stale
+    HEADLESS_RE_JADX left available False and every apk.decompile /
+    apk.export_sources call capability_unavailable even with jadx on PATH --
+    while doctor's probe_optional_tool and the r2/webcrack/wabt resolvers fall
+    back to PATH, so doctor reported jadx detected while the tools said missing.
+    """
+    on_path = tmp_path / "path-jadx"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(jadx_client, "_discover_jadx", lambda: on_path)
+
+    client = JadxClient(tmp_path / "missing-jadx")
+
+    assert client.available is True
+    assert client.executable == on_path
+
+
+def test_missing_jadx_everywhere_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(jadx_client, "_discover_jadx", lambda: None)
+
+    client = JadxClient(tmp_path / "missing-jadx")
+
+    assert client.available is False
+
+
+def test_configured_jadx_that_exists_is_used(tmp_path: Path) -> None:
+    tool = tmp_path / "jadx"
+    tool.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    client = JadxClient(tool)
+
+    assert client.available is True
+    assert client.executable == tool
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,7 @@ disk. jadx needs a JRE on PATH; when either is missing the tool degrades to
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -51,9 +52,35 @@ class JadxError(RuntimeError):
         self.details = details
 
 
+def _discover_jadx() -> Path | None:
+    for name in ("jadx", "jadx.bat"):
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+    return None
+
+
+def _resolve_jadx(configured: Path | None) -> Path | None:
+    """A jadx that is actually there, resolved the way doctor resolves it.
+
+    ``__init__`` used to keep any configured path verbatim, so a stale or typo'd
+    ``HEADLESS_RE_JADX`` left ``available`` False and every ``apk.decompile`` /
+    ``apk.export_sources`` call ``capability_unavailable`` even with jadx on PATH
+    -- while ``doctor``'s ``probe_optional_tool`` and the r2 / webcrack / wabt
+    resolvers fall back to PATH and report it usable, so doctor and the tools
+    disagreed. Take the configured path only when it is a file, else fall back to
+    PATH; when neither exists callers still get ``capability_unavailable``.
+    """
+    if configured is not None:
+        resolved = configured.expanduser()
+        if resolved.is_file():
+            return resolved
+    return _discover_jadx()
+
+
 class JadxClient:
     def __init__(self, executable: Path | None = None) -> None:
-        self.executable = executable
+        self.executable = _resolve_jadx(executable)
 
     @property
     def available(self) -> bool:
