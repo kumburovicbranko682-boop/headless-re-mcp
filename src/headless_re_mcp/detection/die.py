@@ -57,6 +57,11 @@ _MAX_DETECTS: Final[int] = 4096
 _MAX_VALUES_PER_DETECT: Final[int] = 16_384
 _MAX_TEXT: Final[int] = 32_768
 _READ_CHUNK_SIZE: Final[int] = 64 * 1024
+# How many candidate ``{`` positions the JSON scan will try to decode before
+# giving up. diec prints one document after a few notice lines, so the real
+# object is always within the first handful; this only bounds the cost of a
+# hostile reply that is mostly braces.
+_MAX_JSON_OBJECT_SCANS: Final[int] = 256
 
 
 class DieErrorCode:
@@ -357,9 +362,13 @@ def _capture_process(
                 returncode = process.poll()
         # Once the child has exited, let both readers consume the remaining
         # kernel pipe buffers before closing our handles.  Closing first can
-        # truncate a short-lived process's final JSON bytes.
-        stdout_thread.join(timeout=1.0)
-        stderr_thread.join(timeout=1.0)
+        # truncate a short-lived process's final JSON bytes.  A single shared
+        # budget keeps cleanup bounded: joining each reader for a full second
+        # would let a grandchild that inherited (and still holds open) a pipe
+        # extend the caller's deadline by seconds, one stream at a time.
+        drain_deadline = monotonic() + 1.0
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
         # A clean diec exit can still leave a wrapper's detached helper behind;
         # sweep survivors so a successful call never leaks a process.
         from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
@@ -372,8 +381,8 @@ def _capture_process(
             _close_pipe(stdout_pipe)
         if not stderr_thread.is_alive():
             _close_pipe(stderr_pipe)
-        stdout_thread.join(timeout=0.1)
-        stderr_thread.join(timeout=0.1)
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
 
     if returncode is None:
         returncode = -1
@@ -724,12 +733,30 @@ def _parse_json(stdout: str) -> tuple[tuple[DetectionFinding, ...], JsonObject]:
     text = stdout.lstrip("\ufeff")
     decoder = json.JSONDecoder(parse_constant=reject_constant)
     last_error: Exception | None = None
+    attempts = 0
     for index, char in enumerate(text):
         if char != "{":
             continue
+        # A failed decode is not free: raw_decode(text[index:]) copies the
+        # tail, and raw_decode(text, index) instead pays for the line/column
+        # count the JSONDecodeError constructor runs from the buffer start.
+        # Either way each candidate brace costs O(len), so trying every one is
+        # O(n^2) -- and this runs after capture, outside the subprocess
+        # timeout, on a stdout that is only bounded (4 MiB), not small. A reply
+        # that is almost all '{' turned a bounded capture into minutes of work
+        # with no deadline. diec emits one JSON document after at most a few
+        # notice lines, so the object's opening brace is among the first
+        # handful; cap the scan far above any real preamble and the flood
+        # becomes linear.
+        if attempts >= _MAX_JSON_OBJECT_SCANS:
+            break
+        attempts += 1
         try:
             payload, _end = decoder.raw_decode(text[index:])
-        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        except (json.JSONDecodeError, ValueError, TypeError, RecursionError) as exc:
+            # RecursionError joins the set because a deeply nested candidate
+            # raises it out of the C decoder, and it is neither a
+            # JSONDecodeError nor a ValueError.
             last_error = exc
             continue
         try:

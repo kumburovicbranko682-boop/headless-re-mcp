@@ -72,6 +72,16 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x8C: ("box", 4),
 }
 
+# Branch targets (both the short 1-byte and long 4-byte forms) and the ldc.i4
+# constant carry signed operands; every other opcode with an operand here
+# carries an unsigned metadata token. Only the short branches were read as
+# signed, so a long backward branch or a negative constant came back as its
+# two's-complement bit pattern -- br -10 printed as 4294967286 -- which misreads
+# the control flow the disassembly exists to show.
+_SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
+    {"br.s", "brfalse.s", "brtrue.s", "br", "brfalse", "brtrue", "ldc.i4"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Page:
@@ -664,6 +674,13 @@ def _read_method_body(meta: _MetaCtx, rva: int, *, max_bytes: int) -> JsonObject
     truncated = code_size > max_bytes
     take = min(code_size, max_bytes)
     il = data[il_start : il_start + take]
+    if len(il) < take:
+        # code_size is a number out of the sample, and here it runs past the
+        # end of the file, so the slice silently came back short. Without this
+        # the reply showed the bytes that existed with partial=False, and a
+        # body cut off at EOF -- a cheap way to hide the tail of a method from
+        # exactly this tool -- read as a complete disassembly.
+        truncated = True
     return {"header": header, "il": il, "il_len": code_size, "truncated": truncated}
 
 
@@ -691,7 +708,7 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
             if i + imm > len(il):
                 partial = True
                 break
-            signed = name in {"br.s", "brfalse.s", "brtrue.s"}
+            signed = name in _SIGNED_OPERANDS
             operand = int.from_bytes(il[i : i + imm], "little", signed=signed)
             i += imm
         rebuilt.append({"ip": start, "mnemonic": name, "operand": operand})

@@ -140,9 +140,19 @@ def bounded_tool_result(value: Any, *, max_bytes: int = 262_144) -> tuple[JsonOb
     encoded = json.dumps(normalized, ensure_ascii=False, default=str).encode("utf-8")
     if len(encoded) <= max_bytes:
         return normalized, False
-    return {
+    summary: JsonObject = {
         "truncated": True,
         "untrusted_tool_output": True,
         "original_bytes": len(encoded),
         "summary": encoded[: min(16_384, max_bytes // 2)].decode("utf-8", errors="replace"),
-    }, True
+    }
+    # Carry the envelope's own verdict through truncation. Every tool result is
+    # an {"ok": bool, ...} envelope, but the summary dropped that field, so a
+    # large *successful* result came back with ok absent -- which the caller
+    # reads as ok=False. A success then showed up as a failed tool call in the
+    # console and the audit trail purely because it was big. Keeping ok (a
+    # single bool, so the summary still fits its budget) makes the truncated
+    # result report the same success or failure the full one would have.
+    if isinstance(value, dict) and isinstance(value.get("ok"), bool):
+        summary["ok"] = value["ok"]
+    return summary, True
