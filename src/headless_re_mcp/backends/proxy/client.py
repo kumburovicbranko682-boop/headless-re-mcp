@@ -337,6 +337,22 @@ class _ProxyInstance:
                 master = DumpMaster(opts, loop=loop, with_termlog=False, with_dumper=False)
             except TypeError:
                 master = DumpMaster(opts)
+            # DumpMaster ships the errorcheck addon, which watches the process
+            # logger during startup and calls sys.exit(1) if *any* ERROR record
+            # appears anywhere. That is right for the CLI, but here it lets an
+            # unrelated error -- pytest log capture, another library, or a second
+            # concurrent master's transient asyncio error -- kill this proxy
+            # after its port is already bound, leaving the run loop to exit early
+            # without ever stopping the (Rust-backed) listener. We own readiness
+            # and lifecycle, so drop it and let our own probe judge startup.
+            errorcheck = master.addons.get("errorcheck")
+            if errorcheck is not None:
+                finish = getattr(errorcheck, "finish", None)
+                if callable(finish):
+                    with contextlib.suppress(Exception):
+                        finish()
+                with contextlib.suppress(Exception):
+                    master.addons.remove(errorcheck)
             master.addons.add(self.recorder)
             self._master = master
             self._started.set()
@@ -354,10 +370,47 @@ class _ProxyInstance:
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
 
+    def _drive_teardown(self, timeout: float = 10.0) -> bool:
+        """Stop the listeners, then ask the run loop to exit -- on its own loop.
+
+        mitmproxy moved its network layer into a Rust extension and the
+        proxyserver addon has no teardown hook, so ``master.shutdown()`` unwinds
+        ``run()`` without ever stopping the servers: the listening socket stays
+        bound at the OS level and the next capture cannot rebind the port.
+        Explicitly drive the servers to an empty mode set -- which awaits each
+        listener's stop and frees the port -- and only then signal the loop to
+        exit. Returns True when the teardown coroutine completed.
+        """
+        master = self._master
+        loop = self._loop
+        if master is None or loop is None or not loop.is_running():
+            return False
+
+        async def _teardown() -> None:
+            proxyserver = None
+            with contextlib.suppress(Exception):
+                proxyserver = master.addons.get("proxyserver")
+            servers = getattr(proxyserver, "servers", None)
+            if servers is not None:
+                with contextlib.suppress(Exception):
+                    await servers.update([])
+            should_exit = getattr(master, "should_exit", None)
+            if should_exit is not None:
+                should_exit.set()
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_teardown(), loop)
+            future.result(timeout=timeout)
+            return True
+        except Exception:
+            return False
+
     def stop(self) -> None:
         master = self._master
         loop = self._loop
-        if master is not None and loop is not None:
+        if not self._drive_teardown() and master is not None and loop is not None:
+            # Scheduling failed or the loop was already unwinding; fall back to
+            # the plain shutdown so a wedged loop still gets asked to exit.
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(master.shutdown)
         if self._thread is not None:
