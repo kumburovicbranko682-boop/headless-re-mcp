@@ -65,6 +65,18 @@ def probe_ready(url: str, *, timeout: float) -> tuple[bool, str]:
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         return (False, "unreachable: ValueError")
+    try:
+        port = parts.port
+    except ValueError:
+        # urlsplit(...).port parses and range-checks lazily, raising rather than
+        # returning for a port outside 0..65535 (e.g. ":99999"). That read moved
+        # out of the worker's blanket ``except`` when this probe stopped using
+        # urlopen, so a malformed readiness URL -- which _run_supervisor builds
+        # straight from an unvalidated --port -- would now escape probe_ready
+        # instead of failing closed like the scheme/hostname guard above. Answer
+        # the same "not reachable" a bad URL has always meant; _probe_once still
+        # backstops anything else, but the documented tuple contract holds here.
+        return (False, "unreachable: ValueError")
     connection_class = (
         http.client.HTTPSConnection
         if parts.scheme == "https"
@@ -74,7 +86,7 @@ def probe_ready(url: str, *, timeout: float) -> tuple[bool, str]:
     # can close from outside the worker thread; urlopen's socket is unreachable
     # until the response headers -- exactly what a wedged child never finishes
     # sending -- are complete.
-    connection = connection_class(parts.hostname, parts.port, timeout=bound)
+    connection = connection_class(parts.hostname, port, timeout=bound)
     path = parts.path or "/"
     if parts.query:
         path = f"{path}?{parts.query}"

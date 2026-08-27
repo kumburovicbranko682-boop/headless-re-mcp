@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（probe_ready 遇端口越界的 readiness URL 会抛异常而非失败关闭）
+
+- `probe_ready` 改用 `http.client` 后，URL 解析从 worker 线程的兜底 `except` 挪到了主调用路径，
+  而 `urlsplit(...).port` 是惰性解析：端口超出 0..65535（如 `:99999`）时它直接抛 `ValueError`
+  而不是返回。`_run_supervisor` 用未经校验的 `--port` 原样拼出 `http://{host}:{port}/readyz`，
+  于是一个端口越界的 supervise 配置会让 `probe_ready` 抛异常逃逸，违背其文档化的
+  `tuple[bool, str]` 返回契约——同函数里 scheme/hostname 的守卫本意就是让畸形 URL 失败关闭。
+  （`Supervisor._probe_once` 的兜底 `except` 恰好接住了它，所以监督循环没有崩，但直接调用方
+  拿到的是异常而非探活结论。）现把 `parts.port` 的读取纳入守卫：越界端口与坏 scheme/hostname
+  一样返回 `(False, "unreachable: ValueError")`，不再构造连接。新增回归测试钉住越界端口
+  （IPv4/IPv6 形式）与非 http URL 都失败关闭。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

@@ -177,3 +177,31 @@ def test_probe_ready_names_a_non_200() -> None:
         ok, detail = probe_ready(f"http://127.0.0.1:{port}/readyz", timeout=0.5)
         assert ok is False
         assert detail == "http 503"
+
+
+def test_probe_ready_fails_closed_on_an_out_of_range_port() -> None:
+    """A readiness URL whose port is outside 0..65535 must not escape the probe.
+
+    _run_supervisor builds ``http://{host}:{port}/readyz`` straight from an
+    unvalidated ``--port``, and ``urlsplit(...).port`` range-checks lazily: it
+    raises ``ValueError`` for ``:99999`` rather than returning. Reading it moved
+    out of the worker's blanket ``except`` when the probe stopped using urlopen,
+    so this once crashed straight out of probe_ready instead of answering the
+    ``(False, "unreachable: ...")`` a malformed URL has always meant. No socket
+    is opened -- the guard returns before a connection is even constructed.
+    """
+    for bad in (
+        "http://127.0.0.1:99999/readyz",
+        "http://[::1]:70000/readyz",
+    ):
+        ok, detail = probe_ready(bad, timeout=0.5)
+        assert ok is False
+        assert detail == "unreachable: ValueError"
+
+
+def test_probe_ready_fails_closed_on_a_non_http_url() -> None:
+    """The scheme/hostname guard shares the malformed-URL answer with the port."""
+    for bad in ("ftp://127.0.0.1:21/readyz", "http:///readyz", "not-a-url"):
+        ok, detail = probe_ready(bad, timeout=0.5)
+        assert ok is False
+        assert detail == "unreachable: ValueError"
