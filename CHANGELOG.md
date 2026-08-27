@@ -283,6 +283,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   已加载无自有方法类 `found=true`+空列表,以及裸数组形状仍被容忍并报 `found=true`。
   `frida.java.methods` 描述点名 `found`。
 
+### 修复（WASM 输入校验）
+
+- `wasm.wat` / `wasm.info` 现在在派生 `wasm2wat` / `wasm-objdump` 之前先核对四字节
+  `\0asm` 魔数:非 WASM 文件（误传的 PE、文本、抓包下来的 HTML 响应等）过去会把子进程
+  拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
+  `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
+  `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+- 新增回归:`_looks_like_wasm` 识别魔数(合规/坏魔数/短文件)、`wasm.wat` 与 `wasm.info`
+  对非模块回 `invalid_params` 且子进程从未启动、真模块仍能照常抵达工具。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
