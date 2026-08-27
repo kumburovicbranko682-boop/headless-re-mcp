@@ -572,6 +572,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 再加一例证明 `web.navigate`：从已开的 `/` 导航到同源第二页，断言 URL/标题/状态都换成新页
   且活 DOM 确为第二页（首页 marker 已消失）；随后导航到一个返回 404 的路径，断言状态如实为
   404——覆盖后端“4xx 主文档正常 resolve、必须把状态透出”的分支，杜绝错误页伪装成命中。
+- 再加一例走 `web.network.get` 的二进制正文分支：源站以 `application/octet-stream` 提供
+  0x00..0xFF 全字节（非 UTF-8）的 `/blob.bin`，页内 `fetch` 取回并经 console 报出 256 字节
+  （证明确实取全了才回读）。断言 `web.network.get` 回 `base64_encoded=true`、`body` 为空且
+  不 inline、`body_bytes` 为 256，且落盘 `body_path` 的 `.bin` 与服务端字节逐字节一致——
+  证明“先解一次 base64、按真实字节落盘、绝不把有损文本解码冒充原始字节”的那条保证真的成立
+  （此前只测过文本正文 app.js，二进制分支从未被实测走过）。
 - 再加一例把产物回路闭上：`web.screenshot` 与 `web.har.export` 各自登记的 `artifact_id`
   必须能被 `artifacts.list` 列到（kind 为 `web_screenshot`/`web_har`、size 非零），
   `artifacts.describe` 返回的 `sha256` 与磁盘文件重算一致（证明登记的是真摘要而非占位），

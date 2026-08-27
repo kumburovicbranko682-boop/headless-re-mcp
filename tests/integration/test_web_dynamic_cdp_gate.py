@@ -14,6 +14,8 @@ every DevTools surface can be checked against real traffic:
                          their status/mime, and the script body is fetchable.
 * ``web.scripts`` /
   ``web.script_source``-- the external script is parsed and its source retrievable.
+* ``web.network.get`` -- a *binary* subresource returns base64-flagged and spills
+                         its exact bytes, never a lossy text decode.
 * ``web.wasm_list``   -- a live-instantiated WebAssembly module is enumerated
                          (and shown to have actually executed), and ``wasm_only``
                          is proven to be a real filter, not a passthrough.
@@ -174,6 +176,38 @@ class _WasmHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+# Every byte value 0x00..0xFF: not valid UTF-8, so CDP must return the response
+# body base64Encoded -- exactly the path a text-only capture never walks. The
+# page fetch()es it (rather than <img>, whose body Chromium does not reliably
+# buffer for getResponseBody) and logs the received length, so the console also
+# proves the browser really pulled all 256 bytes before we read them back.
+_BLOB_BYTES = bytes(range(256))
+_BLOB_READY = "BLOB_READY"
+_BINARY_HTML = (
+    "<!doctype html><html><head><meta charset=utf-8>"
+    f"<title>{_TITLE}</title>"
+    "<script>fetch('/blob.bin').then(r=>r.arrayBuffer())."
+    f"then(b=>{{console.log('{_BLOB_READY} '+b.byteLength);}});</script>"
+    "</head><body>blob</body></html>"
+)
+
+
+class _BinaryHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - required name
+        if self.path == "/blob.bin":
+            status, body, ctype = 200, _BLOB_BYTES, "application/octet-stream"
+        else:
+            status, body, ctype = 200, _BINARY_HTML.encode("utf-8"), "text/html; charset=utf-8"
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 @contextmanager
 def _origin(handler: type[BaseHTTPRequestHandler] = _Handler) -> Iterator[str]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -320,6 +354,62 @@ def test_web_dynamic_network_capture_and_har(_service: AnalysisService) -> None:
         parsed = json.loads(har_text)
         urls = {e["request"]["url"] for e in parsed["log"]["entries"]}
         assert url + "app.js" in urls, sorted(urls)
+
+
+def test_web_dynamic_retrieves_a_binary_response_body(_service: AnalysisService) -> None:
+    """A binary response body must come back as bytes, not a lossy text decode.
+
+    CDP flags a non-UTF-8 body ``base64Encoded``; the backend decodes it once and
+    spills the *raw* bytes to ``body_path`` rather than inlining the base64 or
+    writing replacement characters. The existing coverage only ever fetched a
+    text body (app.js), so this walks the other branch: serve every byte value
+    0x00..0xFF, pull it as an <img>, and prove the spilled artifact is those exact
+    bytes -- the guarantee that a caller never mistakes a decode for the payload.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web dynamic CDP gate not run (skip != pass)")
+    with _origin(_BinaryHandler) as url:
+        session_id = _open_on(_service, url)
+        blob_url = url + "blob.bin"
+
+        # The page's fetch() actually pulled all 256 bytes (proven over the
+        # console) before we ask CDP for the buffered body.
+        def _blob_fetched() -> bool:
+            res = _service.web_console(session_id)
+            return res.ok and any(
+                f"{_BLOB_READY} {len(_BLOB_BYTES)}" in str(e.get("text", ""))
+                for e in res.data["console"]
+            )
+
+        assert _wait_until(_blob_fetched), "page never fetched the full binary body"
+
+        # The fetch lands as its own flow (responseReceived is async).
+        def _blob_flow() -> dict[str, Any] | None:
+            res = _service.web_network_list(session_id, limit=200)
+            if not res.ok:
+                return None
+            for r in res.data["requests"]:
+                if str(r.get("url", "")) == blob_url:
+                    return r
+            return None
+
+        assert _wait_until(lambda: _blob_flow() is not None), "binary subresource never captured"
+        flow = _blob_flow()
+        assert flow is not None
+
+        got = _service.web_network_get(session_id, flow["requestId"])
+        assert got.ok, got.error
+        # base64-flagged, never inlined as text, and reporting the decoded size.
+        assert got.data["base64_encoded"] is True, got.data
+        assert got.data["body"] == "", got.data
+        assert got.data["body_truncated"] is False, got.data
+        assert got.data["body_bytes"] == len(_BLOB_BYTES), got.data
+
+        # The spilled artifact holds the served bytes verbatim -- decode round-trip
+        # intact, no replacement characters, no base64 written to the .bin.
+        path = got.data.get("body_path")
+        assert isinstance(path, str) and path, got.data
+        assert Path(path).read_bytes() == _BLOB_BYTES, "spilled bytes are not the bytes served"
 
 
 def test_web_dynamic_enumerates_a_live_wasm_module(_service: AnalysisService) -> None:
