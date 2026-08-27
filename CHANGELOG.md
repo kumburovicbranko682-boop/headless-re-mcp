@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（workspace.mode.set 补记会话无关审计）
+
+- `workspace.mode.set` 在 `tools/catalog.py` 里被归为写操作:它改写全局的工作方向 profile、持久化到用户
+  配置(跨重启生效),并决定下一次 MCP 连接看到哪一套工具面。它不属于任何会话——没有可落的时间线——也
+  从不写审计,于是它成了非 PE 写操作里唯一时间线与审计都不留痕的那个:一个无人值守的 agent 半夜把自己
+  切到别的 profile、换出一批工具,操作者事后无从查证。现在成功的切换会像 device.* 一样以空 `session_id`
+  写入全局审计日志,记 `{"from": 旧 profile, "to": 新 profile}`。
+- 只记真正落地的切换:未知 profile 是一次尚未改动任何东西的校验拒绝,不记。记账尽力而为——profile 已经
+  持久化,一次审计写入失败绝不能把已成功的切换变成失败的工具调用;只记 profile 名(取自固定集合、无机密)。
+  `audit.list` 描述更新为点名 workspace.mode.set;新增 `tests/unit/test_workspace_mode_audit.py` 钉住:
+  成功记一条带 from/to 的空会话审计、非法 profile 不记、审计写失败不拖垮切换。
+
 ### 新增（proxy.replay 补记会话时间线）
 
 - `proxy.replay` 在 `tools/catalog.py` 里被归为写操作:它把一条已捕获的请求重新发往真实服务器,是有副
