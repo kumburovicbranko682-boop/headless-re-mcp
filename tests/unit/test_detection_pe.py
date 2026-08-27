@@ -627,3 +627,196 @@ def test_dotnet_minimal_clr_hint_fixture_is_directory_hint_only() -> None:
     assert finding.confidence == 0.55
     assert finding.confidence < 0.99
     assert finding.evidence[0].details.get("clr_status") == "hint"
+
+
+# Byte offsets into a built x64 _SyntheticPe (PE header at 0x80). These pin the
+# fields the parser reads straight from the DOS/COFF/optional header, so a test
+# can corrupt exactly one and drive a single guard without depending on a
+# compiled fixture. The hostile-input suite reaches these by mutating a real
+# binary, but that suite skips when no native build exists; driving the same
+# guards off the synthetic writer makes them run in every environment.
+_X64_FILE_HEADER = 0x84
+_X64_MACHINE = _X64_FILE_HEADER  # u16
+_X64_SECTION_COUNT = _X64_FILE_HEADER + 2  # u16
+_X64_OPTIONAL_SIZE = _X64_FILE_HEADER + 16  # u16
+_X64_OPTIONAL = _X64_FILE_HEADER + 20  # optional header start
+_X64_MAGIC = _X64_OPTIONAL  # u16
+_X64_IMAGE_BASE = _X64_OPTIONAL + 24  # u64 (PE32+)
+_X64_SECTION_ALIGNMENT = _X64_OPTIONAL + 32  # u32
+_X64_FILE_ALIGNMENT = _X64_OPTIONAL + 36  # u32
+_X64_IMAGE_SIZE = _X64_OPTIONAL + 56  # u32
+_X64_SIZE_OF_HEADERS = _X64_OPTIONAL + 60  # u32
+
+
+def _patched_x64(offset: int, fmt: str, value: int) -> bytes:
+    data = bytearray(_sample("x64", imports=False, tls=False, dotnet=False))
+    struct.pack_into(fmt, data, offset, value)
+    return bytes(data)
+
+
+@pytest.mark.parametrize(
+    ("offset", "fmt", "value", "match"),
+    [
+        (_X64_MACHINE, "<H", 0xFFFF, "unsupported PE machine"),
+        (_X64_SECTION_COUNT, "<H", 0, "section count is outside"),
+        (_X64_SECTION_COUNT, "<H", 0xFFFF, "section count is outside"),
+        (_X64_OPTIONAL_SIZE, "<H", 0xFFFF, "optional header is truncated"),
+        (_X64_MAGIC, "<H", 0, "inconsistent with its machine type"),
+    ],
+)
+def test_corrupt_pe_header_field_is_rejected_by_name(
+    tmp_path: Path,
+    offset: int,
+    fmt: str,
+    value: int,
+    match: str,
+) -> None:
+    """One corrupt header field, one specific PeFormatError.
+
+    Each case corrupts a single field the parser reads directly from the
+    DOS/COFF/optional header -- an unsupported machine, a section count outside
+    the supported range, an optional header claiming to run past the input, and
+    a magic that disagrees with the machine -- and must raise a message that
+    names the fault rather than a generic failure or something the result
+    envelope cannot classify.
+    """
+    path = tmp_path / "corrupt-header.exe"
+    path.write_bytes(_patched_x64(offset, fmt, value))
+    with pytest.raises(PeFormatError, match=match):
+        scan_pe(path)
+
+
+@pytest.mark.parametrize(
+    ("offset", "fmt", "value", "match"),
+    [
+        (_X64_IMAGE_BASE, "<Q", 0, "image base and image size must be positive"),
+        (_X64_SECTION_ALIGNMENT, "<I", 0, "section and file alignments must be positive"),
+        (_X64_FILE_ALIGNMENT, "<I", 0, "section and file alignments must be positive"),
+        (_X64_SIZE_OF_HEADERS, "<I", 0x7FFFFFFF, "SizeOfHeaders is outside the input"),
+        (_X64_IMAGE_SIZE, "<I", 0x100, "headers exceed SizeOfImage"),
+    ],
+)
+def test_inconsistent_pe_layout_invariant_is_rejected(
+    tmp_path: Path,
+    offset: int,
+    fmt: str,
+    value: int,
+    match: str,
+) -> None:
+    """_validate_layout enforces the cross-field invariants a loader relies on.
+
+    A positive image base and size, positive alignments, a SizeOfHeaders that
+    fits the input, and an image at least as large as its own headers are each
+    a separate guard. A crafted header that violates one must be refused with
+    the matching message rather than parsed into a nonsensical layout.
+    """
+    path = tmp_path / "bad-layout.exe"
+    path.write_bytes(_patched_x64(offset, fmt, value))
+    with pytest.raises(PeFormatError, match=match):
+        scan_pe(path)
+
+
+def test_overlapping_section_virtual_ranges_are_rejected(tmp_path: Path) -> None:
+    """Two sections mapped to the same VA cannot both own that memory.
+
+    Section overlap is a classic malformed/obfuscated layout; the range sort in
+    _validate_layout must catch it and name both sections rather than let the
+    image parse into ambiguous RVA mappings.
+    """
+    pe = _SyntheticPe("x64")
+    first = pe.add_section(
+        ".text", size=0x400, characteristics=_IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_EXECUTE
+    )
+    second = pe.add_section(".data", size=0x400)
+    second.virtual_address = first.virtual_address
+    path = tmp_path / "overlap.exe"
+    path.write_bytes(pe.build())
+    with pytest.raises(PeFormatError, match="overlapping virtual ranges"):
+        scan_pe(path)
+
+
+def test_unconventional_file_alignment_is_flagged(tmp_path: Path) -> None:
+    """A positive but non-power-of-two alignment is a heuristic anomaly.
+
+    _validate_layout only requires alignments to be positive; _build_findings
+    separately flags alignments outside the conventional power-of-two range
+    (here 0x300), which packers and hand-built images exhibit.
+    """
+    pe = _SyntheticPe("x64")
+    pe.add_section(
+        ".text", size=0x400, characteristics=_IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_EXECUTE
+    )
+    pe.file_alignment = 0x300
+    path = tmp_path / "odd-alignment.exe"
+    path.write_bytes(pe.build())
+
+    report = scan_pe(path)
+
+    assert any(f.id == "builtin:anomaly:unusual-alignment" for f in report.findings)
+
+
+def _clr_sample(*, meta: str) -> bytes:
+    """A synthetic image whose COM descriptor points at a COR20 header.
+
+    ``meta`` selects what the header's MetaData directory points at: ``bsjb`` a
+    mapped BSJB signature (verifiable), ``other`` mapped non-BSJB bytes,
+    ``unmapped`` an RVA in no section (the reader raises), and ``short`` a
+    directory too small to be a COR20 header at all.
+    """
+    pe = _SyntheticPe("x64")
+    text = pe.add_section(
+        ".text", size=0x600, characteristics=_IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_EXECUTE
+    )
+    if meta == "short":
+        pe.directories[14] = (pe.rva(text, 0x100), 8)
+        return pe.build()
+    marker_offset = 0x200
+    if meta == "unmapped":
+        meta_rva = 0x7F000000
+    else:
+        meta_rva = pe.rva(text, marker_offset)
+        pe.write(text, marker_offset, b"BSJB" if meta == "bsjb" else b"NOPE")
+    header_offset = 0x100
+    cor20 = bytearray(72)
+    # IMAGE_COR20_HEADER: the MetaData IMAGE_DATA_DIRECTORY (rva, size) sits at +8.
+    struct.pack_into("<II", cor20, 8, meta_rva, 16)
+    pe.write(text, header_offset, bytes(cor20))
+    pe.directories[14] = (pe.rva(text, header_offset), 72)
+    return pe.build()
+
+
+@pytest.mark.parametrize(
+    ("meta", "expected_status"),
+    [
+        ("bsjb", "verified"),
+        ("other", "hint"),
+        ("unmapped", "hint"),
+        ("short", "hint"),
+    ],
+)
+def test_clr_classification_only_claims_verified_for_mapped_bsjb(
+    tmp_path: Path,
+    meta: str,
+    expected_status: str,
+) -> None:
+    """_classify_clr must earn "verified"; every uncertain shape stays a hint.
+
+    Verified requires a readable COR20 header whose MetaData directory maps to a
+    BSJB signature. A populated directory whose metadata is non-BSJB, points
+    outside any section, or is too small to be a COR20 header all degrade to a
+    hint rather than overclaim a .NET runtime that cannot be confirmed from the
+    mapped bytes.
+    """
+    path = tmp_path / f"clr-{meta}.exe"
+    path.write_bytes(_clr_sample(meta=meta))
+
+    report = scan_pe(path)
+
+    assert report.pe.dotnet is True
+    finding = next(f for f in report.findings if f.id == "builtin:runtime:dotnet")
+    assert finding.evidence[0].details.get("clr_status") == expected_status
+    if expected_status == "verified":
+        assert finding.confidence == 0.99
+        assert finding.summary == "CLR runtime header is present"
+    else:
+        assert finding.confidence == 0.55
