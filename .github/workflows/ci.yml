@@ -144,6 +144,54 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-integration:
+    # Real-backend gates for the portable lines (Web, Android, HTTP(S) proxy,
+    # radare2). These backends install on a stock GitHub-hosted runner, so unlike
+    # the Windows debugger gates they can run on every commit rather than only on
+    # the manual self-hosted job -- which is what keeps "skip != pass" honest for
+    # the non-PE lines instead of letting them rot untested off Windows.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install portable backends (radare2, wabt, webcrack)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends radare2 wabt
+          sudo npm install -g webcrack
+
+      - name: Install package with portable extras
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,android,browser,proxy]"
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Backend sanity
+        run: |
+          r2 -v
+          wasm2wat --version
+          webcrack --version
+          python -c "import androguard, adbutils, mitmproxy, playwright; print('android/proxy/web imports ok')"
+
+      - name: Non-PE integration gates
+        # The whole tree runs, not a hardcoded subset, so a newly added portable
+        # gate is picked up rather than silently omitted. The PE/IDA/Windows gates
+        # skip cleanly here -- no IDA, no x64dbg, and conftest marks the
+        # Windows-only modules -- while the Web/Android/proxy/radare2 gates run for
+        # real. -rs prints every skip reason so a quiet skip never reads as a pass.
+        run: python -m pytest tests/integration -rs --tb=short --timeout=300
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
