@@ -57,6 +57,11 @@ _MAX_DETECTS: Final[int] = 4096
 _MAX_VALUES_PER_DETECT: Final[int] = 16_384
 _MAX_TEXT: Final[int] = 32_768
 _READ_CHUNK_SIZE: Final[int] = 64 * 1024
+# How many candidate ``{`` positions the JSON scan will try to decode before
+# giving up. diec prints one document after a few notice lines, so the real
+# object is always within the first handful; this only bounds the cost of a
+# hostile reply that is mostly braces.
+_MAX_JSON_OBJECT_SCANS: Final[int] = 256
 
 
 class DieErrorCode:
@@ -728,12 +733,30 @@ def _parse_json(stdout: str) -> tuple[tuple[DetectionFinding, ...], JsonObject]:
     text = stdout.lstrip("\ufeff")
     decoder = json.JSONDecoder(parse_constant=reject_constant)
     last_error: Exception | None = None
+    attempts = 0
     for index, char in enumerate(text):
         if char != "{":
             continue
+        # A failed decode is not free: raw_decode(text[index:]) copies the
+        # tail, and raw_decode(text, index) instead pays for the line/column
+        # count the JSONDecodeError constructor runs from the buffer start.
+        # Either way each candidate brace costs O(len), so trying every one is
+        # O(n^2) -- and this runs after capture, outside the subprocess
+        # timeout, on a stdout that is only bounded (4 MiB), not small. A reply
+        # that is almost all '{' turned a bounded capture into minutes of work
+        # with no deadline. diec emits one JSON document after at most a few
+        # notice lines, so the object's opening brace is among the first
+        # handful; cap the scan far above any real preamble and the flood
+        # becomes linear.
+        if attempts >= _MAX_JSON_OBJECT_SCANS:
+            break
+        attempts += 1
         try:
             payload, _end = decoder.raw_decode(text[index:])
-        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        except (json.JSONDecodeError, ValueError, TypeError, RecursionError) as exc:
+            # RecursionError joins the set because a deeply nested candidate
+            # raises it out of the C decoder, and it is neither a
+            # JSONDecodeError nor a ValueError.
             last_error = exc
             continue
         try:

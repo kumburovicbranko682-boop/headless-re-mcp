@@ -233,6 +233,28 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `7f454c46`。frida 原生 runtime 在 CI 跑不了，故按仓库既有做法（见 hook-template schema 测试）
   以源码静态断言钉住脚本用的是指针方法、不再出现被删的全局名。
 
+### 修复（PE 扫描每次读取都吃满 256 MiB 预算）
+
+- `scan_pe` 的 `_read_pe_bytes` 过去以 `stream.read(max_file_size + 1)` 一次性把整份输入读进
+  内存。这一步刻意不信 `stat()`（文件可能在检查与读取之间变大）并把读取封顶在预算内，但
+  Python 带缓冲的 `read(n)` 会先按 `n` 预分配再收缩——于是默认 256 MiB 上限下，**每一次扫描
+  无论文件多大都瞬时吃掉 256 MiB 堆**（实测一个 4 KiB 文件峰值 256 MiB）。scan_pe 在每个二进制、
+  每个会话上都跑，`inspect_dotnet` 与 `.NET` 枚举里的 `_load_metadata_context` 还会各自再读一遍，
+  并发会话下这类瞬时尖峰是真实的 OOM/RSS 风险。现改为分块读到 `max_file_size + 1`：常规文件
+  短读即 EOF，仍是一次「读满预算」的 `read`（I/O 边界不变，超限照样拒绝、文件增长照样封顶），
+  只有大到填满一个分块的文件才多读，且绝不超过实际存在的字节。实测同一个 4 KiB 文件峰值降到
+  约 1 MiB。回归测试断言小文件在默认 256 MiB 上限下的分配与文件大小成比例，而非与上限成比例。
+
+### 修复（内存版仓库时间线无界增长）
+
+- `InMemoryAnalysisRepository`（与 SQLite 端口同契约、供自定义组合使用的生产模块）的
+  审计日志裁到 `AUDIT_RETAINED_ROWS`、知识表裁到 `KNOWLEDGE_RETAINED_PER_SESSION`、
+  关闭会话裁到 `CLOSED_SESSION_RETAINED`，唯独时间线只 `append` 不裁：每个生命周期
+  事件与工具备注都往该会话的 Python list 里加一条，长驻进程用这个端口跑一夜就攒一夜。
+  文件版时间线自身有 10,000 行 / 8 MB 的裁剪上限，现新增
+  `TIMELINE_RETAINED_PER_SESSION`（10,000，与文件版行数上限一致）在 `append_timeline`
+  里同样只留最新条目。新增回归：把保留数调小后断言旧条目被裁、无关会话不受影响。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
