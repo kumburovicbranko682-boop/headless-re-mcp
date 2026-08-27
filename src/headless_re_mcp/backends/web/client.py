@@ -749,10 +749,10 @@ class WebBackend:
             result["source_path"] = str(spill)
         return result
 
-    def dom_snapshot(self, session_id: str) -> JsonObject:
+    def dom_snapshot(self, session_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
 
-        def work() -> JsonObject:
+        def work() -> tuple[str, bool, str, str]:
             try:
                 clipped = handle.page.evaluate(
                     """(cap) => {
@@ -765,7 +765,7 @@ class WebBackend:
                           truncated: text.length > cap
                         };
                     }""",
-                    _MAX_INLINE_BODY,
+                    UNREGISTERED_CAPTURE_MAX_BYTES,
                 )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"dom snapshot failed: {exc}") from exc
@@ -773,14 +773,34 @@ class WebBackend:
                 raise WebError("backend_error", "dom snapshot returned no document")
             html = clipped.get("html")
             text = html if isinstance(html, str) else ""
-            return {
-                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
-                "title": _safe_title(handle.page),
-                "html": text[:_MAX_INLINE_BODY],
-                "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
-            }
+            url = _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0]
+            return text, bool(clipped.get("truncated")), url, _safe_title(handle.page)
 
-        return self._runner(handle).call(work)
+        text, dom_over_cap, url, title = self._runner(handle).call(work)
+        # Spill off the browser thread, the way script_source does: a large DOM
+        # (a generated or heavily-obfuscated SPA) used to be cut to the 200 KB
+        # inline buffer with no way to get the rest. Now the full document lands
+        # in an artifact and only a prefix is inlined -- html_path is where the
+        # whole thing is, exactly like a large script source or response body.
+        inline, spill, cut = _spill_text(
+            text,
+            artifact_dir=artifact_dir,
+            filename=f"dom-{uuid4().hex}.html",
+            kind="dom snapshot",
+        )
+        result: JsonObject = {
+            "url": url,
+            "title": title,
+            "html": inline,
+            "bytes": len(text.encode("utf-8", errors="replace")),
+            # dom_over_cap only trips for a document past the whole capture cap,
+            # which _spill_text would already refuse; keep it in the OR so such a
+            # document is never silently reported as complete.
+            "truncated": cut or dom_over_cap,
+        }
+        if spill is not None:
+            result["html_path"] = str(spill)
+        return result
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)

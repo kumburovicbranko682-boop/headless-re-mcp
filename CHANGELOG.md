@@ -374,6 +374,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,
   且每个非本机探测都往事故日志写一条记录(可被扫描器刷爆)。现改为中间件内直接返回 403。
 
+### 修复（`web.dom.snapshot` 的大 DOM 不再被截断到无法找回）
+
+- `web.script.source` 与 `web.network.get` 早已把超过内联上限的载荷整份溢出到会话制品、
+  回 `*_path` 供 `artifacts.read` 取回;唯独 `web.dom.snapshot` 例外——它在浏览器里就把
+  `outerHTML` 切到 200 KB 才递回 Python,`truncated=true` 之外没有任何找回整份文档的途径。
+  逆向一个生成式或重度混淆的 SPA 时,被切掉的正是最想看的那部分标记。
+- 现在 DOM 快照与两个兄弟一致:浏览器侧的上限抬到整份抓取上限,完整文档经 `_spill_text`
+  落进会话制品并在 service 层登记(kind `web_dom_snapshot`),`html_path` 指向整份、`html`
+  只留前缀。回包新增 `bytes`(整份文档的 UTF-8 字节数),`truncated` 表示内联的 `html` 只是
+  前缀。文档未超内联上限时行为不变:`html` 即整份、无 `html_path`、不落盘。
+- 落盘与 `web.script.source` 一样在浏览器线程之外进行;超过整份抓取上限的文档照旧被
+  `_spill_text` 以 `too_large` 拒绝,不会静默半写。
+- 新增回归:小 DOM 内联且不落盘、超限 DOM 整份落盘且 `html_path` 内容逐字节一致、每次溢出
+  各自成文件、`bytes` 按 UTF-8 计而非字符数,以及 service 层把溢出登记为可经 `artifacts.read`
+  取回的制品(与截图 / HAR / 脚本源同表)。`web.dom.snapshot` 描述点名 `html_path`。
+
 ### 修复（`..` 绕过产物归属守卫）
 
 - 全仓沿用 `not session_id or Path(session_id).name != session_id` 作「单路径段」判据,但
