@@ -52,6 +52,29 @@ def _capture_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return calls
 
 
+def test_ghidra_prefers_the_os_launcher_when_both_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ghidra ships analyzeHeadless and analyzeHeadless.bat side by side.
+
+    The client must pick the one this OS can exec. Listing the .bat first meant
+    Linux/macOS selected the Windows batch file and every Ghidra tool died with
+    a PermissionError before launch; the extensionless script is the Unix one.
+    """
+    support = tmp_path / "support"
+    support.mkdir(parents=True)
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    posix = ghidra_client._find_analyze_headless(tmp_path)
+    assert posix is not None and posix.name == "analyzeHeadless"
+
+    monkeypatch.setattr(ghidra_client.os, "name", "nt")
+    windows = ghidra_client._find_analyze_headless(tmp_path)
+    assert windows is not None and windows.name == "analyzeHeadless.bat"
+
+
 def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
