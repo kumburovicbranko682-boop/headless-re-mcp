@@ -46,6 +46,40 @@ def test_a_traversing_session_id_cannot_escape_the_sessions_root(
     assert ok.name == "timeline.jsonl"
 
 
+@pytest.mark.parametrize(
+    ("offset", "limit", "expected"),
+    [
+        (0, 3, ["e0000", "e0001", "e0002"]),
+        (3, 3, ["e0003", "e0004", "e0005"]),
+        (8, 5, ["e0008", "e0009"]),
+        (9, 3, ["e0009"]),
+        (10, 3, []),
+        (25, 3, []),
+    ],
+)
+def test_list_pages_a_contiguous_window_oldest_first(
+    tmp_path: Path, offset: int, limit: int, expected: list[str]
+) -> None:
+    """Only default-page reads were pinned; the byte-sliced windowing was not.
+
+    _page counts and slices the raw bytes by newline, so a regression there
+    returns the wrong window or a wrong total without failing to parse. Pin an
+    exact mid-file window, a limit running past the end, an offset at the end,
+    and one past it -- entries stay in append (oldest-first) order throughout.
+    """
+    path = tmp_path / "timeline.jsonl"
+    for index in range(10):
+        _append(path, index)
+
+    listed = store.list_session_timeline(path, offset=offset, limit=limit)
+
+    assert [item["event"] for item in listed["events"]] == expected
+    assert listed["total"] == 10
+    assert listed["count"] == len(expected)
+    assert listed["offset"] == offset
+    assert listed["has_more"] is (offset + len(expected) < 10)
+
+
 def test_appending_does_not_read_the_whole_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -139,6 +173,10 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     # The reader already skips what will not parse.
     listed = store.list_session_timeline(path)
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
+    # total counts raw entries, so a torn line still advances a pager past it;
+    # count reports only what parsed, so the two disagree by the torn line.
+    assert listed["total"] == 3
+    assert listed["count"] == 2
 
 
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
