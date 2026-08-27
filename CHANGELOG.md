@@ -784,6 +784,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`frida.applications` / `frida.modules` 以及 apk 的 classes/methods/strings 分页
   只有 total，没有 `has_more`**。total 能算出来，但和相邻工具的字段不一致，只读 count
   的调用方仍会当成完整一页。一律补上。
+- **`frida.devices` 把整份设备枚举当一页回，只有 `count`**。相邻的 `frida.modules` /
+  `frida.applications` 都封顶并回 `total` / `has_more`，唯独设备列表既不封顶也不披露，
+  只读列表的 agent 便把这一页当成 Frida 能看到的全部本地/USB/远端设备。现在封顶 256，并
+  回 `total` 与 `has_more`；设备不多时 `has_more` 为 False。
 - **`apk.strings` 会为了给出 total 把 DEX 里每一条字符串都装进一个集合再排序**。加壳
   样本可以有上百万条，一次调用就能把进程打满。采集上限 5000 条唯一值，超出回
   `has_more`，不再为了计数去物化全集。

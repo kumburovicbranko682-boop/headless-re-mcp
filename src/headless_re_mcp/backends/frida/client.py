@@ -18,6 +18,9 @@ _ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 # process without a JIT. 30s matches adb shell and windbg attach: enough for a
 # slow USB spawn, short enough that a wedged probe cannot keep a worker.
 _PROBE_TIMEOUT_S = 30.0
+# Measured: 500 devices came back in one enumerate reply with only count, so
+# an agent reading the listing treated a page as every device Frida can see.
+_MAX_DEVICES = 256
 
 # Every operation here attaches, works, and detaches in a finally, which is what
 # keeps a failed call from leaving an agent resident in someone's process. For
@@ -522,9 +525,16 @@ class FridaClient:
             raise FridaError("backend_error", f"failed to enumerate devices: {exc}") from exc
         items = [
             {"id": str(dev.id), "name": str(dev.name), "type": str(dev.type)}
-            for dev in devices
+            for dev in devices[:_MAX_DEVICES]
         ]
-        return {"devices": items, "count": len(items)}
+        # Disclose truncation like the sibling enumerations (modules,
+        # applications): a page that filled the cap is not the whole list.
+        return {
+            "devices": items,
+            "count": len(items),
+            "total": len(devices),
+            "has_more": len(devices) > len(items),
+        }
 
     def add_remote_device(self, endpoint: str) -> JsonObject:
         frida = self._need()
