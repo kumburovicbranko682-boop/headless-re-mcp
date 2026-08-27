@@ -3407,6 +3407,44 @@ class TestDeviceListsDiscloseTruncation:
         assert result["has_more"] is True
         assert result["main_activity"] == "A0"
 
+    def test_a_truncated_component_list_is_the_alphabetical_prefix(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """Sorting the capped slice returned an arbitrary subset of manifest order.
+
+        The manifest lists components in its own order, so capping first dropped
+        whichever ones fell past the cap -- here ``com.b.Mid`` sorts between the
+        two returned names yet was cut, so the reply looked like a-to-z with a
+        hole in the middle. Sorting before paging makes the page the true
+        alphabetical prefix and leaves only the tail (``com.c.Last``) for
+        has_more.
+        """
+        from headless_re_mcp.backends.apk import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_COMPONENT_NAMES", 2)
+
+        class FakeApk:
+            def get_activities(self) -> list[str]:
+                return ["com.c.Last", "com.a.First", "com.b.Mid"]
+
+            def get_services(self) -> list[str]:
+                return []
+
+            def get_receivers(self) -> list[str]:
+                return []
+
+            def get_providers(self) -> list[str]:
+                return []
+
+            def get_main_activity(self) -> str:
+                return "com.a.First"
+
+        client = mod.ApkClient()
+        client._apk = lambda path: FakeApk()  # type: ignore[method-assign]
+        result = client.components(tmp_path / "app.apk")
+        assert result["activities"] == ["com.a.First", "com.b.Mid"]
+        assert result["has_more"] is True
+
     def test_a_cut_manifest_says_it_was_cut(self, tmp_path: Any) -> None:
         from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient
 

@@ -1034,6 +1034,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
+- **`apk.permissions` / `apk.components` / `apk.native_libs` 先截断再排序，返回的是伪装成
+  有序的任意子集**。共用的 `_cap_names`（权限、四类组件用它）与 `native_libs` 都是先按
+  androguard 的清单顺序取前 N 个、再对这 N 个 `sort()`。于是一个组件多于上限的大型应用，被
+  丢下的是清单里排在上限之后的那些、而不是字母序末尾的那些——回包看着 a→z，缺口却在中间：
+  按序在返回区间内找某个组件的调用方会漏掉一个被悄悄剪掉的项，`has_more` 也读成"最后一名之后
+  还有"，其实断层在中间。同文件里的 `classes`/`methods`/`strings` 早已是「先收全、排序、再按
+  offset/limit 开窗」，这两处改为一致：先收全（以 `_MAX_NAME_SCAN` 兜底，不让病态清单无界
+  增长）、再 `sort()`、再取上限，返回的这一页就是真正的字母序前缀。
 
 ### 新增（项目文档）
 
