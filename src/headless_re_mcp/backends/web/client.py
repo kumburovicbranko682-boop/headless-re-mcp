@@ -106,6 +106,23 @@ def _merge_capped(existing: Any, incoming: Any) -> dict[str, str]:
     return out
 
 
+def _merge_fill(existing: Any, incoming: Any) -> dict[str, str]:
+    """Union where the *existing* map wins; incoming only fills absent keys.
+
+    responseReceivedExtraInfo (which alone carries Set-Cookie) usually arrives
+    before responseReceived, so the base event must not clobber what extra-info
+    already recorded -- it may only add headers extra-info did not report.
+    """
+    out: dict[str, str] = dict(existing) if isinstance(existing, dict) else {}
+    for name, value in _bounded_header_map(incoming).items():
+        if name in out:
+            continue
+        if len(out) >= _MAX_HAR_HEADERS:
+            break
+        out[name] = value
+    return out
+
+
 def _map_header(headers: Any, name: str) -> str:
     """Case-insensitive lookup in a CDP header map (plain ``{name: value}``)."""
     if not isinstance(headers, dict):
@@ -689,7 +706,12 @@ class WebBackend:
                     if mime_truncated:
                         entry["metadata_truncated"] = True
                     har_meta = entry.setdefault("_har", {})
-                    har_meta["response_headers"] = _bounded_header_map(resp.get("headers"))
+                    # Fill, don't overwrite: responseReceivedExtraInfo (with
+                    # Set-Cookie) tends to arrive first, and its raw headers must
+                    # survive the base event that follows.
+                    har_meta["response_headers"] = _merge_fill(
+                        har_meta.get("response_headers"), resp.get("headers")
+                    )
                     har_meta["http_version"] = protocol
                     har_meta["status_text"] = status_text
                     timing = resp.get("timing")

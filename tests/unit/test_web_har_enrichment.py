@@ -237,6 +237,51 @@ class TestExtraInfoMergesHeadersAndCookies:
         assert by_name["token"]["httpOnly"] is True
         assert by_name["ab"]["secure"] is True
 
+    def test_response_extra_info_before_base_event_is_not_clobbered(self) -> None:
+        # The real CDP order: responseReceivedExtraInfo (the only carrier of
+        # Set-Cookie) fires *before* responseReceived. The base event must fill
+        # gaps, not overwrite, or the cookie header is lost.
+        handle = _Handle()
+        WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+        handlers = handle.cdp.handlers
+        handlers["Network.requestWillBeSent"](
+            {
+                "requestId": "r3",
+                "wallTime": 1_700_000_000.0,
+                "timestamp": 3000.0,
+                "type": "Document",
+                "request": {"url": "https://s.test/", "method": "GET", "headers": {}},
+            }
+        )
+        handlers["Network.responseReceivedExtraInfo"](
+            {
+                "requestId": "r3",
+                "headers": {"Content-Type": "text/html", "Set-Cookie": "sess=1; Path=/"},
+            }
+        )
+        handlers["Network.responseReceived"](
+            {
+                "requestId": "r3",
+                "response": {
+                    "status": 200,
+                    "statusText": "OK",
+                    "mimeType": "text/html",
+                    "protocol": "h2",
+                    "headers": {"Content-Type": "text/html", "Server": "test"},
+                },
+            }
+        )
+        handlers["Network.loadingFinished"](
+            {"requestId": "r3", "timestamp": 3000.1, "encodedDataLength": 10}
+        )
+
+        har_entry = _cdp_entry_to_har(handle.requests["r3"])
+        resp_header_names = {h["name"] for h in har_entry["response"]["headers"]}
+        # Both the extra-info Set-Cookie and the base Server header survive.
+        assert {"Set-Cookie", "Server", "Content-Type"} <= resp_header_names
+        cookies = {c["name"]: c["value"] for c in har_entry["response"]["cookies"]}
+        assert cookies == {"sess": "1"}
+
     def test_extra_info_without_a_known_request_is_dropped_not_crashed(self) -> None:
         # ExtraInfo can, rarely, arrive before requestWillBeSent created the
         # entry; that is merged best-effort, so an orphan event is ignored.

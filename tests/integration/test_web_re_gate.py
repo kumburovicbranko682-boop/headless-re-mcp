@@ -51,6 +51,8 @@ _SITE_HTML = (
 )
 _SITE_JS_MARKER = "net-gate-marker-9449"
 _SITE_JS = f"console.log('net-gate-ready'); window.__netgate = '{_SITE_JS_MARKER}';\n"
+_SITE_COOKIE_NAME = "netgate"
+_SITE_COOKIE_VALUE = "chip-9449"
 
 
 class _GateHandler(BaseHTTPRequestHandler):
@@ -58,13 +60,19 @@ class _GateHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path == "/app.js":
+        is_js = self.path == "/app.js"
+        if is_js:
             body, ctype = _SITE_JS.encode("utf-8"), "application/javascript"
         else:
             body, ctype = _SITE_HTML.encode("utf-8"), "text/html"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # Set a cookie on the document so the browser sends it back on the
+        # /app.js subresource -- which is what proves the HAR carries the real
+        # Cookie/Set-Cookie headers from CDP's ExtraInfo events.
+        if not is_js:
+            self.send_header("Set-Cookie", f"{_SITE_COOKIE_NAME}={_SITE_COOKIE_VALUE}; Path=/")
         self.end_headers()
         self.wfile.write(body)
 
@@ -305,13 +313,37 @@ def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None
                 # HAR: the capture exports with at least the two requests in it,
                 # and the file is valid HAR 1.2 a viewer can open -- not the old
                 # method/url-only stub that failed every HAR parser.
-                har = service.web_har_export(session_id)
-                assert har.ok, har.error
-                assert har.data["entry_count"] >= 1, har.data
-                har_path = Path(har.data["path"])
-                assert har_path.is_file(), har.data
-                doc = json.loads(har_path.read_text(encoding="utf-8"))
-                log = doc["log"]
+                def _export_log() -> dict[str, Any]:
+                    h = service.web_har_export(session_id)
+                    assert h.ok, h.error
+                    assert h.data["entry_count"] >= 1, h.data
+                    p = Path(h.data["path"])
+                    assert p.is_file(), h.data
+                    return json.loads(p.read_text(encoding="utf-8"))["log"]
+
+                def _cookies_present(log: dict[str, Any]) -> bool:
+                    # The ExtraInfo events that carry Set-Cookie/Cookie arrive
+                    # async, so the export may briefly precede them; re-export
+                    # until both directions show up (or the poll gives up).
+                    js = next(
+                        (e for e in log["entries"] if e["request"]["url"].endswith("/app.js")),
+                        None,
+                    )
+                    doc = next(
+                        (
+                            e
+                            for e in log["entries"]
+                            if "text/html" in e["response"]["content"].get("mimeType", "")
+                        ),
+                        None,
+                    )
+                    if js is None or doc is None:
+                        return False
+                    jc = {c["name"] for c in js["request"]["cookies"]}
+                    dc = {c["name"] for c in doc["response"]["cookies"]}
+                    return _SITE_COOKIE_NAME in jc and _SITE_COOKIE_NAME in dc
+
+                log = _poll(_export_log, _cookies_present)
                 assert log["version"] == "1.2", log
                 assert log["creator"]["version"], "creator.version is required by HAR"
                 sample = log["entries"][0]
@@ -349,17 +381,44 @@ def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None
                     None,
                 )
                 assert js_entry is not None, [e["request"]["url"] for e in log["entries"]]
-                # requestWillBeSent carries the request headers Chromium sends
-                # (Host arrives via a separate extra-info event, so assert on
-                # user-agent, which is always present here).
                 req_header_names = {h["name"].lower() for h in js_entry["request"]["headers"]}
                 assert "user-agent" in req_header_names, js_entry["request"]["headers"]
+                # ExtraInfo enrichment: the on-the-wire Host header (absent from
+                # requestWillBeSent) is merged in, proving the extra-info path.
+                assert "host" in req_header_names, js_entry["request"]["headers"]
                 assert js_entry["response"]["headers"], js_entry["response"]
                 resp_header_names = {h["name"].lower() for h in js_entry["response"]["headers"]}
                 assert "content-type" in resp_header_names, js_entry["response"]["headers"]
                 assert js_entry["response"]["status"] == 200, js_entry["response"]
                 assert isinstance(js_entry["response"]["bodySize"], int), js_entry["response"]
                 assert js_entry["response"]["bodySize"] > 0, js_entry["response"]
+
+                # Cookies flow both ways: the document response's Set-Cookie is
+                # parsed into response.cookies, and the browser echoes it on the
+                # /app.js request, parsed into that entry's request.cookies.
+                doc_entry = next(
+                    (
+                        e
+                        for e in log["entries"]
+                        if e["response"]["status"] == 200
+                        and "text/html" in e["response"]["content"].get("mimeType", "")
+                    ),
+                    None,
+                )
+                assert doc_entry is not None, [e["response"]["content"] for e in log["entries"]]
+                resp_cookies = {c["name"]: c["value"] for c in doc_entry["response"]["cookies"]}
+                assert resp_cookies.get(_SITE_COOKIE_NAME) == _SITE_COOKIE_VALUE, doc_entry[
+                    "response"
+                ]["cookies"]
+                req_cookies = {c["name"]: c["value"] for c in js_entry["request"]["cookies"]}
+                assert req_cookies.get(_SITE_COOKIE_NAME) == _SITE_COOKIE_VALUE, js_entry[
+                    "request"
+                ]["cookies"]
+                # The response cookie preserves the Path attribute it was set with.
+                doc_cookie = next(
+                    c for c in doc_entry["response"]["cookies"] if c["name"] == _SITE_COOKIE_NAME
+                )
+                assert doc_cookie.get("path") == "/", doc_cookie
             finally:
                 service.web_close(session_id)
         finally:
