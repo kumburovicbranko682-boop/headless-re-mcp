@@ -49,6 +49,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（proxy 导出的 HAR 现按 Location 头填 `response.redirectURL`，不再整条留空）
+
+- `har_entry` 把每条 entry 的 `response.redirectURL` 硬编码成 `""`。HAR 1.2 规范里
+  `response.redirectURL` 就是响应 `Location` 头的值，消费端（Chrome DevTools 导入 HAR、
+  Firefox）靠它把一次 3xx 跳转 entry 和它指向的下一跳请求串起来。可 mitmproxy 每次重定向
+  本就作为独立的一条流抓下（不像 CDP 那样复用 requestId），于是导出的 HAR 明明抓到了整条
+  重定向链，却因为该字段恒为空而在消费端断链。改法：抓流时（`_record`）顺手从响应取 `Location`
+  头（mitmproxy 的 `Headers.get` 大小写不敏感；`Location` 也可能出现在 201 Created 上，故以
+  “头存在”为准而非仅看 3xx），像其余 summary 字段一样有界存入，并在 `proxy.flows` 每行以
+  `redirect_url` 暴露；导出时传给 `har_entry`（新增 `redirect_url` 入参）。没有 `Location` 的流
+  保持规范的空串、行上也不加该字段，绝不伪造。单测：`har_entry` 传入 `redirect_url` 则
+  `response.redirectURL` 为其值、缺省仍为空；proxy 抓到带 `Location` 的 302 流后 `proxy.flows`
+  行有 `redirect_url` 且导出 entry 的 `redirectURL` 等于它，而普通 200 流既无行字段、
+  `redirectURL` 也为空。新增 live gate（`test_proxy_har_redirect_url_live_gate.py`）：经真实
+  mitmproxy 转发一次 302（`Location` 指向另一绝对 URL）并跟随，断言导出 HAR 里 302 entry 的
+  `redirectURL` 恰为该目标、跟随后的 200 entry 仍为空；并“守卫其守卫”——目标 URL 与请求 URL
+  不同，故通过意味着 `Location` 头确有回传而非巧合。CI 新增 `linux-proxy-har-redirect` job 装
+  mitmproxy 跑该 gate，skip≠pass 守卫在 mitmproxy 已装却仍 skip 时判失败。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
