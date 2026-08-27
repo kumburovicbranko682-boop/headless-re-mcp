@@ -228,18 +228,67 @@ def _timeout_error(timeout: float) -> FridaError:
     return FridaError("timeout", f"frida did not respond within {timeout:g}s")
 
 
-def _detach_all(sessions: list[Any]) -> None:
+def _detach_all(sessions: list[Any]) -> list[JsonObject]:
+    """Detach every session, returning one entry per detach that failed.
+
+    Cleanup keeps going after a failure so a later session is not stranded by
+    an earlier one, and the failures are handed back so a caller cleaning up
+    after a timeout can report that a session was left resident.
+    """
+    failures: list[JsonObject] = []
     while sessions:
         session = sessions.pop()
-        with contextlib.suppress(Exception):
+        try:
             session.detach()
+        except Exception as exc:
+            failures.append({"detach_error": f"{type(exc).__name__}: {exc}"})
+    return failures
 
 
-def _kill_spawned(device: Any, pids: list[int]) -> None:
+def _kill_spawned(device: Any, pids: list[int]) -> list[JsonObject]:
+    """Kill every spawned pid, returning one entry per kill that failed."""
+    failures: list[JsonObject] = []
     while pids:
         pid = pids.pop()
-        with contextlib.suppress(Exception):
+        try:
             device.kill(pid)
+        except Exception as exc:
+            failures.append({"pid": pid, "kill_error": f"{type(exc).__name__}: {exc}"})
+    return failures
+
+
+def _cleanup_detach_error(
+    failures: list[JsonObject], pid: int, label: str
+) -> FridaError:
+    """Build the error for detach failures during post-timeout cleanup.
+
+    The call already timed out; this says the cleanup could not fully undo it,
+    so the caller learns a session was left resident rather than seeing a plain
+    timeout that implies nothing leaked.
+    """
+    return FridaError(
+        "frida_detach_failed",
+        f"{len(failures)} {label} detach attempt(s) failed after timeout",
+        pid=pid,
+        detach_error=failures[0]["detach_error"],
+        failed_count=len(failures),
+        failures=failures,
+    )
+
+
+def _cleanup_kill_error(
+    failures: list[JsonObject], package: str
+) -> FridaError:
+    """Build the error for kill failures during post-timeout spawn cleanup."""
+    return FridaError(
+        "frida_spawn_cleanup_failed",
+        f"{len(failures)} spawned pid kill attempt(s) failed after timeout",
+        package=package,
+        pid=failures[0]["pid"],
+        kill_error=failures[0]["kill_error"],
+        failed_count=len(failures),
+        failures=failures,
+    )
 
 
 def _run_deadline(
@@ -438,6 +487,10 @@ class FridaClient:
             )
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
+        cleanup_failures: list[JsonObject] = []
+
+        def cleanup_sessions() -> None:
+            cleanup_failures.extend(_detach_all(sessions))
 
         def work() -> JsonObject:
             session = _invoke(self._frida.attach, pid, timeout=deadline)
@@ -457,10 +510,17 @@ class FridaClient:
                     session.detach()
 
         try:
-            return _run_deadline(work, timeout=deadline, on_timeout=lambda: _detach_all(sessions))
-        except FridaError:
+            return _run_deadline(work, timeout=deadline, on_timeout=cleanup_sessions)
+        except FridaError as exc:
+            # _run_deadline ran cleanup_sessions while work was still stuck, so
+            # this is the one detach the caller is relying on. A failure here
+            # means the session outlived the timeout; say so.
+            if cleanup_failures:
+                raise _cleanup_detach_error(cleanup_failures, pid, "local hook") from exc
             raise
         except Exception as exc:  # noqa: BLE001
+            # work() unwound on its own, so its finally already detached; this
+            # detach is a redundant backstop and stays best-effort.
             if _is_timeout(exc):
                 _detach_all(sessions)
                 raise _timeout_error(deadline) from exc
@@ -470,15 +530,16 @@ class FridaClient:
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
 
+        def cleanup_sessions() -> None:
+            _detach_all(sessions)
+
         def work() -> Any:
             session = _invoke(self._frida.attach, pid, timeout=deadline)
             sessions.append(session)
             return session
 
         try:
-            return _run_deadline(
-                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
-            )
+            return _run_deadline(work, timeout=deadline, on_timeout=cleanup_sessions)
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -619,6 +680,10 @@ class FridaClient:
             )
         deadline = _bound_timeout(timeout)
         pids: list[int] = []
+        cleanup_failures: list[JsonObject] = []
+
+        def cleanup_spawned() -> None:
+            cleanup_failures.extend(_kill_spawned(device, pids))
 
         def work() -> int:
             try:
@@ -630,13 +695,23 @@ class FridaClient:
             pids.append(spawned)
             try:
                 _invoke(device.resume, spawned, timeout=deadline)
-            except FridaError:
-                with contextlib.suppress(Exception):
-                    device.kill(spawned)
-                raise
             except Exception as exc:  # noqa: BLE001
-                with contextlib.suppress(Exception):
+                # Roll the spawn back by killing it. If that kill also fails the
+                # process is stranded running, so report the compound failure
+                # instead of the resume error alone.
+                try:
                     device.kill(spawned)
+                except Exception as kill_exc:
+                    raise FridaError(
+                        "frida_spawn_cleanup_failed",
+                        f"spawned pid {spawned} could not be killed after resume failed",
+                        package=pkg,
+                        pid=spawned,
+                        resume_error=f"{type(exc).__name__}: {exc}",
+                        kill_error=f"{type(kill_exc).__name__}: {kill_exc}",
+                    ) from kill_exc
+                if isinstance(exc, FridaError):
+                    raise
                 if _is_timeout(exc):
                     raise _timeout_error(deadline) from exc
                 raise FridaError(
@@ -648,10 +723,13 @@ class FridaClient:
             return spawned
 
         try:
-            pid = _run_deadline(
-                work, timeout=deadline, on_timeout=lambda: _kill_spawned(device, pids)
-            )
-        except FridaError:
+            pid = _run_deadline(work, timeout=deadline, on_timeout=cleanup_spawned)
+        except FridaError as exc:
+            # _run_deadline ran cleanup_spawned while work was still stuck, so
+            # this kill is the caller's only rollback. A failure here means the
+            # process outlived the timeout still running; say so.
+            if cleanup_failures:
+                raise _cleanup_kill_error(cleanup_failures, pkg) from exc
             raise
         except Exception as exc:  # noqa: BLE001
             _kill_spawned(device, pids)
@@ -677,6 +755,10 @@ class FridaClient:
         capped = max(1, min(int(limit), 2000))
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
+        cleanup_failures: list[JsonObject] = []
+
+        def cleanup_sessions() -> None:
+            cleanup_failures.extend(_detach_all(sessions))
 
         def work() -> JsonObject:
             try:
@@ -723,12 +805,17 @@ class FridaClient:
                     session.detach()
 
         try:
-            return _run_deadline(
-                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
-            )
-        except FridaError:
+            return _run_deadline(work, timeout=deadline, on_timeout=cleanup_sessions)
+        except FridaError as exc:
+            # _run_deadline ran cleanup_sessions while work was still stuck, so
+            # this is the one detach the caller is relying on. A failure here
+            # means the session outlived the timeout; say so.
+            if cleanup_failures:
+                raise _cleanup_detach_error(cleanup_failures, pid, "Java probe") from exc
             raise
         except Exception as exc:  # noqa: BLE001
+            # work() unwound on its own, so its finally already detached; this
+            # detach is a redundant backstop and stays best-effort.
             _detach_all(sessions)
             if _is_timeout(exc):
                 raise _timeout_error(deadline) from exc
@@ -755,6 +842,10 @@ class FridaClient:
         device = self._resolve_device(device_id)
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
+        cleanup_failures: list[JsonObject] = []
+
+        def cleanup_sessions() -> None:
+            cleanup_failures.extend(_detach_all(sessions))
 
         def work() -> JsonObject:
             try:
@@ -779,12 +870,17 @@ class FridaClient:
                     session.detach()
 
         try:
-            return _run_deadline(
-                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
-            )
-        except FridaError:
+            return _run_deadline(work, timeout=deadline, on_timeout=cleanup_sessions)
+        except FridaError as exc:
+            # _run_deadline ran cleanup_sessions while work was still stuck, so
+            # this is the one detach the caller is relying on. A failure here
+            # means the session outlived the timeout; say so.
+            if cleanup_failures:
+                raise _cleanup_detach_error(cleanup_failures, pid, "device hook") from exc
             raise
         except Exception as exc:  # noqa: BLE001
+            # work() unwound on its own, so its finally already detached; this
+            # detach is a redundant backstop and stays best-effort.
             _detach_all(sessions)
             if _is_timeout(exc):
                 raise _timeout_error(deadline) from exc
