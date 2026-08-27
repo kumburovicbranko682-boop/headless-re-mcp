@@ -150,6 +150,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分代码/文件/文本时各字段齐备、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及五个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 修复（配错的可选工具路径被 doctor 悄悄放过）
+
+- **`probe_optional_tool` 在配置了路径、但路径不是文件时会悄悄回退去查 PATH**，于是把
+  operator 的配错（打错字、二进制被挪走）报成 `not installed`（该去改配置，却提示去设配置），
+  或者——更糟——碰巧 PATH 上有同名工具时报成 `detected`。可 adb/jadx/apktool/apksigner/
+  webcrack/wabt 六个可选工具的客户端（`JadxClient` / `JsClient` / `WasmClient` /
+  `ApktoolClient`）都是**直接拿 `settings.<tool>` 用、不回退 PATH**：配错的路径一律让工具
+  `capability_unavailable`。所以 doctor 那句“detected（走 PATH）”是假的——客户端根本不会用
+  PATH 上那个；而“not installed”的建议也答非所问。`probe_die` / `probe_upx` /
+  `probe_exeinfope` 早就对“配了但文件不在”报 BLOCKED。现在 `probe_optional_tool` 与它们对齐：
+  配了路径但不是文件时报 BLOCKED，摘要点明“configured but the path is not a file”，建议改对
+  路径或干脆 unset 走 PATH；未配置时才照旧查 PATH、查不到报 missing。可选后端被 BLOCKED 不影响
+  核心就绪。回归测试覆盖：配错即 BLOCKED、即便 PATH 上有同名也 BLOCKED（证明与客户端一致的
+  “配置优先”）、目录也 BLOCKED、配对文件 detected、未配置走 PATH/缺失，以及 `run_doctor` 端到端。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具

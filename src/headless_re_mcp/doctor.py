@@ -1086,10 +1086,31 @@ def probe_optional_tool(
     settings_attr: str,
     commands: tuple[str, ...],
 ) -> Probe:
-    """Detect an optional CLI from its configured path or PATH, never blocking."""
+    """Detect an optional CLI from its configured path, else PATH.
+
+    A configured path that is not a file is a misconfiguration, not an absent
+    optional tool, and it is reported BLOCKED rather than falling through to
+    PATH. The clients take the configured path as-is -- JadxClient, JsClient,
+    WasmClient and ApktoolClient all resolve ``settings.<tool>`` directly and
+    call the tool unavailable when it is not a file, with no PATH fallback -- so
+    a broken configured path makes the tool unusable even when the binary is on
+    PATH. Falling back here would report "detected"/"not installed" for a tool
+    the client will refuse to run; probe_die/probe_upx/probe_exeinfope already
+    BLOCK on a broken configured path, and this matches them.
+    """
     configured = getattr(settings, settings_attr, None)
-    if configured is not None and Path(str(configured)).is_file():
-        return Probe(name, ProbeStatus.DETECTED, f"{name} configured", {"path": str(configured)})
+    if configured is not None:
+        if Path(str(configured)).is_file():
+            return Probe(
+                name, ProbeStatus.DETECTED, f"{name} configured", {"path": str(configured)}
+            )
+        return Probe(
+            name,
+            ProbeStatus.BLOCKED,
+            f"{name} is configured but the path is not a file",
+            {"path": str(configured)},
+            f"Fix the configured {name} path to point at the executable, or unset it to use PATH.",
+        )
     found = {candidate: shutil.which(candidate) for candidate in commands}
     found = {candidate: path for candidate, path in found.items() if path}
     if found:
