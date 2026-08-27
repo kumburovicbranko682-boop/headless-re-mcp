@@ -91,6 +91,61 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         assert client.get("/api/agent/threads", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
+def test_event_history_hands_back_a_cursor_when_a_page_hides_more(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """A one-shot history page must say when it is not the whole run.
+
+    /events/history returns a forward page bounded by a count and a byte
+    budget. Without has_more and a cursor, a full-looking first page reads as
+    the entire run history and a reader never fetches the rest.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        created = client.post("/api/agent/threads", headers=headers, json={"title": "run"})
+        thread_id = created.json()["thread"]["id"]
+        store = app.state.agent_store
+        run = store.create_run(
+            thread_id, provider_profile="default", model="fake", deadline_seconds=30
+        )
+        # Squeeze the read window to its byte floor so a handful of events pages
+        # rather than needing to append a thousand.
+        store.event_page_max_bytes = 1024
+        for index in range(5):
+            store.append_event(run.id, "message.delta", {"blob": f"{index}:" + "x" * 400})
+
+        first = client.get(
+            f"/api/agent/runs/{run.id}/events/history?after=0", headers=headers
+        ).json()
+        assert first["has_more"] is True
+        assert first["count"] < 5
+        assert first["next_after"] == first["events"][-1]["seq"]
+
+        # Draining via the cursor terminates and the last page says so, without
+        # any page repeating a sequence it already returned.
+        seen: list[int] = [event["seq"] for event in first["events"]]
+        cursor = first["next_after"]
+        has_more = first["has_more"]
+        for _ in range(20):
+            if not has_more:
+                break
+            page = client.get(
+                f"/api/agent/runs/{run.id}/events/history?after={cursor}", headers=headers
+            ).json()
+            assert all(seq > cursor for seq in [event["seq"] for event in page["events"]])
+            seen.extend(event["seq"] for event in page["events"])
+            cursor = page["next_after"]
+            has_more = page["has_more"]
+        assert has_more is False, "draining the cursor must reach a final page"
+        assert len(seen) == len(set(seen)), "no page may repeat an event"
+        assert seen == sorted(seen)
+        assert len(seen) >= 5
+
+
 def test_agent_message_limits_are_client_errors_not_incidents(
     tmp_path: Path, monkeypatch
 ) -> None:  # type: ignore[no-untyped-def]

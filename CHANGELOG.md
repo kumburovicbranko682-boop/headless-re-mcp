@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（运行事件历史端点交出续读游标,而非把首页当成整段历史）
+
+- `GET /api/agent/runs/{run_id}/events/history` 以 `after` 游标向前分页,底层 `list_events` 每页
+  最多 1000 条(且受字节预算约束),但端点把这一页作为裸列表返回,既无总数也无「还有更多」标志,
+  也不给下一页的游标。于是一个有数千事件的运行,首页看起来就是完整历史,而一次性读取的消费者根本
+  不知道要继续翻页。`AgentStore` 新增 `has_events_after(run_id, after)`(一条 `SELECT EXISTS`),
+  端点据此新增 `count`、`has_more`、`next_after` 三个字段:`next_after` 是本页最后一个事件的 seq
+  (空页时回退为传入的 `after`),`has_more` 表示该 seq 之后是否还有事件——这同时覆盖条数上限和字
+  节预算两种截断(字节预算把页截短到 300 条但后面还有 700 条时,`has_more` 仍为真)。`events`
+  列表本身不变,纯增量。SSE 流式端点(`/events`)本就在循环里推进游标、会读干,不受影响。新增测试:
+  存储层 `has_events_after` 在起点与早页为真、游标越过末事件后为假;路由层把字节预算压到下限后写 5
+  条大事件,首页 `has_more==True` 且 `next_after` 等于本页末事件 seq,顺着游标翻页能收敛到
+  `has_more==False`,期间任何页都不重复 seq。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
