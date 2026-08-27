@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+修正 `apk.certificates` 的一处输出缺陷并补上真机覆盖。此前它只对一个证书字段是普通字符串的假 APK 跑过，从未经过
+androguard 真正的 `get_certificates()`——而 androguard 的 subject/issuer 是 `asn1crypto.x509.Name` 对象，客户端用
+`str()` 渲染，得到的是带内存地址的对象 repr（`<asn1crypto.x509.Name 0x.. b'..'>`），既不稳定也无法辨认签名者。现在改用
+`human_friendly` 渲染为可读 DN（`Common Name: .., Organization: ..`），普通对象/字符串仍回退到 `str`。新增
+`tests/integration/test_apk_certificates_live_gate.py`：用 JDK 自带的 keytool/jarsigner 以已知 DN 现签一个 v1（JAR）
+签名 APK（无需 Android SDK），再驱动 `ApkClient.certificates` 断言看到 v1 签名（`v1_signed` 为 True、含
+`META-INF/*.RSA`），且证书 subject/issuer 是带我们签名 CN/O 的可读 DN——而非那个 mock 从未触及的 asn1crypto 对象
+repr——并带十进制 serial 与 64 位十六进制 SHA-256 指纹。新增 `linux-apk-certificates` CI job：装 android extra 与 JDK、
+跑该 gate 并解析 junitxml，依赖已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

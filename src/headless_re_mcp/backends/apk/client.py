@@ -73,6 +73,25 @@ def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     return start, cap
 
 
+def _readable_name(value: Any) -> str:
+    """Render an X.509 subject/issuer as a stable, human-readable DN.
+
+    androguard hands back ``asn1crypto.x509.Name`` objects, and ``str()`` of one
+    is an object repr carrying a memory address
+    (``<asn1crypto.x509.Name 0x.. b'..'>``) -- unstable between runs and useless
+    to a caller looking for the signer. The ``human_friendly`` form is the
+    readable DN (``Common Name: .., Organization: ..``). Fall back to ``str`` so a
+    plainer object (or a string, as older androguard and the unit fakes provide)
+    still renders.
+    """
+    if value is None:
+        return ""
+    friendly = getattr(value, "human_friendly", None)
+    if isinstance(friendly, str) and friendly:
+        return friendly
+    return str(value)
+
+
 class _ParsedApk:
     __slots__ = ("apk", "analysis", "_dex")
 
@@ -270,8 +289,8 @@ class ApkClient:
             try:
                 items.append(
                     {
-                        "subject": str(getattr(cert, "subject", "")),
-                        "issuer": str(getattr(cert, "issuer", "")),
+                        "subject": _readable_name(getattr(cert, "subject", None)),
+                        "issuer": _readable_name(getattr(cert, "issuer", None)),
                         "serial": str(getattr(cert, "serial_number", "")),
                         "sha256": cert.sha256_fingerprint
                         if hasattr(cert, "sha256_fingerprint")
