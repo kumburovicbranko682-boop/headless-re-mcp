@@ -206,13 +206,16 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=256)] = 50,
     ) -> dict[str, Any]:
-        """Session opens, session closes and UI drives, with arguments and outcome.
+        """Session opens/closes, UI drives and device mutations, with arguments and outcome.
 
         Answers with entries, plus count, total, offset, limit and has_more.
         There is no events field. Narrower than it sounds: a static write
         appears in timeline.list rather than here. Use this to ask which
         sessions ran and how they ended, and timeline.list to ask what one of
-        them changed.
+        them changed. device.* mutations (connect, install, uninstall, launch,
+        force_stop, push, forward) are keyed by serial and own no session
+        timeline, so they are audited here with a null session_id; pass no
+        session_id to see them alongside the session-scoped rows.
         """
         return _dump(analysis.audit_list(session_id, offset=offset, limit=limit))
 

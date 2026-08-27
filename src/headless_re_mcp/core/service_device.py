@@ -23,6 +23,7 @@ from headless_re_mcp.core.limits import (
 )
 from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.service_ext import _ensure_repository
 
 JsonObject = dict[str, Any]
 
@@ -133,6 +134,45 @@ class DeviceAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
+    def _audit_device(
+        self,
+        action: str,
+        result: Result[JsonObject],
+        params: JsonObject,
+        *fields: str,
+    ) -> None:
+        """Record a device state change in the global audit log, best-effort.
+
+        device.* operations are keyed by serial, not a session, so unlike
+        apk.* / frida.* / web.* they have no per-session timeline to land in --
+        yet connect, install, uninstall, launch, force-stop, push and forward
+        are precisely the high-stakes mutations an operator reviewing an
+        unattended run needs a record of, and they used to reach neither the
+        timeline nor the audit log. append_audit takes session_id=None for
+        exactly this: a serial-scoped action that belongs in the audit trail
+        but owns no session, visible through audit.list's unfiltered listing.
+        Best-effort -- an audit write that fails must not turn a device change
+        that already happened into a failed tool call -- and it copies only the
+        named, structural result fields (serials, package ids, verification
+        booleans, ports) which carry no secrets; the store redacts regardless.
+        A failed call is still recorded, with its error code, the way ui.drive
+        audits both outcomes.
+        """
+        if result.ok and isinstance(result.data, dict):
+            summary: JsonObject = {name: result.data.get(name) for name in fields}
+        else:
+            summary = {}
+            if result.error is not None:
+                summary["code"] = result.error.code
+        with suppress(Exception):
+            _ensure_repository(self).append_audit(
+                session_id=None,
+                action=action,
+                params_summary=params,
+                ok=result.ok,
+                result_summary=summary,
+            )
+
     def device_list(self) -> Result[JsonObject]:
         return self._adb_wrap("list_devices")
 
@@ -146,7 +186,7 @@ class DeviceAnalysisMixin:
                 # connected false, so a caller that only reads ok then
                 # installed onto a device that was never there.
                 detail = data.get("result") or "adb reported no connection"
-                return _failure(
+                result = _failure(
                     _as_rpc(
                         AdbError(
                             "backend_error",
@@ -156,6 +196,11 @@ class DeviceAnalysisMixin:
                         )
                     )
                 )
+        # Audit the final outcome, so a connect that adb reported but that the
+        # connected-check downgraded to a failure lands as ok=False, not ok=True.
+        self._audit_device(
+            "device.connect", result, {"endpoint": f"{host}:{port}"}, "connected", "endpoint"
+        )
         return result
 
     def device_info(self, serial: str) -> Result[JsonObject]:
@@ -174,16 +219,32 @@ class DeviceAnalysisMixin:
     def device_install(
         self, serial: str, apk_path: str, reinstall: bool = True
     ) -> Result[JsonObject]:
-        return self._adb_wrap("install", serial=serial, apk_path=apk_path, reinstall=reinstall)
+        result = self._adb_wrap("install", serial=serial, apk_path=apk_path, reinstall=reinstall)
+        self._audit_device(
+            "device.install", result, {"serial": serial}, "installed", "package"
+        )
+        return result
 
     def device_uninstall(self, serial: str, package: str) -> Result[JsonObject]:
-        return self._adb_wrap("uninstall", serial=serial, package=package)
+        result = self._adb_wrap("uninstall", serial=serial, package=package)
+        self._audit_device(
+            "device.uninstall", result, {"serial": serial, "package": package}, "uninstalled"
+        )
+        return result
 
     def device_launch(self, serial: str, package: str) -> Result[JsonObject]:
-        return self._adb_wrap("launch", serial=serial, package=package)
+        result = self._adb_wrap("launch", serial=serial, package=package)
+        self._audit_device(
+            "device.launch", result, {"serial": serial, "package": package}, "launched"
+        )
+        return result
 
     def device_force_stop(self, serial: str, package: str) -> Result[JsonObject]:
-        return self._adb_wrap("force_stop", serial=serial, package=package)
+        result = self._adb_wrap("force_stop", serial=serial, package=package)
+        self._audit_device(
+            "device.force_stop", result, {"serial": serial, "package": package}, "stopped"
+        )
+        return result
 
     def device_current_activity(self, serial: str) -> Result[JsonObject]:
         return self._adb_wrap("current_activity", serial=serial)
@@ -232,7 +293,21 @@ class DeviceAnalysisMixin:
     def device_push(
         self, serial: str, local_path: str, remote_path: str
     ) -> Result[JsonObject]:
-        return self._adb_wrap("push", serial=serial, local_path=local_path, remote_path=remote_path)
+        result = self._adb_wrap(
+            "push", serial=serial, local_path=local_path, remote_path=remote_path
+        )
+        self._audit_device(
+            "device.push", result, {"serial": serial, "remote_path": remote_path}, "remote", "size"
+        )
+        return result
 
     def device_forward(self, serial: str, local: str, remote: str) -> Result[JsonObject]:
-        return self._adb_wrap("forward", serial=serial, local=local, remote=remote)
+        result = self._adb_wrap("forward", serial=serial, local=local, remote=remote)
+        self._audit_device(
+            "device.forward",
+            result,
+            {"serial": serial, "local": local, "remote": remote},
+            "local",
+            "remote",
+        )
+        return result
