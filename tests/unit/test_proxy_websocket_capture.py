@@ -60,6 +60,66 @@ def test_recorder_rolls_frame_count_and_bytes_onto_the_101_row() -> None:
     assert row["ws_bytes"] == len(b"hello") + len(b"echo:hello") + len(b"bye")
 
 
+def test_recorder_rolls_close_metadata_onto_the_row() -> None:
+    recorder = _FlowRecorder()
+    flow = _handshake_flow("ws1")
+    recorder.response(flow)
+    # mitmproxy fills these on flow.websocket when the close handshake finishes.
+    flow.websocket = SimpleNamespace(
+        messages=[], close_code=1008, closed_by_client=False, close_reason="policy"
+    )
+    recorder.websocket_end(flow)
+
+    row = next(r for r in recorder.snapshot() if r["id"] == "ws1")
+    assert row["websocket"] is True
+    assert row["ws_closed"] is True
+    assert row["ws_close_code"] == 1008
+    assert row["ws_closed_by_client"] is False
+    assert row["ws_close_reason"] == "policy"
+
+
+def test_recorder_accepts_the_intenum_close_code_wsproto_delivers() -> None:
+    # mitmproxy stores wsproto's CloseReason IntEnum, not a plain int; a strict
+    # type-is-int check dropped the code while the reason survived. Regression:
+    # the enum must land as a plain JSON int.
+    import enum
+
+    class _CloseReason(enum.IntEnum):
+        GOING_AWAY = 1001
+
+    recorder = _FlowRecorder()
+    flow = _handshake_flow("ws1")
+    recorder.response(flow)
+    flow.websocket = SimpleNamespace(
+        messages=[],
+        close_code=_CloseReason.GOING_AWAY,
+        closed_by_client=True,
+        close_reason="going away",
+    )
+    recorder.websocket_end(flow)
+
+    row = next(r for r in recorder.snapshot() if r["id"] == "ws1")
+    assert row["ws_close_code"] == 1001
+    assert type(row["ws_close_code"]) is int
+
+
+def test_recorder_close_without_a_code_still_marks_closed() -> None:
+    recorder = _FlowRecorder()
+    flow = _handshake_flow("ws1")
+    recorder.response(flow)
+    # An abnormal close (1006) can arrive with no code/reason on the object.
+    flow.websocket = SimpleNamespace(
+        messages=[], close_code=None, closed_by_client=True, close_reason=None
+    )
+    recorder.websocket_end(flow)
+
+    row = next(r for r in recorder.snapshot() if r["id"] == "ws1")
+    assert row["ws_closed"] is True
+    assert row["ws_closed_by_client"] is True
+    assert "ws_close_code" not in row
+    assert "ws_close_reason" not in row
+
+
 def test_a_plain_flow_never_gets_websocket_fields() -> None:
     recorder = _FlowRecorder()
     plain = SimpleNamespace(
@@ -131,6 +191,54 @@ def test_flow_get_truncates_a_flood_of_frames_and_says_so(
     assert payload["websocket_message_count"] == _MAX_WS_MESSAGES + 5
     assert len(payload["websocket_messages"]) == _MAX_WS_MESSAGES
     assert payload["websocket_truncated"] is True
+
+
+def test_flow_get_reports_how_a_closed_socket_ended(tmp_path: Path, monkeypatch: Any) -> None:
+    request = SimpleNamespace(method="GET", pretty_url="ws://x/chat", headers={}, raw_content=None)
+    response = SimpleNamespace(status_code=101, headers={}, raw_content=None)
+    flow = SimpleNamespace(
+        request=request,
+        response=response,
+        websocket=SimpleNamespace(
+            messages=[_frame(b"bye", from_client=True)],
+            close_code=1001,
+            closed_by_client=True,
+            close_reason="going away",
+            timestamp_end=123.0,
+        ),
+    )
+    backend = _backend_with_flow(monkeypatch, flow)
+
+    payload = backend.flow_get("s", "ws1", tmp_path)
+
+    assert payload["websocket_closed"] is True
+    assert payload["websocket_close_code"] == 1001
+    assert payload["websocket_closed_by_client"] is True
+    assert payload["websocket_close_reason"] == "going away"
+
+
+def test_flow_get_on_a_live_socket_has_no_closed_keys(tmp_path: Path, monkeypatch: Any) -> None:
+    request = SimpleNamespace(method="GET", pretty_url="ws://x/chat", headers={}, raw_content=None)
+    response = SimpleNamespace(status_code=101, headers={}, raw_content=None)
+    # mitmproxy keeps all three None while the connection is active.
+    flow = SimpleNamespace(
+        request=request,
+        response=response,
+        websocket=SimpleNamespace(
+            messages=[_frame(b"hi", from_client=True)],
+            close_code=None,
+            closed_by_client=None,
+            close_reason=None,
+            timestamp_end=None,
+        ),
+    )
+    backend = _backend_with_flow(monkeypatch, flow)
+
+    payload = backend.flow_get("s", "ws1", tmp_path)
+
+    assert payload["websocket"] is True
+    assert "websocket_closed" not in payload
+    assert "websocket_close_code" not in payload
 
 
 def test_flow_get_on_a_plain_flow_has_no_websocket_keys(

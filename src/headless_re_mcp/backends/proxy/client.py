@@ -306,6 +306,21 @@ def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
     return out, truncated
 
 
+def _ws_close_code(ws: Any) -> int | None:
+    """flow.websocket.close_code as a plain int, or None.
+
+    mitmproxy stores what wsproto parsed, which is a ``CloseReason`` IntEnum for
+    the registered codes -- ``type(x) is int`` (the strict check used against
+    bool-as-int elsewhere) silently rejects it, which is how the code went
+    missing from the summary while the reason survived. Coerce so JSON carries
+    1001, not an enum repr; bool is still refused.
+    """
+    code = getattr(ws, "close_code", None)
+    if isinstance(code, bool) or not isinstance(code, int):
+        return None
+    return int(code)
+
+
 def _bounded_ws_messages(flow: Any) -> tuple[list[JsonObject], int, bool]:
     """Bounded, chronological view of a flow's WebSocket frames for flow.get.
 
@@ -434,6 +449,38 @@ class _FlowRecorder:
                     summary["websocket"] = True
                     summary["ws_messages"] = int(summary.get("ws_messages") or 0) + 1
                     summary["ws_bytes"] = int(summary.get("ws_bytes") or 0) + size
+                    break
+
+    def websocket_end(self, flow: Any) -> None:  # mitmproxy calls this when a WS closes
+        # How a socket ended is a finding: an abnormal 1006, a policy 1008 after
+        # a malformed frame, or the server (not the client) hanging up all say
+        # something an RE session wants, yet without this hook the row stayed
+        # open-looking forever. mitmproxy fills close_code / close_reason /
+        # closed_by_client on flow.websocket at close; roll them onto the summary
+        # (and set websocket=True so a socket that opened and closed with no
+        # frames is still marked one). Counters/scalars only, never the frames.
+        ws = getattr(flow, "websocket", None)
+        if ws is None:
+            return
+        close_code = _ws_close_code(ws)
+        closed_by_client = getattr(ws, "closed_by_client", None)
+        reason, reason_truncated = _bounded_metadata(
+            getattr(ws, "close_reason", None), _MAX_METADATA_BYTES
+        )
+        flow_id = str(getattr(flow, "id", None) or "")
+        with self._lock:
+            for summary in reversed(self.flows):
+                if summary.get("id") == flow_id:
+                    summary["websocket"] = True
+                    summary["ws_closed"] = True
+                    if close_code is not None:
+                        summary["ws_close_code"] = close_code
+                    if isinstance(closed_by_client, bool):
+                        summary["ws_closed_by_client"] = closed_by_client
+                    if reason:
+                        summary["ws_close_reason"] = reason
+                    if reason_truncated:
+                        summary["metadata_truncated"] = True
                     break
 
     def _record(self, flow: Any, *, error_msg: str | None = None) -> None:
@@ -770,13 +817,32 @@ class ProxyBackend:
             response["metadata_truncated"] = True
         response.update(_emit_body(_raw_body(resp), artifact_dir))
         out: JsonObject = {"id": flow_id, "request": request, "response": response}
-        ws_messages, ws_total, ws_truncated = _bounded_ws_messages(flow)
-        if ws_total:
+        ws = getattr(flow, "websocket", None)
+        if ws is not None:
             out["websocket"] = True
+            ws_messages, ws_total, ws_truncated = _bounded_ws_messages(flow)
             out["websocket_messages"] = ws_messages
             out["websocket_message_count"] = ws_total
             if ws_truncated:
                 out["websocket_truncated"] = True
+            close_code = _ws_close_code(ws)
+            closed_by_client = getattr(ws, "closed_by_client", None)
+            reason, reason_cut = _bounded_metadata(
+                getattr(ws, "close_reason", None), _MAX_METADATA_BYTES
+            )
+            # closed_by_client / timestamp_end are None while the socket is live;
+            # either being set means the close handshake finished, so report how
+            # it ended (the code, the reason, and which side hung up).
+            if closed_by_client is not None or getattr(ws, "timestamp_end", None) is not None:
+                out["websocket_closed"] = True
+                if close_code is not None:
+                    out["websocket_close_code"] = close_code
+                if isinstance(closed_by_client, bool):
+                    out["websocket_closed_by_client"] = closed_by_client
+                if reason:
+                    out["websocket_close_reason"] = reason
+                if reason_cut:
+                    out["websocket_metadata_truncated"] = True
         return out
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:

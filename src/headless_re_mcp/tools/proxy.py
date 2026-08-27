@@ -66,7 +66,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         one flow: its row carries the 101 handshake with websocket=true plus
         ws_messages (frame count) and ws_bytes (decoded frame bytes), so a socket
         that is capturing traffic is not read as an empty 101; fetch the frames
-        with proxy.flow.get. A flow mitmproxy could not complete (TLS refused,
+        with proxy.flow.get. When the socket closes the row also carries
+        ws_closed=true with ws_close_code, ws_closed_by_client and ws_close_reason
+        (present when the close carried them), so an abnormal 1006 or a
+        server-initiated policy close is visible rather than the row looking open
+        forever. A flow mitmproxy could not complete (TLS refused,
         upstream unreachable, connection reset) is captured too, carrying
         error=true and error_msg with a null status; such flows were previously
         dropped entirely. A completed flow always carries a numeric status and no
@@ -93,7 +97,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         websocket_message_count, and websocket_messages: the first frames in
         order, each with from_client and size, plus text for a short UTF-8 frame
         or omitted (binary/too_large) otherwise; websocket_truncated is set when
-        more frames existed than were returned.
+        more frames existed than were returned. Once the socket has closed it
+        also answers websocket_closed=true with websocket_close_code,
+        websocket_closed_by_client and websocket_close_reason when the close
+        carried them, so how the socket ended is visible.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

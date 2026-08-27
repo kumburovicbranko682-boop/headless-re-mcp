@@ -73,9 +73,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   形式写入 HAR，其保留帧作为 Chrome DevTools 的 `_webSocketMessages` 扩展数组（每条 `{type:
   send/receive, opcode, data}`）附在该条目上，而不再只是一个孤零零的 101 握手——分析者把 HAR 交给
   别的查看器时不会再丢掉 WebSocket 会话内容。帧从原始流按需取回（`flow.get` 用的同一套有界解码视图），
-  原始流已随保留预算淘汰或 body 被省略时该字段为空,不伪造；未捕获逐帧时间戳,故不写 `time`。CI 新增
-  `linux-proxy-websocket` job 装 mitmproxy 与 websockets 跑该 gate（现同时断言 `proxy.flows`、
-  `proxy.flow.get` 与导出的 HAR 里都抓到双向帧），skip≠pass 守卫在两者已装却仍 skip 时判失败。
+  原始流已随保留预算淘汰或 body 被省略时该字段为空,不伪造；未捕获逐帧时间戳,故不写 `time`。
+  socket 怎么收场同样是逆向信号（异常 1006、发畸形帧后被 1008 policy 踢、到底哪一侧挂断），此前
+  连接关闭后行仍与活跃 socket 无异。recorder 现另接 `websocket_end` 钩子：mitmproxy 在关闭握手完成时
+  把 `close_code` / `close_reason` / `closed_by_client` 填到 `flow.websocket` 上，钩子将其滚到该行
+  （`ws_closed=true`，有码/理由/方向时附 `ws_close_code`、`ws_close_reason`、`ws_closed_by_client`），
+  `proxy.flow.get` 也从活流读出 `websocket_closed` / `websocket_close_code` /
+  `websocket_closed_by_client` / `websocket_close_reason`。一个实际坑：mitmproxy 存的 close_code 是
+  wsproto 的 `CloseReason` IntEnum，别处防 bool 冒充 int 的严格 `type(x) is int` 检查会把它悄悄丢掉
+  （reason 留下了、code 没了）——现经 `_ws_close_code` 收敛为纯 int（bool 仍拒），单测固化该回归。
+  CI 新增 `linux-proxy-websocket` job 装 mitmproxy 与 websockets 跑该 gate（现同时断言 `proxy.flows`、
+  `proxy.flow.get` 与导出的 HAR 里都抓到双向帧，且客户端以 1001 "going away" 关闭后行与 flow.get 都
+  报出该关闭码与 closed_by_client），skip≠pass 守卫在两者已装却仍 skip 时判失败。
 
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 

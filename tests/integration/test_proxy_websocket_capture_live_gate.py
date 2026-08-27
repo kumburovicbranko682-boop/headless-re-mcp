@@ -14,7 +14,10 @@ messages. It then asserts the flow's row advertises the traffic
 (websocket=true, ws_messages counts both directions) and that flow.get returns
 the actual frames with their text and direction, and that proxy.export_har
 carries those frames as Chrome DevTools' _webSocketMessages array rather than
-leaving a bare 101 entry. Guarding the guard: the origin transforms each message
+leaving a bare 101 entry. The client then closes with a distinctive 1001
+"going away", and the gate asserts the close lands on the row (ws_closed,
+ws_close_code, ws_closed_by_client) and in flow.get -- how a socket ended is an
+RE signal too. Guarding the guard: the origin transforms each message
 ("echo:"+msg), so seeing both the client's "hello" and the server's distinct
 "echo:hello" proves both directions round-tripped through the proxy and were
 captured -- not one side echoed back by accident. skip != pass: it skips only
@@ -75,6 +78,9 @@ async def _exchange(origin_port: int, proxy_port: int) -> None:
             assert await asyncio.wait_for(ws.recv(), timeout=15) == "echo:hello"
             await ws.send("world")
             assert await asyncio.wait_for(ws.recv(), timeout=15) == "echo:world"
+            # Close with a distinctive code so the capture's close metadata is
+            # checkable below (1001 "going away", client-initiated).
+            await ws.close(code=1001, reason="going away")
 
 
 @pytest.mark.integration
@@ -111,6 +117,26 @@ def test_proxy_captures_websocket_frames_both_directions(tmp_path: Path) -> None
         assert ws_row["ws_messages"] >= 4, ws_row
         assert ws_row["ws_bytes"] > 0
 
+        # The client closed with 1001 "going away"; websocket_end lands just
+        # after the last frame, so give the close its own poll.
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            row = next(
+                (
+                    c
+                    for c in backend.flows("ws-gate", offset=0, limit=50)["flows"]
+                    if c.get("id") == ws_row["id"]
+                ),
+                None,
+            )
+            if row is not None and row.get("ws_closed"):
+                ws_row = row
+                break
+            time.sleep(0.2)
+        assert ws_row.get("ws_closed") is True, ws_row
+        assert ws_row.get("ws_close_code") == 1001, ws_row
+        assert ws_row.get("ws_closed_by_client") is True, ws_row
+
         detail = backend.flow_get("ws-gate", ws_row["id"], tmp_path)
         assert detail["websocket"] is True
         texts = {(m["from_client"], m.get("text")) for m in detail["websocket_messages"]}
@@ -119,6 +145,9 @@ def test_proxy_captures_websocket_frames_both_directions(tmp_path: Path) -> None
         # crossed the real proxy and were captured, not one side reflected.
         assert (True, "hello") in texts, texts
         assert (False, "echo:hello") in texts, texts
+        assert detail["websocket_closed"] is True
+        assert detail["websocket_close_code"] == 1001
+        assert detail["websocket_closed_by_client"] is True
 
         # The exported HAR must carry the frames, not just a 101 entry: Chrome
         # DevTools reads them from the _webSocketMessages array.
