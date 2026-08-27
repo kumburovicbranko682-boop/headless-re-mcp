@@ -330,12 +330,28 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
+    # A real Ghidra install ships both launchers side by side: the Windows
+    # ``analyzeHeadless.bat`` and the POSIX ``analyzeHeadless`` shell script.
+    # Picking the ``.bat`` first meant that on Linux discovery returned the
+    # batch file -- which is not +x and not a POSIX executable -- so a correct
+    # install still failed to launch (Errno 13) while Doctor, sharing this
+    # probe, reported Ghidra ready. Prefer the launcher for this platform and
+    # keep the other only as a last resort.
+    if os.name == "nt":
+        rels = (
+            "support/analyzeHeadless.bat",
+            "analyzeHeadless.bat",
+            "support/analyzeHeadless",
+            "analyzeHeadless",
+        )
+    else:
+        rels = (
+            "support/analyzeHeadless",
+            "analyzeHeadless",
+            "support/analyzeHeadless.bat",
+            "analyzeHeadless.bat",
+        )
+    for rel in rels:
         candidate = home / rel
         if candidate.is_file():
             return candidate

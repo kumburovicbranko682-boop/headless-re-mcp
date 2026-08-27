@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（Ghidra 在 Linux 上错选了 Windows 启动脚本）
+
+- 真实 Ghidra 安装同时带 `support/analyzeHeadless`（POSIX shell）与
+  `support/analyzeHeadless.bat`（Windows），而 `_find_analyze_headless` 把 `.bat` 排在最前，
+  于是 Linux 上正确安装的 Ghidra 会返回那个 `.bat`——它既非 +x 也不是 POSIX 可执行文件——
+  一启动就 `Errno 13 Permission denied`，而共用同一探针的 doctor 仍报告 Ghidra ready。
+  现按平台选启动器（POSIX 优先无扩展名脚本，Windows 优先 `.bat`），另一个仅作兜底，
+  于是 Ghidra 这条可移植后端在 Linux 上第一次真能跑起来。新增
+  `tests/unit/test_ghidra_launcher_selection.py`（伪造完整安装、翻转 `os.name` 两个平台都钉住）
+  与 `tests/integration/test_ghidra_linux_elf_gate.py`（现编一个小 ELF，用 `analyze_binary`
+  真跑一遍 analyzeHeadless 的导入+自动分析，断言输出里出现 `Analysis succeeded`；缺 home 或
+  缺编译器时如实 skip）。
+- 附带发现（本次未改）：`functions` / `symbols` / `xrefs` / `decompile` 走的
+  `ExportJson.py` 标的是 `@runtime Jython`，而 Ghidra 11.3+ 已移除内置 Jython，该 postScript
+  会 abort，与平台无关；需把脚本移植到 PyGhidra/Java 才能在新版 Ghidra 上恢复，属独立议题，
+  故上面的 gate 不断言这几条路径。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
