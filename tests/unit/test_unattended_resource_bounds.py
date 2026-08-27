@@ -117,6 +117,29 @@ class TestProxyCaptureIsBounded:
         assert recorder.retained_bytes() <= 1000
         assert recorder.snapshot()[0]["body_omitted"] is True
 
+    def test_re_recording_a_flow_id_does_not_double_count_retained_bytes(self) -> None:
+        """mitmproxy can fire response twice for one flow id.
+
+        Each record pops the prior raw entry and its byte tally before adding
+        the new one. Without that reversal the retained-bytes total would climb
+        on every re-record and start omitting live bodies against a cap the
+        capture never actually reached.
+        """
+        recorder = _FlowRecorder(capacity=10)
+        first = _FakeFlow(1)
+        first.response.raw_content = b"x" * 500
+        recorder.response(first)
+        after_first = recorder.retained_bytes()
+        assert after_first > 0
+
+        again = _FakeFlow(1)  # same id "flow-1", re-recorded
+        again.response.raw_content = b"z" * 500
+        recorder.response(again)
+
+        assert recorder.retained_bytes() == after_first
+        assert len(recorder._raw) == 1
+        assert recorder.raw("flow-1") is again
+
     def test_proxy_summary_metadata_is_byte_bounded(self) -> None:
         from headless_re_mcp.backends.proxy import client as mod
 
