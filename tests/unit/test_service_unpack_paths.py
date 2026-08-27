@@ -30,6 +30,7 @@ from headless_re_mcp.unpack.pe_rebuild import PeRebuildError
 from headless_re_mcp.unpack.session import (
     UnpackPhase,
     create_unpack_session,
+    fail_unpack_session,
     transition,
 )
 from tests.unit.test_dynamic_service import FakeDynamicWorker, FakeStaticWorker
@@ -1237,3 +1238,95 @@ def test_run_upx_orchestration_verifies_and_reanalyzes(
         _upx_state(session_id), session_id, timeout=1.0, open_ida=True
     )
     assert state.phase == UnpackPhase.REANALYZED
+
+
+# ---------------------------------------------------------------------------
+# unpack_start forced routes
+# ---------------------------------------------------------------------------
+
+
+def test_unpack_start_forces_the_dotnet_route_and_records_inspect_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    monkeypatch.setattr(
+        service,
+        "dotnet_inspect",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="not_dotnet", message="not a managed assembly")
+        ),
+    )
+    started = service.unpack_start(
+        session_id, use_die=False, execute_upx=False, force_route="dotnet"
+    )
+    assert started.ok and started.data is not None
+    assert started.data["unpack"]["phase"] == UnpackPhase.FAILED.value
+    probe = started.data.get("bounded_probe")
+    assert isinstance(probe, dict)
+    assert probe["dotnet_inspect_ok"] is False
+
+
+def test_unpack_start_forces_the_generic_dynamic_route(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    started = service.unpack_start(
+        session_id, use_die=False, execute_upx=False, force_route="generic_dynamic"
+    )
+    assert started.ok and started.data is not None
+    probe = started.data.get("bounded_probe")
+    assert isinstance(probe, dict)
+    assert probe["route"] == "generic_dynamic"
+
+
+# ---------------------------------------------------------------------------
+# _advance_* helpers ignore a failed session
+# ---------------------------------------------------------------------------
+
+
+def _store_failed_state(service: AnalysisService, session_id: str) -> None:
+    state = create_unpack_session(session_id, route="upx")
+    state = fail_unpack_session(state, code="boom", message="already failed")
+    service._store_unpack_session(state)
+
+
+def test_advance_after_dump_ignores_a_failed_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    _store_failed_state(service, session_id)
+    service._advance_unpack_after_dump(session_id, path="/tmp/x", sha256="abc")
+    state = service._unpack_owner.get(session_id)
+    assert state is not None and state.phase == UnpackPhase.FAILED
+
+
+def test_advance_after_imports_rebuilt_ignores_a_failed_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    _store_failed_state(service, session_id)
+    service._advance_unpack_after_imports_rebuilt(
+        session_id, path="/tmp/x", sha256="abc", kind="pe_rebuilt"
+    )
+    state = service._unpack_owner.get(session_id)
+    assert state is not None and state.phase == UnpackPhase.FAILED
+
+
+def test_advance_after_verify_ignores_a_failed_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    _store_failed_state(service, session_id)
+    service._advance_unpack_after_verify(
+        session_id, path="/tmp/x", sha256="abc", open_ida=False, ida_ok=False
+    )
+    state = service._unpack_owner.get(session_id)
+    assert state is not None and state.phase == UnpackPhase.FAILED
