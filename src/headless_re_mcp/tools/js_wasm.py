@@ -49,7 +49,7 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def js_unpack_bundle(
         path: str,
         timeout: Annotated[float, Field(gt=0, le=1200.0)] = 300.0,
-        offset: int = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 100,
     ) -> dict[str, Any]:
         """Unpack a webpack/browserify bundle into module files via webcrack.

@@ -11,6 +11,7 @@ import pytest
 
 from headless_re_mcp.backends.common.bounded_run import Completed
 from headless_re_mcp.backends.jsre.client import JsClient, JsReError, WasmClient
+from headless_re_mcp.tools.binding import input_schema_for
 from headless_re_mcp.tools.js_wasm import build_js_wasm_tools
 
 
@@ -179,6 +180,26 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "too_large" in _tool_docstring("js.deobfuscate")
     assert "too_large" in _tool_docstring("js.unpack_bundle")
     assert "too_large" in _tool_docstring("wasm.info")
+
+
+def test_js_unpack_bundle_schema_refuses_a_negative_offset() -> None:
+    """Every other paged tool constrains offset>=0; js.unpack_bundle did not.
+
+    apk.*, web.*, proxy.* and the core static readers all declare
+    offset minimum 0, and the apk schema even has a dedicated test pinning it.
+    js.unpack_bundle was the lone paged tool whose offset accepted any integer.
+    The client clamps it, but the schema should reject a negative offset at the
+    boundary the way its siblings do rather than silently paging from zero.
+    """
+    handler = next(
+        binding.handler
+        for binding in build_js_wasm_tools(object())  # type: ignore[arg-type]
+        if binding.name == "js.unpack_bundle"
+    )
+    offset = input_schema_for(handler)["properties"]["offset"]
+    assert offset.get("type") == "integer"
+    assert offset.get("minimum") == 0
+    assert "maximum" not in offset
 
 
 def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
