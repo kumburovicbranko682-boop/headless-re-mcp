@@ -990,6 +990,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   bytes——某个证书对象在这里给出 bytes(或任何非标量)不会让采集循环失败、却会在下游序列化时崩,故每个证书字段
   (subject/issuer/serial/sha256)都在源头钉成字符串。新增静态单测(用替身对象钉住可读路径与两条回退、并断言含
   Name 主体与 bytes sha256 的 payload 能 `json.dumps`,不需 androguard、不需真 APK);详见下方 gate 条目的 live 覆盖。
+- **`apk.export_sources`/`apk.decompile` 对 jadx 的部分失败守口如瓶,把不完整的树当成功回**。jadx 在
+  无法反编译某些类时以非零码退出,但仍会写出能编出来的那些、并给编不出的类留一份带 `// jadx failed to decompile`
+  注释的桩;客户端 `_run` 只在**一个 .java 都没落盘**时才硬失败,故意走「拿到什么给什么」的路子。问题是 `export_sources`
+  拿到 `_run` 返回的退出码后**整条丢弃**——它自己的注释都写着 jadx「部分失败仍写可用源码」,却把这个码扔了,于是一次
+  部分失败(树里缺类、或某个类体其实是 jadx 的失败桩)与一次干净跑回来的结果一模一样,agent 会把缺了类的树读成反编译
+  已完成。而隔壁 jsre/wabt 的 CLI 早就为自己的部分退出抬了 `tool_failed`。现 `export_sources` 在 jadx 非零退出时补
+  `tool_failed`/`exit_code`/`stderr`(仍照常列出已写出的源码);`decompile` 把这个标志一路带出来——请求的类文件在、可回,
+  但它可能正是那份 `// jadx failed to decompile` 桩,故调用方不能因为「回了个文件」就当它是干净输出。新增单测用 mock 的
+  `_run` 钉住两条路径(部分退出补齐三字段、干净跑不带标志),jadx live gate 也加断言:干净跑一次 `export_sources`/`decompile`
+  都不得带 `tool_failed`(不需真 jadx、由单测覆盖部分失败路径)。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

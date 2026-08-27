@@ -98,6 +98,8 @@ def test_m11_jadx_live_decompiles_a_real_class(tmp_path: Path) -> None:
 
     decompiled = client.decompile(jar, tmp_path / "decompile", "com.example.Sample")
     assert decompiled["class_name"] == "com.example.Sample"
+    # A clean decompile does not carry the partial-run flag either.
+    assert decompiled.get("tool_failed") is not True, decompiled
     source = decompiled["source"]
     assert "class Sample" in source
     assert "addNumbers" in source

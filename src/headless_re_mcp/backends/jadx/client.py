@@ -51,6 +51,27 @@ class JadxError(RuntimeError):
         self.details = details
 
 
+def _note_partial_decompile(result: JsonObject, *, code: int, stderr: str) -> JsonObject:
+    """Say when jadx exited non-zero but still wrote sources.
+
+    jadx is deliberately kept on the "return what we got" path: it exits
+    non-zero when it fails to decompile some classes yet still writes the ones
+    it managed, and writes a stub carrying a ``// jadx failed to decompile ...``
+    comment for the ones it did not. ``_run`` only fails hard when *nothing*
+    landed; a partial run otherwise came back indistinguishable from a clean
+    one, so an agent read a tree missing classes (or a class body that is really
+    a jadx error stub) as the finished decompilation. ``tool_failed`` -- the same
+    flag the jsre/wabt CLIs already raise for their own partial exits -- says the
+    child itself signalled failure, so the sources may be incomplete for a reason
+    this side cannot see.
+    """
+    if code != 0:
+        result["exit_code"] = code
+        result["tool_failed"] = True
+        result["stderr"] = stderr[:_MAX_STDERR]
+    return result
+
+
 class JadxClient:
     def __init__(self, executable: Path | None = None) -> None:
         self.executable = executable
@@ -68,7 +89,7 @@ class JadxClient:
         no_imports: bool = False,
     ) -> JsonObject:
         """Decompile the whole APK into ``out_dir`` and summarise the tree."""
-        self._run(
+        _, stderr, code = self._run(
             apk,
             ["--output-dir", str(out_dir), *(["--no-imports"] if no_imports else [])],
             out_dir,
@@ -78,13 +99,14 @@ class JadxClient:
         java_files, java_file_count, has_more = _capped_java_listing(
             out_dir, cap=_MAX_LISTED_FILES
         )
-        return {
+        result: JsonObject = {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
             "java_file_count": java_file_count,
             "java_files": java_files,
             "has_more": has_more,
         }
+        return _note_partial_decompile(result, code=code, stderr=stderr)
 
     def decompile(
         self,
@@ -98,7 +120,7 @@ class JadxClient:
         target = class_name.strip()
         if not target:
             raise JadxError("invalid_params", "class_name is required")
-        self.export_sources(apk, out_dir, timeout=timeout)
+        export = self.export_sources(apk, out_dir, timeout=timeout)
         rel = _class_to_java_path(target)
         output_root = out_dir.expanduser().resolve()
         sources = (output_root / "sources").resolve()
@@ -138,12 +160,21 @@ class JadxClient:
             raise JadxError("backend_error", f"failed to read source: {exc}") from exc
         truncated = len(raw) > _MAX_SOURCE_BYTES
         source = raw[:_MAX_SOURCE_BYTES].decode("utf-8", errors="replace")
-        return {
+        result: JsonObject = {
             "class_name": target,
             "path": str(candidate),
             "source": source,
             "truncated": truncated,
         }
+        # Carry the overall-run failure forward: the requested class exists, but a
+        # jadx that exited non-zero may have written this very file as a
+        # "// jadx failed to decompile" stub, so the caller must not read the body
+        # as clean output just because a file was returned.
+        if export.get("tool_failed"):
+            result["tool_failed"] = True
+            if "exit_code" in export:
+                result["exit_code"] = export["exit_code"]
+        return result
 
     def _run(
         self,
