@@ -788,6 +788,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
+- **Agent 浏览器工作台 gate 修复为可移植且与 SPA 同步**:该端到端 gate 写死了 Windows Chrome
+  的绝对路径(`C:\Program Files\Google\Chrome\Application\chrome.exe`)且驱动的是早已被本地化成
+  中文的旧英文 SPA——在非 Windows 上启动即崩、在 Windows 上也会因找不到英文控件而失败(CI 从不
+  跑集成 gate,所以一直没人发现它其实各平台皆红)。现在:Windows 路径存在时才用真 Chrome、否则回落
+  到 Playwright 自带 Chromium,两者都起不来则如实 skip(skip≠pass),与其余 web gate 一致;全部定位
+  子改到现网 SPA(开屏/工作台标题、消息框与发送、模型设置弹窗字段与保存、批准卡片按钮、检查器下按
+  tab 隐藏的事件表);保存不再自动关弹窗,故显式关闭;并把自治强制为 fail-closed 的「请求批准」——
+  否则 `Settings.load()` 填入的加壳分析预设会自动批准 `workflow.cancel`(state_change),根本不会
+  出现批准卡片。刷新后再批准这一段改为钉住 `/approve` 回包与恢复的 SSE 游标(reload 会丢掉内存里的
+  对话记录直到重新选中会话,完成气泡只作为流式文本一闪而过,钉它会 flaky)。这条 gate 现在在 Linux
+  上真实起浏览器跑通,而不再只是崩溃或跳过。
 
 ### 变更（Android 后端清理）
 
