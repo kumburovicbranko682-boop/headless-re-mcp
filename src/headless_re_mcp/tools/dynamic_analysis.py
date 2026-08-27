@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -309,7 +309,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
         session_id: str,
         address: Annotated[int, Field(ge=0)],
         bp_type: Annotated[str, Field(pattern="^(r|w|x|rw|access|write|execute)$")] = "x",
-        size: Annotated[int, Field(ge=1, le=8)] = 1,
+        size: Literal[1, 2, 4, 8] = 1,
         timeout: Annotated[float, Field(gt=0, le=30.0)] = 30.0,
     ) -> dict[str, Any]:
         """Set a hardware breakpoint with structured type/size enums only.

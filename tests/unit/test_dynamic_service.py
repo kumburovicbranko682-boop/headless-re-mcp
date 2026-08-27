@@ -1700,6 +1700,30 @@ def test_imports_scan_rejects_a_search_size_over_the_iat_ceiling(tmp_path: Path)
     assert len(worker.requests) == before
 
 
+def test_breakpoints_hardware_set_rejects_a_non_power_of_two_size(tmp_path: Path) -> None:
+    """A debug register length only encodes 1, 2, 4 or 8 bytes.
+
+    The tool schema now advertises exactly that set, but the agent transport
+    skips the schema, so the service is the real guard. size=3 sits inside the
+    old ge=1/le=8 window yet the native ParseHardwareSize refuses it; the service
+    rejects it with invalid_params before dispatching, so no request reaches the
+    worker.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    before = len(worker.requests)
+    bad = service.breakpoints_hardware_set(session_id, 0x140001000, bp_type="x", size=3)
+    assert not bad.ok and bad.error is not None
+    assert bad.error.code == "invalid_params"
+    assert len(worker.requests) == before
+
+
 def test_modules_dump_rejects_a_worker_redirecting_the_artifact_path(tmp_path: Path) -> None:
     outside = tmp_path / "outside.bin"
     outside.write_bytes(b"keep")
