@@ -117,3 +117,33 @@ def test_the_environment_key_overrides_the_file_and_still_never_leaks(
     assert "env-secret-key-123456" not in text
     # And the file on disk never gained the environment's key.
     assert "env-secret-key-123456" not in store.path.read_text(encoding="utf-8")
+
+
+def test_a_stored_only_round_trip_keeps_the_environment_key_out_of_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """save(get(...)) is how routes warm caches; it must not bake env values in.
+
+    The model-probe route and the provider PUT's absent-field fallbacks both
+    read a profile and save it back. Reading the effective (env-merged) view
+    for that round trip copied HEADLESS_RE_PROVIDER_API_KEY — the mechanism
+    whose whole point is keeping the key out of providers.json — into the
+    file, along with the env base_url/model overrides.
+    """
+    store = _store(tmp_path)
+    store.save(_profile(api_key=None))
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_API_KEY", "env-secret-key-123456")
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_BASE_URL", "https://env-gateway.example/v1")
+
+    stored = store.get("default", stored_only=True)
+    assert stored.api_key is None
+    assert stored.base_url == "https://api.example.com/v1"
+    stored.known_models = ["model-a"]
+    store.save(stored, make_current=False)
+
+    text = store.path.read_text(encoding="utf-8")
+    assert "env-secret-key-123456" not in text
+    assert "env-gateway.example" not in text
+    # The effective view still merges the environment for live use.
+    assert store.get("default").api_key == "env-secret-key-123456"
+    assert store.get("default").base_url == "https://env-gateway.example/v1"

@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（环境变量注入的 API key 被两条路由静默写进 providers.json）
+
+- `HEADLESS_RE_PROVIDER_API_KEY`（及每档案前缀变体）是把供应商密钥留在环境、**不落盘**的
+  受支持方式——既有测试也钉住了「环境覆盖生效时 key 既不进文件也不进公开列表」。但两条会
+  改写 providers.json 的路由做了 `get()`→`save()` 回环，而 `get()` 返回的是合并了环境覆盖的
+  生效视图：模型探测路由的 `known_models` 暖存写盘，每次探测成功就把环境密钥抄进文件；
+  `PUT /api/providers/{id}` 对 body 缺省字段回落到 `existing`，设置面板保存从不带未改动的
+  api_key，于是第一次保存就落盘。环境的 base_url/model 覆盖同样被烤进文件。密钥一旦落盘，
+  撤掉环境变量后它仍留在磁盘上——操作者选环境注入恰恰是为了避免这件事。
+- 现 `ProviderConfigStore.get()` 增加 `stored_only=True` 视图（只读文件、不合并环境），两处
+  回环改用它：探测暖存只写文件本有的字段加新列表，PUT 的缺省回落取文件自己的值。生效视图
+  照旧合并环境供实际调用；body 里显式带 api_key 时照旧持久化。
+- 新增三条路由直测（探测成功后文件无环境密钥但缓存已落、部分 PUT 后文件无环境密钥且生效
+  档案仍 configured、显式传 key 仍写入）加一条存储层回环钉住（含 base_url 覆盖不烤入）。
+  修复前两条路由用例都停在「密钥已在文件里」。相关 22 条测试、ruff、mypy 均通过。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

@@ -563,7 +563,13 @@ def register_agent_routes(
         authorize(authorization)
         try:
             try:
-                existing = configs.get(profile_id)
+                # This PUT rewrites the file, so absent-field fallbacks must
+                # come from the file's own view. The default (effective) view
+                # merges HEADLESS_RE_PROVIDER_* overrides, and using it here
+                # baked the environment's API key — the mechanism whose whole
+                # point is keeping the key out of providers.json — into the
+                # file on the first save that omitted api_key.
+                existing = configs.get(profile_id, stored_only=True)
             except KeyError:
                 existing = None
             incoming_key = body.get("api_key")
@@ -591,7 +597,11 @@ def register_agent_routes(
             provider = OpenAICompatibleProvider(configs.get(profile_id), timeout=30.0)
             models = await provider.list_models()
             if models:
-                current = configs.get(profile_id)
+                # Warm the dropdown cache from the file's own view: the
+                # effective view merges HEADLESS_RE_PROVIDER_* overrides, and
+                # round-tripping it through save() copied the environment's
+                # API key into providers.json on every successful probe.
+                current = configs.get(profile_id, stored_only=True)
                 current.known_models = models
                 configs.save(current, make_current=False)
         except KeyError as exc:

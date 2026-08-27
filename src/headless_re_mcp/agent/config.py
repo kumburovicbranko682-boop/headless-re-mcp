@@ -193,11 +193,19 @@ class ProviderConfigStore:
             "profiles": [self._profile_from_raw(key, value).public(source="file") for key, value in profiles.items() if isinstance(value, dict)],
         }
 
-    def _profile_from_raw(self, profile_id: str, raw: dict[str, Any]) -> ProviderProfile:
+    def _profile_from_raw(
+        self, profile_id: str, raw: dict[str, Any], *, use_env: bool = True
+    ) -> ProviderProfile:
         env_prefix = f"HEADLESS_RE_PROVIDER_{profile_id.upper().replace('-', '_')}_"
-        api_key = os.getenv(env_prefix + "API_KEY") or os.getenv("HEADLESS_RE_PROVIDER_API_KEY") or raw.get("api_key")
-        base_url = os.getenv(env_prefix + "BASE_URL") or os.getenv("HEADLESS_RE_PROVIDER_BASE_URL") or raw.get("base_url") or "https://api.openai.com/v1"
-        model = os.getenv(env_prefix + "MODEL") or os.getenv("HEADLESS_RE_PROVIDER_MODEL") or raw.get("model") or "gpt-4.1-mini"
+
+        def _env(name: str) -> str | None:
+            if not use_env:
+                return None
+            return os.getenv(env_prefix + name) or os.getenv("HEADLESS_RE_PROVIDER_" + name)
+
+        api_key = _env("API_KEY") or raw.get("api_key")
+        base_url = _env("BASE_URL") or raw.get("base_url") or "https://api.openai.com/v1"
+        model = _env("MODEL") or raw.get("model") or "gpt-4.1-mini"
         return ProviderProfile(
             id=profile_id,
             base_url=str(base_url),
@@ -210,7 +218,16 @@ class ProviderConfigStore:
             context_compression_threshold_percent=int(raw.get("context_compression_threshold_percent", 75)),
         )
 
-    def get(self, profile_id: str | None = None) -> ProviderProfile:
+    def get(self, profile_id: str | None = None, *, stored_only: bool = False) -> ProviderProfile:
+        """Return the effective profile, or with ``stored_only`` the file's view.
+
+        The effective view merges ``HEADLESS_RE_PROVIDER_*`` environment
+        overrides — the supported way to keep an API key out of this file
+        entirely. Any caller that round-trips a profile back into ``save``
+        must therefore use ``stored_only=True``: persisting the merged view
+        would copy the environment's secret (and its base_url/model
+        overrides) into providers.json behind the operator's back.
+        """
         with self._lock:
             data = self._read()
         selected = profile_id or data.get("current") or "default"
@@ -219,7 +236,7 @@ class ProviderConfigStore:
         raw = profiles.get(selected, {})
         if not isinstance(raw, dict):
             raise KeyError(selected)
-        return self._profile_from_raw(str(selected), raw)
+        return self._profile_from_raw(str(selected), raw, use_env=not stored_only)
 
     def save(self, profile: ProviderProfile, *, make_current: bool = True) -> dict[str, Any]:
         with self._lock:
