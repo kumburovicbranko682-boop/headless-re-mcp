@@ -224,6 +224,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   把 `offset` 钳到 `>=0`、`limit` 钳到 `1..schema 上限`,与 web / proxy / jsre 列表后端既有做法
   一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
   漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
+- **`apk.xrefs` 只保留头一页调用点，翻不到后面。**它按图遍历顺序留下前 `limit` 个调用者、
+  只回 `has_more` 而无 `offset`，于是一个被调用次数超过一页的方法（加密/脱壳里的常见目标）后面的
+  调用者根本够不着，`total` 也未知——它是最后一个还停在 first-N 上的 apk 读取工具。现在改成与
+  `apk.classes`/`methods`/`strings` 一样的分页读取：收集调用点到 5000 扫描上限、按 `(class, method)`
+  排序让翻页稳定不重叠、按 `offset`/`limit` 切片，回 `total`/`offset`/`scan_capped`；`has_more` 只说
+  收集到的列表里还有没有，`scan_capped` 说收集本身是否提前停下（上游可能还有）。新增回归覆盖
+  多页按 offset 拼回完整有序集合且不重复、越界 offset 得空页且非部分、命中扫描上限时
+  `scan_capped=True` 而 `has_more=False`，并钉住描述点名 `total`/`offset`。
 
 ### 修复（签名口令上进程表）
 
