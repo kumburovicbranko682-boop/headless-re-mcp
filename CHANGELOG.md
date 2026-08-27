@@ -102,6 +102,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（暂停质量门的「IAT 门通过」分支把已 fail-closed 的就绪判定又翻回 True）
+
+- `assess_pause_quality` 是 dump 后判断「是否值得尝试 IAT 重建」的 fail-closed 闸。它先按若干
+  硬信号把 `iat_ready` 置 False，其中两条是**独立于导入门**的判据：调用点层面的 stub 主导
+  （`still_vm_stub_count > api_call_site_count*2`——代码里大量 E8 仍打进 VM stub，说明 dump 仍与
+  VM 耦合，见 `stub_calls`）与整体 `resolved_ratio < 0.25`。但末尾的「gate 通过」分支只要
+  `rebuild_allowed and recoverability=="iat_recoverable" and 代码已解密` 成立，就**无条件**
+  `iat_ready = True`，把上面两条否决又翻了回来，却仍把它们的 reason 留在列表里——既自相矛盾，
+  又让这份过度乐观的就绪判定顺着 `confirmed` 与 `gate_stage_upgrade` 流进阶段升级。而
+  `recoverability` 恰恰来自只看导入槽的 `gate_iat_rebuild`（`half_sparse` 只需 `api>=8`、不要求
+  高 resolved_ratio；stub 比例是拿导入数而非调用点数算的），它根本看不到这两条调用点/占比信号，
+  于是「导入槽已解析但代码仍 VM 耦合」正是该被否决的场景反被放行。\n  现把该分支拆成：仅当 gate 干净**且** `iat_ready` 未被任何硬信号打下去时，才摘掉那条软提示
+  `ui_visible_only_not_sufficient`、补上 `ui_visible_and_iat_gate_ok`；删除那句 `iat_ready = True`，
+  绝不把已记录的否决翻回就绪。由于所有把 `iat_ready` 置 False 的都是硬阻断（软提示不改 `iat_ready`），
+  正常「UI 可见 + 门干净 + 无否决」的正路行为不变。新增回归：stub 主导与低 resolved_ratio 两种
+  冲突各断言 `iat_ready` 保持 False 且对应 reason 仍在、`quality != iat_ready`，另一条正路断言干净
+  门下仍摘软提示并补肯定提示；去掉修复后两条冲突用例失败（`iat_ready` 变 True），正路用例始终通过。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
