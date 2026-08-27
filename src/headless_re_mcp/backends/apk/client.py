@@ -22,6 +22,7 @@ _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
+_MAX_XREFS_COLLECT = 5000
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
@@ -379,22 +380,21 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
-    def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
+    def xrefs(
+        self, path: Path, method_name: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
         parsed = self._parsed(path)
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
-        cap = max(1, int(limit))
         callers: list[JsonObject] = []
-        has_more = False
+        scan_more = False
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
                 continue
             for _, call, _ in method.get_xref_from():
-                if len(callers) >= cap:
-                    # Only set once something was actually left out, so a result
-                    # that happens to fill the page is not reported as partial.
-                    has_more = True
+                if len(callers) >= _MAX_XREFS_COLLECT:
+                    scan_more = True
                     break
                 callers.append(
                     {
@@ -402,15 +402,25 @@ class ApkClient:
                         "method": str(call.name),
                     }
                 )
-            if has_more:
+            if scan_more:
                 break
+        # Sort before slicing so a page is stable across calls and pages do not
+        # overlap. The old code kept the first `limit` in graph-walk order with a
+        # has_more flag but no offset, so every caller past the first page was
+        # unreachable -- useless for a method with more callers than one page.
+        callers.sort(key=lambda item: (item["class"], item["method"]))
+        start = max(0, int(offset))
+        window = callers[start : start + max(1, int(limit))]
         return {
             "method_name": target,
-            "callers": callers,
-            "count": len(callers),
-            # A caller deciding "these are all the callers" has to know whether
-            # the enumeration ended or merely stopped.
-            "has_more": has_more,
+            "callers": window,
+            "count": len(window),
+            "total": len(callers),
+            "offset": start,
+            # has_more only speaks to the collected list; scan_capped says the
+            # collection itself stopped early, so more callers may exist upstream.
+            "has_more": start + len(window) < len(callers),
+            "scan_capped": scan_more,
         }
 
 

@@ -76,9 +76,16 @@ def test_apk_xrefs_puts_the_list_in_callers_and_says_when_it_stopped(
     assert payload["count"] == 10
     assert len(payload["callers"]) == 10
     assert payload["has_more"] is True
+    # The whole collected list has to be reachable: total says how many there
+    # are and offset anchors the page, so a caller can walk past the first 10.
+    assert payload["total"] == 25
+    assert payload["offset"] == 0
+    assert payload["scan_capped"] is False
     doc = _tool_docstring("apk.xrefs")
     assert "Answers with callers" in doc
     assert "has_more" in doc
+    assert "total" in doc
+    assert "offset" in doc
 
 
 def test_apk_xrefs_names_method_name_on_the_payload(
