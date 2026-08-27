@@ -145,6 +145,14 @@ _MAX_WASM_MEMORIES_PAGE = 1000
 _WASM_TABLE_SECTION_ID = 4
 _MAX_WASM_TABLES_COLLECT = 50000
 _MAX_WASM_TABLES_PAGE = 1000
+# wasm.elements flattens element segments into per-slot rows (which function
+# lands in which table slot -- the call_indirect target set). The section has
+# eight segment encodings selected by a flags value: bit 0x01 passive/declared,
+# bit 0x02 an explicit table index (active) or declared (with 0x01), bit 0x04
+# entries as const-exprs instead of bare function indices.
+_WASM_ELEMENT_SECTION_ID = 9
+_MAX_WASM_ELEMENTS_COLLECT = 50000
+_MAX_WASM_ELEMENTS_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -1601,6 +1609,144 @@ def parse_wasm_tables(path: Path, *, offset: int = 0, limit: int = 100) -> JsonO
     return {
         "tables": window,
         "imported_count": imported_count,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _eval_ref_expr(data: bytes, pos: int) -> tuple[int | None, int]:
+    """Evaluate an element-entry expression; return (funcidx_or_None, next).
+
+    The common form is ``ref.func N; end`` and resolves to N. Anything else --
+    ref.null, a global.get -- is stepped over with the index left None, so a
+    non-function entry never becomes a made up function index.
+    """
+    try:
+        if _byte_at(data, pos) == 0xD2:  # ref.func
+            idx, after = _read_uleb(data, pos + 1)
+            if _byte_at(data, after) == 0x0B:  # end
+                return idx, after + 1
+    except _WasmParseError:
+        pass
+    return None, _skip_const_expr(data, pos)
+
+
+def _parse_elem_section(body: bytes) -> tuple[list[JsonObject], int, bool, bool]:
+    """Flatten element segments; return (rows, segments, scan_more, truncated)."""
+    rows: list[JsonObject] = []
+    segments = 0
+    scan_more = False
+    try:
+        count, pos = _read_uleb(body, 0)
+        for segment in range(count):
+            if len(rows) >= _MAX_WASM_ELEMENTS_COLLECT:
+                scan_more = True
+                break
+            flag, pos = _read_uleb(body, pos)
+            if flag > 7:
+                raise _WasmParseError(f"unknown element segment flags {flag}")
+            mode = ("active", "passive", "active", "declared")[flag & 0x03]
+            table_index: int | None = None
+            table_offset: int | None = None
+            if mode == "active":
+                if flag & 0x02:
+                    table_index, pos = _read_uleb(body, pos)
+                else:
+                    table_index = 0
+                table_offset, pos = _eval_offset_expr(body, pos)
+            if flag != 0 and flag != 4:
+                # elemkind (funcidx encodings) or reftype (expr encodings)
+                pos += 1
+                if pos > len(body):
+                    raise _WasmParseError("element segment runs past the buffer")
+            n, pos = _read_uleb(body, pos)
+            segments += 1
+            for position in range(n):
+                if len(rows) >= _MAX_WASM_ELEMENTS_COLLECT:
+                    scan_more = True
+                    break
+                if flag & 0x04:
+                    func_index, pos = _eval_ref_expr(body, pos)
+                else:
+                    func_index, pos = _read_uleb(body, pos)
+                slot = (
+                    table_offset + position if table_offset is not None else None
+                )
+                rows.append(
+                    {
+                        "segment": segment,
+                        "mode": mode,
+                        "table_index": table_index,
+                        "slot": slot,
+                        "func_index": func_index,
+                    }
+                )
+            if scan_more:
+                break
+    except _WasmParseError:
+        return rows, segments, scan_more, True
+    return rows, segments, scan_more, False
+
+
+def parse_wasm_elements(
+    path: Path, *, offset: int = 0, limit: int = 100
+) -> JsonObject:
+    """Map table slots to functions (the call_indirect targets), wabt-free.
+
+    The element section is where a module fills its tables, so this answers the
+    question wasm.tables raises: which functions actually sit in the table, i.e.
+    the complete set of indirect-call targets an obfuscator or vtable-style
+    dispatcher can reach (join func_index against wasm.functions for names).
+    Read in pure Python -- no wabt needed. Segments are flattened to one row per
+    table entry: segment (which element segment it came from), mode (active is
+    copied into a table at instantiation, passive waits for table.init, declared
+    only forward-declares functions for ref.func), table_index (the target
+    table for active segments, null otherwise), slot (the concrete table index
+    the entry lands in when the segment's offset is a simple i32.const; null for
+    a computed offset such as global.get, and for passive/declared segments) and
+    func_index (null for a ref.null or non-function entry). Returns
+    has_element_section (false when the module has none -- then entries is empty
+    and total 0, not an error), segment_count, and entries with count, total,
+    offset and has_more so a filled page is not read as every entry; total is
+    capped at 50000 with scan_capped when more may exist, and truncated is true
+    when a segment is malformed (entries read so far are still returned). A file
+    that is not a WebAssembly module is refused as invalid_params, one over
+    16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    bodies, truncated = _collect_section_bodies(
+        raw, frozenset({_WASM_ELEMENT_SECTION_ID})
+    )
+    has_element_section = _WASM_ELEMENT_SECTION_ID in bodies
+    rows: list[JsonObject] = []
+    segments = 0
+    scan_more = False
+    if has_element_section:
+        rows, segments, scan_more, elem_trunc = _parse_elem_section(
+            bodies[_WASM_ELEMENT_SECTION_ID]
+        )
+        truncated = truncated or elem_trunc
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_ELEMENTS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "entries": window,
+        "has_element_section": has_element_section,
+        "segment_count": segments,
         "count": len(window),
         "total": len(rows),
         "offset": start,

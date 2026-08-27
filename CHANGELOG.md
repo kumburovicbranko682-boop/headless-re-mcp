@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **275（158 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **276（159 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -644,6 +644,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tables/count/total/offset/has_more`，`total` 上限 50000、越限置 `scan_capped`；`truncated` 在
   tabletype 畸形时为 true（已读到的表照常返回）。非 WebAssembly 文件按 `invalid_params` 拒绝，
   超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.elements`：把表槽位映射到函数——`call_indirect` 的实际目标集合，纯 Python、**不需要 wabt**，
+  回答 `wasm.tables` 留下的问题：表里到底放了哪些函数（`func_index` 可与 `wasm.functions` 联查名字）。
+  element 段的八种编码（active/passive/declared × funcidx/常量表达式）统一摊平成每表项一行：`segment`
+  （来自哪个 element 段）、`mode`（active 实例化时拷入表 / passive 由 `table.init` 按需拷入 / declared
+  仅为 `ref.func` 预声明）、`table_index`（active 段的目标表，其余为 null）、`slot`（段偏移为简单
+  `i32.const` 时的具体表下标；计算式偏移如 `global.get`、以及 passive/declared 段为 null）与
+  `func_index`（`ref.func N` 解析为 N，`ref.null` 或非函数项为 null，不猜）。返回
+  `has_element_section`（模块无 element 段时为 false，此时 `entries` 空、`total` 0，而非报错）、
+  `segment_count` 与 `entries`（含 `count/total/offset/has_more`）；`total` 上限 50000、越限置
+  `scan_capped`；`truncated` 在段编码畸形时为 true（已读到的表项照常返回）。非 WebAssembly 文件按
+  `invalid_params` 拒绝，超过 16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

@@ -98,6 +98,37 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_data(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.elements")
+    def wasm_elements(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Map table slots to functions (the call_indirect targets), wabt-free.
+
+        The element section is where a module fills its tables, so this answers
+        the question wasm.tables raises: which functions actually sit in the
+        table, i.e. the complete set of indirect-call targets an obfuscator or
+        vtable-style dispatcher can reach (join func_index against
+        wasm.functions for names). Read in pure Python -- no wabt needed.
+        Segments are flattened to one row per table entry: segment (which
+        element segment it came from), mode (active is copied into a table at
+        instantiation, passive waits for table.init, declared only
+        forward-declares functions for ref.func), table_index (the target table
+        for active segments, null otherwise), slot (the concrete table index the
+        entry lands in when the segment's offset is a simple i32.const; null for
+        a computed offset such as global.get, and for passive/declared
+        segments) and func_index (null for a ref.null or non-function entry).
+        Answers with has_element_section (false when the module has none -- then
+        entries is empty and total 0, not an error), segment_count, and entries
+        with count, total, offset and has_more so a filled page is not read as
+        every entry; total is capped at 50000 with scan_capped when more may
+        exist, and truncated is true when a segment is malformed (entries read
+        so far are still returned). A file that is not a WebAssembly module is
+        refused as invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_elements(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.exports")
     def wasm_exports(
         path: str,
