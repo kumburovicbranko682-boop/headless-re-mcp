@@ -63,6 +63,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   hook 会话连同刚注入的脚本一起滞留在目标里。新增模块级 `_detach_or_raise`:成功路径显式 detach、失败抛
   `frida_detach_failed`(带 `pid` 与探针标签),异常路径仍 best-effort detach 后重抛原因。新增回归覆盖
   hook 探针、Java 探针、设备 hook 探针的 detach 成功/失败两路。
+### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
+
+- `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
+  `sys.platform` 强制成 `linux` 后再 monkeypatch `os.sysconf`，但 Windows 的 `os` 模块
+  根本没有 `sysconf` 属性，`monkeypatch.setattr` 默认 `raising=True` 便当场抛
+  `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
+  `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
+  非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
+  创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
