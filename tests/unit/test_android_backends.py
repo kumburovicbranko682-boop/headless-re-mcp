@@ -431,6 +431,75 @@ class TestApkAnalysisIsBoundedByADeadline:
         assert excinfo.value.code == "timeout"
 
 
+class TestApkAnalysisRefusesDecompressionBombs:
+    """androguard decompresses dex/arsc/manifest into memory before parsing, so
+    a member that inflates to gigabytes would OOM the process at that read --
+    before the wall-clock deadline could fire. The client refuses such an APK
+    from the central-directory metadata alone, without decompressing anything.
+    """
+
+    def test_a_bomb_member_is_refused_by_the_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk import client as apk_client
+        from headless_re_mcp.backends.apk.client import ApkError, _refuse_decompression_bomb
+
+        monkeypatch.setattr(apk_client, "_MAX_ANALYZE_UNCOMPRESSED_BYTES", 1024)
+        bomb = tmp_path / "bomb.apk"
+        with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            # 64 KiB declared uncompressed from a trivially small compressed blob.
+            archive.writestr("resources.arsc", b"\x00" * 65536)
+
+        with pytest.raises(ApkError) as excinfo:
+            _refuse_decompression_bomb(bomb)
+        assert excinfo.value.code == "too_large"
+        assert excinfo.value.details["uncompressed_bytes"] == 65536
+
+    def test_unanalysed_members_do_not_count(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk import client as apk_client
+        from headless_re_mcp.backends.apk.client import _refuse_decompression_bomb
+
+        monkeypatch.setattr(apk_client, "_MAX_ANALYZE_UNCOMPRESSED_BYTES", 4 * 1024 * 1024)
+        app = tmp_path / "app.apk"
+        with zipfile.ZipFile(app, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("classes.dex", b"\x00" * (1 * 1024 * 1024))  # 1 MiB analysed
+            # A large asset/native lib androguard never decompresses must not count.
+            archive.writestr("assets/blob.bin", b"\x00" * (64 * 1024 * 1024))
+            archive.writestr("lib/arm64-v8a/libx.so", b"\x00" * (64 * 1024 * 1024))
+
+        # Only the 1 MiB dex counts, under the 4 MiB cap: must not raise.
+        _refuse_decompression_bomb(app)
+
+    def test_a_bomb_apk_is_refused_before_androguard_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pytest.importorskip("androguard")
+        import androguard.misc as androguard_misc
+
+        from headless_re_mcp.backends.apk import client as apk_client
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        client = ApkClient()
+        if not client.available:
+            pytest.skip("androguard not importable")
+
+        def _must_not_run(_path: str) -> Any:
+            raise AssertionError("androguard must not be reached for a bomb APK")
+
+        monkeypatch.setattr(androguard_misc, "AnalyzeAPK", _must_not_run)
+        monkeypatch.setattr(apk_client, "_MAX_ANALYZE_UNCOMPRESSED_BYTES", 1024)
+
+        bomb = tmp_path / "bomb.apk"
+        with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("classes.dex", b"\x00" * 4096)
+
+        with pytest.raises(ApkError) as excinfo:
+            client.classes(bomb, offset=0, limit=10)
+        assert excinfo.value.code == "too_large"
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 

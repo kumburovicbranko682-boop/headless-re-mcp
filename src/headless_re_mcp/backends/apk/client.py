@@ -9,6 +9,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 from __future__ import annotations
 
 import threading
+import zipfile
 from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -52,6 +53,15 @@ _MAX_XREFS_PAGE = 1000
 # pool hostage. Generous, since a legitimate large multidex app is still seconds
 # to tens of seconds; only a stuck or absurd parse reaches this.
 _PARSE_TIMEOUT_S = 300.0
+# Ceiling on the total *uncompressed* size of the members androguard decompresses
+# into memory (the dex files, resources.arsc and the manifest). A decompression
+# bomb -- a member with a tiny compressed size but a huge uncompressed one --
+# would OOM the whole process the instant zipfile inflates it, which the
+# wall-clock deadline cannot prevent because the allocation happens long before
+# the timeout. 512 MiB is far above any legitimate app (a large multidex app's
+# dex + arsc totals a couple hundred MiB), so only a bomb reaches it.
+_MAX_ANALYZE_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+_ANALYSED_MEMBERS = ("AndroidManifest.xml", "resources.arsc")
 
 
 class ApkError(RuntimeError):
@@ -88,6 +98,39 @@ def _run_deadline(work: Callable[[], T], *, timeout: float) -> T:
             f"androguard did not finish within {timeout:g}s; the APK may be "
             "pathologically large or malformed",
         ) from exc
+
+
+def _refuse_decompression_bomb(path: Path) -> None:
+    """Refuse an APK whose analysed members would inflate past the memory cap.
+
+    androguard decompresses classes*.dex, resources.arsc and the manifest into
+    memory (via zipfile) before parsing them, so a member crafted to inflate to
+    gigabytes would OOM the process at that read. The declared uncompressed size
+    in the central directory is a reliable upper bound on what zipfile will
+    produce -- CPython stops at it and raises on a mismatch rather than
+    overrunning it (verified) -- so sum it for just those members, from metadata
+    alone, and refuse before handing the file to androguard. A malformed archive
+    is left for androguard to report as backend_error rather than guessed at.
+    """
+    total = 0
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist():
+                name = info.filename
+                if name in _ANALYSED_MEMBERS or (
+                    name.startswith("classes") and name.endswith(".dex")
+                ):
+                    total += int(info.file_size)
+    except (OSError, zipfile.BadZipFile):
+        return
+    if total > _MAX_ANALYZE_UNCOMPRESSED_BYTES:
+        raise ApkError(
+            "too_large",
+            "APK analysed members would decompress past the in-process limit; "
+            "decode it with apk.decode/apk.decompile (bounded subprocesses) instead",
+            uncompressed_bytes=total,
+            cap=_MAX_ANALYZE_UNCOMPRESSED_BYTES,
+        )
 
 
 def _page_bounds(offset: int, limit: int, *, cap: int) -> tuple[int, int]:
@@ -198,6 +241,7 @@ class ApkClient:
             if cached is not None:
                 self._light_cache.move_to_end(key)
                 return cached
+        _refuse_decompression_bomb(resolved)
         from androguard.core.apk import APK
 
         try:
@@ -221,6 +265,7 @@ class ApkClient:
             if cached is not None:
                 self._full_cache.move_to_end(key)
                 return cached
+        _refuse_decompression_bomb(resolved)
         from androguard.misc import AnalyzeAPK
 
         try:

@@ -234,6 +234,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   再切片，一个把清单做成解压后上 GiB 的恶意 APK，能在切片之前就把进程撑爆；而 `install()` 正是拿
   调用方给的、可能有敌意的 APK 来跑这一步。现在改成 `archive.open(...).read(64 KiB)` 流式只读扫描
   窗口，读满即止，恶意清单再大也只解压这一窗。
+- **androguard 进程内解析会被解压炸弹 OOM**。androguard 在解析前先把 `classes*.dex`、`resources.arsc`
+  和清单经 zipfile 解压进内存；一个压缩后极小、解压后上 GiB 的成员（解压炸弹）会在那一步就把整个进程
+  撑爆，而墙钟上限拦不住——分配发生在超时触发之前。中央目录里声明的未压缩大小是 zipfile 会产出的可靠
+  上界（实测：CPython 到点即止并在不符时报错，不会越界解压），因此只读元数据把 androguard 要解压的那几个
+  成员的声明未压缩大小加总，超过上限（512 MiB，远高于任何真实应用的 dex+arsc 体量）就在交给 androguard
+  之前拒绝，并提示改用 `apk.decode`/`apk.decompile`（有界子进程）。畸形归档仍留给 androguard 报
+  `backend_error`，不去猜。
 - **androguard 进程内解析没有时间上限**。`apk.decode/decompile/export_sources/repack/sign` 走的是
   jadx/apktool 子进程、都带有界 `timeout`，但 `apk.open/classes/methods/strings/xrefs` 走的是进程内
   androguard（`APK()`/`AnalyzeAPK()`），既没有 `timeout` 参数也没有任何上限：一个恶意或超大的 APK
