@@ -552,6 +552,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **抓包**：`proxy.*` 8 个工具，mitmproxy 以 addon 形式跑在独立线程，Web 与 Android 共用，
   含 `proxy.ca.install_android`。
 
+### 测试（Web 动态 CDP 实测 Gate：证明真在驱动页面）
+
+- 新增 `tests/integration/test_web_dynamic_cdp_gate.py`，用 stdlib 起一个一次性本地
+  HTTP 源站（127.0.0.1 随机端口）替代 `data:` URL，让每个 DevTools 面都对着真实流量校验，
+  而不是只证明 Chromium 起得来。源站返回带唯一 marker 的文档、内联 `console.log` 与一个外链
+  `/app.js`，Gate 断言：`web.open` 返回 HTTP 200 与服务端 `<title>`；`web.dom_snapshot`
+  的 `html` 含 body marker（证明取到活 DOM，而不只是标题）；`web.console` 经 CDP 抓到内联
+  `console.log`（事件在 goto 返回后异步到达，故轮询等落）；`web.network` 同时记录文档与外链
+  脚本两条 flow（status/mime 齐全），`web.network.get` 取回脚本正文；`web.scripts` 解析到
+  `app.js` 且 `web.script_source` 能取源码；`web.screenshot` 落一张按 magic 校验的真 PNG；
+  `web.har.export` 把采集到的 flow 序列化成引用 `app.js` 的 HAR。全程本地，缺 Playwright 或
+  未装 Chromium 构建时按 “skip != pass” 显式跳过。
+
 ### 修复（HAR 导出规范与边界）
 
 - `web.har.export` 与 `proxy.export_har` 过去各自手搓一份 `{"request":{method,url},
