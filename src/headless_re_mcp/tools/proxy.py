@@ -103,11 +103,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def proxy_export_har(session_id: str) -> dict[str, Any]:
         """Export captured flows to a spec-valid HAR 1.2 artifact.
 
-        Answers with path, entry_count and truncated, plus artifact_id when
-        the HAR was registered. truncated is true when the oldest entries were
-        dropped to keep the file under the capture cap. There is no har,
-        output or artifact field. path is the file; looking for har after a
-        successful export reads as a missing capture.
+        Answers with path, entry_count, truncated and dropped, plus artifact_id
+        when the HAR was registered. truncated is true when the oldest entries
+        were cut to keep the file under the capture cap; dropped counts flows
+        evicted from the in-memory retain ring before export (the same signal
+        proxy.flows reports), so an overnight capture's HAR is not read as
+        complete. There is no har, output or artifact field. path is the file;
+        looking for har after a successful export reads as a missing capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 

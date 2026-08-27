@@ -174,8 +174,9 @@ def test_serialize_har_leaves_a_small_capture_intact() -> None:
 
 
 class _WebHandle:
-    def __init__(self, count: int) -> None:
+    def __init__(self, count: int, *, dropped: int = 0) -> None:
         self.lock = Lock()
+        self.requests_dropped = dropped
         self.requests = {
             str(index): {
                 "requestId": str(index),
@@ -203,6 +204,34 @@ def test_web_har_export_writes_a_valid_har_that_carries_every_request(
     assert urls == {"https://example.com/0", "https://example.com/1", "https://example.com/2"}
     resource_types = {entry.get("_resourceType") for entry in doc["log"]["entries"]}
     assert resource_types == {"Document", "Script"}
+
+
+def test_web_har_export_reports_ring_evicted_requests_as_dropped(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A HAR from a busy session must disclose requests lost before export.
+
+    truncated only covers the byte-cap trim during serialization; requests
+    evicted from the retain ring never reach the entries at all. Without
+    dropped, an over-capacity capture's HAR reads as the whole story, the same
+    blind spot web.network.list already closes with its own dropped.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _WebHandle(2, dropped=5))
+    out = tmp_path / "capture.har"
+    payload = backend.har_export("s", out)
+    assert payload["entry_count"] == 2
+    assert payload["truncated"] is False
+    assert payload["dropped"] == 5
+
+
+def test_web_har_export_reports_zero_dropped_for_a_small_capture(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _WebHandle(3))
+    payload = backend.har_export("s", tmp_path / "capture.har")
+    assert payload["dropped"] == 0
 
 
 def test_web_har_export_is_bounded_by_the_capture_cap(
@@ -305,6 +334,45 @@ def test_proxy_export_har_is_now_bounded_by_the_capture_cap(
     # The oldest flows are dropped; the newest that fit are kept.
     assert kept[-1] == 399
     assert min(kept) > 0
+
+
+def test_proxy_export_har_reports_ring_evicted_flows_as_dropped(
+    tmp_path: Path,
+) -> None:
+    """An overnight capture's HAR must disclose flows lost to ring eviction.
+
+    The retain ring holds a bounded number of flows; older ones are evicted as
+    new ones arrive. truncated only covers the byte-cap trim, so without
+    dropped the HAR reads as complete -- the same blind spot proxy.flows
+    already closes. dropped mirrors that computation: latest seq minus held.
+    """
+    recorder = _FlowRecorder(capacity=3)
+    for index in range(10):
+        request = SimpleNamespace(
+            method="GET", pretty_url=f"http://x/{index}", host="x"
+        )
+        response = SimpleNamespace(
+            status_code=200, headers={"content-type": "text/plain"}, raw_content=None
+        )
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+    out = tmp_path / "capture.har"
+    payload = backend.export_har("s", out)
+    assert payload["entry_count"] == 3
+    assert payload["truncated"] is False
+    assert payload["dropped"] == 7
+    assert backend.flows("s", offset=0, limit=10)["dropped"] == 7
+
+
+def test_proxy_export_har_reports_zero_dropped_when_nothing_evicted(
+    tmp_path: Path,
+) -> None:
+    backend = _proxy_backend_with_flows(4)
+    payload = backend.export_har("s", tmp_path / "capture.har")
+    assert payload["dropped"] == 0
 
 
 def test_proxy_export_har_refuses_when_even_an_empty_har_exceeds_the_cap(

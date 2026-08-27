@@ -804,6 +804,11 @@ class WebBackend:
                 )
                 for e in handle.requests.values()
             ]
+            # Requests already evicted from the retain ring, the same loss
+            # web.network.list reports. truncated below only covers the byte-cap
+            # trim during serialization, so without this a HAR from a busy
+            # session reads as complete when its oldest requests were long gone.
+            dropped = handle.requests_dropped
         serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
         if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
             raise WebError(
@@ -819,6 +824,7 @@ class WebBackend:
             "entry_count": serialized.entry_count,
             "truncated": serialized.truncated,
             "size": serialized.size,
+            "dropped": dropped,
         }
 
     def close_all(self) -> None:

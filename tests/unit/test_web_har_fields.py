@@ -32,6 +32,7 @@ def _tool_docstring(name: str) -> str:
 
 class _Handle:
     lock = Lock()
+    requests_dropped = 0
     requests = {
         "1": {
             "method": "GET",
@@ -59,6 +60,8 @@ def test_web_har_export_puts_the_file_in_path_not_har(
     assert "artifact" not in payload
     assert payload["entry_count"] == 1
     assert payload["path"].endswith("c.har")
+    assert payload["dropped"] == 0
     doc = _tool_docstring("web.har.export")
     assert "Answers with path" in doc
     assert "entry_count" in doc
+    assert "dropped" in doc

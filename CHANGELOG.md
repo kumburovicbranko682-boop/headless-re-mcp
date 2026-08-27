@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.har.export` / `proxy.export_har` 现在交代被环形缓冲挤掉的条目）
+
+- 两个 HAR 导出都只回一个 `truncated`,而它只表示「序列化时为塞进容量上限,尾部条目被切」。可在
+  这之前,会话早已把最老的请求/流从**内存环形缓冲**里挤掉了:Web 侧 `handle.requests` 超过上限即淘汰
+  最旧项并累加 `requests_dropped`,mitmproxy 侧 `_FlowRecorder` 的环同样按容量淘汰。这部分丢失从不进入
+  导出的 entries,`truncated` 也照不到它。于是一场跑了整夜、请求数远超环容量的会话导出的 HAR,看上去
+  就是「全部流量」,逆向者据此以为拿全了——而它们对应的列表接口 `web.network.list` / `proxy.flows`
+  明明早就各自回了 `dropped`。
+- 现在两个导出都新增 `dropped`:Web 侧取会话的 `requests_dropped`,proxy 侧与 `proxy.flows` 用同一算法
+  (最新 `seq` 减去环内仍保留的条数)。`dropped` 记的是导出前就被环挤掉的量,`truncated` 记的是序列化阶段
+  为容量上限切掉的量,两者是相互独立的两种丢失,各报各的。两个工具描述都点名 `dropped` 并与 `truncated`
+  区分。
+- 新增回归:Web 会话 `requests_dropped=5` 时导出回 `dropped=5`、小抓包回 `dropped=0`;proxy 环容量 3、
+  灌 10 条流后导出回 `dropped=7` 且与 `proxy.flows` 的 `dropped` 一致、未淘汰时回 `dropped=0`;两个
+  字段测试补上 `dropped` 断言(值与描述)。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
