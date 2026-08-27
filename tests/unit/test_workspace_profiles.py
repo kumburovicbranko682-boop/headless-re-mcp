@@ -107,6 +107,20 @@ def test_profile_helpers_are_consistent() -> None:
     assert is_tool_visible("session.create", "pe") is True
 
 
+def test_a_registered_but_unwired_profile_hides_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from headless_re_mcp.core import workspace
+
+    # A profile id present in PROFILES but without an explicit prefix rule must
+    # fall through to hiding nothing rather than crashing, so registering a new
+    # direction cannot silently blank the surface before its rule is wired.
+    monkeypatch.setattr(workspace, "PROFILES", (*workspace.PROFILES, "mystery"))
+    assert workspace.excluded_prefixes("mystery") == ()
+    assert workspace.is_tool_visible("apk.open", "mystery") is True
+    assert workspace.profile_summary("mystery")["hidden_prefixes"] == []
+
+
 def test_shared_proxy_is_visible_in_android_and_web_but_not_pe() -> None:
     # mitmproxy is documented as shared by Web and Android; only the pe direction
     # (which hides every non-core surface) drops it.
