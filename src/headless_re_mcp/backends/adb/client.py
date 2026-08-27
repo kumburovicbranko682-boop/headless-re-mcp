@@ -314,6 +314,15 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
     except AdbError:
         return None
     text = str(raw).strip()
+    # adbutils can hand back the adb host's own "error:" / "adb:" line as stdout
+    # rather than raising, the same way getprop / pm path do. It is worse here:
+    # "adb: device 'X' not found" contains "not found", so without this check it
+    # falls into the pidof-missing branch below, ps -A answers with the same host
+    # error, no line matches the package, and the empty list reads as "nothing
+    # survived" -- force_stop then reports stopped=True though the check never
+    # ran. Read as None so the tri-state stays null ("could not verify").
+    if _is_host_error_output(text):
+        return None
     if not text:
         return []
     lower = text.lower()
@@ -322,8 +331,11 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
             ps = _device_shell(dev, "ps -A", timeout=_ADB_PROBE_TIMEOUT_S)
         except AdbError:
             return None
+        ps_text = str(ps)
+        if _is_host_error_output(ps_text):
+            return None
         pids: list[int] = []
-        for line in str(ps).splitlines():
+        for line in ps_text.splitlines():
             if package not in line:
                 continue
             for token in line.split()[:3]:

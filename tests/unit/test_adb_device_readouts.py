@@ -199,3 +199,46 @@ def test_force_stop_is_honest_when_the_process_list_is_unreadable() -> None:
     assert payload["stopped"] is None
     assert "remaining_pids" not in payload
     assert "note" in payload
+
+
+def test_force_stop_does_not_read_an_offline_host_error_as_a_clean_stop() -> None:
+    """A host-error pidof must leave stopped null, not collapse to true.
+
+    adbutils can return the adb host's own line as stdout instead of raising, so
+    an offline device answers ``pidof`` with ``adb: device 'X' not found``. That
+    string contains "not found", so the pidof-missing fallback runs ``ps -A``,
+    which answers with the same host error; no row mentions the package, the pid
+    list comes back empty, and force-stop would report stopped=True though the
+    device was never reachable. The verify did not run, so the answer is null.
+    """
+    host_error = "adb: device 'emulator-5554' not found"
+    dev = _ScriptedDev(
+        {
+            ("am", "force-stop"): "",
+            ("pidof",): host_error,
+            ("ps", "-A"): host_error,
+        }
+    )
+    payload = _backend_with(dev).force_stop("emulator-5554", "com.example.app")
+    assert payload["stopped"] is None
+    assert "remaining_pids" not in payload
+    assert "note" in payload
+
+
+def test_force_stop_treats_a_host_error_pidof_without_ps_fallback_as_unverifiable() -> None:
+    """An ``error:``-prefixed pidof with no missing-binary phrasing is also null.
+
+    ``error: closed`` does not contain "not found"/"unknown"/"no such", so it
+    never reaches the ps fallback; the digit parse finds no pids. The old code
+    returned None here only because nothing was numeric -- this pins that a host
+    error is treated as unverifiable rather than coincidentally so.
+    """
+    dev = _ScriptedDev(
+        {
+            ("am", "force-stop"): "",
+            ("pidof",): "error: closed",
+        }
+    )
+    payload = _backend_with(dev).force_stop("emulator-5554", "com.example.app")
+    assert payload["stopped"] is None
+    assert "remaining_pids" not in payload
