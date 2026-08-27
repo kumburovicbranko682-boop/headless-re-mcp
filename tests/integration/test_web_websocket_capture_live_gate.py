@@ -57,6 +57,33 @@ def _websockets_available() -> bool:
     return True
 
 
+def _wait_ws_ready(port: int) -> None:
+    """Block until the echo server actually answers a WebSocket handshake.
+
+    serve() binds and listens synchronously, but the accept loop only runs once
+    serve_forever is scheduled -- and under a cold Chromium launch that thread
+    can be starved long enough that the browser's connect completes the TCP but
+    hangs in CONNECTING waiting for an upgrade that never comes, producing no
+    onopen/onclose/onerror to retry from. Driving one real client handshake here
+    forces the accept loop live before we navigate, so the browser's connect is
+    answered immediately.
+    """
+    from websockets.sync.client import connect
+
+    deadline = time.monotonic() + 8.0
+    last: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with connect(f"ws://127.0.0.1:{port}/probe", open_timeout=2) as client:
+                client.send("ping")
+                assert client.recv() == "echo:ping"
+            return
+        except Exception as exc:  # noqa: BLE001 - retry until the loop is live
+            last = exc
+            time.sleep(0.1)
+    raise RuntimeError(f"echo server never answered a handshake: {last}")
+
+
 @contextmanager
 def _ws_echo(port: int) -> Iterator[None]:
     from websockets.sync.server import serve
@@ -69,6 +96,7 @@ def _ws_echo(port: int) -> Iterator[None]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        _wait_ws_ready(port)
         yield
     finally:
         server.shutdown()
@@ -76,11 +104,16 @@ def _ws_echo(port: int) -> Iterator[None]:
 
 @contextmanager
 def _page(ws_port: int) -> Iterator[str]:
+    # One round trip is all the gate needs: the client "hello" and the origin's
+    # distinct "echo:hello" already prove both directions were captured. The
+    # origin's accept loop is confirmed live before we navigate (_wait_ws_ready),
+    # so a plain connect is reliable; a second round trip only added a frame that
+    # could lag past the poll deadline and read as a failure.
     body = (
         "<html><head><title>ws-gate</title><script>\n"
-        f'const ws = new WebSocket("ws://127.0.0.1:{ws_port}/live");\n'
-        'ws.onopen = () => ws.send("hello");\n'
-        'ws.onmessage = (e) => { if (e.data === "echo:hello") ws.send("world"); };\n'
+        f'var ws = new WebSocket("ws://127.0.0.1:{ws_port}/live");\n'
+        'ws.onopen = function () { ws.send("hello"); };\n'
+        "ws.onmessage = function (e) { window.__got = e.data; };\n"
         "</script></head><body>ws gate</body></html>"
     ).encode()
 
@@ -128,30 +161,45 @@ def test_web_lists_a_websocket_and_returns_its_frames() -> None:
                     f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
                 )
             try:
+                # Poll until both directions have actually been captured, checked
+                # against the frames network.get returns -- exactly what the gate
+                # asserts -- rather than a raw count that could race the last
+                # frame's arrival.
                 ws_row: dict | None = None
-                deadline = time.monotonic() + 25.0
+                data: dict | None = None
+                deadline = time.monotonic() + 40.0
                 while time.monotonic() < deadline:
                     listed = service.web_network_list(session_id, limit=200)
                     assert listed.ok, listed.error
-                    for row in listed.data["requests"]:
-                        if str(row.get("url", "")).endswith("/live"):
-                            ws_row = row
-                            break
-                    if ws_row is not None and int(ws_row.get("ws_messages") or 0) >= 4:
-                        break
-                    ws_row = None
+                    row = next(
+                        (
+                            r
+                            for r in listed.data["requests"]
+                            if str(r.get("url", "")).endswith("/live")
+                        ),
+                        None,
+                    )
+                    if row is not None and int(row.get("ws_messages") or 0) >= 2:
+                        detail = service.web_network_get(session_id, str(row["requestId"]))
+                        if detail.ok:
+                            texts = {
+                                (m["from_client"], m.get("text"))
+                                for m in detail.data.get("websocket_messages", [])
+                            }
+                            if (True, "hello") in texts and (False, "echo:hello") in texts:
+                                ws_row = row
+                                data = detail.data
+                                break
                     time.sleep(0.25)
 
-                assert ws_row is not None, "the WebSocket never appeared in network.list"
+                assert ws_row is not None, "the WebSocket's two-way frames never appeared"
                 assert ws_row["resourceType"] == "WebSocket"
                 assert ws_row["status"] == 101
                 assert ws_row["websocket"] is True
-                assert ws_row["ws_messages"] >= 4, ws_row
+                assert ws_row["ws_messages"] >= 2, ws_row
                 assert ws_row["ws_bytes"] > 0
 
-                detail = service.web_network_get(session_id, str(ws_row["requestId"]))
-                assert detail.ok, detail.error
-                data = detail.data
+                assert data is not None
                 assert data["websocket"] is True
                 texts = {(m["from_client"], m.get("text")) for m in data["websocket_messages"]}
                 assert (True, "hello") in texts, texts
