@@ -758,6 +758,20 @@ def test_apk_dex_readers_decode_a_populated_dex(tmp_path: Path) -> None:
         no_callers = service.apk_xrefs(session_id, _DEX_CALLER)
         assert no_callers.ok and no_callers.data is not None, no_callers.error
         assert no_callers.data["callers"] == []
+
+        # The forward direction: main's only callee is onCreate (same class).
+        callees = service.apk_xrefs(session_id, _DEX_CALLER, direction="callees")
+        assert callees.ok and callees.data is not None, callees.error
+        assert callees.data["direction"] == "callees"
+        assert callees.data["count"] == 1, callees.data
+        callee = callees.data["callees"][0]
+        assert callee["class"] == _DEX_CLASS_SMALI, callee
+        assert callee["method"] == _DEX_CALLEE, callee
+
+        # onCreate calls nothing, so its callee list is a clean empty enumeration.
+        leaf = service.apk_xrefs(session_id, _DEX_CALLEE, direction="callees")
+        assert leaf.ok and leaf.data is not None, leaf.error
+        assert leaf.data["callees"] == []
     finally:
         service.close_all()
 
@@ -799,6 +813,16 @@ def test_apk_dex_readers_resolve_a_cross_class_xref(tmp_path: Path) -> None:
         back = service.apk_xrefs(session_id, _DEX_CROSS_CALLER)
         assert back.ok and back.data is not None, back.error
         assert back.data["callers"] == []
+
+        # The forward direction across the class boundary: run's callee is greet,
+        # defined in a different class -- the mirror of the caller edge above.
+        forward = service.apk_xrefs(session_id, _DEX_CROSS_CALLER, direction="callees")
+        assert forward.ok and forward.data is not None, forward.error
+        assert forward.data["direction"] == "callees"
+        assert any(
+            edge["class"] == _DEX_HELPER_SMALI and edge["method"] == _DEX_CROSS_CALLEE
+            for edge in forward.data["callees"]
+        ), forward.data
     finally:
         service.close_all()
 
