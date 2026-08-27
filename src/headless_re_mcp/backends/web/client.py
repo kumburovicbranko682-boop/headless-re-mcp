@@ -420,6 +420,32 @@ class WebBackend:
                     if mime_truncated:
                         entry["metadata_truncated"] = True
 
+        def on_loading_failed(params: JsonObject) -> None:
+            # Without this, a request that Chromium aborted (DNS failure, a
+            # blocked mixed-content load, a cancelled fetch) keeps status None
+            # forever -- byte-for-byte identical to one still in flight. A
+            # caller reverse-engineering an app's traffic then cannot tell "the
+            # server refused this" from "this has not come back yet". Record the
+            # failure so the two are distinguishable.
+            error_text, error_truncated = _bounded_metadata(
+                params.get("errorText"), _MAX_METADATA_BYTES
+            )
+            blocked_reason, blocked_truncated = _bounded_metadata(
+                params.get("blockedReason"), _MAX_METADATA_BYTES
+            )
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is None:
+                    return
+                entry["failed"] = True
+                entry["error_text"] = error_text
+                if params.get("canceled"):
+                    entry["canceled"] = True
+                if params.get("blockedReason"):
+                    entry["blocked_reason"] = blocked_reason
+                if error_truncated or blocked_truncated:
+                    entry["metadata_truncated"] = True
+
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
             language, language_truncated = _bounded_metadata(
@@ -456,6 +482,7 @@ class WebBackend:
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.loadingFailed", on_loading_failed)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,

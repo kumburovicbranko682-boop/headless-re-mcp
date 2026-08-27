@@ -73,7 +73,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
         visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        A request Chromium aborted carries failed=true and error_text (plus
+        canceled or blocked_reason when reported), so a failed request is not
+        mistaken for one still in flight (status stays null on both). There
+        is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -84,7 +87,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
         not truncated. A body over the capture cap is refused rather than
-        written to disk.
+        written to disk. A request that failed to load carries body_error
+        along with failed=true and error_text carried over from the capture,
+        so an empty body is not read as an empty response.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
