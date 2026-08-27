@@ -10,6 +10,7 @@ package name or serial can never smuggle extra arguments.
 
 from __future__ import annotations
 
+import heapq
 import re
 import shutil
 import stat
@@ -416,23 +417,24 @@ class AdbBackend:
         capped = max(1, min(int(limit), _MAX_PACKAGES))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
-        pkgs: list[str] = []
-        has_more = False
+        names: list[str] = []
         for line in str(raw).splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
-            if not name:
-                continue
-            if len(pkgs) >= capped:
-                has_more = True
-                break
-            pkgs.append(name)
-        pkgs.sort()
+            if name:
+                names.append(name)
+        # Rank the whole list, not the first `capped` lines. pm list packages is
+        # not alphabetical, so keeping the first `capped` lines and sorting only
+        # those returned a sorted view of an arbitrary subset: the page shifted
+        # with install order yet looked authoritative. nsmallest ranks every name
+        # while holding only `capped`, so the page is the true alphabetical prefix.
+        page = heapq.nsmallest(capped, names)
         return {
-            "packages": pkgs,
-            "count": len(pkgs),
-            "has_more": has_more,
+            "packages": page,
+            "count": len(page),
+            "total": len(names),
+            "has_more": len(names) > capped,
             "third_party_only": third_party_only,
         }
 

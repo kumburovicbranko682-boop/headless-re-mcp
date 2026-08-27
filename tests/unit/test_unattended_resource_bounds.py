@@ -3152,7 +3152,27 @@ class TestDeviceListsDiscloseTruncation:
         raw = "\n".join(f"package:com.app{index}" for index in range(5))
         result = self._backend(raw).packages("emulator-5554", limit=5)
         assert result["count"] == 5
+        assert result["total"] == 5
         assert result["has_more"] is False
+
+    def test_a_capped_package_list_is_the_alphabetical_prefix_not_a_pm_order_slice(
+        self,
+    ) -> None:
+        """A capped package list must be the alphabetically-first cap, deterministically.
+
+        pm list packages is not alphabetical, and the old code kept the first cap
+        lines then sorted only those -- so the page was a sorted view of whichever
+        packages pm happened to list first, and it shifted as apps were installed
+        or removed while looking authoritative. Feed a non-alphabetical pm order
+        and require the alphabetical prefix (and honest total) regardless.
+        """
+        order = ["com.z", "com.m", "com.a", "com.b", "com.k", "com.c"]
+        raw = "\n".join(f"package:{name}" for name in order)
+        result = self._backend(raw).packages("emulator-5554", limit=3)
+        assert result["packages"] == ["com.a", "com.b", "com.c"]
+        assert result["count"] == 3
+        assert result["total"] == 6
+        assert result["has_more"] is True
 
     def test_properties_past_the_cap_say_so(self) -> None:
         raw = "\n".join(f"[ro.item{index}]: [{index}]" for index in range(12))

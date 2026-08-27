@@ -78,8 +78,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List installed package names, optionally only third-party ones.
 
-        Answers with packages, count, has_more, and third_party_only so a
-        page that filled the cap is not read as every package.
+        Answers with packages, count, total, has_more, and third_party_only so
+        a page that filled the cap is not read as every package. packages is the
+        alphabetically-first cap of all installed packages, not the first cap in
+        pm-list order, so paging by raising limit is stable across calls.
         """
         return _dump(
             analysis.device_packages(
