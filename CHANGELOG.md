@@ -853,6 +853,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   之后看起来就像「页面只打了这些日志」。回 `has_more`。证书列表同样封顶并披露。
 - **Ghidra 导出的函数/符号/xref 列表停在 limit 上不说话**，反编译 C 超过 200k 字符也只
   切一刀。脚本补上 `has_more` / `truncated`。
+- **`analyzeHeadless` 退出非零却留下空 `{}` 时被当成空成功**。脚本失败后遗留的空导出会让
+  `ghidra.functions/symbols/xrefs` 回 `items=[]`、`ghidra.decompile` 回空 C，无人值守的
+  导出据此把失败的运行读成「这个二进制没有函数」。现在非零退出且导出无内容记为
+  `backend_error`；`analyzeHeadless` 常在真正写出 postScript 结果后仍退出 1，这种带内容的
+  非零退出仍算成功。
 - **`proxy.ca.install_android` 和 `frida.server.ensure` 每次新建一个 AdbBackend**。
   那个实例记不住本进程建过的转发，`close_all` 拆不掉它们。改为走服务持有的那一个。
 - **`frida.applications` / `frida.modules` 以及 apk 的 classes/methods/strings 分页
@@ -894,6 +899,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`device.install` / `uninstall` / `force_stop` 同样把 adb 返回当成成功**。装包不查
   `pm path`、卸包不看包是否还在、强停不看 pidof，无人值守循环会以为应用已经装上、卸掉或
   停掉。现在对照设备侧状态回 `installed` / `uninstalled` / `stopped`（核不上就 `null`）。
+- **`device.current_activity` 在 `app_current()` 返回 None 时仍回 `{package: None,
+  activity: None}`**。dumpsys 读失败被无人值守的 agent 当成「前台没有应用」这一事实，而不是
+  一次失败的读取。现在读不出包名记为 `backend_error`，真实的包名/activity 组合行为不变。
 - **`device.list` 对每个设备再调一次 `get_state`**。adbutils 的 `open_transport` 默认等
   600 秒，假死的 adb server 会把工作线程占满十分钟；而且 `device_list()` 只回在线设备，
   offline 看起来像「没有这台设备」。改为一次 `host:devices`（带 socket 超时），offline 也
