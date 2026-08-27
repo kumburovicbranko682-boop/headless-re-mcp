@@ -227,6 +227,39 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_exports(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.features")
+    def wasm_features(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the WebAssembly features a module was built to use, wabt-free.
+
+        The "target_features" custom section is the capability requirement a
+        toolchain (LLVM / wasm-ld) records: which proposals beyond the MVP the
+        module uses -- simd128, atomics (threads and shared memory),
+        exception-handling, bulk-memory, reference-types, tail-call, sign-ext,
+        multivalue and the like. Read in pure Python -- no wabt needed -- it
+        tells a triage what runtime the module needs and how much of the modern
+        instruction set to expect, which wasm.sections cannot (it only reports
+        the custom section exists). It is the capability companion to
+        wasm.producers' provenance. Each row is name (the feature) and prefix,
+        the one-byte marker: "+" the feature is used, "-" it must not be
+        enabled, "=" it is required exactly (an unknown marker byte renders as
+        hex); wasm-ld emits "+" for everything a module actually uses, so in
+        practice the rows are the used-feature set. Returns
+        has_target_features_section (false when the module has none -- then
+        features is empty and total 0, not an error) and features with count,
+        total, offset and has_more so a filled page is not read as the whole
+        set; total is capped at 10000 with scan_capped when more may exist, and
+        truncated is true when the section is malformed (rows read so far are
+        still returned). The section is self-reported and strippable, so its
+        absence is not proof the features are unused. A file that is not a
+        WebAssembly module is refused as invalid_params, one over 16 MiB as
+        too_large.
+        """
+        return _dump(analysis.wasm_features(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.functions")
     def wasm_functions(
         path: str,

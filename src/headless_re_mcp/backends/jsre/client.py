@@ -187,6 +187,13 @@ _MAX_WASM_CALLERS_PAGE = 1000
 # flattened to one (field, name, version) row per pair.
 _MAX_WASM_PRODUCERS_COLLECT = 10000
 _MAX_WASM_PRODUCERS_PAGE = 1000
+# wasm.features decodes the "target_features" custom section -- which WASM
+# proposals the module was built to use. Its format is vec(feature), each a
+# one-byte prefix (0x2B '+' used, 0x2D '-' disallowed, 0x3D '=' required) then a
+# feature name; the prefix byte is surfaced as its character.
+_WASM_FEATURE_PREFIXES = {0x2B: "+", 0x2D: "-", 0x3D: "="}
+_MAX_WASM_FEATURES_COLLECT = 10000
+_MAX_WASM_FEATURES_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -2153,6 +2160,91 @@ def parse_wasm_producers(
     return {
         "producers": window,
         "has_producers_section": has_producers_section,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _parse_target_features(body: bytes) -> tuple[list[JsonObject], bool, bool]:
+    """Parse the target_features section; return (rows, scan_more, truncated)."""
+    rows: list[JsonObject] = []
+    scan_more = False
+    try:
+        count, pos = _read_uleb(body, 0)
+        for _ in range(count):
+            prefix_byte = _byte_at(body, pos)
+            pos += 1
+            name, pos = _read_wasm_name(body, pos)
+            if len(rows) >= _MAX_WASM_FEATURES_COLLECT:
+                scan_more = True
+                break
+            rows.append(
+                {
+                    "name": name,
+                    "prefix": _WASM_FEATURE_PREFIXES.get(
+                        prefix_byte, f"0x{prefix_byte:02x}"
+                    ),
+                }
+            )
+    except _WasmParseError:
+        return rows, scan_more, True
+    return rows, scan_more, False
+
+
+def parse_wasm_features(
+    path: Path, *, offset: int = 0, limit: int = 100
+) -> JsonObject:
+    """List the WebAssembly features a module was built to use, wabt-free.
+
+    The "target_features" custom section is the capability requirement a
+    toolchain (LLVM / wasm-ld) records: which proposals beyond the MVP the
+    module uses -- simd128, atomics (threads and shared memory),
+    exception-handling, bulk-memory, reference-types, tail-call, sign-ext,
+    multivalue and the like. Read in pure Python -- no wabt needed -- it tells a
+    triage what runtime the module needs and how much of the modern instruction
+    set to expect, which wasm.sections cannot (it only reports the custom
+    section exists). It is the capability companion to wasm.producers'
+    provenance. Each row is name (the feature) and prefix, the one-byte marker:
+    "+" the feature is used, "-" it must not be enabled, "=" it is required
+    exactly (an unknown marker byte renders as hex); wasm-ld emits "+" for
+    everything a module actually uses, so in practice the rows are the used-
+    feature set. Returns has_target_features_section (false when the module has
+    none -- then features is empty and total 0, not an error) and features with
+    count, total, offset and has_more so a filled page is not read as the whole
+    set; total is capped at 10000 with scan_capped when more may exist, and
+    truncated is true when the section is malformed (rows read so far are still
+    returned). The section is self-reported and strippable, so its absence is
+    not proof the features are unused. A file that is not a WebAssembly module is
+    refused as invalid_params, one over 16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    body, truncated = _find_custom_section(raw, "target_features")
+    has_target_features_section = body is not None
+    rows: list[JsonObject] = []
+    scan_more = False
+    if body is not None:
+        rows, scan_more, feat_trunc = _parse_target_features(body)
+        truncated = truncated or feat_trunc
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_FEATURES_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "features": window,
+        "has_target_features_section": has_target_features_section,
         "count": len(window),
         "total": len(rows),
         "offset": start,
