@@ -386,6 +386,39 @@ class TestApkOpenReportsMalformedManifest:
             service.close_all()
 
 
+def test_apk_dex_analysis_api_still_exists_on_installed_androguard() -> None:
+    """Guard the DEX path's androguard contract the way the frida guard does.
+
+    classes/methods/strings/xrefs need a valid classes.dex to exercise, and this
+    box has no Android SDK to build one, so a renamed accessor (androguard 4.x
+    already rewrote this surface once) would slip through every synthetic-APK
+    test and only fail on a user's real APK as backend_error. Pin the exact
+    import paths and attributes the client reaches for so a bump breaks a test,
+    not a run. Skips when androguard is absent -- skip != pass.
+    """
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — DEX contract not checked (skip != pass)")
+
+    from androguard.core.analysis.analysis import (
+        Analysis,
+        ClassAnalysis,
+        MethodAnalysis,
+        StringAnalysis,
+    )
+    from androguard.core.apk import APK  # noqa: F401 - client imports it in _apk
+    from androguard.misc import AnalyzeAPK  # noqa: F401 - client imports it in _parsed
+
+    for attr in ("get_classes", "get_strings", "get_methods"):
+        assert hasattr(Analysis, attr), f"androguard Analysis dropped {attr}"
+    for attr in ("is_external", "name", "get_methods"):
+        assert hasattr(ClassAnalysis, attr), f"androguard ClassAnalysis dropped {attr}"
+    for attr in ("is_external", "name", "class_name", "get_xref_from"):
+        assert hasattr(MethodAnalysis, attr), f"androguard MethodAnalysis dropped {attr}"
+    assert hasattr(StringAnalysis, "get_value"), "androguard StringAnalysis dropped get_value"
+
+
 class TestApktoolBoundaries:
     def test_missing_apktool_degrades(self, tmp_path: Path) -> None:
         client = ApktoolClient(None, None)
