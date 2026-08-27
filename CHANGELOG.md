@@ -58,6 +58,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+
 ### 改进（`apk.certificates` 补上签名证书的 SHA-1 指纹,可与主流威胁情报库对齐)
 
 - `apk.certificates` 每份证书只回 `sha256` 指纹。而在 Android 侧,签名证书的 **SHA-1** 才是各威胁情报平台
