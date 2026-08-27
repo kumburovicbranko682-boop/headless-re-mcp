@@ -865,9 +865,10 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     The WASM line otherwise has no tool-free floor: every fact comes from wabt's
     wasm2wat / wasm-objdump, so a module on a machine without wabt yields
     nothing at all. This walks the module's own section table -- a well-defined
-    binary format -- to report the version, which sections are present, and the
-    vector counts (types, imports, functions, exports, ...) that identify what
-    the module is, the same way describe_apk does for a package.
+    binary format -- to report the version, which sections are present, the
+    vector counts (types, imports, functions, exports, ...), and the import and
+    export names that identify what the module needs and exposes, the same way
+    describe_apk does for a package.
 
     Fail-closed and bounded: a non-WASM or unreadable file returns ``{}``; a
     malformed tail stops the walk and is reported via ``well_formed`` rather
