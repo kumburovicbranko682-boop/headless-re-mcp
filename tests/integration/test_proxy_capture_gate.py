@@ -19,10 +19,13 @@ request that went out and the response that came back:
   * an exchange whose upstream refuses the connection is still recorded, marked
     as an error with a null status, because "this host would not answer" is
     itself a finding.
+  * starting the proxy mints the mitmproxy root CA on disk -- the precondition
+    for HTTPS interception and for ``proxy.ca.install_android``, both dead
+    without it -- and it is a real, usable CA certificate.
 
-Plain HTTP keeps the gate free of any CA-trust setup: mitmproxy sees the whole
-request and response without intercepting TLS. skip != pass -- with mitmproxy
-absent the gate skips loudly rather than reporting a hollow success.
+Plain HTTP keeps the capture path free of any CA-trust setup: mitmproxy sees the
+whole request and response without intercepting TLS. skip != pass -- with
+mitmproxy absent the gate skips loudly rather than reporting a hollow success.
 """
 
 from __future__ import annotations
@@ -249,5 +252,59 @@ def test_proxy_records_an_upstream_that_refuses_the_connection(tmp_path: Path) -
         # stay distinguishable with a null status and a message.
         assert flow.get("status") is None
         assert isinstance(flow.get("error_msg"), str) and flow["error_msg"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_proxy_start_materializes_a_usable_ca_certificate(tmp_path: Path) -> None:
+    """Starting the proxy mints the CA that HTTPS interception depends on.
+
+    To read TLS, mitmproxy signs a per-host leaf with its root CA, and
+    ``proxy.ca.install_android`` pushes that root onto a device so the device
+    trusts the interception. Both are dead without the CA on disk, and mitmproxy
+    generates it lazily -- only when the proxy actually starts. The capture path
+    above runs over plain HTTP and never forces it, so prove here that a start
+    materialises a *real, usable* CA (an X.509 certificate whose basic
+    constraints mark it a CA, so it can sign those leaves), not merely that a
+    ``~/.mitmproxy`` directory exists.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy CA Gate not run (skip != pass)")
+    from cryptography import x509  # mitmproxy pulls cryptography in as a dependency
+
+    service = AnalysisService(_settings(tmp_path))
+    try:
+        created = service.create_session(_DATA_URL, target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        started = service.proxy_start(session_id, host="127.0.0.1", port=_free_port())
+        assert started.ok, started.error
+
+        # The CA mitmproxy would present -- and that proxy.ca.install_android
+        # would push -- is generated on startup. ca_cert_path reads ~/.mitmproxy,
+        # so a fresh backend resolves the same file; poll, as the TLS addon writes
+        # it just after run() begins.
+        ca_path = None
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            ca_path = ProxyBackend().ca_cert_path()
+            if ca_path is not None:
+                break
+            time.sleep(0.05)
+        assert ca_path is not None, "proxy.start did not generate the mitmproxy CA"
+        assert ca_path.is_file(), ca_path
+
+        pem = ca_path.read_bytes()
+        assert pem.startswith(b"-----BEGIN CERTIFICATE-----"), pem[:40]
+        cert = x509.load_pem_x509_certificate(pem)
+        # A real CA: it can sign the per-host leaves interception needs.
+        basic = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        assert basic.ca is True, "generated cert is not a CA — cannot sign interception leaves"
+        assert cert.not_valid_after_utc > cert.not_valid_before_utc, cert
+        # ...and it is mitmproxy's own CA, not some unrelated cert on the box.
+        subject = cert.subject.rfc4514_string().lower()
+        assert "mitmproxy" in subject, subject
     finally:
         service.close_all()

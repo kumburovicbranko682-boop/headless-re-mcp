@@ -59,8 +59,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   摘要按真实 method/完整 URL/上游状态/内容类型列出该流；`flow.get` 逐字节还原被 POST 的请求体
   与源站返回的响应体（证明抓的是整次交换，而非只有头部草图）；HAR 导出把该流作为真实条目带出；
   `replay` 重新发出被抓的请求、源站逐字节再收到一次；上游拒连的交换也照样被记录，标为 error 且
-  status 为 null——因为「这个域根本不应答」本身就是发现。用明文 HTTP，代理不拦截 TLS，故 gate
-  无需任何 CA 信任配置；缺 mitmproxy 时如实跳过（skip 不等于 pass）。
+  status 为 null——因为「这个域根本不应答」本身就是发现。用明文 HTTP，代理不拦截 TLS，故抓包
+  这段无需任何 CA 信任配置；缺 mitmproxy 时如实跳过（skip 不等于 pass）。
+- 再加一例证明 `proxy.start` 会真的把 mitmproxy 根 CA 落到磁盘：拦截 TLS 靠这张根证书为每个
+  主机签发叶证书，`proxy.ca.install_android` 也是把这张根推到设备上，二者缺了它都是死的，而
+  mitmproxy 是**懒生成**——只有真正 start 了才写。断言 start 之后 `ca_cert_path()` 解析到一张
+  **可用的** CA 证书（PEM 解得出、basic constraints 标了 CA=真、subject 为 mitmproxy），而不只是
+  `~/.mitmproxy` 目录碰巧存在。抓包用明文，这条恰好补上 HTTPS 拦截与设备 CA 安装的前置条件证明。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
