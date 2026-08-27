@@ -38,7 +38,10 @@ def _single_match(pattern: str, text: str) -> re.Match[str]:
 def test_the_headline_tool_total_matches_the_catalog() -> None:
     total, _read, _write = _catalog_counts()
     text = README.read_text(encoding="utf-8")
-    claim = _single_match(r"收成 (\d+) 个受限语义工具", text)
+    # The headline sentence reads "<N> 个受限语义工具供 Cursor 等 MCP 客户端调用".
+    # Anchoring on the trailing 供 keeps this distinctive to the headline claim
+    # rather than any other place the phrase might appear.
+    claim = _single_match(r"(\d+) 个受限语义工具供", text)
     assert int(claim.group(1)) == total
 
 
