@@ -62,7 +62,15 @@ def probe_ready(url: str, *, timeout: float) -> tuple[bool, str]:
     wedged child outlived its supervisor.
     """
     bound = max(0.05, float(timeout))
-    parts = urllib.parse.urlsplit(url)
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        # urlsplit raises on a malformed authority -- an unclosed IPv6 literal
+        # like http://[::1 is the reachable case, since --host feeds this. That
+        # is a request that can never complete, which the contract reports as
+        # unreachable rather than letting the parse error out; the sibling guard
+        # below already returns exactly this for a scheme/hostname it rejects.
+        return (False, "unreachable: ValueError")
     if parts.scheme not in ("http", "https") or not parts.hostname:
         return (False, "unreachable: ValueError")
     connection_class = (
