@@ -92,6 +92,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增覆盖以上三处的契约单测（落地/未落地/短写/无法核实/推送到目录、转发在表/不在表/读不到、
   空截图删除并拒绝），均不依赖真实 adb。
 
+### 修复（Web 截图 honesty）
+
+- **`web.screenshot` / `web.preview` 空截图不再被当成成功**：与 `device.screenshot` 同源的问题——
+  Playwright `page.screenshot` 返回却留下 0 字节文件（页面已分离、渲染器崩溃后仍返回、整页截取
+  零高文档等）时，过去会答 `size:0` 的成功包并把这张空 PNG 注册成 capture 制品。现在删除该文件并
+  报 `backend_error`。新增直测真实 `WebBackend.screenshot` 的空文件删除单测。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
