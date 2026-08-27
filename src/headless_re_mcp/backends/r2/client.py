@@ -37,7 +37,10 @@ _ALLOWED = frozenset(
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
-_AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# axj (global ref table), axtj (refs to a seek) and axfj (refs from a seek), each
+# pinned to a single numeric seek so no second command can ride along. r2.xrefs
+# uses the address-scoped axtj; the broader forms stay allow-listed as read-only.
+_AX_QUERY_COMMAND = re.compile(r"ax[tf]?j @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -54,7 +57,7 @@ def _require_allowed_command(command: str) -> None:
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
-    if _AXJ_COMMAND.fullmatch(command) is not None:
+    if _AX_QUERY_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -105,9 +108,17 @@ class R2Client:
         *,
         timeout: float = 30.0,
     ) -> JsonObject:
+        """Cross-references *to* ``address`` -- the sites that reference it.
+
+        ``axj`` (which this used to run) prints r2's whole cross-reference table
+        and ignores the ``@`` seek, so ``r2.xrefs(addr)`` answered with every
+        ref in the binary -- capped at 4096 -- regardless of ``addr``. ``axtj``
+        is the address-scoped form: it returns the callers/users of ``addr``,
+        which is what an integer address argument is for.
+        """
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
-        cmd = f"axj @ {address}"
+        cmd = f"axtj @ {address}"
         data = self.run(binary, ["aa", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address

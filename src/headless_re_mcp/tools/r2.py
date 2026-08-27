@@ -18,6 +18,7 @@ def _dump(result: Result[JsonObject]) -> dict[str, Any]:
 
 def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     tools = ToolSetBuilder()
+
     @tools.tool(name="r2.info")
     def r2_info(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
@@ -121,13 +122,17 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """References to and from address, as radare2 resolved them.
+        """Cross-references to address -- the sites that reference it.
 
-        Answers with items, each carrying from, to, type, from_address and
-        to_address, plus address (va/rva/module) and address_va (the integer
-        that was asked). Read items_truncated, items_total and items_limit
-        when the list filled the cap (4096). There is no integer address,
-        xrefs, truncated or has_more field.
+        Scoped to address (radare2's axtj): the callers/users of address, not
+        the binary's whole reference table. Answers with items, each carrying
+        from (the referencing site), type, opcode, fcn_name/refname and
+        from_address, while the queried target is the top-level address
+        (va/rva/module) and address_va (the integer that was asked). Read
+        items_truncated, items_total and items_limit when the list filled the
+        cap (4096). There is no integer address, xrefs, truncated or has_more
+        field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
+
     return tools.bindings
