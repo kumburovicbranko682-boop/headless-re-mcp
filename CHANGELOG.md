@@ -134,6 +134,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
+### 修复（`internal_error` 事故信息被截到上限却不标注，长信息读起来像完整异常）
+
+- `error_boundary._redact_text` 先脱敏再把信息截到上限（`message` 1000、`context` 300、unraisable 对象
+  200 字符），但截断是无声的：返回值不带任何截断标记。于是一条较长的异常信息（嵌套异常 repr、罗列
+  多字段的校验错误等）会被从中间切断，而 `internal_error` 信封里的 `message` 正是无人值守的 Agent 最
+  先读的字段——它把被截的一半当成完整异常，真正的关键往往恰在上限之后。现在超限时追加
+  `...[truncated]`（并把结果控制在上限内，保持调用方依赖的长度边界），与 `reporting._cell` 的 `…`、
+  `doctor` 的 `...[truncated]`、r2/windbg 的 `truncated` 等既有截断标记口径一致；完整堆栈本就写在信封
+  指向的事故日志里。脱敏在截断之前进行，故上限之后的密钥要么已被 `[REDACTED]` 遮蔽、要么被整体切掉，
+  绝不会因为这次切片而泄露。补回归测试钉住：超长信息带 `...[truncated]` 且长度不超上限、短信息不带标
+  记、上限之后的密钥永不出现在返回值里。
+
 ### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
 - Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
