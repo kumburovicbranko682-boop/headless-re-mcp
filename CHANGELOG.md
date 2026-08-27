@@ -203,6 +203,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分代码/文件/文本时各字段齐备、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及五个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 新增（doctor 可选非-PE 后端探测实机 gate）
+
+- `doctor` 每条探针的逻辑都有单测,但一律把 `shutil.which` / `importlib.util.find_spec` 打桩,
+  于是没有任何测试证明 `run_doctor()` 真把这些可选非-PE 后端接进报告、并把**真实安装**映射成
+  `DETECTED`:某条探针被从 `run_doctor` 漏接、或候选名打错一个字母,都会安然穿过全打桩的单测,却
+  在真机上悄悄告诉操作员「你装了的工具没装」。
+- 新增 `tests/integration/test_doctor_nonpe_optional_gate.py`:对真机跑 `run_doctor()`,凡是确实
+  在场的可选非-PE 后端(radare2 / wabt / adb / jadx / apktool / apksigner / webcrack /
+  androguard / adbutils / frida / playwright / mitmproxy)就断言其状态为 `DETECTED`,缺席者按
+  skip != pass 逐个跳过;并钉死一条持久契约——**任何可选非-PE 后端都不得进入 required 集**
+  (对 windows 与 linux 两个平台都校验)。可选后端一旦被误列为 required,所有没装该工具的 Linux
+  用户就会被 doctor 判成 NOT READY、服务据此拒绝就绪。测试同时确认可选探针的状态不影响
+  `report.ready`(就绪只由 required 探针决定)。
+- CI 增 `.github/workflows/doctor-nonpe-gate.yml`:按路径触发(仅 `doctor.py` / 该 gate / 工作流
+  自身变更时才跑),apt 装 wabt + radare2、pip 装 `.[test,dev,android,proxy]`(带上 androguard /
+  adbutils / mitmproxy),先 sanity 校验这几件真在场(缺则当场硬失败,不让坏 runner 把探测断言
+  静默跳过),再跑该 gate。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具

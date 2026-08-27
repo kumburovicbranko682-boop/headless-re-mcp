@@ -1,0 +1,58 @@
+# doctor honesty: prove the optional non-PE backends are actually detected when
+# installed, and can never enter the required set. Path-scoped so a PR pays for
+# this only when it touches doctor or the gate itself.
+name: doctor-nonpe-gate
+
+on:
+  pull_request:
+    paths:
+      - "src/headless_re_mcp/doctor.py"
+      - "tests/integration/test_doctor_nonpe_optional_gate.py"
+      - ".github/workflows/doctor-nonpe-gate.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  doctor-nonpe-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install optional non-PE CLIs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y wabt radare2
+
+      - name: Install package with Android + proxy extras
+        # The extras pull androguard/adbutils (Android) and mitmproxy (proxy):
+        # enough real installs that the detection assertions actually run rather
+        # than skipping.
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,android,proxy]"
+
+      - name: Sanity — the tools this gate expects to detect are really present
+        run: |
+          for tool in wasm2wat r2; do
+            command -v "$tool" >/dev/null || { echo "missing $tool"; exit 1; }
+          done
+          python - <<'PY'
+          import importlib.util
+          for module in ("androguard", "adbutils", "mitmproxy"):
+              assert importlib.util.find_spec(module) is not None, f"{module} not importable"
+          print("optional non-PE backends present: wabt, radare2, androguard, adbutils, mitmproxy")
+          PY
+
+      - name: doctor non-PE optional gate
+        # -rs prints skip reasons: a suite that quietly skips itself reads
+        # exactly like one that passed.
+        run: |
+          python -m pytest tests/integration/test_doctor_nonpe_optional_gate.py \
+            -q -rs --tb=short --timeout=120
