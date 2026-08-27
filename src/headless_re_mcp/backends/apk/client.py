@@ -8,7 +8,10 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import re
+import struct
 import threading
+import zipfile
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
@@ -23,6 +26,12 @@ _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
+# A multidex app has classes.dex..classesN.dex; N in the tens at most. The cap
+# stops a crafted archive naming thousands of dex entries from making this walk
+# unbounded.
+_MAX_DEX_FILES = 128
+_DEX_HEADER_LEN = 112
+_DEX_MAGIC = b"dex\n"
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
@@ -54,6 +63,62 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+def _dex_sort_key(name: str) -> tuple[int, str]:
+    """Order classes.dex before classes2.dex before classes10.dex.
+
+    A plain string sort puts classes10.dex ahead of classes2.dex, which reads
+    as a scrambled multidex layout. classes.dex (no number) is the primary and
+    sorts first.
+    """
+    lowered = name.lower()
+    match = re.fullmatch(r"classes(\d*)\.dex", lowered)
+    if match is None:
+        return (1 << 30, lowered)
+    return (int(match.group(1) or 1), lowered)
+
+
+def _parse_dex_header(head: bytes) -> JsonObject | None:
+    """Read the fixed DEX header counts from its first 112 bytes.
+
+    The header layout is stable across DEX versions, so this reads the id-table
+    sizes without a full DEX parse -- and the caller feeds only the header
+    window, so a bomb-compressed dex never inflates past it. Returns None when
+    the magic is wrong or the window is short, so the caller can mark the entry
+    invalid rather than emit fabricated zero counts.
+    """
+    if len(head) < _DEX_HEADER_LEN or head[:4] != _DEX_MAGIC:
+        return None
+    version = head[4:7].decode("ascii", "replace")
+    # endian_tag (offset 40) is 0x12345678; a big-endian dex stores it reversed.
+    fmt = ">" if head[40:44] == b"\x12\x34\x56\x78" else "<"
+    (
+        string_ids,
+        _string_off,
+        type_ids,
+        _type_off,
+        proto_ids,
+        _proto_off,
+        field_ids,
+        _field_off,
+        method_ids,
+        _method_off,
+        class_defs,
+        _class_off,
+        data_size,
+        _data_off,
+    ) = struct.unpack(fmt + "14I", head[56:112])
+    return {
+        "dex_version": version,
+        "string_ids": string_ids,
+        "type_ids": type_ids,
+        "proto_ids": proto_ids,
+        "field_ids": field_ids,
+        "method_ids": method_ids,
+        "class_defs": class_defs,
+        "data_size": data_size,
+    }
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -324,6 +389,69 @@ class ApkClient:
             "abis": sorted(abis),
             "count": len(libs),
             "has_more": has_more,
+        }
+
+    def dex_files(self, path: Path) -> JsonObject:
+        """List the packaged DEX files with per-DEX header counts.
+
+        androguard names the loadable dex entries; the counts come from each
+        one's 112-byte header, read through a stock ZipFile so only the header
+        window is decompressed. method_ids near 65536 is the signal a dex is
+        against the reference-count ceiling that forces multidex.
+        """
+        apk = self._apk(path)
+        resolved = self._require(path)
+        names = sorted({str(name) for name in (apk.get_dex_names() or [])}, key=_dex_sort_key)
+        has_more = len(names) > _MAX_DEX_FILES
+        names = names[:_MAX_DEX_FILES]
+        items: list[JsonObject] = []
+        method_ids_total = 0
+        try:
+            archive = zipfile.ZipFile(resolved)
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise ApkError("backend_error", f"cannot open APK zip: {exc}") from exc
+        try:
+            present = set(archive.namelist())
+            for name in names:
+                entry: JsonObject = {"name": name}
+                if name not in present:
+                    # get_dex_names named an entry the archive does not hold;
+                    # say the dex is not there rather than parse random bytes.
+                    entry["valid"] = False
+                    entry["error"] = "not present in archive"
+                    items.append(entry)
+                    continue
+                try:
+                    info = archive.getinfo(name)
+                    entry["size"] = int(info.file_size)
+                    entry["compressed_size"] = int(info.compress_size)
+                    with archive.open(name) as stream:
+                        head = stream.read(_DEX_HEADER_LEN)
+                except (KeyError, OSError, zipfile.BadZipFile) as exc:
+                    entry["valid"] = False
+                    entry["error"] = f"{type(exc).__name__}: {exc}"
+                    items.append(entry)
+                    continue
+                header = _parse_dex_header(head)
+                if header is None:
+                    entry["valid"] = False
+                    entry["error"] = "not a DEX (bad magic or short header)"
+                else:
+                    entry["valid"] = True
+                    entry.update(header)
+                    method_ids_total += int(header["method_ids"])
+                items.append(entry)
+        finally:
+            archive.close()
+        return {
+            "dex_files": items,
+            "count": len(items),
+            "has_more": has_more,
+            "multidex": len(items) > 1,
+            # Sum of the per-dex method_ids tables (references, not de-duplicated
+            # defined methods); an app split across dex to clear the 65536-per-
+            # dex ceiling shows the pressure here.
+            "method_ids_total": method_ids_total,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

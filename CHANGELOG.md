@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -596,6 +596,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同时作用于 MCP 客户端与监控台 Agent 的工具面（后者按 run 读取，改了不必重建 orchestrator）。
 - 监控台增加开屏页，让用户在「本地 PE / Web / Android / 全部」之间选择方向，选择经
   `GET`/`POST /api/workspace/mode` 持久化到用户配置；也可用 `workspace.mode.get/set` 工具。
+
+### 新增（APK DEX 布局）
+
+- `apk.dex_files`（只读）列出 APK 里可加载的 DEX 文件（`classes.dex`/`classes2.dex`/…）及每个
+  DEX 头部的计数。答复带 `dex_files`、`count`、`has_more`、`multidex` 与 `method_ids_total`；每条
+  含 `name`、`size`（声明的解压大小）、`compressed_size` 与 `valid`。合法条目再附 `dex_version` 与头
+  部各 id 表大小 `string_ids`/`type_ids`/`proto_ids`/`field_ids`/`method_ids`/`class_defs` 及
+  `data_size`——`method_ids` 逼近 65536 正是某个 dex 触及「每 dex 引用上限」而被迫拆分 multidex 的
+  信号。计数只从 112 字节的 DEX 头部读取，通过标准 `ZipFile` 只解压头部窗口，因此被压缩炸弹式的
+  dex 不会被完整膨胀。缺失或非 DEX 的条目为 `valid=false` 并带 `error`、不给计数，而不是伪造零值。
+  `method_ids_total` 是各 dex 的 method_ids 表之和（是引用数，不是去重后的已定义方法数）。没有
+  `dex`/`items`/`dexes` 字段。DEX 名单取自 androguard，头部计数按 `classes.dex` 先于 `classes2.dex`
+  的自然顺序排列。
 
 ### 依赖
 

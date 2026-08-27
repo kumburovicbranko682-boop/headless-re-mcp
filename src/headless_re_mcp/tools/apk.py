@@ -71,6 +71,24 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_components(session_id))
 
+    @tools.tool(name="apk.dex_files")
+    def apk_dex_files(session_id: str) -> dict[str, Any]:
+        """List packaged DEX files with per-DEX header counts.
+
+        Answers with dex_files, count, has_more, multidex, and method_ids_total.
+        Each entry carries name, size (declared uncompressed), compressed_size,
+        and valid. A valid entry adds dex_version and the header id-table counts
+        string_ids, type_ids, proto_ids, field_ids, method_ids and class_defs,
+        plus data_size; method_ids near 65536 is a dex against the per-dex
+        reference ceiling that forces multidex. An entry that is missing or not
+        a DEX is valid false with an error and no counts, never fabricated
+        zeros. method_ids_total is the sum of the per-dex method_ids tables
+        (references, not de-duplicated defined methods). Counts come from the
+        112-byte header only, so a bomb-compressed dex is not inflated. There
+        is no dex, items or dexes field.
+        """
+        return _dump(analysis.apk_dex_files(session_id))
+
     @tools.tool(name="apk.native_libs")
     def apk_native_libs(session_id: str) -> dict[str, Any]:
         """List bundled native libraries and their ABIs.
