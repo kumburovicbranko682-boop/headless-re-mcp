@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.network.get` 的坏 base64 分支漏掉 body 字段、破坏统一形状）
+
+- `web.network.get` 的取不到 body 分支（重定向、body 已被 CDP 缓存淘汰）特意补齐
+  `body=""`、`base64_encoded=false`、`body_truncated=false` 再带上 `body_error`，就是为了让
+  调用方读 `result["body"]` 在失败路径上也不会撞到缺键——这条不变量还有专门的回归测试守着。
+  但同一函数里再往下两个分支，CDP 把 body 标成 base64 却解不开时（如长度为 4n+1 的非法串），
+  只回了 `{**entry, "body_error": ...}`：`entry` 是请求摘要，本就没有 `body`/`base64_encoded`/
+  `body_truncated`，于是恰恰在它要告知的那种失败上，把邻居精心维持的统一形状又丢了。
+- 现让这条坏 base64 分支也回同一套文档形状（`body=""`、`base64_encoded=false`、
+  `body_truncated=false` 加 `body_error`），两条失败路径形状一致，读 `result["body"]` 永不缺键；
+  照旧不落盘制品。既有的「坏 base64 要报错而非当作字节」回归测试扩断言这套字段与请求元数据仍在、
+  且未写出任何制品。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
