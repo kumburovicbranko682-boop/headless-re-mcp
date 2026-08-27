@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from inspect import signature
@@ -285,6 +285,33 @@ def _invoke(method: Any, *args: Any, timeout: float, **kwargs: Any) -> Any:
     return method(*args, **extra)
 
 
+@contextlib.contextmanager
+def _frida_backend_errors(action: str) -> Iterator[None]:
+    """Map a raw frida exception from the instrument phase to a FridaError.
+
+    ``_attach_local`` converts an attach failure, and the device-aware
+    ``_java_device`` / ``hook_template_device`` paths convert the
+    ``create_script`` / ``load`` / ``exports_sync`` phase too. The local
+    ``modules`` / ``exports`` / ``memory_read`` / ``hook_template`` paths did
+    not: frida's own exceptions (``RPCException``, ``InvalidOperationError``, a
+    script-eval error such as the ``Java is not defined`` the android hooks
+    raise on a non-ART target) escaped unwrapped. Those are not ``FridaError``,
+    so the service's ``BaseException`` arm mapped them to ``internal_error`` --
+    a logged server incident for what is a target-side instrumentation failure,
+    and a contradiction of the android-hook docstring that promises a
+    ``backend_error`` envelope when the script load raises. A transient
+    transport stall keeps the retryable ``timeout`` code its siblings use.
+    """
+    try:
+        yield
+    except FridaError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - frida raises many native types
+        if _is_timeout(exc):
+            raise FridaError("timeout", f"{action} timed out: {exc}") from exc
+        raise FridaError("backend_error", f"{action} failed: {exc}") from exc
+
+
 class FridaClient:
     def __init__(self) -> None:
         self._frida: Any = None
@@ -335,10 +362,11 @@ class FridaClient:
         self._require(pid, allowed_pid)
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            capped = max(1, min(int(limit), 256))
-            raw = script.exports_sync.modules(capped)
+            with _frida_backend_errors("module enumeration"):
+                script = session.create_script(_ENUM_SCRIPT)
+                script.load()
+                capped = max(1, min(int(limit), 256))
+                raw = script.exports_sync.modules(capped)
             if isinstance(raw, dict):
                 held = list(raw.get("modules") or [])
                 total = int(raw.get("total") or len(held))
@@ -379,9 +407,10 @@ class FridaClient:
         capped = max(1, min(int(limit), 512))
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            raw = script.exports_sync.exports(module_name.strip(), capped + 1)
+            with _frida_backend_errors("export enumeration"):
+                script = session.create_script(_ENUM_SCRIPT)
+                script.load()
+                raw = script.exports_sync.exports(module_name.strip(), capped + 1)
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
             page, has_more = _page(list(raw.get("exports") or []), capped)
@@ -423,9 +452,10 @@ class FridaClient:
             raise FridaError("invalid_params", "size must be 1..262144")
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
-            data = bytes(script.exports_sync.read(int(address), int(size)))
+            with _frida_backend_errors("memory read"):
+                script = session.create_script(_ENUM_SCRIPT)
+                script.load()
+                data = bytes(script.exports_sync.read(int(address), int(size)))
             return {
                 "address": address,
                 "size": size,
@@ -472,10 +502,14 @@ class FridaClient:
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
+            # Match hook_template_device: a script that fails to load on a
+            # non-ART target raises frida's own exception, and the docstring
+            # above promises that reads back as a backend_error envelope, not
+            # the internal_error a bare re-raise produced.
+            _detach_all(sessions)
             if _is_timeout(exc):
-                _detach_all(sessions)
                 raise _timeout_error(deadline) from exc
-            raise
+            raise FridaError("backend_error", f"hook template failed: {exc}") from exc
 
     def _attach_local(self, pid: int, *, timeout: float = _PROBE_TIMEOUT_S) -> Any:
         deadline = _bound_timeout(timeout)
