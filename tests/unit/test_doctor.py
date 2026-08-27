@@ -257,6 +257,42 @@ def test_run_doctor_wires_runtime_hints_for_all_launcher_backends(
         assert f"{runtime} is not on PATH" in probe.summary, name
 
 
+def test_run_doctor_emits_a_probe_for_every_nonpe_backend(tmp_path: Path) -> None:
+    """Every non-PE backend must stay visible in the doctor report.
+
+    doctor is how an operator learns which optional backend to install; a
+    refactor of run_doctor that dropped a probe -- or platform-gated one that
+    should not be -- would silently blind them to that backend, and only the
+    few launchers with a dedicated probe test (radare2, jadx/apktool/apksigner,
+    webcrack) would notice. These backends are all cross-platform and emitted
+    unconditionally, so pin the whole non-PE set by name; a new non-PE backend
+    should be added here when it is added to run_doctor.
+    """
+    report = run_doctor(_settings(None, tmp_path / "artifacts"))
+    names = {probe.name for probe in report.probes}
+    nonpe_backends = {
+        # portable binary backends
+        "radare2",
+        "ghidra",
+        "frida",
+        "java",
+        # android
+        "androguard",
+        "adbutils",
+        "adb",
+        "jadx",
+        "apktool",
+        "apksigner",
+        # web
+        "playwright",
+        "mitmproxy",
+        "webcrack",
+        "wabt",
+    }
+    missing = nonpe_backends - names
+    assert not missing, f"doctor stopped reporting these non-PE backends: {sorted(missing)}"
+
+
 def test_x64dbg_source_probe_requires_official_target(tmp_path: Path) -> None:
     source = tmp_path / "x64dbg"
     (source / "src" / "headless").mkdir(parents=True)
