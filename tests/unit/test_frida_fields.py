@@ -348,6 +348,55 @@ def test_frida_imports_requires_a_module_name() -> None:
     assert info.value.code == "invalid_params"
 
 
+class _AppInfo:
+    def __init__(self, identifier: str, name: str) -> None:
+        self.identifier = identifier
+        self.name = name
+        self.pid = 0
+
+
+def _apps_client(apps: list[_AppInfo]) -> FridaClient:
+    class _AppDev:
+        def enumerate_applications(self) -> list[_AppInfo]:
+            return apps
+
+    client = FridaClient()
+    client._resolve_device = lambda device_id: _AppDev()  # type: ignore[method-assign]
+    return client
+
+
+def test_frida_applications_name_filter_matches_identifier_or_name() -> None:
+    client = _apps_client(
+        [
+            _AppInfo("com.android.systemui", "System UI"),
+            _AppInfo("com.example.alpha", "Alpha"),
+            _AppInfo("com.evil.payload", "Totally Legit"),
+            _AppInfo("org.other.bank", "Legit Banking"),
+        ]
+    )
+    by_id = client.applications("usb", name_filter="evil")
+    assert [a["identifier"] for a in by_id["applications"]] == ["com.evil.payload"]
+    assert by_id["total"] == 1
+    # The display name matches too, case-insensitively.
+    by_name = client.applications("usb", name_filter="legit")
+    assert {a["identifier"] for a in by_name["applications"]} == {
+        "com.evil.payload",
+        "org.other.bank",
+    }
+    assert by_name["total"] == 2
+    doc = _tool_docstring("frida.applications")
+    assert "name_filter" in doc
+
+
+def test_frida_applications_filter_reaches_an_app_past_the_cap() -> None:
+    apps = [_AppInfo(f"com.app{index}", f"App {index}") for index in range(50)]
+    apps.append(_AppInfo("com.app999", "App 999"))
+    out = _apps_client(apps).applications("usb", limit=1, name_filter="app999")
+    assert [a["identifier"] for a in out["applications"]] == ["com.app999"]
+    assert out["total"] == 1
+    assert out["has_more"] is False
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident

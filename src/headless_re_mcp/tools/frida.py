@@ -165,15 +165,23 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.applications")
     def frida_applications(
-        session_id: str, limit: Annotated[int, Field(ge=1, le=1000)] = 256
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 256,
+        name_filter: str = "",
     ) -> dict[str, Any]:
         """List installed applications on the session's connected device.
 
         Answers with applications (identifier, name, pid), count, total, and
         has_more so a page that filled the limit is not read as the whole
         device. The list field is applications, not apps or packages.
+        name_filter keeps only apps whose identifier or name contains that
+        substring (case-insensitive), applied before the cap so a target app
+        past the first `limit` on a full device is findable; total is then the
+        match count.
         """
-        return _dump(analysis.frida_applications(session_id, limit=limit))
+        return _dump(
+            analysis.frida_applications(session_id, limit=limit, name_filter=name_filter)
+        )
 
     @tools.tool(name="frida.spawn")
     def frida_spawn(session_id: str, package: str) -> dict[str, Any]:

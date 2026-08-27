@@ -666,26 +666,41 @@ class FridaClient:
             ) from exc
         return {"id": str(device.id), "name": str(device.name), "type": str(device.type)}
 
-    def applications(self, device_id: str | None, *, limit: int = 256) -> JsonObject:
+    def applications(
+        self, device_id: str | None, *, limit: int = 256, name_filter: str = ""
+    ) -> JsonObject:
         device = self._resolve_device(device_id)
         try:
             apps = _run_deadline(device.enumerate_applications, timeout=30.0)
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
         capped = max(1, min(int(limit), 1000))
-        items = [
+        rows = [
             {
                 "identifier": str(app.identifier),
                 "name": str(app.name),
                 "pid": int(getattr(app, "pid", 0) or 0),
             }
-            for app in apps[:capped]
+            for app in apps
         ]
+        # A case-insensitive substring over identifier or name, applied before
+        # the cap so a target app past the first `limit` on a full device is
+        # reachable (there is no offset). total then reflects the match count.
+        # Python-side like device.packages, not an in-agent JS filter.
+        needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+        if needle:
+            rows = [
+                row
+                for row in rows
+                if needle in str(row["identifier"]).lower()
+                or needle in str(row["name"]).lower()
+            ]
+        items = rows[:capped]
         return {
             "applications": items,
             "count": len(items),
-            "total": len(apps),
-            "has_more": len(apps) > capped,
+            "total": len(rows),
+            "has_more": len(rows) > capped,
         }
 
     def spawn(
