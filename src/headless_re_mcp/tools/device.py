@@ -75,15 +75,24 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         serial: str,
         third_party_only: bool = False,
         limit: Annotated[int, Field(ge=1, le=2000)] = 500,
+        name_filter: str = "",
     ) -> dict[str, Any]:
         """List installed package names, optionally only third-party ones.
 
         Answers with packages, count, has_more, and third_party_only so a
-        page that filled the cap is not read as every package.
+        page that filled the cap is not read as every package. name_filter
+        keeps only packages whose name contains that substring
+        (case-insensitive), applied before the cap so a target package past
+        the first `limit` on a device with hundreds installed is still
+        findable. The filter runs in-process, not in the on-device pm command,
+        so it cannot inject a shell token.
         """
         return _dump(
             analysis.device_packages(
-                serial, third_party_only=third_party_only, limit=limit
+                serial,
+                third_party_only=third_party_only,
+                limit=limit,
+                name_filter=name_filter,
             )
         )
 

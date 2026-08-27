@@ -150,10 +150,18 @@ class DeviceAnalysisMixin:
         return self._adb_wrap("properties", serial=serial, limit=limit)
 
     def device_packages(
-        self, serial: str, third_party_only: bool = False, limit: int = 500
+        self,
+        serial: str,
+        third_party_only: bool = False,
+        limit: int = 500,
+        name_filter: str = "",
     ) -> Result[JsonObject]:
         return self._adb_wrap(
-            "packages", serial=serial, third_party_only=third_party_only, limit=limit
+            "packages",
+            serial=serial,
+            third_party_only=third_party_only,
+            limit=limit,
+            name_filter=name_filter,
         )
 
     def device_install(

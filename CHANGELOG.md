@@ -221,6 +221,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`web.scripts` 无法只看运行时生成脚本，也不能按 URL 定位**。给它加上 `dynamic_only` 与 `url_filter`：前者只留
   `dynamic=True` 的脚本（`eval`/`new Function`/注入 `<script>`，其 url 通常为空，正是加壳器解包后 payload 的落点，url 过滤够不着），
   后者对 url 做大小写不敏感子串匹配；二者都在分页前应用，于是 `total` 即匹配数——在解析了成百上千脚本的页面上直接锁定目标。
+- **`device.packages` 只能分页翻，装了几百个包时定位目标全靠运气**。它原来只有 `third_party_only` 和 `limit`，没有名字过滤——
+  在包很多的真机上，要找的包（`com.evil…`）可能落在 `limit` 之后就够不着了。加上 `name_filter`：对包名做大小写不敏感子串匹配、
+  在 cap 之前应用，于是目标包即便排在前 `limit` 个之后也能捞出来，与 `apk.classes`/`apk.strings` 及 web/proxy 列表过滤同一套路。
+  过滤在进程内做，**不**拼进设备端的 `pm` 命令（`dev.shell` 会走设备 `sh`），所以不可能注入 shell token，延续「无 `adb shell` 透传」的约束。
 - **`apk.native_libs` 只给裸路径，看不出哪个 `.so` 是加壳后的大 payload**。它原来把每个原生库当成一个字符串路径返回，是整个
   apk 面里唯一没用富对象的列表（`certificates`/`components` 早已是带字段的对象）。现把每个条目改成 `{path, abi, size}`：`abi`
   取 `lib/<abi>/` 目录（直接挂在 `lib/` 下的散文件为空），`size` 是从 zip 中央目录读到的**未压缩**字节数——不解压、不读内容即可

@@ -121,6 +121,61 @@ class TestLogcatPriorityFilter:
         assert dev.calls == []
 
 
+class _PackagesDevice:
+    """A fake device whose shell returns a fixed `pm list packages` dump."""
+
+    def __init__(self, output: str) -> None:
+        self._output = output
+
+    def shell(self, args: Any, timeout: float | None = None) -> str:
+        return self._output
+
+
+_PM_OUTPUT = "\n".join(
+    "package:" + name
+    for name in (
+        "com.android.systemui",
+        "com.example.alpha",
+        "com.example.beta",
+        "com.evil.payload",
+        "org.other.app",
+    )
+)
+
+
+class TestPackagesNameFilter:
+    def _backend(self, output: str) -> AdbBackend:
+        backend = AdbBackend()
+        dev = _PackagesDevice(output)
+        backend._device = lambda serial: dev  # type: ignore[method-assign]
+        return backend
+
+    def test_name_filter_isolates_matching_packages(self) -> None:
+        out = self._backend(_PM_OUTPUT).packages("emulator-5554", name_filter="example")
+        assert out["packages"] == ["com.example.alpha", "com.example.beta"]
+        assert out["count"] == 2
+        assert out["has_more"] is False
+
+    def test_name_filter_is_case_insensitive(self) -> None:
+        out = self._backend(_PM_OUTPUT).packages("emulator-5554", name_filter="EVIL")
+        assert out["packages"] == ["com.evil.payload"]
+
+    def test_filter_reaches_a_package_past_the_cap(self) -> None:
+        # limit=1 with a filter still finds the 4th package: non-matching lines
+        # never consume the cap, so the target is not stranded past it.
+        out = self._backend(_PM_OUTPUT).packages(
+            "emulator-5554", limit=1, name_filter="payload"
+        )
+        assert out["packages"] == ["com.evil.payload"]
+        assert out["count"] == 1
+        assert out["has_more"] is False
+
+    def test_no_filter_lists_everything_under_the_cap(self) -> None:
+        out = self._backend(_PM_OUTPUT).packages("emulator-5554")
+        assert out["count"] == 5
+        assert "com.evil.payload" in out["packages"]
+
+
 class TestFridaTargetAuthorization:
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
         client = FridaClient()

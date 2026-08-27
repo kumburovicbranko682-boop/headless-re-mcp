@@ -414,12 +414,23 @@ class AdbBackend:
         return {"properties": props, "count": len(props), "has_more": has_more}
 
     def packages(
-        self, serial: str, *, third_party_only: bool = False, limit: int = 500
+        self,
+        serial: str,
+        *,
+        third_party_only: bool = False,
+        limit: int = 500,
+        name_filter: str = "",
     ) -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PACKAGES))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
+        # Filter in Python, not by appending to the pm command: dev.shell runs a
+        # string through the device's sh, so a caller-supplied argument there
+        # would be a shell-injection vector. Applied before the cap so a target
+        # past the first `limit` packages is still reachable on a busy device --
+        # the same idiom as apk.classes and the web/proxy list filters.
+        needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
         pkgs: list[str] = []
         has_more = False
         for line in str(raw).splitlines():
@@ -427,6 +438,8 @@ class AdbBackend:
                 continue
             name = line.split(":", 1)[1].strip()
             if not name:
+                continue
+            if needle and needle not in name.lower():
                 continue
             if len(pkgs) >= capped:
                 has_more = True
