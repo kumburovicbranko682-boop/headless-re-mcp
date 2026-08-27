@@ -16,8 +16,10 @@ jobs:
   quality:
     runs-on: windows-latest
     # A hung backend probe used to burn the full six-hour default before anyone
-    # noticed the job was not going to finish.
-    timeout-minutes: 30
+    # noticed the job was not going to finish. 40 rather than 30 so the
+    # unit-test step timeout below always expires first: a job-level timeout
+    # cancels the runner before it uploads logs, a step-level one keeps them.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -67,15 +69,17 @@ jobs:
         # -rs prints every skip reason: a suite that quietly skips half of
         # itself reads exactly like a suite that passed.
         # A single stuck process-backed test must name itself and fail before
-        # the 30-minute job deadline erases the useful per-test context.
+        # the job deadline erases the useful per-test context.
         # The step timeout exists because the job timeout has been observed to
         # cancel the whole job with its logs unrecoverable; failing the step
         # instead keeps the transcript and still uploads coverage.
-        # It must also fire well before the job deadline: with ~8 minutes of
-        # install/lint steps plus the fixture build ahead of it, a 25-minute
-        # step budget outlived the 30-minute job budget and a wedged run was
-        # cancelled loglessly anyway. Tests take ~10 minutes when healthy.
-        timeout-minutes: 15
+        # Calibration is from measured runs: a healthy suite takes ~10
+        # minutes but needed 15+ on one slow hosted runner (a 15-minute
+        # budget killed that run two dots from the finish line), and the
+        # install/lint/fixture steps ahead of this one have ranged from 3 to
+        # 10 minutes. 20 clears the slowest observed suite, and the 40-minute
+        # job budget guarantees this step deadline always fires first.
+        timeout-minutes: 20
         run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --cov --cov-report=term --cov-report=xml
 
       - name: Upload coverage
