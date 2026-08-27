@@ -705,6 +705,20 @@ class WebBackend:
                 "url": url,
                 "language": language,
             }
+            # CDP attaches a stackTrace only to a script compiled at runtime --
+            # eval, new Function, or a document.write-injected <script>. Such a
+            # script carries an empty url, so on the list it is indistinguishable
+            # from any other anonymous one, yet for RE it is the most interesting:
+            # a packer's real payload is exactly what lands here. Flag it so a
+            # caller can point web.script.source at the generated code rather than
+            # guess among blank-url rows.
+            if params.get("stackTrace"):
+                entry["dynamic"] = True
+            # The script's character length (when CDP reported it) lets a caller
+            # tell which anonymous script is the big generated blob worth pulling.
+            length = params.get("length")
+            if isinstance(length, int) and length >= 0:
+                entry["length"] = length
             if url_truncated or language_truncated:
                 entry["metadata_truncated"] = True
             with handle.lock:

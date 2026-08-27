@@ -138,7 +138,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         has_more and dropped. The session keeps at most 2000 scripts. A page
         of 100 typical URLs is ~22 KiB; the full list was 441 KiB. Read
         total and has_more rather than assuming the page is complete.
-        metadata_truncated marks bounded oversized script fields.
+        metadata_truncated marks bounded oversized script fields. A script
+        compiled at runtime (eval, new Function, injected <script>) carries a
+        blank url and is flagged dynamic true -- a packer's unpacked payload
+        lands there, so point web.script.source at it; length, when the engine
+        reported it, is the script's character count for sizing which blank-url
+        blob to pull.
         """
         return _dump(
             analysis.web_scripts(

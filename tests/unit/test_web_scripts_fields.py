@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import ast
+from collections import OrderedDict, deque
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any
 
 from headless_re_mcp.backends.web.client import WebBackend
@@ -66,6 +67,67 @@ def test_web_scripts_says_when_older_scripts_were_dropped(monkeypatch: Any) -> N
     assert "has_more" in doc
     assert "dropped" in doc
     assert "metadata_truncated" in doc
+
+
+class _Cdp:
+    def __init__(self) -> None:
+        self.handlers: dict[str, Any] = {}
+
+    def send(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    def on(self, event: str, handler: Any) -> None:
+        self.handlers[event] = handler
+
+
+class _WireHandle:
+    def __init__(self) -> None:
+        self.lock = RLock()
+        self.scripts: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.scripts_dropped = 0
+        self.requests: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.requests_dropped = 0
+        self.console: deque[dict[str, Any]] = deque()
+        self.console_dropped = 0
+        self.cdp = _Cdp()
+
+
+def test_web_flags_a_runtime_generated_script_and_keeps_its_length() -> None:
+    """An eval/new Function script has a blank url; CDP marks it with a
+    stackTrace, so flag it dynamic -- that is where a packer's real payload
+    lands -- and keep the reported length so a caller can size the blob.
+    """
+    handle = _WireHandle()
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    handle.cdp.handlers["Debugger.scriptParsed"](
+        {
+            "scriptId": "1",
+            "url": "https://x/app.js",
+            "scriptLanguage": "JavaScript",
+            "length": 1234,
+        }
+    )
+    handle.cdp.handlers["Debugger.scriptParsed"](
+        {
+            "scriptId": "2",
+            "url": "",
+            "scriptLanguage": "JavaScript",
+            "length": 5678,
+            "stackTrace": {"callFrames": [{"url": "https://x/app.js"}]},
+        }
+    )
+
+    loaded = handle.scripts["1"]
+    generated = handle.scripts["2"]
+    assert "dynamic" not in loaded
+    assert loaded["length"] == 1234
+    assert generated["dynamic"] is True
+    assert generated["length"] == 5678
+    assert generated["url"] == ""
+    doc = _tool_docstring("web.scripts")
+    assert "dynamic" in doc
+    assert "length" in doc
 
 
 def test_web_wasm_list_says_when_older_scripts_were_dropped(monkeypatch: Any) -> None:

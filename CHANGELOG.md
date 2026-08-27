@@ -218,6 +218,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`web.scripts` 无法区分运行时生成的脚本，而那正是逆向最想看的**。`Debugger.scriptParsed` 对 eval、
+  `new Function`、document.write 注入的脚本会附带 `stackTrace`，这类脚本 url 为空，在列表里和其它匿名脚本无从分辨——
+  可 packer 解包后的真实载荷恰恰落在这里。`on_script` 现在据 `stackTrace` 是否存在打上 `dynamic: true`，并在引擎给出
+  `length` 时一并记录脚本字符数，`web.scripts` 因此能把生成脚本标出来、按大小挑出值得 `web.script.source` 拉取的那一个。
 - **修正上一条引入的疏漏：har.export 专用的内联请求体泄漏进了 `web.network.list`/`web.network.get`**。为让
   `har.export` 能写出 `request.postData` 而在 ring 上留的 8 KiB 内联 `post_data`（连同 `post_data_truncated`）本是
   纯内部细节，却既进了本应精简的 `network.list` 索引（每行多带一份 POST 载荷），又进了 `network.get`（与它按需拉取的
