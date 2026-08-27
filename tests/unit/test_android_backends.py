@@ -368,7 +368,7 @@ class TestApkOpenRejectsUnparseableManifestStructurally:
     def test_open_raises_a_structured_error_not_a_bare_exception(self, tmp_path: Path) -> None:
         pytest.importorskip(
             "androguard",
-            reason="androguard not installed — apk.open hostile-input guard needs it (skip != pass)",
+            reason="androguard not installed — apk.open hostile-input guard needs it (skip!=pass)",
         )
         from headless_re_mcp.backends.apk import ApkClient
         from headless_re_mcp.backends.apk.client import ApkError

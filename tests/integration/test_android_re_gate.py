@@ -200,15 +200,14 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
         assert isinstance(opened.ok, bool)
         if ApkClient().available:
             # Real androguard tolerates the unparseable synthetic manifest and
-            # opens the zip, so apk.open must degrade to a structured overview --
-            # zip-derived native_abis intact, None for the manifest fields it
-            # cannot read -- and never leak a raw KeyError from
-            # get_androidversion_name/code as an internal_error incident.
-            assert opened.ok, opened.error
-            assert opened.data["opened"] is True
-            assert set(opened.data["native_abis"]) == {"arm64-v8a", "x86_64"}
-            assert opened.data["version_name"] is None
-            assert opened.data["version_code"] is None
+            # opens the zip, but its package name comes back empty. apk.open
+            # refuses that with a *structured* backend_error -- it will not
+            # answer {opened: True} for a zip that is not really an APK, nor leak
+            # a raw KeyError from get_androidversion_name/code that the service
+            # would file as an internal_error incident.
+            assert opened.ok is False
+            assert opened.error is not None
+            assert opened.error.code == "backend_error"
         else:
             # No androguard: a clean capability_unavailable, not a crash.
             assert opened.ok is False
