@@ -311,3 +311,85 @@ def test_the_asyncio_hook_logs_unawaited_failures_and_scrubs_secrets(
 def test_installing_the_asyncio_hook_outside_a_loop_is_a_quiet_no_op() -> None:
     """install_global_exception_hooks runs before any loop exists; it must not raise."""
     boundary.install_asyncio_exception_handler()
+
+
+def test_the_asyncio_hook_accepts_an_explicit_loop() -> None:
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        boundary.install_asyncio_exception_handler(loop)
+        assert loop.get_exception_handler() is not None
+    finally:
+        loop.close()
+
+
+@pytest.fixture
+def restored_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    monkeypatch.setattr(sys, "unraisablehook", sys.unraisablehook)
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+
+
+def test_the_process_hook_prints_an_envelope_and_forwards_ctrl_c(
+    incident_log: Path,
+    restored_hooks: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import sys
+
+    boundary.install_global_exception_hooks("proc-test")
+
+    sys.excepthook(RuntimeError, RuntimeError("password=hunter2 went bang"), None)
+    err = capsys.readouterr().err
+    payload = json.loads(err.strip().splitlines()[-1])
+    assert payload["error"]["code"] == "uncaught_exception"
+    assert "hunter2" not in err
+    assert "[REDACTED]" in payload["error"]["message"]
+
+    forwarded: list[tuple[object, ...]] = []
+    monkeypatch.setattr(sys, "__excepthook__", lambda *args: forwarded.append(args))
+    sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
+    assert forwarded and forwarded[0][0] is KeyboardInterrupt
+    assert "uncaught_exception" not in capsys.readouterr().err
+
+
+def test_the_thread_hook_synthesizes_a_missing_exception(
+    incident_log: Path, restored_hooks: None
+) -> None:
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    boundary.install_global_exception_hooks("proc-test")
+
+    args = SimpleNamespace(exc_value=None, exc_traceback=None, thread=None)
+    threading.excepthook(cast(Any, args))
+
+    logged = incident_log.read_text(encoding="utf-8")
+    assert "thread:unknown" in logged
+    assert "received no exception" in logged
+
+
+def test_the_unraisable_hook_logs_real_and_synthesized_failures(
+    incident_log: Path, restored_hooks: None
+) -> None:
+    import sys
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    boundary.install_global_exception_hooks("proc-test")
+
+    sys.unraisablehook(
+        cast(Any, SimpleNamespace(exc_value=ValueError("del exploded"), object="finalizer"))
+    )
+    sys.unraisablehook(
+        cast(Any, SimpleNamespace(exc_value=None, err_msg="gc dropped it", object="thing"))
+    )
+
+    logged = incident_log.read_text(encoding="utf-8")
+    assert "unraisable:finalizer" in logged
+    assert "del exploded" in logged
+    assert "gc dropped it" in logged
