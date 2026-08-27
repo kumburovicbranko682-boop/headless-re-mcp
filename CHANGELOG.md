@@ -180,6 +180,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分代码/文件/文本时各字段齐备、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及五个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 修复（r2 的 output_bytes 在撞上 8 MiB 排空上限时会低报）
+
+- **`r2.run` 的 `output_bytes` 会把 `run_bounded` 的 8 MiB 排空缓冲当成真实大小低报**。r2
+  输出被两层收口：`run_bounded` 最多读 8 MiB 的排空缓冲，`run()` 再留前 1 MiB 作 `raw`；
+  1 MiB 那刀通过 `truncated` / `output_bytes` / `returned_bytes` 如实上报。但当 r2 吐出的
+  内容超过 8 MiB 时，`completed.stdout` 就是那 8 MiB 缓冲、`completed.stdout_truncated`
+  置位——此时 `output_bytes`（我们抓到的字节数）只是个**下界**，不是总量，而调用方无从知晓，
+  会把 8 MiB 上限当成整份输出的大小（在超大样本上 `izj` 全量字符串、`aflj` 全量函数 JSON 可
+  达此量级）。现在 `run()` 读取 `stdout_truncated`：撞上排空上限时补一个
+  `output_bytes_capped: True`，点明 `output_bytes` 是下界而非总量；未超过 8 MiB 的普通 1 MiB
+  截断不加该标志。回归测试覆盖撞上/未撞上两种情形。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具

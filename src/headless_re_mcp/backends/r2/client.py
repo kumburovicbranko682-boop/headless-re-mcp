@@ -156,6 +156,10 @@ class R2Client:
                 f"failed to launch {self.executable}: {exc}",
             ) from exc
         produced = len(completed.stdout)
+        # run_bounded reads at most its 8 MiB drain buffer. When r2 emits more,
+        # completed.stdout is that buffer and stdout_truncated is set: `produced`
+        # is then a floor, so output_bytes below is a lower bound, not the total.
+        drain_capped = completed.stdout_truncated
         out = completed.stdout[:_MAX_OUTPUT]
         err = completed.stderr[:_MAX_OUTPUT]
         if completed.returncode != 0:
@@ -176,6 +180,10 @@ class R2Client:
             payload["truncated"] = True
             payload["output_bytes"] = produced
             payload["returned_bytes"] = len(out)
+            if drain_capped:
+                # r2 produced more than the drain buffer held, so output_bytes is
+                # a floor. Say so, or a caller reads the 8 MiB cap as the total.
+                payload["output_bytes_capped"] = True
         return enrich_r2_payload(payload, binary=binary)
 
 
