@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住进程级 adb forward 的空闲回收门控：最后一个 Android 会话在时不回收，走后才回收）
+
+- `adb forward` 绑定活在 adb server 上而非本进程，关会话并不会移除它，后端又把进程持有的转发数封在\
+  `_MAX_FORWARDS`(32)，故长期运行的 agent 每次转发 frida/调试端口最终会绑不出新的。`_release_adb_forwards_if_idle`\
+  在每次 `close_session` 时充当清扫，但它是刻意门控的，且两侧都要紧：只要还有任一 Android(APK)会话存活就\
+  **不能**回收——正在跑的 frida/gdb 会话正是经这样一条转发抵达目标，因为**另一个**会话恰好关闭就把它拆掉会\
+  无声打断在跑的插桩；而一旦最后一个存活 APK 会话消失就**必须**回收，否则转发会在 adb server 上泄漏到进程退出、\
+  径直逼近那个会拒绝新绑定的 32 上限。此前只钉住了 `release_forwards` 本身与 `close_all` 的接线，决定**是否**\
+  调用它的空闲门控没有测试。新增 `test_adb_forward_idle_release.py` 钉住它:无会话/仅终态(closed/failed/closing)\
+  APK/仅存活 web/PE 会话都算空闲并回收;任一存活(created/ready/running/suspended)APK 会话都抑制回收——哪怕它\
+  旁边还站着已关闭的同类;缺少自持的 adb 后端时安静容忍、绝不崩。(纯测试补充,无行为变更。)
+
 ### 测试（钉住 device.pull 本地文件名的后缀消毒：设备可控的远端路径不能左右落盘位置）
 
 - `device.pull` 的远端路径是设备可控输入,而本地落盘名的扩展名由 `_safe_pull_suffix` 从该字符串派生(其余部分\
