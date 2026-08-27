@@ -419,8 +419,21 @@ def register_agent_routes(
         authorize(authorization)
         if store.get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="run_not_found")
+        events = store.list_events(run_id, after=after)
+        # list_events is a forward page bounded by a count and a byte budget, so
+        # a full-looking page can still sit in front of more. Hand back the
+        # cursor to continue and say whether continuing would return anything,
+        # rather than letting the first page read as the whole run history.
+        next_after = events[-1].seq if events else after
+        has_more = store.has_events_after(run_id, next_after) if events else False
         return JSONResponse(
-            {"ok": True, "events": [event.dump() for event in store.list_events(run_id, after=after)]}
+            {
+                "ok": True,
+                "events": [event.dump() for event in events],
+                "count": len(events),
+                "has_more": has_more,
+                "next_after": next_after,
+            }
         )
 
     @app.post("/api/agent/missions", status_code=201)

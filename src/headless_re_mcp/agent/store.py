@@ -571,6 +571,23 @@ class AgentStore:
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
+    def has_events_after(self, run_id: str, after: int) -> bool:
+        """Whether any event on the run has a higher seq than ``after``.
+
+        list_events returns a forward page bounded by a count and a byte
+        budget, so a full-looking page can still sit in front of more. This is
+        how a one-shot reader learns there is a next page to fetch rather than
+        taking the first as the whole history.
+        """
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT EXISTS("
+                "  SELECT 1 FROM run_events WHERE run_id=? AND seq>?"
+                ") AS more",
+                (run_id, max(0, after)),
+            ).fetchone()
+        return bool(row["more"]) if row is not None else False
+
     def list_thread_events(self, thread_id: str, *, limit: int = 4000) -> list[RunEvent]:
         """Newest-capped event history across every retained run on a thread.
 
