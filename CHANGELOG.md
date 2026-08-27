@@ -61,6 +61,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（web.network.list 补捕获失败/被拦截的请求)
+
+- Web 网络抓取只订阅了 `Network.requestWillBeSent` 与 `Network.responseReceived`。一个失败的请求
+  (被 CSP/扩展拦截、连接被拒、DNS/CORS 失败、被导航打断)只会触发 `Network.loadingFailed`,而这个
+  事件无人订阅——于是它一直停在 `status: None`,和"仍在飞行中"的请求无法区分,失败原因(net::ERR_...、
+  blockedReason)也丢了。现在补上该订阅:命中的条目标记 `failed: true` 与 `error_text`(浏览器给出
+  `blockedReason` 时再加 `blocked_reason`),`status` 仍为 null——由 `failed` 来表明它不会再有响应。
+  与之前补 `Runtime.exceptionThrown`(未捕获异常进控制台)、以及 `proxy.flow.get` 披露 errored flow
+  同属一类修复。回归测试以假 CDP 驱动 `_wire_events`,覆盖:标记与原因、无 blockedReason 时不加该字段、
+  超长原因限长并标 `metadata_truncated`、未见过的 requestId 不会凭空造条目。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
