@@ -145,6 +145,25 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 
+    @tools.tool(name="apk.field_xrefs")
+    def apk_field_xrefs(
+        session_id: str,
+        field_name: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List where a field named field_name is read and written.
+
+        The field-level analogue of apk.xrefs: for a static key, a config flag
+        or a token cache, read vs write matters -- a value only ever read is a
+        constant, one that is written is set somewhere worth finding. Answers
+        with accesses (each access "read" or "write" plus the class and method
+        touching the field), field_name, count, reads, writes, matched, and
+        has_more. Rows are deduped by (access, class, method) and sorted; matched
+        is false when no field carried the name (distinct from a field nothing
+        touches); has_more means a page filled the limit.
+        """
+        return _dump(analysis.apk_field_xrefs(session_id, field_name, limit=limit))
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

@@ -451,6 +451,67 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def field_xrefs(self, path: Path, field_name: str, *, limit: int = 100) -> JsonObject:
+        """List where a field named field_name is read and written.
+
+        The field-level analogue of apk.xrefs: for a static key, a config flag
+        or a token cache, "who touches this" is the question, and read vs write
+        matters -- a value only ever read is a constant, one that is written is
+        set somewhere worth finding. Walks androguard's field xrefs for every
+        field carrying the name (names are not unique across classes, so several
+        fields may contribute, as with method xrefs). Each row is access
+        ("read" or "write"), class and method of the accessing method,
+        de-duplicated by that triple and sorted. reads and writes count the rows
+        of each kind. matched says whether any field carried the name, so "no
+        such field" is distinct from "a field nothing touches".
+        """
+        parsed = self._parsed(path)
+        target = field_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "field_name is required")
+        _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
+        matched = False
+        has_more = False
+        seen: set[tuple[str, str, str]] = set()
+        for field in parsed.analysis.get_fields():
+            try:
+                name = str(field.get_field().get_name())
+            except Exception:  # noqa: BLE001 - external/malformed fields vary
+                continue
+            if name != target:
+                continue
+            matched = True
+            for access, pairs in (
+                ("read", field.get_xref_read()),
+                ("write", field.get_xref_write()),
+            ):
+                for _klass, method in pairs:
+                    key = (access, str(method.class_name), str(method.name))
+                    if key in seen:
+                        continue
+                    if len(seen) >= cap:
+                        has_more = True
+                        break
+                    seen.add(key)
+                if has_more:
+                    break
+            if has_more:
+                break
+        accesses = [
+            {"access": access, "class": klass, "method": meth}
+            for access, klass, meth in sorted(seen)
+        ]
+        reads = sum(1 for row in accesses if row["access"] == "read")
+        return {
+            "field_name": target,
+            "accesses": accesses,
+            "count": len(accesses),
+            "reads": reads,
+            "writes": len(accesses) - reads,
+            "matched": matched,
+            "has_more": has_more,
+        }
+
 
 def _dotted_to_smali(name: str) -> str:
     """com.example.Foo -> Lcom/example/Foo; so either form resolves a class."""
