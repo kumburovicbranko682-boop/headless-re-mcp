@@ -17,9 +17,17 @@ from headless_re_mcp.workflows.engine import (
     WorkflowState,
     acknowledge_workflow_breakpoint_operation,
     apply_workflow_module_refresh,
+    cancel_workflow_navigation,
     consume_workflow_events,
+    disable_workflow_breakpoint_intent,
+    prepare_workflow_reset,
     put_workflow_breakpoint_intent,
+    remove_workflow_breakpoint_intent,
+    request_workflow_module_refresh,
     start_workflow_navigation,
+    timeout_workflow_navigation,
+    track_workflow_module,
+    untrack_workflow_module,
 )
 from headless_re_mcp.workflows.lifecycle import (
     ModuleLifecycleState,
@@ -212,3 +220,113 @@ def test_active_navigation_must_share_lifecycle_cursor() -> None:
             lifecycle=ModuleLifecycleState(cursor=9),
             navigation=navigation,
         )
+
+
+def test_cancel_navigation_without_an_active_one_is_a_no_op() -> None:
+    transition = cancel_workflow_navigation(_state())
+    assert transition.state.navigation is None
+    assert transition.navigation_effects == ()
+
+
+def test_cancel_navigation_stops_an_active_navigation() -> None:
+    started = start_workflow_navigation(_state(), EventPattern.create("debug.paused"))
+    cancelled = cancel_workflow_navigation(started.state)
+    assert cancelled.state.navigation is not None
+    assert cancelled.state.navigation.status == NavigationStatus.CANCELLED
+    assert cancelled.navigation_effects == (NavigationEffect.ENSURE_PAUSED,)
+
+
+def test_timeout_navigation_without_an_active_one_is_a_no_op() -> None:
+    transition = timeout_workflow_navigation(_state())
+    assert transition.state.navigation is None
+    assert transition.navigation_effects == ()
+
+
+def test_timeout_navigation_ends_an_active_navigation() -> None:
+    started = start_workflow_navigation(_state(), EventPattern.create("debug.paused"))
+    timed_out = timeout_workflow_navigation(started.state)
+    assert timed_out.state.navigation is not None
+    assert timed_out.state.navigation.status == NavigationStatus.TIMED_OUT
+    assert timed_out.navigation_effects == (NavigationEffect.ENSURE_PAUSED,)
+
+
+def test_track_workflow_module_binds_a_module_into_an_empty_state() -> None:
+    transition = track_workflow_module(
+        WorkflowState(),
+        "payload",
+        ModuleSelector(name="payload.dll"),
+        _mapping(0x7FF800000000),
+    )
+    module = transition.state.lifecycle.get("payload")
+    assert module is not None
+    assert module.runtime.base == 0x7FF800000000
+
+
+def test_untrack_workflow_module_drops_the_binding() -> None:
+    state = _state()
+    assert state.lifecycle.get("payload") is not None
+
+    transition = untrack_workflow_module(state, "payload")
+
+    assert transition.state.lifecycle.get("payload") is None
+    assert transition.state.lifecycle.modules == ()
+
+
+def test_remove_workflow_breakpoint_intent_deletes_an_unbound_intent() -> None:
+    state = put_workflow_breakpoint_intent(
+        _state(),
+        BreakpointIntent(id="scratch", module_key="payload", rva=0x40),
+    ).state
+    assert state.breakpoints.intent("scratch") is not None
+
+    transition = remove_workflow_breakpoint_intent(state, "scratch")
+
+    assert transition.state.breakpoints.intent("scratch") is None
+
+
+def test_request_module_refresh_defaults_to_every_tracked_module() -> None:
+    transition = request_workflow_module_refresh(_state())
+    # keys=None selects every tracked module and surfaces it as the refresh set
+    # without mutating the lifecycle.
+    assert transition.refresh_module_keys == {"payload"}
+    assert transition.state.lifecycle.get("payload") is not None
+
+
+def test_request_module_refresh_rejects_untracked_keys() -> None:
+    with pytest.raises(WorkflowInvariantError, match="cannot refresh untracked modules: ghost"):
+        request_workflow_module_refresh(_state(), frozenset({"ghost"}))
+
+
+def test_reset_disables_enabled_intents_and_skips_already_disabled_ones() -> None:
+    state, _ = _with_bound_breakpoint(_state())
+    # A second intent, then disabled, so reset's loop meets both an enabled
+    # intent (oep) and an already-disabled one (second, the skip branch).
+    state = put_workflow_breakpoint_intent(
+        state,
+        BreakpointIntent(id="second", module_key="payload", rva=0x2000),
+    ).state
+    state = disable_workflow_breakpoint_intent(state, "second").state
+    assert {intent.id: intent.enabled for intent in state.breakpoints.intents} == {
+        "oep": True,
+        "second": False,
+    }
+
+    reset = prepare_workflow_reset(state)
+
+    assert all(not intent.enabled for intent in reset.state.breakpoints.intents)
+    # oep still holds its binding, so disabling it queues that binding's removal.
+    assert [
+        operation.kind for operation in reset.breakpoint_reconciliation.operations
+    ] == [BreakpointOperationKind.REMOVE]
+
+
+def test_reset_also_cancels_an_active_navigation() -> None:
+    state, _ = _with_bound_breakpoint(_state())
+    started = start_workflow_navigation(state, EventPattern.create("debug.paused"))
+
+    reset = prepare_workflow_reset(started.state)
+
+    assert reset.state.navigation is not None
+    assert reset.state.navigation.status == NavigationStatus.CANCELLED
+    assert reset.navigation_effects == (NavigationEffect.ENSURE_PAUSED,)
+    assert all(not intent.enabled for intent in reset.state.breakpoints.intents)

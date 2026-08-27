@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（把 workflows/engine 的编排包装补到 100%）
+
+- `workflows/engine.py`（在 lifecycle/breakpoints/navigation 之上的薄编排层）停在 95%：几个纯转发
+  包装从没被任一测试直接走到。`test_workflow_engine.py` 里补齐它们，走公开 API：`track_workflow_module`
+  （空态里绑入模块）、`untrack_workflow_module`（摘除绑定）、`remove_workflow_breakpoint_intent`
+  （删除未绑定的 intent）、`request_workflow_module_refresh`（keys=None 时默认选中全部已跟踪模块并
+  如实上报刷新集，以及点名未跟踪 key 时抛 `cannot refresh untracked modules`）、
+  `cancel_workflow_navigation` / `timeout_workflow_navigation`（无活动导航时的 no-op 早返回，以及有
+  活动导航时分别落到 `CANCELLED` / `TIMED_OUT` 并发 `ENSURE_PAUSED`），以及 `prepare_workflow_reset`
+  的两条边缘：混入一个已禁用 intent 以走「已禁用便跳过」那一支（同时验证仍启用的 intent 被禁用、其绑定
+  排入 REMOVE），和存在活动导航时一并取消导航。engine.py 覆盖率升至 100%（本文件独立即可达成，不再依赖
+  contention 较高的 `test_workflow_{unhappy_paths,runtime,executor}.py`）。纯测试新增，无产品行为变更；
+  16 条用例、`ruff` 与 `mypy` 均通过。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
