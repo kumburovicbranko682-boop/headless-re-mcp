@@ -138,7 +138,21 @@ class ProxyAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def proxy_replay(self, session_id: str, flow_id: str) -> Result[JsonObject]:
-        return self._proxy_wrap(session_id, "replay", session_id, flow_id)
+        try:
+            data = self._proxy.replay(session_id, flow_id)
+            # replay re-sends a captured request to the upstream: a real,
+            # mutating network action (a replayed login or purchase reaches the
+            # server again), not a passive read. Record it the way proxy.start/
+            # stop/export_har already do -- a timeline that omits replays cannot
+            # show the session touched the network beyond its own capture.
+            _timeline_append(
+                self, session_id, "proxy.replay", "proxy flow replayed", flow_id=flow_id
+            )
+            return _success(data, session_id=session_id, backend="proxy")
+        except ProxyError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def proxy_export_har(self, session_id: str) -> Result[JsonObject]:
         try:
