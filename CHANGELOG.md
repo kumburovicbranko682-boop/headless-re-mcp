@@ -124,6 +124,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（高位地址事件不再毒化整个调试事件流）
+
+- 原生 shim 经 jansson 只能发**有符号** 64 位整数（`json_int_t`），而事件里的指针字段
+  （`exception.address`、`thread.created.start_address`、`module.*.base` 等）是全范围
+  `duint`：被调试程序跳到内核区/非规范地址触发异常时，≥2^63 的地址以补码负数上线。
+  Python 端 `parse_debug_event_batch` 过去对所有整型字段一律要求非负，一条这样的事件
+  会让**整批**解析抛 `DebugEventProtocolError`——`dynamic.events` 读取、事件 drain 泵、
+  乃至依赖事件流确认状态迁移的 `dynamic.wait`（resume/step）全部持续失败，直到 1024 条
+  后续事件把该记录挤出原生环形缓冲。这等于给了被调试程序一个廉价的事件通道拒绝服务
+  （对恶意样本的反调试手法而言是现实输入）。现对每种事件里明确是指针语义的字段接受
+  负值并按 mod 2^64 还原成原始无符号地址（线格式不变，新旧 shim/客户端双向兼容）；
+  计数类字段（`process_id`、`exit_code`、`code`、`size`、`type` 等，C++ 侧均来自 DWORD/枚举，
+  合法值恒非负）保持严格非负校验。新增回归：负数补码地址还原、计数字段负值仍拒收。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

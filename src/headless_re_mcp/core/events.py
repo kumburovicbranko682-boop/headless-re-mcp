@@ -8,6 +8,7 @@ DEBUG_EVENT_CAPACITY = 1024
 DEFAULT_DEBUG_EVENT_BATCH = 100
 MAX_DEBUG_EVENT_BATCH = 256
 _MAX_JSON_INTEGER = (1 << 63) - 1
+_MIN_JSON_INTEGER = -(1 << 63)
 
 _EVENT_INTEGER_FIELDS: dict[str, frozenset[str]] = {
     "debug.init": frozenset(),
@@ -32,6 +33,19 @@ _EVENT_INTEGER_FIELDS: dict[str, frozenset[str]] = {
     "debug.attaching": frozenset({"process_id"}),
     "debug.detaching": frozenset({"process_id"}),
     "debug.unrecovered_gap": frozenset(),
+}
+# The native shim serializes duint pointers through jansson's signed 64-bit
+# json_int_t, so an address at or above 2**63 (a debuggee faulting at a kernel
+# or non-canonical address, a thread created with a garbage start routine)
+# arrives as its two's-complement negative. These debuggee-controlled fields
+# must decode back to the unsigned value instead of failing the whole batch.
+_EVENT_POINTER_FIELDS: dict[str, frozenset[str]] = {
+    "process.created": frozenset({"image_base", "start_address"}),
+    "thread.created": frozenset({"start_address", "thread_local_base"}),
+    "module.loaded": frozenset({"base"}),
+    "module.unloaded": frozenset({"base"}),
+    "breakpoint.hit": frozenset({"address"}),
+    "exception": frozenset({"address"}),
 }
 _EVENT_TEXT_FIELDS: dict[str, frozenset[str]] = {
     "debug.init": frozenset({"path"}),
@@ -217,6 +231,7 @@ def _parse_event(payload: object) -> DebugEvent:
 
 def _parse_event_data(kind: str, data: JsonObject) -> JsonObject:
     integer_fields = _EVENT_INTEGER_FIELDS[kind]
+    pointer_fields = _EVENT_POINTER_FIELDS.get(kind, frozenset())
     text_fields = _EVENT_TEXT_FIELDS.get(kind, frozenset())
     boolean_fields = _EVENT_BOOLEAN_FIELDS.get(kind, frozenset())
     truncation_fields = frozenset(f"{key}_truncated" for key in text_fields)
@@ -227,10 +242,15 @@ def _parse_event_data(kind: str, data: JsonObject) -> JsonObject:
     parsed: JsonObject = {}
     for key, value in data.items():
         if key in integer_fields:
-            if type(value) is not int or not 0 <= value <= _MAX_JSON_INTEGER:
+            pointer = key in pointer_fields
+            minimum = _MIN_JSON_INTEGER if pointer else 0
+            if type(value) is not int or not minimum <= value <= _MAX_JSON_INTEGER:
+                qualifier = "a" if pointer else "a non-negative"
                 raise DebugEventProtocolError(
-                    f"debug event data {key} must be a non-negative signed 64-bit integer"
+                    f"debug event data {key} must be {qualifier} signed 64-bit integer"
                 )
+            if value < 0:
+                value += 1 << 64
         elif key in text_fields:
             maximum_bytes = 1023 if key == "path" else 511
             if not isinstance(value, str) or len(value.encode("utf-8")) > maximum_bytes:
