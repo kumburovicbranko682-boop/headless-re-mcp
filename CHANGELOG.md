@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（webcrack/wabt 局部结果不再谎报为完整产物）
+
+- `js.deobfuscate`/`js.beautify`/`js.unpack_bundle`(webcrack)与 `wasm.wat`/`wasm.info`(wabt)这些
+  一次性子进程过去只在退出码非 0 **且**什么都没产出时才报错——非 0 退出但已产出内容的情况被容忍
+  (残缺结果仍值得留),却把退出码一并吞掉、当成成功返回。于是一次「反编译到一半失败」「只解出部分
+  模块」「dump 中途报错」的运行,被回成看似完整的 `code`/`files`/`wat`/`objdump`,调用方据此断定
+  「这就是全部」。现所有五个工具经统一的 `_mark_partial` 附 `partial`(`true`/`false`);局部时加
+  `exit_code`、`note` 与截断后的 `stderr`,`js.unpack_bundle` 的 `file_count` 也不再被误读成整包。
+  与本轮 jadx 的 `partial` 披露同构,让反编译/解包类后端的诚实契约保持一致。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的

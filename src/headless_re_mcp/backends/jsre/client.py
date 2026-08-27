@@ -106,6 +106,27 @@ def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
     return result
 
 
+def _mark_partial(result: JsonObject, *, code: int, stderr: str) -> JsonObject:
+    """Record a non-zero exit that still produced output.
+
+    The one-shot tools here only fail hard when *nothing* came back; a non-zero
+    exit with output on disk is tolerated, because the partial result is still
+    worth having. But a caller reading the payload as a complete deobfuscation,
+    unpack or dump would miss that the tool gave up partway. ``partial`` says so
+    (and carries the exit code and a bounded stderr when it is set).
+    """
+    result["partial"] = code != 0
+    if code != 0:
+        result["exit_code"] = code
+        result["note"] = (
+            "tool exited with errors after producing output; the result may be "
+            "incomplete"
+        )
+        if stderr.strip():
+            result["stderr"] = stderr[:_MAX_STDERR]
+    return result
+
+
 class JsClient:
     """webcrack-backed JavaScript deobfuscation and bundle unpacking."""
 
@@ -130,7 +151,9 @@ class JsClient:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "code", include_bytes=True)
+        return _mark_partial(
+            _bounded_output(stdout, "code", include_bytes=True), code=code, stderr=stderr
+        )
 
     def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         # webcrack always unminifies; expose it under a formatting-focused name.
@@ -161,7 +184,7 @@ class JsClient:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), _MAX_LISTED_FILES))
         window = files[start : start + cap]
-        return {
+        result: JsonObject = {
             "output_dir": str(out_dir),
             "file_count": file_count,
             "files": window,
@@ -171,6 +194,7 @@ class JsClient:
             "has_more": start + len(window) < file_count,
             "listing_truncated": listed_more,
         }
+        return _mark_partial(result, code=code, stderr=stderr)
 
 
 class WasmClient:
@@ -197,7 +221,9 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "wat", include_bytes=True)
+        return _mark_partial(
+            _bounded_output(stdout, "wat", include_bytes=True), code=code, stderr=stderr
+        )
 
     def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
@@ -209,7 +235,9 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "objdump", include_bytes=False)
+        return _mark_partial(
+            _bounded_output(stdout, "objdump", include_bytes=False), code=code, stderr=stderr
+        )
 
 
 def _discover_webcrack() -> Path | None:
