@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.har import build_bounded_har
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -685,7 +686,9 @@ class WebBackend:
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
-            entries = [
+            # requests is evicted from the front, so values() is oldest-first;
+            # the bounded serializer drops the oldest and keeps the newest.
+            entries: list[dict[str, object]] = [
                 {
                     "request": {"method": e.get("method"), "url": e.get("url")},
                     "response": {
@@ -696,35 +699,16 @@ class WebBackend:
                 }
                 for e in handle.requests.values()
             ]
-        import json
-
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
+        text, entry_count, truncated, size = build_bounded_har(
+            entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES
+        )
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        text = json.dumps(har, ensure_ascii=False)
-        truncated = False
-        encoded = text.encode("utf-8")
-        while entries and len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
-            drop = max(1, len(entries) // 8)
-            del entries[-drop:]
-            har["log"]["entries"] = entries
-            text = json.dumps(har, ensure_ascii=False)
-            encoded = text.encode("utf-8")
-            truncated = True
-        if len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
-            raise WebError(
-                "too_large",
-                "HAR export exceeds capture cap",
-                size=len(encoded),
-                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
-            )
         out_path.write_text(text, encoding="utf-8")
         return {
             "path": str(out_path),
-            "entry_count": len(entries),
+            "entry_count": entry_count,
             "truncated": truncated,
-            "size": len(encoded),
+            "size": size,
         }
 
     def close_all(self) -> None:

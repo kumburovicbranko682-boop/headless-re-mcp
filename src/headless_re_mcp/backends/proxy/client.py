@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.har import build_bounded_har
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
+
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
 _REPLAY_WAIT_S = 15.0
@@ -562,9 +565,9 @@ class ProxyBackend:
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
         inst = self._get(session_id)
-        import json
-
-        entries = [
+        # snapshot() is oldest-first, so the bounded serializer drops the oldest
+        # flows and keeps the newest when the ring overflows the capture cap.
+        entries: list[dict[str, object]] = [
             {
                 "request": {"method": f.get("method"), "url": f.get("url")},
                 "response": {
@@ -574,12 +577,21 @@ class ProxyBackend:
             }
             for f in inst.recorder.snapshot()
         ]
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
+        # The ring is count-capped, but each summary still carries a URL up to
+        # 16 KiB, so 2000 of them can be tens of megabytes -- written whole and
+        # then read whole again by the artifact hasher. Bound the export the
+        # way the browser HAR already is.
+        text, entry_count, truncated, size = build_bounded_har(
+            entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES
+        )
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        out_path.write_text(text, encoding="utf-8")
+        return {
+            "path": str(out_path),
+            "entry_count": entry_count,
+            "truncated": truncated,
+            "size": size,
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):
