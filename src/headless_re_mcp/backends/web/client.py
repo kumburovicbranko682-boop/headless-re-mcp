@@ -997,12 +997,23 @@ class WebBackend:
         if spill is not None:
             result["request_body_path"] = str(spill)
 
-    def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
+    def console(
+        self, session_id: str, *, limit: int = 200, type_filter: str = ""
+    ) -> JsonObject:
         handle = self._get(session_id)
         capped = max(1, min(int(limit), _MAX_CONSOLE))
         with handle.lock:
             held = list(handle.console)
             dropped = handle.console_dropped
+        # An exact, case-insensitive type match (log/info/warning/error/...),
+        # applied before the tail, so the failures an analyst watches for
+        # (error, warning, and the uncaught throws folded in as error) can be
+        # pulled out of a console the page has flooded with log lines. has_more
+        # then reflects older matching messages; dropped stays the ring's
+        # eviction count.
+        wanted = type_filter.strip().lower() if isinstance(type_filter, str) else ""
+        if wanted:
+            held = [entry for entry in held if str(entry.get("type", "")).lower() == wanted]
         page = held[-capped:]
         return {
             "console": page,

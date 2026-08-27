@@ -117,13 +117,19 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.console")
     def web_console(
-        session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 200
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        type_filter: str = "",
     ) -> dict[str, Any]:
         """Return recent browser console messages.
 
         Answers with console, count, has_more, and dropped so a page that
         filled the limit is not read as the whole buffer, and ring
-        eviction is visible. A line longer than the per-message cap is
+        eviction is visible. type_filter keeps only entries whose type equals
+        that value (case-insensitive, e.g. error or warning), applied before
+        the tail, so failures can be pulled out of a log-flooded console; the
+        uncaught throws folded in are typed error. A line longer than the
+        per-message cap is
         cut and marked text_truncated. Object and array arguments are
         rendered from their members ({k: v}, [v, ...]) rather than a bare
         "Object", so a logged config or token survives. Each entry carries the
@@ -133,7 +139,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         console.* -- are folded into the same buffer as error entries flagged
         uncaught, with the throw site url/line when the engine reported one.
         """
-        return _dump(analysis.web_console(session_id, limit=limit))
+        return _dump(analysis.web_console(session_id, limit=limit, type_filter=type_filter))
 
     @tools.tool(name="web.scripts")
     def web_scripts(

@@ -92,6 +92,31 @@ def test_web_console_puts_messages_in_console_and_says_when_it_stopped(
     assert "uncaught" in doc
 
 
+def test_web_console_filters_by_type(monkeypatch: Any) -> None:
+    """type_filter pulls the failures out of a log-flooded console."""
+    backend = WebBackend()
+    handle = _FakeHandle(0)
+    handle.console = deque(
+        [
+            {"type": "log", "text": "a"},
+            {"type": "error", "text": "boom"},
+            {"type": "warning", "text": "careful"},
+            {"type": "log", "text": "b"},
+            {"type": "error", "text": "boom2", "uncaught": True},
+        ]
+    )
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    payload = backend.console("s", type_filter="error")
+    assert payload["count"] == 2
+    assert [entry["text"] for entry in payload["console"]] == ["boom", "boom2"]
+    # Case-insensitive match on the discrete console level.
+    assert backend.console("s", type_filter="ERROR")["count"] == 2
+    # A blank filter returns the whole buffer.
+    assert backend.console("s", type_filter="  ")["count"] == 5
+    doc = _tool_docstring("web.console")
+    assert "type_filter" in doc
+
+
 def test_web_network_list_puts_the_page_in_requests_not_type(
     monkeypatch: Any,
 ) -> None:

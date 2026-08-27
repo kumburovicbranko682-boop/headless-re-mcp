@@ -218,6 +218,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`web.console` 没有类型过滤，报错淹没在海量 log 里**。延续 `url_filter` 的思路，给 `web.console` 加上 `type_filter`：对条目
+  `type` 做大小写不敏感的精确匹配（`error`/`warning`/`log`…），在取尾之前应用，于是能把失败（包括折叠进来的未捕获异常，其
+  type 为 error）从被 log 刷屏的控制台里单独拉出来；`has_more` 随之反映更早的匹配项，`dropped` 仍为环形缓冲淘汰计数。
 - **`apk.components` 的导出组件不带 intent-filter，看不到具体调用面**。知道某组件被导出后，分析者下一步要问的是"什么 intent
   能触发它"——`BOOT_COMPLETED`（持久化）、`SMS_RECEIVED`（拦截短信）这类 action，或 `BROWSABLE` 这类 category，正是导出组件的
   实际调用面。既然已在遍历清单树，就顺带用新增的 `_intent_filter_names` 收集每个导出组件各 `<intent-filter>` 的
