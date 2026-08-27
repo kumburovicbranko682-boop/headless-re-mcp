@@ -24,13 +24,15 @@ Two triage themes the other native gates cannot cover from system binaries:
   A library linked with a version script carries the Verdef chain readelf -V
   renders as its "Version definition section", which the reader must match node
   for node (BASE flag and inherited parents included).
-- Exported symbols (ELF .dynsym, Mach-O LC_SYMTAB) -- the object's public API
-  surface, the pair to DT_NEEDED / LC_LOAD_DYLIB imports and the raw-symbol
-  complement to DT_VERDEF. A plain shared library's default-visibility globals
-  become dynamic symbols readelf --dyn-syms lists, which the reader must select
-  name for name; the Mach-O fixture's defined-external nlist entries are what
-  llvm-nm --defined-only --extern-only prints (GNU nm cannot read Mach-O), and
-  the reader must select the same set with the undefined imports left out.
+- The symbol surface (ELF .dynsym, Mach-O LC_SYMTAB), both sides of one split:
+  exports (the object's public API, the raw-symbol complement to DT_VERDEF)
+  and imports (the undefined symbols the loader must resolve -- capability at
+  symbol granularity, where DT_NEEDED / LC_LOAD_DYLIB only name libraries). A
+  plain shared library's default-visibility globals and its libc calls land on
+  the two sides of readelf --dyn-syms, which the reader must match name for
+  name; the Mach-O fixture's external nlist entries are what llvm-nm
+  --defined-only / --undefined-only --extern-only print (GNU nm cannot read
+  Mach-O), and the reader must make the identical split.
 
 skip != pass when a tool is missing; gcc/readelf ship with the CI runner and
 llvm is installed on the Linux lane.
@@ -77,16 +79,21 @@ _VERSION_SCRIPT = (
 _LIB_SONAME = "libprobe.so.1"
 
 # A plain library (no version script) whose default-visibility globals become
-# the .dynsym exports the reader must recover -- two functions and a datum,
-# plus a static helper that must stay out of the dynamic table.
+# the .dynsym exports the reader must recover -- functions and a datum, plus a
+# static helper that must stay out of the dynamic table -- and whose call to
+# puts becomes an undefined .dynsym entry, the known import on the other side
+# of the same split.
 _EXPORTS_C = (
+    "extern int puts(const char *);\n"
     "int exp_counter = 7;\n"
     "int exp_add(int a, int b){return a+b;}\n"
     "int exp_mul(int a, int b){return a*b;}\n"
     "static int helper(int x){return x+1;}\n"
     "int exp_use(int x){return helper(x)+exp_counter;}\n"
+    'int exp_report(void){return puts("probe");}\n'
 )
-_KNOWN_EXPORTS = {"exp_counter", "exp_add", "exp_mul", "exp_use"}
+_KNOWN_EXPORTS = {"exp_counter", "exp_add", "exp_mul", "exp_use", "exp_report"}
+_KNOWN_IMPORTS = {"puts"}
 # readelf -W --dyn-syms rows: "Num: Value Size Type Bind Vis Ndx Name".
 _READELF_DYNSYM_RE = re.compile(
     r"^\s*\d+:\s+\S+\s+\S+\s+\S+\s+(\S+)\s+\S+\s+(\S+)\s+(\S+)"
@@ -202,13 +209,15 @@ def _readelf_version_defs(readelf: str, binary: Path) -> list[dict[str, Any]]:
     return defs
 
 
-def _readelf_dyn_exports(readelf: str, binary: Path) -> set[str]:
-    """The exported symbol names as readelf --dyn-syms decodes them.
+def _readelf_dyn_symbols(readelf: str, binary: Path) -> tuple[set[str], set[str]]:
+    """The (exported, imported) symbol names as readelf --dyn-syms decodes them.
 
-    Selects the same set the reader does -- a real section index (Ndx a decimal
-    number, not UND/ABS) and GLOBAL or WEAK binding -- from readelf's independent
-    walk of .dynsym, so the two decoders can be compared name for name. -W keeps
-    readelf from truncating long names; any @version suffix is dropped.
+    Splits the GLOBAL/WEAK rows the same way the reader does -- a decimal Ndx
+    means defined here (an export), UND means the loader's to resolve (an
+    import), and reserved indices (ABS and friends) are neither -- from
+    readelf's independent walk of .dynsym, so the decoders can be compared name
+    for name. -W keeps readelf from truncating long names; any @version suffix
+    is dropped.
     """
     result = subprocess.run(
         [readelf, "-W", "--dyn-syms", str(binary)],
@@ -217,15 +226,20 @@ def _readelf_dyn_exports(readelf: str, binary: Path) -> set[str]:
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    names: set[str] = set()
+    exports: set[str] = set()
+    imports: set[str] = set()
     for line in result.stdout.splitlines():
         match = _READELF_DYNSYM_RE.match(line)
         if not match:
             continue
         bind, ndx, name = match.group(1), match.group(2), match.group(3)
-        if ndx.isdigit() and bind in ("GLOBAL", "WEAK") and name:
-            names.add(name.split("@")[0])
-    return names
+        if bind not in ("GLOBAL", "WEAK") or not name:
+            continue
+        if ndx.isdigit():
+            exports.add(name.split("@")[0])
+        elif ndx == "UND":
+            imports.add(name.split("@")[0])
+    return exports, imports
 
 
 def _session_native(service: AnalysisService, binary: Path) -> tuple[str, dict[str, Any]]:
@@ -431,21 +445,26 @@ def test_elf_exported_symbols_agree_with_readelf(tmp_path: Path) -> None:
         timeout=120,
     )
     assert result.returncode == 0, result.stderr
-    ground_truth = _readelf_dyn_exports(readelf, lib)
-    assert ground_truth >= _KNOWN_EXPORTS, ground_truth
+    truth_exports, truth_imports = _readelf_dyn_symbols(readelf, lib)
+    assert truth_exports >= _KNOWN_EXPORTS, truth_exports
+    assert truth_imports >= _KNOWN_IMPORTS, truth_imports
 
     service = AnalysisService()
     session_id = None
     try:
         session_id, native = _session_native(service, lib)
         reader_exports = set(native["exported_symbols"])
-        # The tool-free .dynsym walk and readelf --dyn-syms select the exact
-        # same exported names -- including whatever globals the toolchain
-        # injected, since both apply the one rule to the one table.
-        assert reader_exports == ground_truth
-        # And the library's own API is really in there, static helper excluded.
+        reader_imports = set(native["imported_symbols"])
+        # The tool-free .dynsym walk and readelf --dyn-syms make the exact same
+        # split -- including whatever globals the toolchain injected on either
+        # side, since both apply the one rule to the one table.
+        assert reader_exports == truth_exports
+        assert reader_imports == truth_imports
+        # And the library's own API is really in there (static helper excluded),
+        # with its libc call on the import side.
         assert reader_exports >= _KNOWN_EXPORTS
         assert "helper" not in reader_exports
+        assert reader_imports >= _KNOWN_IMPORTS
     finally:
         if session_id is not None:
             service.close_session(session_id)
@@ -522,39 +541,52 @@ def test_macho_build_version_agrees_with_llvm_objdump() -> None:
             service.close_session(session_id)
 
 
-@pytest.mark.integration
-def test_macho_exported_symbols_agree_with_llvm_nm() -> None:
-    nm = shutil.which("llvm-nm")
-    if nm is None:
-        pytest.skip("llvm-nm not installed — Mach-O exports gate not run (skip != pass)")
-    if not _MACHO_FIXTURE.is_file():
-        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+def _llvm_nm_names(nm: str, binary: Path, *selectors: str) -> set[str]:
+    """The symbol names llvm-nm prints under the given selection flags.
 
-    # llvm-nm --defined-only --extern-only lists exactly the exported symbols
-    # (defined here, externally visible), one "<addr> <type> <name>" per line;
-    # GNU nm cannot read Mach-O at all, so llvm's is the independent decoder.
+    One "<addr> <type> <name>" per line (the address column is blank for
+    undefined symbols); the name is always the last field.
+    """
     result = subprocess.run(
-        [nm, "--defined-only", "--extern-only", str(_MACHO_FIXTURE)],
+        [nm, *selectors, str(binary)],
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    llvm_exports = {
+    return {
         line.split()[-1]
         for line in result.stdout.splitlines()
         if line.strip() and not line.rstrip().endswith(":")
     }
-    assert llvm_exports, result.stdout
+
+
+@pytest.mark.integration
+def test_macho_symbol_surface_agrees_with_llvm_nm() -> None:
+    nm = shutil.which("llvm-nm")
+    if nm is None:
+        pytest.skip("llvm-nm not installed — Mach-O symbol gate not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    # llvm-nm --defined-only --extern-only lists exactly the exported symbols
+    # (defined here, externally visible) and --undefined-only --extern-only the
+    # imports dyld must resolve; GNU nm cannot read Mach-O at all, so llvm's is
+    # the independent decoder.
+    llvm_exports = _llvm_nm_names(nm, _MACHO_FIXTURE, "--defined-only", "--extern-only")
+    llvm_imports = _llvm_nm_names(nm, _MACHO_FIXTURE, "--undefined-only", "--extern-only")
+    assert llvm_exports and llvm_imports
 
     service = AnalysisService()
     session_id = None
     try:
         session_id, native = _session_native(service, _MACHO_FIXTURE)
-        # The tool-free LC_SYMTAB walk and llvm-nm select the same exported
-        # symbols, name for name -- here the one function the fixture defines,
-        # with its undefined stack_chk imports correctly left out.
+        # The tool-free LC_SYMTAB walk and llvm-nm make the same split, name
+        # for name: the one function the fixture defines on the export side,
+        # its stack_chk pair on the import side.
         assert set(native["exported_symbols"]) == llvm_exports == {"_main"}
+        expected_imports = {"___stack_chk_fail", "___stack_chk_guard"}
+        assert set(native["imported_symbols"]) == llvm_imports == expected_imports
     finally:
         if session_id is not None:
             service.close_session(session_id)

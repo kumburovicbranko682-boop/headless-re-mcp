@@ -923,14 +923,46 @@ def test_exported_symbols_lists_defined_global_and_weak(tmp_path: Path) -> None:
     )
     facts = describe_native(path)["native"]
     assert facts["exported_symbols"] == ["exported_add", "exported_counter"]
+    # The same walk splits the undefined GLOBAL to the import side -- the
+    # symbol-granular capability list DT_NEEDED only gives per library.
+    assert facts["imported_symbols"] == ["imported_puts"]
+
+
+def test_imported_symbols_list_undefined_globals_and_weaks(tmp_path: Path) -> None:
+    # The import surface: undefined GLOBALs and WEAKs are the loader's to
+    # resolve; an undefined LOCAL (a linker artifact) is nobody's import, and
+    # a fully defined image reports no import fact at all.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_with_dynsym(
+            [
+                ("imported_puts", _STB_GLOBAL, _STT_FUNC, _SHN_UNDEF),
+                ("imported_hook", _STB_WEAK, _STT_FUNC, _SHN_UNDEF),
+                ("local_und", _STB_LOCAL, _STT_NOTYPE, _SHN_UNDEF),
+            ]
+        ),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["imported_symbols"] == ["imported_hook", "imported_puts"]
+    assert "exported_symbols" not in facts
+
+    defined_only = _write(
+        tmp_path,
+        "b.bin",
+        _elf64_with_dynsym([("exported_add", _STB_GLOBAL, _STT_FUNC, 10)]),
+    )
+    assert "imported_symbols" not in describe_native(defined_only)["native"]
 
 
 def test_no_dynsym_leaves_the_export_fact_out(tmp_path: Path) -> None:
     # An image with section headers but no .dynsym (a static binary keeps only
-    # .symtab) exports nothing through the dynamic table; the fact is omitted
-    # rather than reported as an empty list.
+    # .symtab) exports nothing through the dynamic table; the facts are omitted
+    # rather than reported as empty lists.
     path = _write(tmp_path, "a.bin", _elf64_static_with_symtab())
-    assert "exported_symbols" not in describe_native(path)["native"]
+    facts = describe_native(path)["native"]
+    assert "exported_symbols" not in facts
+    assert "imported_symbols" not in facts
 
 
 def test_a_symbol_at_a_special_section_index_is_not_exported(tmp_path: Path) -> None:
@@ -949,6 +981,9 @@ def test_a_symbol_at_a_special_section_index_is_not_exported(tmp_path: Path) -> 
     )
     facts = describe_native(path)["native"]
     assert facts["exported_symbols"] == ["real_export"]
+    # Nor is it an import: a reserved index is defined-elsewhere-by-fiat, not
+    # something the loader resolves, so it lands in neither list.
+    assert "imported_symbols" not in facts
 
 
 def test_a_nameless_export_is_skipped(tmp_path: Path) -> None:
@@ -1427,25 +1462,32 @@ def test_macho_exported_symbols_lists_defined_externals(tmp_path: Path) -> None:
     )
     facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
     assert facts["exported_symbols"] == ["_exported_fn", "_exported_var"]
+    # The same walk sends the undefined external to the import side, and the
+    # non-external local to neither.
+    assert facts["imported_symbols"] == ["_imported_puts"]
 
 
 def test_macho_without_a_symtab_has_no_export_fact(tmp_path: Path) -> None:
-    # No LC_SYMTAB means nothing to enumerate; the fact is omitted rather than
-    # reported as an empty list.
+    # No LC_SYMTAB means nothing to enumerate; the facts are omitted rather
+    # than reported as empty lists.
     data = _macho64_full(filetype=2, flags=0x4, load_cmds=_lc_uuid(), ncmds=1)
-    assert "exported_symbols" not in describe_native(_write(tmp_path, "a.bin", data))["native"]
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert "exported_symbols" not in facts
+    assert "imported_symbols" not in facts
 
 
 def test_macho_only_imports_export_nothing(tmp_path: Path) -> None:
     # A symbol table of nothing but undefined externals (pure imports) has no
-    # export surface, so the fact stays out.
+    # export surface: the import fact carries them all, the export fact stays out.
     data = _macho64_with_symbols(
         [
             ("_dyld_stub_binder", _N_UNDF | _N_EXT, 0),
             ("_printf", _N_UNDF | _N_EXT, 0),
         ]
     )
-    assert "exported_symbols" not in describe_native(_write(tmp_path, "a.bin", data))["native"]
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert "exported_symbols" not in facts
+    assert facts["imported_symbols"] == ["_dyld_stub_binder", "_printf"]
 
 
 def test_macho_nameless_export_is_skipped(tmp_path: Path) -> None:
@@ -1611,9 +1653,10 @@ def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     assert facts["canary"] is True
     assert facts["encrypted"] is False
     # The one symbol the fixture defines externally (_main); the stack_chk pair
-    # are undefined imports, not exports. The toolchain gate cross-checks this
-    # same set against llvm-nm.
+    # are undefined imports on the other side of the split. The toolchain gate
+    # cross-checks both sets against llvm-nm.
     assert facts["exported_symbols"] == ["_main"]
+    assert facts["imported_symbols"] == ["___stack_chk_fail", "___stack_chk_guard"]
     # The committed fixture ships unsigned (the codesign gate signs a copy
     # with rcodesign and cross-checks the signature facts on that).
     assert facts["signed"] is False

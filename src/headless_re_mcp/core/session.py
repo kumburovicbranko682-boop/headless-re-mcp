@@ -591,16 +591,17 @@ _CS_MAX_SIG_BYTES = 4 * 1024 * 1024
 _CS_HASH_TYPES = {1: "sha1", 2: "sha256", 3: "sha256_truncated", 4: "sha384"}
 _MACHO_MAX_LOAD_CMDS = 4096
 _MACHO_MAX_DYLIBS = 64
-# The exported symbols of a Mach-O image: LC_SYMTAB's nlist entries whose type
-# is N_SECT (defined in a section here, not an N_UNDF import) with the N_EXT
-# (external) bit set. This is the Mach-O half of the native export surface --
-# the pair to LC_LOAD_DYLIB imports and the counterpart to the ELF .dynsym
-# exports -- the same defined-external set llvm-nm --defined-only --extern-only
-# lists. N_TYPE masks the type field of n_type; the scan and reported list are
+# The symbol surface of a Mach-O image, split off LC_SYMTAB's nlist entries
+# with the N_EXT (external) bit set: type N_SECT is defined in a section here
+# (an export), type N_UNDF is dyld's to resolve from a linked dylib (an
+# import). Together they are the Mach-O counterpart to the ELF .dynsym facts --
+# the same sets llvm-nm --defined-only / --undefined-only --extern-only list.
+# N_TYPE masks the type field of n_type; the scan and reported lists are
 # bounded so a symbol-heavy image cannot force a large read or an unbounded fact.
 _N_EXT = 0x01
 _N_TYPE = 0x0E
 _N_SECT = 0x0E
+_N_UNDF = 0x00
 _MACHO_MAX_NSYMS_SCAN = 200_000
 _MACHO_MAX_EXPORTS = 8192
 # The header window read for identity facts is small, but a real image's load
@@ -2563,13 +2564,17 @@ def _elf_layout_facts(
     stripped = _elf_is_stripped(stream, order, bits, shoff, shentsize, shnum)
     if stripped is not None:
         facts["stripped"] = stripped
-    # The exported dynamic symbols -- the object's public API surface, read off
-    # .dynsym/.dynstr the way readelf --dyn-syms and nm -D do. Present only when
-    # the image actually exports something, so an executable that exports
-    # nothing (or a static binary with no .dynsym) omits the fact.
-    exports = _elf_exported_symbols(stream, order, bits, shoff, shentsize, shnum)
+    # The dynamic symbol surface, read off .dynsym/.dynstr the way readelf
+    # --dyn-syms and nm -D do: exports (the object's public API) and imports
+    # (the undefined symbols the loader must resolve -- the capability signal,
+    # at symbol granularity, that DT_NEEDED only gives per library). Either
+    # fact is present only when non-empty, so a static binary with no .dynsym
+    # omits both.
+    exports, imports = _elf_dynamic_symbols(stream, order, bits, shoff, shentsize, shnum)
     if exports:
         facts["exported_symbols"] = exports
+    if imports:
+        facts["imported_symbols"] = imports
 
 
 def _elf_program_headers(
@@ -3029,22 +3034,24 @@ def _elf_is_stripped(
     return True
 
 
-def _elf_exported_symbols(
+def _elf_dynamic_symbols(
     stream: BinaryIO, order: str, bits: int, shoff: int, shentsize: int, shnum: int
-) -> list[str]:
-    """The names of the defined, globally/weakly bound dynamic symbols.
+) -> tuple[list[str], list[str]]:
+    """The (exported, imported) names of the globally/weakly bound dynamic symbols.
 
     Locates .dynsym through the section headers (SHT_DYNSYM), reads its linked
-    string table (sh_link -> .dynstr), and returns the names of the symbols the
-    object exports -- those with a real section index (not SHN_UNDEF, so
-    defined here rather than imported) and GLOBAL or WEAK binding. This is the
-    native export surface readelf --dyn-syms / nm -D report; sorted for
-    determinism. Every step is bounded (section count, symbol scan, string
-    read) so a hostile or symbol-heavy image degrades to a shorter list rather
-    than a large read, and any structural surprise yields an empty list.
+    string table (sh_link -> .dynstr), and splits the GLOBAL/WEAK symbols the
+    way readelf --dyn-syms does: a real section index means defined here (an
+    export, the object's public API surface); SHN_UNDEF means the loader must
+    resolve it elsewhere (an import -- the symbol-granular capability signal
+    DT_NEEDED only gives per library). Both lists are sorted for determinism.
+    Every step is bounded (section count, symbol scan, string read, per-list
+    cap) so a hostile or symbol-heavy image degrades to shorter lists rather
+    than a large read, and any structural surprise yields empty lists.
     """
+    nothing: tuple[list[str], list[str]] = ([], [])
     if shoff <= 0 or shnum <= 0 or shnum > _ELF_MAX_SHNUM:
-        return []
+        return nothing
     want = 64 if bits == 64 else 40
     entsize = max(shentsize, want)
     stream.seek(shoff)
@@ -3069,17 +3076,17 @@ def _elf_exported_symbols(
         dynsym = (sh_offset, sh_size, sh_entsize, sh_link)
         break
     if dynsym is None:
-        return []
+        return nothing
     sym_off, sym_size, sym_entsize, link = dynsym
     sym_stride = 24 if bits == 64 else 16
     if sym_entsize:  # honour a declared entry size, but never below the real one
         sym_stride = max(sym_stride, sym_entsize)
     if sym_off <= 0 or sym_size <= 0 or link <= 0 or link >= shnum:
-        return []
+        return nothing
     # The linked section is .dynstr; read it the same bounded way DT_STRTAB is.
     link_entry = table[link * entsize : link * entsize + want]
     if len(link_entry) < want:
-        return []
+        return nothing
     if bits == 64:
         str_off = int.from_bytes(link_entry[24:32], order)  # type: ignore[arg-type]
         str_size = int.from_bytes(link_entry[32:40], order)  # type: ignore[arg-type]
@@ -3087,7 +3094,7 @@ def _elf_exported_symbols(
         str_off = int.from_bytes(link_entry[16:20], order)  # type: ignore[arg-type]
         str_size = int.from_bytes(link_entry[20:24], order)  # type: ignore[arg-type]
     if str_off <= 0 or not (0 < str_size <= _ELF_MAX_STRTAB):
-        return []
+        return nothing
     stream.seek(str_off)
     strblob = stream.read(str_size)
 
@@ -3101,10 +3108,11 @@ def _elf_exported_symbols(
 
     count = min(sym_size // sym_stride, _ELF_MAX_DYNSYM_SCAN)
     if count <= 0:
-        return []
+        return nothing
     stream.seek(sym_off)
     syms = stream.read(sym_stride * count)
     exports: set[str] = set()
+    imports: set[str] = set()
     for i in range(count):
         rec = syms[i * sym_stride : i * sym_stride + sym_stride]
         if len(rec) < sym_stride:
@@ -3117,17 +3125,21 @@ def _elf_exported_symbols(
             st_name = int.from_bytes(rec[0:4], order)  # type: ignore[arg-type]
             st_info = rec[12]
             st_shndx = int.from_bytes(rec[14:16], order)  # type: ignore[arg-type]
-        # Defined here (a real section index) and externally visible.
-        if st_shndx == _SHN_UNDEF or st_shndx >= _SHN_LORESERVE:
-            continue
+        # Only externally visible symbols matter; a reserved section index
+        # (SHN_ABS and friends) is neither a plain definition nor an import.
         if (st_info >> 4) not in (_STB_GLOBAL, _STB_WEAK):
+            continue
+        if st_shndx >= _SHN_LORESERVE:
+            continue
+        # SHN_UNDEF means the loader resolves it elsewhere: an import. Any
+        # real section index means defined here: an export.
+        bucket = imports if st_shndx == _SHN_UNDEF else exports
+        if len(bucket) >= _ELF_MAX_EXPORTS:
             continue
         name = name_at(st_name)
         if name:
-            exports.add(name)
-        if len(exports) >= _ELF_MAX_EXPORTS:
-            break
-    return sorted(exports)
+            bucket.add(name)
+    return sorted(exports), sorted(imports)
 
 
 def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, Any]:
@@ -3181,12 +3193,15 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         canary = _macho_canary(stream, lc["symtab"])
         if canary is not None:
             facts["canary"] = canary
-        # The exported symbols -- the image's public API surface, read off
-        # LC_SYMTAB the way llvm-nm does; the Mach-O half of the native export
-        # facts. Present only when the image actually exports something.
-        exports = _macho_exported_symbols(stream, lc["symtab"], bits, order)
+        # The symbol surface read off LC_SYMTAB the way llvm-nm does: exports
+        # (the image's public API) and imports (the undefined externals dyld
+        # resolves -- the symbol-granular capability signal LC_LOAD_DYLIB only
+        # gives per library). Either fact is present only when non-empty.
+        exports, imports = _macho_symbol_surface(stream, lc["symtab"], bits, order)
         if exports:
             facts["exported_symbols"] = exports
+        if imports:
+            facts["imported_symbols"] = imports
     return facts
 
 
@@ -3285,25 +3300,28 @@ def _macho_canary(stream: BinaryIO, symtab: tuple[int, int, int, int] | None) ->
     return any(sym in blob for sym in _ELF_CANARY_SYMBOLS)
 
 
-def _macho_exported_symbols(
+def _macho_symbol_surface(
     stream: BinaryIO, symtab: tuple[int, int, int, int] | None, bits: int, order: str
-) -> list[str]:
-    """The names of the defined, externally visible symbols the image exports.
+) -> tuple[list[str], list[str]]:
+    """The (exported, imported) names of the externally visible symbols.
 
-    Walks LC_SYMTAB's nlist entries and keeps those with the N_EXT bit set
-    whose type is N_SECT -- defined in one of this image's sections rather than
-    an N_UNDF import -- reading each name (leading underscore and all, exactly
-    as llvm-nm prints it) out of the string table. This is the Mach-O export
-    surface, the counterpart to the ELF .dynsym exports; sorted for
-    determinism. Every step is bounded (symbol scan, string read, result size)
-    so a hostile or symbol-heavy image degrades to a shorter list, and any
-    structural surprise yields an empty list.
+    Walks LC_SYMTAB's nlist entries and splits those with the N_EXT bit set
+    by type, the way llvm-nm does: N_SECT means defined in one of this image's
+    sections (an export, the public API surface); N_UNDF means dyld must
+    resolve it from a linked dylib (an import -- the symbol-granular
+    capability signal LC_LOAD_DYLIB only gives per library). Names are read
+    out of the string table verbatim, leading underscore and all, exactly as
+    llvm-nm prints them; both lists are sorted for determinism. Every step is
+    bounded (symbol scan, string read, per-list cap) so a hostile or
+    symbol-heavy image degrades to shorter lists, and any structural surprise
+    yields empty lists.
     """
+    nothing: tuple[list[str], list[str]] = ([], [])
     if symtab is None:
-        return []
+        return nothing
     symoff, nsyms, stroff, strsize = symtab
     if symoff <= 0 or nsyms <= 0 or stroff <= 0 or strsize <= 0:
-        return []
+        return nothing
     stride = 16 if bits == 64 else 12
     count = min(nsyms, _MACHO_MAX_NSYMS_SCAN)
     try:
@@ -3312,7 +3330,7 @@ def _macho_exported_symbols(
         stream.seek(symoff)
         syms = stream.read(stride * count)
     except OSError:
-        return []
+        return nothing
 
     def name_at(offset: int) -> str | None:
         if 0 < offset < len(strblob):
@@ -3323,22 +3341,30 @@ def _macho_exported_symbols(
         return None
 
     exports: set[str] = set()
+    imports: set[str] = set()
     for i in range(count):
         rec = syms[i * stride : i * stride + stride]
         if len(rec) < stride:
             break
         n_strx = int.from_bytes(rec[0:4], order)  # type: ignore[arg-type]
         n_type = rec[4]
-        # Externally visible and defined in a section here (an export), not an
-        # undefined import (N_UNDF) or a debug/absolute entry.
-        if not (n_type & _N_EXT) or (n_type & _N_TYPE) != _N_SECT:
+        if not (n_type & _N_EXT):
+            continue
+        kind = n_type & _N_TYPE
+        # N_SECT is defined here (an export); N_UNDF is dyld's to resolve (an
+        # import). Anything else (absolute, indirect, debug) is neither.
+        if kind == _N_SECT:
+            bucket = exports
+        elif kind == _N_UNDF:
+            bucket = imports
+        else:
+            continue
+        if len(bucket) >= _MACHO_MAX_EXPORTS:
             continue
         name = name_at(n_strx)
         if name:
-            exports.add(name)
-        if len(exports) >= _MACHO_MAX_EXPORTS:
-            break
-    return sorted(exports)
+            bucket.add(name)
+    return sorted(exports), sorted(imports)
 
 
 def _macho_read_load_commands(
