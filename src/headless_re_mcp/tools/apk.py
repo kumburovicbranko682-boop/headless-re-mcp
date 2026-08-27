@@ -56,9 +56,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_certificates(session_id: str) -> dict[str, Any]:
         """List signing certificates and the signature schemes that signed the APK.
 
-        Answers with certificates (subject, issuer, serial, sha256),
-        signature_files, and has_more so a list that filled the cap is not read
-        as every signer. Signing-scheme flags v1_signed, v2_signed, v3_signed,
+        Answers with certificates (subject, issuer, serial, sha256, and
+        not_before/not_after as ISO-8601 validity bounds or null when a cert
+        shape omits them), signature_files, and has_more so a list that filled
+        the cap is not read as every signer. Signing-scheme flags v1_signed, v2_signed, v3_signed,
         and the overall signed report which APK Signature Schemes are present:
         each is true/false, or null when this androguard build could not
         determine it (null is not "unsigned"). v1-only signing on a modern APK

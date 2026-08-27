@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import ast
+import datetime
+import json
 from pathlib import Path
+
+import pytest
 
 from headless_re_mcp.backends.apk.client import ApkClient
 from headless_re_mcp.tools.apk import build_apk_tools
@@ -155,3 +159,67 @@ def test_apk_certificates_scheme_flag_none_when_predicate_absent() -> None:
     assert payload["v2_signed"] is None
     assert payload["v3_signed"] is None
     assert payload["signed"] is None
+
+
+def test_apk_certificates_validity_none_when_absent() -> None:
+    """A cert shape without validity attributes reports null, never a crash.
+
+    The _Cert stub defines no not_valid_before/after, so both bounds must
+    degrade to null while json.dumps still serializes the whole payload.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    cert = payload["certificates"][0]
+    assert cert["not_before"] is None
+    assert cert["not_after"] is None
+    json.dumps(payload)
+
+
+def test_apk_certificates_reports_validity_from_real_cert() -> None:
+    """Real asn1crypto certs must render validity as ISO-8601 strings.
+
+    The whole reason for _cert_datetime is that androguard hands back asn1crypto
+    x509 certs whose not_valid_before/after are tz-aware datetimes the JSON
+    serializer cannot encode. Build a genuine self-signed cert, load it through
+    asn1crypto exactly as androguard would, and assert the bounds come back as
+    the expected ISO strings and that json.dumps does not choke on a datetime.
+    """
+    pytest.importorskip("cryptography")
+    from asn1crypto import x509 as ax
+    from cryptography import x509 as cx
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = cx.Name([cx.NameAttribute(NameOID.COMMON_NAME, "HeadlessRE Gate")])
+    not_before = datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC)
+    not_after = datetime.datetime(2047, 1, 1, tzinfo=datetime.UTC)
+    built = (
+        cx.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(1234567890)
+        .not_valid_before(not_before)
+        .not_valid_after(not_after)
+        .sign(key, hashes.SHA256())
+    )
+    asn1_cert = ax.Certificate.load(built.public_bytes(serialization.Encoding.DER))
+
+    class _RealCertApk:
+        def get_signature_names(self) -> list[str]:
+            return ["META-INF/CERT.RSA"]
+
+        def get_certificates(self) -> list[object]:
+            return [asn1_cert]
+
+    client = ApkClient()
+    client._apk = lambda _path: _RealCertApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    json.dumps(payload)
+    cert = payload["certificates"][0]
+    assert cert["not_before"] == "2020-01-01T00:00:00+00:00"
+    assert cert["not_after"] == "2047-01-01T00:00:00+00:00"
+    assert "HeadlessRE Gate" in cert["subject"]

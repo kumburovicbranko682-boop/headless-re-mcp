@@ -1182,6 +1182,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   v2/v3-only 假 APK(`v1_signed` 假但 `signed` 真)、抛异常的方案判定(回 `None` 而非 `False`)、缺失方法的老 androguard(全部降级为 `None`)各一例;
   实机 gate(`test_m11_android_apk_live_gate.py`)对 jarsigner v1-only 夹具补断言 `signed` 真、`v2_signed`/`v3_signed` 均为 `False`(而非 `None`)。
 
+- **`apk.certificates` 不报证书有效期,而过期或有效期离谱的签名证书本身就是信号。** 每条证书之前只有 subject/issuer/serial/sha256。androguard 4.x
+  的证书是 asn1crypto `x509.Certificate`,其 `not_valid_before`/`not_valid_after` 是**带时区的 `datetime`**——MCP 的 JSON 序列化器根本编不了,
+  必须在源头渲染成字符串。现每条证书新增 `not_before`/`not_after`,经新助手 `_cert_datetime` 取到有效期边界并 `isoformat()` 成 ISO-8601 字符串;
+  没有该属性的证书形态(更老的 androguard、或本就是字符串)或抛异常的属性降级为 `None`,以免一个古怪证书把周边字段清空、或把 `datetime` 漏进序列化器
+  崩成 `internal_error`。工具描述补上这两字段及其 `null` 语义。单测(`test_apk_certificates_fields.py`):用 `cryptography` 现造一张自签证书、按
+  androguard 的路径经 asn1crypto 载入,断言 `not_before`/`not_after` 回来是预期 ISO 串且 `json.dumps` 不因 `datetime` 抛;另一例断言缺属性时两界均为 `None`
+  且整条 payload 可序列化。实机 gate 对真实夹具证书补断言两界均可被 `datetime.fromisoformat` 解析、且 `not_after` 严格晚于 `not_before`(断言时序而非固定
+  时间戳,重造夹具的一次性密钥不会打断 gate)。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

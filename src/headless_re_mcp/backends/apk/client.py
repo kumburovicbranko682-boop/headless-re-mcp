@@ -138,6 +138,33 @@ def _sig_scheme(apk: Any, method: str) -> bool | None:
         return None
 
 
+def _cert_datetime(cert: Any, attr: str) -> str | None:
+    """ISO-8601 validity bound from an asn1crypto x509 cert, or ``None``.
+
+    androguard 4.x certs are asn1crypto ``x509.Certificate`` objects whose
+    ``not_valid_before`` / ``not_valid_after`` are timezone-aware ``datetime``
+    objects -- which the MCP JSON serializer cannot encode, so they must be
+    rendered to ISO-8601 strings here at the source. An expired signer, or an
+    absurd multi-decade validity window, is a real signal a certificate read
+    should surface; but a cert shape without these attributes (older androguard,
+    a plain string) or a raising property must degrade to ``None`` rather than
+    blank the surrounding fields or crash serialization with a raw datetime.
+    """
+    try:
+        value = getattr(cert, attr)
+    except Exception:  # noqa: BLE001 - property access varies by object
+        return None
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return str(iso())
+        except Exception:  # noqa: BLE001 - odd datetime-likes may raise
+            return None
+    if value is None:
+        return None
+    return str(value)
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -368,6 +395,8 @@ class ApkClient:
                         "sha256": str(cert.sha256_fingerprint)
                         if hasattr(cert, "sha256_fingerprint")
                         else "",
+                        "not_before": _cert_datetime(cert, "not_valid_before"),
+                        "not_after": _cert_datetime(cert, "not_valid_after"),
                     }
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version

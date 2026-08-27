@@ -30,6 +30,7 @@ kept). The readable sources are committed beside it as
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,14 @@ def test_m11_androguard_apk_surface() -> None:
     assert certs["signed"] is True, certs
     assert certs["v2_signed"] is False, certs
     assert certs["v3_signed"] is False, certs
+    # not_before/not_after come off the real asn1crypto cert as tz-aware
+    # datetimes the JSON layer cannot encode; a working read renders both to
+    # parseable ISO-8601 strings with not_after strictly after not_before.
+    # Assert the ordering rather than the exact stamps so regenerating the
+    # fixture's throwaway key does not break the gate.
+    not_before = datetime.datetime.fromisoformat(cert["not_before"])
+    not_after = datetime.datetime.fromisoformat(cert["not_after"])
+    assert not_after > not_before, cert
 
 
 @pytest.mark.integration
