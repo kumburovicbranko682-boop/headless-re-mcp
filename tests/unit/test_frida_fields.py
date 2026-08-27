@@ -515,3 +515,154 @@ def test_add_remote_device_reuses_a_device_already_registered() -> None:
     assert first["id"] == "10.0.0.1:27042"
     assert second["id"] == "10.0.0.1:27042"
     assert client._frida.manager.added == 0
+
+
+class _ReadApi:
+    def read(self, address: int, size: int) -> list[int]:
+        del address
+        return [0xAB] * int(size)
+
+
+class _ReadScript:
+    exports_sync = _ReadApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _ReadSession:
+    def __init__(self, state: dict[str, bool]) -> None:
+        self._state = state
+
+    def create_script(self, source: str) -> _ReadScript:
+        del source
+        return _ReadScript()
+
+    def detach(self) -> None:
+        self._state["detached"] = True
+
+
+def test_frida_memory_read_returns_hex_and_detaches_the_probe() -> None:
+    """A successful local read still tears the probe session down.
+
+    Measured: 4 bytes of 0xAB -> hex "abababab", size and address echoed, and
+    the session detached in the finally so nothing stays attached in the target.
+    """
+    state = {"detached": False}
+
+    class _ReadFrida:
+        def attach(self, pid: int) -> _ReadSession:
+            del pid
+            return _ReadSession(state)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _ReadFrida()
+    payload = client.memory_read(1, 0x1000, 4, allowed_pid=1)
+    assert payload["data"] == "abababab"
+    assert payload["size"] == 4
+    assert payload["address"] == 0x1000
+    assert payload["encoding"] == "hex"
+    assert state["detached"] is True
+
+
+def _hang_frida(state: dict[str, bool], api: Any) -> Any:
+    """A local frida whose attach returns a session that hangs in the RPC."""
+
+    class _HangScript:
+        exports_sync = api
+
+        def load(self) -> None:
+            return None
+
+    class _HangSession:
+        def create_script(self, source: str) -> Any:
+            del source
+            return _HangScript()
+
+        def detach(self) -> None:
+            state["detached"] = True
+
+    class _HangFrida:
+        def attach(self, pid: int) -> Any:
+            del pid
+            return _HangSession()
+
+    return _HangFrida()
+
+
+def test_frida_modules_times_out_and_detaches_the_probe() -> None:
+    """script.load / exports_sync.modules with no deadline parked a worker.
+
+    ``_attach_local`` was bounded but the script phase was not, so a paused
+    debuggee hung the call forever and left the probe attached. Measured: a
+    modules() that never returns now raises timeout and detaches the session.
+    """
+    state = {"detached": False}
+
+    class _HangApi:
+        def modules(self, limit: int) -> dict[str, Any]:
+            del limit
+            time.sleep(10)
+            return {"modules": [], "total": 0}
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _hang_frida(state, _HangApi())
+    started = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1, timeout=0.2)
+    assert time.monotonic() - started < 2.0
+    assert caught.value.code == "timeout"
+    assert state["detached"] is True
+
+
+def test_frida_exports_times_out_and_detaches_the_probe() -> None:
+    """The exports probe now shares the modules/Java deadline.
+
+    Measured: an exports() that never returns raises timeout in well under the
+    natural block and detaches the session rather than parking the worker.
+    """
+    state = {"detached": False}
+
+    class _HangApi:
+        def exports(self, module_name: str, count: int) -> dict[str, Any]:
+            del module_name, count
+            time.sleep(10)
+            return {"found": True, "exports": []}
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _hang_frida(state, _HangApi())
+    started = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.exports(1, "ntdll.dll", allowed_pid=1, timeout=0.2)
+    assert time.monotonic() - started < 2.0
+    assert caught.value.code == "timeout"
+    assert state["detached"] is True
+
+
+def test_frida_memory_read_times_out_and_detaches_the_probe() -> None:
+    """A read against a stalled target no longer hangs the worker.
+
+    Memory.readByteArray runs inside the target; a paused debuggee left the
+    synchronous RPC blocked forever. Measured: a read() that never returns now
+    raises timeout and detaches the session.
+    """
+    state = {"detached": False}
+
+    class _HangApi:
+        def read(self, address: int, size: int) -> list[int]:
+            del address, size
+            time.sleep(10)
+            return []
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _hang_frida(state, _HangApi())
+    started = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(1, 0x1000, 16, allowed_pid=1, timeout=0.2)
+    assert time.monotonic() - started < 2.0
+    assert caught.value.code == "timeout"
+    assert state["detached"] is True

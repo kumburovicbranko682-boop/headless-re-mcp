@@ -315,13 +315,58 @@ class FridaClient:
             with contextlib.suppress(Exception):
                 session.detach()
 
-    def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
-        self._require(pid, allowed_pid)
-        session = self._attach_local(pid)
+    def _on_session(
+        self,
+        session: Any,
+        build: Callable[[Any], JsonObject],
+        *,
+        timeout: float,
+        pid: int,
+        what: str,
+    ) -> JsonObject:
+        """Bound the script-load + synchronous RPC phase and detach on a hang.
+
+        ``_attach_local`` already bounds the attach, but ``script.load`` and the
+        ``exports_sync`` calls run inside the target and can block forever on a
+        paused debuggee or a process without a JIT -- the same hang the
+        device-aware ``java_enumerate`` guards against. Without a deadline here
+        the worker thread parks for good and the script stays loaded in the
+        target. On timeout the probe session is detached, matching the spawn and
+        Java probes.
+        """
+        deadline = _bound_timeout(timeout)
+        sessions = [session]
+
+        def work() -> JsonObject:
+            try:
+                return build(session)
+            finally:
+                with contextlib.suppress(Exception):
+                    session.detach()
+
         try:
-            script = session.create_script(_ENUM_SCRIPT)
+            return _run_deadline(
+                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
+            )
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _detach_all(sessions)
+            if _is_timeout(exc):
+                raise _timeout_error(deadline) from exc
+            raise FridaError("backend_error", f"{what} failed: {exc}", pid=pid) from exc
+
+    def modules(
+        self, pid: int, *, allowed_pid: int, limit: int = 64, timeout: float = _PROBE_TIMEOUT_S
+    ) -> JsonObject:
+        self._require(pid, allowed_pid)
+        deadline = _bound_timeout(timeout)
+        capped = max(1, min(int(limit), 256))
+        session = self._attach_local(pid, timeout=deadline)
+
+        def build(active: Any) -> JsonObject:
+            script = active.create_script(_ENUM_SCRIPT)
             script.load()
-            capped = max(1, min(int(limit), 256))
             raw = script.exports_sync.modules(capped)
             if isinstance(raw, dict):
                 held = list(raw.get("modules") or [])
@@ -345,9 +390,10 @@ class FridaClient:
                 "total": total,
                 "has_more": total > len(items),
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._on_session(
+            session, build, timeout=deadline, pid=pid, what="frida modules"
+        )
 
     def exports(
         self,
@@ -356,16 +402,20 @@ class FridaClient:
         *,
         allowed_pid: int,
         limit: int = 64,
+        timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._require(pid, allowed_pid)
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
+        deadline = _bound_timeout(timeout)
         capped = max(1, min(int(limit), 512))
-        session = self._attach_local(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
+        name = module_name.strip()
+        session = self._attach_local(pid, timeout=deadline)
+
+        def build(active: Any) -> JsonObject:
+            script = active.create_script(_ENUM_SCRIPT)
             script.load()
-            raw = script.exports_sync.exports(module_name.strip(), capped + 1)
+            raw = script.exports_sync.exports(name, capped + 1)
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
             page, has_more = _page(list(raw.get("exports") or []), capped)
@@ -382,25 +432,34 @@ class FridaClient:
                 )
             return {
                 "found": bool(raw.get("found")),
-                "module": str(raw.get("module") or module_name),
+                "module": str(raw.get("module") or name),
                 "base": str(raw.get("base") or ""),
                 "exports": items,
                 "count": len(items),
                 "has_more": has_more,
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._on_session(
+            session, build, timeout=deadline, pid=pid, what="frida exports"
+        )
 
     def memory_read(
-        self, pid: int, address: int, size: int, *, allowed_pid: int
+        self,
+        pid: int,
+        address: int,
+        size: int,
+        *,
+        allowed_pid: int,
+        timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._require(pid, allowed_pid)
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
-        session = self._attach_local(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
+        deadline = _bound_timeout(timeout)
+        session = self._attach_local(pid, timeout=deadline)
+
+        def build(active: Any) -> JsonObject:
+            script = active.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
             return {
@@ -409,9 +468,10 @@ class FridaClient:
                 "encoding": "hex",
                 "data": data.hex(),
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._on_session(
+            session, build, timeout=deadline, pid=pid, what="frida memory read"
+        )
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
