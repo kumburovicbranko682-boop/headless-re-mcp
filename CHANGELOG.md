@@ -389,6 +389,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 修复（device.screenshot 写不出文件时不再报成 size 0 的成功）
+
+- `device.screenshot` 与 `device.pull` 同病：PIL 的 `image.save()` 成功回 None，但被拒绝时回
+  False 且不写文件，随后 `capped_file_size` 对缺失文件返回 0，于是回包是 `{size: 0}` 的成功，
+  无人值守的 agent 会把它当成一张可打开的截图。现在截图后本地文件缺失或为 0 字节即报
+  `backend_error`（`captured: False`），超过 64 MiB 上限仍先按 `too_large` 删除并拒绝。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
