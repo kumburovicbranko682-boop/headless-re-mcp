@@ -422,6 +422,77 @@ def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:
     assert killed == [4242]
 
 
+def test_frida_spawn_kills_the_suspended_process_when_resume_fails() -> None:
+    """A spawn that cannot be resumed must not leak a suspended process.
+
+    frida.spawn starts the target suspended and a separate resume runs it. If
+    resume raises -- a device that went busy, a process that died between the two
+    calls -- the pid is already occupying the device in a frozen state, so the
+    backend kills it before failing rather than leaving it parked. The error is a
+    backend_error (a device outcome, not a fault in this process) that names the
+    pid it killed so the caller knows the launch was cleaned up, not abandoned.
+    """
+    killed: list[int] = []
+
+    class _ResumeFails:
+        def spawn(self, package: str) -> int:
+            del package
+            return 4242
+
+        def resume(self, pid: int) -> None:
+            del pid
+            raise RuntimeError("device busy")
+
+        def kill(self, pid: int) -> None:
+            killed.append(pid)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _ResumeFails()  # type: ignore[method-assign]
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app")
+    assert caught.value.code == "backend_error"
+    # The spawned pid is torn down, not left frozen on the device.
+    assert killed == [4242]
+    assert caught.value.details.get("pid") == 4242
+    assert caught.value.details.get("package") == "com.example.app"
+    assert "resume failed" in caught.value.message
+    assert "killed" in caught.value.message
+
+
+def test_frida_spawn_that_never_starts_reports_backend_error_and_kills_nothing() -> None:
+    """A spawn that fails outright has no pid to reclaim.
+
+    When ``device.spawn`` itself raises, no process was created, so there is
+    nothing to kill -- the failure is classified as a backend_error (the same
+    device-outcome code the resume path uses) and no kill is attempted. This is
+    the branch distinct from the resume rollback: no pid was ever captured.
+    """
+    killed: list[int] = []
+
+    class _SpawnFails:
+        def spawn(self, package: str) -> int:
+            del package
+            raise RuntimeError("no such package on this device")
+
+        def resume(self, pid: int) -> None:  # pragma: no cover - never reached
+            del pid
+
+        def kill(self, pid: int) -> None:
+            killed.append(pid)
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _SpawnFails()  # type: ignore[method-assign]
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app")
+    assert caught.value.code == "backend_error"
+    assert "spawn failed" in caught.value.message
+    assert killed == []
+
+
 def test_frida_java_perform_times_out_and_detaches_the_probe() -> None:
     """Java.perform on a non-JIT process used to occupy the worker forever.
 
