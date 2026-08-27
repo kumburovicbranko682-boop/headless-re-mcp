@@ -1,0 +1,83 @@
+# Per-PR jsre backend gates (js + wasm) — makes these live gates real in CI.
+#
+# The jsre backend is two clients in one module: JsClient (webcrack) and
+# WasmClient (wabt). Both have live gates in
+# tests/integration/test_web_re_gate.py, but nothing ran them: ci.yml runs unit
+# tests only, and the sole integration workflow (windows-integration.yml) is a
+# manual, self-hosted PE job that installs .[test,dev,web] but not
+# Node/webcrack/wabt, so the JS and WASM cases only ever skipped there
+# (skip != pass). js.unpack_bundle was in fact totally broken under webcrack 2.x
+# (it aborts on the pre-created -o directory unless -f is passed) and no CI
+# caught it. This job installs Node + webcrack + wabt and runs the js and wasm
+# cases on Linux so a regression fails here, on the PR, instead of shipping.
+#
+# Scoped to the jsre backend: it runs the js.* (webcrack) and wasm.* (wabt) cases
+# via -k and is path-scoped to the jsre code, so a PR touching none of it does
+# not pay for the job. It never launches a browser -- the CDP cases in the same
+# file need Chromium and belong to a full non-PE integration workflow, not here.
+name: jsre-gates
+
+on:
+  pull_request:
+    paths:
+      - "src/headless_re_mcp/backends/jsre/**"
+      - "src/headless_re_mcp/core/service_jsre.py"
+      - "tests/integration/test_web_re_gate.py"
+      - ".github/workflows/jsre-gates.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jsre-gates:
+    # Pinned, not ubuntu-latest: the apt wabt build and the exact webcrack
+    # version this gate was validated against should not shift with the image.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # Pin the webcrack the gate was validated on (2.16.0) so an upstream
+      # release cannot change the -o/-f contract this job exercises mid-stream.
+      WEBCRACK_VERSION: "2.16.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install wabt (wasm2wat / wasm-objdump)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wabt
+
+      - name: Install webcrack
+        run: npm install -g "webcrack@${WEBCRACK_VERSION}"
+
+      - name: Install package (web extra; no browser needed)
+        # The jsre gates never launch a browser, so [browser]/Chromium is skipped.
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web]"
+
+      - name: Tool sanity — the tools must resolve, not skip the gates
+        # If webcrack or wabt is missing the matching cases skip, and this job
+        # would read green on zero coverage. Fail loudly here instead so a broken
+        # install cannot masquerade as a pass.
+        run: |
+          wasm2wat --version
+          webcrack --version
+          python -c "from headless_re_mcp.backends.jsre import JsClient, WasmClient; assert JsClient().available, 'webcrack not found on PATH'; assert WasmClient().available, 'wabt not found on PATH'; print('jsre backends available')"
+
+      - name: jsre backend gates (js.* + wasm.*)
+        # -k "js_ or wasm_" selects the webcrack and wabt cases and deselects the
+        # browser (CDP) case, which needs Chromium this job does not install. -rs
+        # prints skip reasons so a skip never reads as a pass.
+        run: |
+          python -m pytest -rs --tb=short --timeout=120 \
+            tests/integration/test_web_re_gate.py -k "js_ or wasm_"
