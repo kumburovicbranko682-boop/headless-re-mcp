@@ -141,6 +141,35 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
 
 
+def test_a_unicode_line_separator_in_an_entry_survives_the_read(tmp_path: Path) -> None:
+    """A record carrying U+2028 / U+0085 / U+2029 must not be split and dropped.
+
+    json.dumps(ensure_ascii=False) writes those characters literally -- they are
+    above 0x1F, so JSON does not escape them -- yet str.splitlines() treats each
+    as a line boundary. Reading the page with splitlines() therefore cut one
+    record into fragments that all failed json.loads, so the entry disappeared
+    from timeline.list and the inflated line count made has_more undercount. The
+    reader must split only on the newline that terminates a JSONL record.
+    """
+    path = tmp_path / "timeline.jsonl"
+    hostile = "before\u2028after NEL\u0085tail PS\u2029end"
+    entry = store.append_session_timeline(
+        path, event="e0000", message=hostile, details={"note": "kept"}
+    )
+    assert "write_failed" not in entry
+    # The character really did land on disk unescaped, so the read path is what
+    # is under test rather than the write path.
+    assert "\u2028" in path.read_text(encoding="utf-8")
+
+    listed = store.list_session_timeline(path)
+
+    assert [item["event"] for item in listed["events"]] == ["e0000"]
+    assert listed["events"][0]["message"] == hostile
+    assert listed["count"] == 1
+    assert listed["total"] == 1
+    assert listed["has_more"] is False
+
+
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

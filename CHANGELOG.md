@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（会话时间线读取只按换行切分，含 U+2028 的条目不再消失）
+
+- `list_session_timeline` 的分页把定位到的字节窗口解码后用 `str.splitlines()` 切成一条条 JSONL
+  记录。但 `splitlines()` 除了 `\n` 还在 U+0085(NEL)、U+2028(行分隔)、U+2029(段分隔)处断行,
+  而这三个字符都在 0x1F 以上,`json.dumps(ensure_ascii=False)` 不会转义、原样写进字符串值里。
+  于是任何 `message`/`details` 里带这些字符的条目(抽取出的字符串、控制台输出行、文件名等)被拆成
+  多个片段,每个片段都 `json.loads` 失败而被静默丢弃,该条目从 `timeline.list` 里凭空消失;更糟的是
+  被拆多出来的行数灌进 `len(chunk)`,让 `has_more = offset + len(chunk) < total` 少报「还有更多」。
+  现改为只在终结每条记录的 `\n` 处切分(`split("\n")`,并去掉终结符留下的尾部空串,使返回的行数仍等于
+  记录数),含 Unicode 行分隔符的记录完整保留。新增回归直测:写入一条带 U+2028/U+0085/U+2029 的条目,
+  断言它确以字面量落盘、且 `timeline.list` 原样读回该条(count/total/has_more 均正确)。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

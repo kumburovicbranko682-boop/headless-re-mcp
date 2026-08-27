@@ -180,7 +180,19 @@ def _page(raw: bytes, offset: int, limit: int) -> tuple[int, list[str]]:
             end = len(raw)
             break
         end = nxt + 1
-    return total, raw[start:end].decode("utf-8", errors="replace").splitlines()
+    # Split only on the "\n" that terminates each JSONL record. str.splitlines()
+    # additionally breaks on U+0085, U+2028 and U+2029, which are not control
+    # characters below 0x20 and so json.dumps(ensure_ascii=False) writes them
+    # literally inside a string value. A record carrying one of those (an
+    # extracted string, a console line, a filename) was cut into fragments that
+    # each failed to parse and vanished from the page, and the inflated line
+    # count made has_more undercount. The terminator leaves a trailing "" that
+    # is dropped so the returned count still equals the number of records.
+    decoded = raw[start:end].decode("utf-8", errors="replace")
+    lines = decoded.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return total, lines
 
 
 def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
