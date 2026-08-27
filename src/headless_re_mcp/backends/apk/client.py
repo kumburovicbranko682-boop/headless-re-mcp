@@ -287,6 +287,82 @@ class ApkClient:
             "has_more": certs_more or files_more,
         }
 
+    def signature(self, path: Path) -> JsonObject:
+        """Report which APK signing schemes (v1/v2/v3/v3.1) signed the APK.
+
+        apk.certificates lists the signer certs but only flags the legacy v1
+        (JAR/META-INF) scheme via v1_signed, so a modern v2/v3-only APK reads
+        there as "not v1-signed" with no positive statement of how it *is*
+        signed. This is the scheme view: schemes gives a bool for each of v1,
+        v2, v3 and v31 (the APK Signature Scheme block versions), signed is the
+        library's overall verdict, and each certificates row pairs a scheme with
+        the signer's subject and sha256, so a v1-only downgrade or a per-scheme
+        key mismatch (a repackaging tell) is visible at a glance. Certs are
+        deduped by sha256 within a scheme and capped; has_more marks the cap.
+        Reads manifest/signing only -- no DEX analysis.
+        """
+        apk = self._apk(path)
+        schemes: dict[str, bool] = {}
+        for label, attr in (
+            ("v1", "is_signed_v1"),
+            ("v2", "is_signed_v2"),
+            ("v3", "is_signed_v3"),
+            ("v31", "is_signed_v31"),
+        ):
+            probe = getattr(apk, attr, None)
+            try:
+                schemes[label] = bool(probe()) if callable(probe) else False
+            except Exception:  # noqa: BLE001 - block parsing raises many types
+                schemes[label] = False
+        try:
+            signed = bool(apk.is_signed())
+        except Exception:  # noqa: BLE001
+            signed = any(schemes.values())
+        certs: list[JsonObject] = []
+        has_more = False
+        for label, attr in (
+            ("v1", "get_certificates_v1"),
+            ("v2", "get_certificates_v2"),
+            ("v3", "get_certificates_v3"),
+            ("v31", "get_certificates_v31"),
+        ):
+            getter = getattr(apk, attr, None)
+            if not callable(getter):
+                continue
+            try:
+                scheme_certs = getter() or []
+            except Exception:  # noqa: BLE001 - malformed blocks vary by version
+                continue
+            seen: set[str] = set()
+            for cert in scheme_certs:
+                try:
+                    sha256 = (
+                        cert.sha256_fingerprint
+                        if hasattr(cert, "sha256_fingerprint")
+                        else ""
+                    )
+                    subject = str(getattr(cert, "subject", ""))
+                except Exception:  # noqa: BLE001 - cert objects vary by version
+                    continue
+                if sha256 in seen:
+                    continue
+                seen.add(sha256)
+                if len(certs) >= _MAX_CERTIFICATES:
+                    has_more = True
+                    break
+                certs.append(
+                    {"scheme": label, "subject": subject, "sha256": sha256}
+                )
+            if has_more:
+                break
+        return {
+            "signed": signed,
+            "schemes": schemes,
+            "certificates": certs,
+            "count": len(certs),
+            "has_more": has_more,
+        }
+
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         activities, a_more = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)

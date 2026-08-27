@@ -110,6 +110,9 @@ class ApkAnalysisMixin:
     def apk_certificates(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "certificates")
 
+    def apk_signature(self, session_id: str) -> Result[JsonObject]:
+        return self._apk_call(session_id, "signature")
+
     def apk_components(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "components")
 

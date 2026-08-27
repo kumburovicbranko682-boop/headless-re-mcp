@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -551,6 +551,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   原来的单 pid 校验是**替换而不是移除**：设备操作改用按会话的「设备 + 已授权 pid 集合」，
   会话必须先连设备、pid 必须由本会话 spawn 得到；PE 会话的本机单 pid 行为逐字未变。
   Android hook 模板并入现有 `frida.hook.template`，仍不接受调用方自带脚本。
+
+### 新增（APK 签名方案）
+
+- `apk.signature`：报告 APK 由哪些签名方案（v1/v2/v3/v3.1）签署。`apk.certificates` 只经
+  `v1_signed` 标记老式 v1（JAR/META-INF）方案，一个现代 v2/v3-only 的包在那里读起来像「没签」，
+  却说不清它到底怎么签的。本工具给出方案视图：`schemes` 为 v1、v2、v3、v31（APK Signature Scheme
+  区块版本）各返回一个布尔，`signed` 是库的总体判定，`certificates` 每行把方案与签名者的
+  `subject` 和 `sha256` 配对——于是 v1-only 降级或某个方案换了签名密钥（重打包信号）一眼可见。
+  证书在方案内按 sha256 去重并设上限，`has_more` 标记触顶；只读 manifest/签名，不做 DEX 分析。
 
 ### 新增（Web）
 

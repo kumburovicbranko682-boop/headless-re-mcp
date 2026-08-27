@@ -61,6 +61,23 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_certificates(session_id))
 
+    @tools.tool(name="apk.signature")
+    def apk_signature(session_id: str) -> dict[str, Any]:
+        """Report which APK signing schemes (v1/v2/v3/v3.1) signed the APK.
+
+        apk.certificates lists the signer certs but only flags the legacy v1
+        (JAR/META-INF) scheme via v1_signed, so a modern v2/v3-only APK reads
+        there as "not v1-signed" with no positive statement of how it is signed.
+        This is the scheme view: schemes gives a bool for each of v1, v2, v3 and
+        v31 (the APK Signature Scheme block versions), signed is the library's
+        overall verdict, and each certificates row pairs a scheme with the
+        signer's subject and sha256 -- so a v1-only downgrade or a per-scheme key
+        mismatch (a repackaging tell) is visible at a glance. Answers with
+        signed, schemes, certificates, count, and has_more; certs are deduped by
+        sha256 within a scheme and capped. There is no certs field.
+        """
+        return _dump(analysis.apk_signature(session_id))
+
     @tools.tool(name="apk.components")
     def apk_components(session_id: str) -> dict[str, Any]:
         """List activities, services, receivers, and providers.
