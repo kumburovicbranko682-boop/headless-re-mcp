@@ -209,6 +209,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   xrefs）都把意外异常收敛成结构化 `backend_error`，而 `not_found` / `invalid_params` /
   `too_large` / `capability_unavailable` 这些刻意的码原样透出；Android gate 现在断言这些读取
   永远不会回成 `internal_error`。
+- **`js.unpack_bundle` 每次必败**。适配器在调 webcrack 前先 `out_dir.mkdir(exist_ok=True)`
+  把输出目录建好，而 webcrack 2.x 坚持自己创建 `-o` 目录、遇到已存在的目录直接
+  `output directory already exists` 退 1——于是拆包在活体上从来没成功过，服务层只会回
+  `backend_error`。因为只有 `js.deobfuscate` 有活体门，这条端到端断裂一直没人发现。现在只建
+  父目录、把目录留给 webcrack 自己创建：空的残留目录先删掉让它接管，非空目录则先报
+  `invalid_params` 而不是硬跑进去、再把里面本就存在的文件当成拆包结果误报成功。服务每次用
+  全新的 `unpack-<uuid>` 目录，所以连续拆包都能成。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
@@ -606,6 +613,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **非 PE 线的活体门补齐了此前只打桩子进程的核心路径**。这些能力过去要么只在 Windows PE
+  夹具上验过、要么整条链都被 mock，于是在 Linux 核心上端到端零覆盖——`js.unpack_bundle` 每次
+  必败的缺陷正是这样溜过去的。新增/扩展：`test_web_re_gate` 起一个本地 HTTP 站点、驱动真实
+  CDP 抓一次子资源与一次 fetch，断言 `web.network.get` 回原样响应体、`web.script.source` 回真
+  脚本源码（此前只有 data: URL 门证明 scripts/console/dom 存在）；并新增 `js.unpack_bundle`
+  与 `wasm.info` 的活体门（此前只有 `js.deobfuscate` / `wasm.wat`）。`test_proxy_lifecycle_gate`
+  过去只验起停与端口，从不发一个字节；现增一条真的把 HTTP 请求经代理打到本地源、断言 flow 被
+  记录且 `flow_get` 回原样响应体——这是 Web/Android 共用的拦截契约。`test_android_re_gate`
+  过去只护 `device_list` 降级，现对所有带 serial 的设备控制口（info/properties/packages/
+  current_activity/logcat/launch/force_stop/uninstall/screenshot/pull）断言：无论 adb 缺失
+  （`capability_unavailable`）还是在场但无设备（`backend_error`），都回刻意码、永不 `internal_error`。
+  `test_r2_elf_live_gate` 现在除 open/functions/disasm/xrefs 外还覆盖 strings/imports/exports：
+  用系统 C 编译器编一个带已知字符串的小 ELF，断言 `izj`/`iij`/`iEj` 都解析成带统一 Address 的
+  条目（编进去的字符串、一个 libc 导入、我们自己的一个导出）。缺工具/编译器一律 skip（≠pass）。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
