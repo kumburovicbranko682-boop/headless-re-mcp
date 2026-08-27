@@ -35,6 +35,17 @@ foreach ($item in $include) {
     }
 }
 
+# A live checkout leaves bytecode and tool caches inside src/tests/scripts;
+# they are per-machine state, not source. Every other bundle script strips
+# them (release.ps1, build_msi.ps1, build_portable.ps1); same treatment here.
+Get-ChildItem -LiteralPath $dest -Directory -Recurse -Force |
+    Where-Object { $_.Name -in @("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules") } |
+    Sort-Object FullName -Descending |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+Get-ChildItem -LiteralPath $dest -File -Recurse -Force |
+    Where-Object { $_.Extension -in @(".pyc", ".pyo") } |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+
 $zip = Join-Path $OutDir "$Name.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path $dest -DestinationPath $zip
