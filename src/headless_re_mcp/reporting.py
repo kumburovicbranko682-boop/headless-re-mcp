@@ -255,6 +255,12 @@ def render_markdown_report(
 
         lines.append("")
 
+        # Findings and Artifacts already say when they show only part of the
+        # total; the audit table was the one section that did not, so a page of
+        # 50 rows out of thousands read as the whole recent history. "Recent"
+        # in the heading hints at a subset but not at how much is missing.
+        _note_if_partial(lines, audit, shown=len(audit_entries), noun="actions")
+
         lines.extend(
 
             _table(
