@@ -82,6 +82,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 新增回归（`wasm.info` / `wasm.wat` 各调各的 wabt 工具，由捕获 argv 的目录配置直测固定）
+
+- `WasmClient(wabt)` 从同一个 `wabt` 参数解析出两个不同的二进制、各自 entry point 各调各的:
+  `self._wasm2wat = _resolve_wabt_tool(wabt, "wasm2wat")`、`self._objdump = _resolve_wabt_tool(wabt,
+  "wasm-objdump")`;`wat` 跑 `[wasm2wat, module]`,`info` 跑 `[wasm-objdump, "-h", "-x", module]`。两条
+  契约都要紧,而既有 wasm 测试两条都留空:一是**每个 entry point 调对的工具、带对的参数**——`wat` 必须起
+  `wasm2wat`、`info` 必须起 `wasm-objdump -h -x`,它们是产出不同的两个程序,且 `info` 少了 `-h`(段头)或
+  `-x`(段详情)就打不出有用的东西;既有测试都传单个二进制路径、又用一个*忽略 argv* 只回固定字节的假
+  `run_bounded`,把两个工具对调、或把 `-x` 删掉,它们观察到的都不变。二是**wabt 是*目录*时按名各解各的
+  工具**——运维把设置指向 wabt 安装根(或其 `bin/`)、而不是某个可执行文件;`_resolve_wabt_tool` 于是拼
+  `wabt / name`(并回落到 `wabt / "bin" / name`);没有测试传目录,这个拼接——以及 `wasm2wat` 与
+  `wasm-objdump` 在其下解析成*两个不同文件*——从没被走过。新增三例用目录配置的 client 捕获 argv,把工具
+  选择、`-h -x` 参数、目录解析一并钉住(info 起 `wasm-objdump -h -x`、wat 起 `wasm2wat` 且不带 objdump 参数、
+  安装根下二者各解析到 `bin/` 里自己的文件);对调工具与删 `-x` 两处变异各被相应用例逮到,既有 wasm 用例全绿。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
