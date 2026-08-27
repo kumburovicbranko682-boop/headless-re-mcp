@@ -494,6 +494,18 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x1B: b,  # TypeSpec
         0x1C: 2 + member_forwarded + s + _simple_index_size(rc, 0x1A),
         0x1D: 4 + _simple_index_size(rc, 0x04),  # FieldRVA
+        # EnCLog(0x1E)/EnCMap(0x1F): fixed 4-byte token columns, no heap or coded
+        # index, so their width does not vary with heap_sizes. They only appear in
+        # the uncompressed #- stream (edit-and-continue / unoptimized metadata) --
+        # the same shape whose FieldPtr/MethodPtr/ParamPtr/EventPtr/PropertyPtr
+        # tables above are already sized. Omitting them meant a #- assembly that
+        # carried EnC tables could not be sized past bit 0x1E, so _table_start
+        # raised unsupported_metadata and aborted enumeration of every table after
+        # them -- File, ExportedType, ManifestResource (dotnet.enumerate
+        # kind=resources), NestedClass, GenericParam, MethodSpec -- even though
+        # those rows were perfectly readable.
+        0x1E: 4 + 4,  # EnCLog: Token + FuncCode
+        0x1F: 4,  # EnCMap: Token
         0x20: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # Assembly
         0x21: 4,  # AssemblyProcessor
         0x22: 12,  # AssemblyOS
