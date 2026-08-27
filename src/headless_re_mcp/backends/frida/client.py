@@ -117,7 +117,11 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // Frida 17 removed the Memory.read* helpers; the reads moved onto
+    // NativePointer (ptr(...).readByteArray). The old Memory.readByteArray
+    // form raised "TypeError: not a function", so memory_read failed on every
+    // modern frida while modules/exports (Process.* APIs) kept working.
+    return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
   }
 };
 """
