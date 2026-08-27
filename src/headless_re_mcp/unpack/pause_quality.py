@@ -60,12 +60,21 @@ def assess_pause_quality(
         reasons.append("resolved_ratio_low")
     if oep_role in {"packed_ep"}:
         reasons.append("oep_still_packed_ep")
-    if (
+    # The import-level gate confirms readiness, but it must not resurrect
+    # ``iat_ready`` once a hard signal has already failed closed. Every check
+    # above that clears ``iat_ready`` is a hard block; the only soft note is
+    # "ui_visible_only_not_sufficient", which does not clear it. Stub-call
+    # dominance and a low resolved ratio are *independent*, fail-closed signals
+    # (a dump whose slots resolved can still be VM-coupled -- see stub_calls),
+    # and ``recoverability`` is derived from import-slot analysis that never sees
+    # them. So only lift the soft caveat when the gate is clean *and* nothing
+    # knocked readiness down; never override a recorded block back to ready.
+    gate_confirms = (
         rebuild_allowed is True
         and recoverability == "iat_recoverable"
         and not code_not_ready
-    ):
-        iat_ready = True
+    )
+    if gate_confirms and iat_ready:
         reasons = [r for r in reasons if r != "ui_visible_only_not_sufficient"]
         if ui_visible is True:
             reasons.append("ui_visible_and_iat_gate_ok")
