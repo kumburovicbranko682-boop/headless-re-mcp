@@ -3450,8 +3450,12 @@ class TestGhidraExportDisclosesTruncation:
         script = Path(ghidra.__file__).resolve().parent / "scripts" / "ExportJson.java"
         text = script.read_text(encoding="utf-8")
         assert 'appendBool(json, "has_more", hasMore)' in text
-        assert "boolean truncated = text.length() > MAX_DECOMPILED;" in text
+        # The cap is now a parameter (default MAX_DECOMPILED) so the spill path
+        # can be forced under test, but the disclosure contract is unchanged.
+        assert "boolean truncated = text.length() > maxDecompiled;" in text
         assert 'appendBool(json, "truncated", truncated);' in text
+        # A cut decompilation must also spill the full C so it stays recoverable.
+        assert 'appendKey(json, "artifact_path")' in text
 
 
 class TestAdbShellCallsAreBounded:
