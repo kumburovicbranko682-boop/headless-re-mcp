@@ -32,6 +32,9 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
+# Only the head of AndroidManifest.xml is scanned for a package id, and it is
+# read as a bounded stream so a decompression-bomb manifest cannot OOM install().
+_MANIFEST_SCAN_BYTES = 64 * 1024
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -184,8 +187,13 @@ def _device_info_row(info: Any) -> JsonObject:
 def _apk_package_name(path: Path) -> str | None:
     """Best-effort package id from the APK, without pulling androguard in."""
     try:
-        with zipfile.ZipFile(path) as archive:
-            data = archive.read("AndroidManifest.xml")[:65536]
+        # Stream a bounded window rather than ZipFile.read(), which decompresses
+        # the whole member into memory first: install() runs this on a
+        # caller-supplied, possibly hostile APK, and a manifest crafted to
+        # inflate to gigabytes (a zip bomb) would OOM the process before the
+        # slice ran. archive.open(...).read(n) stops after n decompressed bytes.
+        with zipfile.ZipFile(path) as archive, archive.open("AndroidManifest.xml") as member:
+            data = member.read(_MANIFEST_SCAN_BYTES)
     except Exception:  # noqa: BLE001
         return None
     try:

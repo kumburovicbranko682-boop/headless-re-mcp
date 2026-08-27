@@ -429,6 +429,51 @@ class TestApkClassification:
             describe_apk(plain)
 
 
+class TestApkManifestReadIsBounded:
+    """install() reads the manifest of a caller-supplied, possibly hostile APK.
+
+    ZipFile.read() decompresses the whole member into memory before any slice,
+    so a manifest crafted to inflate to gigabytes (a zip bomb) would OOM the
+    process. The reader now streams a bounded window instead.
+    """
+
+    def test_a_decompression_bomb_manifest_does_not_load_into_memory(
+        self, tmp_path: Path
+    ) -> None:
+        import tracemalloc
+
+        from headless_re_mcp.backends.adb.client import _MANIFEST_SCAN_BYTES, _apk_package_name
+
+        # A valid package id in the scanned window, then ~48 MiB of highly
+        # compressible filler: with the old whole-member read this inflates in
+        # memory; with the bounded stream only the window is decompressed.
+        bomb = tmp_path / "bomb.apk"
+        payload = b'package="com.bomb.app"\n' + b"A" * (48 * 1024 * 1024)
+        assert len(payload) > _MANIFEST_SCAN_BYTES * 16
+        with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("AndroidManifest.xml", payload)
+
+        tracemalloc.start()
+        try:
+            name = _apk_package_name(bomb)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        # Correctness: the package in the window is still recovered.
+        assert name == "com.bomb.app"
+        # Boundedness: nowhere near the 48 MiB the whole-member read would take.
+        assert peak < 4 * 1024 * 1024, f"read {peak} bytes; manifest window is not bounded"
+
+    def test_a_normal_manifest_still_yields_its_package(self, tmp_path: Path) -> None:
+        from headless_re_mcp.backends.adb.client import _apk_package_name
+
+        apk = tmp_path / "app.apk"
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b'package="com.example.app"\n')
+        assert _apk_package_name(apk) == "com.example.app"
+
+
 class TestApktoolBoundaries:
     def test_missing_apktool_degrades(self, tmp_path: Path) -> None:
         client = ApktoolClient(None, None)
