@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（windbg 转储分析失败被当成「空列表」）
+
+- windbg 的转储路径 `_run_dump` 过去完全不看 cdb 的退出码,而实时路径 `_run_process` 早就会在
+  cdb「非零退出且无输出」时抛 `backend_error`。更要命的是 `threads`/`modules`/`disasm` 这些包装器把
+  `output` 改名成自己的字段后,顺手丢掉了 `exit_code` 与 `stderr`——于是 cdb 因位数不符、转储损坏、
+  符号路径被拒而失败时,回包看起来就是一次成功但「空」的列表。这与相邻的截断处理自相矛盾:`_carried`
+  本就按「改名字段的读者不会再去翻嵌套副本」的道理把截断提示带上来,却没把失败一起带上。
+- 现在 `_run_dump` 与 `_run_process` 对齐:cdb 非零退出(0/1 之外)且无输出时抛 `backend_error`(带
+  `exit_code`/`stderr`);若 cdb 打印了东西则保留文本,由 `_carried` 把 `tool_failed` + `exit_code`
+  (以及非空 `stderr`)一并带进 `threads`/`modules`/`disasm` 及其 `live_*` 版本,让「报错的会话」不再
+  被读成「空清单」。退出码 0/1 仍按既有语义视为可接受,不误标失败。六个包装器的工具描述同步点名
+  `tool_failed`/`exit_code`。
+- 新增回归:非零退出带输出时包装器带 `tool_failed`/`exit_code`(空 `stderr` 不伪造)、非零退出且无输出时
+  转储路径抛 `backend_error`、退出码 1 仍视为可接受、`live_modules` 同样带失败信号、`open_dump` 保留
+  部分输出并直报 `exit_code`,以及六个包装器描述点名 `tool_failed`。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
