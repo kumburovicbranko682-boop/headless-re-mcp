@@ -13,6 +13,24 @@ AsgiReceive = Callable[[], Awaitable[AsgiMessage]]
 AsgiSend = Callable[[AsgiMessage], Awaitable[None]]
 
 
+def _body_byte_length(body: object) -> int:
+    """Bytes an ASGI body chunk occupies, for every buffer type ASGI permits.
+
+    The spec types ``body`` as ``bytes``, but an ASGI server may hand back a
+    ``bytearray`` or ``memoryview`` over the same received bytes, and each costs
+    the process exactly as much memory. Counting only ``bytes`` (``isinstance``
+    is False for the other two) let a chunked upload delivered in those buffers
+    slip past the very cap this middleware exists to enforce, so the point of
+    bounding allocation was lost precisely when there was no honest
+    ``content-length`` to catch it first. ``memoryview`` is measured by
+    ``nbytes`` so a non-byte itemsize still reports its true size."""
+    if isinstance(body, (bytes, bytearray)):
+        return len(body)
+    if isinstance(body, memoryview):
+        return body.nbytes
+    return 0
+
+
 async def _send_error(send: AsgiSend, status: int, detail: str) -> None:
     payload = json.dumps({"detail": detail}, separators=(",", ":")).encode("utf-8")
     await send(
@@ -89,8 +107,7 @@ class RequestBodyLimitMiddleware:
                 break
             if message.get("type") != "http.request":
                 continue
-            body = message.get("body", b"")
-            total += len(body) if isinstance(body, bytes) else 0
+            total += _body_byte_length(message.get("body", b""))
             if total > self.max_body_bytes:
                 await _send_error(send, 413, "request_body_too_large")
                 return

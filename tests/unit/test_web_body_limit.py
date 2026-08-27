@@ -72,6 +72,54 @@ async def test_request_body_limit_uses_content_length_before_receiving() -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wrap",
+    [bytearray, memoryview],
+    ids=["bytearray", "memoryview"],
+)
+async def test_request_body_limit_counts_non_bytes_buffers(wrap: Any) -> None:
+    """A body delivered as bytearray/memoryview must still hit the cap.
+
+    ASGI servers may hand the received bytes back in a non-``bytes`` buffer;
+    those cost the same memory, so without honest counting a chunked upload in
+    such a buffer would bypass the size cap entirely.
+    """
+    routed = False
+    incoming = iter(
+        [
+            {"type": "http.request", "body": wrap(b"x" * 600), "more_body": True},
+            {"type": "http.request", "body": wrap(b"y" * 600), "more_body": False},
+        ]
+    )
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return next(incoming)
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    async def downstream(
+        _scope: dict[str, Any],
+        _receive: Any,
+        _send: Any,
+    ) -> None:
+        nonlocal routed
+        routed = True
+
+    middleware = RequestBodyLimitMiddleware(downstream, max_body_bytes=1024)
+    await middleware(
+        {"type": "http", "headers": []},
+        receive,
+        send,
+    )
+
+    assert routed is False
+    assert sent[0]["status"] == 413
+    assert b"request_body_too_large" in sent[1]["body"]
+
+
+@pytest.mark.asyncio
 async def test_request_body_limit_replays_an_accepted_body() -> None:
     incoming = iter(
         [
