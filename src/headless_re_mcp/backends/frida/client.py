@@ -235,6 +235,25 @@ def _detach_all(sessions: list[Any]) -> None:
             session.detach()
 
 
+def _detach_or_raise(session: Any, pid: int, label: str) -> None:
+    """Detach a probe session on the success path, surfacing a failed detach.
+
+    A probe is meant to leave nothing behind, so a detach that raises means the
+    session is still resident in the target with its script loaded. Reporting
+    the failure keeps the caller from treating a leaked session as a clean
+    probe. The error path detaches separately and stays best-effort: a call
+    that already failed should surface its own cause, not this detach.
+    """
+    try:
+        session.detach()
+    except Exception as exc:
+        raise FridaError(
+            "frida_detach_failed",
+            f"{label} detach failed: {type(exc).__name__}: {exc}",
+            pid=pid,
+        ) from exc
+
+
 def _kill_spawned(device: Any, pids: list[int]) -> None:
     while pids:
         pid = pids.pop()
@@ -458,16 +477,19 @@ class FridaClient:
             try:
                 script = session.create_script(source)
                 script.load()
-                return {
+                result = {
                     "pid": pid,
                     "template": template,
                     "loaded": True,
                     "device": "local",
                     **_PROBE_DISCLOSURE,
                 }
-            finally:
+            except BaseException:
                 with contextlib.suppress(Exception):
                     session.detach()
+                raise
+            _detach_or_raise(session, pid, "hook probe")
+            return result
 
         try:
             return _run_deadline(work, timeout=deadline, on_timeout=lambda: _detach_all(sessions))
@@ -726,8 +748,12 @@ class FridaClient:
                     values, has_more = _page(
                         script.exports_sync.classes(name_filter or "", capped + 1), capped
                     )
-                    return {"classes": values, "count": len(values), "has_more": has_more}
-                if mode == "methods":
+                    result: JsonObject = {
+                        "classes": values,
+                        "count": len(values),
+                        "has_more": has_more,
+                    }
+                elif mode == "methods":
                     if not class_name:
                         raise FridaError("invalid_params", "class_name is required")
                     raw = script.exports_sync.methods(class_name, capped + 1)
@@ -743,17 +769,21 @@ class FridaClient:
                     else:
                         found = True
                         values, has_more = _page(list(raw or []), capped)
-                    return {
+                    result = {
                         "class_name": class_name,
                         "found": found,
                         "methods": values,
                         "count": len(values),
                         "has_more": has_more,
                     }
-                raise FridaError("invalid_params", "mode must be classes or methods")
-            finally:
+                else:
+                    raise FridaError("invalid_params", "mode must be classes or methods")
+            except BaseException:
                 with contextlib.suppress(Exception):
                     session.detach()
+                raise
+            _detach_or_raise(session, pid, "Java probe")
+            return result
 
         try:
             return _run_deadline(
@@ -800,16 +830,19 @@ class FridaClient:
             try:
                 script = session.create_script(source)
                 script.load()
-                return {
+                result = {
                     "pid": pid,
                     "template": template,
                     "loaded": True,
                     "device": str(device_id or "local"),
                     **_PROBE_DISCLOSURE,
                 }
-            finally:
+            except BaseException:
                 with contextlib.suppress(Exception):
                     session.detach()
+                raise
+            _detach_or_raise(session, pid, "device hook probe")
+            return result
 
         try:
             return _run_deadline(
