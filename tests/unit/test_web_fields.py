@@ -170,6 +170,7 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     )
 
     request = handle.requests["request-1"]
+    assert request["has_post_data"] is False
     assert len(str(request["url"]).encode()) <= _MAX_URL_BYTES
     assert len(str(request["method"]).encode()) <= _MAX_METADATA_BYTES
     assert len(str(request["resourceType"]).encode()) <= _MAX_METADATA_BYTES

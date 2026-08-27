@@ -502,6 +502,10 @@ class WebBackend:
                 "resourceType": resource_type,
                 "status": None,
                 "mimeType": None,
+                # The request body is fetched on demand in network_get (like the
+                # response body) rather than buffered per request; this flag is
+                # what tells network_get whether that fetch is worth attempting.
+                "has_post_data": bool(req.get("hasPostData") or req.get("postData")),
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
@@ -702,6 +706,35 @@ class WebBackend:
         if spill is not None:
             result["body_path"] = str(spill)
         result["base64_encoded"] = base64_encoded
+        # Request body (POST/PUT payload: the JSON/form an API call sent). Fetched
+        # on demand like the response body, not buffered per request, so it does
+        # not bloat the ring. Only attempted when the request carried a body; a
+        # browser that has already discarded it answers with request_body_error
+        # rather than failing the whole read.
+        if entry.get("has_post_data"):
+            try:
+                post = self._runner(handle).call(
+                    lambda: handle.cdp.send(
+                        "Network.getRequestPostData", {"requestId": request_id}
+                    )
+                )
+                post_data = post.get("postData", "")
+                if not isinstance(post_data, str):
+                    post_data = str(post_data)
+                req_inline, req_spill, req_cut = _spill_text(
+                    post_data,
+                    artifact_dir=artifact_dir,
+                    filename=f"reqbody-{uuid4().hex}.bin",
+                    kind="request body",
+                )
+                result["request_body"] = req_inline
+                result["request_body_truncated"] = req_cut
+                if req_spill is not None:
+                    result["request_body_path"] = str(req_spill)
+            except WebError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - post data may be discarded
+                result["request_body_error"] = str(exc)
         return result
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:

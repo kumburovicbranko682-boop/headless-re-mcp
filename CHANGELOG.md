@@ -1221,6 +1221,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   实机 gate(`test_web_re_gate.py`)对真实浏览器抓到的 `/app.js` 请求补断言 `request_headers`(键名归一后)含 `user-agent`,证明 requestWillBeSent(+ExtraInfo)→
   合并→取回端到端可用。
 
+- **`web.network.get` 能回响应体却回不了请求体,而 API 调用发出的 POST/PUT 载荷(JSON/表单)正是分析者最想看的。** 至此 `network_get` 已有请求/响应头、
+  响应体,唯独缺请求体。请求体像响应体一样**按需取**而非入环缓存(否则 3000 条请求各存一份会吃光内存):`on_request` 只在条目上记一个 `has_post_data`
+  布尔(由 `hasPostData`/内联 `postData` 推出),`network_get` 仅当其为真时调 `Network.getRequestPostData` 取回,经 `_spill_text` 兜底(大体落 `request_body_path`、
+  截断标 `request_body_truncated`),返回 `request_body`。浏览器若已丢弃该数据,则以 `request_body_error` 记录而非让整条读取失败(响应体照常返回);
+  `_spill_text` 抛的 `too_large`(超采集上限的上传)照旧上抛,与响应体一致。工具描述补上 `has_post_data`/`request_body` 及错误/落盘语义。单测
+  (`test_web_network_get_fields.py`):`has_post_data` 为真的请求断言经 `getRequestPostData` 取回 `{"user":"admin"}`;getRequestPostData 抛错时断言响应体仍在、
+  `request_body` 不在、`request_body_error` 记录到位。`test_web_fields.py` 布线断言 GET 的 `has_post_data` 为假。实机 gate 对真实 `/app.js`(GET)补断言
+  `has_post_data` 为假,钉住这条「按需取」的开关端到端接线。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

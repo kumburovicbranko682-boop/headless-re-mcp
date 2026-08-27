@@ -94,7 +94,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         request_headers is the matching client-sent map (Cookie, Authorization,
         custom X- headers, User-Agent), merged from requestWillBeSent and its
         ExtraInfo so network-stack headers like Cookie are included, with
-        request_headers_truncated flagged the same way.
+        request_headers_truncated flagged the same way. has_post_data marks
+        requests that carried a body; for those, request_body returns the sent
+        POST/PUT payload (fetched on demand, large bodies spill to
+        request_body_path, cut flagged as request_body_truncated), or
+        request_body_error when the browser had already discarded it.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 

@@ -200,6 +200,9 @@ def test_web_cdp_captures_network_and_reads_a_body() -> None:
             assert isinstance(req_headers, dict) and req_headers, got.data
             req_lowered = {str(k).lower(): str(v) for k, v in req_headers.items()}
             assert "user-agent" in req_lowered, req_headers
+            # The sub-resource is a GET, so has_post_data is False and no
+            # request_body is fetched -- pins the flag that gates that fetch.
+            assert got.data["has_post_data"] is False, got.data
         finally:
             service.web_close(session_id)
     finally:

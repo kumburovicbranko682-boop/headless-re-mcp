@@ -140,6 +140,72 @@ def test_web_network_get_response_headers_empty_when_unseen(
     assert payload["request_headers_truncated"] is False
 
 
+def test_web_network_get_returns_request_body_when_present(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A request marked has_post_data returns the sent body via getRequestPostData.
+
+    The POST payload an API call sent is the request-side counterpart to the
+    response body; a working read fetches it on demand and returns it inline.
+    """
+
+    class _CdpPost:
+        def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "Network.getRequestPostData":
+                return {"postData": '{"user":"admin"}'}
+            return {"body": "resp-body", "base64Encoded": False}
+
+    class _PostHandle:
+        lock = Lock()
+        requests = {"r3": {"requestId": "r3", "url": "https://api", "has_post_data": True}}
+        response_headers: dict[str, dict[str, object]] = {}
+        request_headers: dict[str, dict[str, str]] = {}
+        cdp = _CdpPost()
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _PostHandle())
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.network_get("s", "r3", tmp_path)
+    assert payload["request_body"] == '{"user":"admin"}'
+    assert payload["request_body_truncated"] is False
+    assert "request_body_path" not in payload
+    doc = _tool_docstring("web.network.get")
+    assert "request_body" in doc
+    assert "has_post_data" in doc
+
+
+def test_web_network_get_request_body_error_does_not_fail_the_read(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A discarded post body surfaces request_body_error, not a failed read.
+
+    getRequestPostData raises once the browser has dropped the data; the
+    response body still reads, so the whole call must not fail -- the request
+    side degrades to a request_body_error note.
+    """
+
+    class _CdpDropped:
+        def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "Network.getRequestPostData":
+                raise RuntimeError("No post data for requestId")
+            return {"body": "resp-body", "base64Encoded": False}
+
+    class _PostHandle:
+        lock = Lock()
+        requests = {"r4": {"requestId": "r4", "url": "https://api", "has_post_data": True}}
+        response_headers: dict[str, dict[str, object]] = {}
+        request_headers: dict[str, dict[str, str]] = {}
+        cdp = _CdpDropped()
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _PostHandle())
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.network_get("s", "r4", tmp_path)
+    assert payload["body"] == "resp-body"
+    assert "request_body" not in payload
+    assert "No post data" in payload["request_body_error"]
+
+
 def test_bounded_headers_coerces_bytes_keys_and_values() -> None:
     """Non-str header keys/values are coerced so the map is JSON-safe.
 
