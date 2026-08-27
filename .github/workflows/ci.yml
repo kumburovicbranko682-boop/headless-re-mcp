@@ -292,6 +292,7 @@ jobs:
             tests/integration/test_web_script_source_gate.py \
             tests/integration/test_m11_r2_live_gate.py \
             tests/integration/test_m11_r2_static_gate.py \
+            tests/integration/test_m11_r2_exports_gate.py \
             tests/integration/test_m11_r2_xrefs_gate.py \
             tests/integration/test_m11_r2_arch_gate.py \
             tests/integration/test_m11_r2_arm32_gate.py \
