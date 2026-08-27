@@ -440,6 +440,132 @@ class TestApkStringXrefs:
         assert excinfo.value.code == "invalid_params"
 
 
+class _FakeFieldAnalysis:
+    def __init__(
+        self,
+        name: str,
+        reads: list[tuple[str, str]],
+        writes: list[tuple[str, str]],
+    ) -> None:
+        self.name = name
+        self._reads = reads
+        self._writes = writes
+
+    def get_xref_read(self) -> set[tuple[object, _FakeMethodRef]]:
+        return {(object(), _FakeMethodRef(cls, name)) for cls, name in self._reads}
+
+    def get_xref_write(self) -> set[tuple[object, _FakeMethodRef]]:
+        return {(object(), _FakeMethodRef(cls, name)) for cls, name in self._writes}
+
+
+class _FakeFieldParsed:
+    def __init__(self, fields: list[_FakeFieldAnalysis]) -> None:
+        self.analysis = self
+        self._fields = fields
+
+    def get_fields(self) -> list[_FakeFieldAnalysis]:
+        return self._fields
+
+
+class TestApkFieldXrefs:
+    """Read and write are distinct questions for a field; both must resolve."""
+
+    def _client(
+        self, monkeypatch: pytest.MonkeyPatch, fields: list[_FakeFieldAnalysis]
+    ) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        client = ApkClient()
+        monkeypatch.setattr(
+            ApkClient, "_parsed", lambda self, path: _FakeFieldParsed(fields)
+        )
+        return client
+
+    def test_read_direction_walks_read_xrefs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fields = [
+            _FakeFieldAnalysis(
+                "secret",
+                reads=[("Lcom/example/Store;", "load")],
+                writes=[("Lcom/example/Store;", "save")],
+            )
+        ]
+        client = self._client(monkeypatch, fields)
+        result = client.field_xrefs(tmp_path / "app.apk", "secret")
+
+        assert result["direction"] == "read"
+        assert result["found"] is True
+        assert result["xrefs"] == [{"class": "Lcom/example/Store;", "method": "load"}]
+        assert result["total"] == 1
+        assert result["scan_capped"] is False
+
+    def test_write_direction_walks_write_xrefs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fields = [
+            _FakeFieldAnalysis(
+                "secret",
+                reads=[("Lcom/example/Store;", "load")],
+                writes=[("Lcom/example/Store;", "save")],
+            )
+        ]
+        client = self._client(monkeypatch, fields)
+        result = client.field_xrefs(tmp_path / "app.apk", "secret", direction="write")
+
+        assert result["direction"] == "write"
+        assert result["xrefs"] == [{"class": "Lcom/example/Store;", "method": "save"}]
+
+    def test_same_name_fields_across_classes_are_merged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A field name is not unique across classes; every match contributes.
+        fields = [
+            _FakeFieldAnalysis("token", reads=[("La;", "m1")], writes=[]),
+            _FakeFieldAnalysis("token", reads=[("Lb;", "m2")], writes=[]),
+        ]
+        client = self._client(monkeypatch, fields)
+        result = client.field_xrefs(tmp_path / "app.apk", "token")
+
+        assert result["found"] is True
+        assert result["total"] == 2
+        assert {edge["class"] for edge in result["xrefs"]} == {"La;", "Lb;"}
+
+    def test_an_absent_field_is_found_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(
+            monkeypatch, [_FakeFieldAnalysis("present", [("La;", "m")], [])]
+        )
+        result = client.field_xrefs(tmp_path / "app.apk", "missing")
+
+        assert result["found"] is False
+        assert result["xrefs"] == []
+
+    def test_a_field_untouched_in_the_direction_is_found_true_and_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # secret is read but never written: write direction is found True, empty.
+        client = self._client(
+            monkeypatch, [_FakeFieldAnalysis("secret", [("La;", "m")], [])]
+        )
+        result = client.field_xrefs(tmp_path / "app.apk", "secret", direction="write")
+
+        assert result["found"] is True
+        assert result["total"] == 0
+        assert result["xrefs"] == []
+
+    def test_an_unknown_direction_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkError
+
+        client = self._client(monkeypatch, [])
+        with pytest.raises(ApkError) as excinfo:
+            client.field_xrefs(tmp_path / "app.apk", "secret", direction="sideways")
+        assert excinfo.value.code == "invalid_params"
+
+
 class _FakeCert:
     def __init__(self, tag: str) -> None:
         self.subject = f"CN={tag}"

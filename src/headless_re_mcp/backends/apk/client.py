@@ -21,6 +21,7 @@ JsonObject = dict[str, Any]
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
+_MAX_FIELDS_COLLECT = 20_000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
@@ -470,6 +471,74 @@ class ApkClient:
         window = ordered[start : start + cap]
         return {
             "value": value,
+            "found": found,
+            "xrefs": [{"class": cls, "method": name} for cls, name in window],
+            "count": len(window),
+            "total": len(ordered),
+            "offset": start,
+            "has_more": start + len(window) < len(ordered),
+            "scan_capped": scan_capped,
+        }
+
+    def field_xrefs(
+        self,
+        path: Path,
+        field_name: str,
+        *,
+        direction: str = "read",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Methods that read or write a field, matched by exact name.
+
+        Fields are where keys, tokens and config live, so "who sets this" and
+        "who uses this" are distinct triage questions -- ``direction="read"``
+        (default) walks androguard's read xrefs and ``direction="write"`` its
+        write xrefs. Names are not unique across classes, so every field with
+        the name is considered and the edges are merged (the same aggregate-by-
+        name rule ``apk.xrefs`` uses). ``found`` separates an absent field from
+        one present but untouched in the chosen direction; ``scan_capped`` says
+        the field scan stopped early. Edges share the {class, method} shape.
+        """
+        if direction not in ("read", "write"):
+            raise ApkError(
+                "invalid_params",
+                "direction must be read or write",
+                direction=direction,
+            )
+        if not isinstance(field_name, str) or field_name.strip() == "":
+            raise ApkError("invalid_params", "field_name is required")
+        parsed = self._parsed(path)
+        target = field_name.strip()
+        cap = max(1, int(limit))
+        start = max(0, int(offset))
+        edges: set[tuple[str, str]] = set()
+        scanned = 0
+        scan_capped = False
+        found = False
+        for fa in parsed.analysis.get_fields():
+            if scanned >= _MAX_FIELDS_COLLECT:
+                scan_capped = True
+                break
+            scanned += 1
+            if str(fa.name) != target:
+                continue
+            # A field name can repeat across classes, so unlike a string value
+            # this cannot stop at the first hit -- every match contributes.
+            found = True
+            walk = fa.get_xref_read() if direction == "read" else fa.get_xref_write()
+            for _klass, method in walk:
+                edges.add(
+                    (
+                        str(getattr(method, "class_name", "")),
+                        str(getattr(method, "name", "")),
+                    )
+                )
+        ordered = sorted(edges)
+        window = ordered[start : start + cap]
+        return {
+            "field_name": target,
+            "direction": direction,
             "found": found,
             "xrefs": [{"class": cls, "method": name} for cls, name in window],
             "count": len(window),

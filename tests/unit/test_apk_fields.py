@@ -119,6 +119,21 @@ def test_apk_string_xrefs_names_found_and_the_edge_fields() -> None:
     assert "exact" in doc
 
 
+def test_apk_field_xrefs_names_the_direction_and_found_fields() -> None:
+    """apk.field_xrefs must name read/write and found so uses cannot merge.
+
+    Read and write are separate questions for a field, and an absent field must
+    not read like one present-but-untouched; the docstring has to name both the
+    direction split and the found flag so a caller can branch.
+    """
+    doc = " ".join(_tool_docstring("apk.field_xrefs").split())
+    assert "read" in doc
+    assert "write" in doc
+    assert "direction" in doc
+    assert "found" in doc
+    assert "scan_capped" in doc
+
+
 class _ManifestBody:
     def get_xml(self) -> bytes:
         return b"<manifest/>" * ((_MAX_MANIFEST_CHARS // 10) + 20)

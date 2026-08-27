@@ -176,6 +176,32 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_string_xrefs(session_id, value, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="apk.field_xrefs")
+    def apk_field_xrefs(
+        session_id: str,
+        field_name: str,
+        direction: Literal["read", "write"] = "read",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List methods that read or write a field, matched by exact name.
+
+        Fields hold keys, tokens and config, so who sets one and who uses it are
+        different questions: direction "read" (default) lists methods that read
+        the field, direction "write" lists methods that write it. A field name
+        can recur across classes, so every field with the name contributes and
+        the edges are merged. Answers with field_name, direction, found, xrefs
+        (each {class, method}), count, total, offset, has_more and scan_capped.
+        found is False for an absent field and True with an empty xrefs for one
+        present but untouched in that direction, so the two do not look alike.
+        The match is exact, not a substring search.
+        """
+        return _dump(
+            analysis.apk_field_xrefs(
+                session_id, field_name, direction=direction, offset=offset, limit=limit
+            )
+        )
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,
