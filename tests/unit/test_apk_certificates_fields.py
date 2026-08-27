@@ -95,6 +95,52 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert "signed" in doc
 
 
+class _Name:
+    """Mimics an asn1crypto x509.Name: str() is an opaque, id-bearing repr."""
+
+    def __init__(self, friendly: str) -> None:
+        self.human_friendly = friendly
+
+    def __str__(self) -> str:
+        return "<asn1crypto.x509.Name 140081758512496 b'061\\x0b0...raw der...'>"
+
+
+class _NamedCert:
+    def __init__(self) -> None:
+        self.subject = _Name("Common Name: Acme Debug, Organization: Acme Corp")
+        self.issuer = _Name("Common Name: Acme CA, Organization: Acme Corp")
+        self.serial_number = 123456789
+        self.sha256_fingerprint = "AA BB CC"
+
+
+class _NamedApk:
+    def get_signature_names(self) -> list[str]:
+        return ["META-INF/CERT.RSA"]
+
+    def get_certificates(self) -> list[_NamedCert]:
+        return [_NamedCert()]
+
+
+def test_apk_certificates_render_readable_subject_and_issuer() -> None:
+    """subject/issuer must be the human-readable DN, not the Name object repr.
+
+    androguard returns asn1crypto Name objects; str() on one yields
+    ``<asn1crypto.x509.Name <id> b'...'>`` -- unreadable, and unstable across runs
+    because it embeds the Python object id. The certificate view now renders the
+    human_friendly DN so a signer is identifiable and the field is deterministic.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _NamedApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    cert = payload["certificates"][0]
+    assert cert["subject"] == "Common Name: Acme Debug, Organization: Acme Corp"
+    assert cert["issuer"] == "Common Name: Acme CA, Organization: Acme Corp"
+    # The opaque object repr (and the object id it carries) must not leak through.
+    assert "asn1crypto" not in cert["subject"]
+    assert "<" not in cert["subject"] and "<" not in cert["issuer"]
+    assert cert["sha256"] == "AA BB CC"
+
+
 def test_apk_certificates_reports_a_v3_only_apk_as_signed() -> None:
     """A v2/v3-only APK must not read as unsigned.
 

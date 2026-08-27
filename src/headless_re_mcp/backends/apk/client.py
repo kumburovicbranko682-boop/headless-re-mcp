@@ -54,6 +54,22 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return page, len(all_names) > len(page)
 
 
+def _name_text(value: Any) -> str:
+    """Readable distinguished name for an asn1crypto Name, not its object repr.
+
+    androguard hands back asn1crypto ``x509.Name`` objects, and ``str()`` on one
+    returns ``<asn1crypto.x509.Name <id> b'...raw DER...'>`` -- so the subject and
+    issuer fields were unreadable and, because that repr embeds the Python object
+    id, they changed from run to run for the very same certificate. ``human_friendly``
+    is the "Common Name: ..., Organization: ..." string a caller wants; fall back
+    to str only for something that is not a Name.
+    """
+    friendly = getattr(value, "human_friendly", None)
+    if isinstance(friendly, str) and friendly:
+        return friendly
+    return "" if value is None else str(value)
+
+
 def _scheme_flag(apk: Any, method: str) -> bool:
     """Best-effort ``is_signed_vN`` probe that never fails the call.
 
@@ -256,8 +272,8 @@ class ApkClient:
             try:
                 items.append(
                     {
-                        "subject": str(getattr(cert, "subject", "")),
-                        "issuer": str(getattr(cert, "issuer", "")),
+                        "subject": _name_text(getattr(cert, "subject", None)),
+                        "issuer": _name_text(getattr(cert, "issuer", None)),
                         "serial": str(getattr(cert, "serial_number", "")),
                         "sha256": cert.sha256_fingerprint
                         if hasattr(cert, "sha256_fingerprint")
