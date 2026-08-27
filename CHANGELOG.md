@@ -266,16 +266,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
   无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
 
-### 修复（元数据表 InterfaceImpl/NestedClass 列宽按 ECMA-335 取错索引类型）
+### 修复（`_table_row_size` 五处元数据表列宽按 ECMA-335 取错列类型）
 
-- `_table_row_size` 里 InterfaceImpl(0x09)把 `Interface` 列当成 MethodDef 简单索引
-  (`_simple_index_size(rc, 0x06)`),而按 ECMA-335 II.22.23 它是 TypeDefOrRef **编码索引**;
-  NestedClass(0x29)把 `EnclosingClass` 列当成 Implementation 编码索引,而两列本都是 TypeDef
-  简单索引。两种宽度只有在相关行数越过 2^14 时才分叉,小程序集里都塌成 2 字节而看不出来;
-  一旦是值得枚举的大程序集,InterfaceImpl 行宽算错会平移其后所有表的起点,`list_memberref_xrefs`
-  与 IL token 解析随之读偏。现 InterfaceImpl 用 `type_def_or_ref`、NestedClass 两列都用 TypeDef
-  简单索引。新增直测:用 20000 行的 TypeRef/File 强制相关索引为 4 字节,断言两表行宽分别为
-  6、4,并留一条小行数用例钉住常见情形仍是 4(2+2)。
+- `_table_row_size`（`dotnet/metadata_enum.py`,给 `_table_start` 累加各表字节以定位待枚举表）
+  有五处列宽与 ECMA-335 II.22 不符,都会平移其后所有表的起点从而读偏后续枚举:
+  - InterfaceImpl(0x09):`Interface` 列当成 MethodDef 简单索引(`_simple_index_size(rc, 0x06)`),
+    实为 TypeDefOrRef **编码索引**(II.22.23),现用 `type_def_or_ref`。
+  - MethodSemantics(0x18):`Method` 列当成 MethodDefOrRef 编码索引,实为 MethodDef **简单索引**
+    (II.22.28),现用 `_simple_index_size(rc, 0x06)`。
+  - AssemblyRef(0x23):整行照抄了 Assembly(0x20)——多了 4 字节 HashAlgId 前缀、又漏了尾部
+    HashValue(blob)。这一处**连普通小堆程序集都算错**:2 字节堆下抄来的行是 22 字节,而
+    正确行 `2+2+2+2+4 + blob + str + str + blob` 是 20;因为几乎每个程序集都有 AssemblyRef 行,
+    这 2 字节漂移会平移其后所有表——`dotnet.enumerate(kind="resources")`(ManifestResource 0x28)
+    在真实输入上普遍读偏。现按 II.22.5 去掉 HashAlgId、补回 HashValue。
+  - File(0x26):`HashValue` 列当成 Implementation 编码索引,实为 Blob 索引(II.22.19),现用 `b`。
+  - NestedClass(0x29):`EnclosingClass` 列当成 Implementation 编码索引,两列实为 TypeDef **简单索引**
+    (II.22.32),现两列都用 `_simple_index_size(rc, 0x02)`。
+- 除 AssemblyRef 外的四处只在相关行数/堆越过对应阈值时才与错值分叉,小程序集里都塌成 2 字节而
+  看不出来。新增五条直测:用 20000 行的 TypeRef/File 或 40000 行 MemberRef、4 字节 blob 堆等各自
+  强制目标列取 4 字节,断言五表行宽分别命中修正值;AssemblyRef 另用默认小堆断言 20(错值为 22),
+  并保留一条小行数用例钉住 InterfaceImpl/NestedClass 常见情形仍是 4(2+2)。
 
 ### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
 
