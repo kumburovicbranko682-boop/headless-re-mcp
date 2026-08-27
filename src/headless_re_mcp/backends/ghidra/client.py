@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -12,7 +13,11 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
-_EXPORT_SCRIPT = "ExportJson.py"
+# Java, not Jython: Ghidra 11.4 removed the bundled Jython runtime, so a .py
+# postScript aborts headless analysis unless the user installs the Jython
+# extension. analyzeHeadless compiles a .java GhidraScript on the fly and that
+# path is supported on every Ghidra release.
+_EXPORT_SCRIPT = "ExportJson.java"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
@@ -192,7 +197,7 @@ class GhidraClient:
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         if not (_SCRIPT_DIR / _EXPORT_SCRIPT).is_file():
-            raise GhidraError("backend_error", "ExportJson.py missing from package")
+            raise GhidraError("backend_error", "ExportJson.java missing from package")
         project_dir.mkdir(parents=True, exist_ok=True)
         out_path = project_dir / f"export_{mode}.json"
         if out_path.exists():
@@ -273,9 +278,18 @@ class GhidraClient:
         env = os.environ.copy()
         # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free.
         env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"
+        # Ghidra refuses a project location that contains any path element
+        # starting with '.' (NamingUtilities.checkName -> ProjectLocator). The
+        # default artifact root lives under ~/.local, so pointing the project
+        # there aborted every headless call with "Path element starting with
+        # '.' is not permitted". The project is transient (-deleteProject), so
+        # build it in a dot-free temp directory instead. The export JSON is
+        # written to out_path by the postScript via plain file IO, which the
+        # naming rule does not touch, so out_path can stay under project_dir.
+        project_loc = tempfile.mkdtemp(prefix="ghidra-headless-")
         cmd = [
             str(self.analyze),
-            str(project_dir),
+            project_loc,
             "HeadlessRE",
             "-import",
             str(binary),
@@ -308,6 +322,10 @@ class GhidraClient:
                 "backend_error",
                 f"failed to launch analyzeHeadless: {exc}",
             ) from exc
+        finally:
+            # -deleteProject removes the project contents; drop the now-empty
+            # holder too, and never let cleanup mask a backend/timeout error.
+            shutil.rmtree(project_loc, ignore_errors=True)
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)
@@ -321,12 +339,16 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
+    # A Ghidra distribution ships both launchers: the extensionless shell
+    # script and the Windows ``.bat``. The ``.bat`` used to be tried first on
+    # every platform, so on Linux/macOS the resolver picked a batch file that
+    # is not marked executable -- ``available`` reported True and every Ghidra
+    # tool then died with "Permission denied". Prefer the launcher that matches
+    # the host, and only fall back to the other as a last resort.
+    posix = ("support/analyzeHeadless", "analyzeHeadless")
+    windows = ("support/analyzeHeadless.bat", "analyzeHeadless.bat")
+    order = (*windows, *posix) if os.name == "nt" else (*posix, *windows)
+    for rel in order:
         candidate = home / rel
         if candidate.is_file():
             return candidate

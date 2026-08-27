@@ -247,6 +247,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的干净返回（缺 androguard 时 skip≠pass）。同一夹具还驱动 jadx 反编译线（此前也无活体覆盖）：跑通
   `apk.export_sources` 生成 `sources/…/Secret.java`、`apk.decompile` 取回该类的 Java 源码，验证
   `--output-dir` / `sources/` 目录布局、单类路径解析与退出码处理确实对得上真实 jadx（缺 jadx 时 skip≠pass）。
+- **Ghidra 线在现代 Ghidra（11.4+/12.x）上整条不可用**，两处独立故障叠加：
+  1) 导出脚本 `ExportJson.py` 标了 `@runtime Jython`，而 Ghidra 11.4 起不再内置 Jython，headless
+     分析一执行 postScript 就以 `JythonStubException` 整体中止——`ghidra.functions/symbols/xrefs/decompile`
+     全线报 `backend_error`。已把脚本移植为 Java 版 `ExportJson.java`（`GhidraScript`）：analyzeHeadless
+     会即时编译，且 Java 脚本在所有 Ghidra 版本都受支持、无需任何扩展；输出 JSON 与原脚本逐字段等价
+     （list 模式的 mode/items/count/has_more，decompile 的 function/entry/decompiled/truncated）。
+  2) 项目落点撞上 Ghidra 的 `ProjectLocator` 校验——它拒绝任何以 `.` 开头的路径段，而默认 artifact 根在
+     `~/.local/...` 下（含 `.local`），于是每次调用都以 “Path element starting with '.' is not permitted”
+     中止。项目本就是一次性的（`-deleteProject`），改为在无点号的临时目录里建项目、用完即删；导出 JSON
+     仍按普通文件 IO 写到调用方路径（不受命名规则约束）。
+- **`_find_analyze_headless` 在 POSIX 上误选 `.bat`**。发行包同时带无扩展名的 shell 启动器与
+  Windows `.bat`，解析器不分平台先挑 `.bat`——Linux/macOS 上于是选中不可执行的批处理，`available`
+  仍报 True，随后每个 Ghidra 工具都以 “Permission denied” 死掉。现按宿主平台优先选对应启动器，另一
+  平台的仅作兜底。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。

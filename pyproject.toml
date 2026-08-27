@@ -142,7 +142,6 @@ explicit-preview-rules = true
 "src/headless_re_mcp/agent/providers/*.py" = ["E501"]
 "src/headless_re_mcp/tools/catalog.py" = ["E501"]
 "src/headless_re_mcp/web/routes/*.py" = ["E501"]
-"src/headless_re_mcp/backends/ghidra/scripts/ExportJson.py" = ["F821", "UP", "I", "B", "SIM"]
 "src/headless_re_mcp/core/capabilities_catalog.py" = ["E501"]
 "src/headless_re_mcp/core/process_tree.py" = ["E501"]
 "src/headless_re_mcp/core/ui_win32.py" = ["E501"]
@@ -236,10 +235,3 @@ module = [
   "headless_re_mcp.web.app",
 ]
 disable_error_code = ["attr-defined"]
-
-# Ghidra executes this inside its own interpreter, which injects currentProgram,
-# ARGS and the ghidra.* packages. There is nothing here for mypy to resolve, and
-# it is not imported by the package. Ruff exempts it from F821 for the same reason.
-[[tool.mypy.overrides]]
-module = ["headless_re_mcp.backends.ghidra.scripts.ExportJson"]
-ignore_errors = true
