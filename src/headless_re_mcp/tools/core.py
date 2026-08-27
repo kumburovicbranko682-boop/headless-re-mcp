@@ -35,15 +35,17 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
     def session_create(
         binary: str,
         target: Annotated[
-            Literal["pe", "apk", "web"] | None,
+            Literal["pe", "apk", "web", "native"] | None,
             Field(description="Force a target kind instead of inferring it"),
         ] = None,
     ) -> dict[str, Any]:
-        """Create a session for a local PE, a local APK, or a web target.
+        """Create a session for a local PE, native ELF/Mach-O, APK, or web target.
 
         binary is a local file path, or an http(s) URL when target is web. The
         target kind is inferred from the extension and magic bytes when omitted,
-        so a PE path behaves exactly as before.
+        so a PE path behaves exactly as before. A native ELF or Mach-O opens as
+        a native session that the portable backends (radare2, ghidra.*) analyse;
+        the PE-only debuggers (idalib, x64dbg, windbg) refuse it.
 
         Answers with session holding id, target, binary, locator, sha256,
         architecture, state, created_at, updated_at, backends and metadata.
