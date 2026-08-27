@@ -95,7 +95,9 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with installed (true/false, or null when it could not be
         verified), path and serial, plus package when the APK's id was
-        readable. A return from adb is not by itself a successful install.
+        readable. When installed is null or false, note says why (the id was
+        not readable, verification could not run, or pm path does not see the
+        package). A return from adb is not by itself a successful install.
         """
         return _dump(analysis.device_install(serial, apk_path, reinstall=reinstall))
 
@@ -104,7 +106,9 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Uninstall a package from the device.
 
         Answers with uninstalled (true/false, or null when it could not be
-        verified) and package. A return from adb is not by itself removal.
+        verified) and package. When uninstalled is null or false, note says
+        why (verification could not run, or pm path still sees the package). A
+        return from adb is not by itself removal.
         """
         return _dump(analysis.device_uninstall(serial, package))
 
@@ -113,7 +117,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Launch a package's main launcher activity.
 
         Answers with launched (true/false, or null when the foreground could
-        not be read), package, and foreground when known.
+        not be read), package, and foreground when known. When launched is
+        null the foreground is absent and note says why.
         """
         return _dump(analysis.device_launch(serial, package))
 
@@ -122,7 +127,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Force-stop a running package.
 
         Answers with stopped (true/false, or null when the process list could
-        not be read), package, and remaining_pids when known.
+        not be read), package, and remaining_pids when known. When stopped is
+        null the pids are absent and note says why.
         """
         return _dump(analysis.device_force_stop(serial, package))
 
