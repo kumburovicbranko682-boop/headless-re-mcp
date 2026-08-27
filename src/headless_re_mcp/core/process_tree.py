@@ -269,12 +269,17 @@ def terminate_process_group(pgid: int) -> list[int]:
     than with ``killpg(pgid)``: once the leader is reaped its pid can be reused,
     and a bare group signal on a recycled pid could hit an unrelated group. A
     per-member kill keyed on the group cannot.
+
+    Killed members that this process adopted as subreaper are then reaped, so a
+    caller like de4dot's exit-0 sweep does not trade a leaked child for a leaked
+    zombie.
     """
     killed: list[int] = []
     for pid in collect_process_group(pgid):
         with suppress(Exception):
             _kill_pid(pid)
             killed.append(pid)
+    _reap_terminated(killed, 1.0)
     return killed
 
 
