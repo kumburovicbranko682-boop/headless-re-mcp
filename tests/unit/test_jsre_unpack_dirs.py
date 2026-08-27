@@ -94,6 +94,9 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     ) -> tuple[str, str, int]:
         del timeout, maximum
         out_dir = Path(cmd[cmd.index("-o") + 1])
+        # Real webcrack creates the output directory itself; the client only
+        # ensures the parent exists. Model that here so the listing has a dir.
+        out_dir.mkdir(parents=True, exist_ok=True)
         if not any(out_dir.iterdir()):
             for index in range(250):
                 (out_dir / f"mod-{index:03d}.js").write_text("x", encoding="utf-8")
@@ -113,6 +116,44 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     assert tail["count"] == 10
     assert tail["has_more"] is False
     assert set(page["files"]) & set(tail["files"]) == set()
+
+
+def test_unpack_leaves_the_output_dir_for_webcrack_to_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The client must not pre-create out_dir; webcrack owns it.
+
+    webcrack 2.x refuses an output directory that already exists ("output
+    directory already exists", exit 1), so a client that pre-created it made
+    every unpack fail. Pin that the leaf does not exist when webcrack runs,
+    while its parent does, so this cannot regress without webcrack installed.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    seen: dict[str, bool] = {}
+
+    def fake_run(
+        cmd: list[str], *, timeout: float, maximum: float = 0.0
+    ) -> tuple[str, str, int]:
+        del timeout, maximum
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        seen["leaf_absent"] = not out_dir.exists()
+        seen["parent_present"] = out_dir.parent.is_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "index.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    client = JsClient(executable=Path("/bin/true"))
+
+    result = client.unpack_bundle(bundle, tmp_path / "jsre" / "unpack-abc", offset=0, limit=10)
+
+    assert seen["leaf_absent"] is True
+    assert seen["parent_present"] is True
+    assert result["file_count"] == 1
 
 
 @pytest.mark.parametrize(
@@ -135,6 +176,9 @@ def test_bounded_unpack_listing_finishes_at_the_last_readable_page(
     ) -> tuple[str, str, int]:
         del timeout, maximum
         out_dir = Path(cmd[cmd.index("-o") + 1])
+        # Real webcrack creates the output directory itself; the client only
+        # ensures the parent exists. Model that here so the listing has a dir.
+        out_dir.mkdir(parents=True, exist_ok=True)
         if not any(out_dir.iterdir()):
             for index in range(files_written):
                 (out_dir / f"mod-{index}.js").write_text("x", encoding="utf-8")
