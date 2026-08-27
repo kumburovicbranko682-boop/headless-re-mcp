@@ -72,6 +72,64 @@ def _omission_notice(omitted: int) -> JsonObject:
     }
 
 
+def _stub_unanswered_tool_calls(tail: list[JsonObject]) -> list[JsonObject]:
+    """Answer every tool call the cut left dangling, with a stub that says so.
+
+    The selection loop drops a newest message that will not fit even after
+    shrinking -- and a tool result is exactly the message that ends up there,
+    because its content is measured JSON-encoded: escape-heavy output (the
+    norm, since results are JSON stringified into content, and analysis output
+    carries control characters) inflates past the budget the shrink cut it to.
+    The assistant turn that made the call is small and survives, so the request
+    went out with a ``tool_calls`` id no tool message answers. That is the
+    mirror image of the orphan the front-of-tail strip removes, and providers
+    reject it the same way: an OpenAI-compatible API 400s on an assistant
+    ``tool_calls`` message not followed by a tool message per id, and the
+    scheduler filed that 400 as the mission failing.
+
+    A dropped result cannot be recovered, but the call can still be answered
+    honestly: a stub tool message saying the result was omitted keeps the
+    request valid and tells the model what happened, where deleting the
+    assistant turn would erase the fact that the call was ever made. Stubs sit
+    where the real results sat -- after the turn's surviving responses, before
+    the next non-tool message -- and answered calls pass through untouched.
+    """
+    repaired: list[JsonObject] = []
+    pending: list[str] = []
+
+    def answer_pending() -> None:
+        for call_id in pending:
+            repaired.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": "[tool result omitted: too large for the compacted context]",
+                }
+            )
+        pending.clear()
+
+    for item in tail:
+        role = item.get("role")
+        if role == "tool":
+            call_id = str(item.get("tool_call_id") or "")
+            if call_id in pending:
+                pending.remove(call_id)
+            repaired.append(item)
+            continue
+        answer_pending()
+        repaired.append(item)
+        if role == "assistant":
+            calls = item.get("tool_calls")
+            if isinstance(calls, list):
+                pending.extend(
+                    str(call.get("id"))
+                    for call in calls
+                    if isinstance(call, dict) and call.get("id")
+                )
+    answer_pending()
+    return repaired
+
+
 def compact_messages(messages: list[JsonObject], *, threshold_percent: int, max_chars: int = 120_000) -> list[JsonObject]:
     budget = max(8_000, int(max_chars * max(10, min(threshold_percent, 95)) / 100))
     total = sum(_message_size(item) for item in messages)
@@ -128,7 +186,9 @@ def compact_messages(messages: list[JsonObject], *, threshold_percent: int, max_
         recent = next((item for item in reversed(messages) if item.get("role") == "user"), None)
         if recent is not None:
             tail = [_shrink(recent, tail_budget // 2)]
+    # Counted before stubbing: a stub marks an omission, it does not undo one.
     omitted = max(0, len(messages) - len(tail) - len(system))
+    tail = _stub_unanswered_tool_calls(tail)
     return system + [_omission_notice(omitted)] + tail
 
 

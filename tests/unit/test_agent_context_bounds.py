@@ -64,3 +64,110 @@ def test_compaction_reserves_room_for_its_own_system_messages() -> None:
 
     assert wire_chars <= 8_000, f"8,000-character budget produced {wire_chars}"
     assert str(compacted[-1].get("content", "")).startswith("latest:")
+
+
+def _unanswered_call_ids(messages: list[dict]) -> list[str]:
+    """Tool-call ids no role="tool" message answers -- each one is a provider 400."""
+    answered = {
+        str(item.get("tool_call_id") or "")
+        for item in messages
+        if item.get("role") == "tool"
+    }
+    return [
+        str(call.get("id"))
+        for item in messages
+        if item.get("role") == "assistant"
+        for call in item.get("tool_calls") or []
+        if str(call.get("id")) not in answered
+    ]
+
+
+def test_a_dropped_oversized_tool_result_leaves_its_call_answered() -> None:
+    """The wire request may not end on an assistant turn with an open tool call.
+
+    A tool result's content is measured JSON-encoded, so escape-heavy output
+    (control characters encode six-to-one) can exceed the tail budget even
+    after the shrink cut the string to half of it. The selection loop then
+    drops that newest result -- but the small assistant turn that called for it
+    survives, and an OpenAI-compatible provider 400s on a ``tool_calls``
+    message with no tool message answering each id, killing the run. The call
+    must come back answered, by a stub that says the result was omitted.
+    """
+    messages = [
+        {"role": "system", "content": "persona"},
+        {"role": "user", "content": "unpack the bundle"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "web.script.source", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "\x01" * 40_000},
+    ]
+
+    compacted = compact_messages(messages, threshold_percent=10)
+
+    assert _unanswered_call_ids(compacted) == []
+    stub = next(item for item in compacted if item.get("role") == "tool")
+    assert stub["tool_call_id"] == "call_1"
+    assert "omitted" in str(stub["content"])
+    assert "\x01" not in json.dumps(compacted), "the oversized result itself stays dropped"
+
+
+def test_a_partially_answered_turn_keeps_real_results_and_stubs_the_rest() -> None:
+    """Only the dropped call gets a stub; surviving results pass through verbatim.
+
+    One assistant turn can make several calls of which only one result was too
+    large to keep. The genuine result must survive untouched and the stub must
+    answer exactly the missing id, in the position the dropped result held.
+    """
+    messages = [
+        {"role": "system", "content": "persona"},
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_a", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+                {"id": "call_b", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_a", "content": "genuine result"},
+        {"role": "tool", "tool_call_id": "call_b", "content": "\x01" * 40_000},
+    ]
+
+    compacted = compact_messages(messages, threshold_percent=10)
+
+    assert _unanswered_call_ids(compacted) == []
+    tools = [item for item in compacted if item.get("role") == "tool"]
+    assert [item["tool_call_id"] for item in tools] == ["call_a", "call_b"]
+    assert tools[0]["content"] == "genuine result"
+    assert "omitted" in str(tools[1]["content"])
+
+
+def test_an_answered_tail_gains_no_stubs() -> None:
+    """When every kept call kept its result, the repair must add nothing."""
+    messages = [
+        {"role": "system", "content": "persona"},
+        {"role": "user", "content": "old turn " + "o" * 9_000},
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "kept result"},
+    ]
+
+    compacted = compact_messages(messages, threshold_percent=10)
+
+    tools = [item for item in compacted if item.get("role") == "tool"]
+    assert tools == [{"role": "tool", "tool_call_id": "call_1", "content": "kept result"}]
+    assert _unanswered_call_ids(compacted) == []

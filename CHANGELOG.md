@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（上下文压缩留下无应答的 tool_calls，请求被 provider 400 拒绝）
+
+- `compact_messages` 的尾部选取会丢弃缩减后仍超预算的最新消息——这个位置恰好总是工具结果：
+  其内容按 JSON 编码后计量，转义密集的输出（结果本身就是 JSON 字符串化进 content 的，逆向
+  分析输出还常带控制字符，后者编码后膨胀六倍）在内容被裁到预算一半后编码长度仍越界。发起
+  该调用的 assistant 轮很小、总能留下，于是发往 provider 的请求带着一个没有任何 tool 消息
+  应答的 `tool_calls` id——这正是尾部开头剥离孤儿 tool 消息所防的镜像情形，OpenAI 兼容 API
+  同样直接 400，调度器把这次 400 记成任务失败。并行调用只丢其一时同样触发（一真一缺）。
+  现压缩后对尾部补一条存根 tool 消息应答每个悬空 id（内容注明“结果过大已省略”），保留
+  assistant 轮曾发起调用的事实与幸存的真实结果；省略计数在补存根前统计，不因此虚减。
+  新增三条直测：单调用被丢后有存根应答、双调用只补缺的那条且真实结果原样保留、
+  全部有应答时不加任何存根。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
