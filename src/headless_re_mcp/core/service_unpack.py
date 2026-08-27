@@ -1140,6 +1140,18 @@ class UnpackMixin:
             candidates = classified.data.get("candidates")
             if not isinstance(candidates, list):
                 candidates = []
+            # Like unpack.recommend, the plan's route is a pure function of
+            # candidates + PE signals, so an empty candidate list yields the
+            # "none" plan (prefer static analysis) whether the signature scanner
+            # ran clean or never ran at all. Carry packer_classify's verdict
+            # through so a "none" plan built on the absence of candidates is not
+            # read as one built on a confirmed absence of packing.
+            detection_conclusion = classified.data.get("conclusion")
+            signature_scan_completed = bool(
+                classified.data.get("signature_scan_completed")
+            )
+            detection_inconclusive = detection_conclusion == "inconclusive"
+            scanners = classified.data.get("scanners")
             session = self.registry.get(session_id)
             pe_report = scan_pe(session.require_pe())
             pe_vm_like = pe_suggests_vm_protector(
@@ -1159,14 +1171,30 @@ class UnpackMixin:
                 force_route=force_route,
                 recommendation=recommendation,
             )
+            payload: JsonObject = {
+                "plan": plan,
+                "recommendation": recommendation.to_dict(),
+                "pe_vm_like": pe_vm_like,
+                "force_route": force_route,
+                "claims_universal_unpack": False,
+                "detection_conclusion": detection_conclusion,
+                "signature_scan_completed": signature_scan_completed,
+                "detection_inconclusive": detection_inconclusive,
+            }
+            if isinstance(scanners, list):
+                payload["scanners"] = scanners
+            if detection_inconclusive:
+                payload["note"] = (
+                    "packer detection was inconclusive: the signature scanner "
+                    "(diec/exeinfope) did not run to completion (unavailable/disabled/"
+                    "failed with no second opinion), so an empty candidate set does not "
+                    "confirm the sample is unpacked. A 'none' plan derived purely from "
+                    "the absence of candidates should be read as 'unknown', not a "
+                    "confirmed absence of packing; re-run with a configured/working DIE "
+                    "or set force_route before concluding no unpacking is needed."
+                )
             return _success(
-                {
-                    "plan": plan,
-                    "recommendation": recommendation.to_dict(),
-                    "pe_vm_like": pe_vm_like,
-                    "force_route": force_route,
-                    "claims_universal_unpack": False,
-                },
+                payload,
                 session_id=session_id,
                 backend="unpack",
             )

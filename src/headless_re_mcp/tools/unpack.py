@@ -148,7 +148,13 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Build a non-authoritative unpack plan without executing side effects.
 
         Answers with plan (route, backend), recommendation, pe_vm_like,
-        force_route, and claims_universal_unpack false. There is no routes field.
+        force_route, claims_universal_unpack false, and the detection verdict it
+        rests on: detection_conclusion, signature_scan_completed,
+        detection_inconclusive, and scanners. There is no routes field. When
+        detection_inconclusive is true a note is added: the signature scanner
+        did not complete, so a "none" plan means the absence of candidates, not
+        a confirmed absence of packing -- read it as "unknown" and re-run with
+        DIE configured or set force_route.
         """
         return _dump(
             analysis.unpack_plan(
