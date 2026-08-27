@@ -1005,6 +1005,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`device.current_activity` 在 `app_current()` 返回 None 时仍回 `{package: None,
   activity: None}`**。dumpsys 读失败被无人值守的 agent 当成「前台没有应用」这一事实，而不是
   一次失败的读取。现在读不出包名记为 `backend_error`，真实的包名/activity 组合行为不变。
+- 新增回归（`device.current_activity` 的错误分流与 package 守卫）：读取走
+  `try: _call(dev.app_current) / except AdbError: raise / except Exception: -> backend_error`
+  再 `if not package: raise`。既有两处用例只覆盖满字段成功与 `app_current()` 返回 None 两点，
+  从未触及 `except` 分流或守卫形状。补齐四条：读取抛结构化 `AdbError`（如无 dumpsys 的
+  `capability_unavailable`）须原样上抛而非压平成 `backend_error`；读取抛普通异常须包成
+  `backend_error` 且消息带 `": <cause>"` 后缀（以区别于守卫那条无后缀的「failed to read current
+  activity」）；只有 `package` 把关成功、`activity` 可为 None（返回 `{package, activity: None}`，
+  否则合法前台会被误判失败）；空串 package 与 None 一样被 `not package` 拒绝（并非名为 "" 的
+  真实前台）。以变异逐一验证（去掉 `except AdbError: raise`、`not package` 改 `package is None`、
+  改成 `not package or not activity`）均被新用例捕获，既有测试仍绿。
 - **`device.list` 对每个设备再调一次 `get_state`**。adbutils 的 `open_transport` 默认等
   600 秒，假死的 adb server 会把工作线程占满十分钟；而且 `device_list()` 只回在线设备，
   offline 看起来像「没有这台设备」。改为一次 `host:devices`（带 socket 超时），offline 也
