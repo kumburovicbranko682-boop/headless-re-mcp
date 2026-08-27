@@ -225,6 +225,46 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestJsReUnpack:
+    def test_unpack_lets_webcrack_create_the_output_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pin the webcrack-version fix without needing webcrack installed.
+
+        Current webcrack owns the output directory and refuses to run when -o
+        points at one that already exists ("output directory already exists").
+        The client must therefore hand it a leaf that does not exist yet while
+        ensuring the parent is present; pre-creating the leaf broke every
+        unpack. This stubs the subprocess and asserts that contract at the
+        moment webcrack would be invoked.
+        """
+        import headless_re_mcp.backends.jsre.client as jsre_client
+
+        source = tmp_path / "bundle.js"
+        source.write_text("(function(){})();", encoding="utf-8")
+        out_dir = tmp_path / "jsre" / "unpack-abc"
+
+        seen: dict[str, object] = {}
+
+        def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+            target = Path(cmd[cmd.index("-o") + 1])
+            seen["leaf_existed"] = target.exists()
+            seen["parent_existed"] = target.parent.is_dir()
+            # Simulate webcrack: it creates the directory and writes modules.
+            target.mkdir(parents=True)
+            (target / "index.js").write_text("module.exports = 1;", encoding="utf-8")
+            return "", "", 0
+
+        monkeypatch.setattr(jsre_client, "_run", fake_run)
+        client = JsClient(tmp_path / "webcrack-stub")
+        result = client.unpack_bundle(source, out_dir)
+
+        assert seen["leaf_existed"] is False, "client pre-created the -o dir webcrack refuses"
+        assert seen["parent_existed"] is True, "client must ensure the parent exists"
+        assert result["file_count"] == 1
+        assert result["files"] == ["index.js"]
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
