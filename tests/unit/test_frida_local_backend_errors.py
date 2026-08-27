@@ -11,6 +11,7 @@ and confirm the session is still detached on the failure path.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -116,3 +117,32 @@ def test_local_rpc_timeout_keeps_the_timeout_code() -> None:
         client.memory_read(1, 0x2000, 8, allowed_pid=1)
 
     assert caught.value.code == "timeout"
+
+
+def test_every_op_reports_capability_unavailable_when_frida_is_absent() -> None:
+    """A missing frida module must degrade, not crash, on every entry point.
+
+    frida is a Python import, so shutil.which does not gate it and the CLI
+    degradation contract cannot reach it; this is its half of that contract. The
+    client guards availability at three distinct sites -- the direct check in
+    attach, _require for the pid-scoped local ops, and _need for the device
+    ops -- so a representative op from each must surface capability_unavailable
+    ("install frida") rather than an AttributeError on the None handle, which
+    _failure would file as an internal_error incident. pid == allowed_pid is
+    passed so the pid-scoped ops reach the availability branch instead of
+    stopping at the permission check that precedes it.
+    """
+    client = FridaClient()
+    client._available = False
+    client._frida = None
+
+    entry_points: list[tuple[str, Callable[[], object]]] = [
+        ("attach", lambda: client.attach(1, allowed_pid=1)),
+        ("modules", lambda: client.modules(1, allowed_pid=1)),
+        ("enumerate_devices", client.enumerate_devices),
+    ]
+    for label, call in entry_points:
+        with pytest.raises(FridaError) as caught:
+            call()
+        assert caught.value.code == "capability_unavailable", label
+        assert "not installed" in caught.value.message, label
