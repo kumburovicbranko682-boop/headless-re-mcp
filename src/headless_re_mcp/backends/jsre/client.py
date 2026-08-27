@@ -35,6 +35,11 @@ _MAX_COUNTED_FILES = 50_000
 # run_bounded. Sixteen mebibytes is enough for a real module and not enough
 # to keep a core busy for the rest of the timeout.
 _MAX_INPUT_BYTES = 16 * 1024 * 1024
+# Every WebAssembly binary opens with these four bytes. Checking them before
+# launching wasm2wat / wasm-objdump turns a cryptic tool failure and a wasted
+# subprocess into a precise invalid_params -- the same reason the size cap
+# refuses input up front rather than handing it to the child.
+_WASM_MAGIC = b"\x00asm"
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -85,6 +90,15 @@ def _require_existing_file(path: Path, *, missing: str) -> Path:
             max_file_size=cap,
         )
     return resolved
+
+
+def _looks_like_wasm(path: Path) -> bool:
+    """Whether the file opens with the four-byte WebAssembly magic."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) == _WASM_MAGIC
+    except OSError:
+        return False
 
 
 def _run(
@@ -234,7 +248,16 @@ class WasmClient:
     def _require_input(self, path: Path, tool: Path | None, name: str) -> Path:
         if tool is None:
             raise JsReError("capability_unavailable", f"{name} (wabt) is not configured")
-        return _require_existing_file(path, missing="wasm file not found")
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        # The size cap runs first (above): an oversized non-module is still
+        # refused as too_large, not misreported as a bad-magic file.
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        return resolved
 
     def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")

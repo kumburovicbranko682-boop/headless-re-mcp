@@ -27,6 +27,10 @@ JsonObject = dict[str, Any]
 # constrained so nothing that reaches a shell command can carry metacharacters.
 _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+# frida-server's -l listen host. An IPv4 address or a simple hostname; the
+# strict set keeps a value that reaches the su -c command line from carrying
+# shell metacharacters, quotes, or the colon that separates host from port.
+_BIND_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,64}$")
 _MAX_LOGCAT_LINES = 5000
 _MAX_LOGCAT_CHARS = 200_000
 # Only the package attribute near the top of the manifest is needed. Reading
@@ -753,16 +757,24 @@ class AdbBackend:
         server_binary: str | None = None,
         remote_path: str = "/data/local/tmp/frida-server",
         port: int = 27042,
+        bind_host: str = "127.0.0.1",
     ) -> JsonObject:
         """Best-effort: push and start frida-server on a rooted device/emulator.
 
         Idempotent-ish: if a frida-server process is already running it does
         nothing. Requires root (su) on the device; failures surface as
         structured errors rather than exceptions.
+
+        bind_host is the interface frida-server listens on. It defaults to
+        loopback: frida then only accepts connections over the USB/adb transport
+        or an adb forward, not from any host that can route to the device. Pass
+        ``0.0.0.0`` to expose it on the network for a remote-by-IP connection.
         """
         dev = self._device(serial)
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
+        if not _BIND_HOST_RE.match(bind_host or ""):
+            raise AdbError("invalid_params", "invalid bind_host", bind_host=bind_host)
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": False, "port": port}
@@ -783,7 +795,7 @@ class AdbBackend:
             # Launch detached under root; bounded so a blocking su prompt cannot hang.
             _device_shell(
                 dev,
-                f"su -c 'nohup {remote_path} -l 0.0.0.0:{int(port)} >/dev/null 2>&1 &'",
+                f"su -c 'nohup {remote_path} -l {bind_host}:{int(port)} >/dev/null 2>&1 &'",
                 timeout=8.0,
             )
         except Exception as exc:  # noqa: BLE001 - a timeout here often means it launched
