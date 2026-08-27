@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（x64dbg 动态运控调用统一到一个墙钟截止期限）
+
+- `_dynamic_request`（`debug.pause` / `debug.continue` 等运控调用背后）此前用 `with runtime.lock:`
+  无界地等运行时锁，且事件标记、RPC、状态等待三个阶段各自再花掉整份 `timeout`。于是一个
+  `timeout=100ms` 的 `debug.pause` 会先在忙锁后无限期干等,进锁后每个阶段又各花一遍预算——
+  `timeout=30` 的运控调用能把运行时占用一分多钟。现在:把 `timeout` 先校验到工具边界的 300 秒上限
+  (顺带挡掉 nan/inf/负值/bool),用 `monotonic()` 立一个覆盖全程的墙钟截止期限,`runtime.lock.acquire`
+  带可重试超时(等锁不再无界),事件标记 / RPC / 状态等待都只拿剩余的墙钟时间。超时抛 `retryable`
+  的 `XdbgRpcError`,`finally` 里必定释放锁。新增回归覆盖越界 timeout 被拒、忙锁下按期限失败、
+  各阶段只花剩余预算。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
