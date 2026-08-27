@@ -152,8 +152,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
         """Return the current page HTML, URL, and title.
 
-        Answers with url, title and html, plus truncated when the HTML was
-        cut at the buffer. There is no content, dom or body field.
+        Answers with url, title and html. html at most 200000 bytes is inline;
+        a larger DOM puts the full document (up to the capture cap) at dom_path
+        with html holding a prefix, and truncated is set. There is no content,
+        dom or body field.
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 

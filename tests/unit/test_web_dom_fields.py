@@ -38,36 +38,60 @@ class _Immediate:
 class _Page:
     url = "https://example/app"
 
+    def __init__(self, char_count: int) -> None:
+        self._char_count = char_count
+
     def evaluate(self, script: str, cap: int) -> dict[str, Any]:
         del script
-        html = "x" * (_MAX_INLINE_BODY + 50)
-        return {"html": html[:cap], "truncated": True}
+        html = "x" * self._char_count
+        return {"html": html[:cap], "over": self._char_count > cap}
 
     def title(self) -> str:
         return "Example"
 
 
-def test_web_dom_snapshot_names_html_and_says_when_it_was_cut(
-    monkeypatch: Any,
+def test_web_dom_snapshot_spills_a_large_dom_instead_of_losing_it(
+    tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """The catalog said HTML and never named the payload.
+    """A DOM over the inline cap used to come back cut with no recovery.
 
-    Measured: truncated True, html 200000 chars (the cap), no content, dom
-    or body field. Looking for those after a successful call reads as a
-    missing document, and a 200000-char string with no truncated flag
-    reads as the whole page.
+    script.source and network.get spill an oversized payload to an artifact;
+    dom.snapshot only clipped at 200000 bytes, so the rest of a large page was
+    gone. It now spills the full document to dom_path with html holding the
+    prefix and truncated set -- the same contract as its sibling tools.
     """
     backend = WebBackend()
-    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=_Page()))
+    page = _Page(_MAX_INLINE_BODY + 50)
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=page))
     monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
-    payload = backend.dom_snapshot("s")
+    payload = backend.dom_snapshot("s", tmp_path)
     assert "content" not in payload
     assert "dom" not in payload
     assert "body" not in payload
     assert payload["truncated"] is True
     assert payload["url"] == "https://example/app"
     assert payload["title"] == "Example"
+    # html is a prefix; the full DOM landed in the artifact.
     assert len(payload["html"]) == _MAX_INLINE_BODY
+    spilled = Path(payload["dom_path"])
+    assert spilled.parent == tmp_path
+    assert spilled.stat().st_size == _MAX_INLINE_BODY + 50
     doc = _tool_docstring("web.dom.snapshot")
     assert "html" in doc
     assert "truncated" in doc
+    assert "dom_path" in doc
+
+
+def test_web_dom_snapshot_inlines_a_small_dom_without_spilling(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Under the inline cap the whole DOM is html and nothing spills."""
+    backend = WebBackend()
+    page = _Page(1000)
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=page))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.dom_snapshot("s", tmp_path)
+    assert payload["truncated"] is False
+    assert "dom_path" not in payload
+    assert len(payload["html"]) == 1000
+    assert list(tmp_path.iterdir()) == []

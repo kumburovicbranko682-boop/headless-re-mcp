@@ -159,23 +159,34 @@ def _spill_text(
     artifact_dir: Path,
     filename: str,
     kind: str,
+    truncate: bool = False,
 ) -> tuple[str, Path | None, bool]:
     """Inline a prefix, spill the rest, or refuse when the capture cap is hit.
 
     CDP already delivered the whole payload. Writing it to the session artifact
     dir still fills the disk before retention runs: a single media response is
     enough. Returns ``(inline, spill_path_or_none, truncated)``.
+
+    ``truncate`` turns the over-cap case from a refusal into a bounded degrade:
+    a snapshot keeps the capture cap's worth (cut on a byte boundary, so a
+    trailing multibyte char may be clipped) and reports truncation, rather than
+    failing the whole call the way a response body or script source -- which the
+    caller asked for in full -- should when it cannot be delivered whole.
     """
     payload = text.encode("utf-8", errors="replace")
+    forced = False
+    if len(payload) > UNREGISTERED_CAPTURE_MAX_BYTES:
+        if not truncate:
+            raise WebError(
+                "too_large",
+                f"{kind} exceeds capture cap",
+                size=len(payload),
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
+        payload = payload[:UNREGISTERED_CAPTURE_MAX_BYTES]
+        forced = True
     size = len(payload)
-    if size > UNREGISTERED_CAPTURE_MAX_BYTES:
-        raise WebError(
-            "too_large",
-            f"{kind} exceeds capture cap",
-            size=size,
-            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
-        )
-    if size <= _MAX_INLINE_BODY:
+    if size <= _MAX_INLINE_BODY and not forced:
         return text, None, False
     if (
         not filename
@@ -715,8 +726,15 @@ class WebBackend:
             result["source_path"] = str(spill)
         return result
 
-    def dom_snapshot(self, session_id: str) -> JsonObject:
+    def dom_snapshot(self, session_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
+        # Clip in the browser at the spill ceiling, not the 200 KB inline cap:
+        # a DOM between the two used to come back cut with no way to recover the
+        # rest, unlike script.source / network.get which spill the full payload
+        # to an artifact. Bounding the transfer here keeps a huge SPA from
+        # serialising unbounded into memory; _spill_text then inlines a prefix
+        # and writes the full (up to the cap) DOM to dom_path.
+        cap = UNREGISTERED_CAPTURE_MAX_BYTES
 
         def work() -> JsonObject:
             try:
@@ -728,10 +746,10 @@ class WebBackend:
                         const text = typeof html === "string" ? html : "";
                         return {
                           html: text.length > cap ? text.slice(0, cap) : text,
-                          truncated: text.length > cap
+                          over: text.length > cap
                         };
                     }""",
-                    _MAX_INLINE_BODY,
+                    cap,
                 )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"dom snapshot failed: {exc}") from exc
@@ -739,12 +757,22 @@ class WebBackend:
                 raise WebError("backend_error", "dom snapshot returned no document")
             html = clipped.get("html")
             text = html if isinstance(html, str) else ""
-            return {
+            inline, spill, cut = _spill_text(
+                text,
+                artifact_dir=artifact_dir,
+                filename=f"dom-{uuid4().hex}.html",
+                kind="dom snapshot",
+                truncate=True,
+            )
+            result: JsonObject = {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
-                "html": text[:_MAX_INLINE_BODY],
-                "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
+                "html": inline,
+                "truncated": cut or bool(clipped.get("over")),
             }
+            if spill is not None:
+                result["dom_path"] = str(spill)
+            return result
 
         return self._runner(handle).call(work)
 

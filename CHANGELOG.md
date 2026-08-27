@@ -363,6 +363,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `wallTime`（各自记进 flow / network 摘要，`proxy.flows`、`web.network.list` 因此多出一个 `started_at` 纪元时间
   字段），拿不到才退化到当下；缺失时 `iso8601` 退到纪元 `1970-01-01T00:00:00+00:00`，绝不省掉这个必填字段
   让整份 log 被判废。既有的按容量裁剪（`UNREGISTERED_CAPTURE_MAX_BYTES` 内丢 entry）与 `too_large` 上抛照旧。
+- **`web.dom.snapshot` 把超过内联上限的 DOM 直接截断丢弃，剩下的再也拿不回来**。姊妹工具
+  `web.script.source`、`web.network.get` 对超大载荷都是「内联一段前缀、其余外溢成 artifact」，唯独
+  DOM 快照在浏览器里 `slice(0, 200000)` 一刀切掉——一个大型 SPA 的 DOM（内联被逆向常要的正是内联脚本、
+  嵌入数据）过了 200 KB 就只剩个头，没有任何补救路径。现在它对齐姊妹工具：浏览器侧改在抓包容量上限
+  （`UNREGISTERED_CAPTURE_MAX_BYTES`，而非 200 KB 内联上限）处截断以约束传输，避免超大页整体序列化进内存；
+  Python 侧走 `_spill_text` 内联前缀、把完整（至多到容量上限）DOM 落到 `dom_path`，`truncated` 置位，服务层
+  `web_dom_snapshot` 把该文件登记为 `web_dom_snapshot` artifact 交给 retention 回收。`_spill_text` 为此加了个
+  `truncate` 形参：response body / script source 是调用方要的完整数据、拿不全就该 `too_large` 报错（行为不变），
+  而快照是尽力而为的视图、超限时降级成「留住容量上限那份、按字节边界切、标 truncated」而非整调用失败。
+  DOM 在内联上限内时行为不变：`html` 就是整份、无 `dom_path`、`truncated=False`。
 - **`_MAX_DEVICE_ARTIFACTS` / `prune_device_artifacts` 是没接线的死代码，改它等于什么都没改**。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`

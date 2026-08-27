@@ -126,6 +126,18 @@ class _FakeWebBackend:
         spill.write_text("var a=1;" * 100, encoding="utf-8")
         return {"scriptId": script_id, "source_path": str(spill), "truncated": True}
 
+    def dom_snapshot(self, session_id: str, artifact_dir: Path) -> dict:  # type: ignore[type-arg]
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        spill = artifact_dir / "dom-x.html"
+        spill.write_text("<html>" + "a" * 300_000 + "</html>", encoding="utf-8")
+        return {
+            "url": "https://x",
+            "title": "t",
+            "html": "<html>",
+            "truncated": True,
+            "dom_path": str(spill),
+        }
+
     def close(self, session_id: str) -> dict:  # type: ignore[type-arg]
         return {"closed": False}
 
@@ -178,6 +190,25 @@ class TestCapturesAreReachableAndReclaimable:
             read = service.artifacts_read(str(shot.data["artifact_id"]), offset=0, limit=8)
             assert read.ok and read.data is not None
             assert read.data["data"].startswith("89504e47")
+        finally:
+            service.close_all()
+
+    def test_a_spilled_dom_snapshot_is_registered(self, tmp_path: Path) -> None:
+        """A large DOM now spills like a script source, so it must be reclaimable."""
+        service = self._service(tmp_path)
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+
+            snap = service.web_dom_snapshot(session_id)
+            assert snap.ok, snap.error
+            assert snap.data is not None
+            assert "artifact_error" not in snap.data
+            assert snap.data["artifact_id"]
+
+            listed = service.repository.list_artifacts(session_id)
+            kinds = {item["kind"] for item in listed["artifacts"]}
+            assert "web_dom_snapshot" in kinds
         finally:
             service.close_all()
 
