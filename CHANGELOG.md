@@ -63,6 +63,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `apk.strings` 描述点明「按整值去重」与 `values_truncated` 语义。字段纯增量,短串场景该标记不出现。
 - 新增回归:两条共 2000 字符前缀、尾部不同的长串 → `total=2`、两行显示都截到该前缀、`values_truncated=true`;
   多 dex 里重复的同值 → 折成一条且不置该标记;全短串 → 不出现 `values_truncated`;并断言描述里点名它。
+### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
+
+- `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
+  `sys.platform` 强制成 `linux` 后再 monkeypatch `os.sysconf`，但 Windows 的 `os` 模块
+  根本没有 `sysconf` 属性，`monkeypatch.setattr` 默认 `raising=True` 便当场抛
+  `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
+  `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
+  非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
+  创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
