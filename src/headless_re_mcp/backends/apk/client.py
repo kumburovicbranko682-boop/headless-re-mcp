@@ -251,10 +251,12 @@ class ApkClient:
     def certificates(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         items: list[JsonObject] = []
+        signature_scan_error: str | None = None
         try:
             names = apk.get_signature_names()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             names = []
+            signature_scan_error = f"{type(exc).__name__}: {exc}"
         sig_files: list[str] = []
         files_more = False
         for name in names or []:
@@ -280,12 +282,21 @@ class ApkClient:
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
-        return {
+        result: JsonObject = {
             "signature_files": sig_files,
             "certificates": items,
-            "v1_signed": bool(names),
+            # bool(names) reports "not v1-signed" whether the APK has no v1
+            # signature or the scan for it threw. On a hostile sample those are
+            # opposite conclusions, and a definite False is the wrong one to
+            # hand a security check. Report v1_signed None (unknown) when the
+            # scan failed and say why, so absent is not conflated with unread.
+            "v1_signed": None if signature_scan_error is not None else bool(names),
             "has_more": certs_more or files_more,
         }
+        if signature_scan_error is not None:
+            result["signature_scan_failed"] = True
+            result["error"] = signature_scan_error
+        return result
 
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
