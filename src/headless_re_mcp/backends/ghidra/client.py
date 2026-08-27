@@ -29,6 +29,22 @@ def _project_lock(project_dir: Path) -> Any:
     return _PROJECT_LOCKS[hash(key) % len(_PROJECT_LOCKS)]
 
 
+def _validate_max_heap(max_heap: str) -> None:
+    """Reject anything but a bare JVM heap size before it reaches the env splice.
+
+    max_heap is a property of the request, so it is judged the same way on every
+    host -- before the capability gate and before any filesystem work -- the way
+    proxy.start's port and frida.server.ensure's port are. It is still checked
+    again at the JAVA_TOOL_OPTIONS splice in _run_headless as defense in depth.
+    """
+    if not isinstance(max_heap, str) or not _MAX_HEAP_RE.fullmatch(max_heap):
+        raise GhidraError(
+            "invalid_params",
+            "max_heap must be a JVM heap size such as 2G, 512m, or 1024",
+            max_heap=max_heap,
+        )
+
+
 class GhidraError(RuntimeError):
     def __init__(self, code: str, message: str, **details: object) -> None:
         super().__init__(message)
@@ -56,6 +72,7 @@ class GhidraClient:
         max_heap: str = "2G",
         delete_project: bool = True,
     ) -> JsonObject:
+        _validate_max_heap(max_heap)
         if not self.available or self.analyze is None:
             raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
         if not binary.is_file():
@@ -171,6 +188,7 @@ class GhidraClient:
         timeout: float,
         max_heap: str,
     ) -> JsonObject:
+        _validate_max_heap(max_heap)
         with _project_lock(project_dir):
             return self._export_unlocked(
                 binary,
@@ -275,12 +293,7 @@ class GhidraClient:
         delete_project: bool,
     ) -> tuple[str, str, int]:
         assert self.analyze is not None
-        if not _MAX_HEAP_RE.fullmatch(max_heap):
-            raise GhidraError(
-                "invalid_params",
-                "max_heap must be a JVM heap size such as 2G, 512m, or 1024",
-                max_heap=max_heap,
-            )
+        _validate_max_heap(max_heap)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         env = os.environ.copy()
         # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free.

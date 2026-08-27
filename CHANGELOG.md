@@ -62,6 +62,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（Ghidra 的 max_heap 校验移到能力门之前，兑现文档早已声明的"输入先于门"）
+
+- `max_heap` 被拼进 `JAVA_TOOL_OPTIONS`（`-Xmx<max_heap>`），是请求自身的属性，但它的正则校验一直只在
+  `_run_headless` 里做——而 `analyze_binary` 与 `_export_unlocked` 都是**先过 `capability_unavailable`
+  能力门、再**调到 `_run_headless`。于是没配 Ghidra 的机器上，一个 `2G -XX:OnOutOfMemoryError=touch …`
+  之类的恶意 `max_heap` 得到的是 `capability_unavailable` 而非 `invalid_params`：同一个坏输入，配了
+  Ghidra 的机器判 `invalid_params`、没配的机器判 `capability_unavailable`，两地不一致。注入本身从未被
+  放过（正则总在 spawn 前跑，且只有能力门通过才会 spawn），漏的只是错误类型的一致性；而 CHANGELOG 里
+  `frida.server.ensure` 那条早已把"Ghidra 的 max_heap"列为"输入先于门"的同类处理，代码却没真正做到。
+  现抽出 `_validate_max_heap`，在 `analyze_binary` 与 `_export`（覆盖 functions/symbols/xrefs/decompile
+  四种模式）进门之前先校验，`_run_headless` 处保留同一校验作为贴着 env 拼接点的纵深防御。与 `proxy.start`
+  的 port、`frida.server.ensure` 的 port、`java_enumerate` 的 mode/class_name、`apk.methods/xrefs` 的
+  必填名同属一致处理。回归在"没装 Ghidra"的客户端上钉住：analyze 与四种导出模式对恶意/空 `max_heap`
+  都在能力门之前回 `invalid_params`，且从不 spawn analyzeHeadless。纯排序修复，返回结构不变。
+
 ### 修复（r2.functions 的截断契约与兄弟工具对齐，补上缺失的字段测试）
 
 - `r2.functions` 与 `r2.strings/imports/exports/xrefs` 走的是同一个 `enrich_r2_payload`：任何列表超过

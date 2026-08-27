@@ -290,6 +290,41 @@ def test_a_hostile_max_heap_is_rejected_before_any_spawn(
 
 
 @pytest.mark.parametrize(
+    "hostile",
+    ["2G -XX:OnOutOfMemoryError=touch /tmp/pwned", "$(reboot)", ""],
+)
+def test_max_heap_is_invalid_params_before_the_capability_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hostile: str
+) -> None:
+    """A host without Ghidra must still call a bad max_heap invalid_params.
+
+    max_heap is a property of the request, spliced into JAVA_TOOL_OPTIONS. Left
+    inside _run_headless -- after the capability_unavailable gate -- a host with
+    no analyzeHeadless answered capability_unavailable for the same hostile value
+    that a configured host rejects as invalid_params: one bad input, two
+    verdicts. Every entry point (analyze plus the four export modes) now judges
+    max_heap before the gate, so both hosts agree and nothing ever spawns.
+    """
+    calls = _capture_run(monkeypatch)
+    unavailable = ghidra_client.GhidraClient(home=None)
+    assert unavailable.available is False
+    binary = _binary(tmp_path)
+    project = tmp_path / "p"
+    invocations = (
+        lambda: unavailable.analyze_binary(binary, project, max_heap=hostile),
+        lambda: unavailable.functions(binary, project, max_heap=hostile),
+        lambda: unavailable.symbols(binary, project, max_heap=hostile),
+        lambda: unavailable.xrefs(binary, project, "0x1000", max_heap=hostile),
+        lambda: unavailable.decompile(binary, project, "0x1000", max_heap=hostile),
+    )
+    for invoke in invocations:
+        with pytest.raises(ghidra_client.GhidraError) as caught:
+            invoke()
+        assert caught.value.code == "invalid_params"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
     ("payload", "error_type"),
     [
         (b"\xff", "UnicodeDecodeError"),
