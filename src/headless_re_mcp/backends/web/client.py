@@ -126,6 +126,52 @@ def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     return " ".join(parts), truncated
 
 
+def _exception_console_entry(params: JsonObject) -> JsonObject:
+    """Shape one ``Runtime.exceptionThrown`` event like a console entry.
+
+    A real browser console shows uncaught exceptions as its red error lines,
+    usually the first thing anyone reads there. A capture that keeps every
+    console.* call but drops thrown errors reads as "the page logged nothing
+    wrong" while it was in fact crashing. Same ring, same per-message text cap,
+    with type "exception" so a caller can tell a thrown error from an explicit
+    console.error.
+    """
+    details = params.get("exceptionDetails")
+    if not isinstance(details, dict):
+        details = {}
+    exception = details.get("exception")
+    if not isinstance(exception, dict):
+        exception = {}
+    # description carries the message plus the stack; a thrown primitive
+    # ("throw 'boom'") has no description, only a plain value.
+    if exception.get("description"):
+        described = exception["description"]
+    elif "value" in exception:
+        described = exception["value"]
+    else:
+        described = None
+    parts = [str(part) for part in (details.get("text"), described) if part not in (None, "")]
+    text = " ".join(parts) or "uncaught exception"
+    url = details.get("url")
+    if isinstance(url, str) and url:
+        line = details.get("lineNumber")
+        # CDP line numbers are zero-based; humans and editors count from one.
+        location = f" ({url}:{line + 1})" if isinstance(line, int) else f" ({url})"
+        text += location
+    entry: JsonObject = {"type": "exception", "text": text[:_MAX_CONSOLE_TEXT]}
+    if len(text) > _MAX_CONSOLE_TEXT:
+        entry["text_truncated"] = True
+    return entry
+
+
+def _append_console(handle: _WebSession, entry: JsonObject) -> None:
+    """Append to the console ring, counting what the ring evicts."""
+    with handle.lock:
+        if handle.console.maxlen is not None and len(handle.console) == handle.console.maxlen:
+            handle.console_dropped += 1
+        handle.console.append(entry)
+
+
 def _spill_text(
     text: str,
     *,
@@ -520,13 +566,10 @@ class WebBackend:
             }
             if text_truncated:
                 entry["text_truncated"] = True
-            with handle.lock:
-                if (
-                    handle.console.maxlen is not None
-                    and len(handle.console) == handle.console.maxlen
-                ):
-                    handle.console_dropped += 1
-                handle.console.append(entry)
+            _append_console(handle, entry)
+
+        def on_exception(params: JsonObject) -> None:
+            _append_console(handle, _exception_console_entry(params))
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
@@ -537,6 +580,11 @@ class WebBackend:
         # on a page logging 60 lines, growing for as long as the session lived.
         # The same information arrives here as plain data.
         cdp.on("Runtime.consoleAPICalled", on_console)
+        # consoleAPICalled only covers console.* calls. An uncaught exception
+        # arrives on the already-enabled Runtime domain as its own event, and
+        # without this subscription the capture kept the page's chatter while
+        # silently dropping the errors a real console shows first.
+        cdp.on("Runtime.exceptionThrown", on_exception)
 
     def navigate(self, session_id: str, url: str, *, timeout: float = 30.0) -> JsonObject:
         handle = self._get(session_id)

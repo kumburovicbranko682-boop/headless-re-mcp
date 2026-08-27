@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（web.console 补捕获页面未捕获异常）
+
+- 控制台抓取此前只订阅了 `Runtime.consoleAPICalled`,即只有页面显式的 `console.*` 调用进环。
+  页面抛出而未捕获的异常(真实浏览器控制台里最先看到的红色错误行)走的是同一 Runtime 域上的
+  另一事件 `Runtime.exceptionThrown`,一直无人订阅——于是一个每次加载都崩掉的页面在
+  `web.console` 里读起来像「什么错都没记」。现在补上该订阅:异常与 console 调用共用同一个
+  环形缓冲与逐条文本上限,条目 `type` 为 `"exception"`,正文由 `exceptionDetails.text`、
+  异常 `description`(带栈;原始值兜底 `value`)与 `url:行号`(转为 1 起)拼成,超长截断标
+  `text_truncated`,畸形事件回退为可读的占位文本。回归测试以假 CDP 驱动 `_wire_events`,
+  钉住订阅存在、条目落环、与 console 调用共享驱逐计数,以及各种事件形状的格式化。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
