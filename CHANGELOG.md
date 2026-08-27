@@ -101,6 +101,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（web.scripts 把 Playwright 注入的 utility-world 脚本当成页面脚本列出）
+
+- Playwright 通过在每个 frame 注入一个 **utility world**（隔离执行上下文，
+  `auxData.isDefault=False`）来驱动页面自动化。这些脚本经 `Debugger.scriptParsed` 到达时 URL 为空，
+  与页面脚本无从区分，于是 `web.scripts` 把 Playwright 自己的插桩脚本当成页面作者写的列了出来——每个
+  frame 一个空 URL 幽灵项，对它调用 `script_source` 还会返回 Playwright 的内部 bundle。实测：一个
+  只加载了一个外部脚本的页面返回 3 个脚本（`['', app.js, '']`），两个空 URL 幽灵。
+- `on_script` 现在按 `scriptParsed` 事件自带的 `executionContextAuxData` 丢弃非默认（隔离）世界的脚本；
+  分类信息就在事件里，无需额外追踪 `executionContextCreated`。页面自己的脚本（含动态插入与页面实例化的
+  WASM 模块）都在默认/主世界，照常保留；`auxData` 缺失或形状未知时**保守放行**，绝不误伤真实脚本。
+  实测：同一页面从 4 个脚本降到恰好 2 个（`app.js` 与页面实例化的 WASM），Playwright 幽灵消失。
+- 新增浏览器实测门禁 `tests/integration/test_web_scripts_gate.py`（起一个真实 HTTP server 提供带外部
+  脚本的页面，用真 Chromium 打开，断言页面脚本在列且无空 URL 幽灵——既防回退到含幽灵，也防过度过滤
+  把默认世界脚本藏掉），以及 CI 作业 `linux-web-browser`（装 Chromium 后跑 lifecycle 与 scripts 两个
+  门禁）。此前没有任何地方启动真实浏览器，CDP 采集路径无实测覆盖，这个 bug 才得以出厂。单测用假 CDP
+  驱动真实 `on_script` 闭包把过滤钉死，恢复旧行为即变红。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
