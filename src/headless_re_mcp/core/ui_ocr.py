@@ -163,6 +163,13 @@ def ocr_bmp_windows(path: str | Path, *, language: str = "en-US") -> JsonObject:
     src_root = str(Path(__file__).resolve().parents[2])
     prev = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join([p for p in [src_root, prev] if p])
+    # The worker prints ensure_ascii=False JSON, and OCR of a non-English UI
+    # is exactly the case where that JSON is non-ASCII. A piped Python child
+    # on Windows encodes stdout with the ANSI code page, so on an English
+    # system recognizing CJK text the print itself raised UnicodeEncodeError
+    # and every such call came back "OCR subprocess failed"; _run_ocr decodes
+    # UTF-8, so pin the worker to emit it.
+    env["PYTHONIOENCODING"] = "utf-8:replace"
     try:
         completed = _run_ocr(
             [sys.executable, str(worker), str(bmp), language],
