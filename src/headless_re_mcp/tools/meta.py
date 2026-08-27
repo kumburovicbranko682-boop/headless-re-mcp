@@ -142,9 +142,14 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Read a byte range of one artifact, including text spilled out of a reply.
 
         Answers with data holding the hex string, encoding naming that form
-        (always hex), plus artifact_id, offset, limit and size. A decompilation
-        or disassembly too large to return inline is registered as an artifact
-        and answered with artifact_id; this is how the rest of it is retrieved.
+        (always hex), plus artifact_id, offset, limit, size, bytes_returned and
+        has_more. size is the whole artifact; bytes_returned is how many bytes
+        this page carried (limit is only the request, and the final page is
+        shorter); has_more is true while bytes past offset+bytes_returned
+        remain, so a page that filled the limit is not read as the whole
+        artifact. A decompilation or disassembly too large to return inline is
+        registered as an artifact and answered with artifact_id; page offset
+        forward until has_more is false to retrieve the rest.
         """
         return _dump(analysis.artifacts_read(artifact_id, offset=offset, limit=limit))
 

@@ -741,12 +741,22 @@ class ExtAnalysisMixin(UiDriveMixin):
             size = os.fstat(stream.fileno()).st_size
             stream.seek(offset)
             data = stream.read(limit)
+        # Every other paginated reader on the surface says has_more so a page
+        # that filled the limit is not read as the whole thing; this one only
+        # returned size, leaving the caller to decode the hex, count it and
+        # compare against size. A pager reading a 200 MB dump with the default
+        # 4 KiB limit would see data and no has_more and stop at the header.
+        # bytes_returned is this page's length (limit is only the request, and
+        # the last page is shorter), so the caller advances offset without
+        # decoding, and has_more is true while bytes past it remain.
         return _success(
             {
                 "artifact_id": artifact_id,
                 "offset": offset,
                 "limit": limit,
                 "size": size,
+                "bytes_returned": len(data),
+                "has_more": offset + len(data) < size,
                 "encoding": "hex",
                 "data": data.hex(),
             }
