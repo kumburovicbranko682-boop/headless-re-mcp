@@ -49,6 +49,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（监控台发送失败会无声吞掉用户刚打的消息）
+
+- `webui` 的 `useWorkbench.send()` 在 `POST /api/agent/runs` 之前先清空输入框，而这次请求
+  是真的会被拒的：超过 1 MiB 的消息后端回 413「message exceeds 1 MiB」，对话已被删回 404，
+  控制台重启窗口内则是网络层直接抛错。`send` 没有任何 catch，`void wb.send()` 让异常变成
+  unhandled rejection——用户按下回车，消息永久消失，界面一个字的反馈都没有。现把整个流程包进
+  try/catch：失败时把原文放回输入框（若用户在请求飞行中已另起新草稿则不覆盖），并走既有的
+  `dispatch({type:"error"})` 横幅说明原因。
+- 同一文件里 `createThread` / `selectThread` / `removeThread` / `cancelRun` / `decide` 也都是
+  裸 `void` 调用、失败即无声（点「新对话」「停止」「批准」没反应，删除失败后列表照样把对话移走
+  的入口也不会到——DELETE 抛错直接中断），而旁边的 `openPickedSession` / `changeSession` /
+  `changeApprovalMode` 一直是 catch + 错误横幅。现统一补齐同一模式；`decide` 吞错不再上抛，
+  顺带修掉 `changeApprovalMode` 在 PUT 已成功后仅因一张积压卡片批准失败就把档位显示回退的
+  误导（服务端档位其实已经切了）。
+- 新增 `useWorkbench.test.ts` 七条 hook 直测：413 拒发后原文回到输入框且横幅给出原因、飞行中
+  新草稿不被回填覆盖、取消失败/批准 409/建对话失败/删对话失败/打开对话 404 各自出横幅且状态
+  不被破坏。七条在修复前全部以 unhandled rejection 失败。前端 70 条测试与 `tsc --noEmit`
+  均通过，提交的 SPA 产物已重建。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
