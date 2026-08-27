@@ -14,7 +14,7 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、apktool、apksigner、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web CDP / **Web JS 反混淆与 webpack 拆包（webcrack）** / **WebAssembly 解码（wabt 处理真实模块）** / Android 静态分类 / **Android 反编译（jadx 处理真实 DEX）** / **Android 反编译回编签名（apktool + apksigner 的补丁往返）** / 抓包（含真实拦截）/ radare2 / Ghidra 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、apktool、apksigner、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web CDP / **Web JS 反混淆与 webpack 拆包（webcrack）** / **WebAssembly 解码（wabt 处理真实模块）** / Android 静态分类 / **Android 反编译（jadx 处理真实 DEX）** / **Android 反编译回编签名（apktool + apksigner 的补丁往返）** / 抓包（含真实拦截）/ radare2（**含整条 `r2.*` 服务面 in-PE 端到端**）/ Ghidra / **本机 Frida 动态插桩（attach/枚举/内存读取/hook）** 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
@@ -73,6 +73,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   断言它被拆回按模块的文件、其中一个带着被打包进去的函数体；同时把 `js.deobfuscate` 的断言收紧到「真的解出了
   藏起来的字符串」（夹具把 `H3adl3ss` 用 `\\x48` 转义藏在轮转字符串数组里，改为断言解出的明文在、转义与
   方括号成员访问不在），而不再只看 `bytes > 0`——后者连原样回显都能过。
+- **整条 `r2.*` 服务面此前零端到端覆盖**：live gate 只直接调了客户端的 `open` + `aflj`，而 MCP 客户端真正
+  会调的会话级工具（`r2.info` / `functions` / `strings` / `imports` / `exports` / `disasm` / `xrefs`）从没
+  被验证过，且每个都把 r2 输出喂给 `enrich_r2_payload`，等于六种不同 payload 形状与它们的地址映射一直
+  没人证明——这正是那两个 Ghidra bug 那类缺陷会藏身的地方。新增 gate 对一份仓库自带的 x64 PE 夹具
+  （r2 在任何主机都能分析 PE，不需要 IDA、也不需要 Windows）依次跑完全部八个工具，断言真实内容:具名
+  函数被映射到 module 下的 rva、字符串表与导入表非空、从函数体解出真实指令、交叉引用带着富化后的地址。
+  只有 radare2/rizin 缺失才 skip。
+- **`frida.read` 在 frida 17 上彻底坏掉，却没人发现**：枚举脚本用的自由函数 `Memory.readByteArray()` 在
+  frida 17 已被移除,于是对任何 frida ≥ 17 的目标 `frida.read` 都抛 `not a function`——经 MCP 的内存读取
+  在当前 frida 上全线失效。改用 `ptr(address).readByteArray(size)`（新老运行时都在的 NativePointer 方法）。
+  之所以一直没被发现,是因为原有 M11 Frida gate 钉死在 Windows PE 夹具上、只探 Windows 系统 DLL,Windows
+  之外永远 skip。新增可移植 local gate:自起一个我们拥有的 Python 解释器子进程（直系子进程即便在 yama
+  ptrace_scope=1 下也可被 ptrace），经客户端驱动 attach/模块枚举/导出枚举/内存读取/探针 hook；内存读取腿
+  断言映像基址处正是 ELF magic（`7f454c46`），没有上面的修复这一步就会失败。只有 frida 缺失或内核直接拒绝
+  attach 时才 skip。`linux-integration` job 里加了 best-effort 的 `ptrace_scope=0` 放宽,好让它真跑而非 skip。
 
 ### 新增（监控台工作台）
 
