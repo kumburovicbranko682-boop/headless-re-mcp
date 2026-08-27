@@ -31,6 +31,15 @@ _WASM = bytes.fromhex(
     "070d02036164640000036d656d02000a09010700200020016a0b"
 )
 
+# A spec-valid module carrying an Import section (which the export-only module
+# above lacks): type (i32,i32)->i32; imports env.log (func#0), env.memory
+# (memory min 1) and js.g (mutable i32 global); export run (func#0).
+_WASM_WITH_IMPORTS = bytes.fromhex(
+    "0061736d0100000001070160027f7f017f"
+    "02210303656e76036c6f67000003656e76066d656d6f7279020001026a730167037f01"
+    "0707010372756e0000"
+)
+
 
 def _wasm_client() -> WasmClient:
     return WasmClient(getattr(Settings.load(), "wabt", None))
@@ -65,3 +74,45 @@ def test_m11_wasm_live_wat_and_objdump(tmp_path: Path) -> None:
         # section walk parsed rather than only the file header being read.
         assert "Type" in dump
         assert "Code" in dump
+
+
+@pytest.mark.integration
+def test_m11_wasm_imports_exports_read_from_bytes(tmp_path: Path) -> None:
+    """wasm.imports / wasm.exports parse real module bytes with no wabt.
+
+    Unlike wat/info these read the binary Import/Export sections in-process, so
+    this test does not skip when wabt is absent -- it must run everywhere. It
+    validates against the same real wat2wasm module the gate above uses (an
+    exported add() + memory, no imports) and against a second module carrying an
+    Import section, proving the parser resolves the host boundary end to end.
+    """
+    client = WasmClient(None)  # deliberately no wabt: imports/exports never need it
+
+    export_only = tmp_path / "exports.wasm"
+    export_only.write_bytes(_WASM)
+    exports = client.exports(export_only)
+    assert exports["total"] == 2
+    assert exports["incomplete"] is False
+    names = {(row["name"], row["kind"]) for row in exports["exports"]}
+    assert names == {("add", "func"), ("mem", "memory")}
+    # The export-only module has no Import section at all -> empty, complete.
+    assert client.imports(export_only)["total"] == 0
+
+    with_imports = tmp_path / "imports.wasm"
+    with_imports.write_bytes(_WASM_WITH_IMPORTS)
+    imports = client.imports(with_imports)
+    assert imports["total"] == 3
+    assert imports["declared"] == 3
+    assert imports["incomplete"] is False
+    by_name = {row["name"]: row for row in imports["imports"]}
+    # The func import's signature is resolved from the module's Type section.
+    assert by_name["log"]["kind"] == "func"
+    assert by_name["log"]["params"] == ["i32", "i32"]
+    assert by_name["log"]["results"] == ["i32"]
+    assert by_name["memory"]["kind"] == "memory"
+    assert by_name["memory"]["limits"] == {"min": 1}
+    assert by_name["g"]["kind"] == "global"
+    assert by_name["g"]["value_type"] == "i32"
+    assert by_name["g"]["mutable"] is True
+    # This module's export is run (func); prove the export path too.
+    assert {row["name"] for row in client.exports(with_imports)["exports"]} == {"run"}

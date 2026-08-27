@@ -83,8 +83,55 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with objdump holding that text, not a sections list, plus
         truncated when the text was cut at the buffer. An input over 16 MiB
-        is refused as too_large rather than handed to wasm-objdump.
+        is refused as too_large rather than handed to wasm-objdump. For a
+        structured host boundary use wasm.imports / wasm.exports instead of
+        parsing this text.
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
+
+    @tools.tool(name="wasm.imports")
+    def wasm_imports(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List a .wasm module's imports (its host-dependency surface).
+
+        Reads the module's binary Import section directly, so it needs no wabt
+        and cannot drift with a wabt version; an input over 16 MiB is refused as
+        too_large. Answers with imports, count, total, offset, declared,
+        has_more and incomplete. Each row has module, name and kind ("func",
+        "table", "memory", "global"); a func row adds type_index and, when the
+        Type section resolves it, params and results (valtype names); a memory or
+        table row adds limits (min, and max when bounded); a global row adds
+        value_type and mutable. total is the number of imports parsed and page-
+        able; declared is the count the section header claimed; incomplete is
+        true when they diverge because the module was truncated or the entry cap
+        was hit, so a short list is not read as the whole surface. count may be
+        below limit when the result-size budget trimmed the page, so read count,
+        not limit, and page on has_more. The list field is imports, not items.
+        """
+        return _dump(analysis.wasm_imports(path, offset=offset, limit=limit))
+
+    @tools.tool(name="wasm.exports")
+    def wasm_exports(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List a .wasm module's exports (the entry points it exposes to the host).
+
+        Reads the module's binary Export section directly, so it needs no wabt
+        and cannot drift with a wabt version; an input over 16 MiB is refused as
+        too_large. Answers with exports, count, total, offset, declared,
+        has_more and incomplete. Each row has name, kind ("func", "table",
+        "memory", "global") and index (into that kind's index space). total is
+        the number of exports parsed and pageable; declared is the count the
+        section header claimed; incomplete is true when they diverge because the
+        module was truncated or the entry cap was hit. count may be below limit
+        when the result-size budget trimmed the page, so read count, not limit,
+        and page on has_more. The list field is exports, not items.
+        """
+        return _dump(analysis.wasm_exports(path, offset=offset, limit=limit))
 
     return tools.bindings

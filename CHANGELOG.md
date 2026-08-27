@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **267（150 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **269（152 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1314,6 +1314,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   工具描述补上 `direction` 与 `callees` 字段。单测(`test_apk_fields.py`):同一方法 2 个调用者 / 3 个被调者——callees 走 `get_xref_to` 得 3 且落 `callees` 字段无 `callers` 键、默认走
   `get_xref_from` 得 2 且落 `callers` 无 `callees`(2≠3 证明取的是正确那一侧),以及未知 direction 报 `invalid_params`。实机 gate(`test_m11_android_apk_live_gate.py`)对真实 dex 里
   `caller→callee` 这条 invoke 边两个方向都读回:callers of `callee` 含 `caller`,callees of `caller` 含 `callee`,证明真实 androguard 的 `get_xref_to` 路径可用而非仅 mock。
+
+- **新增 `wasm.imports` / `wasm.exports`:结构化读出一个 `.wasm` 模块的宿主边界——它依赖哪些宿主函数/全局/内存/表,又向宿主暴露哪些入口。** 此前 WASM 域只有 `wasm.wat`/`wasm.info`
+  回原始 wabt 文本,agent 想知道 import/export 面只能自己去 parse `wasm-objdump -x` 的输出——既繁琐又随 wabt 版本漂移。两条新工具直接读模块的二进制 Import/Export 段,故**不需要装 wabt**
+  (本环境正是没有 wabt 的情形)、也不会随 wabt 版本变化。`wasm.imports` 每行含 `module`/`name`/`kind`;func 导入附 `type_index` 及(当 Type 段能解析时)`params`/`results`(valtype 名);
+  memory/table 导入附 `limits`(`min`,有上界则含 `max`);global 导入附 `value_type` 与 `mutable`。`wasm.exports` 每行含 `name`/`kind`/`index`。两者都回 `count`/`total`/`offset`/`declared`/
+  `has_more`/`incomplete`:`total` 是实际解析出的条数(可分页),`declared` 是段头声明的条数,二者因模块被截断或触达条目上限而不一致时 `incomplete` 为真,故短列表不会被误读成完整边界;
+  `count` 可能因结果预算裁剪而低于 `limit`,按 `has_more` 翻页。解析器对敌意输入全程有界:每次切片都核对缓冲区边界、LEB128 按位宽封顶(连续 continuation 字节不会空转)、向量与名字长度设上限,
+  非法/截断模块给出「部分但带 `incomplete` 标记」的结果而非越界读或崩溃;只有根本不是 WebAssembly 模块的输入才硬报错。工具面 267→**269**(150→**152** 只读,写不变)。单测
+  (`test_wasm_imports_exports.py`):func 签名解析、memory/table/global 各类型、export 名/类型/索引、无段的空模块、非模块硬报错、截断段置 `incomplete`、失控 LEB128 被位宽封顶不空转、
+  WasmClient 无 wabt 也能分页读盘上文件、缺文件报 `not_found`。实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对真实 wat2wasm 产物与一枚带 Import 段的模块两端读回。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

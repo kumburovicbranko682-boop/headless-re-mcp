@@ -15,10 +15,18 @@ from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.common.json_budget import fit_json_list, fit_json_text
+from headless_re_mcp.backends.jsre.wasm_format import (
+    WasmParseError,
+    parse_exports,
+    parse_imports,
+)
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
+# Default and ceiling for one page of parsed import/export entries.
+_WASM_ENTRY_DEFAULT = 200
+_WASM_ENTRY_CAP = 2000
 _MAX_COUNTED_FILES = 50_000
 # Output is already sliced. The child still has to load the file, and an
 # unattended pass that pointed js.deobfuscate at a captured bundle started
@@ -256,6 +264,75 @@ class WasmClient:
         return _note_nonzero_exit(
             _bounded_output(stdout, "objdump", include_bytes=False), code=code, stderr=stderr
         )
+
+    def imports(
+        self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT
+    ) -> JsonObject:
+        """Structured Import section (module/name/kind + per-kind type detail).
+
+        Unlike wat/info this needs no wabt: it reads the module's binary Import
+        section directly, so it works on any host and cannot drift with a wabt
+        version. The file/size guard still applies.
+        """
+        data = self._read_module(path)
+        try:
+            entries, declared, incomplete = parse_imports(data)
+        except WasmParseError as exc:
+            raise JsReError("backend_error", str(exc), path=str(path)) from exc
+        return _paged_entries(entries, "imports", declared, incomplete, offset=offset, limit=limit)
+
+    def exports(
+        self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT
+    ) -> JsonObject:
+        """Structured Export section (name/kind/index). No wabt required."""
+        data = self._read_module(path)
+        try:
+            entries, declared, incomplete = parse_exports(data)
+        except WasmParseError as exc:
+            raise JsReError("backend_error", str(exc), path=str(path)) from exc
+        return _paged_entries(entries, "exports", declared, incomplete, offset=offset, limit=limit)
+
+    def _read_module(self, path: Path) -> bytes:
+        # Existence and the 16 MiB input cap apply exactly as for the wabt tools,
+        # but no wabt executable is required -- the parse is in-process.
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        try:
+            return resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
+
+
+def _paged_entries(
+    entries: list[JsonObject],
+    key: str,
+    declared: int,
+    incomplete: bool,
+    *,
+    offset: int,
+    limit: int,
+) -> JsonObject:
+    """Page a parsed import/export list and bound it by encoded size.
+
+    total is what the parser actually recovered (and can page); declared is the
+    count the module's section header claimed. incomplete is true when the two
+    diverge because the module was truncated mid-parse or its declared count
+    exceeded the entry cap -- so a short list is never read as the whole surface.
+    A budget trim shrinks the window and shows up as has_more, letting the caller
+    page past it, exactly like the sibling list tools.
+    """
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _WASM_ENTRY_CAP))
+    window = entries[start : start + cap]
+    window, _dropped, _budget_cut = fit_json_list(window)
+    return {
+        key: window,
+        "count": len(window),
+        "total": len(entries),
+        "offset": start,
+        "declared": declared,
+        "has_more": start + len(window) < len(entries),
+        "incomplete": incomplete,
+    }
 
 
 def _discover_webcrack() -> Path | None:
