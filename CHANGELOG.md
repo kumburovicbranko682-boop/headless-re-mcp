@@ -918,6 +918,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   取回);ART 上 `enumerateLoadedClasses` 的异步时序本身需要真实 Android 设备,故此处未跑(skip≠pass),
   修法依据 frida 17 迁移说明与一份吻合的上游报告(frida-mcp)。另加静态单测钉住 Promise/onComplete 形态与
   哨兵抛出的移除,让没有设备的 CI 也能挡住回归。
+- **proxy live gate 补上真实抓包覆盖**。原 lifecycle gate 只证明「start 即在监听、stop 即释放端口」,却从没
+  真的把请求穿过代理,于是抓包主链路——mitmproxy 在每个响应上回调 recorder addon、`flows`/`flow_get`/
+  `export_har` 再把它读回来——在装着的 mitmproxy 版本上从未验证过,而这正是版本漂移的藏身处(客户端注释
+  自己也点明 addon/flow API 各版本有别)。新增抓包 gate:起一个一次性的本地 HTTP 源站,经代理 GET 它(纯
+  HTTP,不需要 TLS/CA 信任),断言这条 flow 以正确的 method/url/status/host 被记录、`flow_get` 取回真实的
+  请求/响应体、`export_har` 至少产出一条。已在 mitmproxy 12.2.3 实测通过。
 
 ### 变更（Android 后端清理）
 
