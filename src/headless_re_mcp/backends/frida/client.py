@@ -590,6 +590,17 @@ class FridaClient:
                 if _is_timeout(exc):
                     raise _timeout_error(deadline) from exc
                 raise FridaError("backend_error", f"spawn failed: {exc}", package=pkg) from exc
+            # Measured: spawn() returning 0 still answered {'pid': 0}, so an
+            # agent treated a process that never started as the session
+            # debuggee. Guard before recording it as a spawned pid, since
+            # killing pid 0 on timeout would signal the caller's own group.
+            if spawned <= 0:
+                raise FridaError(
+                    "backend_error",
+                    "spawn did not start the package",
+                    package=pkg,
+                    pid=spawned,
+                )
             pids.append(spawned)
             try:
                 _invoke(device.resume, spawned, timeout=deadline)

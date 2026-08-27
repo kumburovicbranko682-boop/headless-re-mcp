@@ -141,7 +141,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Spawn and resume a package on the device, authorizing its pid for this session.
 
         Answers with pid, package and device. There is no process_id or spawned
-        field.
+        field. A pid of 0 is a backend error, not a started process.
         """
         return _dump(analysis.frida_spawn(session_id, package))
 

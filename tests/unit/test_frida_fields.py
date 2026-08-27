@@ -318,6 +318,45 @@ def test_frida_spawn_refuses_a_path_or_bare_name() -> None:
     assert "There is no process_id" in doc
 
 
+class _ZeroSpawnDevice:
+    def __init__(self) -> None:
+        self.resumed: list[int] = []
+        self.killed: list[int] = []
+
+    def spawn(self, argv: list[str]) -> int:
+        del argv
+        return 0
+
+    def resume(self, pid: int) -> None:
+        self.resumed.append(pid)
+
+    def kill(self, pid: int) -> None:
+        self.killed.append(pid)
+
+
+def test_frida_spawn_rejects_a_zero_pid_process() -> None:
+    """Measured: device.spawn returning 0 still answered {'pid': 0}.
+
+    An unattended agent then treated a process that never started as the
+    session debuggee. pid 0 is a backend error, and the probe neither resumes
+    nor kills pid 0 (killing it would signal the caller's own process group).
+    """
+    from headless_re_mcp.backends.frida.client import FridaError
+
+    device = _ZeroSpawnDevice()
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: device  # type: ignore[method-assign]
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", "com.example.app")
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "spawn did not start the package"
+    assert caught.value.details["pid"] == 0
+    assert device.resumed == []
+    assert device.killed == []
+
+
 def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:
     """device.spawn / resume with no deadline parked a worker forever.
 

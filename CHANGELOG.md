@@ -809,6 +809,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **Frida `spawn` 成功而 `resume` 失败时，暂停的进程被留下，错误里也不带 pid**。
   无人值守循环会在设备上堆暂停的应用。现在 resume 失败会杀掉该 pid，并把 pid 放进
   错误详情。
+- **Frida `spawn` 返回 pid 0 时仍回 `{'pid': 0}`**。设备端 `spawn` 没真正拉起进程也会
+  给个 0，无人值守的 agent 便把一个根本没起来的进程当成本会话的调试目标去 attach。现在
+  非正的 pid 记为 `backend_error`（不再对 pid 0 调 resume 或 kill——杀 pid 0 会把信号发给
+  调用方自己的进程组）；正的 pid 仍算成功。
 - **`device.launch` 在 monkey 返回后就报 `launched: True`**，不管应用有没有到前台。
   启动后再读一次当前 activity，对不上就如实回 `launched: False` 并带上 `foreground`。
 - **`device.install` / `uninstall` / `force_stop` 同样把 adb 返回当成成功**。装包不查
