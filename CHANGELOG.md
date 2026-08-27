@@ -81,6 +81,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   消息条数),与其余读取器口径一致;仍回最新的尾部,且因 limit 上限等于环容量、一次即可取完
   整个缓冲,故不需要 offset。文档串同步说明,并扩展回归测试断言 `total`。
 
+### 新增回归（`parse_r2_json` 跨过括号开头的横幅，由非 JSON 前导 token 直测固定）
+
+- `parse_r2_json` 从左到右扫 r2 `-q0` 输出,在每个 `[`/`{` 处试 `JSONDecoder.raw_decode`,
+  返回第一个解得出的 token;`except json.JSONDecodeError: continue` 正是这套扫描的立身之本——
+  一个「长得像括号却不是 JSON」的前导片段必须被跳过、扫描继续找后面真正的数组/对象。既有两条
+  `parse_r2_json` 测试(横幅是 `"warning stuff"`、`"Cannot find function"`)都不触碰这条分支:它们的
+  横幅里根本没有括号,循环遇到的第一个 `[`/`{` 就已经是真载荷、`raw_decode` 一次即中。真实 r2 输出
+  没这么干净——它以交互提示符 `[0x00000000]>`(文档串点名的那种)开头,还可能夹带 `{...}` 形状的诊断,
+  两者都以括号起头却都不是 JSON。把 `continue` 删成致命(返回 `None` 或让异常上抛),既有两条测试仍
+  全绿,而每一次输出以提示符起头的 r2 调用都会返回 `None`:`enrich_r2_payload` 于是在一次其实成功的
+  调用上报 `parsed: False`、items 为空。新增四例:提示符前导时真数组仍胜出、`{...}` 前导时真对象仍
+  胜出、只有提示符没有 JSON 时如实回 `None`(不把提示符当值抢救)、以及截断的 `[1, 2` 片段不遮住其后
+  完整的数组。
+
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
