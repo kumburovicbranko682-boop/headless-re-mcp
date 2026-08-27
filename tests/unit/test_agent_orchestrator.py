@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -1038,3 +1039,172 @@ async def test_reasoning_deltas_are_flushed_to_the_event_log(tmp_path: Path) -> 
     assert "".join(str(event.data.get("delta") or "") for event in reasoning) == "hmm ok"
     visible = [event for event in events if event.type == "message.delta"]
     assert "".join(str(event.data.get("delta") or "") for event in visible) == "answer"
+
+
+class _CapturingProvider:
+    """Scripted tool calls, and every request's messages kept for assertions."""
+
+    def __init__(self, scripted: list[tuple[ProviderToolCall, ...]]) -> None:
+        self.scripted = scripted
+        self.round = 0
+        self.requests: list[list[JsonObject]] = []
+
+    def stream_chat(
+        self,
+        *,
+        messages: Sequence[JsonObject],
+        tools: Sequence[JsonObject],
+        model: str,
+        enable_thinking: bool = False,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        del tools, model, enable_thinking, reasoning_effort
+        self.requests.append([dict(message) for message in messages])
+        return self._events()
+
+    async def _events(self) -> AsyncIterator[ProviderEvent]:
+        calls = self.scripted[self.round] if self.round < len(self.scripted) else ()
+        self.round += 1
+        yield ProviderEvent("text_delta", text=f"turn-{self.round}")
+        yield ProviderEvent("completed", tool_calls=calls)
+
+    async def list_models(self) -> list[str]:
+        return ["fake"]
+
+
+def _assert_tool_pairing_is_provider_valid(messages: list[JsonObject]) -> None:
+    """Every role="tool" answers the immediately preceding assistant tool_calls.
+
+    This is the invariant OpenAI-compatible endpoints enforce with a 400; a
+    request that breaks it never reaches the model at all.
+    """
+    open_ids: set[str] = set()
+    for message in messages:
+        role = message.get("role")
+        if role == "assistant":
+            open_ids = {
+                str(call.get("id"))
+                for call in (message.get("tool_calls") or [])
+            }
+            assert all(open_ids), f"assistant tool_calls with a missing id: {message}"
+        elif role == "tool":
+            call_id = message.get("tool_call_id")
+            assert call_id and str(call_id) in open_ids, (
+                f"tool result {call_id!r} has no preceding assistant tool_calls, "
+                "which an OpenAI-compatible endpoint rejects with 400"
+            )
+        else:
+            open_ids = set()
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_run_replays_tool_history_a_provider_accepts(tmp_path: Path) -> None:
+    """A thread whose history holds a tool call must stay usable on the next run.
+
+    The store keeps the assistant's text and the tool result but not the
+    tool_calls block between them, and the rebuild used to replay the rows
+    verbatim: the second run's request carried a role="tool" message behind an
+    assistant with no tool_calls, an OpenAI-compatible endpoint 400ed it, and
+    every follow-up run on the thread -- including run two of any mission whose
+    run one touched a tool -- died before its first token.
+    """
+    def read(value: int = 0) -> JsonObject:
+        return {"ok": True, "data": {"value": value}}
+
+    catalog = CommandCatalog([
+        CommandSpec(
+            "test.read",
+            "test_read",
+            frozenset({CommandTransport.MCP, CommandTransport.AGENT}),
+            frozenset({ToolEffect.READ_ONLY}),
+            handler=read,
+            input_schema={"type": "object", "properties": {"value": {"type": "integer"}}},
+        )
+    ])
+    store = AgentStore(tmp_path / "replay.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "inspect the binary")
+    first = _CapturingProvider([(ProviderToolCall("c1", "test.read", {"value": 7}),), ()])
+    runner = AgentOrchestrator(store, catalog, _configs(tmp_path), provider_factory=lambda _: first)
+    run_one = await runner.start_run(thread.id)
+    assert await _wait_status(store, run_one["id"], {RunStatus.COMPLETED, RunStatus.FAILED}) is RunStatus.COMPLETED
+
+    store.add_message(thread.id, "user", "now what?")
+    second = _CapturingProvider([()])
+    follow_up = AgentOrchestrator(store, catalog, _configs(tmp_path), provider_factory=lambda _: second)
+    run_two = await follow_up.start_run(thread.id)
+    assert await _wait_status(store, run_two["id"], {RunStatus.COMPLETED, RunStatus.FAILED}) is RunStatus.COMPLETED
+
+    replayed = second.requests[0]
+    _assert_tool_pairing_is_provider_valid(replayed)
+    result_index = next(
+        index for index, message in enumerate(replayed)
+        if message.get("role") == "tool" and message.get("tool_call_id") == "c1"
+    )
+    anchor = replayed[result_index - 1]
+    assert anchor["role"] == "assistant"
+    stub = next(call for call in anchor["tool_calls"] if call["id"] == "c1")
+    # Name and arguments come back from the tool_calls table while the run is
+    # retained, so the model re-reads what it actually did, not a blank stub.
+    assert stub["function"]["name"] == "test.read"
+    assert json.loads(stub["function"]["arguments"]) == {"value": 7}
+
+
+@pytest.mark.asyncio
+async def test_an_id_less_tool_call_still_pairs_inside_its_own_run(tmp_path: Path) -> None:
+    """A provider that omits the call id must not poison the next round.
+
+    The minted id used to exist only inside _handle_tool_call while the
+    conversation and the store kept the empty original, so round two of the
+    same run paired a tool result with no call -- the same 400 shape.
+    """
+    def read() -> JsonObject:
+        return {"ok": True}
+
+    catalog = CommandCatalog([_single_spec(read)])
+    store = AgentStore(tmp_path / "idless.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "go")
+    provider = _CapturingProvider([(ProviderToolCall("", "test.tool", {}),), ()])
+    runner = AgentOrchestrator(store, catalog, _configs(tmp_path), provider_factory=lambda _: provider)
+    run = await runner.start_run(thread.id)
+    assert await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED}) is RunStatus.COMPLETED
+
+    _assert_tool_pairing_is_provider_valid(provider.requests[1])
+    stored_tool = next(
+        message for message in store.list_messages(thread.id) if message.role == "tool"
+    )
+    assert stored_tool.tool_call_id, "the minted id must be persisted, not the empty original"
+
+
+def test_history_rebuild_survives_a_trimmed_tool_call_row(tmp_path: Path) -> None:
+    """A result whose run was trimmed still replays as a valid, neutral pair.
+
+    Message retention (2000 rows) outlives terminal-run retention (128 runs per
+    thread), and deleting a run cascades its tool_calls rows, so old results
+    legitimately outlive the table that knows their name and arguments.
+    """
+    from headless_re_mcp.agent.models import AgentMessage
+    from headless_re_mcp.agent.orchestrator import _conversation_from_history
+
+    def gone(_run_id: str, _tool_call_id: str) -> JsonObject | None:
+        return None
+
+    history = [
+        AgentMessage("m1", "t", "user", "task", None, None, "2026-01-01T00:00:00+00:00"),
+        AgentMessage("m2", "t", "assistant", "looking", "r1", None, "2026-01-01T00:00:01+00:00"),
+        AgentMessage("m3", "t", "tool", '{"ok": true}', "r1", "dead1", "2026-01-01T00:00:02+00:00"),
+        AgentMessage("m4", "t", "tool", '{"ok": true}', "r1", "dead2", "2026-01-01T00:00:03+00:00"),
+        # A result from a different run must not attach to the earlier turn.
+        AgentMessage("m5", "t", "tool", '{"ok": true}', "r2", "dead3", "2026-01-01T00:00:04+00:00"),
+    ]
+
+    rebuilt = _conversation_from_history(history, gone)
+
+    _assert_tool_pairing_is_provider_valid(rebuilt)
+    anchors = [message for message in rebuilt if message.get("role") == "assistant"]
+    assert len(anchors) == 2, "run r2's orphan result needs its own synthesized turn"
+    assert [call["id"] for call in anchors[0]["tool_calls"]] == ["dead1", "dead2"]
+    assert anchors[0]["content"] == "looking", "the stored assistant text is the anchor"
+    assert [call["id"] for call in anchors[1]["tool_calls"]] == ["dead3"]
+    assert anchors[1]["content"] is None
