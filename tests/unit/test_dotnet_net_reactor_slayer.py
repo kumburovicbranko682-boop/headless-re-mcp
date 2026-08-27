@@ -8,14 +8,20 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.common.bounded_run import BoundedCancelled
+from headless_re_mcp.backends.common.bounded_run import (
+    BoundedCancelled,
+    Completed,
+)
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import file_sha256
 from headless_re_mcp.dotnet import net_reactor_slayer as nrs_mod
+from headless_re_mcp.dotnet.de4dot import _ProcessCapture
 from headless_re_mcp.dotnet.net_reactor_slayer import (
     NetReactorSlayerError,
+    NetReactorSlayerErrorCode,
     NetReactorSlayerResult,
+    probe_net_reactor_slayer,
     run_net_reactor_slayer,
 )
 
@@ -125,9 +131,7 @@ def _prepare_run_inputs(tmp_path: Path) -> tuple[Path, Path, Path, str]:
     return exe, source, destination, file_sha256(source)
 
 
-def test_run_net_reactor_slayer_propagates_cancel(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_run_net_reactor_slayer_propagates_cancel(tmp_path: Path, monkeypatch: Any) -> None:
     """A caller cancel must surface as BoundedCancelled, not a tool failure.
 
     scylla/vmp_dumper/xvlkc re-raise BoundedCancelled before their generic
@@ -145,9 +149,7 @@ def test_run_net_reactor_slayer_propagates_cancel(
         run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
 
 
-def test_run_net_reactor_slayer_remaps_other_failures(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_run_net_reactor_slayer_remaps_other_failures(tmp_path: Path, monkeypatch: Any) -> None:
     """A genuine tool error still becomes the adapter's error envelope."""
     exe, source, destination, sha = _prepare_run_inputs(tmp_path)
 
@@ -158,6 +160,219 @@ def test_run_net_reactor_slayer_remaps_other_failures(
 
     with pytest.raises(NetReactorSlayerError):
         run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
+
+
+# --------------------------------------------------------------------------- #
+# Fail-closed guards before anything is launched                              #
+# --------------------------------------------------------------------------- #
+def test_run_rejects_a_missing_executable(tmp_path: Path) -> None:
+    _exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+    missing = tmp_path / "not-there.exe"
+    with pytest.raises(NetReactorSlayerError) as excinfo:
+        run_net_reactor_slayer(missing, source, destination, input_sha256=sha)
+    assert excinfo.value.code == NetReactorSlayerErrorCode.EXECUTABLE_NOT_FOUND
+
+
+def test_run_rejects_an_input_that_is_not_a_file(tmp_path: Path) -> None:
+    exe, _source, destination, _sha = _prepare_run_inputs(tmp_path)
+    a_directory = tmp_path / "adir"
+    a_directory.mkdir()
+    with pytest.raises(NetReactorSlayerError) as excinfo:
+        run_net_reactor_slayer(exe, a_directory, destination, input_sha256="0" * 64)
+    assert excinfo.value.code == NetReactorSlayerErrorCode.INPUT_NOT_FOUND
+
+
+def test_run_rejects_an_input_over_the_size_bound(tmp_path: Path) -> None:
+    exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+    with pytest.raises(NetReactorSlayerError) as excinfo:
+        run_net_reactor_slayer(exe, source, destination, input_sha256=sha, max_file_size=1)
+    assert excinfo.value.code == NetReactorSlayerErrorCode.INPUT_TOO_LARGE
+    assert excinfo.value.details["max_file_size"] == 1
+
+
+def test_run_refuses_to_overwrite_an_existing_output(tmp_path: Path) -> None:
+    exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"already here")
+    with pytest.raises(NetReactorSlayerError) as excinfo:
+        run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
+    assert excinfo.value.code == NetReactorSlayerErrorCode.INVALID_ARGUMENT
+
+
+def test_run_rejects_a_stale_input_hash(tmp_path: Path) -> None:
+    exe, source, destination, _sha = _prepare_run_inputs(tmp_path)
+    with pytest.raises(NetReactorSlayerError) as excinfo:
+        run_net_reactor_slayer(exe, source, destination, input_sha256="dead" * 16)
+    assert excinfo.value.code == NetReactorSlayerErrorCode.INPUT_MUTATED
+
+
+# --------------------------------------------------------------------------- #
+# Post-capture handling of a (mocked) tool run                                #
+# --------------------------------------------------------------------------- #
+def _slayed_path(work_input: Path) -> Path:
+    return work_input.with_name(f"{work_input.stem}_Slayed{work_input.suffix}")
+
+
+def test_run_publishes_the_slayed_output_on_success(tmp_path: Path, monkeypatch: Any) -> None:
+    """A clean run copies the tool's ``*_Slayed`` file to the output path."""
+    exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+
+    def capture(argv: list[str], **_kwargs: Any) -> _ProcessCapture:
+        _slayed_path(Path(argv[1])).write_bytes(b"deobfuscated-bytes")
+        return _ProcessCapture("done", "", 0, False, False)
+
+    monkeypatch.setattr(nrs_mod, "_capture_process", capture)
+
+    result = run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
+
+    assert isinstance(result, NetReactorSlayerResult)
+    assert result.returncode == 0
+    assert Path(result.output_path).read_bytes() == b"deobfuscated-bytes"
+    assert result.output_sha256 == file_sha256(destination)
+    assert result.input_sha256 == sha
+    # The original input is left untouched.
+    assert file_sha256(source) == sha
+
+
+def test_run_accepts_a_differently_named_slayed_file(tmp_path: Path, monkeypatch: Any) -> None:
+    """When the expected name is absent, a lone ``*_Slayed*`` file is accepted."""
+    exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+
+    def capture(argv: list[str], **_kwargs: Any) -> _ProcessCapture:
+        work_input = Path(argv[1])
+        (work_input.parent / "renamed_Slayed_v2.exe").write_bytes(b"fallback-bytes")
+        return _ProcessCapture("done", "", 0, False, False)
+
+    monkeypatch.setattr(nrs_mod, "_capture_process", capture)
+
+    result = run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
+    assert Path(result.output_path).read_bytes() == b"fallback-bytes"
+
+
+def test_run_flags_an_input_mutated_by_the_tool(tmp_path: Path, monkeypatch: Any) -> None:
+    """If the tool touches the original input, the run fails input_mutated."""
+    exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+
+    def capture(argv: list[str], **_kwargs: Any) -> _ProcessCapture:
+        source.write_bytes(b"tool-rewrote-the-original")
+        return _ProcessCapture("done", "", 0, False, False)
+
+    monkeypatch.setattr(nrs_mod, "_capture_process", capture)
+
+    with pytest.raises(NetReactorSlayerError) as excinfo:
+        run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
+    assert excinfo.value.code == NetReactorSlayerErrorCode.INPUT_MUTATED
+    assert not destination.exists()
+
+
+def test_run_flags_output_that_exceeds_the_stream_bound(tmp_path: Path, monkeypatch: Any) -> None:
+    exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+
+    def capture(argv: list[str], **_kwargs: Any) -> _ProcessCapture:
+        return _ProcessCapture("noisy", "", 0, True, False)
+
+    monkeypatch.setattr(nrs_mod, "_capture_process", capture)
+
+    with pytest.raises(NetReactorSlayerError) as excinfo:
+        run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
+    assert excinfo.value.code == NetReactorSlayerErrorCode.OUTPUT_LIMIT
+
+
+def test_run_flags_a_nonzero_exit_as_retryable(tmp_path: Path, monkeypatch: Any) -> None:
+    exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+
+    def capture(argv: list[str], **_kwargs: Any) -> _ProcessCapture:
+        return _ProcessCapture("", "crashed", 3, False, False)
+
+    monkeypatch.setattr(nrs_mod, "_capture_process", capture)
+
+    with pytest.raises(NetReactorSlayerError) as excinfo:
+        run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
+    assert excinfo.value.code == NetReactorSlayerErrorCode.PROCESS_FAILED
+    assert excinfo.value.returncode == 3
+    assert excinfo.value.retryable is True
+
+
+def test_run_flags_a_clean_exit_with_no_output(tmp_path: Path, monkeypatch: Any) -> None:
+    exe, source, destination, sha = _prepare_run_inputs(tmp_path)
+
+    def capture(argv: list[str], **_kwargs: Any) -> _ProcessCapture:
+        return _ProcessCapture("said ok", "", 0, False, False)
+
+    monkeypatch.setattr(nrs_mod, "_capture_process", capture)
+
+    with pytest.raises(NetReactorSlayerError) as excinfo:
+        run_net_reactor_slayer(exe, source, destination, input_sha256=sha)
+    assert excinfo.value.code == NetReactorSlayerErrorCode.OUTPUT_MISSING
+
+
+# --------------------------------------------------------------------------- #
+# probe_net_reactor_slayer                                                    #
+# --------------------------------------------------------------------------- #
+def test_probe_reports_missing_when_the_executable_is_absent(tmp_path: Path) -> None:
+    ok, text = probe_net_reactor_slayer(tmp_path / "nope.exe")
+    assert ok is False
+    assert text == ""
+
+
+def test_probe_swallows_launch_failures(tmp_path: Path, monkeypatch: Any) -> None:
+    exe = tmp_path / "NETReactorSlayer.CLI.exe"
+    exe.write_bytes(b"x")
+
+    def boom(*_args: Any, **_kwargs: Any) -> Completed:
+        raise OSError("cannot launch")
+
+    monkeypatch.setattr(nrs_mod, "run_bounded", boom)
+    ok, text = probe_net_reactor_slayer(exe)
+    assert ok is False
+    assert text == ""
+
+
+def test_probe_recognizes_the_tool_banner(tmp_path: Path, monkeypatch: Any) -> None:
+    exe = tmp_path / "NETReactorSlayer.CLI.exe"
+    exe.write_bytes(b"x")
+
+    def banner(*_args: Any, **_kwargs: Any) -> Completed:
+        return Completed(returncode=1, stdout=b"NETReactorSlayer 1.0\n", stderr=b"")
+
+    monkeypatch.setattr(nrs_mod, "run_bounded", banner)
+    ok, text = probe_net_reactor_slayer(exe)
+    assert ok is True
+    assert "NETReactorSlayer" in text
+
+
+def test_probe_recognizes_usage_text_on_a_benign_exit(tmp_path: Path, monkeypatch: Any) -> None:
+    exe = tmp_path / "NETReactorSlayer.CLI.exe"
+    exe.write_bytes(b"x")
+
+    def usage(*_args: Any, **_kwargs: Any) -> Completed:
+        return Completed(returncode=1, stdout=b"Usage: run it like so\n", stderr=b"")
+
+    monkeypatch.setattr(nrs_mod, "run_bounded", usage)
+    ok, text = probe_net_reactor_slayer(exe)
+    assert ok is True
+    assert "usage" in text.lower()
+
+
+def test_probe_falls_back_to_whether_there_was_any_output(tmp_path: Path, monkeypatch: Any) -> None:
+    exe = tmp_path / "NETReactorSlayer.CLI.exe"
+    exe.write_bytes(b"x")
+
+    def unknown(*_args: Any, **_kwargs: Any) -> Completed:
+        return Completed(returncode=42, stdout=b"some unrelated chatter", stderr=b"")
+
+    monkeypatch.setattr(nrs_mod, "run_bounded", unknown)
+    ok, text = probe_net_reactor_slayer(exe)
+    assert ok is True
+    assert text == "some unrelated chatter"
+
+    def empty(*_args: Any, **_kwargs: Any) -> Completed:
+        return Completed(returncode=42, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(nrs_mod, "run_bounded", empty)
+    ok, text = probe_net_reactor_slayer(exe)
+    assert ok is False
+    assert text == ""
 
 
 def test_doctor_reports_net_reactor_slayer_missing(tmp_path: Path) -> None:
