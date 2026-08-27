@@ -69,6 +69,33 @@ def _origin_server() -> Iterator[int]:
         thread.join(timeout=5.0)
 
 
+@contextmanager
+def _counting_origin_server(hits: list[int]) -> Iterator[int]:
+    """Like _origin_server but records how many GETs actually reached the origin."""
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler naming
+            hits[0] += 1
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(_ORIGIN_BODY)))
+            self.end_headers()
+            self.wfile.write(_ORIGIN_BODY)
+
+        def log_message(self, *args: object) -> None:
+            return
+
+    server = HTTPServer(("127.0.0.1", _free_port()), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield int(server.server_address[1])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+
 def _get_through_proxy(proxy_port: int, url: str) -> bytes:
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
@@ -144,3 +171,59 @@ def test_proxy_flow_get_rejects_an_unknown_id(tmp_path: Path) -> None:
         assert info.value.code == "not_found"
     finally:
         backend.stop("empty")
+
+
+@pytest.mark.integration
+def test_proxy_replays_a_captured_flow() -> None:
+    """proxy.replay re-issues a captured request; it really reaches the origin again.
+
+    The capture gate proves a request becomes a retrievable flow; replay is the
+    next tool and had no live coverage. This captures one GET, replays it, and
+    proves the replay crossed the wire -- the origin server counts a second hit
+    and the proxy records a second flow -- rather than trusting the replayed=True
+    envelope alone. Skips only when mitmproxy is absent (skip != pass).
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy replay Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    hits = [0]
+    with _counting_origin_server(hits) as origin_port:
+        backend.start("replay", host="127.0.0.1", port=proxy_port)
+        try:
+            url = f"http://127.0.0.1:{origin_port}/probe"
+            assert _get_through_proxy(proxy_port, url) == _ORIGIN_BODY
+
+            flows = _wait_for_flow(backend, "replay")
+            assert flows, "proxy did not record the request to replay"
+            assert hits[0] == 1
+
+            result = backend.replay("replay", str(flows[0]["id"]))
+            assert result["replayed"] is True
+
+            # The replay genuinely re-hits the origin and is recorded again.
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                if hits[0] >= 2 and backend.status("replay")["flow_count"] >= 2:
+                    break
+                time.sleep(0.1)
+            assert hits[0] == 2, "replay did not reach the origin a second time"
+            assert backend.status("replay")["flow_count"] == 2
+        finally:
+            backend.stop("replay")
+
+
+@pytest.mark.integration
+def test_proxy_replay_rejects_an_unknown_id() -> None:
+    """Replaying a flow that was never captured is a structured not_found, not a crash."""
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy replay Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("noreplay", host="127.0.0.1", port=proxy_port)
+    try:
+        with pytest.raises(ProxyError) as info:
+            backend.replay("noreplay", "no-such-flow")
+        assert info.value.code == "not_found"
+    finally:
+        backend.stop("noreplay")

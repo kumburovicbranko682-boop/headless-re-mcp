@@ -98,6 +98,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   发过去,断言录到的 flow 摘要(method/url/status/content_type)、完整明细(经 `flow_get` 拿到
   请求行与响应体原文)与 HAR 导出都如实反映过线内容;纯 HTTP 免 CA 信任。另钉死在活体会话上读
   未知 flow id 得到结构化 `not_found` 而非崩。仅当 mitmproxy 缺失时 skip。
+- 同一文件补 `proxy.replay` 活体覆盖(此前无):捕获一条 GET 后 replay 它,不只信 `replayed=True`
+  信封——用计数版 origin 证明重放**真的再次打到源站**(命中数 1→2)、代理也随之记成第二条 flow。
+  再钉死 replay 未知 flow id 得结构化 `not_found`。仅当 mitmproxy 缺失时 skip。
 - Android 静态线新增**活体** androguard Gate:此前所有 Android 断言都跑在合成包上,而它的 manifest
   不是合法 AXML,androguard 只可能被走到失败路径。新增手工编码的最小**合法**二进制 AndroidManifest
   (纯 stdlib `struct`+`zipfile`,不需要 Android SDK/aapt),现造一个 androguard 真能解析的 APK,断言
