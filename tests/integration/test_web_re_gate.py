@@ -982,6 +982,51 @@ def test_wasm_info_when_wabt_present() -> None:
 
 
 @pytest.mark.integration
+def test_wasm_decompile_when_wabt_present() -> None:
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm-decompile) not installed — WASM Gate not run (skip != pass)")
+    assert _WASM_FIXTURE.is_file(), f"fixture missing: {_WASM_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_decompile(str(_WASM_FIXTURE))
+        assert result.ok, result.error
+        code = result.data["code"]
+        # wasm-decompile recovers a named function with typed params and a
+        # structured body -- the C-like form, not wat's stack ops. So the export
+        # name and a real return statement must be present, and the raw stack
+        # opcode wasm.wat would emit (local.get) must not: that contrast is the
+        # whole reason wasm.decompile exists beside wasm.wat.
+        assert "function add" in code
+        assert "return" in code
+        assert "local.get" not in code
+        assert result.data["bytes"] > 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_decompile_faults_soft_on_a_malformed_module(tmp_path: Path) -> None:
+    """A bad .wasm through wasm-decompile must fault structured, not smuggle text.
+
+    wasm-decompile empties stdout and writes its diagnostic to stderr on a bad
+    module, so the reader must come back backend_error with the diagnostic
+    reachable -- never a false success dressing "invalid section" up as a
+    one-line decompilation.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt not installed — WASM Gate not run (skip != pass)")
+    bad = tmp_path / "bad.wasm"
+    bad.write_bytes(b"NOPE\x01\x00\x00\x00garbage-past-the-magic")
+    service = AnalysisService()
+    try:
+        result = service.wasm_decompile(str(bad))
+        assert not result.ok and result.error is not None
+        assert result.error.code == "backend_error", result.error
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_wat_accepts_minimal_module(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")

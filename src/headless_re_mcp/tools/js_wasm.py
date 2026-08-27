@@ -79,6 +79,23 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
+    @tools.tool(name="wasm.decompile")
+    def wasm_decompile(
+        path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
+    ) -> dict[str, Any]:
+        """Decompile a .wasm module to readable pseudo-C via wasm-decompile.
+
+        Where wasm.wat gives the raw stack-machine text, this gives a C-like form
+        with named functions, structured control flow and the module's data
+        segments (so an embedded URL or key reads as a string, not a byte run) --
+        the WASM analogue of ghidra.decompile for a native binary. Answers with
+        code and bytes, plus truncated when the inline text was cut at the buffer;
+        when truncated, artifact_path / artifact_bytes give the full decompilation
+        on disk so the preview is never the whole story. An input over 16 MiB is
+        refused as too_large rather than handed to wasm-decompile.
+        """
+        return _dump(analysis.wasm_decompile(path, timeout=timeout))
+
     @tools.tool(name="wasm.info")
     def wasm_info(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

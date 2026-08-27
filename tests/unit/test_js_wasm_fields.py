@@ -57,6 +57,87 @@ def test_wasm_info_puts_the_dump_in_objdump_not_sections(tmp_path: Path) -> None
     assert "Answers with objdump" in _tool_docstring("wasm.info")
 
 
+def test_wasm_decompile_names_code_and_bytes(tmp_path: Path) -> None:
+    """wasm.decompile returns readable pseudo-C under code, like the JS tools.
+
+    Measured: wasm-decompile stdout -> code holds the text, bytes its length,
+    no size key. It shares js.deobfuscate's code/bytes/truncated shape, not
+    wasm.info's objdump field, so a caller reads one field name across both the
+    JS and the decompiled-WASM path.
+    """
+    tool = tmp_path / "wasm-decompile.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "export function add(a:int, b:int):int {\n  return a + b\n}\n"
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).decompile(module)
+
+    assert "size" not in payload
+    assert "objdump" not in payload
+    assert payload["code"] == body
+    assert payload["bytes"] == len(body)
+    doc = _tool_docstring("wasm.decompile")
+    assert "code" in doc
+    assert "bytes" in doc
+    assert "pseudo-C" in doc
+
+
+def test_wasm_decompile_faults_soft_on_a_bad_module(tmp_path: Path) -> None:
+    """A module wasm-decompile rejects must surface as backend_error, not code.
+
+    wasm-decompile empties stdout and writes the diagnostic to stderr on a bad
+    module, so an empty stdout with a non-zero exit is the failure -- returning
+    the stderr text as code would read as a one-line decompilation.
+    """
+    tool = tmp_path / "wasm-decompile.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(1, b"", b"0000008: error: invalid section code")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        WasmClient(tool).decompile(module)
+
+    assert caught.value.code == "backend_error"
+    assert "invalid section code" in str(caught.value.details.get("stderr", ""))
+
+
+def test_wasm_decompile_spills_full_output_when_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "wasm-decompile.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "function f() { }\n" * 40
+    spill = tmp_path / "spill"
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 30)
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).decompile(module, spill_dir=spill)
+
+    assert payload["truncated"] is True
+    artifact = Path(payload["artifact_path"])
+    assert artifact.suffix == ".dcmp"
+    assert artifact.read_text(encoding="utf-8") == body
+
+
 def test_wasm_wat_names_bytes_not_size(tmp_path: Path) -> None:
     """The catalog named wat and never named the length field.
 
@@ -263,12 +344,14 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with wat" in _tool_docstring("wasm.wat")
     assert "bytes" in _tool_docstring("wasm.wat")
     assert "truncated" in _tool_docstring("wasm.info")
+    assert "pseudo-C" in _tool_docstring("wasm.decompile")
     assert "too_large" in _tool_docstring("js.deobfuscate")
     assert "too_large" in _tool_docstring("js.unpack_bundle")
     assert "too_large" in _tool_docstring("wasm.info")
+    assert "too_large" in _tool_docstring("wasm.decompile")
     # The text tools spill to an artifact when truncated; say so where a caller
     # would otherwise treat the preview as the whole output.
-    for name in ("js.deobfuscate", "js.beautify", "wasm.wat", "wasm.info"):
+    for name in ("js.deobfuscate", "js.beautify", "wasm.wat", "wasm.info", "wasm.decompile"):
         assert "artifact_path" in _tool_docstring(name), name
 
 

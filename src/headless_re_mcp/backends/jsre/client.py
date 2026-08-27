@@ -220,6 +220,7 @@ class WasmClient:
     def __init__(self, wabt: Path | None = None) -> None:
         self._wasm2wat = _resolve_wabt_tool(wabt, "wasm2wat")
         self._objdump = _resolve_wabt_tool(wabt, "wasm-objdump")
+        self._decompile = _resolve_wabt_tool(wabt, "wasm-decompile")
 
     @property
     def available(self) -> bool:
@@ -247,6 +248,32 @@ class WasmClient:
             spill_dir=spill_dir,
             spill_stem="module",
             spill_suffix=".wat",
+        )
+
+    def decompile(
+        self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
+        resolved = self._require_input(path, self._decompile, "wasm-decompile")
+        assert self._decompile is not None
+        stdout, stderr, code = _run([str(self._decompile), str(resolved)], timeout=timeout)
+        # wasm-decompile, like wasm2wat, writes its diagnostic to stderr and
+        # leaves stdout empty on a bad module, so an empty stdout with a non-zero
+        # exit is the failure. A valid module always yields at least a
+        # declaration, so "empty output" never means "success" here.
+        if code != 0 and not stdout:
+            raise JsReError(
+                "backend_error",
+                "wasm-decompile failed",
+                exit_code=code,
+                stderr=stderr[:_MAX_STDERR],
+            )
+        return _bounded_output(
+            stdout,
+            "code",
+            include_bytes=True,
+            spill_dir=spill_dir,
+            spill_stem="decompiled",
+            spill_suffix=".dcmp",
         )
 
     def info(

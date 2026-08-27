@@ -157,6 +157,19 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
+    def wasm_decompile(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
+        try:
+            spill = self._jsre_spill_dir()
+            data = WasmClient(getattr(self.settings, "wabt", None)).decompile(
+                Path(path), timeout=timeout, spill_dir=spill
+            )
+            self._prune_spill(spill)
+            return _success(data, backend="wabt")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
     def wasm_info(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
             spill = self._jsre_spill_dir()
