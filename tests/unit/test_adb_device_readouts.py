@@ -223,6 +223,20 @@ def test_force_stop_is_honest_when_pidof_returns_a_host_error() -> None:
     assert "note" in payload
 
 
+def test_force_stop_caps_a_flooded_pidof_reply() -> None:
+    """A device flooding pidof cannot grow the force-stop envelope without bound.
+
+    pidof output is device-controlled and echoed back in remaining_pids, so the
+    main (pidof-present) path caps what it keeps the same way the ps -A fallback
+    does -- at most 16 pids, not one entry per token the device chose to send.
+    """
+    flood = " ".join(str(pid) for pid in range(1, 101))
+    dev = _ScriptedDev({("am", "force-stop"): "", ("pidof",): flood})
+    payload = _backend_with(dev).force_stop("emulator-5554", "com.example.app")
+    assert payload["stopped"] is False
+    assert len(payload["remaining_pids"]) == 16
+
+
 def test_force_stop_is_honest_when_the_ps_fallback_returns_a_host_error() -> None:
     """A device that drops during the ps -A fallback leaves stopped null.
 

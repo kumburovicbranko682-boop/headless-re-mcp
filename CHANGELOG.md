@@ -92,6 +92,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   命中即回 `None`(核实没跑成),让 `force_stop` 如实报 could-not-verify;真正的 `pidof: not found`
   不带主机错误前缀,照旧落到回退。新增两条回归:`pidof` 回主机错误串、以及回退里 `ps -A` 回主机错误串,
   `stopped` 均为 null 而非 true。
+- 同处再把 `pidof` 主路径的 PID 解析封顶到 `_MAX_PIDS`(16,与 `ps -A` 回退一致)。pidof 输出是被设备
+  控制的、又被原样塞回 `remaining_pids`,原先主路径 `pids = [int(t) for t in …]` 无上限,一台设备灌
+  几百个 token 就能把 force-stop 回包撑大。新增回归:pidof 回 100 个 PID 时 `remaining_pids` 仍只留 16 条。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
