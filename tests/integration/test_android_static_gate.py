@@ -55,6 +55,7 @@ _ABIS = ("arm64-v8a", "x86_64")
 # What the hand-built classes.dex carries, asserted by the DEX-half tests.
 _DEX_CLASS = "Lcom/gate/sample/Gate;"
 _DEX_METHOD = "gateSecret"
+_DEX_CALLER = "gateCaller"
 _DEX_STRING = "gate-secret-marker"
 
 _ANDROID_URI = "http://schemas.android.com/apk/res/android"
@@ -251,18 +252,22 @@ def _build_manifest_axml() -> bytes:
 
 
 # --- classes.dex ------------------------------------------------------------
-# A minimal but valid DEX (format 035): one public class with one direct method
-# whose bytecode is ``const-string v0, "gate-secret-marker"; return-void``. That
-# is enough for androguard to enumerate the class, list the method and surface
-# the string, which is what the DEX-half tools read. String indices are explicit
-# throughout, so the tables need not be sorted for androguard to resolve them.
+# A minimal but valid DEX (format 035): one public class with two direct
+# methods. ``gateSecret`` runs ``const-string v0, "gate-secret-marker";
+# return-void``; ``gateCaller`` runs ``invoke-static {}, gateSecret;
+# return-void``. That is enough for androguard to enumerate the class, list both
+# methods, surface the string, and record the call edge that ``apk.xrefs`` reads.
+# String indices are explicit throughout, so the tables need not be sorted for
+# androguard to resolve them.
 _DEX_STRINGS = [
     _DEX_CLASS,  # 0: the class descriptor
     "Ljava/lang/Object;",  # 1: superclass
     "V",  # 2: void, reused as the proto shorty
-    _DEX_STRING,  # 3: the constant the method loads
-    _DEX_METHOD,  # 4: the method name
+    _DEX_STRING,  # 3: the constant gateSecret loads
+    _DEX_METHOD,  # 4: gateSecret
+    _DEX_CALLER,  # 5: gateCaller
 ]
+_S_VOID, _S_SECRET, _S_SECRET_NAME, _S_CALLER_NAME = 2, 3, 4, 5
 _DEX_TYPES = [0, 1, 2]  # type index -> string index
 _T_CLASS, _T_OBJECT, _T_VOID = range(3)
 
@@ -296,28 +301,39 @@ def _build_classes_dex() -> bytes:
 
     _align4(body)
     proto_ids_off = header_size + len(body)
-    body += struct.pack("<III", 2, _T_VOID, 0)  # shorty "V", return void, no params
+    body += struct.pack("<III", _S_VOID, _T_VOID, 0)  # shorty "V", return void, no params
 
     _align4(body)
     method_ids_off = header_size + len(body)
-    body += struct.pack("<HHI", _T_CLASS, 0, 4)  # class, proto 0, name "gateSecret"
+    body += struct.pack("<HHI", _T_CLASS, 0, _S_SECRET_NAME)  # method 0: gateSecret
+    body += struct.pack("<HHI", _T_CLASS, 0, _S_CALLER_NAME)  # method 1: gateCaller
 
     _align4(body)
-    code_off = header_size + len(body)
-    insns = struct.pack("<BBH", 0x1A, 0x00, 3)  # const-string v0, string@3
-    insns += struct.pack("<BB", 0x0E, 0x00)  # return-void
-    body += struct.pack("<HHHHII", 1, 0, 0, 0, 0, len(insns) // 2)
-    body += insns
+    code0_off = header_size + len(body)
+    insns0 = struct.pack("<BBH", 0x1A, 0x00, _S_SECRET)  # const-string v0, string@secret
+    insns0 += struct.pack("<BB", 0x0E, 0x00)  # return-void
+    body += struct.pack("<HHHHII", 1, 0, 0, 0, 0, len(insns0) // 2)
+    body += insns0
+
+    _align4(body)
+    code1_off = header_size + len(body)
+    insns1 = struct.pack("<BBHH", 0x71, 0x00, 0, 0)  # invoke-static {}, method@0
+    insns1 += struct.pack("<BB", 0x0E, 0x00)  # return-void
+    body += struct.pack("<HHHHII", 1, 0, 0, 0, 0, len(insns1) // 2)
+    body += insns1
 
     _align4(body)
     class_data_off = header_size + len(body)
     body += _uleb128(0)  # static fields
     body += _uleb128(0)  # instance fields
-    body += _uleb128(1)  # direct methods
+    body += _uleb128(2)  # direct methods
     body += _uleb128(0)  # virtual methods
-    body += _uleb128(0)  # first method_idx_diff
+    body += _uleb128(0)  # method 0 idx_diff (gateSecret)
     body += _uleb128(0x9)  # access: public | static
-    body += _uleb128(code_off)
+    body += _uleb128(code0_off)
+    body += _uleb128(1)  # method 1 idx_diff (gateCaller)
+    body += _uleb128(0x9)  # access: public | static
+    body += _uleb128(code1_off)
 
     _align4(body)
     class_defs_off = header_size + len(body)
@@ -350,10 +366,10 @@ def _build_classes_dex() -> bytes:
         (0x0001, len(_DEX_STRINGS), string_ids_off),
         (0x0002, len(_DEX_TYPES), type_ids_off),
         (0x0003, 1, proto_ids_off),
-        (0x0005, 1, method_ids_off),
+        (0x0005, 2, method_ids_off),
         (0x0006, 1, class_defs_off),
         (0x2000, 1, class_data_off),
-        (0x2001, 1, code_off),
+        (0x2001, 2, code0_off),
         (0x2002, len(_DEX_STRINGS), string_data_offsets[0]),
         (0x1000, 1, map_off),
     ]
@@ -375,9 +391,9 @@ def _build_classes_dex() -> bytes:
     header += struct.pack("<II", len(_DEX_TYPES), type_ids_off)
     header += struct.pack("<II", 1, proto_ids_off)
     header += struct.pack("<II", 0, 0)  # field ids
-    header += struct.pack("<II", 1, method_ids_off)
+    header += struct.pack("<II", 2, method_ids_off)
     header += struct.pack("<II", 1, class_defs_off)
-    header += struct.pack("<II", file_size - code_off, code_off)  # data section
+    header += struct.pack("<II", file_size - code0_off, code0_off)  # data section
 
     dex = bytearray(header + body)
     dex[12:32] = hashlib.sha1(bytes(dex[32:])).digest()
@@ -504,11 +520,11 @@ def test_androguard_analyzes_the_dex_classes_methods_and_strings(tmp_path: Path)
         assert classes.ok, classes.error
         assert classes.data["classes"] == [_DEX_CLASS]
 
-        # apk.methods must decode the one method with its real descriptor/access.
+        # apk.methods must decode both methods with real descriptors/access.
         methods = service.apk_methods(session_id, _DEX_CLASS)
         assert methods.ok, methods.error
         names = {m["name"] for m in methods.data["methods"]}
-        assert _DEX_METHOD in names
+        assert {_DEX_METHOD, _DEX_CALLER} <= names
         method = next(m for m in methods.data["methods"] if m["name"] == _DEX_METHOD)
         assert method["descriptor"] == "()V"
         assert "static" in method["access"]
@@ -517,6 +533,35 @@ def test_androguard_analyzes_the_dex_classes_methods_and_strings(tmp_path: Path)
         strings = service.apk_strings(session_id)
         assert strings.ok, strings.error
         assert _DEX_STRING in strings.data["strings"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_androguard_resolves_the_dex_call_graph(tmp_path: Path) -> None:
+    """apk.xrefs must report the real caller of a method from the DEX call graph."""
+    if not _androguard_available():
+        pytest.skip("androguard not installed — Android static Gate not run (skip != pass)")
+    apk = _build_valid_apk(tmp_path / "gate.apk")
+    settings = Settings(
+        ida_home=None,
+        x64dbg_source=None,
+        x64dbg_headless_x64=None,
+        x64dbg_headless_x86=None,
+        artifact_root=tmp_path / "artifacts",
+    )
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        xrefs = service.apk_xrefs(session_id, _DEX_METHOD)
+        assert xrefs.ok, xrefs.error
+        callers = xrefs.data["callers"]
+        assert any(c["class"] == _DEX_CLASS and c["method"] == _DEX_CALLER for c in callers), (
+            callers
+        )
     finally:
         service.close_all()
 
