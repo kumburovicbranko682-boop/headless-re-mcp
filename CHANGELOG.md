@@ -70,6 +70,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   输出抛 `AdbError`，两个调用方已有的 `except AdbError` 分支即把结果如实报成 null + “could not
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
+- **`frida.server.ensure` 的可见性探测把主机错误串读成「没在跑」的 false，而非「查不了」的 null。**
+  `_frida_server_visible` 靠在设备进程表里找 "frida-server" 给出三态 `running`，它的 None 只留给探测
+  抛异常；但 adbutils 会把 adb 主机端的 "adb:"/"error:" 行当 stdout 返回而不抛（掉线设备的 ps 就这样
+  回），那行里没有 "frida-server"——于是主机错误被读成确定的「未运行」(false) 而非「无法确认」(null)，
+  正是 `pm path` 与 `force_stop` 已经补过守卫的同类误报：读到 false 的调用方要么去重启一个可能已在跑的
+  frida-server，要么放弃一台其实从没真正查过的设备。现在 `ps -A` 与裸 `ps` 回退的输出都过一遍
+  `_is_host_error_output`，命中即返回 None；`ensure_frida_server` 在确认探测回 null 时，备注也改成
+  「进程表读不出、无法确认」而不再是「frida-server 不在 ps 里」。新增直测覆盖两条主机错误路径、
+  一次真命中、一次真未命中，以及端到端的 ensure_frida_server null 报告。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
