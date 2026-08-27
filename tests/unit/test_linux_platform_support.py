@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -283,3 +285,106 @@ def test_capability_catalog_uses_unsupported_probe_status(
     assert statuses["x64dbg.headless"] == "unsupported_on_platform"
     assert statuses["ui.win32"] == "unsupported_on_platform"
     assert statuses["windbg.cdb"] == "unsupported_on_platform"
+
+
+# PE / .NET / IDA static gates that are not Windows-only (they run on Linux)
+# yet do not belong in the portable non-PE Linux CI job: each needs a
+# proprietary backend (IDA) or a PE/.NET fixture and self-skips on a plain
+# Linux runner, so listing them would only add skips. Kept explicit so the
+# partition below is total -- every integration gate is classified exactly
+# once, which is what forces a newly added portable gate into the CI list.
+_PE_STATIC_EXCLUDED_FROM_LINUX_CI = frozenset(
+    {
+        "test_dotnet_m6_gate.py",
+        "test_idalib_gate.py",
+        "test_m8_static_batch1_gate.py",
+        "test_m8_static_write_gate.py",
+        "test_mcp_static_idalib.py",
+    }
+)
+
+
+def _windows_only_modules(conftest_path: Path) -> set[str]:
+    """Read _WINDOWS_ONLY_MODULES from the integration conftest without importing it.
+
+    ast-parsing avoids importing a pytest conftest as a plain module (which
+    would register its fixtures/hooks); the value is a frozenset literal of
+    string constants, so pulling the constants straight out of the assignment
+    is exact and has no runtime dependency on pytest collection.
+    """
+    tree = ast.parse(conftest_path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "_WINDOWS_ONLY_MODULES"
+            for target in node.targets
+        ):
+            continue
+        # frozenset({...}) -> the set literal is the sole call argument.
+        call = node.value
+        assert isinstance(call, ast.Call), "expected frozenset(...) literal"
+        (set_literal,) = call.args
+        assert isinstance(set_literal, ast.Set)
+        return {
+            element.value
+            for element in set_literal.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        }
+    raise AssertionError("_WINDOWS_ONLY_MODULES not found in integration conftest")
+
+
+def _linux_ci_gate_list(ci_yaml: str) -> list[str]:
+    """The integration gate filenames the linux-integration job runs.
+
+    ci.yml references tests/integration test files in exactly one place -- the
+    'Non-PE integration gates' step -- so every such token in the file is a
+    member of that explicit list. Returned as a list so a duplicate entry
+    (a real copy-paste mistake) is visible to the caller.
+    """
+    return re.findall(r"tests/integration/(test_[a-z0-9_]+\.py)", ci_yaml)
+
+
+def test_every_integration_gate_is_classified_for_linux_ci() -> None:
+    """Adding a portable gate without wiring CI must fail here, not go unnoticed.
+
+    The linux-integration job runs an explicit file list, so a new non-PE gate
+    that is not added to it simply never runs in CI -- silent, since the job
+    still goes green on the gates it does list. Enforce a total partition of
+    every tests/integration gate into exactly one of: Windows-only (skipped by
+    the conftest on Linux), PE/IDA-static (self-skips, excluded by design), or
+    the Linux CI list. A gate that falls in none, or in two, fails this test.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    integration_dir = repo_root / "tests" / "integration"
+    all_gates = {path.name for path in integration_dir.glob("test_*.py")}
+
+    windows_only = _windows_only_modules(integration_dir / "conftest.py")
+    ci_yaml = (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    ci_list = _linux_ci_gate_list(ci_yaml)
+    ci_set = set(ci_list)
+
+    # A duplicated or stale (nonexistent) CI entry is itself a bug.
+    assert len(ci_list) == len(ci_set), f"duplicate entry in the linux CI gate list: {ci_list}"
+    missing_files = ci_set - all_gates
+    assert not missing_files, (
+        f"linux CI lists gate files that do not exist: {sorted(missing_files)}"
+    )
+
+    classified = ci_set | windows_only | _PE_STATIC_EXCLUDED_FROM_LINUX_CI
+    unclassified = all_gates - classified
+    assert not unclassified, (
+        "these integration gates are classified nowhere -- add each to the "
+        "linux-integration job in ci.yml (portable non-PE), to _WINDOWS_ONLY_MODULES "
+        "in the integration conftest, or to _PE_STATIC_EXCLUDED_FROM_LINUX_CI: "
+        f"{sorted(unclassified)}"
+    )
+
+    # The three buckets must not overlap, or the classification is ambiguous.
+    assert not (ci_set & windows_only), sorted(ci_set & windows_only)
+    assert not (ci_set & _PE_STATIC_EXCLUDED_FROM_LINUX_CI), sorted(
+        ci_set & _PE_STATIC_EXCLUDED_FROM_LINUX_CI
+    )
+    assert not (windows_only & _PE_STATIC_EXCLUDED_FROM_LINUX_CI), sorted(
+        windows_only & _PE_STATIC_EXCLUDED_FROM_LINUX_CI
+    )
