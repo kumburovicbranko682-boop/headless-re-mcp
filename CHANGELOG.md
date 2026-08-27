@@ -18,6 +18,8 @@ CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服�
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
+就绪与存活探针的分工新增经真实 HTTP 的降级端到端 Gate（`tests/integration/test_readiness_degrade_gate.py`）。`/healthz` 只证进程在服务、故意不碰任何后端,`/readyz` 每次真实写一个探针文件——这对分工是无人值守部署的承重面:监督者按存活重启、引流按就绪摘除,而此前只有快乐路径被证明过。Gate 起真实 `serve-web` 后在运行中夺走产物根的写权限:断言 `/readyz` 如实转 503 且 `checks` 里指名 `artifact_root` 失败并给出原因、`/healthz` 全程 200(这正是阻止监督者重启循环的性质)、`/metrics` 照常应答且 `headless_re_ready` gauge 落 0(降级是要发布的信号,不是发布者熄灯的理由);恢复权限后同一进程内 `/readyz` 立即回 200——探针每次重查现实,不闩存。另一条用例逐行校验 `/metrics` 的 Prometheus exposition 格式:content-type 版本、每个样本行可解析且值为有限浮点、每个样本都有对应 HELP/TYPE 家族声明、build_info 标签如实命名运行中的解释器。仅回环、纯 Python、POSIX 权限位实现降级(非 root 运行)。
+
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
 
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
