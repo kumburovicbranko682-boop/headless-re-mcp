@@ -11,11 +11,13 @@ that finds them missing rejects the whole file. Emitting them here, once, keeps
 the two exporters producing an interoperable artifact instead of a bespoke blob
 that only this project can read.
 
-Serialisation is bounded the same way ``web.har.export`` already bounded itself:
-entries are dropped from the newest end until the encoded file fits the capture
-cap. ``proxy.export_har`` had no such ceiling -- it wrote whatever the ring held
--- so an overnight capture of thousands of flows wrote an unbounded artifact
-into the session directory that retention could not have foreseen. Both now go
+Serialisation is byte-bounded: entries are dropped from the *oldest* end until
+the encoded file fits the capture cap, so the HAR keeps the most recent flows
+that fit -- the same way both capture rings evict their oldest row when full,
+and the subset an analyst reaching for a HAR after an action actually wants.
+``proxy.export_har`` had no such ceiling -- it wrote whatever the ring held --
+so an overnight capture of thousands of flows wrote an unbounded artifact into
+the session directory that retention could not have foreseen. Both now go
 through :func:`serialize_har`.
 """
 
@@ -150,12 +152,14 @@ def build_har(entries: list[JsonObject]) -> JsonObject:
 
 
 def serialize_har(entries: list[JsonObject], *, max_bytes: int) -> SerializedHar:
-    """Encode a HAR log, dropping the newest entries until it fits ``max_bytes``.
+    """Encode a HAR log, dropping the oldest entries until it fits ``max_bytes``.
 
-    Returns the JSON text, how many entries survived, whether any were dropped,
-    and the encoded byte length. Newest-first eviction matches the loop
-    ``web.har.export`` already used; a log that still exceeds the cap with no
-    entries left is left for the caller to reject, since only the caller knows
+    Callers pass entries oldest-first, so eviction from the front keeps the most
+    recent flows -- consistent with both capture rings, which evict their oldest
+    row when full, and with what an analyst wants from a HAR taken right after an
+    action. Returns the JSON text, how many entries survived, whether any were
+    dropped, and the encoded byte length. A log that still exceeds the cap with
+    no entries left is left for the caller to reject, since only the caller knows
     which error envelope to raise.
     """
     kept = list(entries)
@@ -164,7 +168,7 @@ def serialize_har(entries: list[JsonObject], *, max_bytes: int) -> SerializedHar
     encoded = text.encode("utf-8")
     while kept and len(encoded) > max_bytes:
         drop = max(1, len(kept) // 8)
-        del kept[-drop:]
+        del kept[:drop]
         truncated = True
         text = json.dumps(build_har(kept), ensure_ascii=False)
         encoded = text.encode("utf-8")

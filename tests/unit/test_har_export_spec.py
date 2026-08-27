@@ -138,7 +138,13 @@ def test_har_entry_reports_a_known_response_body_size() -> None:
     assert unknown["response"]["bodySize"] == -1
 
 
-def test_serialize_har_drops_newest_entries_until_it_fits_the_cap() -> None:
+def test_serialize_har_keeps_the_newest_entries_that_fit_the_cap() -> None:
+    """Eviction drops the oldest end, so the surviving entries are the newest.
+
+    Callers pass entries oldest-first; keeping the newest that fit matches the
+    capture rings (which evict oldest) and is the subset an analyst wants from a
+    HAR taken right after an action. This pins that direction, not just the size.
+    """
     entries = [
         har_entry(
             method="GET",
@@ -154,6 +160,10 @@ def test_serialize_har_drops_newest_entries_until_it_fits_the_cap() -> None:
     assert 0 < result.entry_count < 200
     doc = _assert_valid_har(result.text)
     assert len(doc["log"]["entries"]) == result.entry_count
+    kept = [int(entry["request"]["url"].rsplit("/", 1)[1]) for entry in doc["log"]["entries"]]
+    # The newest index survives and the kept run is the contiguous newest tail.
+    assert kept[-1] == 199
+    assert kept == list(range(200 - result.entry_count, 200))
 
 
 def test_serialize_har_leaves_a_small_capture_intact() -> None:
@@ -206,7 +216,11 @@ def test_web_har_export_is_bounded_by_the_capture_cap(
     assert payload["truncated"] is True
     assert payload["entry_count"] < 400
     assert out.stat().st_size <= 4096
-    _assert_valid_har(out.read_text(encoding="utf-8"))
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    kept = [int(entry["request"]["url"].rsplit("/", 1)[1]) for entry in doc["log"]["entries"]]
+    # The oldest requests are dropped; the newest that fit are kept.
+    assert kept[-1] == 399
+    assert min(kept) > 0
 
 
 def test_web_har_export_refuses_when_even_an_empty_har_exceeds_the_cap(
@@ -286,7 +300,11 @@ def test_proxy_export_har_is_now_bounded_by_the_capture_cap(
     assert payload["truncated"] is True
     assert payload["entry_count"] < 400
     assert out.stat().st_size <= 4096
-    _assert_valid_har(out.read_text(encoding="utf-8"))
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    kept = [int(entry["request"]["url"].rsplit("/", 1)[1]) for entry in doc["log"]["entries"]]
+    # The oldest flows are dropped; the newest that fit are kept.
+    assert kept[-1] == 399
+    assert min(kept) > 0
 
 
 def test_proxy_export_har_refuses_when_even_an_empty_har_exceeds_the_cap(
