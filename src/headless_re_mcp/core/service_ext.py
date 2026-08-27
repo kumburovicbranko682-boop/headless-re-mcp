@@ -335,8 +335,13 @@ class ExtAnalysisMixin(UiDriveMixin):
     def r2_functions(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["aa", "aflj"], timeout=timeout)
 
-    def r2_strings(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return _r2_request(self, session_id, ["izj"], timeout=timeout)
+    def r2_strings(
+        self, session_id: str, timeout: float = 30.0, *, whole: bool = False
+    ) -> Result[JsonObject]:
+        # izj scans only sections r2 classifies as data (.rodata/.data/...);
+        # izzj scans the whole file, so it recovers strings a packer or a
+        # non-standard/non-loaded section hides outside those sections.
+        return _r2_request(self, session_id, ["izzj" if whole else "izj"], timeout=timeout)
 
     def r2_imports(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["iij"], timeout=timeout)

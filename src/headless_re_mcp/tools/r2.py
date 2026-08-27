@@ -60,7 +60,9 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="r2.strings")
     def r2_strings(
-        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+        session_id: str,
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+        whole: bool = False,
     ) -> dict[str, Any]:
         """Strings radare2 recovered.
 
@@ -69,8 +71,20 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         field. Read items_truncated, items_total and items_limit when the
         list filled the cap (4096). There is no strings, truncated or
         has_more field.
+
+        By default (whole=false) this runs ``izj``, which scans only the
+        sections radare2 classifies as data (.rodata/.data/...). Pass
+        whole=true to run ``izzj``, a whole-file scan that also recovers
+        strings hidden outside those sections -- the case that matters for a
+        packed or obfuscated binary, where the payload's strings sit in a
+        non-standard or non-loaded section izj never looks at, or an entry
+        with an empty section name. The whole-file scan is a superset and
+        noisier (it will surface byte runs inside code that merely look like
+        text); reach for it when the data-section listing comes back thin or
+        you suspect strings were tucked away. The item shape and the 4096 cap
+        are identical either way.
         """
-        return _dump(analysis.r2_strings(session_id, timeout=timeout))
+        return _dump(analysis.r2_strings(session_id, timeout=timeout, whole=whole))
 
     @tools.tool(name="r2.imports")
     def r2_imports(

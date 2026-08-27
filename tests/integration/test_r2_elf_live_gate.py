@@ -195,6 +195,94 @@ def test_r2_strings_imports_exports_map_on_a_real_elf(tmp_path: Path) -> None:
     assert isinstance(ours["address"].get("va"), int)
 
 
+_RODATA_MARKER = "r2-rodata-visible-marker"
+_HIDDEN_MARKER = "r2-whole-file-only-marker"
+
+# A string in .rodata (izj and izzj both see it) plus one forced into a
+# non-loaded custom section: izj scans only data sections, so it never looks
+# there, but the whole-file scan does. This is the packer-hides-strings shape
+# the whole=true option exists for, reduced to a deterministic fixture.
+_HIDDEN_SECTION_SOURCE = f"""
+#include <stdio.h>
+const char *VISIBLE = "{_RODATA_MARKER}";
+__attribute__((used, section(".r2hidden")))
+static const char HIDDEN[] = "{_HIDDEN_MARKER}";
+int main(void) {{ printf("%s\\n", VISIBLE); return (int)HIDDEN[0]; }}
+"""
+
+
+def _compile_hidden_section_elf(tmp_path: Path) -> Path:
+    compiler = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if compiler is None:
+        pytest.skip("no C compiler (cc/gcc/clang) to build the ELF fixture — skip != pass")
+    source = tmp_path / "r2hidden.c"
+    source.write_text(_HIDDEN_SECTION_SOURCE, encoding="utf-8")
+    binary = tmp_path / "r2hidden"
+    result = subprocess.run(  # noqa: S603 - fixed argv, compiler discovered on PATH
+        [compiler, "-O0", "-no-pie", "-o", str(binary), str(source)],
+        capture_output=True,
+        timeout=120,
+    )
+    if result.returncode != 0 or not binary.is_file():
+        detail = result.stderr.decode("utf-8", "replace")[:200]
+        pytest.skip(f"C compiler could not build the hidden-section ELF ({detail}) — skip != pass")
+    return binary
+
+
+def _has_string(items: list[dict], marker: str) -> bool:
+    return any(marker in str(item.get("string", "")) for item in items)
+
+
+@pytest.mark.integration
+def test_r2_strings_whole_recovers_a_string_izj_misses(tmp_path: Path) -> None:
+    """whole=true (izzj) must recover a string the data-section scan (izj) misses.
+
+    The whole point of the option is a packer that hides its payload strings
+    outside the sections izj scans. Compile a marker into a non-loaded custom
+    section, then prove the default scan does not see it while the whole-file
+    scan does -- and that the recovered entry still maps to a real section and
+    Address, so it is not a mangled byte run. Without the miss/find pair the
+    option would be indistinguishable from the default and could rot silently.
+    """
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live gate not run (skip != pass)")
+    binary = _compile_hidden_section_elf(tmp_path)
+
+    # Default: data-section scan. It must find the .rodata string and must NOT
+    # find the one buried in the non-loaded section.
+    izj = client.run(binary, ["izj"], timeout=60.0)
+    assert izj["parsed"] is True
+    assert _has_string(izj["items"], _RODATA_MARKER), (
+        f"the .rodata marker was not in the default scan: "
+        f"{[s.get('string') for s in izj['items']]}"
+    )
+    assert not _has_string(izj["items"], _HIDDEN_MARKER), (
+        "the hidden-section marker leaked into the data-section scan; the fixture "
+        "no longer distinguishes izj from izzj on this radare2"
+    )
+
+    # Whole-file scan: a superset that must recover both markers.
+    izzj = client.run(binary, ["izzj"], timeout=60.0)
+    assert izzj["parsed"] is True
+    assert _has_string(izzj["items"], _RODATA_MARKER)
+    assert _has_string(izzj["items"], _HIDDEN_MARKER), (
+        f"the whole-file scan did not recover the hidden-section string: "
+        f"{[s.get('string') for s in izzj['items']]}"
+    )
+    # It is a superset: it cannot report fewer strings than the data-section scan.
+    assert izzj.get("count", 0) >= izj.get("count", 0)
+
+    hidden = next(
+        item for item in izzj["items"] if _HIDDEN_MARKER in str(item.get("string", ""))
+    )
+    # The recovered string still carries its section name and a structured
+    # Address -- it is a real find, not a stray byte run mislabelled as text.
+    assert hidden.get("section") == ".r2hidden"
+    assert isinstance(hidden.get("address"), dict)
+    assert isinstance(hidden["address"].get("va"), int)
+
+
 @pytest.mark.integration
 def test_r2_sections_map_on_a_real_elf(tmp_path: Path) -> None:
     """The section layout (iSj) had no live ELF coverage.

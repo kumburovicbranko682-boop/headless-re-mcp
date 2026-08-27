@@ -418,6 +418,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   我们写的 `helper`/`compute`/`main` 三个 `FUNC` 符号、其 `address.va` 为正、ELF 不伪造 PE 的 `rva`，且符号表是导出表的
   超集（缺 r2 或缺编译器时 skip≠pass）；单测覆盖 `isj` 条目到 Address 的映射、`is_imported`/`bind`/`type` 原样透传、
   列表截断标注、以及工具描述如实点名 `isj`/`is_imported`/`items_truncated`。该工具计入读效果，工具面因此 271→272。
+- **`r2.strings` 只扫数据段（`izj`），加壳/混淆样本把字符串藏到别处就看不见了**。`izj` 只扫 radare2 归类为数据的
+  段（.rodata/.data/…），可加壳器常把载荷字符串塞进非标准或不加载的段里——那正是分析者最想看的东西，却恰好在 `izj`
+  的视野之外。给 `r2.strings` 加可选 `whole`：默认（`whole=false`）仍跑 `izj` 保持常见情形干净，`whole=true` 改跑
+  `izzj` 全文件扫描，把藏在数据段之外的字符串也捞出来。全文件扫描是超集、也更吵（会把代码里看着像文本的字节串也报出来），
+  条目形状与 4096 上限两种模式完全一致。无 `whole` 参数时行为不变，工具计数与读写归类不变。活体门用系统 C 编译器现编
+  一个把标记字符串塞进非加载自定义段 `.r2hidden` 的 `-no-pie` ELF，断言默认 `izj` 扫描看得到 .rodata 标记却看不到隐藏段
+  标记、而 `izzj` 全文件扫描两者都捞到、且是 `izj` 的超集（count 不小于），并核对捞回的隐藏字符串仍带 `.r2hidden` 段名与
+  结构化 `address`（缺 r2 或缺编译器时 skip≠pass）；单测经服务层断言 `whole=false`→`izj`、`whole=true`→`izzj`，`izzj`
+  在启动白名单内，以及工具描述如实点名 `whole`/`izzj`/`izj`。
 - **WASM 线只有 wabt 文本大块，读不出模块的导入/导出结构**。`wasm.wat`（wasm2wat）、`wasm.info`
   （wasm-objdump）都要装 wabt，且只把结果当一坨文本回来；只想知道「这模块向宿主导入了什么、对外导出了什么」的
   分析者得先装 wabt、再去 objdump 文本里 grep。新增只读的 `wasm.summary`：**纯 Python** 直接读模块的 section 表，
