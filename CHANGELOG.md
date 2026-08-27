@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（输入桌面遮蔽不再把没能遮住的窗口报成已遮住）
+
+- `hide_input_desktop_windows_for_pids` 是输入桌面的泄漏防线:它枚举 `pids` 在操作员桌面上的
+  顶层窗口并逐个遮蔽,返回“已遮住”的 hwnd 清单。过去它对每个 hwnd 无条件 `hidden.append`,不看
+  `SetWindowPos` 的返回——可窗口可能在枚举与实际动作之间已消失,更关键的是被更高完整性级别进程
+  拥有的对话框(UIPI 禁止低完整性调试器去动它)根本遮不住,而那正是这道防线要挡的反调试
+  `MessageBox` 泄漏。把遮不住的窗口列进“已遮住”,等于宣称桌面已清空,而操作员仍看得见它。
+- 现只把 `SetWindowPos`(带 `SWP_HIDEWINDOW`,返回非零才真正把窗口置入隐藏态)成功的 hwnd 计入
+  返回清单;`ShowWindow` 仍对每个窗口先试一遍(尽力遮蔽),但它返回的是“先前可见性”(已隐藏窗口
+  返回 0),分不清失败与冗余,故不据它判定结果。文档串说明返回的是真正遮住的窗口,而非扫过的全部。
+- 新增回归(Win32 ctypes,Linux CI 不跑,用 fake user32 固定):遮不住的窗口不进返回清单但仍被
+  尝试、全部成功时逐一计入、全部失败时返回空。与两条正在评审的 `desktop_isolation` 覆盖分支
+  (均以 `SetWindowPos` 返回真值的 fake 断言)保持兼容。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
