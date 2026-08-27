@@ -137,7 +137,13 @@ def run_idalib_gate(
 
 
 def _last_json_line(text: str) -> dict[str, Any]:
-    for line in reversed(text.splitlines()):
+    # Split only on the "\n" the worker appends after its record. splitlines()
+    # also breaks on U+2028 / U+2029 / U+0085, which json.dumps with
+    # ensure_ascii=False leaves literal inside strings -- and the payload
+    # carries text from the analyzed binary (the decompiler preview, error
+    # messages), so one such character shredded the verdict line into
+    # fragments that no longer parsed and a passing gate read as a refusal.
+    for line in reversed(text.split("\n")):
         try:
             value = json.loads(line)
         except json.JSONDecodeError:
@@ -145,4 +151,3 @@ def _last_json_line(text: str) -> dict[str, Any]:
         if isinstance(value, dict):
             return value
     return {"error": "worker returned no JSON object"}
-

@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（idalib gate 判决行被样本里的 Unicode 行分隔符切碎，成功误报拒绝）
+
+- gate worker 用 `json.dumps(..., ensure_ascii=False)` 单行输出判决，其载荷携带来自被分析
+  二进制的文本：`decompiler.preview` 是 `str(cfunc)[:1000]`，会原样引用样本中的字符串字面量，
+  error 字段则引用异常文本。U+2028 / U+2029 / U+0085 高于 0x1F，JSON 不转义、原样落入该行，
+  而读端 `_last_json_line` 用 `str.splitlines()` 切行——它把这三个字符也当行界。于是样本字符串里
+  一个 U+2028 就把唯一的判决行剁成两段都解析不了的碎片，反扫描找不到 JSON 对象，一次
+  exit 0、`ok: true` 的成功探测被读成 `worker returned no JSON object` 的拒绝——纯粹由被测
+  二进制的内容触发的假失败（与 timeline 分页器同根：`ensure_ascii=False` 写、`splitlines()` 读）。
+  现改为只按 worker 追加的 `"\n"` 切分（JSON 记录内的控制字符均被转义，记录本身无裸 `\n`；
+  `text=True` 已把 `\r\n` 归一）。新增直测：含三种分隔符的判决行必须完整解析回原载荷，
+  反扫描取最后对象、跳过噪声行的语义不变。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
