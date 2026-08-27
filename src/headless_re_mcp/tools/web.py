@@ -78,7 +78,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
         visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        A request that failed (refused, blocked, DNS, aborted) carries
+        failed true and error_text (the browser's reason, e.g.
+        net::ERR_CONNECTION_REFUSED); those two keys are absent on a request
+        that is still pending or that got a response, so a null status with
+        no failed flag means in flight, not failed. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 

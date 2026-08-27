@@ -24,6 +24,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（Web 网络抓取把「失败的请求」记成「仍在进行中」）
+
+- **`web.network.list` 无法区分请求失败与请求未完成**。请求失败（连接被拒、被拦截、DNS、
+  中断）触发的是 CDP 的 `Network.loadingFailed` 而非 `responseReceived`，而抓取只监听了后者；
+  于是失败请求的条目一直停在 `status: null`、没有任何其它信号，形状与「仍在飞行中的请求」完全
+  一样。分析者读抓取时无法判断浏览器是拒绝了这个请求，还是只是还没跑完；单测只手工构造条目，
+  真正的失败路径从未被走过。
+- 现新增 `Network.loadingFailed` 处理：把对应条目标记 `failed: true`，并带上浏览器的
+  `error_text`（如 `net::ERR_CONNECTION_REFUSED`）说明原因。这两个键只在真正失败时出现——
+  仍在进行或已拿到响应的请求都不带，因此「`status` 为 null 且没有 `failed`」明确表示在飞行中而非
+  失败。`web.network.list` 文档同步说明这两个字段。
+- 新增 `tests/integration/test_web_network_failed_request_live_gate.py`：对真实 headless Chromium
+  加载一个页面，同时发起一个到已关闭端口（必被拒绝）的请求与一个服务器真实提供的资源，断言失败
+  请求的条目 `failed` 为 true、`error_text` 命中真实网络错误（`net::ERR_...`）、`status` 仍为 null；
+  而被真实提供的资源条目根本不带 `failed` 键。Skip != pass：Playwright/Chromium 缺失时按原因显式
+  skip。新增 CI job `linux-web-network` 安装 `.[test,dev,web,browser]` 与
+  `playwright install --with-deps chromium` 跑该 gate，带 skip 守卫，CI 里一旦 skip 即判失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

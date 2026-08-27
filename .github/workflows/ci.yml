@@ -152,6 +152,43 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-web-network:
+    # Drives web network capture against a real headless Chromium: a page issues
+    # a request to a closed port (refused) and one the server serves, and the gate
+    # asserts the failed request is marked failed with an error_text while the
+    # served one is not. The loadingFailed path only runs against a real browser --
+    # the unit tests build capture entries by hand.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,browser]"
+
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+
+      - name: web network failed-request live gate (skip != pass)
+        # The gate skips honestly when Playwright/Chromium is missing. This job
+        # installs both, so a skip here is a real regression -- treat it as a
+        # failure rather than a green run that tested nothing.
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          python -m pytest tests/integration/test_web_network_failed_request_live_gate.py \
+            -q -rs -p no:cacheprovider --tb=short | tee web_network_gate.log
+          if grep -qiE "skipped" web_network_gate.log; then
+            echo "::error::web network gate skipped — Playwright/Chromium missing in CI"
+            exit 1
+          fi
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
