@@ -11,6 +11,7 @@ from __future__ import annotations
 import heapq
 import threading
 from collections import OrderedDict
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -298,26 +299,34 @@ class ApkClient:
 
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        libs: list[str] = []
         abis: set[str] = set()
-        has_more = False
-        for name in apk.get_files() or []:
-            text = str(name)
-            if not text.startswith("lib/"):
-                continue
-            parts = text.split("/")
-            if len(parts) >= 3:
-                abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
-                has_more = True
-                continue
-            libs.append(text)
-        libs.sort()
+        total = 0
+
+        def _lib_names() -> Iterator[str]:
+            # abis is gathered from every lib entry, not just the page: a capped
+            # library list must not hide that another ABI exists. total drives an
+            # honest has_more without holding more than the cap in memory.
+            nonlocal total
+            for name in apk.get_files() or []:
+                text = str(name)
+                if not text.startswith("lib/"):
+                    continue
+                parts = text.split("/")
+                if len(parts) >= 3:
+                    abis.add(parts[1])
+                total += 1
+                yield text
+
+        # Rank every lib path, not the first _MAX_NATIVE_LIBS in zip order: the
+        # old code kept the first cap entries and sorted only those, so a large
+        # multi-ABI app got a sorted view of an arbitrary subset. A bounded heap
+        # ranks all of them while holding only the cap.
+        libs = heapq.nsmallest(_MAX_NATIVE_LIBS, _lib_names())
         return {
             "native_libs": libs,
             "abis": sorted(abis),
             "count": len(libs),
-            "has_more": has_more,
+            "has_more": total > len(libs),
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
