@@ -180,7 +180,21 @@ def _page(raw: bytes, offset: int, limit: int) -> tuple[int, list[str]]:
             end = len(raw)
             break
         end = nxt + 1
-    return total, raw[start:end].decode("utf-8", errors="replace").splitlines()
+    # Split the window on the record separator alone. The navigation above
+    # already treats \n as the only boundary, but decoding first and calling
+    # str.splitlines() breaks on U+2028, U+2029 and U+0085 too -- none of which
+    # json.dumps escapes and every one of which a timeline message or detail
+    # carries verbatim from the sample under analysis (obfuscated JavaScript
+    # embeds U+2028 in string literals as a matter of course). That tore one
+    # valid JSONL record into fragments that each failed to parse, so the entry
+    # dropped out of the page while total still counted it: a four-line timeline
+    # came back with one event and has_more False. Splitting the bytes on \n and
+    # decoding each keeps every record whole.
+    return total, [
+        piece.decode("utf-8", errors="replace")
+        for piece in raw[start:end].split(b"\n")
+        if piece
+    ]
 
 
 def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

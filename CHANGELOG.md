@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（时间线读取把含 U+2028/U+2029/U+0085 的记录拆碎后静默丢弃）
+
+- `timeline.list` 的分页读取（`core/store/timeline.py` 的 `_page`）按 `\n` 定位字节窗口，
+  但取出窗口后先 `decode` 再 `str.splitlines()`——而 `str.splitlines()` 除 `\n` 外还在
+  U+2028（行分隔符）、U+2029（段分隔符）、U+0085（NEL）处断行，这三个字符 `json.dumps`
+  都不转义，且正是从被分析样本里逐字带出来的（混淆 JavaScript 的字符串字面量惯用 U+2028）。
+  于是一条本来合法的 JSONL 记录被拆成多个片段，各自 `json.loads` 失败被跳过，整条 entry
+  就从这一页里悄悄消失，而 `total` 仍把它算在内：一条四行的时间线读回来只剩一个事件、
+  `has_more` 还是 False；逐条翻页时 `has_more` 指向本页已丢掉的记录，按 `count` 前进的调用方
+  既丢事件又错位偏移。磁盘上的记录分隔符只有 `\n`，故读取端也只按 `\n` 切分（对字节窗口
+  `split(b"\n")` 后逐段 decode），记录整条保留、分隔符原样回传。内存版仓库把 entry 以对象
+  形式留存、不经 JSONL 往返，无此问题。新增参数化直测：含三种分隔符的 entry 读回不丢、
+  `count == total`、分隔符逐字节还原，以及跨分隔符逐条翻页既不跳过也不重复。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

@@ -141,6 +141,69 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
 
 
+@pytest.mark.parametrize(
+    "sep",
+    [
+        "\u2028",  # LINE SEPARATOR -- obfuscated JS embeds this in string literals
+        "\u2029",  # PARAGRAPH SEPARATOR
+        "\u0085",  # NEL
+    ],
+)
+def test_a_unicode_line_separator_in_an_entry_is_not_split_into_fragments(
+    tmp_path: Path, sep: str
+) -> None:
+    """A record carrying U+2028/U+2029/U+0085 must survive the read whole.
+
+    json.dumps escapes none of these, and str.splitlines() (which the reader
+    used after decoding the page) treats every one as a line boundary. A single
+    valid JSONL record then tore into fragments that each failed json.loads, so
+    a message lifted verbatim from an analysed sample -- exactly where these
+    characters come from -- silently dropped out of the page while ``total``
+    still counted it. The record separator on disk is ``\\n`` alone, so the
+    reader must split on that alone too.
+    """
+    path = tmp_path / "timeline.jsonl"
+    store.append_session_timeline(path, event="plain", message="before")
+    store.append_session_timeline(path, event="hostile", message=f"a{sep}b")
+    store.append_session_timeline(path, event="detail", message="ok", details={"src": f"x{sep}y"})
+
+    listed = store.list_session_timeline(path)
+
+    assert [item["event"] for item in listed["events"]] == ["plain", "hostile", "detail"]
+    assert listed["count"] == listed["total"] == 3
+    assert listed["has_more"] is False
+    # The separator round-trips byte-for-byte; it is data, not a record break.
+    assert listed["events"][1]["message"] == f"a{sep}b"
+    assert listed["events"][2]["details"]["src"] == f"x{sep}y"
+
+
+def test_paging_across_a_unicode_line_separator_neither_skips_nor_duplicates(
+    tmp_path: Path,
+) -> None:
+    """Walking one entry at a time must visit each record exactly once.
+
+    The over-split inflated the decoded line count, so ``has_more`` pointed past
+    a record the same page had already dropped -- a caller advancing by ``count``
+    both lost the entry and mis-stepped its offset.
+    """
+    path = tmp_path / "timeline.jsonl"
+    for index in range(5):
+        store.append_session_timeline(
+            path, event=f"e{index}", message=f"m{index}\u2028tail"
+        )
+
+    seen: list[str] = []
+    offset = 0
+    for _ in range(10):  # bounded so a broken has_more cannot loop forever
+        page = store.list_session_timeline(path, offset=offset, limit=2)
+        seen += [item["event"] for item in page["events"]]
+        if not page["has_more"]:
+            break
+        offset += page["count"]
+
+    assert seen == ["e0", "e1", "e2", "e3", "e4"]
+
+
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
