@@ -161,14 +161,22 @@ function TimelinePanel({ sessionId }: { sessionId: string }) {
 
   const load = useCallback(async () => {
     if (!sessionId) { setItems([]); return; }
-    const result = await api<Envelope<{ events?: TimelineItem[] }>>(`/api/sessions/${encodeURIComponent(sessionId)}/timeline?limit=40`);
-    if (result.ok === false) {
-      setItems([]);
-      setError(result.error?.message ?? "无法读取时间线");
-      return;
+    try {
+      const result = await api<Envelope<{ events?: TimelineItem[] }>>(`/api/sessions/${encodeURIComponent(sessionId)}/timeline?limit=40`);
+      if (result.ok === false) {
+        setItems([]);
+        setError(result.error?.message ?? "无法读取时间线");
+        return;
+      }
+      setItems(result.data?.events ?? []);
+      setError(null);
+    } catch (reason) {
+      // api() throws on any non-2xx (401 token-missing, 500) and on network
+      // failure, while the ok===false branch only fires when it resolves. Left
+      // uncaught, load() ran as void load() and the rejection went unhandled
+      // with the panel silently stuck empty; catch turns it into a banner.
+      setError(String(reason));
     }
-    setItems(result.data?.events ?? []);
-    setError(null);
   }, [sessionId]);
 
   useEffect(() => { void load(); }, [load]);
@@ -195,9 +203,13 @@ function ArtifactsPanel({ sessionId }: { sessionId: string }) {
 
   const load = useCallback(async () => {
     const query = sessionId ? `session_id=${encodeURIComponent(sessionId)}&limit=40` : "limit=40";
-    const result = await api<Envelope<{ artifacts?: Artifact[] }>>(`/api/artifacts?${query}`);
-    setItems(result.data?.artifacts ?? []);
-    setError(result.ok === false ? (result.error?.message ?? "无法列出产物") : null);
+    try {
+      const result = await api<Envelope<{ artifacts?: Artifact[] }>>(`/api/artifacts?${query}`);
+      setItems(result.data?.artifacts ?? []);
+      setError(result.ok === false ? (result.error?.message ?? "无法列出产物") : null);
+    } catch (reason) {
+      setError(String(reason));
+    }
   }, [sessionId]);
 
   useEffect(() => { void load(); }, [load]);
@@ -238,9 +250,13 @@ function AuditPanel({ sessionId }: { sessionId: string }) {
 
   const load = useCallback(async () => {
     const query = sessionId ? `session_id=${encodeURIComponent(sessionId)}&limit=40` : "limit=40";
-    const result = await api<Envelope<{ entries?: AuditEntry[] }>>(`/api/audit?${query}`);
-    setItems(result.data?.entries ?? []);
-    setError(result.ok === false ? (result.error?.message ?? "无法读取审计") : null);
+    try {
+      const result = await api<Envelope<{ entries?: AuditEntry[] }>>(`/api/audit?${query}`);
+      setItems(result.data?.entries ?? []);
+      setError(result.ok === false ? (result.error?.message ?? "无法读取审计") : null);
+    } catch (reason) {
+      setError(String(reason));
+    }
   }, [sessionId]);
 
   useEffect(() => { void load(); }, [load]);

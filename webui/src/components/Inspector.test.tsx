@@ -92,4 +92,31 @@ describe("Inspector surfaces", () => {
     expect(screen.queryByText("打开动态")).toBeNull();
     expect(screen.getByText("监控")).toBeInTheDocument();
   });
+
+  it("surfaces a timeline/artifacts/audit load failure instead of staying silently empty", async () => {
+    // api() rejects on network failure and on any non-2xx. Before the fix the
+    // three files-tab panels called load() as void load() with no catch, so the
+    // rejection went unhandled and the panel showed nothing at all -- no banner,
+    // no retry hint. Reject just those three endpoints; everything the watch tab
+    // needs still resolves so this isolates the files tab.
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/timeline")) throw new Error("boom-timeline");
+      if (url.includes("/artifacts")) throw new Error("boom-artifacts");
+      if (url.includes("/audit")) throw new Error("boom-audit");
+      if (url.includes("/virtual-desktop")) {
+        return jsonOk({ available: false, mode: "unavailable", windows: [], window_count: 0, input_desktop: false });
+      }
+      if (url.includes("/monitor")) {
+        return jsonOk({ ok: true, session: { id: "pe-1", state: "created", target: "pe" }, dynamic: {}, timeline: { items: [] }, events: { items: [] } });
+      }
+      return jsonOk({});
+    }));
+    render(<Inspector events={[]} sessionId="pe-1" profile="pe" sessionTarget="pe" sessionState="created" locator="F:\\test.exe" />);
+    await waitFor(() => {
+      expect(screen.getByText(/boom-timeline/)).toBeInTheDocument();
+      expect(screen.getByText(/boom-artifacts/)).toBeInTheDocument();
+      expect(screen.getByText(/boom-audit/)).toBeInTheDocument();
+    });
+  });
 });

@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（检查器时间线 / 产物 / 审计面板请求失败会无声空着）
+
+- `webui` 检查器的 `TimelinePanel` / `ArtifactsPanel` / `AuditPanel` 三个面板的 `load()` 直接
+  `await api(...)` 而没有任何 `try/catch`。但 `api()` 在任何非 2xx（令牌缺失的 401、后端 500）
+  以及网络层直接抛错时都会 reject，三个面板里 `setError(result.ok === false ? …)` 那行只在
+  `api()` 正常 resolve、拿到 `{ok:false}` 信封时才跑得到——真抛错时它压根到不了。而 `load()` 全是
+  以 `void load()`（挂载 effect 与「刷新」按钮）方式调用，于是异常变成 unhandled rejection：面板
+  一个字的反馈都没有，只是静静地空着或停在旧数据，用户以为「没有时间线 / 没有产物 / 没有审计」，
+  其实是请求根本没成。旁边同文件的 `MonitorPanel.load()` 一直是 `try/catch` + `setError(String(reason))`，
+  `ArtifactsPanel.download()` 也早有 catch——这三处是明显的漏网。现把三个 `load()` 各自包进
+  `try/catch`，抛错时统一走已有的 `findings-error` 横幅显示原因，与 `MonitorPanel` 对齐。
+- 新增一条 `Inspector` 直测：让 `/timeline`、`/artifacts`、`/audit` 三个请求全部 reject（其余监视
+  所需请求照常成功），断言三个面板各自把错误显示成横幅。修复前该测试以三个 unhandled rejection
+  失败，正对应线上「无声空着」的表现。前端 64 条测试与 `tsc --noEmit` 均通过，提交的 SPA 产物已重建。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
