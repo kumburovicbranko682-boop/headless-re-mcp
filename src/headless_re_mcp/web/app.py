@@ -120,6 +120,21 @@ def run_web(
     if not addr.is_loopback:
         print(f"拒绝绑定：仅允许回环地址，当前为 {bind_host}")
         return 2
+    if not 1 <= int(preferred) <= 65535:
+        # Port 0 asks the kernel for an ephemeral port. The bind probe accepts
+        # it (binding 0 always succeeds) and uvicorn serves on whatever number
+        # the kernel picked -- but the banner, app.state.bind_port and the
+        # supervisor's readiness URL can only repeat the 0 they were given, so
+        # the result is a healthy server nobody can find and a probe that kills
+        # it forever. Values past 65535 were no better: socket.bind raises
+        # OverflowError, which is not OSError, so it escaped port_is_free as an
+        # incident instead of a refusal. Auto-port already covers "just pick a
+        # free one", so an unusable number is refused, not reinterpreted.
+        print(
+            f"拒绝绑定：端口必须在 1..65535，当前为 {preferred}"
+            "（不指定 --port 可自动选择空闲端口）"
+        )
+        return 2
 
     bind_port, reason = choose_bind_port(
         bind_host,
