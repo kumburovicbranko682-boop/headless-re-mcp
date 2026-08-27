@@ -92,8 +92,11 @@ class R2Client:
         if type(count) is not int or not 1 <= count <= 512:
             raise R2Error("invalid_params", "count must be 1..512")
         cmd = f"pdj {count} @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
-        data = dict(data)
+        # _run_raw, not run: run already enriches, and enriching its result a
+        # second time here re-read the PE header and re-parsed the pdj JSON for
+        # an identical payload. Enrich once, over the raw r2 output plus the
+        # request coordinates.
+        data = self._run_raw(binary, ["aa", cmd], timeout=timeout)
         data["address"] = address
         data["count"] = count
         return enrich_r2_payload(data, binary=binary)
@@ -108,12 +111,23 @@ class R2Client:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
-        data = dict(data)
+        # See disasm: _run_raw avoids a redundant second enrichment of a payload
+        # run would already have enriched.
+        data = self._run_raw(binary, ["aa", cmd], timeout=timeout)
         data["address"] = address
         return enrich_r2_payload(data, binary=binary)
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        """Run whitelisted r2 commands and return the address-enriched payload."""
+        return enrich_r2_payload(self._run_raw(binary, commands, timeout=timeout), binary=binary)
+
+    def _run_raw(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        """The r2 subprocess and its raw output, before Address enrichment.
+
+        Split out so disasm/xrefs -- which add request coordinates and then
+        enrich -- do not pay for a first enrichment (a PE-header read and a JSON
+        parse) whose result the second call throws away.
+        """
         try:
             timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
         except InvalidTimeout as exc:
@@ -176,7 +190,7 @@ class R2Client:
             payload["truncated"] = True
             payload["output_bytes"] = produced
             payload["returned_bytes"] = len(out)
-        return enrich_r2_payload(payload, binary=binary)
+        return payload
 
 
 def _discover() -> Path | None:

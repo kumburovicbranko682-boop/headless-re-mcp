@@ -120,7 +120,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   仍用严格的 `[:=]` 边界(不加尾随 `\w*`),避免把 `tokenized=false` 这类诊断文本误抹。回归矩阵
   相应增加 `private_key`/`private-key`/`access_key`/`passwd`/`credential` 五种形态。
 
-### 修复（CLI 适配器超时在后端边界夹取越界输入）
+### 变更（r2.disasm / r2.xrefs 不再重复富化同一份载荷）
+
+- `R2Client.disasm` / `xrefs` 过去先调 `run`（其末尾已做一次 `enrich_r2_payload`：
+  读 PE 头、解析 pdj/axj 的 JSON），再对拿到的**已富化**载荷又调一次
+  `enrich_r2_payload`——第二次把第一次的结果整个丢掉重算，等于在这两条热路径上
+  白读一遍 PE 头、白解析一遍 JSON（正是 `pe_preferred_base` 注释所忌讳的每调用成本）。
+  抽出不做富化的 `_run_raw`：`run` 在其结果上富化一次，`disasm`/`xrefs` 则在
+  `_run_raw` 的原始输出上补好请求坐标后只富化一次。输出逐字节不变（第二次富化本就是
+  从 `raw` 重算，与单次富化等价），新增单测用富化计数探针钉住「每次调用恰好富化一次」，
+  并核对地址映射、`address_va`、`parsed`、xref 端点仍与原先一致。
 
 - **apk（jadx/apktool）、web（webcrack/wabt）与 r2（radare2）几条 CLI 适配器把调用方的 `timeout`
   直接塞进 `run_bounded`**，而 frida 早已用 `_bound_timeout` 在后端边界拒非正、封上限。MCP schema
