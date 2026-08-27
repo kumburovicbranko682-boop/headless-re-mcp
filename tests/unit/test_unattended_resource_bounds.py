@@ -136,6 +136,72 @@ class TestProxyCaptureIsBounded:
         assert len(str(row["content_type"]).encode()) <= mod._MAX_METADATA_BYTES
         assert row["metadata_truncated"] is True
 
+    def test_har_export_is_trimmed_to_the_capture_cap(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """A full ring of near-cap URLs must not serialise into an oversized HAR.
+
+        The summaries are field-bounded, but the whole ring still writes one
+        file to the artifact root before retention runs. web.har_export drops
+        its newest entries until the HAR fits and reports it; the proxy sibling
+        used to write whatever the ring held and under-report it.
+        """
+        from headless_re_mcp.backends.proxy import client as mod
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 600)
+        recorder = mod._FlowRecorder(capacity=100)
+        for index in range(40):
+            recorder.response(_FakeFlow(index))
+
+        backend = mod.ProxyBackend()
+        monkeypatch.setattr(
+            backend, "_get", lambda session_id: type("I", (), {"recorder": recorder})()
+        )
+        out = tmp_path / "capture.har"
+        payload = backend.export_har("s", out)
+
+        assert payload["truncated"] is True
+        assert 1 <= payload["entry_count"] < 40
+        assert payload["size"] <= 600
+        assert out.stat().st_size <= 600
+
+    def test_har_export_that_fits_is_not_labelled_truncated(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.backends.proxy import client as mod
+
+        recorder = mod._FlowRecorder(capacity=10)
+        for index in range(4):
+            recorder.response(_FakeFlow(index))
+
+        backend = mod.ProxyBackend()
+        backend._instances["s"] = type("I", (), {"recorder": recorder})()
+        payload = backend.export_har("s", tmp_path / "capture.har")
+
+        assert payload["truncated"] is False
+        assert payload["entry_count"] == 4
+        assert payload["size"] > 0
+
+    def test_har_export_refuses_when_even_the_skeleton_is_too_large(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.proxy import client as mod
+
+        # Smaller than the empty HAR envelope, so dropping every entry still
+        # cannot fit: the export is refused rather than written oversized.
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 10)
+        recorder = mod._FlowRecorder(capacity=10)
+        for index in range(3):
+            recorder.response(_FakeFlow(index))
+
+        backend = mod.ProxyBackend()
+        backend._instances["s"] = type("I", (), {"recorder": recorder})()
+        out = tmp_path / "capture.har"
+        with pytest.raises(mod.ProxyError) as caught:
+            backend.export_har("s", out)
+        assert caught.value.code == "too_large"
+        assert not out.exists()
+
     def test_sequence_numbers_keep_counting_past_the_window(self) -> None:
         recorder = _FlowRecorder(capacity=5)
         for index in range(20):
