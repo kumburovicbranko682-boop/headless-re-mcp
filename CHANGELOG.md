@@ -969,6 +969,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`apk.strings` 会为了给出 total 把 DEX 里每一条字符串都装进一个集合再排序**。加壳
   样本可以有上百万条，一次调用就能把进程打满。采集上限 5000 条唯一值，超出回
   `has_more`，不再为了计数去物化全集。
+- 新增回归（`apk.certificates` 两份列表各自可溢出、`v1_signed` 系于签名文件而非证书、
+  两处 `except` 兜底）：回包由 `get_signature_names()`（META-INF 的 v1/JAR 签名文件）与
+  `get_certificates()`（解析出的 X.509 证书，任何签名方案）两次**独立**读取拼成，各自按
+  `_MAX_CERTIFICATES` 截断，`has_more = certs_more or files_more`，`v1_signed = bool(names)`。
+  既有 `certificates` 测试同时喂 40 个签名文件与 40 张证书（两侧都过 32 上限且都规整），
+  于是把分支该判定的东西全部过度确定：`has_more` 两个操作数同时为真、`v1_signed` 在证书也
+  在场时为真、且没有任何读取会失败。四条对该对称夹具惰性的行为补齐：文件侧单独溢出（证书
+  在上限内）与证书侧单独溢出（文件在上限内）都必须各自置起 `has_more`；v2/v3-only APK 有证书
+  但无 META-INF 签名文件，`v1_signed` 必须为 False（该标志系于签名文件名而非证书，否则每个现代
+  v2 签名包都被误标 v1 签名）；`get_signature_names` 抛错时 `except` 让 `names` 为空（v1_signed
+  False、signature_files 空）而证书解析照常进行，而非整条工具翻车；单张证书读取抛异常时按
+  `except: continue` 只丢它一个、其余可读证书照常返回。以变异逐一验证（`has_more` 分别丢掉
+  `certs_more`/`files_more`、`v1_signed` 改系于 `items`、去掉签名名的 `except`、把逐证书
+  `except: continue` 改成上抛）均被新用例捕获，既有测试仍绿。
 - **拆转发失败后就把记录扔掉**。`release_forwards` 先清空再逐条拆除；设备当时掉线，
   adb server 上的转发还在，而本进程已经忘了，以后的 `close_all` 再也不会去拆。失败
   的项重新挂回跟踪列表。
