@@ -157,14 +157,15 @@ jobs:
   # androguard opens an APK, real webcrack/wabt process a fixture) -- and
   # until this lane existed no CI job ran them at all, so they rotted
   # invisibly on machines nobody had. Windows backend gates (x64dbg / IDA /
-  # Win32 UI) and gates that need an untracked binary fixture (radare2,
-  # idalib) still skip here by design; the -rs listing keeps every skip
-  # visible so skip != pass stays auditable.
+  # Win32 UI) and gates that need IDA (idalib) still skip here by design;
+  # the -rs listing keeps every skip visible so skip != pass stays
+  # auditable.
   linux-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       WABT_VERSION: "1.0.36"
+      R2_VERSION: "6.2.0"
     steps:
       - uses: actions/checkout@v7
 
@@ -191,6 +192,12 @@ jobs:
             "https://github.com/WebAssembly/wabt/releases/download/${WABT_VERSION}/wabt-${WABT_VERSION}-ubuntu-20.04.tar.gz"
           tar -xzf /tmp/wabt.tar.gz -C /tmp
           echo "/tmp/wabt-${WABT_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Install radare2 for the r2 gate
+        run: |
+          curl -fsSL -o /tmp/radare2.deb \
+            "https://github.com/radareorg/radare2/releases/download/${R2_VERSION}/radare2_${R2_VERSION}_amd64.deb"
+          sudo dpkg -i /tmp/radare2.deb
 
       - name: Linux integration gates
         run: python -m pytest tests/integration -q -rs --tb=short --timeout=300
