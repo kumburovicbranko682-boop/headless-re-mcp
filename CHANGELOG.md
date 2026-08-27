@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -536,6 +536,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **静态**：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）。
   WASM 反编译复用现有 `ghidra.*` 加 ghidra-wasm-plugin——wabt 的 `wasm-decompile` 已于
   2026-06 被上游删除，不再作为路径。
+- `js.urls`：从 JS（或任意文本）文件里抽取带协议的 URL，纯 Python、只读、不需要 Node。它是「在
+  APK 的 DEX 字符串池里找端点」在前端侧的对应物——面向下载下来或压缩过的 bundle，API 面往往藏在
+  字符串字面量里。扫描 http、https、ws、wss，去掉字面量结尾的标点，去重排序。它是启发式的（跨模板
+  字面量或用拼接构造的 URL 会漏或只截到一半），因此从不启动 webcrack。返回 `urls/count/total/
+  offset/has_more`，`total` 是收集到的不同 URL 数、上限 5000、越限置 `scan_capped`；输入超过
+  16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

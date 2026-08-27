@@ -8,6 +8,7 @@ needs Node.js 22 or 24; wabt provides ``wasm2wat`` and ``wasm-objdump``.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,6 +41,19 @@ _MAX_INPUT_BYTES = 16 * 1024 * 1024
 # subprocess into a precise invalid_params -- the same reason the size cap
 # refuses input up front rather than handing it to the child.
 _WASM_MAGIC = b"\x00asm"
+# js.urls scans the file text for scheme-qualified URLs. It is a heuristic, so
+# it is bounded like everything else: a distinct-URL collect cap, a page cap
+# matching the tool schema, and a per-URL length clamp so one pathological
+# token cannot blow up the reply.
+_MAX_URLS_COLLECT = 5000
+_MAX_URLS_PAGE = 2000
+_MAX_URL_LEN = 2000
+# http/https and the WebSocket schemes cover the endpoints worth hunting in a
+# frontend bundle. The character class stops at whitespace, quotes, brackets
+# and the statement punctuation that ends a literal, so a URL inside "..." or
+# (...) is captured without its delimiters.
+_URL_RE = re.compile(r"(?:https?|wss?)://[^\s\"'`<>()\[\]{}\\,;]+", re.IGNORECASE)
+_URL_TRIM = ".,;:!?"
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -99,6 +113,51 @@ def _looks_like_wasm(path: Path) -> bool:
             return handle.read(4) == _WASM_MAGIC
     except OSError:
         return False
+
+
+def scan_urls(path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+    """Extract scheme-qualified URLs from a JavaScript (or any text) file.
+
+    Node-free and read-only: the web-RE analog of hunting endpoints in an APK's
+    DEX string pool, but for a downloaded/minified frontend bundle where the
+    API surface hides in string literals. Scans the file text for http, https,
+    ws and wss URLs, trims the trailing statement punctuation that ends a
+    literal, dedupes and sorts. It is a heuristic (a URL split across a template
+    literal or built by concatenation will be missed or partial), so it never
+    launches webcrack and needs no Node. Returns urls, count, total, offset and
+    has_more so a filled page is not read as every endpoint; total is the number
+    of distinct URLs collected, capped at 5000 with scan_capped when more may
+    exist. The input is refused as too_large above the 16 MiB tool limit.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    text = raw.decode("utf-8", errors="replace")
+    seen: set[str] = set()
+    scan_more = False
+    for match in _URL_RE.finditer(text):
+        if len(seen) >= _MAX_URLS_COLLECT:
+            scan_more = True
+            break
+        url = match.group(0).rstrip(_URL_TRIM)[:_MAX_URL_LEN]
+        if url:
+            seen.add(url)
+    urls = sorted(seen)
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_URLS_PAGE))
+    window = urls[start : start + cap]
+    return {
+        "urls": window,
+        "count": len(window),
+        "total": len(urls),
+        "offset": start,
+        "has_more": start + len(window) < len(urls),
+        "scan_capped": scan_more,
+    }
 
 
 def _run(

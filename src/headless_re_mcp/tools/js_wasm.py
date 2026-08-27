@@ -49,6 +49,28 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
+    @tools.tool(name="js.urls")
+    def js_urls(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Extract scheme-qualified URLs from a JavaScript (or text) file.
+
+        Node-free and read-only: the web-RE analog of hunting endpoints in an
+        APK's DEX string pool, but for a downloaded or minified frontend bundle
+        where the API surface hides in string literals. Scans the file text for
+        http, https, ws and wss URLs, trims the trailing statement punctuation
+        that ends a literal, dedupes and sorts. It is a heuristic (a URL split
+        across a template literal or built by concatenation will be missed or
+        partial) and never launches webcrack, so it needs no Node. Answers with
+        urls, count, total, offset and has_more so a filled page is not read as
+        every endpoint; total is the distinct URLs collected, capped at 5000
+        with scan_capped when more may exist. Input over 16 MiB is refused as
+        too_large.
+        """
+        return _dump(analysis.js_urls(path, offset=offset, limit=limit))
+
     @tools.tool(name="js.unpack_bundle")
     def js_unpack_bundle(
         path: str,
