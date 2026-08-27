@@ -20,6 +20,7 @@ JsonObject = dict[str, Any]
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
+_MAX_RESOURCES_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
@@ -33,6 +34,7 @@ _MAX_MANIFEST_CHARS = 200_000
 _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
+_MAX_RESOURCES_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
 
 
@@ -415,6 +417,86 @@ class ApkClient:
             "offset": start,
             "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
+        }
+
+    def resources(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """List string resources from resources.arsc (name/value per locale).
+
+        apk.strings only reaches the DEX string pool; hardcoded endpoints,
+        labels and keys frequently live in the resource table instead, which
+        was otherwise unreachable without unpacking the APK. Each entry is a
+        (package, locale, name, value) tuple; public string names with no value
+        in a locale carry no data and are skipped. The flat list is sorted by
+        package, then locale, then name so paging is stable across calls.
+        """
+        apk = self._apk(path)
+        arsc = apk.get_android_resources()
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_RESOURCES_PAGE)
+        if arsc is None:
+            # A split or resource-less APK has no resources.arsc; that is an
+            # empty table, not a backend error, so callers get the same shape.
+            return {
+                "resources": [],
+                "count": 0,
+                "total": 0,
+                "offset": start,
+                "has_more": False,
+                "scan_capped": False,
+                "packages": [],
+                "packages_has_more": False,
+                "note": "no resources.arsc in this apk",
+            }
+        try:
+            resolved = arsc.get_resolved_strings()
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to read resources: {exc}") from exc
+        try:
+            packages, packages_more = _cap_names(
+                arsc.get_packages_names(), _MAX_COMPONENT_NAMES
+            )
+        except Exception:  # noqa: BLE001 - older androguard shapes vary
+            packages, packages_more = [], False
+        entries: list[JsonObject] = []
+        scan_more = False
+        # resolved is {package: {locale: {name: value_or_None}}}; iterate in a
+        # fixed order so the paged window is deterministic like the other lists.
+        for package_name in sorted(resolved if isinstance(resolved, dict) else {}):
+            locales = resolved[package_name]
+            if not isinstance(locales, dict):
+                continue
+            for locale in sorted(locales):
+                names = locales[locale]
+                if not isinstance(names, dict):
+                    continue
+                for name in sorted(names):
+                    value = names[name]
+                    if value is None:
+                        continue
+                    if len(entries) >= _MAX_RESOURCES_COLLECT:
+                        scan_more = True
+                        break
+                    entries.append(
+                        {
+                            "package": str(package_name),
+                            "locale": str(locale),
+                            "name": str(name),
+                            "value": str(value)[:_MAX_STRING_LEN],
+                        }
+                    )
+                if scan_more:
+                    break
+            if scan_more:
+                break
+        window = entries[start : start + cap]
+        return {
+            "resources": window,
+            "count": len(window),
+            "total": len(entries),
+            "offset": start,
+            "has_more": start + len(window) < len(entries),
+            "scan_capped": scan_more,
+            "packages": packages,
+            "packages_has_more": packages_more,
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:

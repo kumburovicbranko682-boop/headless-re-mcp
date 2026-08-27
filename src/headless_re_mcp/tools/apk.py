@@ -132,6 +132,25 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.resources")
+    def apk_resources(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List string resources from resources.arsc with pagination.
+
+        Answers with resources (package, locale, name, value), count, total,
+        offset, and has_more so a page that filled the limit is not read as
+        the whole table. total is the number collected, capped at 5000;
+        scan_capped is true when more resource strings may exist. packages
+        lists the resource package names present, with packages_has_more when
+        that list filled the cap. This is the resources.arsc string table, not
+        the DEX pool apk.strings reads; a resource-less apk answers with an
+        empty resources list and a note. There is no strings or items field.
+        """
+        return _dump(analysis.apk_resources(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,
