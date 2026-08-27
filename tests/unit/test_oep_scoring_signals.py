@@ -135,3 +135,37 @@ def test_truncates_to_max_candidates_by_score() -> None:
     assert [candidate["oep_rva"] for candidate in out] == [0x2000, 0x1000]
     # Single-signal candidates stay low-confidence (<= 0.45).
     assert all(candidate["score"] <= 0.45 for candidate in out)
+
+
+def test_truncation_reports_pre_cap_total_not_silently() -> None:
+    observations: list[Any] = [
+        {"kind": "write_to_execute", "oep_rva": 0x1000},
+        {"kind": "rip_in_main_module_code", "oep_rva": 0x2000},
+        {"kind": "imports_resolved", "oep_rva": 0x3000},
+    ]
+    out = _score(observations, max_candidates=2)
+    # The dropped candidate is not simply gone: total/limit/truncated disclose it.
+    assert out.total == 3
+    assert out.limit == 2
+    assert out.truncated is True
+
+
+def test_untruncated_result_is_not_flagged() -> None:
+    observations: list[Any] = [
+        {"kind": "write_to_execute", "oep_rva": 0x1000},
+        {"kind": "rip_in_main_module_code", "oep_rva": 0x2000},
+    ]
+    out = _score(observations, max_candidates=8)
+    assert out.total == 2
+    assert out.limit == 8
+    assert out.truncated is False
+    # Still a plain list to every existing consumer.
+    assert isinstance(out, list)
+    assert len(out) == 2
+
+
+def test_empty_scoring_is_an_empty_untruncated_list() -> None:
+    out = _score([], max_candidates=8)
+    assert out == []
+    assert out.total == 0
+    assert out.truncated is False

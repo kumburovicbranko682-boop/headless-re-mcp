@@ -60,6 +60,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（unpack.score_oep 把「按分数截断的候选」当成「找到的全部候选」）
+
+- `score_oep_candidates` 先按分数排序,再 `candidates[:max_candidates]` 截去分数最低的一批,
+  但只返回一个裸 list;`unpack.score_oep` 于是回 `candidate_count`(幸存者数)而不透露有过截断。
+  当 `max_candidates`(默认 8,自动从运行时快照采集观测时很容易凑出多个不同 RVA)不够用时,读到
+  `candidate_count: 8` 的调用方会以为「一共就 8 个候选」,而实际上分数更低的那些被悄悄丢掉了——
+  这正是本项目在别处一律会披露的静默截断(`items_truncated`/`items_total`/`items_limit`、
+  `output_bytes`/`returned_bytes` 等)。
+- 现让 `score_oep_candidates` 返回一个 `ScoredOep`(仍是 list,`len`/下标/迭代/`tuple(...)`/`== []`
+  对既有调用方完全不变),额外带上 `total`(截断前打过分的不同 RVA 数)、`limit` 与 `truncated`;
+  服务层据此在回包与持久化时间线里补 `candidates_truncated`/`candidates_total`/`candidates_limit`
+  ——只在真的截断时出现,未截断则不加。`unpack.score_oep` 工具描述同步点名这三个字段。
+- 新增回归:打分器在超额时报 `total`/`limit`/`truncated`、未超额不误标、空结果是空且未截断的 list;
+  服务层截断时回包与时间线都带三元组、未截断时都不带。既有直接把结果当 list 用的测试保持不变。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
