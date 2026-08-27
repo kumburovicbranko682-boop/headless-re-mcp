@@ -417,3 +417,57 @@ def test_the_reload_resume_contract_carries_a_runs_thread_and_transcript(
         # A stale run id in history.state must resolve to a clean 404, never a
         # 500, so a resume onto a since-deleted run degrades instead of erroring.
         assert client.get("/api/agent/runs/does-not-exist", headers=headers).status_code == 404
+
+def test_selecting_a_thread_reports_its_live_run_so_a_pending_approval_is_reachable(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """GET /api/agent/threads/{id} names the thread's still-running run.
+
+    The console reconnects to a run whose id it already holds; picking a thread
+    from the sidebar holds none. Without ``active_run`` a thread whose run is
+    paused at an approval opened as a dead transcript -- the approval card, and
+    any way to answer it, gone until a reload. Pin the field's presence and its
+    lifecycle: a live run is reported, a finished or cancel-requested one is
+    not, so the console never reconnects to a run that is already on its way
+    out.
+    """
+    from headless_re_mcp.agent.models import RunStatus
+
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        thread_id = client.post(
+            "/api/agent/threads", headers=headers, json={"title": "live"}
+        ).json()["thread"]["id"]
+
+        def active_run() -> dict | None:
+            body = client.get(f"/api/agent/threads/{thread_id}", headers=headers).json()
+            assert "active_run" in body, "the resume contract field disappeared"
+            return body["active_run"]
+
+        # A thread with no runs has nothing to resume.
+        assert active_run() is None
+
+        # A queued (not yet terminal) run is the one to reconnect to, and the
+        # payload carries the id the client resumes with.
+        store = app.state.agent_store
+        run = store.create_run(
+            thread_id, provider_profile="default", model="fake", deadline_seconds=30
+        )
+        reported = active_run()
+        assert reported is not None and reported["id"] == run.id
+
+        # Once the run reaches a terminal state there is nothing live to offer.
+        store.transition(run.id, RunStatus.CANCELLED)
+        assert active_run() is None
+
+        # A cancel-requested run is on its way out: offering it would invite the
+        # console to reconnect to a run about to die mid-handshake.
+        doomed = store.create_run(
+            thread_id, provider_profile="default", model="fake", deadline_seconds=30
+        )
+        store.request_cancel(doomed.id)
+        assert active_run() is None
