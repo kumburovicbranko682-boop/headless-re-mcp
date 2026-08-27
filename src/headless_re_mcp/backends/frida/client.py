@@ -481,10 +481,17 @@ class FridaClient:
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
+            # Mirror hook_template_device: a template that fails to compile or
+            # load (bad script, wedged target) is a backend fault the caller can
+            # act on, not an internal one. A bare re-raise here lets it escape as
+            # a raw frida exception that _failure files as internal_error with an
+            # incident, unlike the device path that already translates it.
+            _detach_all(sessions)
             if _is_timeout(exc):
-                _detach_all(sessions)
                 raise _timeout_error(deadline) from exc
-            raise
+            raise FridaError(
+                "backend_error", f"hook template failed: {exc}", pid=pid
+            ) from exc
 
     def _attach_local(self, pid: int, *, timeout: float = _PROBE_TIMEOUT_S) -> Any:
         deadline = _bound_timeout(timeout)

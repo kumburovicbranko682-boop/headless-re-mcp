@@ -227,6 +227,45 @@ def test_frida_local_reads_translate_backend_failures_not_internal_error() -> No
         assert caught.value.code == "backend_error"
 
 
+def _load_boom_client() -> FridaClient:
+    class _BoomScript:
+        def load(self) -> None:
+            raise RuntimeError("script load raises on a non-ART process")
+
+    class _BoomSession:
+        def create_script(self, source: str) -> Any:
+            del source
+            return _BoomScript()
+
+        def detach(self) -> None:
+            return None
+
+    class _BoomFrida:
+        def attach(self, pid: int) -> Any:
+            del pid
+            return _BoomSession()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _BoomFrida()
+    return client
+
+
+def test_frida_local_hook_template_translates_load_failures_not_internal_error() -> None:
+    """A failed hook-template load must read as backend_error, like the device path.
+
+    The android hooks no-op on non-ART processes because ``script.load()`` raises;
+    the template docstring even promises the caller a backend_error envelope. The
+    local ``hook_template`` used to re-raise that load exception raw, so ``_failure``
+    filed it as internal_error with an incident, while ``hook_template_device``
+    translated the identical failure. The two paths must agree.
+    """
+    client = _load_boom_client()
+    with pytest.raises(FridaError) as caught:
+        client.hook_template(1, "noop", allowed_pid=1)
+    assert caught.value.code == "backend_error"
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident
