@@ -188,6 +188,41 @@ def test_r2_service_functions_disasm_xrefs_end_to_end() -> None:
 
 
 @pytest.mark.integration
+def test_r2_service_lists_sections_with_permissions() -> None:
+    """r2.sections must map the section table and name each section's perms.
+
+    Where .text/.rodata/.data land, and whether any section is both writable
+    and executable, is a first-move triage none of the other r2 readers answer.
+    The committed PE has a .text section radare2 marks executable, so a green
+    proves the section map decodes and the row is address-mapped. skip != pass
+    when r2 is absent; the in-tree PE keeps it runnable on any host.
+    """
+    if not R2Client().available:
+        pytest.skip("radare2/rizin not installed — live Gate not run (skip≠pass)")
+    fixture = _gate_fixture()
+    service = AnalysisService(Settings.load())
+    created = service.create_session(str(fixture))
+    assert created.ok and created.data is not None
+    session_id = str(created.data["session"]["id"])
+    try:
+        sections = service.r2_sections(session_id, timeout=60.0)
+        assert sections.ok and sections.data is not None, sections.error
+        assert sections.data.get("parsed") is True
+        rows = sections.data.get("items") or []
+        assert rows, "no sections decoded"
+        for row in rows:
+            assert isinstance(row.get("name"), str), row
+            assert isinstance(row.get("perm"), str) and row["perm"], row
+        # The code section is present, named, and marked executable.
+        text = next((row for row in rows if row.get("name") == ".text"), None)
+        assert text is not None, [row.get("name") for row in rows]
+        assert "x" in text["perm"], text
+        _assert_mapped(text.get("address"))
+    finally:
+        service.close_session(session_id)
+
+
+@pytest.mark.integration
 def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
     """A native ELF must open as a session and analyse through r2 -- the portable
     backend's whole point on non-Windows targets.
@@ -265,6 +300,19 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         exported_triple = next((n for n in exported if "re_mcp_triple" in (n or "")), None)
         assert exported_triple is not None, sorted(n for n in exported if n)
         _assert_mapped(exported[exported_triple].get("address"))
+
+        # Sections map on the native target too, carrying the architecture: the
+        # ELF .text section must come back executable and address-mapped.
+        sections = service.r2_sections(session_id, timeout=60.0)
+        assert sections.ok and sections.data is not None, sections.error
+        assert sections.data.get("parsed") is True
+        assert sections.data.get("architecture") == expect_arch
+        sect_rows = sections.data.get("items") or []
+        text_sect = next((row for row in sect_rows if row.get("name") == ".text"), None)
+        assert text_sect is not None, [row.get("name") for row in sect_rows]
+        assert "x" in (text_sect.get("perm") or ""), text_sect
+        _assert_mapped(text_sect.get("address"))
+        assert text_sect["address"].get("architecture") == expect_arch, text_sect
 
         # xrefs must resolve on the native target too: main calls re_mcp_triple,
         # so a "to" edge into the function has to come back with mapped endpoints.
