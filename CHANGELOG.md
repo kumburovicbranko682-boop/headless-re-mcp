@@ -60,6 +60,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   androguard 全部方法在 4.1.4 上仍在（唯一缺失的 `APK.get_requested_permissions` 早已被
   `permissions` 的 try/except 回退兜住）。
 
+### 测试（jadx 反编译：补上只测降级、从不真机反编译的空白）
+
+- **`apk.decompile` / `apk.export_sources` 从没对真 APK 跑过 jadx。** Android RE gate 只在
+  jadx 缺席时断言 jadx 系工具「回结构化信封不崩」；jadx 是外部 CLI，其参数与落盘布局会随版本
+  漂移（又是那类只在运行期才炸的破坏）：`--output-dir` / `--no-imports` 可能被改名，源码可能
+  不再落到 `<out>/sources/` 下，而所有基于 fake 的单测照样过。新增
+  `test_apk_jadx_decompile_gate.py`（复用同一 660 字节真 DEX 打成 APK）：按 `config.py` 同款
+  顺序发现 jadx（`HEADLESS_RE_JADX` 或 PATH 上的 `jadx`），像 `test_m11_r2_live_gate` 那样直接
+  驱动 `JadxClient` 端到端，钉住 `export_sources` 落出 `<out>/sources/…/Hello.java`、
+  `--no-imports` 这条独立开关仍被走到、`decompile("Hello")` 解出的源码确含 `decryptSecret` 与
+  `s3cr3t-flag-value`（证明 jadx 真反编译了字节码，而非空信封）。jadx 1.5.0 上实测通过：
+  `--output-dir` / `--no-imports` 仍在，默认包类落到 `sources/defpackage/Hello.java`；缺 jadx
+  时明确 skip（skip≠pass）。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
