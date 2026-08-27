@@ -453,3 +453,218 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def test_an_unconfigured_client_refuses_before_touching_the_filesystem(tmp_path: Path) -> None:
+    """No Ghidra home means capability_unavailable, not a confusing spawn error.
+
+    Both entry points -- the analyze pass and every export -- must refuse up
+    front, and the refusal must not have created a project directory the
+    operator would then wonder about.
+    """
+    client = ghidra_client.GhidraClient(home=None)
+    project = tmp_path / "project"
+
+    with pytest.raises(ghidra_client.GhidraError) as analyze_err:
+        client.analyze_binary(_binary(tmp_path), project)
+    with pytest.raises(ghidra_client.GhidraError) as export_err:
+        client.functions(_binary(tmp_path), project)
+
+    assert analyze_err.value.code == "capability_unavailable"
+    assert export_err.value.code == "capability_unavailable"
+    assert not project.exists()
+
+
+def test_a_missing_binary_is_not_found_for_analyze_and_export(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    ghost = tmp_path / "gone.exe"
+
+    with pytest.raises(ghidra_client.GhidraError) as analyze_err:
+        client.analyze_binary(ghost, tmp_path / "project")
+    with pytest.raises(ghidra_client.GhidraError) as export_err:
+        client.symbols(ghost, tmp_path / "project")
+
+    assert analyze_err.value.code == "not_found"
+    assert export_err.value.code == "not_found"
+    assert analyze_err.value.details["path"] == str(ghost)
+
+
+def test_a_failed_analyze_reports_the_exit_code_and_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        ghidra_client,
+        "run_bounded",
+        lambda cmd, **kwargs: Completed(2, b"log", b"missing jdk"),
+    )
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.details["exit_code"] == 2
+    assert "missing jdk" in caught.value.details["stderr"]
+
+
+def test_symbols_and_xrefs_ask_the_postscript_for_their_own_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each wrapper must select its export mode, and an int address goes as hex.
+
+    The postScript dispatches on the mode argv token, so a wrapper passing the
+    wrong one would return the wrong listing under the right tool name. The
+    xref address crosses into Jython as text; an int must arrive as 0x-hex so
+    the script parses the same value the caller held.
+    """
+    calls = _capture_run(monkeypatch)
+    client = _client(tmp_path)
+    binary = _binary(tmp_path)
+
+    client.symbols(binary, tmp_path / "project")
+    client.xrefs(binary, tmp_path / "project", 0x401000)
+
+    symbols_cmd, xrefs_cmd = calls
+    script = symbols_cmd.index("ExportJson.py")
+    assert symbols_cmd[script + 1] == "symbols"
+    script = xrefs_cmd.index("ExportJson.py")
+    assert xrefs_cmd[script + 1] == "xrefs"
+    assert "0x401000" in xrefs_cmd
+
+
+def test_a_package_missing_its_postscript_refuses_instead_of_spawning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken install must be named before a JVM is started against it."""
+    monkeypatch.setattr(ghidra_client, "_SCRIPT_DIR", tmp_path / "no-scripts")
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert "ExportJson.py missing" in caught.value.message
+
+
+def test_a_failed_run_that_wrote_nothing_is_an_export_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        ghidra_client,
+        "run_bounded",
+        lambda cmd, **kwargs: Completed(1, b"log tail", b"script crashed"),
+    )
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "analyzeHeadless export failed"
+    assert caught.value.details["exit_code"] == 1
+
+
+def test_a_clean_exit_without_the_export_file_is_still_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit 0 with no JSON is a postScript that never ran, not an empty result."""
+    monkeypatch.setattr(
+        ghidra_client,
+        "run_bounded",
+        lambda cmd, **kwargs: Completed(0, b"ok", b""),
+    )
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert "export JSON missing after postScript" in caught.value.message
+
+
+def test_an_export_file_that_cannot_be_read_is_a_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write/read race or permission flip surfaces as unreadable, not a crash."""
+    _capture_run(monkeypatch)
+    real_open = Path.open
+
+    def flaky_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self.suffix == ".json" and args[:1] == ("rb",):
+            raise OSError("input/output error")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert "export JSON unreadable" in caught.value.message
+
+
+def test_an_export_that_is_json_but_not_an_object_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare list parses fine and then breaks every key access downstream."""
+    monkeypatch.setattr(
+        ghidra_client, "run_bounded", _run_writing("[1, 2, 3]", exit_code=0)
+    )
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert caught.value.code == "backend_error"
+    assert "must be an object" in caught.value.message
+
+
+def test_analyze_can_keep_the_project_when_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _capture_run(monkeypatch)
+    client = _client(tmp_path)
+
+    client.analyze_binary(_binary(tmp_path), tmp_path / "project", delete_project=False)
+
+    assert "-deleteProject" not in calls[0]
+
+
+def test_a_timed_out_analyze_names_the_pids_that_had_to_die(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """analyzeHeadless is a launcher for a JVM; the timeout must report both."""
+    from headless_re_mcp.backends.common.bounded_run import TimedOut
+
+    def timing_out(cmd: list[str], **kwargs: Any) -> Completed:
+        raise TimedOut(5.0, killed=[101, 102])
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", timing_out)
+    client = _client(tmp_path)
+
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project", timeout=5.0)
+
+    assert caught.value.code == "timeout"
+    assert caught.value.details["killed_pids"] == [101, 102]
+    assert caught.value.details["timeout"] == 5.0
+
+
+def test_launcher_discovery_walks_the_known_layouts_and_reports_absence(tmp_path: Path) -> None:
+    """A home without analyzeHeadless yields None; a bare layout is still found.
+
+    The discovery order mirrors real installs: support/ first (release zips),
+    then the home root (some repackaged builds). None of the four present means
+    the client reports unavailable rather than guessing a path.
+    """
+    empty_home = tmp_path / "empty"
+    empty_home.mkdir()
+    assert ghidra_client._find_analyze_headless(empty_home) is None
+    assert ghidra_client.GhidraClient(home=empty_home).available is False
+
+    bare_home = tmp_path / "bare"
+    bare_home.mkdir()
+    launcher = bare_home / "analyzeHeadless"
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    assert ghidra_client._find_analyze_headless(bare_home) == launcher
