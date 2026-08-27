@@ -102,6 +102,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（start_web.py 在 IPv6 回环主机上打印/打开的控制台 URL 不可用）
+
+- `start_web.py` 用 `f"http://{host}:{port}/"` 拼接要打印和交给 `webbrowser.open` 的地址，但
+  `run_web` 允许任何回环地址，包括 `::1`。IPv6 字面量不加方括号时，`http://::1:8765/` 不是浏览器
+  能解析的 URL（authority 需要 `[::1]` 才能把主机和端口分开），于是把 `http_host` 设成 `::1` 的
+  部署既复制不出可用链接、自动打开的也是错的——服务其实已正常绑定并在监听。新增
+  `_bracketed_authority(host, port)`：IPv6 字面量套上方括号，IPv4 与主机名原样返回；复用/新建两条
+  路径的 URL 与日志行都改用它。（服务器绑定本身不受影响，这只修打印与浏览器跳转。）
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
