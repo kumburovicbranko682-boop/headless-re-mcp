@@ -2280,12 +2280,27 @@ class AnalysisService(
         self,
         session_id: str,
         action: Callable[[_BackendRuntime], JsonObject],
+        *,
+        timeout: float,
     ) -> Result[JsonObject]:
         try:
             runtime = self._runtime(session_id, BackendKind.X64DBG)
-            with runtime.lock:
+            if not runtime.lock.acquire(timeout=max(0.0, timeout)):
+                raise XdbgRpcError(
+                    "workflow_lock_timeout",
+                    "workflow operation timed out acquiring the runtime lock",
+                    details={"timeout_seconds": timeout},
+                    retryable=True,
+                )
+            try:
                 self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
                 data = action(runtime)
+            finally:
+                # Navigation deliberately drops this lock while waiting for
+                # events.  If its bounded reacquisition fails, another thread
+                # owns the RLock and this thread has nothing to release.
+                with suppress(RuntimeError):
+                    runtime.lock.release()
             return _success(
                 data,
                 session_id=session_id,
@@ -2438,19 +2453,35 @@ class AnalysisService(
                 ValueError(f"event_budget must be between 1 and {_MAX_WORKFLOW_EVENT_BUDGET}"),
                 session_id=session_id,
             )
+        # One budget covers the lock wait and the navigation: acquiring the
+        # runtime lock used to be unbounded, and navigation then started its
+        # own full timeout on top of whatever the wait already cost.
+        deadline = monotonic() + validated
 
         def action(runtime: _BackendRuntime) -> JsonObject:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise XdbgRpcError(
+                    "workflow_lock_timeout",
+                    "workflow navigation exhausted its timeout acquiring the runtime lock",
+                    details={"timeout_seconds": validated},
+                    retryable=True,
+                )
             workflow = self._require_mutable_workflow(session_id)
             return self._navigate_locked(
                 session_id,
                 runtime,
                 workflow,
                 pattern,
-                timeout=validated,
+                timeout=remaining,
                 event_budget=event_budget,
             )
 
-        return self._workflow_request(session_id, action)
+        return self._workflow_request(
+            session_id,
+            action,
+            timeout=max(0.0, deadline - monotonic()),
+        )
 
     def _navigate_locked(
         self,
@@ -2531,7 +2562,17 @@ class AnalysisService(
                 if not batch.events and not batch.has_more:
                     sleep(min(0.05, max(0.0, deadline - monotonic())))
             finally:
-                runtime.lock.acquire()
+                # Reacquisition spends only the remaining navigation budget; an
+                # unbounded acquire let a competing lock owner extend a 100 ms
+                # navigation indefinitely once its event read returned.
+                if not runtime.lock.acquire(timeout=max(0.0, deadline - monotonic())):
+                    runtime.navigation_cancel.set()
+                    raise XdbgRpcError(
+                        "workflow_lock_timeout",
+                        "workflow navigation timed out reacquiring the runtime lock",
+                        details={"timeout_seconds": timeout},
+                        retryable=True,
+                    )
             workflow = self._require_workflow(session_id)
             # Cancel (or a terminal status) may have landed while the lock
             # was down. Consuming into a finished navigation raises.

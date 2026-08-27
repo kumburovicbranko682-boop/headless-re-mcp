@@ -12,6 +12,7 @@ from headless_re_mcp.core.events import DebugEvent, DebugEventBatch
 from headless_re_mcp.core.models import (
     BackendKind,
     ModuleSelector,
+    Result,
     Session,
     SessionState,
 )
@@ -1386,6 +1387,172 @@ def test_workflow_cancel_stops_in_flight_navigation(tmp_path: Path) -> None:
     assert workflow.get("status") == "cancelled" or _workflow_state(workflow).get(
         "navigation", {}
     ).get("status") in {"cancelled", "canceled"}
+
+
+def test_workflow_navigation_times_out_acquiring_a_busy_runtime_lock(
+    tmp_path: Path,
+) -> None:
+    """The initial runtime-lock wait ignored the 100 ms navigation timeout."""
+    from threading import Event, Thread
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    runtime = service._runtime(session_id, BackendKind.X64DBG)
+    lock_held = Event()
+    release_lock = Event()
+
+    def hold_runtime_lock() -> None:
+        with runtime.lock:
+            lock_held.set()
+            assert release_lock.wait(2)
+
+    blocker = Thread(target=hold_runtime_lock, daemon=True)
+    blocker.start()
+    assert lock_held.wait(1)
+    outcomes: list[Result[JsonObject]] = []
+    navigation = Thread(
+        target=lambda: outcomes.append(
+            service.workflow_navigate_to_event(
+                session_id,
+                "breakpoint.hit",
+                timeout=0.1,
+                event_budget=8,
+            )
+        ),
+        daemon=True,
+    )
+    navigation.start()
+    navigation.join(timeout=0.4)
+    returned_within_bound = not navigation.is_alive()
+    release_lock.set()
+    blocker.join(timeout=2)
+    navigation.join(timeout=2)
+
+    assert returned_within_bound, "navigation remained blocked acquiring the runtime lock"
+    (result,) = outcomes
+    assert not result.ok and result.error is not None
+    assert result.error.code == "workflow_lock_timeout"
+    assert result.error.retryable is True
+
+
+def test_workflow_navigation_times_out_reacquiring_a_busy_runtime_lock(
+    tmp_path: Path,
+) -> None:
+    """A 100 ms navigation must not hang behind a competing lock owner."""
+    from threading import Event, Thread
+
+    entered = Event()
+    release_read = Event()
+
+    class BlockingWorker(FakeDynamicWorker):
+        def read_events(
+            self,
+            cursor: int,
+            *,
+            limit: int = 100,
+            timeout: float = 10.0,
+        ) -> DebugEventBatch:
+            del limit, timeout
+            entered.set()
+            assert release_read.wait(2)
+            return _debug_batch(cursor)
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = BlockingWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    runtime = service._runtime(session_id, BackendKind.X64DBG)
+    outcomes: list[Result[JsonObject]] = []
+
+    navigation = Thread(
+        target=lambda: outcomes.append(
+            service.workflow_navigate_to_event(
+                session_id,
+                "breakpoint.hit",
+                timeout=0.1,
+                event_budget=8,
+            )
+        ),
+        daemon=True,
+    )
+    navigation.start()
+    # Navigation drops the runtime lock for the event read; grab it while the
+    # read blocks so the reacquisition in its finally block finds it owned.
+    assert entered.wait(1)
+
+    lock_held = Event()
+    release_lock = Event()
+
+    def hold_runtime_lock() -> None:
+        with runtime.lock:
+            lock_held.set()
+            assert release_lock.wait(2)
+
+    blocker = Thread(target=hold_runtime_lock, daemon=True)
+    blocker.start()
+    assert lock_held.wait(1)
+    release_read.set()
+    navigation.join(timeout=0.4)
+    returned_within_bound = not navigation.is_alive()
+    release_lock.set()
+    blocker.join(timeout=2)
+    navigation.join(timeout=2)
+
+    assert returned_within_bound, "navigation remained blocked reacquiring the runtime lock"
+    (result,) = outcomes
+    assert not result.ok and result.error is not None
+    assert result.error.code == "workflow_lock_timeout"
+    assert result.error.retryable is True
+
+
+def test_workflow_operations_time_out_acquiring_a_busy_runtime_lock(tmp_path: Path) -> None:
+    """Every workflow operation forwards its budget into the lock wait."""
+    from threading import Event, Thread
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    runtime = service._runtime(session_id, BackendKind.X64DBG)
+    lock_held = Event()
+    release_lock = Event()
+
+    def hold_runtime_lock() -> None:
+        with runtime.lock:
+            lock_held.set()
+            assert release_lock.wait(2)
+
+    blocker = Thread(target=hold_runtime_lock, daemon=True)
+    blocker.start()
+    assert lock_held.wait(1)
+    outcomes: list[Result[JsonObject]] = []
+    operation = Thread(
+        target=lambda: outcomes.append(service.workflow_reset(session_id, timeout=0.1)),
+        daemon=True,
+    )
+    operation.start()
+    operation.join(timeout=0.4)
+    returned_within_bound = not operation.is_alive()
+    release_lock.set()
+    blocker.join(timeout=2)
+    operation.join(timeout=2)
+
+    assert returned_within_bound, "workflow.reset remained blocked acquiring the runtime lock"
+    (result,) = outcomes
+    assert not result.ok and result.error is not None
+    assert result.error.code == "workflow_lock_timeout"
+    assert result.error.retryable is True
 
 
 def test_workflow_acknowledges_breakpoint_already_removed_by_debugger(
