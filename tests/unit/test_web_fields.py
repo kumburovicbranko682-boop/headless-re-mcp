@@ -940,3 +940,56 @@ def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     assert "Answers with scripts" in doc
     assert "no modules field" in doc
     assert "has_more" in doc
+
+
+class _NamedScriptHandle:
+    def __init__(self, urls: list[str], *, dropped: int = 0) -> None:
+        self.lock = Lock()
+        self.scripts = {
+            str(index): {
+                "scriptId": str(index),
+                "url": url,
+                "language": "JavaScript",
+            }
+            for index, url in enumerate(urls)
+        }
+        self.scripts_dropped = dropped
+
+
+def test_web_scripts_url_contains_narrows_the_list(monkeypatch: Any) -> None:
+    """A url substring filter must find the one bundle among vendor scripts.
+
+    A real page loads dozens of vendor/analytics scripts; finding the app
+    bundle by hand means paging. Assert url_contains keeps only the matching
+    urls, folds case, reports filtered/unfiltered_total so a small match is not
+    read as a near-empty session, and leaves dropped (the whole-ring count)
+    intact.
+    """
+    urls = [
+        "https://cdn.vendor.com/react.min.js",
+        "https://cdn.vendor.com/analytics.js",
+        "https://app.example.com/static/app.bundle.js",
+        "https://app.example.com/static/app.chunk.2.js",
+    ]
+    backend = WebBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: _NamedScriptHandle(urls, dropped=2)
+    )
+
+    hits = backend.scripts("s", url_contains="APP.BUNDLE")
+    assert [row["url"] for row in hits["scripts"]] == [urls[2]]
+    assert hits["filtered"] is True
+    assert hits["unfiltered_total"] == 4
+    assert hits["total"] == 1
+    assert hits["dropped"] == 2
+
+    # An unfiltered call carries neither key, so a plain listing is not mistaken
+    # for a filtered one.
+    plain = backend.scripts("s")
+    assert "filtered" not in plain
+    assert "unfiltered_total" not in plain
+    assert plain["total"] == 4
+
+    doc = _tool_docstring("web.scripts")
+    assert "url_contains" in doc
+    assert "unfiltered_total" in doc

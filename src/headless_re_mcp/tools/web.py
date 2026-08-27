@@ -234,6 +234,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         wasm_only: bool = False,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        url_contains: str | None = None,
     ) -> dict[str, Any]:
         """List parsed scripts seen by the debugger, one page at a time.
 
@@ -242,10 +243,24 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         of 100 typical URLs is ~22 KiB; the full list was 441 KiB. Read
         total and has_more rather than assuming the page is complete.
         metadata_truncated marks bounded oversized script fields.
+
+        Pass url_contains to keep only scripts whose url holds a
+        case-insensitive substring (an app-bundle name, a vendor, a path
+        fragment) -- narrowing runs before pagination, so a real page's dozens
+        of vendor/analytics scripts do not have to be paged by hand to find the
+        one you want. When set the reply also carries filtered true and
+        unfiltered_total (the whole list's size) so a handful of matches is not
+        read as a near-empty session; total/count/has_more then describe the
+        matched subset. dropped stays the whole-ring eviction count. Combines
+        with wasm_only.
         """
         return _dump(
             analysis.web_scripts(
-                session_id, wasm_only=wasm_only, offset=offset, limit=limit
+                session_id,
+                wasm_only=wasm_only,
+                offset=offset,
+                limit=limit,
+                url_contains=url_contains,
             )
         )
 

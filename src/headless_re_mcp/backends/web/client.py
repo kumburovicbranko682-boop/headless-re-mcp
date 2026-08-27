@@ -1199,16 +1199,26 @@ class WebBackend:
         wasm_only: bool = False,
         offset: int = 0,
         limit: int = 100,
+        url_contains: str | None = None,
     ) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
             values = list(handle.scripts.values())
+        # The whole-capture size, measured before any filter narrows the view, so
+        # a filtered page cannot misreport how many scripts the session holds.
+        unfiltered_total = len(values)
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
+        needle = url_contains.casefold() if url_contains else None
+        if needle is not None:
+            # Narrow before paginating so the pagination fields describe the set
+            # the caller is actually walking. Finding the one app bundle among
+            # dozens of vendor/analytics scripts otherwise meant paging by hand.
+            values = [s for s in values if needle in str(s.get("url", "")).casefold()]
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = values[start : start + cap]
-        return {
+        result: JsonObject = {
             "scripts": window,
             "count": len(window),
             "total": len(values),
@@ -1216,6 +1226,13 @@ class WebBackend:
             "has_more": start + len(window) < len(values),
             "dropped": handle.scripts_dropped,
         }
+        if needle is not None:
+            # total already reports the matched count; unfiltered_total keeps the
+            # size of the whole script list visible so a small match is not read
+            # as a near-empty page.
+            result["filtered"] = True
+            result["unfiltered_total"] = unfiltered_total
+        return result
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)

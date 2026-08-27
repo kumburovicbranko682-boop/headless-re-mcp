@@ -268,6 +268,23 @@ def test_web_cdp_captures_network_and_script_source() -> None:
             assert source.data["bytes"] > 0
             assert "__probe" in source.data["source"]
 
+            # Server-side url filtering must narrow the same live script list
+            # without paging: the point is finding one bundle among many.
+            full = service.web_scripts(session_id, limit=1000)
+            assert full.ok, full.error
+            hits = service.web_scripts(session_id, url_contains="app.js", limit=1000)
+            assert hits.ok, hits.error
+            assert hits.data["filtered"] is True
+            assert hits.data["unfiltered_total"] == full.data["total"]
+            assert hits.data["count"] >= 1
+            assert all(
+                "app.js" in str(row.get("url", "")).lower() for row in hits.data["scripts"]
+            )
+            miss = service.web_scripts(session_id, url_contains="no-such-script-zzz")
+            assert miss.ok, miss.error
+            assert miss.data["total"] == 0
+            assert miss.data["scripts"] == []
+
             def _data_request() -> dict[str, Any] | None:
                 listing = service.web_network_list(session_id, limit=1000)
                 assert listing.ok, listing.error

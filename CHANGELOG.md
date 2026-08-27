@@ -377,6 +377,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   断言 `level=error` 捞到未捕获异常、排除 `console.log`、回 `filtered`/`unfiltered_total`，且 `contains` 按文本命中该异常
   （缺浏览器时 skip≠pass）；单测覆盖 level 精确匹配（含异常）、contains 文本匹配、二者组合、尾页 limit 与 `has_more`、
   以及无过滤器不多出字段。
+- **`web.scripts` 同样只能整页翻——真实页面几十个 vendor/analytics 脚本里那一个 app bundle 得人肉翻**。脚本列表此前只有
+  `wasm_only` 与分页，`web.network.list`/`web.console` 都能按子串过滤，唯独脚本列表不能，找某个 bundle 只能一页页翻。给
+  `web.scripts` 加可选 `url_contains`（对 `url` 的大小写不敏感子串过滤），与 `web.network.list` 同一范式：在分页**之前**收窄，
+  故 `total`/`count`/`has_more` 描述命中子集；设了时另回 `filtered` 为真与 `unfiltered_total`（整份脚本列表的规模），免得一小撮
+  命中被读成近乎空的会话；`dropped` 仍按整环淘汰量计。可与 `wasm_only` 组合。无过滤器时行为与字段完全不变，工具计数与读写
+  归类不变。活体门经本地站点断言 `url_contains="app.js"` 把实时脚本列表收窄到只含该子串的脚本、回 `filtered` 且
+  `unfiltered_total` 等于全量 `total`，另断言无命中查询回 `total` 为 0（缺浏览器时 skip≠pass）；单测覆盖大小写折叠过滤、
+  `filtered`/`unfiltered_total` 上报、`dropped` 经过滤不变、以及无过滤器不多出字段。
 - **过滤之前，得先知道抓包里到底有什么——但 `web.network.list` 只能整页翻着看**。与代理线的 `proxy.stats` 对齐，新增
   只读的 `web.network.stats`：把整条请求环折叠一次成三角摘要，一眼看清该往哪过滤。回 `total`、`by_method`（每个 HTTP
   方法一个计数）、`by_status_class`（每个 2xx/3xx/4xx/5xx 一个计数；尚无状态的请求不计入这里，改计入 `no_status`）、
