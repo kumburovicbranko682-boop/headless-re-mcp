@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -214,6 +219,114 @@ def test_web_cdp_screenshot_navigate_source_and_har(tmp_path: Path) -> None:
             service.web_close(session_id)
     finally:
         service.close_all()
+
+
+_NET_PAGE = (
+    b"<html><head><title>net-gate</title></head><body>"
+    b"<script>fetch('/data.json').then(r => r.json());</script>"
+    b"</body></html>"
+)
+_NET_JSON = b'{"marker":"web-net-capture-42"}'
+
+
+@contextmanager
+def _fetch_origin_server() -> Iterator[int]:
+    """A local origin whose page fetches a same-origin JSON subresource.
+
+    Same-origin keeps the response body readable over CDP (a cross-origin,
+    non-CORS body comes back opaque), so web.network.get can return it verbatim.
+    Binding port 0 lets the OS pick a free port.
+    """
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler naming
+            if self.path.startswith("/data.json"):
+                body, ctype = _NET_JSON, "application/json"
+            else:
+                body, ctype = _NET_PAGE, "text/html; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield int(server.server_address[1])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_web_cdp_captures_a_network_request(tmp_path: Path) -> None:
+    """Live web.network.list / web.network.get: a real fetch is recorded and read back.
+
+    The other CDP gates never route a request the network recorder would see, so
+    the network tools -- much of the point of driving a browser for RE -- had no
+    live coverage. This serves a page that fetches a same-origin JSON subresource
+    and asserts the recorder lists that request with its real status and that
+    web.network.get hands back the exact bytes the origin sent, then that an
+    unknown request id is a structured not_found. Skips only when
+    Playwright/Chromium is absent (skip != pass).
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    service = _service_with_artifacts(tmp_path)
+    with _fetch_origin_server() as port:
+        try:
+            created = service.create_session(f"http://127.0.0.1:{port}/page", target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                # The fetch is async; poll until the recorder has the response.
+                entry = None
+                deadline = time.monotonic() + 15.0
+                while time.monotonic() < deadline:
+                    listed = service.web_network_list(session_id)
+                    assert listed.ok, listed.error
+                    for candidate in listed.data["requests"]:
+                        url = str(candidate.get("url"))
+                        if "/data.json" in url and candidate.get("status") is not None:
+                            entry = candidate
+                            break
+                    if entry is not None:
+                        break
+                    time.sleep(0.1)
+                assert entry is not None, "recorder never saw the same-origin fetch"
+                assert entry["method"] == "GET"
+                assert entry["status"] == 200
+                assert "application/json" in str(entry["mimeType"])
+
+                got = service.web_network_get(session_id, str(entry["requestId"]))
+                assert got.ok, got.error
+                assert got.data["body"] == _NET_JSON.decode()
+                assert got.data["base64_encoded"] is False
+                assert got.data["body_truncated"] is False
+                assert "body_error" not in got.data
+
+                # An id the recorder never saw is a structured not_found, not a crash.
+                missing = service.web_network_get(session_id, "no-such-request")
+                assert not missing.ok
+                assert missing.error is not None
+                assert missing.error.code == "not_found"
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
 
 
 @pytest.mark.integration

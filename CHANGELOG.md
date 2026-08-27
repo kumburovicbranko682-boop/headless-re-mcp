@@ -278,6 +278,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一个已解析脚本的源码)、`web.navigate`(结果标题与随后 DOM 快照同步变到目标页)、`web.har.export`
   (落 HAR 文件)此前都无活体覆盖。用 tmp 产物根让 PNG/HAR 落在测试目录内。仅当 Playwright/Chromium
   缺失时 skip。
+- Web CDP 网络录制补活体覆盖(`web.network.list`/`web.network.get` 此前无——其余 CDP Gate 都不过
+  网络录制器看得见的请求)。新 Gate 起一个本地 origin,页面 `fetch` 一个**同源** JSON 子资源(同源
+  才能让 CDP 把响应体原样交回,跨源无 CORS 会拿到 opaque 空体),轮询到录制器收下该请求后断言它列出
+  真实 `status=200`/`application/json`、`web.network.get` 按 requestId 读回**源站发的确切字节**
+  (`base64_encoded=false`、未截断、无 `body_error`),再钉死未知 requestId 得结构化 `not_found`。
+  仅当 Playwright/Chromium 缺失时 skip。
 - 新增 GitHub 托管的 `linux-integration` CI 作业:装好 radare2、wabt、adb、upx、C 编译器、
   webcrack(npm)、androguard/adbutils/frida/mitmproxy/fastapi(`.[android,web,proxy,browser]`)
   与 Playwright Chromium,在每次 push/PR 上跑整个 `tests/integration`。此前 `linux-quality`
