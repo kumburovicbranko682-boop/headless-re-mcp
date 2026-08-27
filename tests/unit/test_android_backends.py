@@ -357,6 +357,31 @@ class TestApkClassification:
         assert info["dex_count"] == 1
         assert info["signed_v1"] is True
 
+    def test_dex_count_is_runtime_multidex_not_every_dot_dex(self, tmp_path: Path) -> None:
+        r"""dex_count must mean "code DEX the runtime loads", not "files ending .dex".
+
+        Android loads classes.dex / classes<N>.dex from the archive root; a .dex
+        stashed under assets/ or res/raw/ (a common dynamic-loading / anti-analysis
+        trick), or a stray root foo.dex, is not runtime multidex. Counting those
+        inflated the first-look metadata -- a two-code-DEX app read as four -- and
+        it is the number an agent sees before any androguard call. This matches
+        androguard's own ^classes(\d*)\.dex$ rule (its get_dex_names), verified to
+        return 2 for exactly this archive.
+        """
+        apk = tmp_path / "multidex.apk"
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("classes.dex", b"dex\n035\x00")
+            archive.writestr("classes2.dex", b"dex\n035\x00")
+            archive.writestr("assets/payload.dex", b"dex\n035\x00")
+            archive.writestr("res/raw/extra.dex", b"dex\n035\x00")
+            archive.writestr("foo.dex", b"dex\n035\x00")
+        info = describe_apk(apk)["apk"]
+        assert info["dex_count"] == 2
+        # The stashed dexes still show up in the raw entry count, so the signal
+        # that they exist is not lost -- only dex_count stops conflating them.
+        assert info["entry_count"] == 6
+
     def test_describe_apk_rejects_archive_without_manifest(self, tmp_path: Path) -> None:
         plain = tmp_path / "archive.zip"
         with zipfile.ZipFile(plain, "w") as archive:

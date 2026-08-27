@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import zipfile
 from collections import deque
 from collections.abc import Iterable, Mapping
@@ -359,6 +360,12 @@ def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
 _APK_SUFFIXES = frozenset({".apk", ".aab", ".apks", ".xapk"})
 _WEB_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".wasm", ".html", ".htm", ".har"})
 _APK_MANIFEST = "AndroidManifest.xml"
+# Android only loads DEX files named classes.dex / classes<N>.dex at the archive
+# root; a .dex stashed under assets/ or res/raw/ is data the app may load itself,
+# not runtime multidex. Matching androguard's own rule (^classes(\d*)\.dex$)
+# keeps dex_count meaning "how many code DEX the runtime loads" rather than
+# "how many files happen to end in .dex".
+_DEX_NAME_RE = re.compile(r"^classes\d*\.dex$")
 # Enough for every magic number below without pulling a large header into memory.
 _MAGIC_BYTES = 8
 
@@ -431,7 +438,7 @@ def describe_apk(path: Path) -> dict[str, Any]:
     return {
         "apk": {
             "native_abis": abis,
-            "dex_count": sum(1 for name in names if name.endswith(".dex")),
+            "dex_count": sum(1 for name in names if _DEX_NAME_RE.match(name)),
             "entry_count": len(names),
             "signed_v1": any(
                 name.startswith("META-INF/") and name.endswith((".RSA", ".DSA", ".EC"))

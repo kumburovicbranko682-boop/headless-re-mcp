@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（APK 会话首屏元数据把 `assets/`、`res/raw/` 里私藏的 `.dex` 也算进 `dex_count`）
+
+- **`describe_apk` 的 `dex_count` 过去统计整个包里任何以 `.dex` 结尾的条目**，可 Android 运行时
+  只加载归档**根目录**下的 `classes.dex` / `classes<N>.dex` 作为多 dex 代码；塞在
+  `assets/`、`res/raw/` 里的 `.dex`（动态加载 / 反分析常见手法），或根目录下一个杂项 `foo.dex`，
+  都不是运行时多 dex。这条计数是分析师在任何 androguard 调用之前、创建会话时就看到的首屏元数据
+  （会话不依赖 androguard，故用 stdlib 直接读 zip 目录）——把私藏 dex 算进来，会让一个「两段代码
+  dex」的应用被读成四段，恰好把「这里藏了额外 dex」这个线索伪装成普通多 dex。现改用与 androguard
+  自身相同的规则 `^classes(\d*)\.dex$`（其 `get_dex_names`），只数根目录的 `classesN.dex`。真机
+  核对过：同一个含 `classes.dex`+`classes2.dex`+`assets/payload.dex`+`res/raw/extra.dex` 的包，
+  androguard `get_all_dex()` 恰好 2 段，修复后 `dex_count` 也是 2（旧代码报 4）。私藏 dex 依旧计入
+  `entry_count`，线索不丢，只是 `dex_count` 不再把它们和运行时代码混为一谈。新增单测
+  `test_android_backends.py::test_dex_count_is_runtime_multidex_not_every_dot_dex` 钉住这条。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
