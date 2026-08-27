@@ -81,9 +81,10 @@ class TestAdbArgumentValidation:
 
 class TestFridaTargetAuthorization:
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
+        # _authorize checks the allow-set before it probes for frida, so an
+        # unauthorized pid is permission_denied on every host -- including where
+        # frida is not installed -- and no skip guard is needed.
         client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
         with pytest.raises(FridaError) as info:
             client.java_enumerate(
                 "usb", 4242, allowed_pids=[1, 2, 3], mode="classes", limit=1
@@ -93,8 +94,6 @@ class TestFridaTargetAuthorization:
 
     def test_device_hook_refuses_unauthorized_pid(self) -> None:
         client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
         with pytest.raises(FridaError) as info:
             client.hook_template_device("usb", 99, "noop", allowed_pids=[7])
         assert info.value.code == "permission_denied"

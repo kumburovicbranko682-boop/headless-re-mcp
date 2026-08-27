@@ -142,6 +142,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_unknown_hook_template_is_rejected_with_allowed_list` 因此不再需要装 frida 才能跑;
   `test_local_single_pid_rule_is_unchanged`(`modules` 走 `_require`,授权先于能力探测)本就不依赖
   frida,一并去掉多余的 skip 守卫——两条契约现在都能在 CI(不含 frida)上真正验证。
+- Frida 设备授权顺序对齐本地 `_require`:`_authorize`(设备 allow-set,`java_enumerate` /
+  `hook_template_device` 用)此前先探测 frida 再判授权,而它按注释本就是本地单 pid 规则(`_require`,
+  授权先于能力探测)的推广——两者却给出相反顺序。未授权 pid 在没装 frida 的机器上因此被报成
+  `capability_unavailable` 而非 `permission_denied`,既随环境漂移,又把"装没装 frida"透露给了未授权的
+  调用方。现 `_authorize` 统一为 形状 → 授权 → 能力:未授权 pid 在任何机器上都确定地报
+  `permission_denied` 且不泄露能力状态,只有已授权 pid 才走到能力探测。`test_device_operations_
+  refuse_unauthorized_pid` 与 `test_device_hook_refuses_unauthorized_pid` 因此不再需要装 frida,
+  frida 授权类测试的 skip 归零;新增回归钉死两条 `_authorize` 入口的授权先于能力探测。
 
 ### 新增（会话目标类型）
 

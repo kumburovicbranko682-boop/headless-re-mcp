@@ -67,6 +67,20 @@ def test_hook_template_device_unknown_name_is_invalid_params_without_frida(
     assert caught.value.code == "invalid_params"
 
 
+def test_authorize_reports_permission_denied_before_capability() -> None:
+    # _authorize checks the allow-set before it probes for frida (matching
+    # _require), so an unauthorized but well-formed pid is permission_denied even
+    # where frida is not installed -- and never learns the module is absent.
+    client = _unavailable_client()
+    with pytest.raises(FridaError) as caught:
+        client.java_enumerate(None, 4242, allowed_pids={1, 2, 3}, mode="classes")
+    assert caught.value.code == "permission_denied"
+
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device("usb", 99, "noop", allowed_pids={7})
+    assert caught.value.code == "permission_denied"
+
+
 def test_malformed_pid_beats_permission_denied_in_require() -> None:
     # Even with frida "available" and the pid outside the allow-set, a malformed
     # pid is the caller's shape error, not a permission decision, so _require must

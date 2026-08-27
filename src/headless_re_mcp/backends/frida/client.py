@@ -760,13 +760,13 @@ class FridaClient:
             raise FridaError("backend_error", f"hook template failed: {exc}") from exc
 
     def _authorize(self, pid: int, allowed_pids: Iterable[int]) -> None:
-        # Shape first, matching attach()/_require(): a malformed pid is
-        # invalid_params on every host, not capability_unavailable where frida is
-        # absent; the capability probe and the allow-set check keep their order.
+        # Shape, then authorization, then capability -- the same order as
+        # _require(), which this per-session allow-set check generalises (see the
+        # section comment above). A malformed pid is invalid_params everywhere; an
+        # unauthorized pid is permission_denied everywhere and never learns whether
+        # frida is installed; only an authorized pid reaches the capability probe.
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
-        if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
         allowed = set(int(value) for value in allowed_pids)
         if pid not in allowed:
             raise FridaError(
@@ -775,3 +775,5 @@ class FridaClient:
                 pid=pid,
                 allowed_pids=sorted(allowed),
             )
+        if not self._available or self._frida is None:
+            raise FridaError("capability_unavailable", "frida Python module is not installed")
