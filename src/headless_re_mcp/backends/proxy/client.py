@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import io
 import logging
 import os
 import socket
 import threading
 import time
+import zlib
 from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any
@@ -33,7 +35,69 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A hostile server can answer a captured request with a small compressed body
+# that inflates to gigabytes. The ring only bounds the *compressed* size, so
+# decoding has to stop at a fixed ceiling rather than trust the wire length.
+_MAX_DECODED_BODY = 8 * 1024 * 1024
 _OMITTED_BODY = object()
+
+
+def _response_encoding(resp: Any) -> str:
+    headers = getattr(resp, "headers", None)
+    if headers is None:
+        return ""
+    try:
+        return str(headers.get("content-encoding", "") or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _decode_body(resp: Any, raw: bytes) -> tuple[bytes, str, bool, bool]:
+    """Return (body, encoding, decoded, truncated) for a captured response.
+
+    ``raw_content`` is the body exactly as it crossed the wire, which for most
+    real responses is gzip/deflate/zstd/brotli. Returned verbatim and decoded as
+    UTF-8 it read as garbage, so the tool that exists to show a response body
+    handed back noise for the common case. Decode the encodings that can be
+    bounded (gzip, deflate, zstd) within ``_MAX_DECODED_BODY`` so a decompression
+    bomb cannot turn a retained few-hundred-KB body into an OOM. Brotli cannot be
+    output-bounded with the installed binding and anything unrecognised is left
+    as-is with ``decoded`` False -- honest bytes the caller can still spill,
+    rather than compressed data mislabelled as text.
+    """
+    encoding = _response_encoding(resp)
+    if encoding in ("", "identity"):
+        return raw, "", True, False
+    cap = _MAX_DECODED_BODY
+    try:
+        if encoding in ("gzip", "x-gzip", "deflate", "x-deflate"):
+            # 47 auto-detects the gzip and zlib headers; raw deflate (no header)
+            # needs -15, so fall through to it when the first attempt rejects
+            # the stream rather than reporting a decode failure.
+            for wbits in (47, -15):
+                obj = zlib.decompressobj(wbits)
+                try:
+                    out = obj.decompress(raw, cap + 1)
+                except zlib.error:
+                    continue
+                if obj.unconsumed_tail or len(out) > cap:
+                    return out[:cap], encoding, True, True
+                tail = obj.flush()
+                if len(out) + len(tail) > cap:
+                    return (out + tail)[:cap], encoding, True, True
+                return out + tail, encoding, True, False
+            return raw, encoding, False, False
+        if encoding == "zstd":
+            import zstandard
+
+            reader = zstandard.ZstdDecompressor().stream_reader(io.BytesIO(raw))
+            out = reader.read(cap + 1)
+            if len(out) > cap:
+                return out[:cap], encoding, True, True
+            return out, encoding, True, False
+    except Exception:  # noqa: BLE001
+        return raw, encoding, False, False
+    return raw, encoding, False, False
 
 
 class ProxyError(RuntimeError):
@@ -495,11 +559,26 @@ class ProxyBackend:
             )
         req = flow.request
         resp = flow.response
-        body = b""
+        raw = b""
         try:
-            body = resp.raw_content or b"" if resp else b""
+            raw = resp.raw_content or b"" if resp else b""
         except Exception:  # noqa: BLE001
-            body = b""
+            raw = b""
+        body, encoding, decoded, truncated = _decode_body(resp, raw)
+        response: JsonObject = {
+            "status": getattr(resp, "status_code", None),
+            "headers": dict(resp.headers) if resp else {},
+            "size": len(body),
+        }
+        if encoding:
+            # Only when the wire body was content-encoded: name the encoding,
+            # say whether we actually decoded it, and keep the on-wire size so a
+            # caller is never left guessing why body and size disagree.
+            response["body_encoding"] = encoding
+            response["body_decoded"] = decoded
+            response["encoded_size"] = len(raw)
+        if truncated:
+            response["body_truncated"] = True
         result: JsonObject = {
             "id": flow_id,
             "request": {
@@ -507,19 +586,15 @@ class ProxyBackend:
                 "url": req.pretty_url,
                 "headers": dict(req.headers),
             },
-            "response": {
-                "status": getattr(resp, "status_code", None),
-                "headers": dict(resp.headers) if resp else {},
-                "size": len(body),
-            },
+            "response": response,
         }
         if len(body) > 200_000:
             artifact_dir.mkdir(parents=True, exist_ok=True)
             out = artifact_dir / f"flow-{uuid4().hex}.bin"
             out.write_bytes(body)
-            result["response"]["body_path"] = str(out)
+            response["body_path"] = str(out)
         else:
-            result["response"]["body"] = body.decode("utf-8", errors="replace")
+            response["body"] = body.decode("utf-8", errors="replace")
         return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:

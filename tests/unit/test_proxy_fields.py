@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import ast
+import gzip
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOWS,
@@ -159,6 +162,92 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     doc = _tool_docstring("proxy.flow.get")
     assert "body_path" in doc
     assert "response" in doc
+
+
+def _flow_get_response(monkeypatch: Any, tmp_path: Path, response: Any) -> dict[str, Any]:
+    request = SimpleNamespace(method="GET", pretty_url="http://x/1", headers={"accept": "*/*"})
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
+    return backend.flow_get("s", "f1", tmp_path)["response"]
+
+
+def test_proxy_flow_get_decodes_a_gzip_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """raw_content is the on-wire body; for gzip that is not the text.
+
+    Returned verbatim it decoded to noise, so the tool that exists to show a
+    response body handed back garbage for the encoding most of the web uses.
+    """
+    text = "hello gzip world " * 20
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "text/plain", "content-encoding": "gzip"},
+        raw_content=gzip.compress(text.encode("utf-8")),
+    )
+    result = _flow_get_response(monkeypatch, tmp_path, response)
+    assert result["body"] == text
+    assert result["body_encoding"] == "gzip"
+    assert result["body_decoded"] is True
+    assert result["size"] == len(text.encode("utf-8"))
+    # A compressible body is smaller on the wire than decoded.
+    assert result["encoded_size"] < result["size"]
+
+
+def test_proxy_flow_get_labels_a_body_it_will_not_decode(tmp_path: Path, monkeypatch: Any) -> None:
+    """Brotli cannot be output-bounded here, so it is flagged, not mislabelled.
+
+    The old code decoded the raw brotli bytes as UTF-8 and called them the body.
+    Now the caller is told the bytes are still brotli (body_decoded false) rather
+    than handed noise dressed as text.
+    """
+    brotli = pytest.importorskip("brotli")
+    blob = brotli.compress(b"this content is really still brotli " * 5)
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-encoding": "br"},
+        raw_content=blob,
+    )
+    result = _flow_get_response(monkeypatch, tmp_path, response)
+    assert result["body_encoding"] == "br"
+    assert result["body_decoded"] is False
+    assert result["encoded_size"] == len(blob)
+
+
+def test_proxy_flow_get_decodes_a_zstd_body(tmp_path: Path, monkeypatch: Any) -> None:
+    zstandard = pytest.importorskip("zstandard")
+    text = "zstandard payload " * 20
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-encoding": "zstd"},
+        raw_content=zstandard.ZstdCompressor().compress(text.encode("utf-8")),
+    )
+    result = _flow_get_response(monkeypatch, tmp_path, response)
+    assert result["body"] == text
+    assert result["body_encoding"] == "zstd"
+    assert result["body_decoded"] is True
+
+
+def test_proxy_flow_get_bounds_a_decompression_bomb(tmp_path: Path, monkeypatch: Any) -> None:
+    """A retained few-KB body can inflate to gigabytes; the decode stops early."""
+    from headless_re_mcp.backends.proxy import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_DECODED_BODY", 1024)
+    bomb = gzip.compress(b"\x00" * (5 * 1024 * 1024))
+    assert len(bomb) < 10_000  # tiny on the wire, huge decoded
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-encoding": "gzip"},
+        raw_content=bomb,
+    )
+    result = _flow_get_response(monkeypatch, tmp_path, response)
+    assert result["body_decoded"] is True
+    assert result["body_truncated"] is True
+    assert result["size"] == 1024
 
 
 def test_proxy_status_names_flow_count_and_retained_max() -> None:

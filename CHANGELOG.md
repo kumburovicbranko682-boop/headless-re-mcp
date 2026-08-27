@@ -331,6 +331,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   只把非 `WebError` 的单体失败兜成 `not_found`；`network.get` 独此一处没对齐。现在它也先 `except WebError:
   raise` 让会话级故障带自己的 `code` 上抛（`timeout` 可重试），只有真正的单体 CDP 失败（资源不存在、body
   已被清出缓冲）才继续留作软 `body_error`、连同 `requestId`/`url` 等元数据一起返回。
+- **`proxy.flow.get` 把压缩响应体原样当文本返回，等于给了一坨乱码**。它取的是 `resp.raw_content`——
+  报文在链路上的原始字节，而现代 Web 的响应体绝大多数是 gzip/deflate/zstd/brotli 压缩过的；原样
+  `decode("utf-8")` 出来的是噪声。于是这个「就为看响应体而存在」的工具，对最常见的情形交回的是垃圾。
+  不能简单改调 `.content`（mitmproxy 会整体解压）：抓包环 只约束了**压缩后**的体积，一个敌意服务器
+  完全可以回一个几百 KB、解压后上 GiB 的解压炸弹，把整个进程 OOM。现在新增有界解码 `_decode_body`：
+  gzip/deflate（`zlib.decompressobj` 带 `max_length`）与 zstd（`zstandard` 流式 reader 带上限读）都在
+  `_MAX_DECODED_BODY`（8 MiB）内解，超出即截断并置 `body_truncated`；brotli 在现装的绑定里没法对输出
+  设限、其它未知编码同理，一律**不解**、原样返回并标 `body_decoded=False`——是「诚实的、仍是该编码的
+  字节」，而不是「压缩数据冒充文本」。响应体被内容编码过时，`response` 现在带 `body_encoding`（编码名）、
+  `body_decoded`（是否真解开了）、`encoded_size`（链路上的字节数），而 `size` 报解码后的长度；未编码的
+  响应（identity/无该头）行为不变。
 - **`_MAX_DEVICE_ARTIFACTS` / `prune_device_artifacts` 是没接线的死代码，改它等于什么都没改**。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`

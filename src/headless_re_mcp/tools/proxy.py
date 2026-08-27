@@ -75,7 +75,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with id, request (method, url, headers) and response (status,
         headers, size). A body at most 200000 bytes is response.body; anything
         larger is response.body_path and there is no body key. There are no
-        top-level headers or body fields.
+        top-level headers or body fields. A content-encoded response adds
+        response.body_encoding, response.body_decoded (false means the bytes are
+        still that encoding, e.g. brotli), and response.encoded_size (the on-wire
+        length); size is the decoded length. body_truncated marks a decoded body
+        cut at the decode ceiling.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
