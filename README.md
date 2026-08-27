@@ -390,6 +390,8 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 Android 静态分析（androguard 进程内）现有一个不依赖设备/SDK 的真机 Gate：仓库里提交了一个用真实 Java 编出、已签名的 `fixtures/android/sample.apk`（构建脚本见同目录 `build.sh`），`tests/integration/test_android_static_deep_gate.py` 用它跑通 `apk.open/manifest/permissions/certificates/components/native_libs/classes/methods/strings/xrefs` 全套——包含 DEX 类/方法/字符串与方法间交叉引用，只要装了 `android` extra（androguard）即执行。radare2 的 live Gate 也已可移植到非 Windows：缺 PE 夹具时会就地用 `cc` 编一个原生 ELF 来跑。
 
+抓包（mitmproxy）除了起停/端口释放的生命周期 Gate，现在还有一个端到端的抓包 Gate（`tests/integration/test_proxy_capture_gate.py`）：起一个本地 HTTP 源、把请求经代理转发过去，断言 `proxy.flows` 记到了这条流、`proxy.flow.get` 能取到请求/响应体、`proxy.export_har` 导出的 HAR 里带着它——纯 HTTP、免 CA、免外网。Web 静态侧则修了一个真实缺陷：`js.unpack_bundle` 在 webcrack 2.x 下必然报 “output directory already exists”（客户端预建了输出目录），加上 `-f` 后恢复可用，并新增了 `js.unpack_bundle` 与 `wasm.info`（wasm-objdump）的 live Gate。
+
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
