@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **285（165 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **286（166 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -564,6 +564,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   路径回来、`export_imports.json` 落盘；另有一条静态同步测试断言 `ExportJson.java` 确实分派 `imports` 模式并调 `getExternalFunctions`，
   避免 Java 与 Python 走偏（本环境无 Ghidra，端到端跑不了）。活体门（装了 Ghidra 才跑，skip≠pass）在真 PE fixture 上断言导入表
   至少解析出一条、每条带 name/entry/library。该工具计入读效果，工具面因此 284→285。
+- **radare2 线能列函数、导入、重定位、依赖库，却没把「执行从哪儿开始」单列出来**——入口点只埋在 `r2.info` 的文本块里。
+  新增只读的 `r2.entrypoints`，跑 `iej`。回 `items`，每条带 `type`（真入口是 `program`；PE 上还有 TLS 回调 `tls` 与 init/fini
+  槽）、`vaddr`、`paddr`、头偏移（haddr/hvaddr），并由 vaddr 生成结构化 `address`（va/rva/module），外加 `count`。这是执行真正开始
+  的地方——第一条要反汇编的指令——更关键的是把在主入口*之前*运行的 TLS 回调单独拎出来，那是恶意样本常见的反分析/抢先执行手法，
+  而 `r2.info` 的文本块不会把它拆开。没有整型 address 字段；列表满 4096 时给 `items_truncated`/`items_total`/`items_limit`；没有
+  entrypoints/truncated/has_more 字段。`iej` 纳入后端命令白名单。活体门在真 ELF 上断言 iej 解析出恰好一个 `program` 入口、带由
+  vaddr 生成的结构化 va（ELF 不伪造 PE RVA）。单测用构造的 iej 输出钉住 vaddr→Address 映射与 type 保留（program 与 tls 各留其址）、
+  4096 截断、`iej` 过白名单、docstring 形状。该工具计入读效果，工具面因此 285→286。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

@@ -358,6 +358,9 @@ class ExtAnalysisMixin(UiDriveMixin):
     def r2_relocations(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["irj"], timeout=timeout)
 
+    def r2_entrypoints(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
+        return _r2_request(self, session_id, ["iej"], timeout=timeout)
+
     def r2_libraries(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)

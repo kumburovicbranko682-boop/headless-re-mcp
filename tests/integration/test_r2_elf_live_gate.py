@@ -398,6 +398,38 @@ def test_r2_relocations_list_the_fixup_table_on_a_real_elf(tmp_path: Path) -> No
 
 
 @pytest.mark.integration
+def test_r2_entrypoints_report_the_program_entry_on_a_real_elf(tmp_path: Path) -> None:
+    """The entry-point list (iej) had no live ELF coverage.
+
+    r2.entrypoints runs iej through the shared service path; nothing else drives
+    it. A dynamically linked ELF has exactly one program entry (_start), so prove
+    iej comes back parsed with a program entry carrying a structured Address
+    built from vaddr (plain va, no fabricated PE RVA) -- the first address a
+    caller would disassemble.
+    """
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live gate not run (skip != pass)")
+    binary = _compile_elf(tmp_path)
+
+    entries = client.run(binary, ["iej"], timeout=60.0)
+    assert entries["parsed"] is True
+    assert entries.get("count", 0) >= 1, "an ELF must have a program entry point"
+
+    program = next(
+        (item for item in entries["items"] if item.get("type") == "program"),
+        None,
+    )
+    assert program is not None, (
+        f"expected a program entry: {[e.get('type') for e in entries['items']]}"
+    )
+    address = program.get("address")
+    assert isinstance(address, dict), "entry point lacks a structured Address"
+    assert isinstance(address.get("va"), int)
+    assert "rva" not in address, "ELF entry must not fabricate a PE RVA"
+
+
+@pytest.mark.integration
 def test_r2_libraries_list_the_linked_dependencies_on_a_real_elf(tmp_path: Path) -> None:
     """The linked-library list (ilj) had no live ELF coverage.
 

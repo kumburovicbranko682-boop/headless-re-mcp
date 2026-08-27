@@ -170,6 +170,25 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_relocations(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.entrypoints")
+    def r2_entrypoints(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Program entry points radare2 reads from the binary.
+
+        Runs ``iej``. Answers with items, each carrying type (``program`` for the
+        real entry; on a PE also ``tls`` for TLS callbacks and the init/fini
+        slots), vaddr, paddr and the header offsets (haddr/hvaddr), plus address
+        (va/rva/module) built from vaddr, and count. This is where execution
+        actually starts -- the first address to disassemble -- and, crucially,
+        the TLS-callback entries that run *before* the main entry, a classic
+        anti-analysis/early-execution trick that r2.info's text blob does not
+        break out. There is no integer address field. Read items_truncated,
+        items_total and items_limit when the list filled the cap (4096). There is
+        no entrypoints, truncated or has_more field.
+        """
+        return _dump(analysis.r2_entrypoints(session_id, timeout=timeout))
+
     @tools.tool(name="r2.libraries")
     def r2_libraries(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
