@@ -3485,10 +3485,16 @@ class TestGhidraExportDisclosesTruncation:
 
         from headless_re_mcp.backends.ghidra import client as ghidra
 
-        script = Path(ghidra.__file__).resolve().parent / "scripts" / "ExportJson.py"
+        script = Path(ghidra.__file__).resolve().parent / "scripts" / "ExportJson.java"
         text = script.read_text(encoding="utf-8")
-        assert 'payload["has_more"] = True' in text
-        assert 'payload["truncated"] = len(text) > 200000' in text
+        # A cut list must set has_more, and an over-cap decompilation must set
+        # truncated -- the Java GhidraScript keeps the same disclosure the
+        # former Jython script made, so a caller never mistakes a buffer that
+        # stopped at the cap for one that ended.
+        assert "hasMore = true;" in text
+        assert 'payload.addProperty("has_more", hasMore);' in text
+        assert "MAX_DECOMPILED = 200000" in text
+        assert 'payload.addProperty("truncated", text.length() > MAX_DECOMPILED);' in text
 
 
 class TestAdbShellCallsAreBounded:
