@@ -49,6 +49,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（core/results 错误信封契约固化）
+
+- `core/results.py` 的 `_failure` 是全项目每个服务失败都要经过的、按 `isinstance` 顺序分派的错误信封构造器，其注释记录了一串历史误判（调用方取消被记成 `internal_error` 事故、Exeinfo PE 错误漏到 `internal_error`、裸 `KeyError` 被读成 `session_not_found`）。此前无同名测试。
+- 新增 `tests/unit/test_core_results.py`（25 项，`core/results.py` 覆盖率 100%），逐条固化每个分支的 `(code, retryable, 合并后的 details)`：取消/超时是控制信号而非事故；`DieScanError` 的可重试性由 code 推导而非其自带的 `retryable` 属性；`ExeinfopeScanError` 被命名而非漏到 `internal_error`；`PeFormatError` / `AddressSyncError` 作为 `ValueError` 子类必须先于通用 `ValueError` 分支解析到各自 code；`SessionNotFound` 只认这一种类型（裸 `KeyError` 归 `internal_error`）；`sqlite3.OperationalError` 记为可重试的 `storage_unavailable`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
