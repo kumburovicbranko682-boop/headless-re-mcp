@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（进程树枚举与 PID 击杀）
+
+- `core/process_tree.py` 的 POSIX 进程组扫描与子收割已有专测,但 `/proc` 直接子进程
+  枚举、有界的 `collect_descendants` 遍历、`collect_process_tree` 合并、镜像路径过滤、
+  窗口候选探测与 `terminate_pid_tree` 仍未覆盖。新增
+  `tests/unit/test_process_tree_enumeration.py`:用真实子进程验证 `enumerate_direct_children`
+  与 `_scan_proc_ppid` 找到活子进程、children 文件缺失时回退、`terminate_pid_tree`
+  真实击杀(POSIX);用注入的接缝(monkeypatch `enumerate_direct_children` /
+  `process_image_path` / `collect_*`)跨平台验证广度与深度上限、环路去重、合并去重且排除
+  父进程、镜像路径大小写不敏感匹配与空基准、窗口候选跳过无窗子进程且标题截断到 8 与
+  `same_image` 判定、`terminate_pid_tree` 按逆序击杀枚举到的后代、`collect_process_group`
+  非正数守卫、`_reap_terminated` 无子收割时立即返回、`terminate_leftover_process_tree`
+  的无 pid 与空树守卫。行覆盖 64% → 76%(余量为 Windows 专有的 Toolhelp/镜像查询/
+  TerminateProcess 与少数非确定性的 /proc 错误分支)。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
