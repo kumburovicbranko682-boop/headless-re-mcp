@@ -81,10 +81,12 @@ export function SettingsModal({
           try {
             const probed = await api<{ models?: string[] }>("/api/providers/default/models", { method: "POST" });
             const list = probed.models ?? [];
-            if (list.length) {
-              setModels(list);
-              if (current.model && !list.includes(current.model)) setModel(list[0] ?? current.model);
-            }
+            // Never swap the stored model for list[0] when it is missing from
+            // the probe: gateways routinely return partial /models lists
+            // (aliases, dated snapshots, fine-tunes), and a user who only came
+            // to update the key would save and silently destroy the setting.
+            // The dropdown keeps the configured model as an extra option.
+            if (list.length) setModels(list);
           } catch {
             /* keep known_models; probe is best-effort on open */
           }
@@ -119,7 +121,6 @@ export function SettingsModal({
       const result = await api<{ models?: string[] }>("/api/providers/default/models", { method: "POST" });
       const list = result.models ?? [];
       setModels(list);
-      if (list[0] && !list.includes(model)) setModel(list[0]);
       setNote(list.length ? `探测到 ${list.length} 个模型。` : "接口没有返回模型列表。");
     } catch (reason) {
       setError(String(reason));
@@ -201,7 +202,9 @@ export function SettingsModal({
         <label>接口地址<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></label>
         <label>模型
           {models.length > 0
-            ? <select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option key={item} value={item}>{item}</option>)}</select>
+            ? <select value={model} onChange={(event) => setModel(event.target.value)}>
+                {(model && !models.includes(model) ? [model, ...models] : models).map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
             : <input value={model} onChange={(event) => setModel(event.target.value)} />}
         </label>
         <label>API 密钥{configured ? `（已配置${masked ? ` · ${masked}` : ""}）` : "（未配置）"}
