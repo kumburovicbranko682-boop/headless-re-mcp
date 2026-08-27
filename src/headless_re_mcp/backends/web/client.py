@@ -782,6 +782,29 @@ class WebBackend:
 
         return self._runner(handle).call(work)
 
+    def page_info(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            url, url_cut = _bounded_metadata(handle.page.url, _MAX_URL_BYTES)
+            result: JsonObject = {"url": url, "title": _safe_title(handle.page)}
+            if url_cut:
+                result["url_truncated"] = True
+            # readyState tells apart "still loading" from "settled" -- the state
+            # navigate() reported is a snapshot from goto time, and a JS redirect
+            # or an SPA route change since then would leave it stale. A page that
+            # cannot answer (evaluation blocked, document gone) omits the field
+            # rather than guessing a value the caller would read as settled.
+            try:
+                ready = handle.page.evaluate("document.readyState")
+            except Exception:  # noqa: BLE001 - a wedged eval must not fail the read
+                ready = None
+            if isinstance(ready, str) and ready:
+                result["ready_state"] = ready
+            return result
+
+        return self._runner(handle).call(work)
+
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)
         out_path.parent.mkdir(parents=True, exist_ok=True)

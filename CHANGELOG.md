@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -23,6 +23,16 @@ CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去�
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
+
+### 新增（`web.page` 读取页面当前 URL / 标题 / 加载状态）
+
+- 新增只读工具 `web.page`：读取页面**此刻**的 `url`、`title` 与 `ready_state`
+  （`document.readyState`：loading / interactive / complete）。`web.navigate` 回的 url/title 是
+  goto 那一刻的快照，导航之后的 JS 跳转或 SPA 路由切换会让它变旧；`web.page` 每次都取活值，
+  于是「落地页到底是哪个」在重定向后仍能问清。URL 被缓冲区截断时带 `url_truncated`；页面无法
+  求值（求值被拦、文档已不在）时**省略** `ready_state` 而非猜一个会被读成已就绪的值。不含 html
+  字段——要文档用 `web.dom.snapshot`。取值走 CDP 会话所在的 runner 线程，与 `web.dom.snapshot`
+  同一范式。Web 动态线 `web.*` 工具随之 12 → 13。
 
 ### 新增（监控台工作台）
 
@@ -536,7 +546,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **静态**：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）。
   WASM 反编译复用现有 `ghidra.*` 加 ghidra-wasm-plugin——wabt 的 `wasm-decompile` 已于
   2026-06 被上游删除，不再作为路径。
-- **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
+- **动态**：`web.*` 13 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。
 - **抓包**：`proxy.*` 8 个工具，mitmproxy 以 addon 形式跑在独立线程，Web 与 Android 共用，
@@ -1084,7 +1094,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **OpenAI 桥接 CLI 三形态**：默认输出完整导出(count==tools==name_map)、`--names-only`
   只剩 `{name_map,count}`、`--output` 把完整 JSON 写到(自动创建的)路径并在 stdout 报告而不
   把工具体打到屏幕(CI 只 smoke 了 `--names-only`)。
-- **全表面资源策略有界**：全部 265 个工具的 `resource_policy` 都有有限且为正的超时与为正的
+- **全表面资源策略有界**：全部 266 个工具的 `resource_policy` 都有有限且为正的超时与为正的
   输出上限——防止 0/负/非有限超时混入导致无人值守跑挂。
 - **ScyllaHide 画像映射纯函数直测**：别名/节名规范化与其 fail-closed 拒绝(空串或未知名会连
   同白名单一起报出)、3 字符短 token(`vmp`/`tmd`)只按词边界匹配以免命中别的词内部、非壳类

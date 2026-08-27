@@ -160,6 +160,20 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_wasm_list(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="web.page")
+    def web_page(session_id: str) -> dict[str, Any]:
+        """Read the page's current URL, title, and load state.
+
+        Unlike the url/title web.navigate reported at goto time, this reads the
+        live values now, so a JS redirect or SPA route change since navigation
+        is visible. Answers with url and title, ready_state (document.readyState:
+        loading / interactive / complete) when the page can report it, and
+        url_truncated when the URL was cut at the buffer. ready_state is omitted
+        rather than guessed when evaluation is blocked. There is no html field --
+        use web.dom.snapshot for the document.
+        """
+        return _dump(analysis.web_page(session_id))
+
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
         """Return the current page HTML, URL, and title.
