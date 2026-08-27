@@ -564,22 +564,32 @@ class ProxyBackend:
         inst = self._get(session_id)
         import json
 
-        entries = [
-            {
-                "request": {"method": f.get("method"), "url": f.get("url")},
-                "response": {
-                    "status": f.get("status") or 0,
-                    "content": {"mimeType": f.get("content_type") or ""},
-                },
-            }
-            for f in inst.recorder.snapshot()
-        ]
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
+        from mitmproxy.addons.savehar import SaveHar
+
+        # Serialize the retained flow objects through mitmproxy's own HAR writer
+        # so the artifact carries the spec-required startedDateTime, time, cache,
+        # timings, and the full request/response header/cookie/content arrays. The
+        # old hand-built log held only method/url/status/mimeType per entry, which
+        # a HAR viewer (Chrome DevTools, har validators) rejects as malformed. A
+        # flow whose body was dropped to keep the capture under its memory cap is
+        # not retained as a real flow, so it cannot be serialized to a full entry;
+        # such flows are reported in ``omitted`` rather than emitted as stubs.
+        flows: list[Any] = []
+        omitted = 0
+        for summary in inst.recorder.snapshot():
+            raw = inst.recorder.raw(str(summary.get("id")))
+            if raw is None or raw is _OMITTED_BODY:
+                omitted += 1
+                continue
+            flows.append(raw)
+        try:
+            har = SaveHar().make_har(flows)
+        except Exception as exc:  # noqa: BLE001 - never let a flow shape crash export
+            raise ProxyError("backend_error", f"HAR serialization failed: {exc}") from exc
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        entries = har.get("log", {}).get("entries", [])
+        return {"path": str(out_path), "entry_count": len(entries), "omitted": omitted}
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):

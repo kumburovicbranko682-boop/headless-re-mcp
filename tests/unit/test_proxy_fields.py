@@ -200,33 +200,73 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
     assert "retained_bytes_max" in doc
 
 
-def test_proxy_export_har_names_path_and_entry_count(
+def test_proxy_export_har_writes_a_spec_shaped_har(
     tmp_path: Path,
 ) -> None:
-    """The catalog said a HAR artifact and never named the payload.
+    """The export must be a HAR a viewer can load, not a method/url/status stub.
 
-    Measured: 4 flows -> path ending capture.har, entry_count 4, no har or
-    output key. Looking for har after a successful export reads as a missing
-    capture.
+    The old hand-built log omitted startedDateTime, time, timings, and the
+    request/response header/cookie/content arrays the HAR spec requires, so
+    Chrome DevTools and har validators rejected it. Routing the retained flows
+    through mitmproxy's own serializer produces a complete entry per flow.
     """
+    import json
+
+    from mitmproxy.test import tflow
+
     recorder = _FlowRecorder()
     for index in range(4):
-        request = SimpleNamespace(
-            method="GET", pretty_url=f"http://x/{index}", host="x"
-        )
-        response = SimpleNamespace(
-            status_code=200, headers={"content-type": "text/plain"}
-        )
-        recorder.response(
-            SimpleNamespace(id=str(index), request=request, response=response)
-        )
+        flow = tflow.tflow(resp=True)
+        flow.request.path = f"/{index}"
+        recorder.response(flow)
     backend = ProxyBackend()
     backend._instances["s"] = SimpleNamespace(recorder=recorder)
     payload = backend.export_har("s", tmp_path / "capture.har")
     assert "har" not in payload
     assert "output" not in payload
     assert payload["entry_count"] == 4
+    assert payload["omitted"] == 0
     assert payload["path"].endswith("capture.har")
+
+    document = json.loads((tmp_path / "capture.har").read_text(encoding="utf-8"))
+    entries = document["log"]["entries"]
+    assert len(entries) == 4
+    for entry in entries:
+        assert "startedDateTime" in entry
+        assert "timings" in entry
+        assert {"method", "url", "headers"}.issubset(entry["request"])
+        assert {"status", "headers", "content"}.issubset(entry["response"])
+
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+    assert "omitted" in doc
+
+
+def test_proxy_export_har_counts_flows_whose_body_was_dropped(
+    tmp_path: Path,
+) -> None:
+    """A flow dropped to stay under the memory cap is counted, not stubbed.
+
+    Its body is not retained, so it cannot be serialized to a full HAR entry;
+    reporting it in omitted keeps entry_count honest about what the artifact
+    actually contains while still accounting for every captured flow.
+    """
+    from mitmproxy.test import tflow
+
+    from headless_re_mcp.backends.proxy.client import _MAX_STORED_BODY
+
+    recorder = _FlowRecorder()
+    small = tflow.tflow(resp=True)
+    small.request.path = "/small"
+    recorder.response(small)
+    big = tflow.tflow(resp=True)
+    big.request.path = "/big"
+    big.response.content = b"x" * (_MAX_STORED_BODY + 1)
+    recorder.response(big)
+
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+    payload = backend.export_har("s", tmp_path / "capture.har")
+    assert payload["entry_count"] == 1
+    assert payload["omitted"] == 1

@@ -92,9 +92,14 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def proxy_export_har(session_id: str) -> dict[str, Any]:
         """Export captured flows to a HAR artifact.
 
-        Answers with path and entry_count. There is no har, output or
-        artifact field. path is the file; looking for har after a successful
-        export reads as a missing capture.
+        Answers with path, entry_count, and omitted. The HAR is written by
+        mitmproxy's own serializer, so each entry carries the spec fields
+        (startedDateTime, time, timings, headers, cookies, content) a HAR
+        viewer needs. entry_count counts the flows exported; omitted counts
+        those whose body was dropped to stay under the capture cap and so
+        could not be serialized -- entry_count plus omitted is the flow total.
+        There is no har, output or artifact field. path is the file; looking
+        for har after a successful export reads as a missing capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 
