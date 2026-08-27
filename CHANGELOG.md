@@ -51,15 +51,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 修复（`js.unpack_bundle` 在 webcrack 2.x 上每次调用都失败）
 
-- `js.unpack_bundle` 客户端先 `out_dir.mkdir(...)` 造好输出目录（服务层的产物目录也会先建），
-  再以 `-o <dir>` 交给 webcrack；而 webcrack 2.x 一旦 `-o` 指向已存在的目录便直接以
+- `js.unpack_bundle` 客户端先 `out_dir.mkdir(...)` 造好输出目录（服务层只建 `jsre/` 父目录、
+  把未创建的 `unpack-<uuid>` 叶子交给客户端，直接调用方也可能自带已存在目录），再以
+  `-o <dir>` 交给 webcrack；而 webcrack 2.x 一旦 `-o` 指向已存在的目录便直接以
   「output directory already exists」中止，因此在当前 webcrack 下**每一次拆包都必然失败**
   （对 webcrack 2.16.0 实测：`backend_error`、"output directory already exists"）。而这条
   路只有 `js.deobfuscate`（走 stdout、不碰 `-o`）在冒烟，拆包的回归无人看守。给 webcrack
-  命令补上 `-f`（强制覆盖）：对已存在目录覆盖写、对新建目录同样接受，两条路径都正确。同时给
-  `tests/integration/test_web_re_gate.py` 加 `test_js_unpack_bundle_when_webcrack_present`
-  实机 gate 走通 `-o`/`-f` 全路径，webcrack 缺席时按「skip != pass」诚实跳过——下次回归在此
-  失败而非流到生产。
+  命令补上 `-f`（强制覆盖）：对已存在目录覆盖写、对新建目录同样接受，比「不再预建目录」更稳
+  （后者盖不住调用方自带的已存在目录）。同时给 `tests/integration/test_web_re_gate.py` 加
+  `test_js_unpack_bundle_when_webcrack_present` 实机 gate 走通 `-o`/`-f` 全路径，webcrack
+  缺席时按「skip != pass」诚实跳过——下次回归在此失败而非流到生产。
+- 顺带把整条 jsre 后端（webcrack + wabt）的 gate 从「跑没跑」升级到「有没有真做事」，并让 CI
+  真正跑起来。`js.deobfuscate` gate 过去只验 `ok`/`bytes>0`，一个跑了却什么都没解的 webcrack
+  也能过；现要求样本里 `\x` 转义的 "H3adl3ss" 被还原、`["split"]` 被简化成 `.split(`（都是
+  webcrack 的核心变换，样本原文两者皆无，纯回显必挂）。`wasm.wat` gate 过去只喂 8 字节空模块、
+  只验 `"module"`；现改喂真模块（导出 `add(i32,i32)->i32`）并要求还原出签名、导出名与 `i32.add`
+  函数体，另补 `wasm.info`（`wasm-objdump`，此前无 gate）验证 Type/Export 段头。新增
+  `.github/workflows/jsre-gates.yml`：按 PR 路径触发、装 Node+webcrack+wabt，用
+  `-k "js_ or wasm_"` 跑这四条 gate——此前 `ci.yml` 只跑单测，唯一的集成工作流是手动、自托管、
+  只装 `.[test,dev,web]` 的 Windows PE job，这些 gate 在那里只会 skip（skip != pass），形同虚设。
 
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
