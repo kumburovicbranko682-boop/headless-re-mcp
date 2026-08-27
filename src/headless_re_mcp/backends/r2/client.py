@@ -27,6 +27,7 @@ _ALLOWED = frozenset(
         "iEj",
         "iSj",
         "isj",
+        "irj",
         "pdj",
         "axj",
         "aa",

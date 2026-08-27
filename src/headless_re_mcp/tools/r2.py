@@ -150,6 +150,26 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_symbols(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.relocations")
+    def r2_relocations(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Relocations radare2 reads from the binary.
+
+        Runs ``irj``. Answers with items, each carrying type (the reloc kind,
+        e.g. ``JUMP_SLOT``/``GLOB_DAT``/``ADD_64``), name and demname (the
+        imported symbol the slot resolves to, empty for anonymous relocs),
+        vaddr, paddr and is_ifunc, plus address (va/rva/module) built from
+        vaddr, and count. This is the fixup table: it says which address (a GOT
+        or PLT slot) gets patched at load and to which imported symbol, so it is
+        how you find where an import is wired -- the site r2.xrefs then shows the
+        callers of. It complements r2.imports (the symbols pulled in) by naming
+        the slots those symbols land in. There is no integer address field. Read
+        items_truncated, items_total and items_limit when the list filled the
+        cap (4096). There is no relocations, truncated or has_more field.
+        """
+        return _dump(analysis.r2_relocations(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,

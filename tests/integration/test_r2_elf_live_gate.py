@@ -361,6 +361,43 @@ def test_r2_symbols_list_the_whole_table_on_a_real_elf(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_r2_relocations_list_the_fixup_table_on_a_real_elf(tmp_path: Path) -> None:
+    """The relocation table (irj) had no live ELF coverage.
+
+    r2.relocations is a separate service tool; nothing else drives irj. A
+    dynamically linked ELF that calls printf must carry a relocation binding
+    that symbol's GOT/PLT slot, so prove irj returns parsed items with the
+    unified Address mapping on a real binary and that the imported symbol shows
+    up in the fixup table -- the slot r2.xrefs then traces the callers of.
+    """
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live gate not run (skip != pass)")
+    binary = _compile_elf(tmp_path)
+
+    relocs = client.run(binary, ["irj"], timeout=60.0)
+    assert relocs["parsed"] is True
+    assert relocs.get("count", 0) >= 1, "a dynamically linked ELF must have relocations"
+
+    # Every relocation names the slot address it patches; the enrichment must
+    # attach a structured Address built from vaddr, with a plain va (no PE RVA).
+    for item in relocs["items"]:
+        address = item.get("address")
+        assert isinstance(address, dict), "relocation lacks a structured Address"
+        assert isinstance(address.get("va"), int)
+        assert "rva" not in address, "ELF relocations must not fabricate a PE RVA"
+        assert "type" in item, "relocation entry must carry its reloc type"
+
+    # printf is called from main and resolved through a PLT/GOT relocation, so
+    # the imported symbol must appear in the fixup table.
+    printf = _named(relocs["items"], "printf") or _named(relocs["items"], "puts")
+    assert printf is not None, (
+        "expected a libc call relocation (printf/puts): "
+        f"{[r.get('name') for r in relocs['items']]}"
+    )
+
+
+@pytest.mark.integration
 def test_r2_rejects_a_command_off_the_whitelist_even_live(tmp_path: Path) -> None:
     client = R2Client()
     if not client.available:

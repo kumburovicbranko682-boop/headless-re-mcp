@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **277（157 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **278（158 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -436,6 +436,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   我们写的 `helper`/`compute`/`main` 三个 `FUNC` 符号、其 `address.va` 为正、ELF 不伪造 PE 的 `rva`，且符号表是导出表的
   超集（缺 r2 或缺编译器时 skip≠pass）；单测覆盖 `isj` 条目到 Address 的映射、`is_imported`/`bind`/`type` 原样透传、
   列表截断标注、以及工具描述如实点名 `isj`/`is_imported`/`items_truncated`。该工具计入读效果，工具面因此 271→272。
+- **radare2 线看不到重定位表——不知道哪个导入被接到哪个 GOT/PLT 槽**。r2 线能列导入（`iij`，被拉进来的符号）
+  却没有工具回报 `ir` 重定位：装载时被打补丁的那些槽（GOT/PLT），以及每个槽最终解析到哪个导入符号，都落在重定位表里，
+  这正是「一个导入到底接在哪个地址」的答案——`r2.xrefs` 随后拿这个地址去找调用点。新增只读的 `r2.relocations`：跑
+  `irj`，回 `items`，每条带 `type`（重定位类型，如 `JUMP_SLOT`/`GLOB_DAT`/`ADD_64`）、`name` 与 `demname`（该槽解析到的
+  导入符号，匿名重定位为空）、`vaddr`、`paddr`、`is_ifunc`，并由 `vaddr` 走与其它列表工具相同的统一 Address 富化给出
+  `address`（va/rva/module）、`count`；列表填满 4096 上限时标 `items_truncated`/`items_total`/`items_limit`，不另造
+  `relocations`/`truncated`/`has_more` 字段。它与 `r2.imports`（被拉进来的符号）互补，点名这些符号落在哪些槽里。活体门用
+  系统 C 编译器现编一个调用 printf 的 `-no-pie` ELF，断言 `r2.relocations` 取回带结构化 `address`（ELF 只给 `va`、不伪造
+  PE `rva`）的重定位、且 libc 调用（printf/puts）出现在重定位表里（缺 r2 或缺编译器时 skip≠pass）；单测覆盖 `irj` 条目到
+  Address 的映射（含匿名重定位仍映射槽地址）、列表截断标注、`irj` 在启动白名单内，以及工具描述如实点名
+  `irj`/`is_ifunc`/`items_truncated`。该工具计入读效果，工具面因此 277→278。
 - **`r2.strings` 只扫数据段（`izj`），加壳/混淆样本把字符串藏到别处就看不见了**。`izj` 只扫 radare2 归类为数据的
   段（.rodata/.data/…），可加壳器常把载荷字符串塞进非标准或不加载的段里——那正是分析者最想看的东西，却恰好在 `izj`
   的视野之外。给 `r2.strings` 加可选 `whole`：默认（`whole=false`）仍跑 `izj` 保持常见情形干净，`whole=true` 改跑
