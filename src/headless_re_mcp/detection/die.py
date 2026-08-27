@@ -294,6 +294,12 @@ def _capture_process(
             "diec process did not expose stdout/stderr pipes",
         )
 
+    # start_new_session (POSIX) makes the scanner its own group leader, so the
+    # group id is the scanner's pid. Used to find and kill a reparented child
+    # by group after the scanner exits, when the parent/child walk sees nothing.
+    group_pid = getattr(process, "pid", None)
+    group_id = int(group_pid) if os.name != "nt" and group_pid else 0
+
     limit_event = Event()
     stdout_capture = _CapturedStream(max_output_size)
     stderr_capture = _CapturedStream(max_output_size)
@@ -360,6 +366,34 @@ def _capture_process(
         # truncate a short-lived process's final JSON bytes.
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
+        if not (timed_out or limited or cancelled):
+            # The scanner exited on its own; make sure it left nothing behind.
+            # On POSIX the parent/child walk is blind to a child the scanner
+            # orphaned to init, so enumerate the session group it led instead
+            # -- the same success-path reap de4dot's _capture_process does.
+            readers_blocked = stdout_thread.is_alive() or stderr_thread.is_alive()
+            if os.name == "nt":
+                from headless_re_mcp.core.process_tree import collect_descendants
+
+                leftover_children = readers_blocked or bool(
+                    group_pid and collect_descendants(int(group_pid))
+                )
+            else:
+                from headless_re_mcp.core.process_tree import collect_process_group
+
+                leftover_children = readers_blocked or bool(
+                    group_id and collect_process_group(group_id)
+                )
+            if leftover_children:
+                _terminate_process(process)
+                if os.name != "nt" and group_id:
+                    from headless_re_mcp.core.process_tree import (
+                        terminate_process_group,
+                    )
+
+                    terminate_process_group(group_id)
+                stdout_thread.join(timeout=2.0)
+                stderr_thread.join(timeout=2.0)
         # The readers close their own pipes; only close here when the reader has
         # already finished, so a reader still blocked on a survivor's pipe never
         # wedges this thread on close().
