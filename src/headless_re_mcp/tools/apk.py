@@ -116,6 +116,30 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="apk.class_fields")
+    def apk_class_fields(
+        session_id: str,
+        class_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the fields a class declares (dotted or Lsmali/form; paginated).
+
+        The field-side companion to apk.methods: it enumerates a class's fields
+        so its static keys, config flags and cached state show without
+        decompiling. A field's descriptor is its type (Ljava/lang/String;, I,
+        [B) and access is the flag string (e.g. "public static final"), which
+        together tell a constant from mutable state. Pair with apk.field_xrefs
+        to see where a field found here is read or written. Answers with
+        class_name, fields (name, descriptor, access), count, total, offset, and
+        has_more; total is the number collected, capped at 2000, with
+        scan_capped when more may exist. has_more only means a larger offset
+        still has collected rows.
+        """
+        return _dump(
+            analysis.apk_class_fields(session_id, class_name, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,

@@ -396,6 +396,70 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def class_fields(
+        self,
+        path: Path,
+        class_name: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """List the fields a class declares (name, type descriptor, access).
+
+        The field-side companion to apk.methods: apk.methods enumerates a class's
+        methods, this its fields, so a class's static keys, config flags and
+        cached state are visible without decompiling. A field's descriptor is its
+        type (Ljava/lang/String;, I, [B) and access is the flag string (e.g.
+        "public static final"), which together tell a constant apart from mutable
+        state. Accepts the dotted or Lsmali/form class name. Pair with
+        apk.field_xrefs to see where a field found here is read or written.
+        Answers with class_name, fields (name, descriptor, access), count, total,
+        offset and has_more; total is the number collected, capped at 2000 with
+        scan_capped when more may exist.
+        """
+        parsed = self._parsed(path)
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        found = [
+            klass
+            for klass in parsed.analysis.get_classes()
+            if klass.name == target or klass.name == _dotted_to_smali(target)
+        ]
+        if not found:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        fields: list[JsonObject] = []
+        scan_more = False
+        for klass in found:
+            for field in klass.get_fields():
+                if len(fields) >= _MAX_METHODS_COLLECT:
+                    scan_more = True
+                    break
+                try:
+                    encoded = field.get_field()
+                    fields.append(
+                        {
+                            "name": str(encoded.get_name()),
+                            "descriptor": str(encoded.get_descriptor()),
+                            "access": str(encoded.get_access_flags_string()),
+                        }
+                    )
+                except Exception:  # noqa: BLE001 - external/malformed fields vary
+                    continue
+            if scan_more:
+                break
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_METHODS_PAGE)
+        window = fields[start : start + cap]
+        return {
+            "class_name": found[0].name,
+            "fields": window,
+            "count": len(window),
+            "total": len(fields),
+            "offset": start,
+            "has_more": start + len(window) < len(fields),
+            "scan_capped": scan_more,
+        }
+
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
         seen: set[str] = set()
