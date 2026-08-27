@@ -94,4 +94,24 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
+    @tools.tool(name="wasm.summary")
+    def wasm_summary(path: str) -> dict[str, Any]:
+        """Structured import/export/memory summary of a .wasm module.
+
+        Parses the module's section table directly in pure Python -- no wabt
+        needed, so this answers even when wasm2wat/wasm-objdump are absent.
+        Answers with imports (each module/name/kind, kind one of
+        func/table/memory/global), import_count, exports (each name/kind/index),
+        export_count, memory (initial/maximum pages, or null when the module
+        declares none), has_start, custom_sections (their names, e.g. "name"),
+        and counts (types, functions defined in this module, imported_functions,
+        tables, globals, memories, data_segments, elements). The import list is
+        the host/JS/WASI interop boundary; exports are the callable surface.
+        Both lists cap at 4096 -- read imports_truncated/imports_total/
+        imports_limit and the exports_* counterparts when a list filled the cap.
+        An input over 16 MiB is refused as too_large; a non-module is rejected
+        as invalid_params rather than guessed at.
+        """
+        return _dump(analysis.wasm_summary(path))
+
     return tools.bindings

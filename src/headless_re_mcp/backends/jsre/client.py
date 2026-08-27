@@ -243,6 +243,17 @@ class WasmClient:
             )
         return _bounded_output(stdout, "wat", include_bytes=True, spill_path=spill_path)
 
+    def summary(self, path: Path) -> JsonObject:
+        """Structured import/export/memory summary parsed straight from the binary.
+
+        Needs no wabt tool: the module's section table is read in pure Python,
+        so the interop surface is available even when wasm2wat/wasm-objdump are
+        not configured.
+        """
+        from headless_re_mcp.backends.jsre.wasm_summary import summarize_wasm
+
+        return summarize_wasm(path)
+
     def info(
         self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
     ) -> JsonObject:

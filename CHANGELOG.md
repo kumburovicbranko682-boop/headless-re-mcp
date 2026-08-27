@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **272（153 只读 / 119 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **273（154 只读 / 119 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -386,6 +386,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   我们写的 `helper`/`compute`/`main` 三个 `FUNC` 符号、其 `address.va` 为正、ELF 不伪造 PE 的 `rva`，且符号表是导出表的
   超集（缺 r2 或缺编译器时 skip≠pass）；单测覆盖 `isj` 条目到 Address 的映射、`is_imported`/`bind`/`type` 原样透传、
   列表截断标注、以及工具描述如实点名 `isj`/`is_imported`/`items_truncated`。该工具计入读效果，工具面因此 271→272。
+- **WASM 线只有 wabt 文本大块，读不出模块的导入/导出结构**。`wasm.wat`（wasm2wat）、`wasm.info`
+  （wasm-objdump）都要装 wabt，且只把结果当一坨文本回来；只想知道「这模块向宿主导入了什么、对外导出了什么」的
+  分析者得先装 wabt、再去 objdump 文本里 grep。新增只读的 `wasm.summary`：**纯 Python** 直接读模块的 section 表，
+  不依赖任何外部工具，wabt 缺席也能出结果。回 `imports`（每条 `module`/`name`/`kind`，kind 为 func/table/memory/global
+  之一——这就是宿主/JS/WASI 互操作边界）、`import_count`，`exports`（每条 `name`/`kind`/`index`——对外可调用面）、
+  `export_count`，`memory`（`initial`/`maximum` 页，模块没声明内存则为 null），`has_start`，`custom_sections`（如 `name`），
+  以及 `counts`（`types`、本模块内定义的 `functions`、`imported_functions`、`tables`、`globals`、`memories`、
+  `data_segments`、`elements`）。只解析摘要需要的 type/import/function/memory/export/start 与 custom 名，其余 section 按
+  声明长度跳过，且每个 section body 都按自身边界切片，恶意长度读不出模块之外；截断、超长 LEB128、坏 magic 一律按
+  `invalid_params` 返回而非崩溃，输入超 16 MiB 按 `too_large` 拒绝。导入/导出两张表各按 4096 上限，填满时标
+  `imports_truncated`/`imports_total`/`imports_limit` 与对应的 `exports_*`。活体门用与既有 wabt 门相同的手法现搭一个带
+  导入/导出/内存的合法模块，走完整 `AnalysisService.wasm_summary` 信封断言结构化结果，并对非模块断言返回 `invalid_params`
+  信封（纯 Python，不依赖外部工具，总会跑）；另有一条在装了 wat2wasm 时把 WAT 现编成真模块交叉校验宿主导入/命名导出/内存/
+  start（缺 wabt 时 skip≠pass）。单测手工构造模块字节覆盖导入/导出/内存/计数解析、导出表按上限截断、坏 magic、截断
+  section 与超长 LEB128 的拒绝。该工具计入读效果，工具面因此 272→273。
 - **JS/WASM 输出超过 400 KB 就被截断且无从取回**。`js.deobfuscate`/`js.beautify`（webcrack）、`wasm.wat`
   （wasm2wat）、`wasm.info`（wasm-objdump）都只把结果内联返回、超 400 KB 直接切掉——而一份反混淆后的打包脚本常有
   几 MB，一个非平凡 WASM 模块的 WAT 反汇编动辄上兆，于是分析者拿到的是残缺的前 400 KB、且没有任何办法读到其余部分
