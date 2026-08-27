@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock
@@ -268,3 +269,127 @@ def test_ghidra_reports_corrupt_export_as_a_backend_error(
     assert caught.value.code == "backend_error"
     assert caught.value.message == "export JSON invalid"
     assert error_type in str(caught.value.details["error"])
+
+
+def _fake_pyghidra_home(tmp_path: Path) -> Path:
+    home = tmp_path / "ghidra"
+    (home / "support").mkdir(parents=True)
+    (home / "support" / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    (home / "Ghidra" / "Features" / "PyGhidra").mkdir(parents=True)
+    return home
+
+
+def test_analyze_headless_resolver_prefers_the_platform_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old fixed tuple picked the .bat first, which Linux cannot execute."""
+    home = tmp_path / "ghidra"
+    (home / "support").mkdir(parents=True)
+    posix = home / "support" / "analyzeHeadless"
+    windows = home / "support" / "analyzeHeadless.bat"
+    posix.write_text("#!/bin/sh\n", encoding="utf-8")
+    windows.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(home) == posix
+    monkeypatch.setattr(ghidra_client.os, "name", "nt")
+    assert ghidra_client._find_analyze_headless(home) == windows
+
+
+def test_analyze_headless_resolver_falls_back_to_the_other_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "ghidra"
+    (home / "support").mkdir(parents=True)
+    windows = home / "support" / "analyzeHeadless.bat"
+    windows.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(home) == windows
+
+
+def test_pyghidra_required_detects_modern_ghidra(tmp_path: Path) -> None:
+    home = tmp_path / "ghidra"
+    features = home / "Ghidra" / "Features"
+    (features / "PyGhidra").mkdir(parents=True)
+    assert ghidra_client._pyghidra_required(home) is True
+    # A Jython-capable install (<= 11.2) keeps the analyzeHeadless launch.
+    (features / "Jython").mkdir(parents=True)
+    assert ghidra_client._pyghidra_required(home) is False
+
+
+def test_pyghidra_not_required_without_the_feature(tmp_path: Path) -> None:
+    home = tmp_path / "ghidra"
+    (home / "Ghidra" / "Features" / "Jython").mkdir(parents=True)
+    assert ghidra_client._pyghidra_required(home) is False
+    assert ghidra_client._pyghidra_required(None) is False
+
+
+def test_split_post_script_recovers_name_and_args() -> None:
+    extra = [
+        "-scriptPath",
+        "/scripts",
+        "-postScript",
+        "ExportJson.py",
+        "functions",
+        "/out.json",
+        "8",
+        "",
+    ]
+    name, args = ghidra_client._split_post_script(extra)
+    assert name == "ExportJson.py"
+    assert args == ["functions", "/out.json", "8", ""]
+
+
+def test_split_post_script_without_a_post_script() -> None:
+    assert ghidra_client._split_post_script(["-import", "x"]) == (None, [])
+
+
+def test_pyghidra_launch_translates_analyzeheadless_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PyGhidra install runs the export via ``python -m pyghidra``, positionally.
+
+    Modern Ghidra (>= 11.3) cannot run a Jython -postScript, so the adapter must
+    launch through PyGhidra instead: the binary and script become positional
+    arguments and the analyzeHeadless flags are dropped, while the export JSON
+    still lands where the caller reads it.
+    """
+    monkeypatch.setattr(ghidra_client.importlib.util, "find_spec", lambda name: object())
+    home = _fake_pyghidra_home(tmp_path)
+    client = ghidra_client.GhidraClient(home=home)
+    client.java = tmp_path / "java"
+    client.java.write_bytes(b"")
+    assert client.uses_pyghidra is True
+    assert client.available is True
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        argv = [str(part) for part in cmd]
+        calls.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text(
+                    '{"mode": "functions", "items": [], "count": 0, "has_more": false}',
+                    encoding="utf-8",
+                )
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    result = client.functions(_binary(tmp_path), tmp_path / "project", limit=8)
+
+    assert result["mode"] == "functions"
+    assert result["export_path"]
+    cmd = calls[0]
+    assert "-m" in cmd and "pyghidra" in cmd
+    assert cmd[0] == sys.executable
+    assert "-import" not in cmd
+    assert "-deleteProject" not in cmd
+    assert "-postScript" not in cmd
+    assert any(arg.endswith("ExportJson.py") for arg in cmd)
+    assert "functions" in cmd
+    assert "8" in cmd
+    # The throwaway project directory is dot-free and cleaned up after the run.
+    assert not (tmp_path / "project" / "pyghidra_project").exists()

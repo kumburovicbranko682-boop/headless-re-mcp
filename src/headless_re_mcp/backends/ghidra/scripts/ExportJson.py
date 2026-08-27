@@ -8,6 +8,12 @@ import json
 from ghidra.app.decompiler import DecompInterface
 from ghidra.util.task import ConsoleTaskMonitor
 
+# getScriptArgs() is the portable GhidraScript accessor: it is populated the
+# same way under the Jython provider (analyzeHeadless, Ghidra <= 11.2) and under
+# PyGhidra (Ghidra >= 11.3, which dropped Jython). The old ARGS global existed
+# only in the Jython provider, so reading it broke this script on modern Ghidra.
+ARGS = list(getScriptArgs())
+
 mode = ARGS[0] if ARGS else "functions"
 out_path = ARGS[1] if len(ARGS) > 1 else None
 limit = 256

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -36,10 +38,20 @@ class GhidraClient:
         self.home = home
         self.java = java or _which("java")
         self.analyze = _find_analyze_headless(home)
+        # Ghidra >= 11.3 dropped the Jython script provider for PyGhidra, so a
+        # -postScript .py run only works when launched through PyGhidra. Detect
+        # that install shape once and route the launch accordingly, leaving the
+        # analyzeHeadless/Jython path (still shipped by <= 11.2 and by Windows
+        # installs) exactly as it was.
+        self.uses_pyghidra = _pyghidra_required(home)
 
     @property
     def available(self) -> bool:
-        return self.analyze is not None and self.java is not None
+        if self.analyze is None or self.java is None:
+            return False
+        if self.uses_pyghidra:
+            return importlib.util.find_spec("pyghidra") is not None
+        return True
 
     def analyze_binary(
         self,
@@ -268,6 +280,15 @@ class GhidraClient:
         max_heap: str,
         delete_project: bool,
     ) -> tuple[str, str, int]:
+        if self.uses_pyghidra:
+            return self._run_pyghidra(
+                project_dir,
+                binary=binary,
+                extra=extra,
+                timeout=timeout,
+                max_heap=max_heap,
+                delete_project=delete_project,
+            )
         assert self.analyze is not None
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         env = os.environ.copy()
@@ -312,6 +333,78 @@ class GhidraClient:
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)
 
+    def _run_pyghidra(
+        self,
+        project_dir: Path,
+        *,
+        binary: Path,
+        extra: list[str],
+        timeout: float,
+        max_heap: str,
+        delete_project: bool,
+    ) -> tuple[str, str, int]:
+        """Launch the same export script through PyGhidra for modern Ghidra.
+
+        PyGhidra runs a ``.py`` script directly rather than via analyzeHeadless'
+        ``-postScript``/``-scriptPath`` machinery, so the analyzeHeadless flags
+        are translated into PyGhidra's positional model. The Ghidra project is
+        kept in a private subdirectory so the export JSON the caller reads back
+        (written under ``project_dir``) survives the post-run cleanup, matching
+        the ``-deleteProject`` behaviour of the Jython path.
+        """
+        script_name, script_args = _split_post_script(extra)
+        # Ghidra's ProjectLocator rejects path elements beginning with '.', so
+        # this holding directory for the throwaway project must be dot-free.
+        proj_home = project_dir / "pyghidra_project"
+        proj_home.mkdir(parents=True, exist_ok=True)
+        if script_name is None:
+            # A bare PyGhidra invocation with no script drops into a REPL, which
+            # would hang headless. analyze-only callers just want import+analyze,
+            # so run the export in a throwaway mode to drive analysis and discard
+            # the result into the project directory that is about to be deleted.
+            script_name = _EXPORT_SCRIPT
+            script_args = ["functions", str(proj_home / "_analyze_probe.json"), "1", ""]
+        script_path = _SCRIPT_DIR / script_name
+        env = os.environ.copy()
+        env["GHIDRA_INSTALL_DIR"] = str(self.home)
+        env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        cmd = [
+            sys.executable,
+            "-m",
+            "pyghidra",
+            "--project-path",
+            str(proj_home),
+            "--project-name",
+            "HeadlessRE",
+            str(binary),
+            str(script_path),
+            *script_args,
+        ]
+        try:
+            with _project_lock(project_dir):
+                completed = run_bounded(
+                    cmd, timeout=timeout, creationflags=creationflags, env=env
+                )
+        except TimedOut as exc:
+            raise GhidraError(
+                "timeout",
+                "ghidra pyghidra headless timed out",
+                timeout=timeout,
+                killed_pids=exc.killed,
+            ) from exc
+        except OSError as exc:
+            raise GhidraError(
+                "backend_error",
+                f"failed to launch pyghidra: {exc}",
+            ) from exc
+        finally:
+            if delete_project:
+                shutil.rmtree(proj_home, ignore_errors=True)
+        stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
+        stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
+        return stdout, stderr, int(completed.returncode)
+
 
 def _which(name: str) -> Path | None:
     found = shutil.which(name)
@@ -321,13 +414,47 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
-        candidate = home / rel
-        if candidate.is_file():
-            return candidate
+    # Ghidra ships both launchers side by side: analyzeHeadless.bat for Windows
+    # and an extensionless shell script for POSIX. The .bat is not executable on
+    # Linux, so picking it first (as a fixed tuple did) made a real install fail
+    # to launch. Prefer the current platform's own launcher, keeping the other
+    # as a fallback for unusual layouts.
+    names = (
+        ("analyzeHeadless.bat", "analyzeHeadless")
+        if os.name == "nt"
+        else ("analyzeHeadless", "analyzeHeadless.bat")
+    )
+    for base in (home / "support", home):
+        for name in names:
+            candidate = base / name
+            if candidate.is_file():
+                return candidate
     return None
+
+
+def _pyghidra_required(home: Path | None) -> bool:
+    """Whether this install needs PyGhidra to run a Python postScript.
+
+    Ghidra >= 11.3 removed the Jython feature and routes ``.py`` scripts through
+    PyGhidra. Detect that by the presence of the PyGhidra feature together with
+    the absence of Jython, so a Jython-capable install (<= 11.2) keeps the
+    analyzeHeadless launch that the rest of the adapter and its tests assume.
+    """
+    if home is None:
+        return False
+    features = home / "Ghidra" / "Features"
+    return (features / "PyGhidra").is_dir() and not (features / "Jython").is_dir()
+
+
+def _split_post_script(extra: list[str]) -> tuple[str | None, list[str]]:
+    """Pull the postScript name and its arguments out of analyzeHeadless flags.
+
+    The adapter builds one ``extra`` list for both launch paths; PyGhidra takes
+    the script positionally, so recover ``(script_name, script_args)`` from the
+    ``-postScript`` marker and drop the ``-scriptPath``/``-postScript`` flags.
+    """
+    if "-postScript" not in extra:
+        return None, []
+    index = extra.index("-postScript")
+    name = extra[index + 1] if index + 1 < len(extra) else None
+    return name, list(extra[index + 2 :])
