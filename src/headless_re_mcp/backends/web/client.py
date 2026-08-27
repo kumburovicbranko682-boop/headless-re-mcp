@@ -41,6 +41,11 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+_MAX_FRAMES_COLLECT = 2000
+_MAX_FRAMES_PAGE = 1000
+# A frame tree deeper than this is almost certainly a cycle in the fake or a
+# pathological page; walking ancestors is bounded so depth never spins.
+_MAX_FRAME_DEPTH = 128
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -782,6 +787,66 @@ class WebBackend:
 
         return self._runner(handle).call(work)
 
+    def frames(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                page = handle.page
+                all_frames = list(page.frames)
+                main = page.main_frame
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"frame enumeration failed: {exc}") from exc
+            items: list[JsonObject] = []
+            scan_capped = False
+            for frame in all_frames:
+                if len(items) >= _MAX_FRAMES_COLLECT:
+                    scan_capped = True
+                    break
+                try:
+                    parent = frame.parent_frame
+                except Exception:  # noqa: BLE001 - a detached frame can raise here
+                    parent = None
+                depth = 0
+                walker = parent
+                # A detached/looping tree must not spin the ancestor walk.
+                while walker is not None and depth < _MAX_FRAME_DEPTH:
+                    depth += 1
+                    try:
+                        walker = walker.parent_frame
+                    except Exception:  # noqa: BLE001
+                        break
+                url_text, url_cut = _bounded_metadata(_frame_attr(frame, "url"), _MAX_URL_BYTES)
+                name_text, name_cut = _bounded_metadata(
+                    _frame_attr(frame, "name"), _MAX_METADATA_BYTES
+                )
+                entry: JsonObject = {
+                    "url": url_text,
+                    "name": name_text,
+                    "is_main": frame is main,
+                    "depth": depth,
+                }
+                if parent is not None:
+                    entry["parent_url"] = _bounded_metadata(
+                        _frame_attr(parent, "url"), _MAX_URL_BYTES
+                    )[0]
+                if url_cut or name_cut:
+                    entry["metadata_truncated"] = True
+                items.append(entry)
+            start = max(0, int(offset))
+            cap = max(1, min(int(limit), _MAX_FRAMES_PAGE))
+            window = items[start : start + cap]
+            return {
+                "frames": window,
+                "count": len(window),
+                "total": len(items),
+                "offset": start,
+                "has_more": start + len(window) < len(items),
+                "scan_capped": scan_capped,
+            }
+
+        return self._runner(handle).call(work)
+
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -846,6 +911,17 @@ def _safe_title(page: Any) -> str:
         return _bounded_metadata(page.title(), _MAX_METADATA_BYTES)[0]
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _frame_attr(frame: Any, attr: str) -> str:
+    """A Playwright Frame's url/name are properties that can raise once the frame
+    detaches mid-enumeration; a raised attribute must read as empty, not abort
+    the whole listing."""
+    try:
+        value = getattr(frame, attr)
+    except Exception:  # noqa: BLE001
+        return ""
+    return value if isinstance(value, str) else ("" if value is None else str(value))
 
 
 def _response_status(response: Any) -> int | None:

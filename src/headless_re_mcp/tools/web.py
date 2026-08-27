@@ -169,6 +169,25 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
+    @tools.tool(name="web.frames")
+    def web_frames(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the page's frame tree (main document plus every iframe).
+
+        Each entry carries url, name, is_main (True for the top document),
+        depth (0 for the main frame, 1 for a direct child iframe, and so on),
+        and parent_url for every non-main frame; metadata_truncated marks a
+        bounded oversized url or name. Frames keep the page's tree order, so
+        the main frame is first. count/total/offset/has_more page the list and
+        scan_capped is True when more frames existed than were collected. This
+        exposes embedded and cross-origin iframe attack surface that a single
+        page URL hides; it does not evaluate script or return frame content.
+        """
+        return _dump(analysis.web_frames(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.
