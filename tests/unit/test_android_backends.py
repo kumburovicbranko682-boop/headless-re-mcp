@@ -244,15 +244,41 @@ class _FakeCall:
 
 
 class _FakeMethod:
-    def __init__(self, name: str, callers: int) -> None:
+    def __init__(self, name: str, callers: int, *, external: bool = False) -> None:
         self.name = name
         self._callers = callers
+        self._external = external
 
     def is_external(self) -> bool:
-        return False
+        return self._external
 
     def get_xref_from(self) -> list[tuple[object, _FakeCall, int]]:
         return [(None, _FakeCall(index), index) for index in range(self._callers)]
+
+
+class _FixedCall:
+    """A caller with a caller-controlled class/method, for dedup coverage."""
+
+    def __init__(self, class_name: str, name: str) -> None:
+        self.class_name = class_name
+        self.name = name
+
+
+class _MethodWithCalls:
+    """A method whose get_xref_from() returns exactly the given callers."""
+
+    def __init__(
+        self, name: str, calls: list[tuple[str, str]], *, external: bool = False
+    ) -> None:
+        self.name = name
+        self._calls = calls
+        self._external = external
+
+    def is_external(self) -> bool:
+        return self._external
+
+    def get_xref_from(self) -> list[tuple[object, _FixedCall, int]]:
+        return [(None, _FixedCall(cls, meth), i) for i, (cls, meth) in enumerate(self._calls)]
 
 
 class _FakeParsed:
@@ -303,6 +329,73 @@ class TestApkXrefsSayWhenTheyStopped:
         result = client.xrefs(tmp_path / "app.apk", "decrypt", limit=10)
 
         assert result["count"] == 10
+        assert result["has_more"] is False
+
+
+class TestApkXrefsFindFrameworkCallers:
+    """xrefs must answer "who calls this framework API?" -- external methods.
+
+    The verified bug: xrefs skipped every is_external() method, so a query for a
+    framework/crypto/reflection method (the whole point of Android xref hunting)
+    returned an authoritative-looking empty caller list. get_xref_from() on such
+    a method is exactly the in-app callers of it.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, methods: list[Any]) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeParsed(methods))
+        return client
+
+    def test_callers_of_an_external_method_are_returned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        method = _MethodWithCalls(
+            "doFinal",
+            [("Lcom/app/Crypto;", "decrypt"), ("Lcom/app/Net;", "send")],
+            external=True,
+        )
+        client = self._client(monkeypatch, [method])
+
+        result = client.xrefs(tmp_path / "app.apk", "doFinal", limit=10)
+
+        assert result["count"] == 2
+        assert {c["class"] for c in result["callers"]} == {
+            "Lcom/app/Crypto;",
+            "Lcom/app/Net;",
+        }
+
+    def test_identical_call_sites_are_deduplicated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One caller hitting the target from three sites -> one entry, since the
+        # payload has no offset to tell the sites apart.
+        method = _MethodWithCalls(
+            "append",
+            [("Lcom/app/Main;", "greet")] * 3,
+            external=True,
+        )
+        client = self._client(monkeypatch, [method])
+
+        result = client.xrefs(tmp_path / "app.apk", "append", limit=10)
+
+        assert result["count"] == 1
+        assert result["callers"] == [{"class": "Lcom/app/Main;", "method": "greet"}]
+        assert result["has_more"] is False
+
+    def test_dedup_does_not_spend_the_page_budget_on_repeats(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Twelve raw call sites but only three distinct callers, page cap 10:
+        # the answer is complete, not partial -- repeats must not fill the page.
+        calls = [(f"Lcom/app/C{n};", "m") for n in range(3) for _ in range(4)]
+        method = _MethodWithCalls("invoke", calls, external=True)
+        client = self._client(monkeypatch, [method])
+
+        result = client.xrefs(tmp_path / "app.apk", "invoke", limit=10)
+
+        assert result["count"] == 3
         assert result["has_more"] is False
 
 

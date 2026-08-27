@@ -424,22 +424,40 @@ class ApkClient:
             raise ApkError("invalid_params", "method_name is required")
         _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
         callers: list[JsonObject] = []
+        seen: set[tuple[str, str]] = set()
         has_more = False
         for method in parsed.analysis.get_methods():
-            if method.is_external() or method.name != target:
+            # Match on name across *all* methods, external included. A method's
+            # get_xref_from() is the set of in-app callers of it, and for an
+            # external (framework/library) method -- Cipher.doFinal,
+            # HttpURLConnection.connect, Method.invoke, System.loadLibrary,
+            # StringBuilder.append -- that is exactly the "who calls this API?"
+            # answer an analyst is after, and the single most valuable Android
+            # xref query. Skipping is_external() methods (the previous behaviour)
+            # returned an empty, authoritative-looking "0 callers" for every one
+            # of them: a false negative worse than an error. In-app methods that
+            # share the name are still matched, so nothing that used to resolve
+            # stops resolving.
+            if method.name != target:
                 continue
             for _, call, _ in method.get_xref_from():
+                # De-duplicate by (caller class, caller method): the payload
+                # carries no call-site offset, so a caller that hits the target
+                # from several sites would otherwise appear as identical,
+                # information-free repeats -- common now that framework methods
+                # (append twice for one `+` expression) are in scope. The page
+                # cap therefore bounds *distinct* callers, which is the unit a
+                # reader cares about.
+                key = (str(call.class_name), str(call.name))
+                if key in seen:
+                    continue
                 if len(callers) >= cap:
-                    # Only set once something was actually left out, so a result
-                    # that happens to fill the page is not reported as partial.
+                    # Only set once a distinct caller was actually left out, so a
+                    # result that merely fills the page is not reported partial.
                     has_more = True
                     break
-                callers.append(
-                    {
-                        "class": str(call.class_name),
-                        "method": str(call.name),
-                    }
-                )
+                seen.add(key)
+                callers.append({"class": key[0], "method": key[1]})
             if has_more:
                 break
         return {

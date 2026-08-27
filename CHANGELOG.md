@@ -49,6 +49,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（apk.xrefs 跳过所有外部方法——"谁调用了这个框架 API"永远返回空）
+
+- `apk.xrefs` 用 `if method.is_external() or method.name != target: continue` 把**所有外部
+  方法**（框架/库方法）直接跳过。可一个方法的 `get_xref_from()` 恰恰是它的**应用内调用者**集合；
+  对 `Cipher.doFinal`、`HttpURLConnection.connect`、`Method.invoke`、`System.loadLibrary`、
+  `StringBuilder.append` 这类外部方法而言，这正是分析者最想要的"谁调用了这个 API"——也是 Android
+  交叉引用分析最核心的查询。跳过它们意味着对每一个框架方法都返回一个**看起来权威的空调用者列表**，
+  是比报错更糟的假阴性。实测：真实 APK 里 `StringBuilder.append` 有 2 处来自 `MainActivity.greet`
+  的调用，旧代码返回 0。
+- 现在只按名字匹配（外部方法一并纳入），应用内同名方法仍照常解析，原本能解析的不受影响。
+- 顺带按 `(调用者类, 调用者方法)` **去重**：结果不含调用点偏移，一个调用者从多个调用点命中目标
+  （如一次 `+` 表达式产生两次 `append`）本会退化成完全相同、毫无信息的重复项；现在分页上限按**不同
+  调用者**计数，正是读者关心的单位。
+- 新增真实 DEX 的 androguard 静态分析门禁 `tests/integration/test_apk_static_gate.py` 与固定件
+  `fixtures/android/`（源码 + `build.sh` 溯源 + 已签名的 `sample.apk`），以及 CI 作业
+  `linux-apk-static`（装 android extra 后跑门禁）。此前 androguard 的真实分析在任何机器上都无实测
+  覆盖——裸机上的 Android 测试都用 androguard 无法解析的占位 dex，这个 bug 才得以出厂。门禁断言
+  `greet` 作为 `append` 的调用者被解析到，恢复旧行为即变红。单测另用假对象把外部纳入/去重/分页语义
+  钉死。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
