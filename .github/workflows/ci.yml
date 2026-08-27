@@ -55,9 +55,15 @@ jobs:
       - name: Unit tests
         # -rs prints every skip reason: a suite that quietly skips half of
         # itself reads exactly like a suite that passed.
-        # A single stuck process-backed test must name itself and fail before
-        # the 30-minute job deadline erases the useful per-test context.
-        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --cov --cov-report=term --cov-report=xml
+        # --timeout bounds a single stuck test so it names itself and fails
+        # before the 30-minute job deadline erases the useful per-test context.
+        # --session-timeout bounds the run as a whole: a hang outside any one
+        # test -- collection, a between-test gap, a process the suite could not
+        # reap -- is invisible to the per-test timer, so without it a wedged
+        # session burns the full job ceiling and GitHub cancels it with no
+        # pytest output at all. This trips it between tests instead, failing
+        # red with a diagnostic well inside the ceiling.
+        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --session-timeout=1200 --cov --cov-report=term --cov-report=xml
 
       - name: Upload coverage
         if: always()
@@ -120,7 +126,10 @@ jobs:
           python -m pip check
 
       - name: Linux unit tests
-        run: python -m pytest tests/unit -q -rs --tb=short --cov --cov-report=term
+        # Same two bounds as the Windows quality job: --timeout names and fails
+        # a single stuck test, --session-timeout stops a hang outside any one
+        # test from silently burning the 30-minute job ceiling.
+        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --session-timeout=1200 --cov --cov-report=term
 
       - name: Doctor and core service smoke
         run: |
