@@ -68,6 +68,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:前缀相邻的邻居在跑时 `force_stop` 仍回 `stopped=true`/`remaining_pids=[]`、目标包及其
   `包名:子进程` 行被如实计入、`_pids_from_ps` 精确匹配名字(拒 `app2`/`appstore`)、空行与表头不崩、
   海量进程表封顶 16 条;pidof 回主机错误串时保持 null 且不触发 ps 回退、ps 回退回主机错误串时也保持 null。
+### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
+
+- `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
+  `sys.platform` 强制成 `linux` 后再 monkeypatch `os.sysconf`，但 Windows 的 `os` 模块
+  根本没有 `sysconf` 属性，`monkeypatch.setattr` 默认 `raising=True` 便当场抛
+  `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
+  `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
+  非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
+  创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
