@@ -134,8 +134,27 @@ export function useWorkbench() {
         const resumeAfter = Number(window.history.state?.runSeq ?? 0);
         if (typeof resumeRun === "string") {
           try {
-            const history = await api<{ events: RunEvent[] }>(`/api/agent/runs/${encodeURIComponent(resumeRun)}/events/history?after=0`);
+            const [runInfo, history] = await Promise.all([
+              api<{ run?: { thread_id?: string } }>(`/api/agent/runs/${encodeURIComponent(resumeRun)}`),
+              api<{ events: RunEvent[] }>(`/api/agent/runs/${encodeURIComponent(resumeRun)}/events/history?after=0`),
+            ]);
             if (cancelled) return;
+            // Reselect the resumed run's thread. A reload wipes the selection,
+            // and consume() refreshes messages from the *selected* thread when
+            // the stream ends -- without this the transcript stays on the empty
+            // screen even after the resumed run finishes.
+            const resumeThread = runInfo.run?.thread_id;
+            if (typeof resumeThread === "string" && resumeThread) {
+              const thread = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(resumeThread)}`).catch(() => null);
+              if (cancelled) return;
+              if (thread) {
+                // Messages only: seeding thread events here would make the
+                // history replay below drop its duplicates, and with them the
+                // approval.required rebuild that restores pending approval cards.
+                dispatch({ type: "select", threadId: resumeThread, messages: thread.messages });
+                setSessionId(thread.thread.session_id ?? "");
+              }
+            }
             dispatch({ type: "run", runId: resumeRun });
             history.events.forEach((event) => dispatch({ type: "event", event }));
             void consume(resumeRun, resumeAfter);

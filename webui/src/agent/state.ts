@@ -28,7 +28,7 @@ export type AgentAction =
 export function runFailureHint(type: string, data: Record<string, unknown>): string | null {
   if (type === "run.completed") return null;
   if (type === "run.cancelled") return "\u672c\u8f6e\u5df2\u53d6\u6d88";
-  if (type === "run.rejected") return "\u5199\u64cd\u4f5c\u88ab\u62d3\u7edd\uff0c\u672c\u8f6e\u5df2\u505c";
+  if (type === "run.rejected") return "\u5199\u64cd\u4f5c\u88ab\u62d2\u7edd\uff0c\u672c\u8f6e\u5df2\u505c";
   const raw = String(data.error ?? type);
   if (/maximum tool rounds exceeded/i.test(raw)) {
     return "\u672c\u8f6e\u5de5\u5177\u6b65\u6570\u7528\u5b8c\u4e86\uff0c\u4e0d\u662f\u5d29\u6e83\u3002\u4f1a\u8bdd\u8fd8\u5728\uff0c\u63a5\u7740\u53d1\u4e00\u53e5\u5373\u53ef\u7ee7\u7eed\u3002";

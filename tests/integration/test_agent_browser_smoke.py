@@ -73,6 +73,11 @@ _ROUND_TRIP_MS = 45_000
 @pytest.mark.integration
 def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    # This smoke drives the human approval flow, so pin the fail-closed policy.
+    # Without these the packed-analysis presets auto-approve the danger call and
+    # the approval card this test clicks never renders.
+    monkeypatch.setenv("HEADLESS_RE_AGENT_AUTO_APPROVE_EFFECTS", "")
+    monkeypatch.setenv("HEADLESS_RE_AGENT_AUTO_APPROVE_TOOLS", "")
     settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
     token = "browser-web-token-0123456789"
     app = create_app(AnalysisService(settings), token=token, settings=settings)
@@ -91,9 +96,12 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
     secret = "browser-provider-secret-value"
     try:
         with sync_playwright() as playwright:
+            # Use Playwright's managed Chromium (same as the web backend's
+            # pw.chromium.launch), not a hardcoded system path -- the old
+            # C:\Program Files\Google\Chrome path only existed on the author's
+            # Windows box and made this gate impossible to run anywhere else.
             browser = playwright.chromium.launch(
                 headless=True,
-                executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
                 args=["--disable-gpu", "--no-first-run"],
             )
             page = browser.new_page()
@@ -110,7 +118,7 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
             page.on("response", capture)
             # A fresh profile lands on the work-direction screen first.
             page.goto(f"http://127.0.0.1:{port}/?token={token}")
-            expect(page.get_by_role("heading", name="你想逆向什么？")).to_be_visible()
+            expect(page.get_by_role("heading", name="开始一段分析")).to_be_visible()
 
             # Skip past it for the agent flow. Seeding the stored choice rather
             # than clicking keeps this gate from persisting a workspace profile
@@ -118,41 +126,49 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
             # webui/src/components/WorkspaceLanding.test.tsx.
             page.evaluate("localStorage.setItem('headless_ws_profile','full')")
             page.goto(f"http://127.0.0.1:{port}/?token={token}")
-            expect(page.get_by_role("heading", name="Agent analysis")).to_be_visible()
+            expect(page.get_by_role("heading", name="有什么想分析的？")).to_be_visible()
             assert "token=" not in page.url
 
-            page.get_by_label("Message").fill("run read-only tool")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_text("tool round finished")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_label("消息").fill("run read-only tool")
+            page.get_by_role("button", name="发送").click()
+            expect(page.get_by_text("tool round finished", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
+            # Raw event types render only on the inspector's events tab; the
+            # default tab is the virtual-desktop watch.
+            page.get_by_role("tab", name="事件").click()
             expect(page.get_by_text("tool.completed").first).to_be_visible()
 
-            page.get_by_role("button", name="Provider & setup").click()
-            page.get_by_label("Base URL").fill("https://example.invalid/v1")
-            page.get_by_label("Model").fill("browser-fake")
-            page.get_by_label("API key").fill(secret)
-            page.get_by_role("button", name="Save server-side").click()
+            page.get_by_role("button", name="设置", exact=True).click()
+            page.get_by_label("接口地址").fill("https://example.invalid/v1")
+            page.get_by_label("模型", exact=True).fill("browser-fake")
+            page.get_by_label("API 密钥").fill(secret)
+            page.get_by_role("button", name="保存模型").click()
+            # Saving keeps the modal open and confirms inline; close it by hand.
+            expect(page.get_by_text("模型设置已保存到本机服务。")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_role("dialog").get_by_role("button", name="×").click()
             expect(page.get_by_role("dialog")).not_to_be_visible()
 
-            page.get_by_label("Message").fill("danger approve")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_role("button", name="Approve once")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_label("消息").fill("danger approve")
+            page.get_by_role("button", name="发送").click()
+            expect(page.get_by_role("button", name="批准一次")).to_be_visible(timeout=_ROUND_TRIP_MS)
             prior_seq = int(page.evaluate("window.history.state.runSeq"))
             assert prior_seq > 0
             page.reload()
-            expect(page.get_by_role("button", name="Approve once")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            expect(page.get_by_role("button", name="批准一次")).to_be_visible(timeout=_ROUND_TRIP_MS)
             assert "token=" not in page.url
-            page.get_by_role("button", name="Approve once").click()
-            expect(page.get_by_text("tool round finished")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_role("button", name="批准一次").click()
+            expect(page.get_by_text("tool round finished", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
             assert any(f"after={prior_seq}" in url for url in sse_urls)
 
-            page.get_by_label("Message").fill("danger reject")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_role("button", name="Reject", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_label("消息").fill("danger reject")
+            page.get_by_role("button", name="发送").click()
+            expect(page.get_by_role("button", name="拒绝", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
             with page.expect_response(
                 lambda response: response.url.endswith("/reject"), timeout=_ROUND_TRIP_MS
             ) as rejected_response:
-                page.get_by_role("button", name="Reject", exact=True).click()
+                page.get_by_role("button", name="拒绝", exact=True).click()
             assert rejected_response.value.status == 200
+            # The reload above reset the inspector back to the watch tab.
+            page.get_by_role("tab", name="事件").click()
             expect(page.get_by_text("run.rejected")).to_be_visible(timeout=_ROUND_TRIP_MS)
 
             providers = page.evaluate(
