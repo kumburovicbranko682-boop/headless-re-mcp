@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -69,6 +70,59 @@ def _build_elf_fixture(tmp_path: Path) -> Path:
             f"({completed.stderr.decode('utf-8', 'replace')[:200]}) — skip != pass"
         )
     return out
+
+
+# A named, un-inlinable function main calls, so the Mach-O gate can recover it
+# by name and follow the call as an xref. No libc string/import here: a
+# zig-cross-linked Mach-O surfaces those differently than an ELF, and the point
+# of this gate is the native Mach-O identity + r2 function/xref surface.
+_MACHO_SOURCE = (
+    "int re_mcp_triple(int x) { return x * 3 + 1; }\n"
+    "int main(void) { return re_mcp_triple(7); }\n"
+)
+# Thin Mach-O magics (32/64-bit, either byte order); the fat magic is excluded
+# on purpose, matching classify_target.
+_MACHO_MAGICS = {
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+}
+
+
+def _build_macho_fixture(tmp_path: Path) -> Path:
+    """Compile a tiny Mach-O x86_64 executable, or skip (skip != pass).
+
+    A Mach-O *executable* is required, not a bare object: r2 seeds its function
+    analysis from the entrypoint, and on r2 6.x an object exposes neither an
+    entry nor its symbol table, so nothing named comes back. On Linux ``zig cc
+    -target x86_64-macos`` cross-links one without the macOS SDK; on a mac the
+    host compiler emits Mach-O directly. Absent either, skip honestly.
+    """
+    source = tmp_path / "re_mcp_probe_macho.c"
+    source.write_text(_MACHO_SOURCE, encoding="utf-8")
+    out = tmp_path / "re_mcp_probe_macho"
+    commands: list[list[str]] = []
+    zig = shutil.which("zig")
+    if zig is not None:
+        commands.append([zig, "cc", "-target", "x86_64-macos", "-O0", "-o", str(out), str(source)])
+    if sys.platform == "darwin":
+        host = shutil.which("cc") or shutil.which("clang")
+        if host is not None:
+            commands.append([host, "-O0", "-o", str(out), str(source)])
+    if not commands:
+        pytest.skip("no Mach-O cross toolchain (zig / darwin cc) — skip != pass")
+    last = ""
+    for argv in commands:
+        try:
+            completed = subprocess.run(argv, capture_output=True, timeout=180.0)
+        except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover - host dependent
+            last = str(exc)
+            continue
+        if completed.returncode == 0 and out.is_file() and out.read_bytes()[:4] in _MACHO_MAGICS:
+            return out
+        last = completed.stderr.decode("utf-8", "replace")[:200]
+    pytest.skip(f"no toolchain emitted a Mach-O executable ({last}) — skip != pass")
 
 
 def _assert_mapped(address: object) -> None:
@@ -225,6 +279,80 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
             _assert_mapped(row.get("from_address"))
             _assert_mapped(row.get("to_address"))
             assert row["to_address"].get("architecture") == expect_arch, row
+    finally:
+        service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_r2_service_analyzes_a_native_macho_end_to_end(tmp_path: Path) -> None:
+    """A native Mach-O must open as a session and analyse through r2 too.
+
+    ELF is the common non-Windows target, but the native line also claims
+    Mach-O: classify_target maps its magic to NATIVE and describe_native reads
+    its header. Only synthetic headers exercised that until now. This builds a
+    real Mach-O executable (zig cross-compile, or a mac host) and drives the
+    same r2 surface the ELF gate does -- classification, functions, disasm,
+    exports and an xref edge -- with every address carrying the architecture.
+    skip != pass when r2 or a Mach-O toolchain is absent.
+    """
+    if not R2Client().available:
+        pytest.skip("radare2/rizin not installed — native Mach-O Gate not run (skip≠pass)")
+    macho = _build_macho_fixture(tmp_path)
+    service = AnalysisService(Settings.load())
+    created = service.create_session(str(macho))
+    assert created.ok and created.data is not None, created.error
+    session = created.data["session"]
+    assert session.get("target") == "native"
+    native = session.get("metadata", {}).get("native", {})
+    assert native.get("format") == "macho", native
+    assert native.get("bits") in {32, 64}, native
+    assert isinstance(native.get("machine"), str) and native["machine"]
+    expect_arch = session.get("architecture")
+    session_id = str(session["id"])
+    try:
+        assert service.r2_open(session_id, timeout=60.0).ok
+
+        funcs = service.r2_functions(session_id, timeout=60.0)
+        assert funcs.ok and funcs.data is not None, funcs.error
+        assert funcs.data.get("parsed") is True
+        assert funcs.data.get("architecture") == expect_arch, funcs.data.get("architecture")
+        by_name = {item.get("name"): item for item in funcs.data.get("items", [])}
+        # r2 flags the Mach-O entry as sym._main / entry0; match main by substring
+        # so the flag-namespace prefix does not make the gate brittle.
+        main_name = next((n for n in by_name if n and "main" in n), None)
+        assert main_name is not None, sorted(by_name)
+        triple = next((n for n in by_name if "re_mcp_triple" in (n or "")), None)
+        assert triple is not None, sorted(by_name)
+
+        entry = int(by_name[main_name]["offset"])
+        dis = service.r2_disasm(session_id, entry, count=8, timeout=60.0)
+        assert dis.ok and dis.data is not None, dis.error
+        assert dis.data.get("parsed") is True
+        assert dis.data.get("invalid_count") == 0, dis.data
+        assert dis.data.get("items"), "main disassembled to nothing"
+
+        exports = service.r2_exports(session_id, timeout=60.0)
+        assert exports.ok and exports.data is not None, exports.error
+        assert exports.data.get("parsed") is True
+        assert exports.data.get("architecture") == expect_arch
+        exported = {item.get("name"): item for item in exports.data.get("items", [])}
+        exported_triple = next((n for n in exported if "re_mcp_triple" in (n or "")), None)
+        assert exported_triple is not None, sorted(n for n in exported if n)
+        addr = exported[exported_triple].get("address")
+        _assert_mapped(addr)
+        assert addr.get("architecture") == expect_arch, exported[exported_triple]
+
+        # main calls re_mcp_triple, so a "to" edge must resolve on Mach-O as well.
+        target = int(addr["va"])
+        xref = service.r2_xrefs(session_id, target, timeout=60.0)
+        assert xref.ok and xref.data is not None, xref.error
+        assert xref.data.get("parsed") is True
+        rows = xref.data.get("items") or []
+        assert any(row.get("direction") == "to" for row in rows), rows
+        for row in rows:
+            assert row.get("direction") in {"to", "from"}, row
+            _assert_mapped(row.get("from_address"))
+            _assert_mapped(row.get("to_address"))
     finally:
         service.close_session(session_id)
 
