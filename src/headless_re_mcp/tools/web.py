@@ -172,7 +172,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Export captured network activity to a HAR artifact.
 
         Answers with path and entry_count, plus artifact_id when the HAR
-        was registered. There is no har, entries or artifact field.
+        was registered. total is how many retained requests were available;
+        truncated is true when some were dropped from the tail to fit the
+        capture cap (entry_count is then below total), and dropped is the
+        ring evictions that never reached the export. There is no har,
+        entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.har.export` 不再把「只剩一角」的 HAR 报成完整抓取）
+
+- 一次 HAR 导出会从两条独立路径丢条目:抓取环在页面运行时溢出淘汰的请求(`web.network.list`
+  以 `dropped` 交代),以及导出器自身在序列化后超过抓取上限时从尾部丢弃的条目。此前回包只有
+  `entry_count` 和一个 `truncated` 布尔——尾部丢了多少不知道,环里更早淘汰了多少更是只字未提。
+  无人值守的 agent 据此会把「实际只剩一角」的 HAR 读成「完整抓取减掉一小口」,基于残缺流量下错结论。
+- 现在回包与 `web.network.list` 用同一套词汇:`total` 是导出时环内仍在、可供导出的条目数;
+  `entry_count` 是真正写进文件的条数;`truncated` 为真即发生了尾部丢弃(此时 `entry_count < total`,
+  丢弃量即两者之差);`dropped` 是环淘汰数,一笔从未进入本次导出的损失。三者各自成因、互不掩盖。
+- 单条目大到一进去就超上限时,它被丢掉、写出一份空但据实标注的 HAR(`total=1`/`entry_count=0`/
+  `truncated=true`),读作「有一条但塞不下」,而非「抓取为空」。
+- 新增回归:小抓取 `total==entry_count`、`truncated` 假、`dropped` 0;环淘汰独立现于 `dropped`
+  且不误标 `truncated`;超上限时尾部丢弃据实量化且写出文件的条数与 `entry_count` 逐条一致;
+  单条超限落成空但标注的 HAR。`web.har.export` 描述点名 `total` / `truncated` / `dropped`。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

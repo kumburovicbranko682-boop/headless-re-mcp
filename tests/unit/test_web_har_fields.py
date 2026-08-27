@@ -32,6 +32,7 @@ def _tool_docstring(name: str) -> str:
 
 class _Handle:
     lock = Lock()
+    requests_dropped = 0
     requests = {
         "1": {
             "method": "GET",
@@ -62,3 +63,5 @@ def test_web_har_export_puts_the_file_in_path_not_har(
     doc = _tool_docstring("web.har.export")
     assert "Answers with path" in doc
     assert "entry_count" in doc
+    assert "total" in doc
+    assert "dropped" in doc

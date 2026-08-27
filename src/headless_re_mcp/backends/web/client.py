@@ -696,8 +696,18 @@ class WebBackend:
                 }
                 for e in handle.requests.values()
             ]
+            ring_dropped = handle.requests_dropped
         import json
 
+        # Two independent losses reach a HAR, and the caller has to see both.
+        # ``dropped`` is ring eviction: requests that never made it into this
+        # export because the capture buffer overflowed while the page ran, the
+        # same count web.network.list surfaces. ``total`` is what survived the
+        # ring and was available here; dropping any of those to fit the capture
+        # cap is a *second* loss, marked by ``truncated`` and quantified by
+        # ``total`` minus ``entry_count``. Reporting only a truncated boolean
+        # let an agent read the file as the whole capture minus a nibble.
+        total = len(entries)
         har = {
             "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
         }
@@ -723,7 +733,9 @@ class WebBackend:
         return {
             "path": str(out_path),
             "entry_count": len(entries),
+            "total": total,
             "truncated": truncated,
+            "dropped": ring_dropped,
             "size": len(encoded),
         }
 
