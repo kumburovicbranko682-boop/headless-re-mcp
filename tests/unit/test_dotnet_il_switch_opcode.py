@@ -173,3 +173,66 @@ def test_leave_and_leave_s_consume_their_signed_displacement() -> None:
     long_form, _ = _disassemble_il(b"\xdd" + struct.pack("<i", -3), max_insns=MAX_IL_INSNS)
     assert long_form[0]["mnemonic"] == "leave"
     assert long_form[0]["operand"] == -3
+
+
+def test_token_object_model_opcodes_consume_four_bytes_and_stay_aligned() -> None:
+    """castclass/ldsfld/newarr/ldtoken/unbox.any skip their whole token.
+
+    These object-model opcodes each carry a 4-byte metadata token and appear in
+    nearly every non-trivial method. Missing from the table, each advanced one
+    byte and its four token bytes were decoded as instructions -- the common
+    four-byte desync. The trailing ret must be reached in step after all of them.
+    """
+    il = (
+        b"\x74" + struct.pack("<I", 0x0100_0002)  # castclass
+        + b"\x7e" + struct.pack("<I", 0x0400_0003)  # ldsfld
+        + b"\x8d" + struct.pack("<I", 0x0200_0001)  # newarr
+        + b"\xd0" + struct.pack("<I", 0x0A00_0004)  # ldtoken
+        + b"\xa5" + struct.pack("<I", 0x0100_0005)  # unbox.any
+        + b"\x2a"  # ret
+    )
+    instructions, partial = _disassemble_il(il, max_insns=MAX_IL_INSNS)
+
+    assert [insn["mnemonic"] for insn in instructions] == [
+        "castclass", "ldsfld", "newarr", "ldtoken", "unbox.any", "ret",
+    ]
+    assert instructions[-1]["ip"] == len(il) - 1
+    assert partial is False
+
+
+def test_metadata_tokens_decode_unsigned() -> None:
+    """A token with the high bit set is a large positive value, not a negative.
+
+    ldsfld carries an unsigned metadata token; a table id in the top byte must
+    not flip it negative the way a signed read would.
+    """
+    instructions, _ = _disassemble_il(
+        b"\x7e" + struct.pack("<I", 0xFF00_0000), max_insns=MAX_IL_INSNS
+    )
+    assert instructions[0]["mnemonic"] == "ldsfld"
+    assert instructions[0]["operand"] == 0xFF00_0000
+
+
+def test_ldc_i8_is_a_signed_eight_byte_constant() -> None:
+    """ldc.i8 loads a signed int64: eight 0xFF bytes are -1, not a huge uint."""
+    negative, partial = _disassemble_il(
+        b"\x21" + struct.pack("<q", -1) + b"\x2a", max_insns=MAX_IL_INSNS
+    )
+    assert [insn["mnemonic"] for insn in negative] == ["ldc.i8", "ret"]
+    assert negative[0]["operand"] == -1
+    assert negative[1]["ip"] == 9  # the eight operand bytes were skipped whole
+    assert partial is False
+
+
+def test_ldc_r8_reserves_its_eight_operand_bytes() -> None:
+    """ldc.r8 is 8 bytes wide; a double literal must not desync the ret after it.
+
+    The float bits themselves are surfaced raw -- this decoder shows control
+    flow and tokens, not rendered floats -- but the width must be right so the
+    following instruction is read in step.
+    """
+    il = b"\x23" + struct.pack("<d", 3.14159) + b"\x2a"  # ldc.r8; ret
+    instructions, partial = _disassemble_il(il, max_insns=MAX_IL_INSNS)
+    assert [insn["mnemonic"] for insn in instructions] == ["ldc.r8", "ret"]
+    assert instructions[1]["ip"] == len(il) - 1
+    assert partial is False

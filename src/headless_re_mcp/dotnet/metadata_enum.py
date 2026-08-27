@@ -67,9 +67,21 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x1E: ("ldc.i4.8", 0),
     0x1F: ("ldc.i4.s", 1),
     0x20: ("ldc.i4", 4),
+    # The wide numeric loads: ldc.i8 is a signed 8-byte constant, ldc.r4/ldc.r8
+    # are 4- and 8-byte IEEE-754 patterns. Absent from the table, each advanced
+    # a single byte and its 8 (or 4) operand bytes were read as instructions --
+    # a `long`/`double` literal desynced the rest of the method. Getting the
+    # width right realigns the sweep; the float operands are surfaced as their
+    # raw little-endian bits (this decoder shows control flow and tokens, not
+    # rendered floats), while ldc.i8 joins the signed set below.
+    0x21: ("ldc.i8", 8),
+    0x22: ("ldc.r4", 4),
+    0x23: ("ldc.r8", 8),
     0x25: ("dup", 0),
     0x26: ("pop", 0),
+    0x27: ("jmp", 4),
     0x28: ("call", 4),
+    0x29: ("calli", 4),
     0x2A: ("ret", 0),
     0x2B: ("br.s", 1),
     0x2C: ("brfalse.s", 1),
@@ -106,12 +118,39 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x42: ("bgt.un", 4),
     0x43: ("ble.un", 4),
     0x44: ("blt.un", 4),
+    # The object-model opcodes each carry a 4-byte metadata token. Only a
+    # handful (call/callvirt/ldstr/newobj/ldfld/stfld/box) were listed, so the
+    # rest -- castclass and isinst behind every cast and `is`/`as`, ldsfld/
+    # stsfld behind every static field access, newarr behind every `new T[]`,
+    # ldtoken behind every `typeof`, unbox.any behind every unbox to a value
+    # type -- fell to the unknown-opcode branch, which advanced one byte and
+    # read the four token bytes as the next instructions. These appear in
+    # nearly every non-trivial method, so the four-byte desync they caused was
+    # the common case, not an edge one. All tokens are unsigned.
     0x6F: ("callvirt", 4),
+    0x70: ("cpobj", 4),
+    0x71: ("ldobj", 4),
     0x72: ("ldstr", 4),
     0x73: ("newobj", 4),
+    0x74: ("castclass", 4),
+    0x75: ("isinst", 4),
+    0x79: ("unbox", 4),
     0x7B: ("ldfld", 4),
+    0x7C: ("ldflda", 4),
     0x7D: ("stfld", 4),
+    0x7E: ("ldsfld", 4),
+    0x7F: ("ldsflda", 4),
+    0x80: ("stsfld", 4),
+    0x81: ("stobj", 4),
     0x8C: ("box", 4),
+    0x8D: ("newarr", 4),
+    0x8F: ("ldelema", 4),
+    0xA3: ("ldelem", 4),
+    0xA4: ("stelem", 4),
+    0xA5: ("unbox.any", 4),
+    0xC2: ("refanyval", 4),
+    0xC6: ("mkrefany", 4),
+    0xD0: ("ldtoken", 4),
     # leave/leave.s exit a protected (try/catch/finally) region; every method
     # with exception handling ends its guarded blocks with one. Like the
     # branches they carry a signed displacement -- four bytes, one for .s -- to
@@ -122,13 +161,13 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
 
 # Every branch target -- unconditional, conditional, short (1-byte) and long
 # (4-byte) -- is a signed displacement from the instruction that follows the
-# branch, as is leave's displacement to the end of a protected region. The two
-# ldc.i4 constant forms are the only non-branch signed operands; every other
-# opcode with an operand here carries an unsigned value -- a metadata token or,
-# for the short-form ldarg.s/ldloc.s/etc, an unsigned slot index. Reading a
-# signed operand as unsigned turns a backward branch into its two's-complement
-# bit pattern -- br -10 printed as 4294967286 -- which misreads the control flow
-# the disassembly exists to show.
+# branch, as is leave's displacement to the end of a protected region. The
+# ldc.i4 forms and the wide ldc.i8 load their integer constants signed too;
+# every other opcode with an operand here carries an unsigned value -- a
+# metadata token or, for the short-form ldarg.s/ldloc.s/etc, an unsigned slot
+# index. Reading a signed operand as unsigned turns a backward branch into its
+# two's-complement bit pattern -- br -10 printed as 4294967286 -- which misreads
+# the control flow the disassembly exists to show.
 _SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
     {
         "br.s", "brfalse.s", "brtrue.s",
@@ -138,7 +177,7 @@ _SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
         "beq", "bge", "bgt", "ble", "blt",
         "bne.un", "bge.un", "bgt.un", "ble.un", "blt.un",
         "leave", "leave.s",
-        "ldc.i4", "ldc.i4.s",
+        "ldc.i4", "ldc.i4.s", "ldc.i8",
     }
 )
 
