@@ -188,7 +188,6 @@ _READ_ONLY_NAMES = frozenset((
     'apk.manifest',
     'apk.methods',
     'apk.native_libs',
-    'apk.open',
     'apk.permissions',
     'apk.strings',
     'apk.xrefs',
@@ -271,6 +270,13 @@ _STATE_CHANGE_NAMES = frozenset((
     'workflow.navigate_to_event',
     'workflow.reset',
     # Android / Web / workspace state-changing tools.
+    # apk.open records the "apk" backend and appends a timeline row to the
+    # session store, and guards CLOSING/CLOSED/FAILED with InvalidStateTransition
+    # -- the same session mutation r2.open / dynamic.open / web.open perform, all
+    # filed here. Filed read-only it skipped guard_write entirely, so it ran (and
+    # mutated the store) in a read-only deployment and auto-executed under the
+    # request-approval autonomy mode; every other backend open waits.
+    'apk.open',
     'device.connect',
     'device.force_stop',
     'device.forward',

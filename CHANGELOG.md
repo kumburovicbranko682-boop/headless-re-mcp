@@ -59,6 +59,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（`apk.open` 被误标为只读，绕过只读部署与审批门）
+
+- 工具读写分级决定两件事：只读工具在只读部署里不套 `guard_write`（直接跑），且在
+  「请求批准」自治模式下 `agent_auto_execute` 自动放行。`apk.open` 却和其它后端 open 一样
+  会 `_record_backend("apk")` + `_timeline_append`（写进会话库 `sessions.db`），并用
+  `InvalidStateTransition` 拦 CLOSING/CLOSED/FAILED——这些都是 `r2.open` / `dynamic.open` /
+  `web.open` / `proxy.start` / `frida.attach` 归为 `state_change` 的同款会话改动。唯独
+  `apk.open` 落在只读集里：于是只读部署下它照样运行并改写会话库（违背只读承诺），在请求
+  批准模式下也无卡直接自动执行，而每个其它后端 open 都要等审批。现把 `apk.open` 移到
+  `state_change`：只读部署改为 `write_disabled` 拒绝，请求批准模式改为等待人工，默认加壳
+  分析预设（自动批准 `state_change`）与完全访问下仍照常自动运行，行为与其它 open 对齐。
+  纯解析类 APK 工具（`apk.classes` / `apk.manifest` / `apk.strings` / `apk.xrefs` 等，均不写
+  后端或时间线）仍是只读。新增直测钉住 `apk.open` 为 `state_change` 且与 `r2.open` 同级。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

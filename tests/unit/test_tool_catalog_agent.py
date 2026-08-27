@@ -96,3 +96,28 @@ def test_stealth_set_is_a_file_write() -> None:
     assert spec.write is True
     assert spec.agent_auto_execute is False
     assert spec.effects == frozenset({ToolEffect.STATE_CHANGE, ToolEffect.FILE_WRITE})
+
+
+def test_apk_open_is_a_state_change_like_every_other_backend_open() -> None:
+    """apk.open records a backend + timeline, so it must be a guarded write.
+
+    apk.open calls _record_backend / _timeline_append (persisting to the session
+    store) and guards CLOSING/CLOSED/FAILED with InvalidStateTransition -- the
+    same session mutation r2.open / dynamic.open / web.open do, all filed as
+    state_change. Filed read-only it skipped guard_write, so it ran and mutated
+    the store even in a read-only deployment and auto-executed under the
+    request-approval autonomy mode. Its read-only siblings that only parse the
+    APK (apk.classes, apk.manifest, ...) stay read-only.
+    """
+    apk_open = COMMAND_CATALOG.require("apk.open")
+    assert apk_open.effects == frozenset({ToolEffect.STATE_CHANGE})
+    assert apk_open.write is True
+    assert apk_open.agent_auto_execute is False
+    # r2.open is the direct analogue: another backend open on an existing
+    # session that records a backend. Their effects must match.
+    assert apk_open.effects == COMMAND_CATALOG.require("r2.open").effects
+    # The pure-reader APK tools are unaffected and remain read-only.
+    for reader in ("apk.classes", "apk.manifest", "apk.strings", "apk.xrefs"):
+        spec = COMMAND_CATALOG.require(reader)
+        assert spec.effects == frozenset({ToolEffect.READ_ONLY})
+        assert spec.write is False
