@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import ipaddress
+import json
 import socket
 import ssl
 import tempfile
@@ -379,6 +380,43 @@ def test_proxy_replay_reissues_a_captured_request_to_the_origin() -> None:
             assert _poll(lambda: backend.flows("gate-replay")["total"] >= 2, timeout=10.0)
         finally:
             backend.stop("gate-replay")
+
+
+@pytest.mark.integration
+def test_proxy_export_har_serialises_the_capture(tmp_path: Path) -> None:
+    """export_har turns the live capture into a HAR log, but had no live test.
+
+    Capture one request, export, and assert a valid HAR 1.2 log lands on disk
+    with an entry that names the request's method and URL -- the shape any HAR
+    viewer or downstream replay tool expects.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy HAR Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _counting_origin_server() as (origin_url, _hits):
+        backend.start("gate-har", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            with opener.open(origin_url, timeout=10) as response:
+                assert response.status == 200
+            assert _poll(lambda: backend.flows("gate-har")["total"] >= 1)
+
+            out = tmp_path / "capture.har"
+            result = backend.export_har("gate-har", out)
+            assert result["entry_count"] >= 1
+            assert out.is_file()
+            log = json.loads(out.read_text(encoding="utf-8"))["log"]
+            assert log["version"] == "1.2"
+            assert any(
+                str(entry["request"]["url"]).endswith("/api/thing")
+                and entry["request"]["method"] == "GET"
+                for entry in log["entries"]
+            ), "the captured GET is missing from the HAR"
+        finally:
+            backend.stop("gate-har")
 
 
 @pytest.mark.integration
