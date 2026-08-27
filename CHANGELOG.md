@@ -277,8 +277,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   frida 的重型原生 wheel),对提交的 `hello_world.apk` 夹具跑 Android gate:会话分类、PE 工具拒绝 APK
   会话、以及 androguard 完整成功路径(清单/组件/类/方法/字符串)都真跑;jadx/apktool 两条因无 JRE
   工具链诚实跳过,adb/frida 调用则降级为 `capability_unavailable` 信封(已验证 adbutils/frida 缺席时不
-  抛异常)。跑前先 import 验证 androguard 装成功,不让"装失败=看着绿"混过。jadx/apktool 不在发行版
-  仓库里、需下载且版本敏感,故暂不进 CI,保持 skip 门。
+  抛异常)。跑前先 import 验证 androguard 装成功,不让"装失败=看着绿"混过。jadx 只以大体积 GitHub
+  release 发布、不在发行版仓库里,故仍保持 skip 门;apktool 在发行版里、已另立 gate(见下)。
+- **Android 改包线(apktool decode→repack)进 CI 真跑,并借此修掉一个真实的跨版本缺陷**。此前只
+  在本机用较新的 apktool 2.9.x 验证过;换到发行版打包的 apktool 2.7.x(Debian/Ubuntu universe)
+  后,先在 decode 就崩:提交的夹具 `resources.arsc` 是 `aapt2 link` 在无资源时吐的 40 字节空表
+  (零 package),apktool < 2.9 直接拒绝解码(`arsc files with zero packages or no arsc file
+  found`),于是这条线过去只在新版 apktool 上"碰巧能过"。**更要命的是 repack**:apktool 2.9.0 才把
+  构建默认切到 aapt2,之前默认用已停更的 aapt1,而 aapt1 无法回编 apktool 自己从 aapt2 打的(现代)
+  APK 解出来的资源,会以 `First type is not attr!`(aapt 退出码 134)崩掉——也就是说 Debian/Ubuntu
+  稳定版用户拿我们的 `apk.repack` 去处理任何现代 APK 都会失败。修法两处:①**加固夹具**——`res/values/
+  strings.xml` 补一个 `app_name` 字符串并在清单里 `@string/app_name` 引用,让 arsc 带一个真实 package,
+  从而在 2.7.x/2.9.x 上都能解码(`build.sh` 相应改成先 `aapt2 compile --dir res` 再 link);②**让
+  `ApktoolClient.build` 按版本选 aapt**——`apktool --version` < 2.9.0 时补 `--use-aapt2`(该版本区间
+  既需要它、也接受它),2.9.0+ 默认已是 aapt2、且 2.12.0 起该 flag 被移除故一律不传;版本读不出时按现代
+  默认不传。CI `linux-quality` 新增一步:`apt-get install -y apktool`(它自带 JRE、aapt/aapt2 与
+  android-framework-res,无需手动下载),`apktool --version` 自检后按 `-k apktool` 跑 decode→repack
+  往返 gate。已在 apktool 2.7.0(apt)与 2.9.3 上均验证往返通过;新增三条 CI 可跑单测钉住版本解析与
+  按版本增删 `--use-aapt2`。此外用真实 jadx/apktool 把两条线的错误/边界路径(找不到的类、路径逃逸、空类名、
+  超时、export_sources、no_resources 解码、未 decode 先 repack、缺 apksigner、越界 decoded_dir)全跑了一遍,
+  确认每一种失败都回结构化信封、无 `internal_error` 泄漏。
 - **Web CDP(Playwright 浏览器)线进 CI 真跑,单独成一个作业**。浏览器抓取路径此前修过真实缺陷
   (高层 console 事件每次导航泄漏一批 OS 句柄;Playwright 的线程亲和性),这些单测替代不了——必须
   驱动一个活的 CDP 会话。新增 `web-cdp-gate` 作业:装 `.[browser]` 后

@@ -46,12 +46,21 @@ YML
 java -jar "$APKTOOL_JAR" b "$work/skel" -o "$work/apktool.apk" --use-aapt2 -a "$AAPT2"
 unzip -oq "$work/apktool.apk" classes.dex -d "$work"
 
-# 2. Compile the manifest to binary AXML (needs the framework) and package.
+# 2. Compile the app resources so the packaged resources.arsc carries a real
+#    resource package. An empty arsc (what a resource-less link emits) has zero
+#    packages, which apktool < 2.9 refuses to decode ("arsc files with zero
+#    packages"); a real package keeps the fixture decodable across apktool
+#    versions.
+"$AAPT2" compile --dir "$here/res" -o "$work/res.zip"
+
+# 3. Compile the manifest to binary AXML (needs the framework) and package the
+#    compiled resources into base.apk.
 "$AAPT2" link \
   --manifest "$here/AndroidManifest.xml" \
   -I "$ANDROID_JAR" \
   -o "$work/base.apk" \
-  --min-sdk-version 21 --target-sdk-version 30
+  --min-sdk-version 21 --target-sdk-version 30 \
+  "$work/res.zip"
 cp "$work/base.apk" "$here/hello_world.apk"
 ( cd "$work" && zip -q "$here/hello_world.apk" classes.dex )
 

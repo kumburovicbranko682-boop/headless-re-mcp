@@ -415,6 +415,73 @@ class TestApktoolBoundaries:
         assert info.value.details.get("exit_code") == 1
 
 
+class TestApktoolBuildPicksAaptForTheVersion:
+    """apktool < 2.9 defaults to aapt1 and cannot rebuild resources it decoded
+    from a modern (aapt2-built) APK, so build must add ``--use-aapt2`` there --
+    but only there, since 2.12+ removed the flag. These lock that gate in."""
+
+    def _decoded_tree(self, tmp_path: Path) -> Path:
+        decoded = tmp_path / "decoded"
+        decoded.mkdir()
+        (decoded / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+        return decoded
+
+    def _build_and_capture(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        version: tuple[int, int, int] | None,
+    ) -> list[str]:
+        captured: dict[str, list[str]] = {}
+
+        def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+            captured["cmd"] = list(cmd)
+            out_apk = Path(cmd[cmd.index("-o") + 1])
+            out_apk.write_bytes(b"PK\x03\x04")
+            return "", "", 0
+
+        monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.apktool.client._apktool_version",
+            lambda _apktool: version,
+        )
+        fake_tool = tmp_path / "apktool.bat"
+        fake_tool.write_text("@echo off\n", encoding="utf-8")
+        client = ApktoolClient(fake_tool, None)
+        result = client.build(self._decoded_tree(tmp_path), tmp_path / "out.apk")
+        assert result["apk"] == str(tmp_path / "out.apk")
+        return captured["cmd"]
+
+    def test_version_parser_tolerates_suffixes_and_prefixes(self) -> None:
+        from headless_re_mcp.backends.apktool.client import _parse_apktool_version
+
+        assert _parse_apktool_version("2.7.0-dirty") == (2, 7, 0)
+        assert _parse_apktool_version("Apktool v2.9.3\n") == (2, 9, 3)
+        assert _parse_apktool_version("2.11") == (2, 11, 0)
+        assert _parse_apktool_version("3.0.1") == (3, 0, 1)
+        assert _parse_apktool_version("no version at all") is None
+
+    def test_old_apktool_is_forced_onto_aapt2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cmd = self._build_and_capture(tmp_path, monkeypatch, (2, 7, 0))
+        assert "--use-aapt2" in cmd
+
+    def test_modern_apktool_is_left_on_its_aapt2_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 2.9.0 defaults to aapt2 already; 2.12+ dropped the flag, so passing it
+        # would make the build fail with "Unrecognized option".
+        cmd = self._build_and_capture(tmp_path, monkeypatch, (2, 9, 0))
+        assert "--use-aapt2" not in cmd
+
+    def test_unreadable_version_does_not_add_the_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cmd = self._build_and_capture(tmp_path, monkeypatch, None)
+        assert "--use-aapt2" not in cmd
+
+
 class TestPeOnlyToolsRefuseApkSessions:
     def test_detect_dotnet_and_unpack_return_target_mismatch(self, tmp_path: Path) -> None:
         from dataclasses import replace

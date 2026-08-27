@@ -9,6 +9,7 @@ the password argument withheld.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,38 @@ _MAX_STDERR = 8000
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
+# apktool made aapt2 the build default in 2.9.0. Before that it defaulted to the
+# retired aapt1, which cannot rebuild the resources apktool itself decoded from a
+# modern (aapt2-built) APK -- the rebuild dies with "First type is not attr!".
+# The ``--use-aapt2`` flag both selects aapt2 and is accepted on those older
+# versions; 2.9.0+ default to aapt2 and 2.12.0 removed the flag entirely, so we
+# only pass it below this cutoff.
+_AAPT2_DEFAULT_SINCE = (2, 9, 0)
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def _parse_apktool_version(text: str) -> tuple[int, int, int] | None:
+    match = _VERSION_RE.search(text)
+    if not match:
+        return None
+    major, minor, patch = match.groups(default="0")
+    return int(major), int(minor), int(patch)
+
+
+def _apktool_version(apktool: Path) -> tuple[int, int, int] | None:
+    """Best-effort ``apktool --version``; returns None when it cannot be read."""
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        completed = run_bounded(
+            [str(apktool), "--version"], timeout=30.0, creationflags=creationflags
+        )
+    except (TimedOut, OSError):
+        return None
+    text = "\n".join(
+        stream.decode("utf-8", errors="replace")
+        for stream in (completed.stdout, completed.stderr)
+    )
+    return _parse_apktool_version(text)
 
 
 class ApktoolError(RuntimeError):
@@ -112,10 +145,11 @@ class ApktoolClient:
                 path=str(decoded_dir),
             )
         out_apk.parent.mkdir(parents=True, exist_ok=True)
-        _, stderr, code = _run(
-            [str(self.apktool), "b", str(decoded_dir), "-o", str(out_apk)],
-            timeout=timeout,
-        )
+        args = [str(self.apktool), "b", str(decoded_dir), "-o", str(out_apk)]
+        version = _apktool_version(self.apktool)
+        if version is not None and version < _AAPT2_DEFAULT_SINCE:
+            args.append("--use-aapt2")
+        _, stderr, code = _run(args, timeout=timeout)
         if code != 0 or not out_apk.is_file():
             raise ApktoolError(
                 "backend_error",

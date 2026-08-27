@@ -172,15 +172,30 @@ jobs:
         # extra, which pulls frida's heavy native wheel) and run the Android gate
         # against the committed hello_world.apk fixture: classification, the
         # PE-tool rejection, and the full androguard happy path (manifest,
-        # components, classes, methods, strings) all run. The jadx/apktool cases
-        # skip honestly because those need a JRE toolchain not installed here,
-        # and the adb/frida calls degrade to capability_unavailable envelopes.
-        # Verifying the import first keeps a failed install from passing as a
-        # green skip.
+        # components, classes, methods, strings) all run. The jadx case skips
+        # honestly (jadx ships only as a large GitHub release, not a package),
+        # apktool has its own gate below, and the adb/frida calls degrade to
+        # capability_unavailable envelopes. Verifying the import first keeps a
+        # failed install from passing as a green skip.
         run: |
           python -m pip install androguard
           python -c "import androguard; print('androguard', androguard.__version__)"
           python -m pytest tests/integration/test_android_re_gate.py -q -rs --tb=short
+
+      - name: Android decode/repack gate (apktool)
+        # apktool is packaged in the distro (universe) and pulls its own JRE,
+        # aapt/aapt2 and android-framework-res, so the decode -> edit -> repack
+        # modify line can be enforced without any manual toolchain download. The
+        # distro ships apktool 2.7.x, which defaults to the retired aapt1;
+        # ApktoolClient detects the version and adds --use-aapt2 so the round
+        # trip against the committed fixture works the same way it does for a
+        # user on Debian/Ubuntu stable. Verifying the binary first keeps a failed
+        # install from passing as a green skip.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apktool
+          apktool --version
+          python -m pytest tests/integration/test_android_re_gate.py -q -rs --tb=short -k apktool
 
       - name: Doctor and core service smoke
         run: |
