@@ -3058,12 +3058,17 @@ class TestAdbForwardsAreReleased:
             assert result.ok
             assert pushed == [("emulator-5554", "/data/local/tmp/mitmproxy-ca-cert.pem")]
 
-            service._adb_backend.ensure_frida_server = (  # type: ignore[method-assign]
-                lambda serial, server_binary=None, port=27042, bind_host="127.0.0.1": ensured.append(
-                    serial
-                )
-                or {"running": True, "pushed": False, "port": port}
-            )
+            def _fake_ensure(
+                serial: str,
+                server_binary: object = None,
+                port: int = 27042,
+                bind_host: str = "127.0.0.1",
+            ) -> dict[str, Any]:
+                del server_binary, bind_host
+                ensured.append(serial)
+                return {"running": True, "pushed": False, "port": port}
+
+            service._adb_backend.ensure_frida_server = _fake_ensure  # type: ignore[method-assign]
             result = service.frida_server_ensure(session_id, "emulator-5554")
             assert result.ok
             assert ensured == ["emulator-5554"]
