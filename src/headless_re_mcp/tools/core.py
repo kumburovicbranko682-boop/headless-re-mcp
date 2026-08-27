@@ -1013,7 +1013,11 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     def dotnet_deobfuscate(
         session_id: str,
-        timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0,
+        # The service runs this through _detection_timeout, which rejects
+        # anything over MAX_WORKFLOW_TIMEOUT (300s); advertise that same ceiling
+        # so an in-schema 400 is not accepted here only to be refused downstream
+        # as "at most 300 seconds".
+        timeout: Annotated[float, Field(gt=0, le=300.0)] = 120.0,
     ) -> dict[str, Any]:
         """Run configured de4dot into an artifact path; never overwrite the input.
 
@@ -1026,7 +1030,9 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     def dotnet_reactor_unpack(
         session_id: str,
-        timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0,
+        # See dotnet.deobfuscate: the service caps this at MAX_WORKFLOW_TIMEOUT
+        # (300s) via _detection_timeout, so the schema ceiling matches it.
+        timeout: Annotated[float, Field(gt=0, le=300.0)] = 120.0,
     ) -> dict[str, Any]:
         """Optional NETReactorSlayer unpack (authorized Reactor samples only).
 
