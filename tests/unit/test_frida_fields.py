@@ -318,6 +318,35 @@ def test_frida_spawn_refuses_a_path_or_bare_name() -> None:
     assert "There is no process_id" in doc
 
 
+def test_frida_spawn_validates_the_package_before_touching_the_device() -> None:
+    """spawn resolved the device before checking the package id.
+
+    _resolve_device is a USB/remote round-trip; the package check is a cheap
+    regex. Ordering it after the resolve meant a malformed package cost a device
+    connection and, when the device was unreachable, surfaced as a device error
+    instead of invalid_params. A resolver that always raises proves the package
+    is judged first: a bad id still returns invalid_params, while a good id
+    reaches the resolve and takes on its failure.
+    """
+    from headless_re_mcp.backends.frida.client import FridaError
+
+    def _boom(device_id: str | None) -> Any:
+        raise FridaError("backend_error", "device offline")
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = _boom  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as bad:
+        client.spawn("usb", "notapackage")
+    assert bad.value.code == "invalid_params"
+
+    with pytest.raises(FridaError) as good:
+        client.spawn("usb", "com.example.app")
+    assert good.value.code == "backend_error"
+
+
 def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:
     """device.spawn / resume with no deadline parked a worker forever.
 
