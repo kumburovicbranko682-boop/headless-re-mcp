@@ -320,6 +320,7 @@ jobs:
             tests/integration/test_m11_r2_ghidra_arm_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_pe_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_i386_agree_gate.py \
+            tests/integration/test_m11_r2_ghidra_pe_data_xref_agree_gate.py \
             tests/integration/test_m11_r2_arm_xrefs_gate.py \
             tests/integration/test_m11_r2_data_xrefs_gate.py \
             tests/integration/test_m11_r2_pe_imports_gate.py \
