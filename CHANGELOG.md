@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把五个非 PE 后端的"缺依赖即优雅降级"钉成契约）
+
+- 每个可选非 PE 后端在其依赖缺失时都必须降级为 `capability_unavailable`——一个 agent 能识别并绕开的
+  干净错误,而不是 ImportError、AttributeError 或对着 `None` 调用出来的半截结果。这行为本就写在各后端的
+  可用性守卫里,但只有 adb、apktool、apksigner、jsre 的 CLI、r2、windbg 被测试钉住;web(Playwright)、
+  proxy(mitmproxy)、frida 模块、jadx、apk(androguard)这五个源码里有守卫却无测试兜底。一次对可用性检查的
+  重构就可能把"缺依赖"悄悄变回硬崩溃,而对无人值守任务来说,这是"跳过该线"与"任务卡死"之别。
+- 新增 `tests/unit/test_backend_degradation.py`,为这五个后端各钉一条:强制进入不可用态(而非"依赖装了就
+  跳过"),因此无论环境是否装了依赖,降级路径都会被真正走一遍;并断言抛出的是带 `capability_unavailable`
+  码的对应类型错误——守卫一旦被移除,调用会改抛 ImportError/AttributeError,测试即失败。
+
 ### 加固（把非 PE 写操作的"必留痕"钉成整面不变量）
 
 - 这一整轮为非 PE 各线逐个补齐了可观测性（device.* 变更与抓取、frida.spawn/server.ensure、
