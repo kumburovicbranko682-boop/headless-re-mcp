@@ -801,11 +801,23 @@ class AdbBackend:
             )
         dev = self._device(serial)
         try:
-            _call(dev.sync.push, str(path), remote_path, timeout=_ADB_TRANSFER_TIMEOUT_S)
+            result = _call(dev.sync.push, str(path), remote_path, timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
+        # adbutils returns the pushed byte count (None on older signatures) on
+        # success. Measured: an explicit False was still reported as a
+        # successful push, so an agent treated a file that never left the host
+        # as on-device.
+        if result is False:
+            raise AdbError(
+                "backend_error",
+                "push was refused",
+                local=str(path),
+                remote=remote_path,
+                pushed=False,
+            )
         return {"local": str(path), "remote": remote_path, "size": size}
 
     def ensure_frida_server(
@@ -894,7 +906,7 @@ class AdbBackend:
                 self._forwards.append(key)
                 reserved = True
         try:
-            _call(dev.forward, local, remote, timeout=_ADB_SHELL_TIMEOUT_S)
+            result = _call(dev.forward, local, remote, timeout=_ADB_SHELL_TIMEOUT_S)
         except AdbError:
             if reserved:
                 with self._forward_lock:
@@ -907,6 +919,21 @@ class AdbBackend:
                     if key in self._forwards:
                         self._forwards.remove(key)
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
+        # adbutils returns None on success. Measured: an explicit False was
+        # still reported as a successful forward, so an agent talked through a
+        # port that was never opened. Release the slot we reserved for it.
+        if result is False:
+            if reserved:
+                with self._forward_lock:
+                    if key in self._forwards:
+                        self._forwards.remove(key)
+            raise AdbError(
+                "backend_error",
+                "forward was refused",
+                local=local,
+                remote=remote,
+                forwarded=False,
+            )
         return {"local": local, "remote": remote}
 
     def release_forwards(self) -> JsonObject:
