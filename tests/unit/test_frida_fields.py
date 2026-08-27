@@ -347,6 +347,58 @@ def test_frida_java_methods_reports_a_loaded_class_with_no_methods_as_found() ->
     assert payload["has_more"] is False
 
 
+class _JavaApiTotal:
+    """Current script shape: methods() returns {found, methods, total}."""
+
+    def __init__(self, *, page: int, total: int) -> None:
+        self._page = page
+        self._total = total
+
+    def methods(self, class_name: str, limit: int) -> dict[str, Any]:
+        del class_name, limit
+        return {
+            "found": True,
+            "methods": [f"m{index}" for index in range(self._page)],
+            "total": self._total,
+        }
+
+
+def test_frida_java_methods_surfaces_the_full_declared_count_as_total() -> None:
+    """total is the class's whole declared-method count, like modules reports.
+
+    getDeclaredMethods hands the script the full array, so the count is free.
+    Without total a filled page tells the caller only that it stopped, not that
+    the class has 300 methods -- parity with frida.modules, which already
+    surfaces total. Here a 10-method page over a class of 300 must read
+    count 10, has_more True, total 300, so the caller can size its next limit.
+    """
+    client = _java_client_returning(_JavaApiTotal(page=11, total=300))
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Big", limit=10
+    )
+    assert payload["count"] == 10
+    assert payload["has_more"] is True
+    assert payload["total"] == 300
+    doc = _tool_docstring("frida.java.methods")
+    assert "total" in doc
+
+
+def test_frida_java_methods_total_falls_back_to_page_length_without_a_script_total() -> None:
+    """The legacy bare-array/dict-without-total shape reports total, not a KeyError.
+
+    total is always present so a caller can read it uniformly. When the script
+    gives no total (older shape, or the bare-array branch), fall back to the
+    page length -- exact when nothing was left out -- rather than omit the field.
+    """
+    client = _java_client_returning(_JavaApiFound(found=True, count=3))
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", limit=10
+    )
+    assert payload["count"] == 3
+    assert payload["has_more"] is False
+    assert payload["total"] == 3
+
+
 class _SpawnDevice:
     def spawn(self, argv: list[str]) -> int:
         return 4242

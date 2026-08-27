@@ -156,6 +156,7 @@ rpc.exports = {
   methods: function (className, limit) {
     var out = [];
     var found = false;
+    var total = 0;
     Java.perform(function () {
       var clazz;
       try {
@@ -165,11 +166,15 @@ rpc.exports = {
       }
       found = true;
       var methods = clazz.class.getDeclaredMethods();
+      // getDeclaredMethods already returned the whole array, so the full count
+      // is free here; report it as total so a caller sees how many methods the
+      // class has, not just that the page filled -- the same way modules does.
+      total = methods.length;
       for (var i = 0; i < methods.length && out.length < limit; i++) {
         out.push(methods[i].toString());
       }
     });
-    return {found: found, methods: out};
+    return {found: found, methods: out, total: total};
   }
 };
 """
@@ -707,14 +712,28 @@ class FridaClient:
                     if isinstance(raw, dict):
                         found = bool(raw.get("found"))
                         values, has_more = _page(list(raw.get("methods") or []), capped)
+                        raw_total = raw.get("total")
                     else:
                         found = True
                         values, has_more = _page(list(raw or []), capped)
+                        raw_total = None
+                    # total is the class's full declared-method count, which the
+                    # script gets for free from getDeclaredMethods -- surfaced
+                    # for parity with modules so a filled page reports how many
+                    # exist, not merely that it stopped. The bare-array script
+                    # shape carries no total, so fall back to the page length
+                    # (exact when nothing was left out) rather than fabricate one.
+                    total = (
+                        int(raw_total)
+                        if isinstance(raw_total, (int, float))
+                        else len(values)
+                    )
                     return {
                         "class_name": class_name,
                         "found": found,
                         "methods": values,
                         "count": len(values),
+                        "total": total,
                         "has_more": has_more,
                     }
                 raise FridaError("invalid_params", "mode must be classes or methods")

@@ -49,6 +49,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`frida.java.methods` 补 `total`，与 `frida.modules` 的分页诚实度对齐）
+
+- `frida.modules` 已把枚举脚本回的 `total`(模块全量数)透出,调用方看一眼就知道\
+  「一共有多少」而非只知「这一页填满了」;但 `frida.java.methods` 只回\
+  `methods/count/has_more`,没有 `total`。差别不是不能补——枚举脚本里\
+  `clazz.class.getDeclaredMethods()` 本就把整份方法数组拿在手上,`methods.length`\
+  是**免费**的全量数,却被丢掉了。后果:默认 `limit=200` 下,一个声明了 300 个方法的大类\
+  (生成代码、Activity、God class 并不罕见)只能读到 `count=200, has_more=True`,调用方\
+  无从得知到底是 201 个还是 3000 个,只能盲试更大的 `limit`。现让 `_JAVA_SCRIPT` 的\
+  `methods` 在截断前记下 `total = methods.length` 一并回传(类未加载时 `found=false`、\
+  `total=0`),Python 侧在 `java_enumerate` 的 methods 分支透出 `total`,与 `modules`\
+  同构;脚本回的 `total` 与 `_page` 得出的 `has_more` 天然一致(脚本按 `limit+1` 取,\
+  故 `total>count` 当且仅当 `has_more`)。老式裸数组/无 `total` 的脚本形状下回退到页长\
+  (无遗漏时即精确值),使 `total` 字段恒在、调用方可统一读取,而非在这条路径撞 `KeyError`。\
+  工具文档串补记 `total`。`test_frida_fields.py` 新增两条:以桩\
+  `methods()->{found,methods,total:300}`、`limit=10` 断言 `count==10, has_more True,`\
+  `total==300`;并以无 `total` 的桩断言回退到页长。去掉 Python 侧修复后两条均以\
+  `KeyError: 'total'` 失败,正是调用方会撞上的缺键。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
