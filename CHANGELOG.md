@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（Web 动态抓取 Gate 在 Linux 真跑）
+
+- Web 那条线此前唯一的浏览器 Gate（`test_web_re_gate.py`）只打开一个 data: URL，检查
+  scripts/console/dom，从不碰真正做逆向要用的部分：经 CDP 抓到的网络流、回取的响应体、导出的
+  HAR、DOM 快照与截图制品——这些没有任何能跑起来的覆盖。新增
+  `tests/integration/test_web_dynamic_gate.py`：起一个用完即弃的 localhost HTTP 服务（因此有真实
+  流量——HTML 文档、外链脚本、被 fetch 的 JSON 端点），把整条 `web.*` 面穿过 `AnalysisService`
+  对着 headless Chromium 驱动，断言抓到的内容是真的——`web.network.list` 抓到文档/脚本/fetch 三条流、
+  `web.network.get` 回取的响应体带其标记、未知请求 id 返回 `not_found`、`web.console` 原样抓到打印行、
+  `web.scripts` 列出外链脚本、`web.dom.snapshot` 拿到标题与正文、`web.screenshot` 落成真实 PNG 制品、
+  `web.har.export` 回读为 JSON 且 `log.entries` 数与回执 `entry_count` 一致、非正导航超时被
+  `_bound_nav_timeout` 拦为 `invalid_params`。Playwright 或其浏览器缺失时如实跳过（skip 不等于 pass），
+  本轮在 Playwright 托管的 Chromium headless shell 上通过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
