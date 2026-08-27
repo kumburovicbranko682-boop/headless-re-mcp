@@ -120,8 +120,9 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         (as request.postData) from the retained flow (empty for a flow the ring
         already evicted or whose body was omitted), request/response cookies
         parsed from the Cookie/Set-Cookie headers, redirectURL recovered
-        from the response Location header, and request/response bodySize
-        recovered from Content-Length, with fields the capture did
+        from the response Location header, request/response bodySize
+        recovered from Content-Length, and serverIPAddress set to the upstream
+        host the flow actually connected to, with fields the capture did
         not retain left empty/`-1` rather
         than omitted. Answers with path and entry_count. There is no har, output
         or artifact field. path is the file; looking for har after a successful

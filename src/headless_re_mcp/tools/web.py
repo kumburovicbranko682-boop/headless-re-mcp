@@ -82,7 +82,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List captured network requests.
 
         Answers with requests (url, method, status, resourceType, started_at as
-        an epoch time), count, total, offset, has_more, and dropped so a page
+        an epoch time, and remote_ip/remote_port -- the server the request
+        actually reached, the C2/CDN host behind the domain, present once a
+        response arrived over a real connection), count, total, offset,
+        has_more, and dropped so a page
         that filled the limit is not read as the whole capture, and ring
         eviction is visible. A request blocked or aborted before any response
         carries failed with error_text and, for a policy block, blocked_reason
@@ -281,8 +284,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         reported, the request body (as request.postData) for a row whose POST
         payload CDP inlined at send time, request/response cookies parsed from
         the Cookie/Set-Cookie headers, redirectURL recovered from the
-        response Location header, and request/response bodySize recovered from
-        Content-Length, with unknown fields left as empty/`-1` rather than
+        response Location header, request/response bodySize recovered from
+        Content-Length, and serverIPAddress set to the server IP the response
+        arrived from, with unknown fields left as empty/`-1` rather than
         omitted.
         Answers with path and entry_count, plus artifact_id when the HAR was
         registered. There is no har, entries or artifact field.

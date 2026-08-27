@@ -224,6 +224,21 @@ def _request_body(request: Any) -> tuple[bytes | None, str]:
     return (content if isinstance(content, bytes) else None), content_type
 
 
+def _server_ip(flow: Any) -> str:
+    """The upstream server IP mitmproxy actually connected to, guarded.
+
+    ``server_conn.ip_address`` is the (host, port) tuple resolved once the
+    connection is established -- the C2/CDN host behind the domain, which the
+    URL alone does not give. It is ``None`` for a flow that never reached the
+    server; return "" then so the HAR entry simply omits serverIPAddress.
+    """
+    conn = getattr(flow, "server_conn", None)
+    address = getattr(conn, "ip_address", None)
+    if isinstance(address, (tuple, list)) and address:
+        return str(address[0])
+    return ""
+
+
 def _encoded_len(value: object) -> int:
     try:
         return len(str(value).encode("utf-8", errors="replace"))
@@ -806,12 +821,14 @@ class ProxyBackend:
             req_headers: list[JsonObject] = []
             resp_headers: list[JsonObject] = []
             req_post: JsonObject | None = None
+            server_ip = ""
             if raw is not None and raw is not _OMITTED_BODY:
                 request = getattr(raw, "request", None)
                 req_headers = har_headers(getattr(request, "headers", None))
                 resp_headers = har_headers(getattr(getattr(raw, "response", None), "headers", None))
                 if request is not None:
                     req_post = post_data(*_request_body(request))
+                server_ip = _server_ip(raw)
             entries.append(
                 har_entry(
                     started_at=f.get("started_at"),
@@ -822,6 +839,10 @@ class ProxyBackend:
                     request_headers=req_headers,
                     response_headers=resp_headers,
                     request_post_data=req_post,
+                    # The upstream host mitmproxy connected to, so the HAR
+                    # entry's serverIPAddress names the real server behind the
+                    # domain, not just the URL's hostname.
+                    server_ip=server_ip,
                 )
             )
         har = har_document(entries)

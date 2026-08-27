@@ -297,6 +297,28 @@ def test_har_entry_redirect_url_is_empty_without_a_location_header() -> None:
     assert entry["response"]["redirectURL"] == ""
 
 
+def test_har_entry_records_the_server_ip_when_the_capture_kept_it() -> None:
+    """serverIPAddress names the host the request actually reached."""
+    entry = har_entry(
+        started_at=1_700_000_000.0,
+        method="GET",
+        url="https://x/a",
+        status=200,
+        mime_type="text/html",
+        server_ip="93.184.216.34",
+    )
+    _assert_entry_is_spec_valid(entry)
+    assert entry["serverIPAddress"] == "93.184.216.34"
+
+
+def test_har_entry_omits_server_ip_when_absent() -> None:
+    entry = har_entry(
+        started_at=None, method="GET", url="https://x", status=0, mime_type="",
+    )
+    _assert_entry_is_spec_valid(entry)
+    assert "serverIPAddress" not in entry
+
+
 def test_har_entry_populates_headers_when_the_capture_kept_them() -> None:
     entry = har_entry(
         started_at=1_700_000_000.0,
@@ -444,6 +466,28 @@ def test_proxy_export_har_includes_the_request_body(tmp_path: Path, monkeypatch:
     }
 
 
+def _proxy_flow_with_server_ip(started: float) -> SimpleNamespace:
+    flow = _proxy_flow(started)
+    flow.server_conn = SimpleNamespace(ip_address=("93.184.216.34", 443))
+    return flow
+
+
+def test_proxy_export_har_records_the_server_ip(tmp_path: Path, monkeypatch: Any) -> None:
+    """The upstream host mitmproxy connected to reaches serverIPAddress."""
+    from headless_re_mcp.backends.proxy.client import _FlowRecorder
+
+    backend = ProxyBackend()
+    rec = _FlowRecorder()
+    rec.response(_proxy_flow_with_server_ip(1_700_000_000.0))
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=rec))
+    out = tmp_path / "ip.har"
+    backend.export_har("s", out)
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    (entry,) = doc["log"]["entries"]
+    _assert_entry_is_spec_valid(entry)
+    assert entry["serverIPAddress"] == "93.184.216.34"
+
+
 def test_proxy_export_har_is_spec_valid(tmp_path: Path, monkeypatch: Any) -> None:
     from headless_re_mcp.backends.proxy.client import _FlowRecorder
 
@@ -482,6 +526,7 @@ class _WebHandle:
             "resourceType": "XHR",
             "started_at": 1_700_000_000.0,
             "response_headers": [{"name": "content-type", "value": "text/plain"}],
+            "remote_ip": "93.184.216.34",
         }
     }
 
@@ -499,6 +544,8 @@ def test_web_har_export_is_spec_valid(tmp_path: Path, monkeypatch: Any) -> None:
     assert datetime.fromisoformat(entry["startedDateTime"]).year == 2023
     # The response headers the web capture kept reached the HAR too.
     assert {"name": "content-type", "value": "text/plain"} in entry["response"]["headers"]
+    # The server IP CDP reported for the connection reached serverIPAddress.
+    assert entry["serverIPAddress"] == "93.184.216.34"
 
 
 class _WebPostHandle:

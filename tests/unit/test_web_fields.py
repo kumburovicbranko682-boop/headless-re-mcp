@@ -485,6 +485,91 @@ def test_web_captures_headers_from_cdp_and_keeps_them_off_the_list(
     assert "response_headers" in doc
 
 
+def test_web_captures_the_server_ip_and_keeps_it_on_the_list(monkeypatch: Any) -> None:
+    """The server IP CDP reports at response time is the C2/CDN pivot, so it
+    stays on the ring and, unlike headers, on the lean network.list row too."""
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    backend = WebBackend()
+    backend._wire_events(handle)  # type: ignore[arg-type]
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r1",
+            "request": {"url": "https://x/api", "method": "GET", "headers": {}},
+            "type": "XHR",
+        }
+    )
+    cdp.handlers["Network.responseReceived"](
+        {
+            "requestId": "r1",
+            "response": {
+                "status": 200,
+                "mimeType": "application/json",
+                "headers": {},
+                "remoteIPAddress": "93.184.216.34",
+                "remotePort": 443,
+            },
+        }
+    )
+
+    entry = handle.requests["r1"]
+    assert entry["remote_ip"] == "93.184.216.34"
+    assert entry["remote_port"] == 443
+
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    listed = backend.network_list("s", offset=0, limit=10)["requests"][0]
+    assert listed["remote_ip"] == "93.184.216.34"
+    assert listed["remote_port"] == 443
+
+
+def test_web_omits_the_server_ip_for_a_cached_response(monkeypatch: Any) -> None:
+    """A cached/data response opens no connection; the fields simply stay off."""
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    backend = WebBackend()
+    backend._wire_events(handle)  # type: ignore[arg-type]
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r1",
+            "request": {"url": "data:text/html,hi", "method": "GET", "headers": {}},
+            "type": "Document",
+        }
+    )
+    cdp.handlers["Network.responseReceived"](
+        {"requestId": "r1", "response": {"status": 200, "mimeType": "text/html", "headers": {}}}
+    )
+
+    entry = handle.requests["r1"]
+    assert "remote_ip" not in entry
+    assert "remote_port" not in entry
+
+
 def test_web_scripts_isolates_dynamic_and_filters_by_url(monkeypatch: Any) -> None:
     """dynamic_only reaches the blank-url runtime blobs; url_filter finds a named one."""
     backend = WebBackend()

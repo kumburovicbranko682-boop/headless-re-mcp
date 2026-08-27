@@ -700,6 +700,10 @@ class WebBackend:
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            remote_ip, ip_truncated = _bounded_metadata(
+                resp.get("remoteIPAddress"), _MAX_METADATA_BYTES
+            )
+            remote_port = resp.get("remotePort")
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
@@ -709,7 +713,15 @@ class WebBackend:
                     # response side an analyst reads. CDP folds repeats with
                     # newlines; _cdp_headers unfolds them so each survives.
                     entry["response_headers"] = _cdp_headers(resp.get("headers"))
-                    if mime_truncated:
+                    # The server IP:port the request actually reached -- the C2
+                    # or CDN host behind the domain, an infrastructure pivot a
+                    # URL alone does not give. Absent for cached and data:
+                    # responses, which never open a connection.
+                    if remote_ip:
+                        entry["remote_ip"] = remote_ip
+                    if isinstance(remote_port, int) and not isinstance(remote_port, bool):
+                        entry["remote_port"] = remote_port
+                    if mime_truncated or ip_truncated:
                         entry["metadata_truncated"] = True
 
         def on_loading_failed(params: JsonObject) -> None:
@@ -1337,6 +1349,10 @@ class WebBackend:
                         e.get("post_data"),
                         header_value(e.get("request_headers"), "content-type"),
                     ),
+                    # The server IP the response actually came from, so the HAR
+                    # entry's serverIPAddress names the C2/CDN host, not just the
+                    # domain in the URL.
+                    server_ip=str(e.get("remote_ip") or ""),
                     extra={"_resourceType": e.get("resourceType")},
                 )
                 for e in handle.requests.values()

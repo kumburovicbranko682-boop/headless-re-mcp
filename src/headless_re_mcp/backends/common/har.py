@@ -271,6 +271,7 @@ def har_entry(
     request_headers: list[JsonObject] | None = None,
     response_headers: list[JsonObject] | None = None,
     request_post_data: JsonObject | None = None,
+    server_ip: str = "",
     extra: JsonObject | None = None,
 ) -> JsonObject:
     """One spec-complete HAR entry from what a capture retained.
@@ -282,8 +283,10 @@ def har_entry(
     populated and the request/response ``cookies`` are parsed from the
     ``Cookie``/``Set-Cookie`` headers; a capture that kept the request body can
     pass ``request_post_data`` (build it with ``post_data``) so the Request
-    payload is shown; a capture that only kept summaries omits them and those
-    members stay empty.
+    payload is shown; a capture that recorded the connection's server address
+    can pass ``server_ip`` so the entry's ``serverIPAddress`` names the host the
+    request actually reached; a capture that only kept summaries omits them and
+    those members stay empty.
     Every remaining required member is emitted with a valid empty/unknown value
     so the entry is well-formed. ``extra`` carries custom ``_``-prefixed fields
     (e.g. the web capture's resource type), which HAR permits.
@@ -329,6 +332,8 @@ def har_entry(
         "cache": {},
         "timings": {"send": 0.0, "wait": 0.0, "receive": 0.0},
     }
+    if server_ip:
+        entry["serverIPAddress"] = server_ip
     if extra:
         entry.update(extra)
     return entry

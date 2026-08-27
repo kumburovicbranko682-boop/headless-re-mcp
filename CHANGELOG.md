@@ -291,6 +291,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_console_call_site` 从栈顶帧还原 `url`/`line`（0 基，与 `Debugger.scriptParsed` 一致）并附到每条 console 记录上，
   于是一条日志可回溯到发出它的脚本（尤其是 `web.scripts` 现在会标记的匿名/运行时生成脚本）；栈缺失或结构异常时退化为不带
   位置而非中断采集。
+- **HAR 导出的 `serverIPAddress` 一直为空，命中的真实服务器 IP 丢失**。该字段按 HAR 规范就是本次请求实际连到的服务器地址——
+  一个域名背后真正的 C2/CDN 主机，是做基础设施关联（域前置、快速通量、同 IP 归并）时 URL 给不出的关键旋转点。web 侧 CDP 的
+  `Network.responseReceived` 就带 `remoteIPAddress`/`remotePort`，proxy 侧 mitmproxy 的 `server_conn.ip_address` 也记着
+  连接建立后解析出的 (host, port)；现在两侧把它接进 `har_entry` 的新增可选参数 `server_ip`，非空时写出 `serverIPAddress`。
+  web 抓包在响应到达时把 `remote_ip`/`remote_port` 挂到请求环上，这两项因体量小且信号强，破例保留在精简的 `web.network.list`
+  行内（不像响应头那样被剔除），`web.network.get` 亦随之带出；缓存命中与 `data:` 响应从不建连，字段自然缺席而非伪造。
 - **HAR 导出的 `request.bodySize`/`response.bodySize` 恒为 `-1`，请求/响应体大小丢失**。这两个字段按 HAR 规范就是消息体的
   字节数，而发送方自己声明的 `Content-Length` 正是该值——它取自请求头而非我们保留的（可能已被截断的）体副本，因此即使内联体
   被裁剪也不会少报。web 与 proxy 两侧现在都已把头传给 `har_entry`，于是新增 `content_length` 助手从 Content-Length 还原
