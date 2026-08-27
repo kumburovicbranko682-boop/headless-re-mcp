@@ -9,14 +9,15 @@ instructions / through the pool -- if its analysis or the ExportJson xrefs branc
 mishandled ARM address materialisation, string cross-referencing would silently
 return nothing on every ARM binary while the x86 gate still passed.
 
-This is deliberately Ghidra-only: radare2's shallow ``aa`` pass (the sole
-analysis command the r2 backend whitelists) records no data references to the
-string on ARM, so a cross-engine agreement is not achievable here -- a real limit
-of that engine's default analysis, not something to paper over. For each
-architecture the gate compiles an ELF where one literal is read from two
-functions, finds the string via Ghidra's own ``s_..._<addr>`` label, and asserts
-the ReferenceManager returns exactly the two data-kind references, one inside
-each reader, with a call edge appearing only when the target is a function.
+This gate stays single-engine on purpose: it pins down Ghidra's own ARM address
+propagation against a fixed, exact expectation (precisely two data references,
+one per reader). radare2's default ``aa`` pass sees none of these on ARM; its
+deeper ``aaa`` pass does, and the cross-engine convergence is covered separately
+by ``test_m11_r2_ghidra_arm_data_xref_agree_gate``. For each architecture the
+gate compiles an ELF where one literal is read from two functions, finds the
+string via Ghidra's own ``s_..._<addr>`` label, and asserts the ReferenceManager
+returns exactly the two data-kind references, one inside each reader, with a call
+edge appearing only when the target is a function.
 
 Runs where a Jython-capable Ghidra (HEADLESS_RE_GHIDRA_HOME) and the ARM cross
 compiler are present; skips honestly otherwise. skip != pass.
