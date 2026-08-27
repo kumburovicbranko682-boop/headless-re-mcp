@@ -49,6 +49,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（apksigner 口令走命令行泄露给本机用户）
+
+- `apk.sign` 把 keystore 口令放在命令行上（`--ks-pass pass:<口令>`）。Linux 下 `/proc/<pid>/cmdline`
+  对本机任意用户可读，apksigner 运行期间口令因此暴露——与 SECURITY.md 视为漏洞、且已由 stderr
+  抹除处理的正是同一类泄露。现改为通过子进程环境变量传入（apksigner 的 `env:NAME`），
+  `/proc/<pid>/environ` 仅属主可读，命令行上只留变量名；stderr 抹除作为纵深防御保留。
+  `tests/unit/test_apk_sign_fields.py` 断言口令不出现在 argv、而是经环境变量下发。
+
 ### 修复（frida 本地读取 RPC 无外层超时）
 
 - `frida.modules` / `frida.exports` / `frida.memory_read` 只给 attach 上了超时（经 `_attach_local`），
