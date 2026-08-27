@@ -353,10 +353,11 @@ def _capture_process(
             # child walk is blind to it, so reap the session group diec led. This
             # mirrors the de4dot adapter, and restores reaping the _capture_process
             # convergence dropped from this path.
-            if process.pid:
+            leader = getattr(process, "pid", None)
+            if leader:
                 from headless_re_mcp.core.process_tree import reap_detached_group
 
-                reap_detached_group(int(process.pid))
+                reap_detached_group(int(leader))
             # The process has exited, but wait once more for a concrete code.
             try:
                 returncode = process.wait(timeout=1.0)
