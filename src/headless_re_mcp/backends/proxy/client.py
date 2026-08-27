@@ -17,9 +17,13 @@ import socket
 import threading
 import time
 from collections import OrderedDict, deque
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
+
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
 
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
@@ -379,6 +383,69 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _har_flow_headers(message: Any) -> list[JsonObject]:
+    """A captured message's headers as HAR's name/value array (empty when none).
+
+    ``items(multi=True)`` preserves duplicate header lines -- several
+    ``Set-Cookie`` / ``Cache-Control`` values are exactly the sort of thing an
+    analyst reading a captured session needs -- and falls back to ``items()``
+    for a plain-dict stand-in. A missing or odd header container yields ``[]``
+    rather than raising, so one malformed flow cannot fail the whole export.
+    """
+    headers = getattr(message, "headers", None)
+    if headers is None:
+        return []
+    try:
+        try:
+            items = list(headers.items(multi=True))
+        except TypeError:
+            items = list(headers.items())
+    except Exception:  # noqa: BLE001 - odd header containers must not break the export
+        return []
+    return [{"name": str(name), "value": str(value)} for name, value in items]
+
+
+def _har_query_string(url: str) -> list[JsonObject]:
+    """The URL's query as HAR's name/value array; a bad URL yields an empty one."""
+    try:
+        query = urlsplit(url).query
+    except (ValueError, TypeError):
+        return []
+    return [
+        {"name": name, "value": value}
+        for name, value in parse_qsl(query, keep_blank_values=True)
+    ]
+
+
+def _har_started(message: Any) -> str:
+    """A flow's start time as an ISO 8601 stamp, falling back to now.
+
+    HAR entries require a ``startedDateTime``; mitmproxy records the request's
+    wall-clock start on ``timestamp_start``. A flow with none (or a stand-in
+    without the field) gets the current time so the entry stays valid.
+    """
+    ts = getattr(message, "timestamp_start", None)
+    if isinstance(ts, int | float) and ts > 0:
+        with contextlib.suppress(OverflowError, OSError, ValueError):
+            return datetime.fromtimestamp(float(ts), tz=UTC).isoformat()
+    return datetime.now(UTC).isoformat()
+
+
+def _har_time_ms(request: Any, response: Any) -> float:
+    """Round-trip time in milliseconds from request start to response end.
+
+    Zero when either timestamp is missing, so the ``time``/``timings`` fields
+    are always present and non-negative as HAR 1.2 requires.
+    """
+    start = getattr(request, "timestamp_start", None)
+    end = getattr(response, "timestamp_end", None)
+    if end is None:
+        end = getattr(response, "timestamp_start", None)
+    if isinstance(start, int | float) and isinstance(end, int | float) and end >= start:
+        return max(0.0, (float(end) - float(start)) * 1000.0)
+    return 0.0
 
 
 class _FlowRecorder:
@@ -1206,25 +1273,101 @@ class ProxyBackend:
         return {"replayed": True, "flow_id": flow_id}
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
-        inst = self._get(session_id)
+        """Serialise the capture as a conformant HAR 1.2 log.
+
+        The old export named only each flow's method/url/status/mimeType, which
+        is not valid HAR 1.2 -- the viewers this feeds (DevTools Import HAR, HAR
+        Analyzer, har-validator) reject an entry with no startedDateTime,
+        timings, cookies, headers or queryString, so the file was effectively
+        unusable. The proxy already retains the whole flow, so this now emits
+        conformant entries: request/response headers (the auth, cookie,
+        content-type and CORS lines an analyst actually reads, with duplicates
+        preserved), the parsed query string, real per-flow timings and start
+        times, and the decoded response size. Bodies are not inlined -- a
+        capture can hold megabytes per flow -- so ``response.content`` carries
+        the size and mimeType and ``proxy.flow.get`` remains the way to read a
+        body. A failed upstream flow is emitted with status 0 and an ``_error``
+        note rather than dropped. Oldest entries are trimmed to fit the capture
+        cap, mirroring the web HAR export.
+        """
         import json
 
-        entries = [
-            {
-                "request": {"method": f.get("method"), "url": f.get("url")},
-                "response": {
-                    "status": f.get("status") or 0,
-                    "content": {"mimeType": f.get("content_type") or ""},
+        inst = self._get(session_id)
+        entries: list[JsonObject] = []
+        for summary in inst.recorder.snapshot():
+            flow_id = str(summary.get("id"))
+            url = str(summary.get("url") or "")
+            method = str(summary.get("method") or "")
+            status = summary.get("status")
+            content_type = str(summary.get("content_type") or "")
+            raw = inst.recorder.raw(flow_id)
+            req_obj = resp_obj = None
+            if raw is not None and raw is not _OMITTED_BODY:
+                req_obj = getattr(raw, "request", None)
+                resp_obj = getattr(raw, "response", None)
+            resp_body_len = len(_message_body(resp_obj)) if resp_obj is not None else 0
+            req_body_len = _content_len(req_obj)
+            time_ms = _har_time_ms(req_obj, resp_obj)
+            entry: JsonObject = {
+                "startedDateTime": _har_started(req_obj),
+                "time": time_ms,
+                "request": {
+                    "method": method,
+                    "url": url,
+                    "httpVersion": str(getattr(req_obj, "http_version", "") or "HTTP/1.1"),
+                    "cookies": [],
+                    "headers": _har_flow_headers(req_obj),
+                    "queryString": _har_query_string(url),
+                    "headersSize": -1,
+                    "bodySize": req_body_len if req_body_len else -1,
                 },
+                "response": {
+                    "status": status if isinstance(status, int) else 0,
+                    "statusText": str(getattr(resp_obj, "reason", "") or ""),
+                    "httpVersion": str(getattr(resp_obj, "http_version", "") or "HTTP/1.1"),
+                    "cookies": [],
+                    "headers": _har_flow_headers(resp_obj),
+                    "content": {"size": resp_body_len, "mimeType": content_type},
+                    "redirectURL": "",
+                    "headersSize": -1,
+                    "bodySize": resp_body_len if resp_body_len else -1,
+                },
+                "cache": {},
+                "timings": {"send": 0, "wait": time_ms, "receive": 0},
             }
-            for f in inst.recorder.snapshot()
-        ]
-        har = {
+            if summary.get("failed"):
+                entry["response"]["_error"] = str(summary.get("error") or "")
+            entries.append(entry)
+        har: JsonObject = {
             "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        text = json.dumps(har, ensure_ascii=False)
+        truncated = False
+        encoded = text.encode("utf-8")
+        # Drop oldest entries until the file fits the capture cap, exactly as the
+        # web HAR export does, so one huge capture cannot write an unbounded file.
+        while entries and len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            drop = max(1, len(entries) // 8)
+            del entries[:drop]
+            har["log"]["entries"] = entries
+            text = json.dumps(har, ensure_ascii=False)
+            encoded = text.encode("utf-8")
+            truncated = True
+        if len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise ProxyError(
+                "too_large",
+                "HAR export exceeds capture cap",
+                size=len(encoded),
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
+        out_path.write_text(text, encoding="utf-8")
+        return {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "truncated": truncated,
+            "size": len(encoded),
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):

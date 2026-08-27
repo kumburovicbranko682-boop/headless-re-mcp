@@ -731,11 +731,13 @@ def test_proxy_replay_reissues_a_captured_request_to_the_origin() -> None:
 
 @pytest.mark.integration
 def test_proxy_export_har_serialises_the_capture(tmp_path: Path) -> None:
-    """export_har turns the live capture into a HAR log, but had no live test.
+    """export_har must turn the live capture into a conformant HAR 1.2 log.
 
-    Capture one request, export, and assert a valid HAR 1.2 log lands on disk
-    with an entry that names the request's method and URL -- the shape any HAR
-    viewer or downstream replay tool expects.
+    The old export named only method/url/status/mimeType, which HAR viewers
+    reject. Capture a real request (with a query string) and assert the entry
+    carries the conformant shape a viewer needs: request/response header
+    arrays, the parsed query string, a start time and timings, and status --
+    read off the real intercepted flow, not the summary alone.
     """
     if not _mitmproxy_available():
         pytest.skip("mitmproxy not installed — proxy HAR Gate not run (skip != pass)")
@@ -747,7 +749,9 @@ def test_proxy_export_har_serialises_the_capture(tmp_path: Path) -> None:
             opener = urllib.request.build_opener(
                 urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
             )
-            with opener.open(origin_url, timeout=10) as response:
+            query_url = origin_url + "?page=2&q=secret"
+            req = urllib.request.Request(query_url, headers={"X-Trace": "gate-har-1"})
+            with opener.open(req, timeout=10) as response:
                 assert response.status == 200
             assert _poll(lambda: backend.flows("gate-har")["total"] >= 1)
 
@@ -757,11 +761,33 @@ def test_proxy_export_har_serialises_the_capture(tmp_path: Path) -> None:
             assert out.is_file()
             log = json.loads(out.read_text(encoding="utf-8"))["log"]
             assert log["version"] == "1.2"
-            assert any(
-                str(entry["request"]["url"]).endswith("/api/thing")
-                and entry["request"]["method"] == "GET"
-                for entry in log["entries"]
-            ), "the captured GET is missing from the HAR"
+            entry = next(
+                (
+                    e
+                    for e in log["entries"]
+                    if str(e["request"]["url"]).endswith("/api/thing?page=2&q=secret")
+                    and e["request"]["method"] == "GET"
+                ),
+                None,
+            )
+            assert entry is not None, "the captured GET is missing from the HAR"
+
+            # Conformant HAR 1.2: the fields a viewer requires must be present.
+            assert entry["startedDateTime"].startswith("20")
+            assert entry["time"] >= 0
+            assert set(entry["timings"]) == {"send", "wait", "receive"}
+            assert entry["cache"] == {}
+            # The request header we sent must round-trip out of the real flow.
+            req_headers = {h["name"].lower(): h["value"] for h in entry["request"]["headers"]}
+            assert req_headers.get("x-trace") == "gate-har-1"
+            # The query string must be parsed, not left embedded in the URL only.
+            query = {h["name"]: h["value"] for h in entry["request"]["queryString"]}
+            assert query.get("page") == "2"
+            assert query.get("q") == "secret"
+            # The response side carries status and its captured headers.
+            assert entry["response"]["status"] == 200
+            resp_headers = {h["name"].lower() for h in entry["response"]["headers"]}
+            assert "content-type" in resp_headers
         finally:
             backend.stop("gate-har")
 

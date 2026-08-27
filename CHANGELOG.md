@@ -593,6 +593,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   postScript 到达、address/value/length/data_type/truncated 走同一解析路径、docstring 形状，并静态校验 Java 侧确有
   `strings` 分派与 `getDefinedData`/`hasStringValue` 遍历，免得 Java 与 Python 走偏（本环境无 Ghidra，端到端跑不了）。
   该工具计入读效果，工具面因此 287→288。
+- **`proxy.export_har` 导出的 HAR 不合规**，几乎没法用。每条 entry 只有 method/url/status/mimeType，缺
+  `startedDateTime`、`timings`、`cookies`、`headers`、`queryString`——正是当初 `web.har.export` 被修掉的同一毛病，
+  DevTools 的 Import HAR、HAR Analyzer、har-validator 都会拒收。代理其实完整保留了整条流（请求/响应头与体都在
+  `_raw` 里），却只导出了摘要。现改为发出合规的 HAR 1.2：每条 entry 带请求/响应头数组（auth、cookie、content-type、
+  CORS 这些分析真正要看的行，且用 `items(multi=True)` 保留 `Set-Cookie` 等重复头）、解析出的 `queryString`、按流计算的
+  `startedDateTime` 与 `timings`（从 `request.timestamp_start` 到 `response.timestamp_end`）、`status`/`statusText`/
+  `httpVersion` 与解码后的 `content.size`。体不内联（一条流可达数 MB）——`response.content` 只给 size 与 mimeType，取体仍
+  走 `proxy.flow.get`。上游失败的流不再被丢，按 status 0 加 `_error` 说明导出。超容量时像 web HAR 一样从最旧开始裁到
+  合上限，并回 `truncated`/`size`。活体门经真代理打一个带 query 串和自定义头的请求，断言导出的 entry 有
+  startedDateTime/timings/cache、请求头里回得出该自定义头、queryString 被解析、响应侧带 status 与 content-type 头；
+  单测另钉合规整形与失败流的 status 0 + `_error`。工具面不变（仍 288）。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

@@ -461,6 +461,96 @@ def test_proxy_export_har_names_path_and_entry_count(
     assert "entry_count" in doc
 
 
+def test_proxy_export_har_emits_conformant_har_1_2(tmp_path: Path) -> None:
+    """The HAR entries must be valid HAR 1.2, not a bare method/url stub.
+
+    A HAR whose entries omit startedDateTime/timings/headers/queryString is
+    rejected by DevTools Import HAR and har-validator. Record a flow whose
+    request carries an auth header and a query string and whose response
+    carries a content-type, then assert the exported entry has the conformant
+    shape: request/response header arrays (carrying those values), the parsed
+    query string, per-flow start time and timings, status and a non-negative
+    content size.
+    """
+    import json
+
+    recorder = _FlowRecorder()
+    request = SimpleNamespace(
+        method="GET",
+        pretty_url="http://api.example/v1/items?page=2&q=secret",
+        host="api.example",
+        headers={"Authorization": "Bearer tok123", "Accept": "application/json"},
+        http_version="HTTP/1.1",
+        timestamp_start=1_700_000_000.0,
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        reason="OK",
+        headers={"content-type": "application/json"},
+        http_version="HTTP/1.1",
+        timestamp_start=1_700_000_000.0,
+        timestamp_end=1_700_000_000.25,
+    )
+    recorder.response(SimpleNamespace(id="f1", request=request, response=response))
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+
+    out = tmp_path / "capture.har"
+    payload = backend.export_har("s", out)
+    assert payload["entry_count"] == 1
+    assert payload["truncated"] is False
+    assert payload["size"] > 0
+
+    log = json.loads(out.read_text(encoding="utf-8"))["log"]
+    assert log["version"] == "1.2"
+    entry = log["entries"][0]
+
+    # startedDateTime is an ISO stamp; timings are present and non-negative.
+    assert entry["startedDateTime"].startswith("20")
+    assert entry["time"] >= 0
+    assert set(entry["timings"]) == {"send", "wait", "receive"}
+    assert entry["timings"]["wait"] >= 0
+    assert entry["cache"] == {}
+
+    req = entry["request"]
+    assert req["method"] == "GET"
+    assert req["httpVersion"] == "HTTP/1.1"
+    assert {"name": "Authorization", "value": "Bearer tok123"} in req["headers"]
+    # The query string must be parsed into HAR name/value pairs.
+    assert {"name": "page", "value": "2"} in req["queryString"]
+    assert {"name": "q", "value": "secret"} in req["queryString"]
+
+    resp = entry["response"]
+    assert resp["status"] == 200
+    assert resp["statusText"] == "OK"
+    assert {"name": "content-type", "value": "application/json"} in resp["headers"]
+    assert resp["content"]["mimeType"] == "application/json"
+    assert isinstance(resp["content"]["size"], int)
+
+
+def test_proxy_export_har_marks_a_failed_flow(tmp_path: Path) -> None:
+    """A failed upstream flow must be exported with status 0 and an _error note.
+
+    An errored flow has a request but no response; dropping it would make the
+    HAR look like the request was never attempted. Record a failed flow and
+    assert the entry carries status 0 and the failure message.
+    """
+    import json
+
+    recorder = _FlowRecorder()
+    request = SimpleNamespace(method="GET", pretty_url="http://down.example/x", host="down.example")
+    error = SimpleNamespace(msg="connection refused")
+    recorder.error(SimpleNamespace(id="bad", request=request, error=error))
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+
+    out = tmp_path / "failed.har"
+    backend.export_har("s", out)
+    entry = json.loads(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["response"]["status"] == 0
+    assert entry["response"]["_error"] == "connection refused"
+
+
 def _ws_flow(flow_id: str, messages: list[Any]) -> Any:
     return SimpleNamespace(id=flow_id, websocket=SimpleNamespace(messages=messages))
 

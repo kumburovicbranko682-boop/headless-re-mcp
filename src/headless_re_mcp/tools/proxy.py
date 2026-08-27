@@ -224,11 +224,16 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="proxy.export_har")
     def proxy_export_har(session_id: str) -> dict[str, Any]:
-        """Export captured flows to a HAR artifact.
+        """Export the captured flows to a conformant HAR 1.2 artifact.
 
-        Answers with path and entry_count. There is no har, output or
-        artifact field. path is the file; looking for har after a successful
-        export reads as a missing capture.
+        Answers with path, entry_count, truncated (true when oldest entries were
+        dropped to fit the cap) and size, plus artifact_id when registered.
+        There is no har, output or artifact field -- path is the file. Each
+        entry is valid HAR 1.2: request and response headers (auth, cookies,
+        content-type, CORS, with duplicates preserved), the parsed query string,
+        per-flow start time and timings, status and the decoded response size,
+        so the log loads in DevTools' Import HAR and other HAR viewers. Bodies
+        are not inlined (a capture can be huge); use proxy.flow.get for a body.
         """
         return _dump(analysis.proxy_export_har(session_id))
 
