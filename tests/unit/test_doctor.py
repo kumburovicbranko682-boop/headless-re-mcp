@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import os
 import subprocess
+import sys
+import types
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,8 +21,11 @@ from headless_re_mcp.doctor import (
     Probe,
     ProbeStatus,
     format_report,
+    probe_adbutils,
     probe_die,
     probe_exeinfope,
+    probe_frida,
+    probe_playwright,
     probe_upx,
     probe_x64dbg_binaries,
     probe_x64dbg_source,
@@ -547,3 +554,161 @@ def test_linux_hidden_desktop_setting_is_not_an_isolation_signal(tmp_path: Path)
     assert probe.status == ProbeStatus.MISSING
     assert probe.details["hidden_desktop"] is True
     assert probe.details["hidden_desktop_supported"] is False
+
+
+# ---------------------------------------------------------------------------
+# Python-module backends whose readiness depends on an out-of-band asset:
+# frida's native core, adbutils' bundled adb binary, playwright's browser. The
+# fakes keep these hermetic -- the unit-test env has none of the extras
+# installed, yet the tests must still prove READY/BLOCKED/MISSING for each.
+# ---------------------------------------------------------------------------
+def _install_fake_module(
+    monkeypatch: pytest.MonkeyPatch, name: str, **attrs: object
+) -> types.ModuleType:
+    module = types.ModuleType(name)
+    # A real __spec__ so importlib.util.find_spec returns it (it raises for a
+    # module in sys.modules whose spec is None), i.e. the probe sees "present".
+    module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
+    for key, value in attrs.items():
+        setattr(module, key, value)
+    monkeypatch.setitem(sys.modules, name, module)
+    return module
+
+
+def _force_module_absent(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    real_find_spec = importlib.util.find_spec
+
+    def fake(query: str, *args: object, **kwargs: object) -> object:
+        if query == name:
+            return None
+        return real_find_spec(query, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake)
+
+
+def test_frida_probe_is_missing_when_the_module_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_module_absent(monkeypatch, "frida")
+    probe = probe_frida()
+    assert probe.status == ProbeStatus.MISSING
+    assert "pip install frida" in (probe.remediation or "")
+
+
+def test_frida_probe_ready_imports_the_core_and_opens_a_local_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = types.SimpleNamespace(id="local", type="local")
+    _install_fake_module(
+        monkeypatch, "frida", __version__="16.5.9", get_local_device=lambda: device
+    )
+    probe = probe_frida()
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["version"] == "16.5.9"
+    assert probe.details["local_device"] == "local"
+
+
+def test_frida_probe_blocks_when_the_local_device_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom() -> object:
+        raise RuntimeError("no local device backend")
+
+    _install_fake_module(monkeypatch, "frida", __version__="16.5.9", get_local_device=boom)
+    probe = probe_frida()
+    # Importable but the device backend failed -- exactly the case find_spec's
+    # "detected" hid; the client must see blocked, not a green light.
+    assert probe.status == ProbeStatus.BLOCKED
+    assert "local device" in probe.summary
+
+
+def test_adbutils_probe_is_missing_when_the_module_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_module_absent(monkeypatch, "adbutils")
+    probe = probe_adbutils()
+    assert probe.status == ProbeStatus.MISSING
+    assert "pip install adbutils" in (probe.remediation or "")
+
+
+def test_adbutils_probe_ready_runs_the_bundled_adb(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    adb = tmp_path / "adb"
+    adb.touch()
+    _install_fake_module(monkeypatch, "adbutils", __version__="2.12.0", adb_path=lambda: str(adb))
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command, 0, stdout="Android Debug Bridge version 1.0.41\nVersion 35.0.0\n", stderr=""
+        )
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_adbutils()
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["adb_version"] == "1.0.41"
+    # It must run the bundled binary, not merely stat it.
+    assert commands and commands[0] == [str(adb), "version"]
+
+
+def test_adbutils_probe_blocks_when_the_bundled_adb_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    absent = tmp_path / "nope" / "adb"
+    _install_fake_module(
+        monkeypatch, "adbutils", __version__="2.12.0", adb_path=lambda: str(absent)
+    )
+    probe = probe_adbutils()
+    assert probe.status == ProbeStatus.BLOCKED
+    assert "missing" in probe.summary
+
+
+def test_playwright_probe_is_missing_when_the_module_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_module_absent(monkeypatch, "playwright")
+    probe = probe_playwright()
+    assert probe.status == ProbeStatus.MISSING
+    assert "pip install playwright" in (probe.remediation or "")
+
+
+def test_playwright_probe_ready_when_chromium_is_downloaded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_fake_module(monkeypatch, "playwright")
+    browsers = tmp_path / "chromium-1234"
+    browsers.mkdir()
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(
+            command, 0, stdout=f"Install location:    {browsers}\n", stderr=""
+        )
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_playwright()
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["chromium_location"] == str(browsers)
+
+
+def test_playwright_probe_blocks_when_chromium_is_not_downloaded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_fake_module(monkeypatch, "playwright")
+    absent = tmp_path / "chromium-9999"  # never created
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(
+            command, 0, stdout=f"Install location:    {absent}\n", stderr=""
+        )
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_playwright()
+    # The package is present but the browser was never downloaded -- the single
+    # most common playwright trap, which "detected" quietly waved through.
+    assert probe.status == ProbeStatus.BLOCKED
+    assert "python -m playwright install chromium" in (probe.remediation or "")

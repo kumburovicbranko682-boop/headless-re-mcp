@@ -188,7 +188,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         ),
         probe_command("radare2", ("r2", "rizin")),
         probe_ghidra(current),
-        probe_python_module("frida", "frida"),
+        probe_frida(),
         probe_command("java", ("java",)),
         (
             probe_command("windbg", ("cdb", "windbg", "windbgx"))
@@ -197,13 +197,13 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         ),
         # Android reverse-engineering (all optional; missing only degrades).
         probe_python_module("androguard", "androguard"),
-        probe_python_module("adbutils", "adbutils"),
+        probe_adbutils(),
         probe_optional_tool("adb", current, "adb", ("adb",)),
         probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat")),
         probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
         probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
         # Web reverse-engineering (all optional).
-        probe_python_module("playwright", "playwright"),
+        probe_playwright(),
         probe_python_module("mitmproxy", "mitmproxy"),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
         probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
@@ -1106,6 +1106,205 @@ def probe_python_module(name: str, module: str) -> Probe:
         ProbeStatus.DETECTED,
         f"Optional Python module {module} detected",
         {"origin": spec.origin},
+    )
+
+
+def _module_missing(name: str, module: str, remediation: str) -> Probe | None:
+    """MISSING when a module is absent; None means present and worth exercising.
+
+    ``find_spec`` alone can only ever answer "present", which for these three
+    backends is a false promise: it does not import (so a frida whose native core
+    cannot load still looks fine), and presence of the package says nothing about
+    the *out-of-band* asset each really needs -- adbutils' bundled adb binary or a
+    downloaded playwright browser. So the caller goes on to run the thing.
+    """
+    try:
+        spec = importlib.util.find_spec(module)
+    except ModuleNotFoundError:
+        spec = None
+    if spec is None:
+        return Probe(
+            name,
+            ProbeStatus.MISSING,
+            f"Optional Python module {module} is not installed",
+            {},
+            remediation,
+        )
+    return None
+
+
+def probe_frida() -> Probe:
+    """READY only when frida's native core actually loads and yields a device.
+
+    ``find_spec`` says "detected" even when the frida wheel's compiled core cannot
+    load (arch/ABI mismatch), because it never imports. Importing for real is the
+    only thing that proves the core initialises, and ``get_local_device`` proves
+    the piece the local-attach path (the PE debuggee on this machine) depends on.
+    """
+    missing = _module_missing(
+        "frida", "frida", "Install frida (pip install frida) for dynamic instrumentation."
+    )
+    if missing is not None:
+        return missing
+    try:
+        import frida
+    except Exception as exc:  # noqa: BLE001 - a broken native core raises many types
+        return Probe(
+            "frida",
+            ProbeStatus.BLOCKED,
+            "frida is installed but its native core failed to import",
+            {"error": f"{type(exc).__name__}: {exc}"},
+            "Reinstall a frida wheel matching this Python version, OS and CPU arch.",
+        )
+    details: dict[str, Any] = {"version": getattr(frida, "__version__", None)}
+    try:
+        device = frida.get_local_device()
+        details["local_device"] = str(getattr(device, "id", ""))
+    except Exception as exc:  # noqa: BLE001
+        return Probe(
+            "frida",
+            ProbeStatus.BLOCKED,
+            "frida imported but its local device is unavailable",
+            {**details, "error": f"{type(exc).__name__}: {exc}"},
+            "The frida core loaded but could not open the local device; reinstall frida.",
+        )
+    suffix = f" {details['version']}" if details["version"] else ""
+    return Probe(
+        "frida",
+        ProbeStatus.READY,
+        f"frida{suffix} is available with a local device",
+        details,
+    )
+
+
+def probe_adbutils() -> Probe:
+    """READY only when adbutils' bundled adb binary actually runs.
+
+    adbutils ships its own adb executable and auto-spawns the server, so the
+    module importing is not the real question -- whether that binary exists and
+    runs on this OS/arch is. ``find_spec`` cannot see a truncated or wrong-arch
+    bundled adb; running ``adb version`` can.
+    """
+    missing = _module_missing(
+        "adbutils", "adbutils", "Install adbutils (pip install adbutils) for adb device control."
+    )
+    if missing is not None:
+        return missing
+    try:
+        import adbutils
+    except Exception as exc:  # noqa: BLE001
+        return Probe(
+            "adbutils",
+            ProbeStatus.BLOCKED,
+            "adbutils is installed but failed to import",
+            {"error": f"{type(exc).__name__}: {exc}"},
+            "Reinstall adbutils.",
+        )
+    details: dict[str, Any] = {"version": getattr(adbutils, "__version__", None)}
+    try:
+        adb_path = Path(str(adbutils.adb_path()))
+    except Exception as exc:  # noqa: BLE001 - adbutils raises if it cannot resolve one
+        return Probe(
+            "adbutils",
+            ProbeStatus.BLOCKED,
+            "adbutils could not resolve an adb binary",
+            {**details, "error": f"{type(exc).__name__}: {exc}"},
+            "Reinstall adbutils, or put an adb on PATH / set ADBUTILS_ADB_PATH.",
+        )
+    details["adb_path"] = str(adb_path)
+    if not adb_path.is_file():
+        return Probe(
+            "adbutils",
+            ProbeStatus.BLOCKED,
+            "adbutils' adb binary is missing",
+            details,
+            "Reinstall adbutils, or put an adb on PATH / set ADBUTILS_ADB_PATH.",
+        )
+    try:
+        result = _probe_run([str(adb_path), "version"], timeout=15.0)
+    except (OSError, TimedOut) as exc:
+        return Probe(
+            "adbutils",
+            ProbeStatus.BLOCKED,
+            "adbutils' adb binary did not run",
+            {**details, "error": f"{type(exc).__name__}: {exc}"},
+            "The bundled adb could not execute on this OS/arch; reinstall adbutils.",
+        )
+    output = _bounded_text(result.stdout, result.stderr)
+    match = re.search(r"Android Debug Bridge version\s+(\S+)", output)
+    details.update(
+        {"adb_version": match.group(1) if match else None, "exit_code": result.returncode}
+    )
+    if result.returncode == 0:
+        suffix = f" {details['version']}" if details["version"] else ""
+        return Probe(
+            "adbutils",
+            ProbeStatus.READY,
+            f"adbutils{suffix} has a working adb binary",
+            details,
+        )
+    return Probe(
+        "adbutils",
+        ProbeStatus.BLOCKED,
+        "adbutils' adb binary did not report a usable version",
+        details,
+        "The bundled adb ran but returned non-zero; reinstall adbutils.",
+    )
+
+
+def probe_playwright() -> Probe:
+    """READY only when a playwright browser is actually installed, not just the SDK.
+
+    The single most common playwright trap is an importable package with no
+    downloaded browser, which ``find_spec`` happily calls "detected". Asking
+    playwright itself where chromium lives (``install --dry-run`` prints the
+    location without touching the network) and checking that the directory exists
+    tells apart a usable install from one that will fail at first launch.
+    """
+    missing = _module_missing(
+        "playwright",
+        "playwright",
+        "Install playwright (pip install playwright) for browser automation.",
+    )
+    if missing is not None:
+        return missing
+    try:
+        result = _probe_run(
+            [sys.executable, "-m", "playwright", "install", "chromium", "--dry-run"],
+            timeout=60.0,
+        )
+    except (OSError, TimedOut) as exc:
+        return Probe(
+            "playwright",
+            ProbeStatus.BLOCKED,
+            "playwright is installed but its driver did not run",
+            {"error": f"{type(exc).__name__}: {exc}"},
+            "Reinstall playwright; its Node driver failed to start.",
+        )
+    match = re.search(r"Install location:\s*(\S+)", result.stdout)
+    if result.returncode != 0 or match is None:
+        return Probe(
+            "playwright",
+            ProbeStatus.BLOCKED,
+            "playwright could not report its chromium location",
+            {"exit_code": result.returncode, "output": _bounded_text(result.stdout, result.stderr)},
+            "Reinstall playwright; the driver did not describe its browsers.",
+        )
+    location = match.group(1)
+    details: dict[str, Any] = {"chromium_location": location}
+    if Path(location).is_dir():
+        return Probe(
+            "playwright",
+            ProbeStatus.READY,
+            "playwright chromium is installed",
+            details,
+        )
+    return Probe(
+        "playwright",
+        ProbeStatus.BLOCKED,
+        "playwright is installed but its chromium browser is not downloaded",
+        details,
+        "Run: python -m playwright install chromium",
     )
 
 

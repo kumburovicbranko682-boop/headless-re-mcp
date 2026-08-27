@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+doctor 对三个"能 import 不代表能用"的 Python 后端给出真实就绪信号。此前 frida、adbutils、
+playwright 都走 `probe_python_module`，只用 `importlib.util.find_spec` 探测——它连 import 都
+不做，于是原生核心加载失败的 frida、缺少自带 adb 二进制的 adbutils、没下载浏览器的 playwright
+统统报 `detected`，和真正可用时一个词；而能力目录（`capabilities_catalog`）会把这个状态原样透传给
+Cursor。新增三个专用探针：`probe_frida` 真 import 并 `get_local_device()`；`probe_adbutils`
+解析自带 `adb_path()` 并真跑 `adb version`；`probe_playwright` 用 `playwright install
+chromium --dry-run`（不联网）问出浏览器安装位置并核实目录存在。三者据此报 `ready`/`blocked`/
+`missing`，与 PE 工具探针的措辞对齐。补齐 `tests/unit/test_doctor.py` 的对应用例（注入假模块，
+不依赖可选 extra 是否安装）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
