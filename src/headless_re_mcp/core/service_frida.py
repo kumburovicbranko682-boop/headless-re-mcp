@@ -182,6 +182,11 @@ class FridaDeviceMixin:
     ) -> Result[JsonObject]:
         return self._java(session_id, "methods", class_name=class_name, limit=limit, pid=pid)
 
+    def frida_java_fields(
+        self, session_id: str, class_name: str, limit: int = 200, pid: int = 0
+    ) -> Result[JsonObject]:
+        return self._java(session_id, "fields", class_name=class_name, limit=limit, pid=pid)
+
     def _java(
         self,
         session_id: str,

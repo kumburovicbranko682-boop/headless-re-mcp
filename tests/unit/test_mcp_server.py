@@ -292,6 +292,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "frida.spawn",
         "frida.java.classes",
         "frida.java.methods",
+        "frida.java.fields",
         # Web static (js.* / wasm.*)
         "js.deobfuscate",
         "js.beautify",

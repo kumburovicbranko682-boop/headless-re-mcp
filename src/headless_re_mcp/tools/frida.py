@@ -184,4 +184,23 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.frida_java_methods(session_id, class_name, limit=limit, pid=pid))
 
+    @tools.tool(name="frida.java.fields")
+    def frida_java_fields(
+        session_id: str,
+        class_name: str,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        pid: int = 0,
+    ) -> dict[str, Any]:
+        """List declared fields of a Java class on the authorized device pid (ART only).
+
+        The field companion to frida.java.methods, for reading a class's data
+        shape (each entry is Field.toString(), e.g. "private int com.x.Foo.n").
+        Answers with fields, class_name, found, count, and has_more so a page
+        that filled the limit is not read as every declared field. found is
+        false when the class is not loaded on the target, which an empty fields
+        list alone cannot distinguish from a loaded class that declares none of
+        its own.
+        """
+        return _dump(analysis.frida_java_fields(session_id, class_name, limit=limit, pid=pid))
+
     return tools.bindings

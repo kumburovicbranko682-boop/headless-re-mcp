@@ -347,6 +347,62 @@ def test_frida_java_methods_reports_a_loaded_class_with_no_methods_as_found() ->
     assert payload["has_more"] is False
 
 
+class _JavaFieldsApi:
+    """fields() returns {found, fields}, mirroring the methods RPC shape."""
+
+    def __init__(self, *, found: bool, count: int) -> None:
+        self._found = found
+        self._count = count
+
+    def fields(self, class_name: str, limit: int) -> dict[str, Any]:
+        del class_name, limit
+        return {
+            "found": self._found,
+            "fields": [f"f{index}" for index in range(self._count)],
+        }
+
+
+def test_frida_java_fields_puts_the_list_in_fields_and_says_when_it_stopped() -> None:
+    """A full page paginates via has_more; the field list is named fields."""
+    client = _java_client_returning(_JavaFieldsApi(found=True, count=11))
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="fields", class_name="Foo", limit=10
+    )
+    assert "field_list" not in payload
+    assert payload["class_name"] == "Foo"
+    assert payload["count"] == 10
+    assert len(payload["fields"]) == 10
+    assert payload["has_more"] is True
+    assert payload["found"] is True
+    doc = _tool_docstring("frida.java.fields")
+    assert "Answers with fields" in doc
+    assert "has_more" in doc
+    assert "found" in doc
+
+
+def test_frida_java_fields_reports_a_class_that_is_not_loaded_as_not_found() -> None:
+    """found false with an empty list means the class name did not resolve."""
+    client = _java_client_returning(_JavaFieldsApi(found=False, count=0))
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="fields", class_name="Nope", limit=10
+    )
+    assert payload["found"] is False
+    assert payload["fields"] == []
+    assert payload["count"] == 0
+    assert payload["has_more"] is False
+
+
+def test_frida_java_fields_reports_a_loaded_class_with_no_fields_as_found() -> None:
+    """found true with an empty list: loaded, but declares none of its own."""
+    client = _java_client_returning(_JavaFieldsApi(found=True, count=0))
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="fields", class_name="Marker", limit=10
+    )
+    assert payload["found"] is True
+    assert payload["fields"] == []
+    assert payload["count"] == 0
+
+
 class _SpawnDevice:
     def spawn(self, argv: list[str]) -> int:
         return 4242

@@ -170,6 +170,24 @@ rpc.exports = {
       }
     });
     return {found: found, methods: out};
+  },
+  fields: function (className, limit) {
+    var out = [];
+    var found = false;
+    Java.perform(function () {
+      var clazz;
+      try {
+        clazz = Java.use(className);
+      } catch (e) {
+        return;  // class is not loaded on the target
+      }
+      found = true;
+      var fields = clazz.class.getDeclaredFields();
+      for (var i = 0; i < fields.length && out.length < limit; i++) {
+        out.push(fields[i].toString());
+      }
+    });
+    return {found: found, fields: out};
   }
 };
 """
@@ -717,7 +735,29 @@ class FridaClient:
                         "count": len(values),
                         "has_more": has_more,
                     }
-                raise FridaError("invalid_params", "mode must be classes or methods")
+                if mode == "fields":
+                    if not class_name:
+                        raise FridaError("invalid_params", "class_name is required")
+                    raw = script.exports_sync.fields(class_name, capped + 1)
+                    # found carries the same meaning as it does for methods: it
+                    # separates "class is not loaded on the target" (found false)
+                    # from "loaded, but declares no fields of its own" (found
+                    # true, empty), so an empty list is not read as a bad class
+                    # name. The bare-array branch tolerates the older script.
+                    if isinstance(raw, dict):
+                        found = bool(raw.get("found"))
+                        values, has_more = _page(list(raw.get("fields") or []), capped)
+                    else:
+                        found = True
+                        values, has_more = _page(list(raw or []), capped)
+                    return {
+                        "class_name": class_name,
+                        "found": found,
+                        "fields": values,
+                        "count": len(values),
+                        "has_more": has_more,
+                    }
+                raise FridaError("invalid_params", "mode must be classes, methods or fields")
             finally:
                 with contextlib.suppress(Exception):
                     session.detach()
