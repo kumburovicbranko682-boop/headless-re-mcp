@@ -80,3 +80,48 @@ def test_m11_r2_live_address_mapping(tmp_path: Path) -> None:
     if "rva" in item["address"]:
         # A PE carries a preferred base, so addresses map to module-relative RVAs.
         assert item["address"].get("module") == fixture.name
+
+
+@pytest.mark.integration
+def test_m11_r2_live_xrefs_resolve_a_real_call(tmp_path: Path) -> None:
+    """r2.xrefs must return the real caller of a function.
+
+    This guards the ``axtj``/``axfj`` fix: modern radare2's bare ``axj`` is a
+    write ("add jmp reference"), not a listing, so the old command returned
+    nothing (``parsed: False``) for every address. Against the compiled ELF,
+    ``main`` calls ``helper`` -- so asking for references *to* helper must yield
+    the CALL edge, with ``to`` pointing at helper. POSIX only: it needs the
+    named symbols of the compiled ELF, which the committed PE sample does not
+    share.
+    """
+    if os.name == "nt":
+        pytest.skip("xref edge assertions target the compiled ELF fixture (skip != pass)")
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live Gate not run (skip≠pass)")
+    fixture = _r2_fixture(tmp_path)
+
+    funcs = client.run(fixture, ["aa", "aflj"], timeout=60.0)
+    va_by_name = {
+        str(entry.get("name")): entry.get("address", {}).get("va")
+        for entry in funcs.get("items", [])
+        if isinstance(entry.get("address"), dict)
+    }
+    helper_va = next(
+        (va for name, va in va_by_name.items() if "helper" in name and va is not None), None
+    )
+    assert helper_va is not None, f"no helper function among {sorted(va_by_name)}"
+
+    xrefs = client.xrefs(fixture, helper_va, timeout=60.0)
+    assert xrefs.get("parsed") is True
+    assert xrefs.get("count", 0) >= 1
+    call_edges = [
+        item
+        for item in xrefs["items"]
+        if item.get("type") == "CALL"
+        and isinstance(item.get("to_address"), dict)
+        and item["to_address"].get("va") == helper_va
+    ]
+    assert call_edges, f"no CALL edge into helper@{helper_va:#x}: {xrefs['items']}"
+    assert isinstance(call_edges[0].get("from_address"), dict)
+    assert isinstance(call_edges[0]["from_address"].get("va"), int)
