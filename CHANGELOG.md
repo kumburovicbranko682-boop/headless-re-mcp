@@ -58,6 +58,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   还照它算出错误的 `has_more`，而分页出来的类/方法/字符串恰恰是 agent 据以下结论的东西。现按
   同一范式夹取（`start=max(0, offset)`、`cap=max(1, limit)`）并回夹取后的 `offset`。补回归测试
   钉住三条路径的负偏移都归零、非正 `limit` 仍回一页。
+- **`apk.xrefs` 的 `limit` 只有下界没有上界。** classes/methods/strings 无论传多大 `limit`
+  都被各自的 `_MAX_*_COLLECT` 采集上限兜住，而 xrefs 是「正好采 `limit` 个调用方」，没有上界时
+  Agent 传输（不经 schema 校验）可以点名某个热点方法的全部调用方，把回包撑到 `bounded_tool_result`
+  只能整份截断的地步——本该是「一页封顶 + `has_more`」，却退化成一坨截断 blob。现按 schema 的
+  `le=1000` 在后端边界封顶（`cap=max(1, min(limit, _MAX_XREFS))`），对合法调用零影响（schema 上限
+  本就是 1000）。补回归测试钉住超大 `limit` 被封到 `_MAX_XREFS` 且回 `has_more`。
 
 ### 修复（监控台回环护栏）
 

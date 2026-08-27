@@ -267,6 +267,23 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["count"] == 10
         assert result["has_more"] is False
 
+    def test_an_out_of_range_limit_is_capped_at_the_schema_ceiling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The schema says le=1000, but the agent transport skips that check.
+
+        Unlike classes/methods/strings, which a scan cap bounds regardless of
+        limit, xrefs collects exactly `limit` callers, so a huge value would
+        gather every caller of a hot method and balloon the reply.
+        """
+        from headless_re_mcp.backends.apk.client import _MAX_XREFS
+
+        client = self._client(monkeypatch, callers=_MAX_XREFS + 500)
+        result = client.xrefs(tmp_path / "app.apk", "decrypt", limit=10**9)
+
+        assert result["count"] == _MAX_XREFS
+        assert result["has_more"] is True
+
 
 class _FakeClass:
     def __init__(self, name: str, methods: list[Any] | None = None) -> None:

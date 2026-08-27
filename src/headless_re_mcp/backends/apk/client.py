@@ -27,6 +27,14 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# Mirror the xrefs tool schema's le=1000 at the backend boundary. classes /
+# methods / strings are bounded by their _MAX_*_COLLECT scan caps no matter what
+# limit is passed; xrefs instead collects exactly `limit` callers, so without an
+# upper bound the agent transport (which skips schema validation) could ask for
+# every caller of a hot method and balloon the reply past what
+# bounded_tool_result can return -- turning a clean capped page + has_more into a
+# blunt truncated blob.
+_MAX_XREFS = 1000
 
 
 class ApkError(RuntimeError):
@@ -395,7 +403,7 @@ class ApkClient:
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
-        cap = max(1, int(limit))
+        cap = max(1, min(int(limit), _MAX_XREFS))
         callers: list[JsonObject] = []
         has_more = False
         for method in parsed.analysis.get_methods():
