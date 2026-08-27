@@ -70,8 +70,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   少量结构线索（如 UPX 节名），单凭它不足以把空结果升格为对整个加壳/保护器空间的确信“无壳”。
   现只有签名扫描确实完成才给 `none_detected`，否则如实报 `inconclusive`；新增 `scanners`
   （各 source 的 name/status/summary）与 `signature_scan_completed` 布尔，使结论可核验，空结果
-  不再在检测退化时被读成“确认无壳”。新增四条直测覆盖 diec 未配置→inconclusive、崩溃→
+  不再在检测退化时被读成“确认无壳”。  新增四条直测覆盖 diec 未配置→inconclusive、崩溃→
   inconclusive（而非 none_detected）、完成且无壳→none_detected、以及有候选时仍带扫描器披露。
+- 同一处退化被 `unpack.recommend` 原样带过：路由是候选+PE 信号的纯函数，候选为空时无论签名
+  扫描是跑干净了还是根本没跑，都会给出 `route="none"`（“无壳候选，优先静态分析”）。现把
+  `packer.classify` 的判定透传为 `detection_conclusion` / `signature_scan_completed` /
+  `detection_inconclusive` / `scanners`；检测为 inconclusive 时另加 `note`，说明 `route="none"`
+  只反映“没有候选”，不等于“确认未加壳”，应按“未知”处理并在配置好 DIE 或指定 `force_route`
+  后再下结论。新增两条直测：diec 未配置时 recommend 标 inconclusive 且带 note，完成的干净扫描
+  不标 note。
 
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
