@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（监控台帧的 timeline/artifacts 窗口只报页长，不报总数）
+
+- `build_monitor_snapshot` 刻意只取最新一窗（timeline 48 条、artifacts 12 条），却只透出 `count`——
+  也就是窗口长度。于是一个有 300 条 timeline 的会话，帧里 `count` 读作 48、没有任何字段表明另外 252 条
+  存在，繁忙会话的实时视图看起来"就这些了"，实则只是个尾巴。底层 `list_timeline`/`list_artifacts` 本就
+  返回了真实 `total`，只是在组装帧时被丢弃。现在两段都补上 `total`（真实总数）与 `truncated`
+  （`total > count` 时为真，表示窗口之外还有更早的条目）；`count` 保留为页长以兼容既有前端。回归测试
+  钉住：60 条 timeline + 20 个 artifact 的会话帧报 `count` 48/12、`total` ≥61/20、`truncated` 均为真；
+  历史全部落在窗口内时 `truncated` 为假且 `total == count`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

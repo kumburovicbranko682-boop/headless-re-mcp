@@ -55,6 +55,70 @@ def test_a_console_frame_does_not_eat_the_agents_events(tmp_path: Path) -> None:
     assert snapshot["events"]["error"] is None
 
 
+def test_a_busy_frame_admits_its_window_is_a_tail(tmp_path: Path) -> None:
+    """A bounded monitor window must not read as the whole history.
+
+    The frame shows the newest 48 timeline entries and newest 12 artifacts, but
+    only surfaced ``count`` -- the window length. A session with far more entries
+    drew a frame whose count looked like the complete total, so a live view of a
+    busy session looked done when it was a tail. The frame now carries the real
+    ``total`` and a ``truncated`` flag for both sections.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, FakeDynamicWorker())
+    session_id = _create(service, binary)
+
+    for index in range(60):
+        service.repository.append_timeline(session_id, "probe", f"step {index}")
+    for index in range(20):
+        service.repository.register_artifact(
+            session_id=session_id,
+            kind="dump",
+            path=f"/nonexistent/dump-{index}.bin",
+            size=1,
+            sha256="0" * 64,
+            source="test",
+        )
+
+    snapshot = build_monitor_snapshot(service, session_id)
+
+    timeline = snapshot["timeline"]
+    assert timeline["count"] == 48
+    assert timeline["total"] >= 61  # 60 probes plus the session.created entry
+    assert timeline["total"] > timeline["count"]
+    assert timeline["truncated"] is True
+
+    artifacts = snapshot["artifacts"]
+    assert artifacts["count"] == 12
+    assert artifacts["total"] == 20
+    assert artifacts["truncated"] is True
+
+
+def test_a_quiet_frame_does_not_claim_it_hid_anything(tmp_path: Path) -> None:
+    """When the whole history fits the window, truncated must stay False."""
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, FakeDynamicWorker())
+    session_id = _create(service, binary)
+
+    service.repository.register_artifact(
+        session_id=session_id,
+        kind="dump",
+        path="/nonexistent/only.bin",
+        size=1,
+        sha256="0" * 64,
+        source="test",
+    )
+
+    snapshot = build_monitor_snapshot(service, session_id)
+
+    assert snapshot["timeline"]["truncated"] is False
+    assert snapshot["timeline"]["total"] == snapshot["timeline"]["count"]
+    assert snapshot["artifacts"]["truncated"] is False
+    assert snapshot["artifacts"]["total"] == 1
+
+
 def test_a_frame_for_a_session_with_no_event_log_says_so(tmp_path: Path) -> None:
     """A static-only session has no debugger stream, and that is not a failure."""
     binary = tmp_path / "fixture.exe"
