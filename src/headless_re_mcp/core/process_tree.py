@@ -9,6 +9,7 @@ import subprocess
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -223,19 +224,52 @@ def collect_process_group(pgid: int) -> list[int]:
     return members
 
 
-def terminate_process_group(pgid: int) -> list[int]:
+def _pid_reads_dead(pid: int) -> bool:
+    """POSIX: True when ``pid`` is gone or a killed-but-unreaped zombie.
+
+    ``os.kill(pid, 0)`` reports a zombie as alive, so a caller that checks right
+    after a kill would read a process it just killed as still running -- and an
+    orphan reparented to init lingers as a zombie until init reaps it, which a
+    container's pid 1 may never do. The ``/proc/<pid>/stat`` state field
+    separates a live process ('R'/'S'/'D'...) from one already dead and only
+    awaiting reaping ('Z'/'X').
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return True
+    close = stat.rfind(")")
+    if close < 0:
+        return True
+    fields = stat[close + 2 :].split()
+    if not fields:
+        return True
+    return fields[0] in {"Z", "X", "x"}
+
+
+def terminate_process_group(pgid: int, *, wait_s: float = 2.0) -> list[int]:
     """POSIX: kill every live member of process group ``pgid``. [] on Windows.
 
     Members are enumerated by their recorded group and killed one by one, rather
     than with ``killpg(pgid)``: once the leader is reaped its pid can be reused,
     and a bare group signal on a recycled pid could hit an unrelated group. A
     per-member kill keyed on the group cannot.
+
+    SIGKILL is asynchronous -- the kernel tears the target down after ``os.kill``
+    returns -- so wait, bounded, for each killed member to actually reach a dead
+    state. Without it a caller that reaps a helper and immediately checks would
+    read a pid it just killed as still alive.
     """
     killed: list[int] = []
     for pid in collect_process_group(pgid):
         with suppress(Exception):
             _kill_pid(pid)
             killed.append(pid)
+    if killed and os.name != "nt":
+        deadline = monotonic() + max(0.0, wait_s)
+        for pid in killed:
+            while not _pid_reads_dead(pid) and monotonic() < deadline:
+                sleep(0.01)
     return killed
 
 

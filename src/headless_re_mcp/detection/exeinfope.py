@@ -387,6 +387,12 @@ def _capture_process(
             details={"executable": argv[0], "os_error": str(exc)},
         ) from exc
 
+    # start_new_session (POSIX) makes the analyzer its own group leader, so the
+    # group id is its pid. Recorded now, before a clean exit reaps the leader, so
+    # a child it orphaned to init -- invisible to the parent/child walk -- can
+    # still be found and killed by group membership.
+    group_id = int(pid) if os.name != "nt" and pid else 0
+
     stdout_pipe = process.stdout
     stderr_pipe = process.stderr
     if stdout_pipe is None or stderr_pipe is None:
@@ -468,6 +474,14 @@ def _capture_process(
             except (subprocess.TimeoutExpired, OSError):
                 _terminate_process(process)
                 returncode = process.poll()
+            else:
+                # Exeinfo PE ended on its own; the parent/child walk cannot see a
+                # child it orphaned to init, so kill any survivor by the session
+                # group it still carries.
+                if os.name != "nt" and group_id:
+                    from headless_re_mcp.core.process_tree import terminate_process_group
+
+                    terminate_process_group(group_id)
         stop_monitor.set()
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
