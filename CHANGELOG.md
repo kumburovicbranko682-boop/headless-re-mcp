@@ -14,7 +14,7 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、apktool、apksigner、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web / Android 静态分类 / **Android 反编译（jadx 处理真实 DEX）** / **Android 反编译回编签名（apktool + apksigner 的补丁往返）** / 抓包（含真实拦截）/ radare2 / Ghidra 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、apktool、apksigner、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web CDP / **Web JS 反混淆与 webpack 拆包（webcrack）** / **WebAssembly 解码（wabt 处理真实模块）** / Android 静态分类 / **Android 反编译（jadx 处理真实 DEX）** / **Android 反编译回编签名（apktool + apksigner 的补丁往返）** / 抓包（含真实拦截）/ radare2 / Ghidra 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
@@ -61,6 +61,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   临时 keystore（keytool 现造）签名——`sign()` 只有在 `apksigner verify` 通过后才返回，随后再把已签名
   APK 解一次，断言那处清单改动确实穿过了重打包与签名（`PatchedByGate` 仍在），而不只是命令退出 0。
   apktool/apksigner/keytool 缺失时才 skip。
+- **WebAssembly 线过去只在一个空模块上跑 `wasm.wat`**（只有 magic+version、没有任何 section），既没证明
+  wabt 能解出函数或导出，`wasm.info`（wasm-objdump）更是零覆盖。新增 gate 用 wat2wasm 现编一个真模块
+  （一个把两个 i32 相加的函数，连同一块内存一起导出），经 `AnalysisService` 跑 `wasm.wat` / `wasm.info`，
+  断言反汇编文本里带着真实指令与导出（`i32.add`、`(export "add"`），objdump 也列出 section 表与导出表。
+  wat2wasm 随 wabt 同一个包装到 `linux-integration`。wabt/wat2wasm 缺失时才 skip。
+- **`js.unpack_bundle` 从没在测试里真跑过，也没人发现它其实是坏的**：客户端会先把输出目录建好（父目录必须
+  存在且按调用键名），可 webcrack 2.x 拒绝写入一个已存在的目录（`output directory already exists`、非零退出），
+  于是当前 webcrack 上每次拆包都 `backend_error`。修复是给 webcrack 传 `--force`（覆盖我们刚建的空目录，
+  目录不存在时也照样创建）。新增 gate 手搓一个两模块 webpack 运行时，经 `AnalysisService` 真跑 webcrack，
+  断言它被拆回按模块的文件、其中一个带着被打包进去的函数体；同时把 `js.deobfuscate` 的断言收紧到「真的解出了
+  藏起来的字符串」（夹具把 `H3adl3ss` 用 `\\x48` 转义藏在轮转字符串数组里，改为断言解出的明文在、转义与
+  方括号成员访问不在），而不再只看 `bytes > 0`——后者连原样回显都能过。
 
 ### 新增（监控台工作台）
 
