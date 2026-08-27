@@ -200,6 +200,55 @@ class TestFridaTargetAuthorization:
         assert "android_ssl_unpin" in info.value.details["allowed"]
 
 
+class TestFridaJavaEnumerateInputContract:
+    """java_enumerate settles mode/class_name before the gate, like the template.
+
+    An authorized pid gets past `_authorize`, so these reach the mode/class_name
+    checks. Because those now run before `_resolve_device`, a malformed request
+    is `invalid_params` on a host without frida rather than
+    `capability_unavailable`, and no device is ever attached. A well-formed
+    request, by contrast, does reach the gate and reports the capability there.
+    """
+
+    def _unavailable_client(self) -> FridaClient:
+        client = FridaClient()
+        client._frida = None
+        client._available = False
+        return client
+
+    def test_an_unknown_mode_is_invalid_params_before_the_gate(self) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.java_enumerate("usb", 5, allowed_pids=[5], mode="dump", limit=1)
+        assert info.value.code == "invalid_params"
+        assert info.value.details.get("mode") == "dump"
+
+    def test_methods_without_a_class_name_is_invalid_params_before_the_gate(self) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.java_enumerate(
+                "usb", 5, allowed_pids=[5], mode="methods", class_name="", limit=1
+            )
+        assert info.value.code == "invalid_params"
+
+    def test_methods_with_class_name_none_is_invalid_params(self) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.java_enumerate(
+                "usb", 5, allowed_pids=[5], mode="methods", class_name=None, limit=1
+            )
+        assert info.value.code == "invalid_params"
+
+    def test_a_well_formed_request_reaches_the_capability_gate(self) -> None:
+        """Valid mode/class_name pass the input checks and hit _resolve_device."""
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.java_enumerate(
+                "usb", 5, allowed_pids=[5], mode="methods", class_name="Foo", limit=1
+            )
+        assert info.value.code == "capability_unavailable"
+
+
 class _FakeScript:
     def __init__(self) -> None:
         self.loaded = False

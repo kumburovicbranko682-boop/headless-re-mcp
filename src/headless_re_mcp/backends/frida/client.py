@@ -642,6 +642,19 @@ class FridaClient:
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._authorize(pid, allowed_pids)
+        # Validate mode and class_name before the capability gate and before any
+        # device attach, the same ordering hook_template_device uses for its
+        # template. Left inside work(), an unknown mode or a missing class_name
+        # was only caught after _resolve_device and device.attach(pid): on a host
+        # without frida it answered capability_unavailable instead of
+        # invalid_params -- a different verdict for the same bad request -- and on
+        # a working host it attached to a real process for a request malformed on
+        # its face. mode/class_name are properties of the request, so they settle
+        # here, next to the pid authorization above.
+        if mode not in ("classes", "methods"):
+            raise FridaError("invalid_params", "mode must be classes or methods", mode=mode)
+        if mode == "methods" and not class_name:
+            raise FridaError("invalid_params", "class_name is required")
         device = self._resolve_device(device_id)
         capped = max(1, min(int(limit), 2000))
         deadline = _bound_timeout(timeout)
@@ -663,19 +676,15 @@ class FridaClient:
                         script.exports_sync.classes(name_filter or "", capped + 1), capped
                     )
                     return {"classes": values, "count": len(values), "has_more": has_more}
-                if mode == "methods":
-                    if not class_name:
-                        raise FridaError("invalid_params", "class_name is required")
-                    values, has_more = _page(
-                        script.exports_sync.methods(class_name, capped + 1), capped
-                    )
-                    return {
-                        "class_name": class_name,
-                        "methods": values,
-                        "count": len(values),
-                        "has_more": has_more,
-                    }
-                raise FridaError("invalid_params", "mode must be classes or methods")
+                values, has_more = _page(
+                    script.exports_sync.methods(class_name, capped + 1), capped
+                )
+                return {
+                    "class_name": class_name,
+                    "methods": values,
+                    "count": len(values),
+                    "has_more": has_more,
+                }
             finally:
                 with contextlib.suppress(Exception):
                     session.detach()

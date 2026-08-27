@@ -62,6 +62,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（frida.java.classes/methods 的 mode/class_name 校验移到能力门与 attach 之前）
+
+- 设备维度的 `java_enumerate` 把 `mode`（classes/methods）与 methods 模式下必填的 `class_name` 校验
+  留在 `work()` 里——也就是 `_resolve_device`（能力门）与 `device.attach(pid)` **之后**。于是没装
+  frida 的机器上，一个未知 mode 或空 class_name 得到的是 `capability_unavailable` 而非 `invalid_params`
+  （同一个坏请求在不同机器给不同结论）；能装 frida 的机器上，`frida.java.methods` 传空 class_name
+  会先 attach 到真实进程、再拒绝一个本就畸形的请求。兄弟方法 `hook_template_device` 早已把未知模板校验
+  放在 `_resolve_device` 之前，`java_enumerate` 没跟上。现把 `mode`/`class_name` 校验前移到 `_authorize`
+  之后、`_resolve_device` 之前：未知 mode 与缺失 class_name 都在碰能力门、碰设备之前回 `invalid_params`，
+  且从不 attach；合法请求照常抵达能力门（缺 frida 时由 `_resolve_device` 回 `capability_unavailable`）。
+  与 `_authorize` 的 pid、`hook_template_device` 的 template、`proxy.start` 的 port、Ghidra 的 max_heap
+  同属 "输入先于门" 的一致处理。回归直连后端在 "假装未装 frida" 的客户端上钉住：坏 mode/空 class_name
+  回 `invalid_params`，合法请求回 `capability_unavailable`。
+
 ### 修复（frida.server.ensure 的 port/remote_path 校验移到 adbutils 能力门之前）
 
 - `AdbBackend.ensure_frida_server` 把 `port` 与 `remote_path` 都拼进 `su -c '…'` 命令行，二者本是
