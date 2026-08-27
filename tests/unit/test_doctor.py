@@ -495,6 +495,99 @@ def test_a_missing_tool_stays_missing_regardless_of_runtime(
     assert "missing_runtime" not in probe.details
 
 
+class _FakeSpec:
+    def __init__(self, origin: str) -> None:
+        self.origin = origin
+
+
+def _spec_found(monkeypatch: pytest.MonkeyPatch, origin: str) -> None:
+    monkeypatch.setattr(
+        doctor_module.importlib.util, "find_spec", lambda module: _FakeSpec(origin)
+    )
+
+
+def _probe_returns(
+    monkeypatch: pytest.MonkeyPatch, *, returncode: int, stdout: str
+) -> None:
+    def run(command: list[str], *, timeout: float, env: object = None) -> object:
+        del command, timeout, env
+        return doctor_module._ProbeOutput(returncode, stdout, "")
+
+    monkeypatch.setattr(doctor_module, "_probe_run", run)
+
+
+def test_playwright_probe_is_missing_without_the_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor_module.importlib.util, "find_spec", lambda module: None)
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        raise AssertionError("must not launch the driver when the module is absent")
+
+    monkeypatch.setattr(doctor_module, "_probe_run", forbidden)
+
+    probe = doctor_module.probe_playwright()
+
+    assert probe.status == ProbeStatus.MISSING
+    assert "not installed" in probe.summary
+
+
+def test_playwright_probe_reports_the_missing_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pip installs the package; the Chromium build is a separate download.
+
+    Naming the absent browser mirrors how the JVM launchers name an absent
+    java: web.open cannot launch anything until the operator runs the install.
+    """
+    _spec_found(monkeypatch, "/site/playwright/__init__.py")
+    _probe_returns(
+        monkeypatch,
+        returncode=0,
+        stdout="\nMISSING /cache/ms-playwright/chromium-1234/chrome-linux64/chrome\n",
+    )
+
+    probe = doctor_module.probe_playwright()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert "chromium browser is not installed" in probe.summary
+    assert "playwright install chromium" in (probe.remediation or "")
+    assert probe.details["chromium_executable"].endswith("chrome")
+
+
+def test_playwright_probe_is_quiet_when_the_browser_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _spec_found(monkeypatch, "/site/playwright/__init__.py")
+    _probe_returns(
+        monkeypatch,
+        returncode=0,
+        stdout="\nOK /cache/ms-playwright/chromium-1234/chrome-linux64/chrome\n",
+    )
+
+    probe = doctor_module.probe_playwright()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert "installed" in probe.summary
+    assert probe.remediation is None
+    assert probe.details["chromium_executable"].endswith("chrome")
+
+
+def test_playwright_probe_degrades_when_the_driver_cannot_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wedged or failed driver must not block the doctor or invent a verdict."""
+    _spec_found(monkeypatch, "/site/playwright/__init__.py")
+    _probe_returns(monkeypatch, returncode=1, stdout="boom\n")
+
+    probe = doctor_module.probe_playwright()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.summary == "Optional Python module playwright detected"
+    assert probe.remediation is None
+    assert "chromium_executable" not in probe.details
+
+
 def test_isolation_probe_blocks_on_elevated_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

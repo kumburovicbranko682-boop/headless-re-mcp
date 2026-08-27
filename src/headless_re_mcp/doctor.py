@@ -207,7 +207,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             "apksigner", current, "apksigner", ("apksigner", "apksigner.bat"), runtime=("java",)
         ),
         # Web reverse-engineering (all optional).
-        probe_python_module("playwright", "playwright"),
+        probe_playwright(),
         probe_python_module("mitmproxy", "mitmproxy"),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",), runtime=("node",)),
         probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
@@ -1135,6 +1135,92 @@ def probe_python_module(name: str, module: str) -> Probe:
         ProbeStatus.DETECTED,
         f"Optional Python module {module} detected",
         {"origin": spec.origin},
+    )
+
+
+# Ask Playwright for the version-correct Chromium path and report whether it is
+# on disk. Writing the marker on its own line keeps it separable from the
+# asyncio teardown noise Playwright emits to stderr (and occasionally stdout)
+# when the driver stops. ``.start()``/``.stop()`` avoid the context manager,
+# which was the loudest source of that noise.
+_PLAYWRIGHT_BROWSER_PROBE = (
+    "import os, sys\n"
+    "from playwright.sync_api import sync_playwright\n"
+    "pw = sync_playwright().start()\n"
+    "path = pw.chromium.executable_path\n"
+    "marker = 'OK ' if os.path.exists(path) else 'MISSING '\n"
+    "sys.stdout.write('\\n' + marker + path + '\\n')\n"
+    "sys.stdout.flush()\n"
+    "pw.stop()\n"
+)
+
+
+def _detect_playwright_browser() -> tuple[bool, str] | None:
+    """Return (installed, chromium_path) for Playwright, or None if unknown.
+
+    Importing the ``playwright`` package says nothing about whether ``web.open``
+    can launch anything: the Chromium build is a separate ``playwright install``
+    download, so a pip-only environment imports fine and then fails at first
+    navigation. Playwright itself knows the version- and platform-correct
+    executable path, so read it from a bounded child -- a wedged driver must not
+    hang the doctor, the one command someone runs *because* the machine is
+    misbehaving -- and check it on disk. Any failure returns None so the probe
+    falls back to a plain "detected" rather than guessing.
+    """
+    try:
+        result = _probe_run([sys.executable, "-c", _PLAYWRIGHT_BROWSER_PROBE], timeout=30)
+    except (OSError, TimedOut):
+        return None
+    if result.returncode != 0:
+        return None
+    for raw in result.stdout.splitlines():
+        line = raw.strip()
+        if line.startswith("OK "):
+            return True, line[len("OK ") :].strip()
+        if line.startswith("MISSING "):
+            return False, line[len("MISSING ") :].strip()
+    return None
+
+
+def probe_playwright() -> Probe:
+    """Playwright is usable only when its Chromium build is also installed.
+
+    Unlike a plain Python module, importability does not imply readiness. Report
+    the absent browser the way the JVM launchers report an absent java runtime:
+    still ``detected`` and never blocking -- it is optional -- but naming what is
+    missing and how to fix it instead of implying web.open will work.
+    """
+    spec = importlib.util.find_spec("playwright")
+    if spec is None:
+        return Probe(
+            "playwright",
+            ProbeStatus.MISSING,
+            "Optional Python module playwright is not installed",
+        )
+    detail: dict[str, Any] = {"origin": spec.origin}
+    browser = _detect_playwright_browser()
+    if browser is None:
+        return Probe(
+            "playwright",
+            ProbeStatus.DETECTED,
+            "Optional Python module playwright detected",
+            detail,
+        )
+    installed, executable = browser
+    detail["chromium_executable"] = executable
+    if installed:
+        return Probe(
+            "playwright",
+            ProbeStatus.DETECTED,
+            "playwright detected; chromium browser installed",
+            detail,
+        )
+    return Probe(
+        "playwright",
+        ProbeStatus.DETECTED,
+        "playwright detected, but its chromium browser is not installed",
+        detail,
+        "Run 'python -m playwright install chromium' so web.open can launch a browser.",
     )
 
 

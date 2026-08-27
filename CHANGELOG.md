@@ -229,6 +229,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   别处一律用 `capability_unavailable` 表达；web 这条却抛 `backend_error`，无人值守的编排会把「没装
   好」当成「跑坏了」。现在按报文识别这种启动失败，改抛 `capability_unavailable` 并给出
   `playwright install chromium` 的指引，与其余可选后端一致。
+- **doctor 把 Playwright 只当普通 Python 模块，导入成功就报 `detected`**。可 `pip install
+  playwright` 从不下载 Chromium，模块能导入不代表 `web.open` 能起浏览器——这正是上一条在运行期
+  才暴露的「模块在、浏览器不在」。别的可选工具里，JVM 启动器缺 `java`、webcrack 缺 `node` 时
+  doctor 已如实点名缺席的运行时；唯独 web 这条主探针只看导入，操作者在装好包却没跑 install 的机器上
+  跑 doctor，看到的是干巴巴的「detected」，无从得知还差一步。现在按同一「在场≠可用」原则处理：向
+  Playwright 自己问版本/平台正确的 Chromium 可执行路径（在有界子进程里问，驱动卡死也拖不垮
+  doctor——那正是机器出问题时有人会跑的命令），落盘不在就仍报 `detected`（可选项从不阻塞就绪）但
+  summary 点明浏览器没装、details 带 `chromium_executable`、remediation 给出
+  `python -m playwright install chromium`；问不出结果（驱动缺失/超时）就回落到原来的纯 `detected`，
+  绝不臆测。
 - **`device.install` 读 APK 清单会被解压炸弹 OOM**。为了不引入 androguard，`_apk_package_name`
   用 `ZipFile.read("AndroidManifest.xml")[:65536]` 手搓解析——可 `read()` 会先把整个成员解压进内存
   再切片，一个把清单做成解压后上 GiB 的恶意 APK，能在切片之前就把进程撑爆；而 `install()` 正是拿
