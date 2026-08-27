@@ -1630,6 +1630,55 @@ def test_memory_regions_and_modules_dump_service_wrappers(tmp_path: Path) -> Non
     assert too_large.error.code == "dump_too_large"
 
 
+def test_dynamic_memory_read_write_reject_out_of_range_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    """The MCP schema bounds size/data; the agent path bypasses it, so the
+    service must refuse the same values before they reach the worker."""
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    assert service.dynamic_launch(session_id).ok
+
+    # Baseline: a valid small read reaches the worker.
+    ok_read = service.dynamic_memory_read(session_id, 0x140001000, 4)
+    assert ok_read.ok and ok_read.data is not None
+    assert ok_read.data["data"] == "90" * 4
+    before = list(worker.requests)
+
+    # A size past 2 MiB (or non-positive/non-int) never reaches the worker: it
+    # would otherwise read that much target memory only for the reply frame to
+    # be rejected as an rpc_protocol_error.
+    for bad_size in (0, -1, 2 * 1024 * 1024 + 1, 1_000_000_000, True, 4.0):
+        rejected = service.dynamic_memory_read(session_id, 0x140001000, bad_size)  # type: ignore[arg-type]
+        assert not rejected.ok and rejected.error is not None
+        assert rejected.error.code == "invalid_request"
+    for bad_addr in (-1, True, 1.5):
+        rejected = service.dynamic_memory_read(session_id, bad_addr, 4)  # type: ignore[arg-type]
+        assert not rejected.ok and rejected.error is not None
+        assert rejected.error.code == "invalid_request"
+    assert worker.requests == before
+
+    # Writes: an over-cap hex payload, odd stubs and non-strings are all refused
+    # pre-dispatch, and a bad address too.
+    for bad_data in ("", "9" * (4 * 1024 * 1024 + 1), 144, None):
+        rejected = service.dynamic_memory_write(session_id, 0x140001000, bad_data)  # type: ignore[arg-type]
+        assert not rejected.ok and rejected.error is not None
+        assert rejected.error.code == "invalid_request"
+    bad_addr_write = service.dynamic_memory_write(session_id, -1, "90ab")
+    assert not bad_addr_write.ok and bad_addr_write.error is not None
+    assert bad_addr_write.error.code == "invalid_request"
+    assert worker.requests == before
+
+    # A valid write still reaches the worker.
+    ok_write = service.dynamic_memory_write(session_id, 0x140001000, "90ab")
+    assert ok_write.ok and ok_write.data is not None
+    assert worker.requests[-1][0] == "memory.write"
+
+
 def test_modules_dump_rejects_a_worker_redirecting_the_artifact_path(tmp_path: Path) -> None:
     outside = tmp_path / "outside.bin"
     outside.write_bytes(b"keep")
