@@ -49,6 +49,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（frida 本地探针的 `_require` 门与 attach 的边界校验对不齐）
+
+- 本地四个探针 `modules` / `exports` / `memory_read` / `hook_template` 都走 `_require(pid,
+  allowed_pid)` 这道门，但它与同族入口 `attach()`、`_authorize()` 的检查次序和内容都不一致：
+  `_require` 先比 `pid != allowed_pid`、再看能力是否可用，且**完全不校验 pid 本身**。Agent 传输层
+  直接拿模型给的参数调用处理器、不做 schema 校验（与 `_bound_nav_timeout` 记的同一个缺口），于是
+  一个非整数或非正的 pid 在这里要么因不等于 `allowed_pid` 被报成 `permission_denied`，要么一路漏到
+  `frida.attach` 变成一个不透明的 `backend_error`——而 `attach()` 对同样的输入在边界上就报
+  `invalid_params`。同时「frida 没装 + pid 又不匹配」这一种情形，`_require` 先报
+  `permission_denied`，`attach()`/`_authorize()` 则先报 `capability_unavailable`：同一个前置条件
+  在不同工具上给出不同错误码。
+- 现在 `_require` 与 `attach()`/`_authorize()` 用同一套边界次序：先能力、再 pid 合法性、最后授权。
+  非法 pid 一律 `invalid_params`；能力检查先于授权，故运行时缺失时稳定报 `capability_unavailable`；
+  授权仍照旧拦截，且 `permission_denied` 的 details 补上 `allowed_pid`，与 `attach()` 口径一致。
+  新增回归覆盖四个探针：非法 pid（0/负数/非 int）报 `invalid_params`、缺能力时报
+  `capability_unavailable`、越权 pid 报 `permission_denied` 且带 `allowed_pid`；四条断言在改前均
+  失败（frida 原生运行时无法在 CI 跑，故用桩对象直接驱动这道门）。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

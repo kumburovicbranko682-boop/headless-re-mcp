@@ -488,10 +488,24 @@ class FridaClient:
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
 
     def _require(self, pid: int, allowed_pid: int) -> None:
-        if pid != allowed_pid:
-            raise FridaError("permission_denied", "pid not allowed", pid=pid)
+        # Same boundary order as attach() and _authorize(): capability, then
+        # pid validity, then authorization. The agent transport calls handlers
+        # straight from model arguments with no schema enforcement, so a non-int
+        # or non-positive pid must be rejected here as invalid_params -- not left
+        # to mismatch allowed_pid (reported as permission_denied) or to reach
+        # frida.attach and surface as an opaque backend_error, which is how the
+        # local probes routed through this gate diverged from attach() itself.
         if not self._available or self._frida is None:
             raise FridaError("capability_unavailable", "frida Python module is not installed")
+        if type(pid) is not int or pid <= 0:
+            raise FridaError("invalid_params", "pid must be a positive integer")
+        if pid != allowed_pid:
+            raise FridaError(
+                "permission_denied",
+                "frida attach limited to session debuggee pid",
+                pid=pid,
+                allowed_pid=allowed_pid,
+            )
 
     # ------------------------------------------------------------------
     # Device-aware operations (USB / emulator / remote). The single-pid
