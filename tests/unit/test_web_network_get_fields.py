@@ -145,6 +145,54 @@ def test_web_network_get_skips_request_body_when_the_row_had_none(
     assert "Network.getRequestPostData" not in handle.cdp.calls
 
 
+def test_web_network_get_strips_the_har_only_inline_body(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The inline post_data is a har.export-only ring detail; network.get pulls
+    the full request_body via CDP, so the redundant preview must not leak out.
+    """
+    backend = WebBackend()
+    handle = _PostHandle()
+    handle.requests["r1"]["post_data"] = "user=alice&pw=secret"
+    handle.requests["r1"]["post_data_truncated"] = False
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    monkeypatch.setattr(backend, "_runner", lambda h: _Immediate())
+    payload = backend.network_get("s", "r1", tmp_path)
+    assert "post_data" not in payload
+    assert "post_data_truncated" not in payload
+    # The canonical, full body is still there under request_body.
+    assert payload["request_body"] == "user=alice&pw=secret"
+
+
+class _ListBodyHandle:
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.requests = {
+            "r1": {
+                "url": "https://x/login",
+                "method": "POST",
+                "status": 200,
+                "post_data": "user=alice",
+                "post_data_truncated": False,
+                "request_headers": [{"name": "content-type", "value": "text/plain"}],
+            }
+        }
+        self.requests_dropped = 0
+
+
+def test_web_network_list_strips_the_har_only_inline_body(monkeypatch: Any) -> None:
+    """network.list is a lean index; the inline POST body stays off it, like the
+    header lists already do.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _ListBodyHandle())
+    row = backend.network_list("s", offset=0, limit=10)["requests"][0]
+    assert "post_data" not in row
+    assert "post_data_truncated" not in row
+    assert "request_headers" not in row
+    assert row["url"] == "https://x/login"
+
+
 class _PostErrorCdp:
     def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "Network.getResponseBody":

@@ -218,6 +218,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **修正上一条引入的疏漏：har.export 专用的内联请求体泄漏进了 `web.network.list`/`web.network.get`**。为让
+  `har.export` 能写出 `request.postData` 而在 ring 上留的 8 KiB 内联 `post_data`（连同 `post_data_truncated`）本是
+  纯内部细节，却既进了本应精简的 `network.list` 索引（每行多带一份 POST 载荷），又进了 `network.get`（与它按需拉取的
+  完整 `request_body` 重复）。新增 `_NETWORK_INTERNAL_KEYS`，`network.list` 现在同时剔除头部列表与该内联体，
+  `network.get`（含软 `body_error` 分支）也把它剔除，只保留规范的 `request_body`。
 - **HAR 导出丢掉了请求体（`request.postData`）**。`proxy.export_har` 和 `web.har.export` 已经把 method/url/
   status、queryString、请求/响应头都补齐成 spec-valid 的 HAR 1.2，但 POST 载荷——JSON body、表单凭据、签名 blob，
   也就是做 API/协议分析时最想看的东西——始终缺失。common `har.py` 新增 `post_data(body, mime_type)` 助手（表单

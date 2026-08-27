@@ -52,6 +52,11 @@ _MAX_HEADER_TEXT = 8 * 1024
 _MAX_HEADERS_BYTES = 16 * 1024
 # Header lists live on the ring entry but are stripped from network.list.
 _NETWORK_HEADER_KEYS = frozenset({"request_headers", "response_headers"})
+# Ring-only capture detail that no network.* view should surface directly: the
+# inline POST body exists solely to feed har.export (network.get fetches the
+# full request_body on demand, network.list is a lean index), so strip it from
+# both outputs rather than leak a redundant 8 KiB preview onto every row.
+_NETWORK_INTERNAL_KEYS = frozenset({"post_data", "post_data_truncated"})
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -826,9 +831,11 @@ class WebBackend:
         cap = max(1, min(int(limit), 1000))
         # Headers ride on the ring entry so network.get and har.export can reach
         # them, but a list of up to 1000 rows must stay a lean index -- strip
-        # them here so the summary is not dominated by every row's headers.
+        # them, and the har.export-only inline body, so the summary is not
+        # dominated by every row's headers or POST payload.
+        omit = _NETWORK_HEADER_KEYS | _NETWORK_INTERNAL_KEYS
         window = [
-            {k: v for k, v in item.items() if k not in _NETWORK_HEADER_KEYS}
+            {k: v for k, v in item.items() if k not in omit}
             for item in items[start : start + cap]
         ]
         return {
@@ -866,7 +873,8 @@ class WebBackend:
             # soft ``body_error`` with the entry metadata intact.
             raise
         except Exception as exc:  # noqa: BLE001
-            return {**entry, "body_error": str(exc)}
+            projected = {k: v for k, v in entry.items() if k not in _NETWORK_INTERNAL_KEYS}
+            return {**projected, "body_error": str(exc)}
         if not isinstance(body, str):
             body = str(body)
         inline, spill, cut = _spill_text(
@@ -875,7 +883,10 @@ class WebBackend:
             filename=f"body-{uuid4().hex}.bin",
             kind="response body",
         )
-        result = dict(entry)
+        # The inline POST body is a har.export-only ring detail; network.get
+        # returns the full request_body via _attach_request_body below, so drop
+        # the redundant preview rather than ship two request-body fields.
+        result = {k: v for k, v in entry.items() if k not in _NETWORK_INTERNAL_KEYS}
         result["body"] = inline
         result["body_truncated"] = cut
         if spill is not None:
