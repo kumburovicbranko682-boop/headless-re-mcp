@@ -224,6 +224,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   连同其源文件与 `build.sh` 可复现。新增两个按工具在场与否干净跳过（skip != pass）的 gate 用例：
   androguard 打开夹具并断言其已知 package/activity/permission/类/方法/marker 字符串，jadx 把那一个类
   反编译回含 marker 的源码。两者在 androguard / jadx 在场时均已验证通过。
+- **WASM 线也从只测空模块升级到真实模块**。`wasm.wat` 过去只喂 magic+version 的空模块，`wasm.info`
+  （wasm-objdump）更是没有任何 gate，真实分段解码从未跑过。现提交一个 74 字节的合法模块（导出
+  `add`/`answer` 函数加一段内存）及其 `.wat` 源，`wat2wasm` 可复现；`wasm.wat` 现断言能把 `add`
+  导出与 `i32.add` 反汇编回 WAT，新增的 `wasm.info` 断言 Export/Code 分段与函数名。两者在无 wabt 时
+  干净跳过（skip != pass），wabt 在场时已验证通过。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
 - **Watchdog 字段名对不上，每次巡检都会崩**。代码读 `_reported_disconnected`（set），
   字段却声明成 `_disconnected_streak`。未捕获时整次巡检变成 `watchdog_failed`。
