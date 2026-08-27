@@ -130,6 +130,7 @@ def _client(transport: ScriptedTransport, process: FakeProcess | None = None) ->
     client._stderr_log = deque(maxlen=10)
     client._window_lock = Lock()
     client._observed_windows = set()
+    client._observed_windows_dropped = 0
     return client
 
 

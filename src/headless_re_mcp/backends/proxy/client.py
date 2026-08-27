@@ -27,6 +27,7 @@ from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
 _REPLAY_WAIT_S = 15.0
+_SERVER_STOP_WAIT_S = 10.0
 # The ring is count-capped, but each slot can still hold a multi-megabyte
 # request or response. Two thousand of those is the overnight OOM the count
 # cap was supposed to prevent.
@@ -129,6 +130,30 @@ def _uninstall_master_logging(
         if owner is master or (loop is not None and getattr(owner, "event_loop", None) is loop):
             with contextlib.suppress(Exception):
                 root.removeHandler(candidate)
+
+
+def _drain_proxy_servers(master: Any, loop: asyncio.AbstractEventLoop) -> None:
+    """Close mitmproxy's listening servers, and wait until they are down.
+
+    ``Master.done()`` stopped tearing down the proxyserver's listeners on the
+    road to mitmproxy 12 -- mitmdump never noticed because the whole process
+    exits right after ``run()`` returns. Embedded in a long-lived service,
+    ``shutdown()`` alone therefore leaves the OS socket accepting forever:
+    stop() reports "stopped" and joins a thread that exits cleanly, yet the
+    port stays bound until the process dies, so no later capture can ever bind
+    it again. Draining ``Servers.update([])`` on the proxy loop is the
+    documented way to stop every listener, and it awaits their close.
+    """
+    try:
+        addon = master.addons.get("proxyserver")
+        update = getattr(getattr(addon, "servers", None), "update", None)
+        if update is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(update([]), loop)
+    except Exception:  # noqa: BLE001 - the addon surface varies across versions
+        return
+    with contextlib.suppress(Exception):
+        future.result(timeout=_SERVER_STOP_WAIT_S)
 
 
 def _content_len(part: Any) -> int:
@@ -306,13 +331,35 @@ class _FlowRecorder:
                 break
 
     def response(self, flow: Any) -> None:  # mitmproxy calls this on each response
-        req = flow.request
-        resp = flow.response
+        self._record(flow)
+
+    def error(self, flow: Any) -> None:  # mitmproxy calls this when a flow errors
+        # A flow that never produced a response -- TLS handshake refused,
+        # upstream unreachable, connection reset mid-request -- otherwise
+        # vanishes: only `response` was wired, so the capture silently dropped
+        # every failed request. That is the opposite of what an RE session
+        # wants, where "this host refused the handshake" is often the finding.
+        # Record it, marked with error/error_msg, so it is captured like any
+        # other flow but stays distinguishable from a completed one (which
+        # always carries a numeric status; an errored flow's status is null).
+        err = getattr(flow, "error", None)
+        message = str(getattr(err, "msg", None) or err or "flow error")
+        self._record(flow, error_msg=message)
+
+    def _record(self, flow: Any, *, error_msg: str | None = None) -> None:
+        req = getattr(flow, "request", None)
+        resp = getattr(flow, "response", None)
         stored_bytes = _flow_stored_bytes(flow)
         omitted = stored_bytes > _MAX_STORED_BODY
-        method, method_truncated = _bounded_metadata(req.method, _MAX_METADATA_BYTES)
-        url, url_truncated = _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)
-        host, host_truncated = _bounded_metadata(req.host, _MAX_METADATA_BYTES)
+        method, method_truncated = _bounded_metadata(
+            getattr(req, "method", ""), _MAX_METADATA_BYTES
+        )
+        url, url_truncated = _bounded_metadata(
+            getattr(req, "pretty_url", ""), _MAX_URL_BYTES
+        )
+        host, host_truncated = _bounded_metadata(
+            getattr(req, "host", ""), _MAX_METADATA_BYTES
+        )
         content_type, type_truncated = _bounded_metadata(
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
@@ -322,6 +369,7 @@ class _FlowRecorder:
         # whose body was not retained -- and the HAR export can report a real
         # content size instead of the -1 "unknown" sentinel.
         response_size = _content_len(resp)
+        error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
@@ -355,7 +403,16 @@ class _FlowRecorder:
             }
             if omitted:
                 entry["body_omitted"] = True
-            if method_truncated or url_truncated or host_truncated or type_truncated:
+            if error_msg is not None:
+                entry["error"] = True
+                entry["error_msg"] = error_text
+            if (
+                method_truncated
+                or url_truncated
+                or host_truncated
+                or type_truncated
+                or error_truncated
+            ):
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
 
@@ -462,11 +519,17 @@ class _ProxyInstance:
     def stop(self) -> None:
         master = self._master
         loop = self._loop
+        thread = self._thread
         if master is not None and loop is not None:
+            # Draining needs a loop that is still serving; a dead thread means
+            # the servers are already unwinding (or leaked beyond reach), and
+            # waiting on its loop would stall stop() for the whole timeout.
+            if thread is not None and thread.is_alive():
+                _drain_proxy_servers(master, loop)
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(master.shutdown)
-        if self._thread is not None:
-            self._thread.join(timeout=10.0)
+        if thread is not None:
+            thread.join(timeout=10.0)
         # Also here, not only in the thread's own unwind: a thread that is wedged
         # never runs its finally, and a stale handler is the one piece of a dead
         # proxy that keeps costing the whole process something.

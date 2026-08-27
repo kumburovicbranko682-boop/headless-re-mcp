@@ -45,6 +45,9 @@ _MAX_METADATA_BYTES = 1024
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
 _CALL_TIMEOUT = 60.0
+# Ceiling for a caller-supplied navigation timeout, matching the web.open /
+# web.navigate tool schema (``0 < timeout <= 120``). See ``_bound_nav_timeout``.
+_MAX_NAV_TIMEOUT_S = 120.0
 _OPENING = object()
 
 
@@ -54,6 +57,25 @@ class WebError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _bound_nav_timeout(timeout: float) -> float:
+    """Clamp a caller navigation timeout at the backend boundary.
+
+    The tool schema declares ``0 < timeout <= 120``, but the agent transport
+    invokes handlers straight from model arguments with no schema enforcement
+    (``CommandCatalog.invoke`` -> ``spec.handler(**arguments)``), the same gap
+    frida guards with ``_bound_timeout``. A non-positive value would reach
+    ``Future.result(timeout<=0)``, which returns immediately and flips the
+    runner to ``_wedged`` -- bricking a healthy session until ``web.close`` --
+    while a huge one would park the session thread and a pool worker for as long
+    as the page took. Reject the first and cap the second before any work is
+    queued, so a stray timeout can never wedge a live browser.
+    """
+    value = float(timeout)
+    if value <= 0:
+        raise WebError("invalid_params", "timeout must be positive")
+    return min(value, _MAX_NAV_TIMEOUT_S)
 
 
 def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
@@ -352,6 +374,7 @@ class WebBackend:
         self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
     ) -> JsonObject:
         self._check_available()
+        timeout = _bound_nav_timeout(timeout)
 
         with self._lock:
             if session_id in self._sessions:
@@ -382,8 +405,11 @@ class WebBackend:
                 handle = _WebSession(pw, browser, context, page, cdp)
                 handle.driver_pid = pid
                 self._wire_events(handle)
+                response = None
                 if url:
-                    page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                    response = page.goto(
+                        url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
+                    )
                 # Summarised here rather than by a second call: between the two,
                 # a browser exists that no session yet refers to, and a failure
                 # in that window would leave it with nothing able to close it.
@@ -393,6 +419,9 @@ class WebBackend:
                     "title": _safe_title(page),
                     "headless": headless,
                 }
+                status = _response_status(response)
+                if status is not None:
+                    summary["status"] = status
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     pw.stop()
@@ -511,16 +540,23 @@ class WebBackend:
 
     def navigate(self, session_id: str, url: str, *, timeout: float = 30.0) -> JsonObject:
         handle = self._get(session_id)
+        timeout = _bound_nav_timeout(timeout)
 
         def work() -> JsonObject:
             try:
-                handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                response = handle.page.goto(
+                    url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
+                )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
-            return {
+            result: JsonObject = {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
             }
+            status = _response_status(response)
+            if status is not None:
+                result["status"] = status
+            return result
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)
 
@@ -643,10 +679,16 @@ class WebBackend:
         with handle.lock:
             held = list(handle.console)
             dropped = handle.console_dropped
+        # Newest tail, and total for parity with every other paginated reader:
+        # has_more alone says "there is more", total says how much is buffered,
+        # so a caller can size its next limit instead of guessing. No offset is
+        # needed here -- the max limit equals the ring capacity, so one call can
+        # return the whole buffer.
         page = held[-capped:]
         return {
             "console": page,
             "count": len(page),
+            "total": len(held),
             "has_more": len(held) > capped,
             "dropped": dropped,
         }
@@ -804,6 +846,24 @@ def _safe_title(page: Any) -> str:
         return _bounded_metadata(page.title(), _MAX_METADATA_BYTES)[0]
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _response_status(response: Any) -> int | None:
+    """HTTP status of a navigation, or None when it produced no response.
+
+    page.goto only raises for transport failures (DNS, refused, timeout); a
+    4xx/5xx main document resolves normally, so without surfacing this a
+    navigation onto an error page reports the same success as a real hit. goto
+    also returns None for about:blank and same-document navigations, which is
+    an absent status rather than a failure.
+    """
+    if response is None:
+        return None
+    try:
+        status = response.status
+    except Exception:  # noqa: BLE001
+        return None
+    return status if isinstance(status, int) else None
 
 
 def _playwright_driver_pid(playwright: Any) -> int | None:

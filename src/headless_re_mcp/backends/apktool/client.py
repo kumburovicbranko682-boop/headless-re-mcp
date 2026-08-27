@@ -13,13 +13,21 @@ from __future__ import annotations
 
 import os
 import subprocess
+import zipfile
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
+# apk.decode / repack / sign all declare le=1800 in their schema.
+_MAX_TIMEOUT_S = 1800.0
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
@@ -37,9 +45,35 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
+def _require_apk_zip(apk: Path) -> None:
+    """Refuse a non-zip APK before launching the JVM.
+
+    apktool ``d`` and apksigner both require a zip-format APK; handed anything
+    else -- a truncated download, a path pointing at the wrong file, or a build
+    output that slipped past its own check -- they still start a JVM and only
+    then fail with an opaque Java error, after paying that startup cost and
+    reporting a parameter mistake as a backend failure. ``zipfile.is_zipfile``
+    reads only the archive's tail (it does not decompress, so the check itself
+    has no zip-bomb exposure) and turns that cryptic failure into a precise
+    ``invalid_params`` up front -- the same fail-fast shape as ``build``
+    validating its own output is a real zip and the wasm tools checking the
+    ``\\0asm`` magic before launching wabt.
+    """
+    if not zipfile.is_zipfile(apk):
+        raise ApktoolError(
+            "invalid_params",
+            "input is not a valid APK (not a zip archive)",
+            path=str(apk),
+        )
+
+
 def _run(
     cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
 ) -> tuple[str, str, int]:
+    try:
+        timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+    except InvalidTimeout as exc:
+        raise ApktoolError("invalid_params", str(exc)) from exc
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
@@ -87,6 +121,7 @@ class ApktoolClient:
             raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
+        _require_apk_zip(apk)
         out_dir.parent.mkdir(parents=True, exist_ok=True)
         args = [str(self.apktool), "d", str(apk), "-o", str(out_dir), "-f"]
         if no_resources:
@@ -132,9 +167,22 @@ class ApktoolClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
+        # apktool can exit 0 yet leave a truncated or empty file (a build that
+        # aborted after creating the output, a full disk). An APK is a zip, so a
+        # zero-byte or non-zip result is a failed rebuild -- reporting it as a
+        # rebuilt apk would send an unusable file into apk.sign/install.
+        size = out_apk.stat().st_size
+        if size == 0 or not zipfile.is_zipfile(out_apk):
+            raise ApktoolError(
+                "backend_error",
+                "apktool build produced an empty or invalid apk",
+                exit_code=code,
+                size=size,
+                stderr=stderr[:_MAX_STDERR],
+            )
         return {
             "apk": str(out_apk),
-            "size": out_apk.stat().st_size,
+            "size": size,
             "signed": False,
             "note": "unsigned; call apk.sign before installing",
         }
@@ -156,6 +204,7 @@ class ApktoolClient:
             )
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
+        _require_apk_zip(apk)
         store = keystore or _DEBUG_KEYSTORE
         if not store.is_file():
             raise ApktoolError(
