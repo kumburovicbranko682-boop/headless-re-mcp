@@ -77,6 +77,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（`apk.strings` 先截断再去重,共前缀的两条长串被并成一条、`total` 少算且无提示）
+
+- `apk.strings` 收集去重时把 `str(item.get_value())[:_MAX_STRING_LEN]` 直接塞进 `set`——**截断在
+  去重之前**。于是两条**本不相同**、只是前 2000 字符恰好一样的常量(混淆壳里长得像的 URL / base64
+  / 内嵌证书,以及多 dex 里同一池串的重现)会塌成一条:`set` 只留一份,`total` 少算一,另一条常量
+  就这么无声消失,连个「被截了」的标记都没有。逆向者据 `total` 判断字符串规模、据列表找线索,系统性
+  地漏掉尾部才有区别的那条。
+- 现在改成按**整值的 blake2b 摘要**去重(digest 16 字节),整值只在循环里瞬时持有(本就被 `str()`
+  物化过)、绝不入集合,内存边界与原先「先截断」一样牢,一条超大常量撑不爆 `set`;显示串仍截到
+  `_MAX_STRING_LEN`。前缀相同的两条各留一份、`total` 如实为 2,再加一个 `values_truncated`:只要有
+  任一收集到的串被截过就置 true,提示「读着一模一样的两行,截断点之后可能不同,故仍按两条计」。
+  `apk.strings` 描述点明「按整值去重」与 `values_truncated` 语义。字段纯增量,短串场景该标记不出现。
+- 新增回归:两条共 2000 字符前缀、尾部不同的长串 → `total=2`、两行显示都截到该前缀、`values_truncated=true`;
+  多 dex 里重复的同值 → 折成一条且不置该标记;全短串 → 不出现 `values_truncated`;并断言描述里点名它。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

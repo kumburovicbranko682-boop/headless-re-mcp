@@ -8,6 +8,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -414,17 +415,37 @@ class ApkClient:
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
-        seen: set[str] = set()
+        seen: set[bytes] = set()
+        values: list[str] = []
         scan_more = False
+        any_truncated = False
         for item in parsed.analysis.get_strings():
             if len(seen) >= _MAX_STRINGS_COLLECT:
                 scan_more = True
                 break
-            seen.add(str(item.get_value())[:_MAX_STRING_LEN])
-        values = sorted(seen)
+            full = str(item.get_value())
+            # Deduplicate on the full value's digest, not on the truncated
+            # display text. Adding str(value)[:_MAX_STRING_LEN] to the set made
+            # two distinct constants that share the first _MAX_STRING_LEN chars
+            # (a long common prefix -- ordinary in obfuscated apps, and in
+            # multidex where the same pool string recurs) collapse into one, so
+            # total under-counted and a distinct string vanished with no signal.
+            # The digest bounds memory the way pre-truncation did: the full
+            # value is only held transiently (str() already materialized it),
+            # never stored, so a giant constant cannot bloat the set.
+            digest = hashlib.blake2b(full.encode("utf-8", "replace"), digest_size=16).digest()
+            if digest in seen:
+                continue
+            seen.add(digest)
+            if len(full) > _MAX_STRING_LEN:
+                any_truncated = True
+                values.append(full[:_MAX_STRING_LEN])
+            else:
+                values.append(full)
+        values.sort()
         start, cap = _clamp_page(offset, limit, max_limit=_MAX_STRINGS_PAGE)
         window = values[start : start + cap]
-        return {
+        result: JsonObject = {
             "strings": window,
             "count": len(window),
             "total": len(values),
@@ -432,6 +453,12 @@ class ApkClient:
             "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
         }
+        if any_truncated:
+            # At least one collected string was cut to _MAX_STRING_LEN, so two
+            # entries that read identically may differ past the cut -- they are
+            # still counted as two because dedup is on the full value.
+            result["values_truncated"] = True
+        return result
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
