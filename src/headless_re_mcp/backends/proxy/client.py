@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import ipaddress
 import logging
 import os
 import socket
@@ -58,6 +59,25 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.run_until_complete(loop.shutdown_asyncgens())
     finally:
         loop.close()
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True only when a bind to ``host`` stays on the local machine.
+
+    A non-loopback listen host turns the proxy into an open, TLS-intercepting
+    MITM reachable by anything that can route to this box, so anything not
+    provably loopback (including the empty host, which binds every interface)
+    is treated as exposed and warned about rather than assumed safe.
+    """
+    text = (host or "").strip()
+    if not text:
+        return False
+    if text.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
 
 
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
@@ -423,6 +443,21 @@ class ProxyBackend:
             with contextlib.suppress(Exception):
                 inst.stop()
             raise
+        # A caller may deliberately expose the proxy (a physical device that
+        # reaches this host by IP), so this is disclosed rather than refused --
+        # but an open TLS MITM is never something to report as a plain success.
+        exposure = (
+            {}
+            if _is_loopback_host(host)
+            else {
+                "warning": (
+                    "bound to a non-loopback interface: this is an open, "
+                    "TLS-intercepting proxy reachable by other hosts on the "
+                    "network. Prefer host 127.0.0.1 and route the device to it "
+                    "(adb reverse, or the emulator's 10.0.2.2 host alias)."
+                )
+            }
+        )
         with self._lock:
             if self._instances.get(session_id) is inst:
                 return {
@@ -430,6 +465,7 @@ class ProxyBackend:
                     "host": host,
                     "port": port,
                     "endpoint": f"{host}:{port}",
+                    **exposure,
                 }
         with contextlib.suppress(Exception):
             inst.stop()

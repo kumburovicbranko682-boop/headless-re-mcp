@@ -29,8 +29,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Start an HTTP(S) interception proxy bound to this session.
 
-        Answers with running, host, port and endpoint. There is no ok,
-        started or url field.
+        Answers with running, host, port and endpoint, plus warning when host
+        is not loopback -- that binds an open, TLS-intercepting proxy other
+        hosts can reach, so host defaults to 127.0.0.1 (route a device to it
+        with adb reverse or the emulator's 10.0.2.2). There is no ok, started
+        or url field.
         """
         return _dump(analysis.proxy_start(session_id, host=host, port=port))
 
