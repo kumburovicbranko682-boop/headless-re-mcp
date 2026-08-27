@@ -735,18 +735,20 @@ def test_overlapping_section_virtual_ranges_are_rejected(tmp_path: Path) -> None
         scan_pe(path)
 
 
-def test_unconventional_file_alignment_is_flagged(tmp_path: Path) -> None:
+@pytest.mark.parametrize("field", ["file_alignment", "section_alignment"])
+def test_unconventional_alignment_is_flagged(tmp_path: Path, field: str) -> None:
     """A positive but non-power-of-two alignment is a heuristic anomaly.
 
     _validate_layout only requires alignments to be positive; _build_findings
-    separately flags alignments outside the conventional power-of-two range
-    (here 0x300), which packers and hand-built images exhibit.
+    separately flags either alignment when it falls outside the conventional
+    power-of-two range (here 0x300 / 0x1800), which packers and hand-built
+    images exhibit. Both the file and section fields drive the same finding.
     """
     pe = _SyntheticPe("x64")
     pe.add_section(
         ".text", size=0x400, characteristics=_IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_EXECUTE
     )
-    pe.file_alignment = 0x300
+    setattr(pe, field, 0x300 if field == "file_alignment" else 0x1800)
     path = tmp_path / "odd-alignment.exe"
     path.write_bytes(pe.build())
 
@@ -820,3 +822,122 @@ def test_clr_classification_only_claims_verified_for_mapped_bsjb(
         assert finding.summary == "CLR runtime header is present"
     else:
         assert finding.confidence == 0.55
+
+
+def test_scan_pe_refuses_a_non_regular_file(tmp_path: Path) -> None:
+    """A directory (or any non-file) resolves and stats but is not a PE input.
+
+    scan_pe resolves the path strictly and stats it before reading; the
+    is_file guard rejects a directory with a named PeFormatError rather than
+    attempting to open it and surfacing an opaque OSError to the caller.
+    """
+    directory = tmp_path / "not-a-file"
+    directory.mkdir()
+    with pytest.raises(PeFormatError, match="not a regular file"):
+        scan_pe(directory)
+
+
+def _tls_pe(callbacks_va: int) -> bytes:
+    """An x64 image whose TLS directory carries a chosen AddressOfCallBacks.
+
+    The parser reads the callback-array VA straight out of the TLS directory;
+    driving that field lets a test exercise the empty (zero) and the
+    below-ImageBase cases without a real callback table.
+    """
+    pe = _SyntheticPe("x64")
+    pe.add_section(
+        ".text", size=0x400, characteristics=_IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_EXECUTE
+    )
+    tls = pe.add_section(".tls", size=0x100)
+    # x64 IMAGE_TLS_DIRECTORY: AddressOfCallBacks is the 4th pointer (offset 24).
+    directory = struct.pack("<QQQQII", 0, 0, 0, callbacks_va, 0, 0)
+    pe.write(tls, 0, directory)
+    pe.directories[9] = (pe.rva(tls, 0), len(directory))
+    return pe.build()
+
+
+def test_tls_directory_smaller_than_its_header_is_rejected(tmp_path: Path) -> None:
+    """A TLS directory too small to hold its architecture header is malformed.
+
+    _parse_tls checks the declared directory size against the fixed x86/x64 TLS
+    header before mapping anything, so a size below that (here 8 < 40) is
+    refused rather than read into a short buffer.
+    """
+    pe = _SyntheticPe("x64")
+    text = pe.add_section(
+        ".text", size=0x400, characteristics=_IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_EXECUTE
+    )
+    pe.directories[9] = (pe.rva(text, 0), 8)
+    path = tmp_path / "short-tls.exe"
+    path.write_bytes(pe.build())
+    with pytest.raises(PeFormatError, match="TLS directory is smaller"):
+        scan_pe(path)
+
+
+def test_tls_callback_array_before_imagebase_is_rejected(tmp_path: Path) -> None:
+    """A callback-array VA below ImageBase cannot be a real callback pointer.
+
+    The array VA is absolute; subtracting ImageBase must not underflow into a
+    bogus RVA, so a VA that precedes ImageBase is refused by name.
+    """
+    path = tmp_path / "tls-before-base.exe"
+    path.write_bytes(_tls_pe(callbacks_va=0x100))
+    with pytest.raises(PeFormatError, match="precedes ImageBase"):
+        scan_pe(path)
+
+
+def test_tls_present_with_no_callback_array_reports_zero(tmp_path: Path) -> None:
+    """A TLS directory whose AddressOfCallBacks is zero is present but empty.
+
+    A null callback pointer is legitimate: the image has a TLS directory but
+    registers no callbacks, and the summary must say present with a zero count
+    rather than reject the image or invent a callback.
+    """
+    path = tmp_path / "tls-empty.exe"
+    path.write_bytes(_tls_pe(callbacks_va=0))
+
+    report = scan_pe(path)
+
+    assert report.pe.tls.present is True
+    assert report.pe.tls.callback_count == 0
+
+
+def test_upx_section_names_are_flagged(tmp_path: Path) -> None:
+    """Sections named UPX0/UPX1 are the common UPX stub layout.
+
+    This is a structural hint only, but the finding must fire on the section
+    names alone so a packed image is surfaced even without running upx.
+    """
+    pe = _SyntheticPe("x64")
+    pe.add_section(
+        "UPX0", size=0x400, characteristics=_IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_EXECUTE
+    )
+    pe.add_section(
+        "UPX1", size=0x400, characteristics=_IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_EXECUTE
+    )
+    path = tmp_path / "upx.exe"
+    path.write_bytes(pe.build())
+
+    report = scan_pe(path)
+
+    assert any(f.id == "builtin:packer:upx-sections" for f in report.findings)
+
+
+def test_large_virtual_raw_gap_is_flagged(tmp_path: Path) -> None:
+    """A section that maps far larger than its raw data is a packing hint.
+
+    A virtual size vastly exceeding the raw size (here 2 MiB of virtual over a
+    1 KiB raw section) is how a packer reserves room to unpack into; the
+    heuristic must flag that gap.
+    """
+    pe = _SyntheticPe("x64")
+    pe.add_section(
+        ".text", size=0x400, characteristics=_IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_EXECUTE
+    )
+    pe.add_section(".big", size=0x400, virtual_size=0x200000)
+    path = tmp_path / "vgap.exe"
+    path.write_bytes(pe.build())
+
+    report = scan_pe(path)
+
+    assert any(f.id.startswith("builtin:anomaly:virtual-raw-gap") for f in report.findings)
