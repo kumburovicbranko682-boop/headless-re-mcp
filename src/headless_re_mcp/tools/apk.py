@@ -145,6 +145,25 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 
+    @tools.tool(name="apk.callees")
+    def apk_callees(
+        session_id: str,
+        method_name: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the distinct methods that a method named method_name calls.
+
+        The mirror of apk.xrefs: xrefs answers "who calls this", this answers
+        "what does this call" -- the step for following control flow out of an
+        entry point. Answers with callees (class and method), method_name,
+        count, matched, and has_more so a page that filled the limit is not read
+        as the whole list. Targets are de-duplicated and sorted, so one helper
+        called at ten sites is one callee, not ten. matched is false when no
+        non-external method carried the name, distinct from a method that calls
+        nothing. There is no callers or xref_to field.
+        """
+        return _dump(analysis.apk_callees(session_id, method_name, limit=limit))
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

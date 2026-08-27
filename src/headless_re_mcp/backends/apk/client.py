@@ -451,6 +451,51 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def callees(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
+        """List the distinct methods a method named method_name calls.
+
+        The mirror of apk.xrefs: xrefs walks get_xref_from to answer "who calls
+        this", this walks get_xref_to to answer "what does this call" -- the step
+        for following control flow out of an entry point. Unlike the caller list,
+        targets are de-duplicated by (class, method) and sorted, because a body
+        that calls one helper at ten sites should read as one callee, not ten;
+        the offsets that distinguish those call sites are dropped. matched says
+        whether any non-external method carried the name at all, so "no such
+        method" is distinct from "a method that calls nothing".
+        """
+        parsed = self._parsed(path)
+        target = method_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "method_name is required")
+        _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
+        matched = False
+        has_more = False
+        seen: set[tuple[str, str]] = set()
+        for method in parsed.analysis.get_methods():
+            if method.is_external() or method.name != target:
+                continue
+            matched = True
+            for _, callee, _ in method.get_xref_to():
+                key = (str(callee.class_name), str(callee.name))
+                if key in seen:
+                    continue
+                if len(seen) >= cap:
+                    # Only a genuinely new target beyond the cap means more was
+                    # left out; a repeated call site does not.
+                    has_more = True
+                    break
+                seen.add(key)
+            if has_more:
+                break
+        callees = [{"class": klass, "method": name} for klass, name in sorted(seen)]
+        return {
+            "method_name": target,
+            "callees": callees,
+            "count": len(callees),
+            "matched": matched,
+            "has_more": has_more,
+        }
+
 
 def _dotted_to_smali(name: str) -> str:
     """com.example.Foo -> Lcom/example/Foo; so either form resolves a class."""
