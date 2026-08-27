@@ -299,6 +299,7 @@ def test_the_packed_analysis_denylist_stays_pinned_to_the_real_catalog() -> None
 def test_the_packed_analysis_preset_keeps_sensitive_writes_behind_approval() -> None:
     """Applied to the real specs: no denylisted write auto-runs, stealth does."""
     from headless_re_mcp.agent.autonomy import (
+        _EXCLUDED_AUTO_FILE_WRITES,
         PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS,
         PACKED_ANALYSIS_AUTO_APPROVE_TOOLS,
     )
@@ -315,15 +316,42 @@ def test_the_packed_analysis_preset_keeps_sensitive_writes_behind_approval() -> 
         spec.name: spec for spec in COMMAND_CATALOG.for_transport(CommandTransport.AGENT)
     }
 
-    for name in (
-        "patches.apply",
-        "patches.restore",
-        "static.bytes.patch",
-        "apk.sign",
-        "apk.repack",
-        "artifacts.gc",
-        "web.screenshot",
-    ):
+    # These names are written out independently of _EXCLUDED_AUTO_FILE_WRITES on
+    # purpose: the preset auto-approves every agent file-write tool *except* this
+    # set, so deriving the check from the same constant would make it tautological
+    # -- dropping a name from the constant would drop it from the check too, and
+    # the leak would pass silently. Spelling the dangerous writes out here means a
+    # narrowed exclusion list fails a hardcoded assertion instead.
+    sensitive_writes = frozenset(
+        {
+            # Patch application and byte edits mutate the subject binary.
+            "patches.apply",
+            "patches.restore",
+            "static.bytes.patch",
+            # APK rewriting/resigning ships a modified, re-executable app.
+            "apk.decode",
+            "apk.decompile",
+            "apk.export_sources",
+            "apk.repack",
+            "apk.sign",
+            # Pulling from / imaging a device exfiltrates off-box state.
+            "device.pull",
+            "device.screenshot",
+            # Web and proxy captures exfiltrate intercepted traffic to disk.
+            "js.unpack_bundle",
+            "proxy.export_har",
+            "web.har.export",
+            "web.screenshot",
+            # Report and artifact GC write/erase outside the analysis loop.
+            "report.generate",
+            "artifacts.gc",
+        }
+    )
+    # If a new exclusion is added, force it to be pinned here too, so the
+    # independent denylist above never silently falls behind the constant.
+    assert sensitive_writes == _EXCLUDED_AUTO_FILE_WRITES
+
+    for name in sorted(sensitive_writes):
         assert policy.decide(agent_specs[name]).approved is False, (
             f"{name} must stay behind human approval under the packed preset"
         )
