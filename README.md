@@ -386,13 +386,21 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 **Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。
 
-当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
-该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
+当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard + Ghidra headless
+的机器上实测；该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 84 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、Ghidra headless
+  functions/symbols/xrefs/decompile 端到端）
+- Ghidra headless Gate（`test_ghidra_headless_gate.py`，在装了 Ghidra 11.3.2 headless + JDK 21 的
+  Linux 上实测）：对提交的非剥离 ELF 夹具跑 `analyzeHeadless`，验证 functions/symbols 认出三个具名
+  函数、xrefs 看见 `main` 对 `compute_checksum` 的调用边、decompiler 还原出含 `* 0x1f` 的可读 C；
+  再对提交的 PE 夹具走 `ghidra.analyze` / `ghidra.functions` 验证服务面（制品登记、时间线打点、
+  分页与 `has_more`），并钉住关闭会话（`invalid_request`）与缺 `HEADLESS_RE_GHIDRA_HOME`
+  （`capability_unavailable`）的拒绝路径。这一轮同时修复了两个使该后端在非 Windows 上从未跑通的
+  bug（启动器误选 `.bat`；`ExportJson.py` 误读 `ARGS`）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回

@@ -43,6 +43,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 修复（Ghidra headless 在非 Windows 上从未真正跑起来）
+
+- `ghidra.analyze/functions/symbols/xrefs/decompile` 在 Linux/macOS 上一次都没成功过，两个各自
+  独立的 bug 叠加所致；此前它们只有把 `run_bounded` 打桩的单测，没有任何一条真的拉起过
+  `analyzeHeadless`，所以问题一直没暴露。其一，启动器发现顺序不分平台地先试 `analyzeHeadless.bat`
+  ——官方发行版 `support/` 下 `analyzeHeadless`（shell 脚本）与 `analyzeHeadless.bat` 是并排的，
+  于是 Linux 每次都把一个 Windows 批处理交给 `Popen`，在跑任何分析前就以 `EACCES`（`backend_error`）
+  失败。其二，打包的 `ExportJson.py` 读了一个 Ghidra 的 Jython 从不注入的 `ARGS` 全局
+  （参数经 `getScriptArgs()` 传入），于是每次导出都在 JVM 里抛 `NameError`、导出 JSON 从不写出，
+  客户端只报“export JSON missing after postScript”。现启动器按平台择优（Linux 先 shell 脚本，
+  Windows 先 `.bat`，另一个作精简安装的兜底），`ExportJson.py` 用 `getScriptArgs()` 取参；新增单测
+  钉住二者，并新增 `tests/integration/test_ghidra_headless_gate.py` 对真实 Ghidra 11.3.2 headless
+  端到端验证 functions/symbols/xrefs/decompile 与服务面（制品登记、时间线、分页、关闭会话与缺
+  `HEADLESS_RE_GHIDRA_HOME` 的拒绝）。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
