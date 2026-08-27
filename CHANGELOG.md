@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（方向选择页把后端明确拒绝的切换当成切换成功）
+
+- `webui` 首次进入的「开始一段分析」方向选择页里，`choose()` 只 `await api('/api/workspace/mode', POST)`
+  而不看返回信封：该路由把服务层失败（最典型是用户配置文件写不进去，`update_config_values` 抛
+  `OSError` 被 `workspace_mode_set` 捕成 `_failure`）包成 HTTP 200 + `{ok:false}` 返回，`api()`
+  对 2xx 一律正常 resolve，于是页面照写 `localStorage`、照关落地页、照裁剪前端工具面——而服务端
+  的活动配置和持久化配置仍是旧方向。更糟的是 `localStorage` 里已经存了新值，之后每次打开控制台
+  都直接跳过落地页，这个「前端以为切了、后端没切」的错位就永久静默下去：MCP 客户端和 `/api/meta`
+  暴露的还是旧工具面，重启后一切回退，用户的选择无声丢失。组件里本来就有失败横幅与重试路径
+  （`catch` + `setError`），但只有真抛错（非 2xx / 网络层）才走得到。现检查 `result.ok === false`
+  时抛出 `error.message` 走既有 `catch`：落地页保持打开、横幅显示原因、不写 `localStorage`、
+  不调 `onChoose`，卡片解除禁用可重试。
+- 新增一条组件直测：让 POST `/api/workspace/mode` 返回 200 + `{ok:false, error:{message:"config
+  not writable"}}`，断言横幅出现、`onChoose` 未被调、`headless_ws_profile` 未写入、卡片可再点。
+  修复前该用例失败——横幅永不出现，选择被当作成功记录。前端 64 条测试与 `tsc --noEmit` 均通过，
+  提交的 SPA 产物已重建。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

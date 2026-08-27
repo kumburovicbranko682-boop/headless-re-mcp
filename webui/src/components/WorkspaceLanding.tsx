@@ -35,7 +35,16 @@ export function WorkspaceLanding({
     setBusy(profile);
     setError(null);
     try {
-      await api("/api/workspace/mode", { method: "POST", body: JSON.stringify({ profile }) });
+      // The route wraps service failures (e.g. the user config file was not
+      // writable) in an ok:false envelope with HTTP 200, so api() resolves;
+      // only network/auth errors throw. Treat both the same — recording the
+      // choice locally while the server kept the old profile would silently
+      // desync the tool surface and suppress this landing on future loads.
+      const result = await api<{ ok?: boolean; error?: { message?: string } }>(
+        "/api/workspace/mode",
+        { method: "POST", body: JSON.stringify({ profile }) },
+      );
+      if (result.ok === false) throw new Error(result.error?.message ?? "切换方向失败");
       window.localStorage.setItem("headless_ws_profile", profile);
       onChoose(profile);
     } catch (err) {

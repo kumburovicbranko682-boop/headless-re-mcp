@@ -37,4 +37,33 @@ describe("WorkspaceLanding", () => {
     expect(postCall).toBeTruthy();
     expect(String(postCall?.[1]?.body)).toContain("android");
   });
+
+  it("keeps the landing open and shows the failure when the backend rejects the switch", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/workspace/mode") && init?.method === "POST") {
+        // The route wraps service failures (e.g. unwritable user config) in an
+        // ok:false envelope with HTTP 200, so api() resolves instead of throwing.
+        return new Response(
+          JSON.stringify({ ok: false, error: { code: "internal_error", message: "config not writable" } }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, data: { profile: "pe", available: [] } }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const chosen: string[] = [];
+    render(<WorkspaceLanding onChoose={(profile) => chosen.push(profile)} />);
+
+    fireEvent.click(screen.getByText("Web 逆向"));
+
+    await waitFor(() => expect(screen.getByText(/config not writable/)).toBeInTheDocument());
+    // The choice must not be recorded anywhere: the server still runs the old
+    // profile, and a stored value would suppress the landing on future loads.
+    expect(chosen).toEqual([]);
+    expect(localStorage.getItem("headless_ws_profile")).toBeNull();
+    // The cards come back so the user can retry.
+    expect(screen.getByText("Web 逆向").closest("button")).not.toBeDisabled();
+  });
 });
