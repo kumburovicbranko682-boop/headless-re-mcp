@@ -317,6 +317,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（`ui.ocr` 文本在捕获上限处被截时不再无声）
+
+- OCR 的识别文本就是子进程的 stdout,而 `run_bounded` 会在每流捕获上限处丢弃其后的字节。
+  `_run_ocr` 过去只解码 stdout、丢掉 `run_bounded` 已经算出的 `stdout_truncated`,于是被截半页的
+  文本读起来和完整一页一模一样——本仓其余每一处内联文本(windbg、jsre、apk manifest)都设界并回
+  `truncated`,唯独 OCR 既不设界也不报,与这套作风相悖。
+- 现 `_OcrOutput` 带上 `stdout_truncated` 并由 `_run_ocr` 透传;`ui.ocr` 的 tesseract 路径在返回里
+  新增 `truncated`(stdout 在上限处被截为 true,否则 false),Windows OCR 路径也补上同名字段(子进程
+  JSON 被截会先在 `json.loads` 处失败,故成功解析即 `truncated=false`;`setdefault` 不覆盖 worker
+  自带的值),两条后端返回形状一致。文档串同步说明 `truncated` 只在文本越过捕获上限被截时为 true。
+- 新增回归:`run_bounded` 的截断标志被 `_run_ocr` 透传、tesseract 被截/完整两态、Windows OCR 补齐
+  字段且不覆盖 worker 已给的 `truncated`。
+
 ### 修复（`proxy.flow.get` 头部无界回传）
 
 - `proxy.flow.get` 一直把响应体按 200000 字节内联/溢写严格设界,却用 `dict(req.headers)` /
