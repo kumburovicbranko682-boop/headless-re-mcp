@@ -138,6 +138,24 @@ def test_address_dict_with_rva() -> None:
     }
 
 
+def test_address_dict_drops_a_row_the_model_would_reject() -> None:
+    """A row whose Address the model refuses is dropped, not raised on.
+
+    address_dict is called per row while enriching an r2 listing; if a caller
+    ever asks for an rva-bearing address with no module (Address requires a
+    module when rva is present), the mapper must return None so that one bad
+    row is skipped rather than aborting the whole enriched payload. va<0 is
+    already refused earlier, so the model's ge=0 bound is reached through the
+    module rule here.
+    """
+    assert (
+        address_dict(0x2000, module="", image_base=0x1000, architecture=Architecture.X64)
+        is None
+    )
+    # Guarding the row does not disturb the ordinary va-only mapping.
+    assert address_dict(0x2000, module="", image_base=None, architecture=None) == {"va": 0x2000}
+
+
 def test_enrich_functions_payload(tmp_path: Path) -> None:
     binary = _minimal_pe(tmp_path, x64=True)
     arch, base = pe_preferred_base(binary)
