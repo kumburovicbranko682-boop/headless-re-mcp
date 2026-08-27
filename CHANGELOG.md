@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
+
+- `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
+  `sys.platform` 强制成 `linux` 后再 monkeypatch `os.sysconf`，但 Windows 的 `os` 模块
+  根本没有 `sysconf` 属性，`monkeypatch.setattr` 默认 `raising=True` 便当场抛
+  `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
+  `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
+  非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
+  创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+
 ### 修复（dotnet.enumerate 被截断的枚举如实报 source_truncated，不再把下限当总数）
 
 - `enumerate_metadata` 有两个刻意的界：表行数被夹到 `#~` 流实际装得下的行数（防
