@@ -2308,6 +2308,39 @@ def test_a_killed_orphan_is_reaped_not_left_as_a_zombie() -> None:
             process_tree.terminate_pid_tree(child)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the child subreaper is Linux (skip != pass)")
+def test_reaping_an_already_retired_pid_returns_without_spinning() -> None:
+    """A pid whose /proc entry is gone must not hold the sweep to its deadline.
+
+    waitpid on a fully retired pid raises ECHILD -- the same errno as an orphan
+    that has been killed but not yet reparented to this subreaper. The reap
+    loop keeps waiting on the second kind (giving up would leave its zombie
+    unreaped) but must recognise the first kind by its missing /proc entry,
+    or every ordinary Popen the caller already waited on would cost the full
+    deadline in 10ms polls.
+    """
+    import subprocess
+    import sys
+    from time import monotonic
+
+    from headless_re_mcp.core import process_tree
+
+    if not process_tree._LINUX_CHILD_SUBREAPER:
+        pytest.skip("PR_SET_CHILD_SUBREAPER unavailable in this environment")
+
+    retired = subprocess.Popen(
+        [sys.executable, "-c", "pass"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    retired.wait(timeout=10.0)  # fully reaped: /proc entry gone, waitpid -> ECHILD
+    started = monotonic()
+    process_tree._reap_terminated([retired.pid], wait_s=5.0)
+    assert monotonic() - started < 2.0
+
+
 class TestOnlyAMissingSessionSaysSessionNotFound:
     """Any KeyError used to be reported as a missing session.
 

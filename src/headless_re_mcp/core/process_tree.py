@@ -283,9 +283,9 @@ def _reap_terminated(pids: list[int], wait_s: float) -> None:
     Only pids this module just signalled are waited on, and only with WNOHANG:
     a targeted waitpid on an adopted orphan frees its pid slot, while a global
     waitpid(-1) would steal exit statuses from Popen objects elsewhere in the
-    process. A pid that is not our child (ECHILD) or has not finished dying by
-    the deadline is simply left; the /proc-state wait in
-    terminate_process_group already treats its zombie as dead.
+    process. A pid that has not finished dying by the deadline is simply left;
+    the /proc-state wait in terminate_process_group already treats its zombie
+    as dead.
     """
     if not _LINUX_CHILD_SUBREAPER:
         return
@@ -301,7 +301,18 @@ def _reap_terminated(pids: list[int], wait_s: float) -> None:
         for pid in tuple(pending):
             try:
                 waited, _ = waitpid(pid, wnohang)
-            except (ChildProcessError, OSError):
+            except ChildProcessError:
+                # Not currently our child. Either someone already retired it
+                # (a Popen.wait elsewhere, or init before the reparent) and
+                # the pid is gone, or the kill has not yet reparented it to
+                # this subreaper and it becomes waitable in a moment. /proc
+                # tells the two apart: giving up on a not-yet-reparented
+                # orphan would leave its eventual zombie unreaped, while a
+                # retired pid must not make the sweep spin until the deadline.
+                if not Path(f"/proc/{pid}").exists():
+                    pending.discard(pid)
+                continue
+            except OSError:
                 pending.discard(pid)
                 continue
             if waited == pid:
