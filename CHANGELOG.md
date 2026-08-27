@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 变更（Web 后端补一条“无浏览器”降级 gate——这是唯一不需要浏览器就能跑的 Web gate）
+
+- `test_web_lifecycle_gate.py` 与 `test_web_re_gate.py` 的 CDP 用例都要真的起 Chromium，起不来就
+  `skip`；于是在「装了 playwright 包、但没跑过 `playwright install`」的机器上——所有不下载浏览器的
+  CI runner、以及大量真实部署——Web 这条线**没有一条测试真正执行**。新增
+  `tests/integration/test_web_no_browser_degrade_gate.py` 专打这个状态：`web.open` 必须降级成结构化
+  `backend_error`（绝不抛裸异常、绝不是带事故的 `internal_error`），必须释放会话槽位让同名 id 可复用，
+  且不得遗留 `sync_playwright().start()` 拉起的 node 驱动进程（实测：0 泄漏、槽位可复用、服务层
+  `web_open` 返回 `backend_error` 且无 `incident_id`）。仅在无浏览器状态下运行，检出浏览器存在时诚实
+  跳过（生命周期/CDP gate 覆盖那条路）。新增 `.github/workflows/web-degrade-gate.yml`：装 playwright 但
+  **刻意不下载浏览器**（正是本 gate 要打的状态），并装 psutil 让驱动泄漏检查真的跑；先做前置校验断言
+  「包可导入且启动必失败」，确保跑的确是无浏览器路径而非误装了浏览器。此前 `ci.yml` 只跑单测，唯一集成
+  工作流是手动自托管的 Windows PE job，这条降级契约从未被任何 CI 触达。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

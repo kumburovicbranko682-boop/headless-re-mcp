@@ -1,0 +1,77 @@
+# Per-PR web degradation gate — the one web gate that runs without a browser.
+#
+# Every test in test_web_lifecycle_gate.py (and the CDP cases in
+# test_web_re_gate.py) launches Chromium and skips when it cannot, so on any
+# runner that has the playwright package but has not run `playwright install`
+# there is no web coverage that executes at all. ci.yml runs unit tests only and
+# the sole integration workflow is a manual, self-hosted PE job, so the web
+# backend's browserless-degradation contract -- structured backend_error, no
+# leaked node driver, a reusable session slot, no internal_error incident at the
+# service boundary -- was never exercised. This job installs playwright but
+# deliberately does NOT download a browser, which is exactly the state the gate
+# asserts against, so a regression there fails here, on the PR.
+#
+# Light by design: it never downloads Chromium (~150 MB), so it is a plain pip
+# install. psutil is added so the driver-leak check actually runs rather than
+# skipping. Path-scoped to the web backend, its service/tools, and the gate.
+name: web-degrade-gate
+
+on:
+  pull_request:
+    paths:
+      - "src/headless_re_mcp/backends/web/**"
+      - "src/headless_re_mcp/core/service_web.py"
+      - "src/headless_re_mcp/tools/web.py"
+      - "tests/integration/test_web_no_browser_degrade_gate.py"
+      - ".github/workflows/web-degrade-gate.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-degrade-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package (browser extra = playwright; no browser download)
+        # .[browser] installs the playwright package and its bundled node driver.
+        # `playwright install` is intentionally NOT run: the browserless state is
+        # the whole point of this gate. psutil makes the driver-leak check real.
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,browser]" psutil
+
+      - name: Sanity — playwright imports but no browser is installed
+        # Assert the exact precondition: the package resolves (so the gate does
+        # not skip on "playwright not installed") and a launch fails (so the
+        # browserless path is genuinely exercised, not silently a browser run).
+        run: |
+          python -c "import playwright.sync_api; print('playwright import OK')"
+          python - <<'PY'
+          from headless_re_mcp.backends.web import WebBackend, WebError
+          b = WebBackend()
+          b._check_available()  # must not raise: package is importable
+          try:
+              b.open("sanity", "about:blank", headless=True, timeout=10.0)
+          except WebError as exc:
+              assert exc.code in {"backend_error", "capability_unavailable"}, exc.code
+              print("browserless precondition confirmed:", exc.code)
+          else:
+              raise SystemExit("a browser is installed; this job must run browserless")
+          finally:
+              b.close_all()
+          PY
+
+      - name: Web browserless-degradation gate
+        # -rs prints skip reasons so a skip never reads as a pass.
+        run: |
+          python -m pytest -rs --tb=short --timeout=120 \
+            tests/integration/test_web_no_browser_degrade_gate.py
