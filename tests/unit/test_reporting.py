@@ -200,6 +200,26 @@ def test_a_capped_report_says_it_is_capped() -> None:
     assert "Showing 100 of 247 artifacts" in partial
 
 
+def test_a_finding_with_an_empty_dict_value_renders_as_a_dash_not_a_broken_row() -> None:
+    """A recorded-but-empty value must still make a well-formed table cell.
+
+    Knowledge values are free-form dicts; a tool that recorded a finding before
+    it had details leaves ``{}`` behind. Joining zero items would produce an
+    empty cell, which Markdown renders as a squashed column, so the summarizer
+    answers the same em-dash placeholder every other absent cell uses.
+    """
+    markdown = render_markdown_report(
+        session=_SESSION,
+        knowledge={
+            "entries": [{"kind": "note", "key": "stub", "value": {}, "updated_at": "t"}]
+        },
+        generated_at="t",
+    )
+
+    row = next(line for line in markdown.splitlines() if line.startswith("| stub"))
+    assert row.split(" | ")[1] == "—"
+
+
 def test_report_reads_the_list_artifacts_key() -> None:
     """Production list_artifacts returns artifacts, not entries."""
     markdown = render_markdown_report(

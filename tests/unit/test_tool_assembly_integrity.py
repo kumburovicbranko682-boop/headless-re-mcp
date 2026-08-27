@@ -17,11 +17,18 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 
+from headless_re_mcp.mcp.adapter import register_bound_tools
 from headless_re_mcp.tools import assembly
 from headless_re_mcp.tools.assembly import bind_all_tools
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
-from headless_re_mcp.tools.catalog import CommandCatalog
+from headless_re_mcp.tools.catalog import (
+    CommandCatalog,
+    CommandSpec,
+    CommandTransport,
+    ToolEffect,
+)
 
 
 def _fake_analysis() -> Any:
@@ -71,3 +78,34 @@ def test_bind_all_tools_rejects_a_binding_the_catalog_never_declared(
     # The undeclared name is named as extra, and the real catalog names it missed.
     assert "phantom.tool" in message
     assert "extra=" in message and "missing=" in message
+
+
+def test_register_bound_tools_refuses_a_command_the_catalog_keeps_off_mcp() -> None:
+    """A transport declaration is a promise, not a comment.
+
+    The catalog can declare a command agent-only (or CLI-only); if the MCP
+    adapter registered it anyway, the surface an operator audited via the
+    catalog and the surface a client can actually call would quietly diverge.
+    Registration must stop at the first such name rather than ship it.
+    """
+
+    def handler() -> dict[str, Any]:
+        """Agent-only probe."""
+        return {"ok": True, "data": {}, "error": None, "meta": {}}
+
+    catalog = CommandCatalog(
+        [
+            CommandSpec(
+                name="agent.only",
+                service_method="agent_only",
+                transports=frozenset({CommandTransport.AGENT}),
+                effects=frozenset({ToolEffect.READ_ONLY}),
+            )
+        ]
+    )
+    with pytest.raises(ValueError, match="not exposed over MCP: agent.only"):
+        register_bound_tools(
+            FastMCP(name="probe"),
+            [BoundTool("agent.only", handler)],
+            catalog=catalog,
+        )

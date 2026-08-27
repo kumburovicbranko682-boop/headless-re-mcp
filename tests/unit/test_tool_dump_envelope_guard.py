@@ -58,3 +58,22 @@ def test_dump_passes_a_real_object_envelope_through(module_name: str) -> None:
     module = importlib.import_module(module_name)
     dumped = module._dump(_AnObject())  # type: ignore[attr-defined]
     assert dumped == {"ok": True, "data": None, "error": None, "meta": {}}
+
+
+def test_detection_report_to_dict_carries_the_same_envelope_guard() -> None:
+    """DetectionReport.to_dict promises an object and refuses anything else.
+
+    The detection report is handed to callers as a plain dict the same way tool
+    envelopes are; a serialisation that came back as a list would be sliced and
+    key-accessed downstream with confusing errors. Pydantic's own model_dump
+    always returns a dict, so the guard is reached through a subclass whose
+    serialisation is broken -- the same shape a hostile refactor would produce.
+    """
+    from headless_re_mcp.detection.models import DetectionReport
+
+    class _Broken(DetectionReport):
+        def model_dump(self, **_kwargs: Any) -> Any:  # type: ignore[override]
+            return ["not", "an", "object"]
+
+    with pytest.raises(TypeError, match="did not serialize to an object"):
+        _Broken.model_construct().to_dict()

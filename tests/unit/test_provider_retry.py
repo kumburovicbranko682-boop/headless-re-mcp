@@ -166,3 +166,20 @@ async def test_cancellation_is_not_treated_as_a_retryable_fault() -> None:
 async def test_list_models_passes_through() -> None:
     provider = RetryingProvider(ScriptedProvider([]), sleep=_no_sleep)
     assert await provider.list_models() == ["fake"]
+
+
+@pytest.mark.asyncio
+async def test_an_attempt_budget_below_one_yields_nothing_and_never_calls_out() -> None:
+    """max_attempts=0 exhausts the loop before the first request is even sent.
+
+    The wrapper then ends the stream instead of raising, so a misconfigured
+    budget looks to the caller like a model that answered with silence. This
+    pins that shape -- empty stream, zero provider calls, zero attempts -- so
+    anyone loosening the config knows what the degenerate value does.
+    """
+    inner = ScriptedProvider([])
+    provider = RetryingProvider(inner, max_attempts=0, sleep=_no_sleep)
+
+    assert await _drain(provider) == []
+    assert inner.calls == 0
+    assert provider.attempts_made == 0
