@@ -34,6 +34,13 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# flow.get returns the full header maps, which the summary ring never did. A
+# peer can send thousands of headers or a multi-megabyte Set-Cookie, so the map
+# is bounded three ways: per-value, per-count, and by a total budget, so the
+# whole headers section of one flow can never dwarf its 200 KiB inline body.
+_MAX_HEADER_COUNT = 100
+_MAX_HEADER_VALUE_BYTES = 4 * 1024
+_MAX_HEADERS_TOTAL_BYTES = 64 * 1024
 _OMITTED_BODY = object()
 
 
@@ -177,6 +184,41 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
+    """Return a header map bounded by count, per-value length and total bytes.
+
+    ``dict(headers)`` is otherwise unbounded: a hostile or merely chatty peer
+    can send thousands of headers or a multi-megabyte value, and ``flow.get``
+    would serialize all of it into one tool result. Every other field the proxy
+    surfaces is already run through ``_bounded_metadata``; the header maps were
+    the gap. Returns the bounded map and whether anything was dropped or cut.
+    """
+    headers = getattr(part, "headers", None)
+    if headers is None:
+        return {}, False
+    try:
+        items = list(headers.items())
+    except Exception:  # noqa: BLE001
+        return {}, False
+    out: dict[str, str] = {}
+    truncated = False
+    total = 0
+    for raw_key, raw_value in items:
+        if len(out) >= _MAX_HEADER_COUNT:
+            truncated = True
+            break
+        key, key_cut = _bounded_metadata(raw_key, _MAX_METADATA_BYTES)
+        value, value_cut = _bounded_metadata(raw_value, _MAX_HEADER_VALUE_BYTES)
+        total += len(key.encode("utf-8", "replace")) + len(value.encode("utf-8", "replace"))
+        if total > _MAX_HEADERS_TOTAL_BYTES:
+            truncated = True
+            break
+        if key_cut or value_cut:
+            truncated = True
+        out[key] = value
+    return out, truncated
 
 
 class _FlowRecorder:
@@ -501,19 +543,27 @@ class ProxyBackend:
             body = resp.raw_content or b"" if resp else b""
         except Exception:  # noqa: BLE001
             body = b""
+        method, method_cut = _bounded_metadata(req.method, _MAX_METADATA_BYTES)
+        url, url_cut = _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)
+        req_headers, req_hdr_cut = _bounded_headers(req)
+        resp_headers, resp_hdr_cut = _bounded_headers(resp) if resp else ({}, False)
         result: JsonObject = {
             "id": flow_id,
             "request": {
-                "method": req.method,
-                "url": req.pretty_url,
-                "headers": dict(req.headers),
+                "method": method,
+                "url": url,
+                "headers": req_headers,
             },
             "response": {
                 "status": getattr(resp, "status_code", None),
-                "headers": dict(resp.headers) if resp else {},
+                "headers": resp_headers,
                 "size": len(body),
             },
         }
+        if method_cut or url_cut:
+            result["metadata_truncated"] = True
+        if req_hdr_cut or resp_hdr_cut:
+            result["headers_truncated"] = True
         if len(body) > 200_000:
             artifact_dir.mkdir(parents=True, exist_ok=True)
             out = artifact_dir / f"flow-{uuid4().hex}.bin"

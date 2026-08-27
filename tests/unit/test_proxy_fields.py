@@ -9,10 +9,25 @@ from typing import Any
 
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOWS,
+    _MAX_HEADER_COUNT,
+    _MAX_HEADER_VALUE_BYTES,
+    _MAX_HEADERS_TOTAL_BYTES,
     ProxyBackend,
     _FlowRecorder,
 )
 from headless_re_mcp.tools.proxy import build_proxy_tools
+
+
+def _fetch_flow(flow: Any, tmp_path: Path, monkeypatch: Any) -> dict[str, Any]:
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    return backend.flow_get("s", "f1", tmp_path)
 
 
 def _tool_docstring(name: str) -> str:
@@ -159,6 +174,97 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     doc = _tool_docstring("proxy.flow.get")
     assert "body_path" in doc
     assert "response" in doc
+
+
+def test_proxy_flow_get_bounds_hostile_headers(tmp_path: Path, monkeypatch: Any) -> None:
+    """flow.get returned dict(headers) whole; the summary ring never did.
+
+    A peer can send thousands of headers or a multi-megabyte value. Measured:
+    a request with 1000 headers is capped at the count limit, a response with a
+    2 MiB Set-Cookie is cut to the per-value limit, an oversized method/url is
+    trimmed, and the reply carries headers_truncated and metadata_truncated so
+    the cut is not read as the real request.
+    """
+    big_value = "c" * (2 * 1024 * 1024)
+    request = SimpleNamespace(
+        method="G" * 5000,
+        pretty_url="http://x/" + "a" * (32 * 1024),
+        headers={f"x-{index}": "v" for index in range(1000)},
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"set-cookie": big_value, "content-type": "text/plain"},
+        raw_content=b"ok",
+    )
+    payload = _fetch_flow(
+        SimpleNamespace(request=request, response=response), tmp_path, monkeypatch
+    )
+
+    req_headers = payload["request"]["headers"]
+    assert len(req_headers) <= _MAX_HEADER_COUNT
+    assert all(len(v.encode("utf-8")) <= _MAX_HEADER_VALUE_BYTES for v in req_headers.values())
+
+    resp_headers = payload["response"]["headers"]
+    assert all(len(v.encode("utf-8")) <= _MAX_HEADER_VALUE_BYTES for v in resp_headers.values())
+    # The 2 MiB cookie is present but clipped, not dropped.
+    assert len(resp_headers["set-cookie"].encode("utf-8")) == _MAX_HEADER_VALUE_BYTES
+
+    assert payload["headers_truncated"] is True
+    assert payload["metadata_truncated"] is True
+    assert len(payload["request"]["method"].encode("utf-8")) <= 1024
+    # A tiny body still inlines; the header cap did not disturb it.
+    assert payload["response"]["body"] == "ok"
+    assert "headers_truncated" in _tool_docstring("proxy.flow.get")
+
+
+def test_proxy_flow_get_headers_respect_the_total_budget(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """No single header is over the per-value cap, yet many add up.
+
+    Forty 3 KiB values are each under the per-value limit and the count limit,
+    so only the total-bytes budget stops them. Measured: the kept map is a
+    prefix under the total cap, with headers_truncated set.
+    """
+    value = "v" * (3 * 1024)
+    request = SimpleNamespace(
+        method="GET",
+        pretty_url="http://x/1",
+        headers={f"h-{index}": value for index in range(40)},
+    )
+    response = SimpleNamespace(status_code=200, headers={}, raw_content=b"ok")
+    payload = _fetch_flow(
+        SimpleNamespace(request=request, response=response), tmp_path, monkeypatch
+    )
+    req_headers = payload["request"]["headers"]
+    total = sum(len(k.encode("utf-8")) + len(v.encode("utf-8")) for k, v in req_headers.items())
+    assert total <= _MAX_HEADERS_TOTAL_BYTES
+    assert 0 < len(req_headers) < 40
+    assert payload["headers_truncated"] is True
+
+
+def test_proxy_flow_get_keeps_normal_headers_verbatim(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An ordinary flow is unchanged: no truncation flags, headers intact."""
+    request = SimpleNamespace(
+        method="GET",
+        pretty_url="http://x/1",
+        headers={"accept": "text/html", "user-agent": "curl/8"},
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "text/plain", "content-length": "2"},
+        raw_content=b"ok",
+    )
+    payload = _fetch_flow(
+        SimpleNamespace(request=request, response=response), tmp_path, monkeypatch
+    )
+    assert payload["request"]["headers"] == {"accept": "text/html", "user-agent": "curl/8"}
+    assert payload["response"]["headers"] == {"content-type": "text/plain", "content-length": "2"}
+    assert "headers_truncated" not in payload
+    assert "metadata_truncated" not in payload
+    assert payload["response"]["body"] == "ok"
 
 
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
