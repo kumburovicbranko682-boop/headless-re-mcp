@@ -18,6 +18,22 @@ def _safe_data(result: Any) -> JsonObject | None:
     return data if isinstance(data, dict) else None
 
 
+def _hidden_beyond_window(data: JsonObject) -> bool:
+    """Whether a paged section holds more than this frame shows.
+
+    Both sections below deliberately read a bounded window -- the newest 48
+    timeline entries, the newest 12 artifacts -- but only surfaced ``count``,
+    the length of that window. A session with 300 timeline entries drew a frame
+    whose count read 48 with nothing to say the other 252 existed, so a live
+    view of a busy session looked complete when it was a tail. The paged reads
+    already carry the real ``total``; this only decides whether to admit the
+    window hid anything.
+    """
+    total = data.get("total")
+    count = data.get("count")
+    return isinstance(total, int) and isinstance(count, int) and total > count
+
+
 def _safe_error(result: Any) -> JsonObject | None:
     err = getattr(result, "error", None)
     if err is None:
@@ -186,6 +202,9 @@ def build_monitor_snapshot(
             or timeline_data.get("entries")
             or [],
             "count": timeline_data.get("count"),
+            "total": timeline_data.get("total"),
+            # The window is the newest entries; anything hidden is older.
+            "truncated": _hidden_beyond_window(timeline_data),
             "error": None
             if (timeline_data.get("items") is not None or timeline_data.get("events") is not None
                 or timeline_data.get("entries") is not None
@@ -200,6 +219,8 @@ def build_monitor_snapshot(
         "artifacts": {
             "items": artifacts_data.get("artifacts") or artifacts_data.get("items") or [],
             "count": artifacts_data.get("count"),
+            "total": artifacts_data.get("total"),
+            "truncated": _hidden_beyond_window(artifacts_data),
         },
         "claims_universal_unpack": False,
     }
