@@ -13,6 +13,11 @@ JsonObject = dict[str, Any]
 
 _DIRECTORY_COM_DESCRIPTOR = 14
 _CLR_METADATA_SIG = b"BSJB"
+# Upper bound on the CLI metadata root we map, shared with the enumerator so the
+# two never drift. inspect_dotnet used to cap at 64 KiB; real assemblies carry
+# more metadata than that, so the #Strings heap (hence module/assembly names)
+# sat past the cut and came back null while dotnet.enumerate read it fine.
+MAX_METADATA_BYTES = 0x200000  # 2 MiB
 _FLAG_ILONLY = 0x00000001
 _FLAG_32BITREQUIRED = 0x00000002
 _FLAG_IL_LIBRARY = 0x00000004
@@ -192,8 +197,10 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
 
     if meta_rva and meta_size >= 16:
         try:
-            meta_off = pe_mod._rva_to_offset(layout, meta_rva, size=min(meta_size, 0x10000))  # noqa: SLF001
-            meta = pe_mod._slice(data, meta_off, min(meta_size, 0x10000))  # noqa: SLF001
+            meta_off = pe_mod._rva_to_offset(  # noqa: SLF001
+                layout, meta_rva, size=min(meta_size, MAX_METADATA_BYTES)
+            )
+            meta = pe_mod._slice(data, meta_off, min(meta_size, MAX_METADATA_BYTES))  # noqa: SLF001
             if meta[:4] == _CLR_METADATA_SIG:
                 verified = True
                 (

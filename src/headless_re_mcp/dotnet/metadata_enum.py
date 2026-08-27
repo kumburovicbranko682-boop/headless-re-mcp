@@ -13,7 +13,11 @@ from typing import Any, Final
 
 from headless_re_mcp.detection import pe as pe_mod
 from headless_re_mcp.detection.pe import PeFormatError, scan_pe
-from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, inspect_dotnet
+from headless_re_mcp.dotnet.clr_inspect import (
+    MAX_METADATA_BYTES,
+    DotnetInspectError,
+    inspect_dotnet,
+)
 
 JsonObject = dict[str, Any]
 
@@ -288,8 +292,10 @@ def _load_metadata_context(path: Path) -> _MetaCtx:
     meta_size = int.from_bytes(header[12:16], "little")
     if not meta_rva or meta_size < 16:
         raise DotnetInspectError("clr_unverified", "metadata directory empty")
-    meta_off = pe_mod._rva_to_offset(layout, meta_rva, size=min(meta_size, 0x200000))  # noqa: SLF001
-    meta = pe_mod._slice(data, meta_off, min(meta_size, 0x200000))  # noqa: SLF001
+    meta_off = pe_mod._rva_to_offset(  # noqa: SLF001
+        layout, meta_rva, size=min(meta_size, MAX_METADATA_BYTES)
+    )
+    meta = pe_mod._slice(data, meta_off, min(meta_size, MAX_METADATA_BYTES))  # noqa: SLF001
     if meta[:4] != b"BSJB":
         raise DotnetInspectError("clr_unverified", "metadata not BSJB")
     version_len = int.from_bytes(meta[12:16], "little")

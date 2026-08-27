@@ -49,6 +49,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dotnet.inspect` 只映射 64 KiB 元数据,大程序集名字读空）
+
+- `dotnet.inspect` 把 CLI 元数据根截在 64 KiB(`0x10000`),而 `dotnet.enumerate` 用的是
+  2 MiB(`0x200000`)。真实程序集的元数据普遍超过 64 KiB,`#Strings` 堆(以及 `module_name`
+  /`assembly_name` 所指的名字)往往落在 64 KiB 之后,于是 inspect 读到的是空名(`#~` 靠前,
+  行数/`metadata_stats` 侥幸还在,但名字为 null),同一个文件 enumerate 却能读全。两处的上限
+  现在收敛到一个共享常量 `MAX_METADATA_BYTES`(2 MiB),不再各写各的、悄悄漂移。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
