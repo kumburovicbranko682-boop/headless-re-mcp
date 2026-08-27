@@ -634,6 +634,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   构造时统一持有。
 - **APK 解析缓存在会话关闭后不释放**。上限 4 份，但每份完整 DEX 分析可达数百 MB，空闲进程会
   一直占着。会话关闭时按路径显式回收。
+- **设备 `device.pull` 的容量上限只是 stat 预检,不是真正的界限**。旧实现先用 `sync.stat`
+  的大小拒超限,再整包 `sync.pull` 落盘、事后 `capped_file_size` 复核——但设备可以骗:
+  `/proc` 类文件 stat 为 0、日志在 stat 与传输之间增长、旧后端根本不答 stat。于是超限拷贝
+  已经落满本机磁盘,复核只是在事后报告而非阻止。现在优先走 `sync.iter_content` 流式拉取并
+  **自行累计字节**,越过上限的那一块永不写入、也不把流读到 EOF,拒绝或中途失败都不留部分
+  文件;无 `iter_content` 的旧后端退回原路径,但事后判超限时会删掉那份拷贝而非留着。
+  `device.screenshot` 同理:超限的截图不再留在盘上被下游当成黑屏读取。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
 - **Watchdog 字段名对不上，每次巡检都会崩**。代码读 `_reported_disconnected`（set），
   字段却声明成 `_disconnected_streak`。未捕获时整次巡检变成 `watchdog_failed`。
