@@ -103,9 +103,7 @@ async def stdio_server_with_parse_replies() -> Any:
                         break
                     line = encoded.decode("utf-8", errors="replace")
                     if oversized:
-                        exc = ValueError(
-                            f"request exceeds {_MAX_STDIO_MESSAGE_BYTES} bytes"
-                        )
+                        exc = ValueError(f"request exceeds {_MAX_STDIO_MESSAGE_BYTES} bytes")
                         reply = _error_for_parse_failure(line, exc)
                         if reply is not None:
                             await error_writer.send(SessionMessage(reply))
@@ -118,7 +116,10 @@ async def stdio_server_with_parse_replies() -> Any:
                             await error_writer.send(SessionMessage(reply))
                         continue
                     await read_stream_writer.send(SessionMessage(message))
-        except anyio.ClosedResourceError:
+        except (anyio.BrokenResourceError, anyio.ClosedResourceError):
+            # The session closed its end mid-handoff (shutdown with a
+            # pipelined request still unread breaks the blocked send);
+            # that is a shutdown, not a crash.
             await anyio.lowlevel.checkpoint()
 
     async def stdout_writer() -> None:
@@ -130,7 +131,9 @@ async def stdio_server_with_parse_replies() -> Any:
                     )
                     await stdout.write(payload + "\n")
                     await stdout.flush()
-        except anyio.ClosedResourceError:
+        except anyio.ClosedResourceError:  # pragma: no cover - mirrors SDK
+            # stdio_server; the reader is private to this task group, so
+            # nothing outside can close it mid-iteration.
             await anyio.lowlevel.checkpoint()
 
     async with anyio.create_task_group() as tg:
