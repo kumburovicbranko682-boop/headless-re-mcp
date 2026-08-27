@@ -547,7 +547,9 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def ghidra_analyze(self, session_id: str, timeout: float = 120.0) -> Result[JsonObject]:
+    def ghidra_analyze(
+        self, session_id: str, timeout: float = 120.0, slice_arch: str | None = None
+    ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
             if session.state in {
@@ -558,9 +560,13 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"ghidra.analyze cannot run in {session.state.value} state"
                 )
+            select = _resolve_slice_arch(session, slice_arch)
+            _require_slice_for_fat(session, select)
             client = GhidraClient(home=getattr(self.settings, "ghidra_home", None))
             project = self.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
-            data = client.analyze_binary(session.require_binary(), project, timeout=timeout)
+            data = client.analyze_binary(
+                session.require_binary(), project, timeout=timeout, slice_arch=select
+            )
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -579,26 +585,55 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _failure(exc, session_id=session_id)
 
     def ghidra_functions(
-        self, session_id: str, limit: int = 256, timeout: float = 180.0
-    ) -> Result[JsonObject]:
-        return _ghidra_export(self, session_id, "functions", limit=limit, timeout=timeout)
-
-    def ghidra_symbols(
-        self, session_id: str, limit: int = 256, timeout: float = 180.0
-    ) -> Result[JsonObject]:
-        return _ghidra_export(self, session_id, "symbols", limit=limit, timeout=timeout)
-
-    def ghidra_xrefs(
-        self, session_id: str, address: str | int, limit: int = 256, timeout: float = 180.0
+        self,
+        session_id: str,
+        limit: int = 256,
+        timeout: float = 180.0,
+        slice_arch: str | None = None,
     ) -> Result[JsonObject]:
         return _ghidra_export(
-            self, session_id, "xrefs", limit=limit, address=address, timeout=timeout
+            self, session_id, "functions", limit=limit, timeout=timeout, slice_arch=slice_arch
+        )
+
+    def ghidra_symbols(
+        self,
+        session_id: str,
+        limit: int = 256,
+        timeout: float = 180.0,
+        slice_arch: str | None = None,
+    ) -> Result[JsonObject]:
+        return _ghidra_export(
+            self, session_id, "symbols", limit=limit, timeout=timeout, slice_arch=slice_arch
+        )
+
+    def ghidra_xrefs(
+        self,
+        session_id: str,
+        address: str | int,
+        limit: int = 256,
+        timeout: float = 180.0,
+        slice_arch: str | None = None,
+    ) -> Result[JsonObject]:
+        return _ghidra_export(
+            self,
+            session_id,
+            "xrefs",
+            limit=limit,
+            address=address,
+            timeout=timeout,
+            slice_arch=slice_arch,
         )
 
     def ghidra_decompile(
-        self, session_id: str, address: str | int, timeout: float = 180.0
+        self,
+        session_id: str,
+        address: str | int,
+        timeout: float = 180.0,
+        slice_arch: str | None = None,
     ) -> Result[JsonObject]:
-        return _ghidra_export(self, session_id, "decompile", address=address, timeout=timeout)
+        return _ghidra_export(
+            self, session_id, "decompile", address=address, timeout=timeout, slice_arch=slice_arch
+        )
 
     def frida_attach(self, session_id: str) -> Result[JsonObject]:
         try:
@@ -1248,20 +1283,13 @@ def _resolve_slice_arch(session: Any, value: str | None) -> Architecture | None:
             f"slice_arch must be one of: {allowed}",
             details={"slice_arch": value},
         ) from None
-    macho = session.metadata.get("macho") if isinstance(session.metadata, dict) else None
-    if not (isinstance(macho, dict) and macho.get("fat") is True):
+    available = _fat_slice_names(session)
+    if available is None:
         raise XdbgRpcError(
             "invalid_params",
             "slice_arch is only valid for a fat/universal Mach-O target",
             details={"slice_arch": value},
         )
-    available = sorted(
-        {
-            str(entry["architecture"])
-            for entry in macho.get("slices") or []
-            if isinstance(entry, dict) and entry.get("architecture")
-        }
-    )
     if select.value not in available:
         raise XdbgRpcError(
             "invalid_params",
@@ -1269,6 +1297,46 @@ def _resolve_slice_arch(session: Any, value: str | None) -> Architecture | None:
             details={"slice_arch": value, "available_slices": available},
         )
     return select
+
+
+def _fat_slice_names(session: Any) -> list[str] | None:
+    """Sorted slice architecture names when the session target is a fat Mach-O.
+
+    None for anything that is not a fat/universal Mach-O; the (possibly empty)
+    name list otherwise, read from the metadata recorded at session creation.
+    """
+    macho = session.metadata.get("macho") if isinstance(session.metadata, dict) else None
+    if not (isinstance(macho, dict) and macho.get("fat") is True):
+        return None
+    return sorted(
+        {
+            str(entry["architecture"])
+            for entry in macho.get("slices") or []
+            if isinstance(entry, dict) and entry.get("architecture")
+        }
+    )
+
+
+def _require_slice_for_fat(session: Any, select: Architecture | None) -> None:
+    """Ghidra needs a slice named up front on a fat/universal Mach-O.
+
+    Its headless importer offers no load spec for the fat container itself, so
+    without a slice the request would burn a full analyzeHeadless run only to
+    fail with a stderr dump ('no load spec found') that the session metadata
+    could have predicted. Reject it as a parameter problem instead, naming the
+    slices that would work. r2 keeps its different contract (an unselected fat
+    opens on r2's host-dependent default pick, va-only coordinates).
+    """
+    if select is not None:
+        return
+    available = _fat_slice_names(session)
+    if available is not None:
+        raise XdbgRpcError(
+            "invalid_params",
+            "a fat/universal Mach-O needs slice_arch for ghidra tools: "
+            "Ghidra imports one slice at a time",
+            details={"available_slices": available},
+        )
 
 
 def _r2_request(
@@ -1319,6 +1387,7 @@ def _ghidra_export(
     limit: int = 256,
     address: str | int | None = None,
     timeout: float = 180.0,
+    slice_arch: str | None = None,
 ) -> Result[JsonObject]:
     try:
         session = service.registry.get(session_id)
@@ -1330,20 +1399,35 @@ def _ghidra_export(
             raise InvalidStateTransition(
                 f"ghidra.{mode} cannot run in {session.state.value} state"
             )
+        select = _resolve_slice_arch(session, slice_arch)
+        _require_slice_for_fat(session, select)
         client = GhidraClient(home=getattr(service.settings, "ghidra_home", None))
         project = service.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
         if mode == "functions":
-            data = client.functions(session.require_binary(), project, limit=limit, timeout=timeout)
+            data = client.functions(
+                session.require_binary(), project, limit=limit, timeout=timeout, slice_arch=select
+            )
         elif mode == "symbols":
-            data = client.symbols(session.require_binary(), project, limit=limit, timeout=timeout)
+            data = client.symbols(
+                session.require_binary(), project, limit=limit, timeout=timeout, slice_arch=select
+            )
         elif mode == "xrefs":
             if address is None:
                 raise GhidraError("invalid_params", "address required for ghidra.xrefs")
-            data = client.xrefs(session.require_binary(), project, address, limit=limit, timeout=timeout)
+            data = client.xrefs(
+                session.require_binary(),
+                project,
+                address,
+                limit=limit,
+                timeout=timeout,
+                slice_arch=select,
+            )
         elif mode == "decompile":
             if address is None:
                 raise GhidraError("invalid_params", "address required for ghidra.decompile")
-            data = client.decompile(session.require_binary(), project, address, timeout=timeout)
+            data = client.decompile(
+                session.require_binary(), project, address, timeout=timeout, slice_arch=select
+            )
         else:
             raise GhidraError("invalid_params", "unknown ghidra export mode", mode=mode)
         session = service.registry.get(session_id)

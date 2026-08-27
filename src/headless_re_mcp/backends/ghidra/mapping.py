@@ -26,6 +26,7 @@ from headless_re_mcp.backends.r2.mapping import (
     address_dict,
     preferred_base,
 )
+from headless_re_mcp.core.models import Architecture
 
 JsonObject = dict[str, Any]
 
@@ -58,18 +59,25 @@ def _to_int(value: object) -> int | None:
         return None
 
 
-def enrich_ghidra_payload(payload: JsonObject, *, binary: Path) -> JsonObject:
+def enrich_ghidra_payload(
+    payload: JsonObject, *, binary: Path, slice_arch: Architecture | None = None
+) -> JsonObject:
     """Return a copy of a Ghidra export payload with Address objects attached.
 
     Adds top-level ``module`` (always) and ``image_base``/``architecture`` (when
     the header names them), then per item attaches the object companion for each
     address string the mode carries. Unknown formats simply yield va-only
     objects, exactly as the r2 mapping does.
+
+    ``slice_arch`` names the fat Mach-O slice Ghidra was directed at (the
+    carved slice that was actually imported); base and architecture then come
+    from that slice's own header, exactly as the r2 enrichment resolves its
+    ``-a``/``-b`` selection, so both engines report the same frame.
     """
     module = binary.name
     # PE, then ELF, then Mach-O -- the shared chain the r2 backend uses, so both
     # engines resolve the same base and architecture for one binary.
-    arch, image_base = preferred_base(binary)
+    arch, image_base = preferred_base(binary, select=slice_arch)
 
     out = dict(payload)
     out["module"] = module

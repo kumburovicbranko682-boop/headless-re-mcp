@@ -10,6 +10,8 @@ from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.ghidra.mapping import enrich_ghidra_payload
+from headless_re_mcp.backends.r2.mapping import macho_slice_span
+from headless_re_mcp.core.models import Architecture
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
@@ -50,15 +52,19 @@ class GhidraClient:
         timeout: float = 120.0,
         max_heap: str = "2G",
         delete_project: bool = True,
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         if not self.available or self.analyze is None:
             raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         project_dir.mkdir(parents=True, exist_ok=True)
+        import_target = (
+            binary if slice_arch is None else _carve_slice(binary, project_dir, slice_arch)
+        )
         stdout, stderr, code = self._run_headless(
             project_dir,
-            binary=binary,
+            binary=import_target,
             extra=[],
             timeout=timeout,
             max_heap=max_heap,
@@ -88,6 +94,7 @@ class GhidraClient:
         limit: int = 256,
         timeout: float = 180.0,
         max_heap: str = "2G",
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         return self._export(
             binary,
@@ -96,6 +103,7 @@ class GhidraClient:
             limit=limit,
             timeout=timeout,
             max_heap=max_heap,
+            slice_arch=slice_arch,
         )
 
     def symbols(
@@ -106,6 +114,7 @@ class GhidraClient:
         limit: int = 256,
         timeout: float = 180.0,
         max_heap: str = "2G",
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         return self._export(
             binary,
@@ -114,6 +123,7 @@ class GhidraClient:
             limit=limit,
             timeout=timeout,
             max_heap=max_heap,
+            slice_arch=slice_arch,
         )
 
     def xrefs(
@@ -125,6 +135,7 @@ class GhidraClient:
         limit: int = 256,
         timeout: float = 180.0,
         max_heap: str = "2G",
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         return self._export(
             binary,
@@ -134,6 +145,7 @@ class GhidraClient:
             address=address,
             timeout=timeout,
             max_heap=max_heap,
+            slice_arch=slice_arch,
         )
 
     def decompile(
@@ -144,6 +156,7 @@ class GhidraClient:
         *,
         timeout: float = 180.0,
         max_heap: str = "2G",
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         return self._export(
             binary,
@@ -153,6 +166,7 @@ class GhidraClient:
             address=address,
             timeout=timeout,
             max_heap=max_heap,
+            slice_arch=slice_arch,
         )
 
     def _export(
@@ -165,6 +179,7 @@ class GhidraClient:
         address: str | int | None = None,
         timeout: float,
         max_heap: str,
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         with _project_lock(project_dir):
             return self._export_unlocked(
@@ -175,6 +190,7 @@ class GhidraClient:
                 address=address,
                 timeout=timeout,
                 max_heap=max_heap,
+                slice_arch=slice_arch,
             )
 
     def _export_unlocked(
@@ -187,6 +203,7 @@ class GhidraClient:
         address: str | int | None = None,
         timeout: float,
         max_heap: str,
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         if not self.available or self.analyze is None:
             raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
@@ -195,6 +212,15 @@ class GhidraClient:
         if not (_SCRIPT_DIR / _EXPORT_SCRIPT).is_file():
             raise GhidraError("backend_error", "ExportJson.py missing from package")
         project_dir.mkdir(parents=True, exist_ok=True)
+        # Ghidra's headless importer offers no load spec for a fat/universal
+        # Mach-O (and -processor merely forces a language, importing every
+        # slice wrong), so directing Ghidra at a slice means carving that
+        # slice -- a complete thin Mach-O -- and importing the carved file.
+        # Coordinates are still derived from the original fat, so the module
+        # name and frame match what r2 reports for its -a/-b selection.
+        import_target = (
+            binary if slice_arch is None else _carve_slice(binary, project_dir, slice_arch)
+        )
         out_path = project_dir / f"export_{mode}.json"
         if out_path.exists():
             out_path.unlink()
@@ -212,7 +238,7 @@ class GhidraClient:
         ]
         stdout, stderr, code = self._run_headless(
             project_dir,
-            binary=binary,
+            binary=import_target,
             extra=extra,
             timeout=timeout,
             max_heap=max_heap,
@@ -255,7 +281,7 @@ class GhidraClient:
             ) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
-        payload = enrich_ghidra_payload(payload, binary=binary)
+        payload = enrich_ghidra_payload(payload, binary=binary, slice_arch=slice_arch)
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         return payload
@@ -313,6 +339,51 @@ class GhidraClient:
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)
+
+
+def _carve_slice(binary: Path, project_dir: Path, slice_arch: Architecture) -> Path:
+    """Extract the ``slice_arch`` slice of a fat Mach-O into the project dir.
+
+    The carved bytes are a complete thin Mach-O (fat table offsets/sizes span
+    whole slice files), written under ``slices/<arch>/`` with the original
+    file name so the imported program keeps a recognisable identity. Raises
+    invalid_params when the file has no such slice -- the same rejection the
+    service issues, kept here too so a directly-driven client cannot silently
+    import the wrong bytes -- and when a malformed table points past EOF.
+    """
+    span = macho_slice_span(binary, slice_arch)
+    if span is None:
+        raise GhidraError(
+            "invalid_params",
+            f"no {slice_arch.value} slice in this file: slice_arch needs a "
+            "fat/universal Mach-O that contains that architecture",
+            path=str(binary),
+        )
+    offset, size = span
+    dest_dir = project_dir / "slices" / slice_arch.value
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / binary.name
+    remaining = size
+    try:
+        with binary.open("rb") as source, dest.open("wb") as sink:
+            source.seek(offset)
+            while remaining > 0:
+                chunk = source.read(min(1 << 20, remaining))
+                if not chunk:
+                    break
+                sink.write(chunk)
+                remaining -= len(chunk)
+    except OSError as exc:
+        raise GhidraError("backend_error", f"carving fat slice failed: {exc}") from exc
+    if remaining:
+        dest.unlink(missing_ok=True)
+        raise GhidraError(
+            "invalid_params",
+            "fat slice table points past the end of the file",
+            path=str(binary),
+            missing_bytes=remaining,
+        )
+    return dest
 
 
 def _which(name: str) -> Path | None:

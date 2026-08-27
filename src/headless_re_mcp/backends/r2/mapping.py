@@ -194,24 +194,59 @@ def macho_preferred_base(
             fat_is64 = _FAT_MAGICS.get(magic)
             if fat_is64 is None or select is None:
                 return None, None
-            nfat = int.from_bytes(stream.read(4), "big")
-            if not 1 <= nfat <= _FAT_MAX_ARCHS:
+            span = _fat_slice_span(stream, fat_is64, select)
+            if span is None:
                 return None, None
-            entry_size = 32 if fat_is64 else 20
-            table = stream.read(entry_size * nfat)
-            if len(table) < entry_size * nfat:
-                return None, None
-            for index in range(nfat):
-                entry = table[index * entry_size :]
-                cputype = int.from_bytes(entry[0:4], "big")
-                if _MACHO_CPUTYPE_TO_ARCH.get(cputype) is not select:
-                    continue
-                offset_size = 8 if fat_is64 else 4
-                slice_offset = int.from_bytes(entry[8 : 8 + offset_size], "big")
-                return _thin_macho_base(stream, slice_offset)
-            return None, None
+            return _thin_macho_base(stream, span[0])
     except OSError:
         return None, None
+
+
+def macho_slice_span(binary: Path, select: Architecture) -> tuple[int, int] | None:
+    """(file offset, byte size) of the ``select`` slice inside a fat Mach-O.
+
+    None when the file is not fat/universal, its table is malformed, or no
+    slice's cputype maps to ``select``. This is the carve primitive for an
+    engine with no native slice flag (Ghidra's headless importer offers no
+    load spec for a fat file at all): the ``size`` bytes at ``offset`` are a
+    complete thin Mach-O of that architecture, importable on its own.
+    """
+    try:
+        with binary.open("rb") as stream:
+            fat_is64 = _FAT_MAGICS.get(stream.read(4))
+            if fat_is64 is None:
+                return None
+            return _fat_slice_span(stream, fat_is64, select)
+    except OSError:
+        return None
+
+
+def _fat_slice_span(
+    stream: Any, fat_is64: bool, select: Architecture
+) -> tuple[int, int] | None:
+    """(offset, size) of the fat table entry whose cputype maps to ``select``.
+
+    The stream is positioned just past the magic. fat_arch entries are
+    big-endian: cputype, cpusubtype, then offset and size (32-bit, or 64-bit
+    under FAT_MAGIC_64), then align.
+    """
+    nfat = int.from_bytes(stream.read(4), "big")
+    if not 1 <= nfat <= _FAT_MAX_ARCHS:
+        return None
+    entry_size = 32 if fat_is64 else 20
+    table = stream.read(entry_size * nfat)
+    if len(table) < entry_size * nfat:
+        return None
+    word = 8 if fat_is64 else 4
+    for index in range(nfat):
+        entry = table[index * entry_size :]
+        cputype = int.from_bytes(entry[0:4], "big")
+        if _MACHO_CPUTYPE_TO_ARCH.get(cputype) is not select:
+            continue
+        offset = int.from_bytes(entry[8 : 8 + word], "big")
+        size = int.from_bytes(entry[8 + word : 8 + 2 * word], "big")
+        return offset, size
+    return None
 
 
 def _thin_macho_base(stream: Any, header_offset: int) -> tuple[Architecture | None, int | None]:
