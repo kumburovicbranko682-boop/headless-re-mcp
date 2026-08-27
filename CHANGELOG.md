@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 jadx 的类名→路径守卫补全、并把 java 源列举钉进测试）
+
+- `_class_to_java_path` 把调用方给的类名映射成文件系统路径,是拦住构造类名(`..`、`\`、`:`、NUL、首尾点、
+  绝对路径)越出解包树的守卫;既有 `test_jadx_path_safety` 钉了几例,但接受/拒绝契约还有缺口。补齐拒绝:
+  绝对路径 `/etc/passwd`(前导斜杠→空段)、首/尾点、裸 `..`/`.`、空串与纯空白、只有 `$Inner` 后缀(剥空);
+  补齐接受:单段裸类名、斜杠分隔(非 smali)、点分内部类折进外层文件、无内部类的 smali、首尾空白先剥。
+- `_capped_java_listing` 与 jsre 的解包列举同构:按返回名数 `cap` 与遍历总数 `_MAX_COUNTED_FILES` 双轴封顶,
+  `has_more` 是调用方得知源树被裁剪的唯一信号,且它 glob `*.java`——一个恰好叫 `pkg.java` 的目录不能被当成
+  源文件计数。新增 `tests/unit/test_jadx_pure_helpers.py` 钉住:cap 内排序返回、超 cap 数全并置 `has_more`、
+  非目录回空、`is_file` 滤掉像源文件的目录、嵌套按相对路径、到遍历上限即停且 total 不越界。
+  `jadx/client.py` 中 33-51 与 231-243 补齐,纯补测、不改行为。
+
 ### 加固（把 jsre 的列举/输入守卫与 _run 错误分类钉进测试）
 
 - jsre 线有三个纯 helper 决定它报什么、收什么,却薄测或没测:`_capped_file_listing` 从两个维度约束

@@ -19,6 +19,18 @@ from headless_re_mcp.backends.jadx.client import (
         "com..outside.Main",
         r"C:\outside",
         "com.example.\x00Main",
+        # An absolute path: the leading slash becomes an empty leading segment.
+        "/etc/passwd",
+        # Leading / trailing dots leave an empty segment on either end.
+        ".leadingdot",
+        "trailingdot.",
+        # Bare relative markers and empties never map to a class file.
+        "..",
+        ".",
+        "",
+        "   ",
+        # A name that is only an inner-class suffix strips to nothing.
+        "$Inner",
     ],
 )
 def test_jadx_rejects_class_names_that_are_not_relative_java_paths(
@@ -32,9 +44,17 @@ def test_jadx_rejects_class_names_that_are_not_relative_java_paths(
 
 def test_jadx_keeps_valid_dotted_and_smali_class_names() -> None:
     assert _class_to_java_path("com.example.Main") == Path("com/example/Main.java")
-    assert _class_to_java_path("Lcom/example/Main$Inner;") == Path(
-        "com/example/Main.java"
-    )
+    assert _class_to_java_path("Lcom/example/Main$Inner;") == Path("com/example/Main.java")
+    # A single, unqualified class name is a bare file at the root.
+    assert _class_to_java_path("Main") == Path("Main.java")
+    # Slash-separated (non-smali) is accepted the same as dotted.
+    assert _class_to_java_path("com/example/Main") == Path("com/example/Main.java")
+    # A dotted inner class folds into its outer file, like the smali form.
+    assert _class_to_java_path("com.example.Main$Inner") == Path("com/example/Main.java")
+    # Smali without an inner suffix drops only the L...; wrapper.
+    assert _class_to_java_path("Lcom/example/Main;") == Path("com/example/Main.java")
+    # Surrounding whitespace is stripped before the path is built.
+    assert _class_to_java_path("  com.example.Main  ") == Path("com/example/Main.java")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="creating test symlinks needs Windows privileges")
