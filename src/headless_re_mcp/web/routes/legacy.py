@@ -1027,7 +1027,23 @@ def register_legacy_routes(
             raise HTTPException(status_code=403, detail="artifact_outside_root") from exc
         if not resolved.is_file():
             raise HTTPException(status_code=404, detail="artifact_missing")
-        return FileResponse(resolved)
+        # Artifacts are captured from the sample under analysis -- a page DOM, a
+        # proxy-recorded response body, a decompiled source -- so their bytes are
+        # untrusted. A bare FileResponse guesses the content type from the file
+        # name, and a capture stored as .html or .svg then arrives as text/html
+        # or image/svg+xml and renders in this console's loopback origin, where a
+        # valid bootstrap cookie is already scoped -- turning a stored sample into
+        # script driving the authenticated API. The sibling preview/frame routes
+        # already send nosniff; this general reader did not. Pin an inert type,
+        # forbid sniffing past it, and mark it a download (filename => attachment)
+        # so a direct navigation saves the file rather than rendering it. The only
+        # in-tree reader fetches this as a blob to save, so nothing regresses.
+        return FileResponse(
+            resolved,
+            media_type="application/octet-stream",
+            filename=resolved.name,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     @app.get("/api/audit")
     def audit(
