@@ -168,8 +168,15 @@ def test_r2_tool_surface_reachable_for_a_native_elf_session(tmp_path: Path) -> N
         created = service.create_session(str(fixture))
         assert created.ok, created.error
         session_id = created.data["session"]["id"]
-        # The ELF must be bound as a native (portable-static) session.
+        # The ELF must be bound as a native (portable-static) session, carrying
+        # the identity describe_native read from its header. Arch/bits are left
+        # to the runner (x86-64 on CI), so assert they were populated, not a
+        # specific value; the unit tests pin the exact parsing.
         assert created.data["session"]["target"] == "native"
+        native_meta = created.data["session"]["metadata"]["native"]
+        assert native_meta["format"] == "elf"
+        assert native_meta["bits"] in (32, 64)
+        assert isinstance(native_meta["arch"], str) and native_meta["arch"]
 
         opened = service.r2_open(session_id)
         assert opened.ok, opened.error

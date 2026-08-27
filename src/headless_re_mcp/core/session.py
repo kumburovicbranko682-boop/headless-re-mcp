@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from headless_re_mcp.core.models import (
     Architecture,
@@ -122,6 +122,9 @@ class SessionRegistry:
                 architecture = detect_pe_architecture(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
+            elif kind is TargetKind.NATIVE:
+                metadata = describe_native(path)
+                architecture = native_architecture(metadata)
             session = Session(
                 target=kind,
                 binary=path,
@@ -454,6 +457,65 @@ def describe_apk(path: Path) -> dict[str, Any]:
             ),
         }
     }
+
+
+_ELF_MACHINES = {
+    0x03: "x86",
+    0x3E: "x86-64",
+    0x28: "arm",
+    0xB7: "aarch64",
+    0xF3: "riscv",
+    0x08: "mips",
+    0x14: "ppc",
+    0x15: "ppc64",
+}
+_ELF_TYPES = {1: "rel", 2: "exec", 3: "dyn", 4: "core"}
+# Mach-O cputype: the 0x01000000 bit is CPU_ARCH_ABI64.
+_MACHO_CPUS = {0x07: "x86", 0x01000007: "x86-64", 0x0C: "arm", 0x0100000C: "aarch64"}
+_MACHO_TYPES = {1: "object", 2: "exec", 6: "dylib", 8: "bundle"}
+_NATIVE_ARCH = {"x86": Architecture.X86, "x86-64": Architecture.X64}
+
+
+def describe_native(path: Path) -> dict[str, Any]:
+    """Cheap ELF/Mach-O identity from the header alone -- no r2, no disk slurp.
+
+    A native session used to carry no identity at all (unlike a PE, which gets
+    its machine type, or an APK, which gets ``describe_apk``), so ``get_session``
+    on an ELF could not even say "64-bit executable". This reads only the first
+    64 bytes and reports what it can; anything it cannot parse is omitted rather
+    than guessed, and it never raises -- the magic was already confirmed by
+    ``classify_target`` and a short/odd header must not block session creation.
+    """
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(64)
+    except OSError:
+        return {"native": {}}
+    info: dict[str, Any] = {}
+    if head.startswith(b"\x7fELF"):
+        info["format"] = "elf"
+        if len(head) >= 20:
+            info["bits"] = {1: 32, 2: 64}.get(head[4])
+            order: Literal["little", "big"] = "big" if head[5] == 2 else "little"
+            info["endian"] = "big" if head[5] == 2 else "little"
+            info["type"] = _ELF_TYPES.get(int.from_bytes(head[16:18], order))
+            info["arch"] = _ELF_MACHINES.get(int.from_bytes(head[18:20], order))
+    elif head[:4] in _MACHO_MAGICS:
+        info["format"] = "macho"
+        big = head[:4] in (b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce")
+        info["bits"] = 64 if head[:4] in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf") else 32
+        info["endian"] = "big" if big else "little"
+        if len(head) >= 16:
+            morder: Literal["little", "big"] = "big" if big else "little"
+            info["arch"] = _MACHO_CPUS.get(int.from_bytes(head[4:8], morder))
+            info["type"] = _MACHO_TYPES.get(int.from_bytes(head[12:16], morder))
+    return {"native": {key: value for key, value in info.items() if value is not None}}
+
+
+def native_architecture(metadata: dict[str, Any]) -> Architecture | None:
+    """The PE-style Architecture for a native binary, when it is one we model."""
+    arch = metadata.get("native", {}).get("arch")
+    return _NATIVE_ARCH.get(arch) if isinstance(arch, str) else None
 
 
 def detect_pe_architecture(path: Path) -> Architecture:

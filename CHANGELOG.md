@@ -123,6 +123,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_r2_tool_surface_reachable_for_a_native_elf_session`(现编 ELF→建原生会话→`r2.open`/`functions`/
   `strings`/`imports` 逐个断言拿回夹具里造进去的函数/格式串/printf 导入,并断言 `dynamic.launch` 被拒),
   加单测钉住 ELF/Mach-O 魔数分类、fat/未知字节仍回落 PE、以及原生会话是文件绑定但 `require_pe()` 仍拒。
+- 原生会话补上身份信息:此前 PE 会话带 `architecture`、APK 会话带 `describe_apk`(包名/ABI/dex 数),而
+  原生会话 `architecture=None`、`metadata={}`——`get_session` 一个 ELF 连「64 位可执行」都答不出。新增
+  `describe_native`(纯 stdlib、只读头 64 字节、绝不 slurp、也绝不因头短而抛),按 ELF/Mach-O 头解析出
+  `{format, bits, endian, type, arch}`(ELF 认 x86/x86-64/arm/aarch64/riscv/mips/ppc(64),Mach-O 认
+  x86/x86-64/arm/aarch64),并把 x86/x86-64 映射进 `Architecture` 填到会话上;`create` 在原生分支调用它,
+  与 PE/APK 分支同构。r2 服务 Gate 顺带断言现编 ELF 建出的会话带上 `format=elf`、`bits`、`arch`,单测用手搓
+  的 ELF/Mach-O 头钉住精确解析(含 PIE→`dyn`、aarch64、截断头只报 `format`)。
 
 ### 新增（抓包代理实测 Gate：真的录到流量、也真的能重放）
 
