@@ -77,3 +77,22 @@ def test_invalid_bind_host_is_refused_before_any_launch(monkeypatch: Any, bad: s
         backend.ensure_frida_server("emulator-5554", bind_host=bad)
     assert caught.value.code == "invalid_params"
     assert commands == []
+
+
+@pytest.mark.parametrize("bad", [0, -1, 65536, 99999999, True])
+def test_out_of_range_port_is_refused_before_any_launch(monkeypatch: Any, bad: int) -> None:
+    """An out-of-range or non-int port is rejected the way bind_host already is.
+
+    frida.server.ensure's schema bounds port to 1..65535, but the agent and
+    OpenAI-bridge transports call the service directly and skip that pydantic
+    check. An unbounded port reached the su launch line as "-l host:0" (or a
+    negative/huge value) that frida-server cannot bind, surfacing as an opaque
+    device error instead of the precise invalid_params its string siblings
+    raise. bool is an int subclass but never a real port, so it is refused too.
+    """
+    commands = _capture_launch(monkeypatch)
+    backend = _backend(monkeypatch)
+    with pytest.raises(AdbError) as caught:
+        backend.ensure_frida_server("emulator-5554", port=bad)
+    assert caught.value.code == "invalid_params"
+    assert commands == []

@@ -846,6 +846,15 @@ class AdbBackend:
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
         if not _BIND_HOST_RE.match(bind_host or ""):
             raise AdbError("invalid_params", "invalid bind_host", bind_host=bind_host)
+        # The frida.server.ensure schema bounds port to 1..65535, but the agent
+        # and OpenAI-bridge transports call the service directly and skip that
+        # pydantic check, so an out-of-range or non-int port reached the su
+        # launch line below and became "-l host:0" (or a negative/huge port)
+        # that frida-server cannot bind -- surfacing as an opaque device error
+        # instead of the precise invalid_params its two string siblings already
+        # raise. bool is an int subclass and never a real port, so reject it too.
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise AdbError("invalid_params", "invalid port", port=port)
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": False, "port": port}
