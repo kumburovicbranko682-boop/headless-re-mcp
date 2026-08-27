@@ -287,6 +287,72 @@ def test_android_jadx_decompiles_the_valid_apk(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_android_apktool_decodes_and_repacks_the_valid_apk(tmp_path: Path) -> None:
+    """Round-trip the built APK through the real apktool: decode then rebuild.
+
+    apktool decode/build back apk.decode and apk.repack but had no live
+    coverage -- only stubbed unit tests -- so an apktool CLI or output-layout
+    change would slip through. Decode runs with ``no_resources`` because the
+    built APK carries a placeholder resources.arsc; that still exercises the
+    real work -- decoding the binary AndroidManifest to text and the DEX to a
+    ``smali`` tree -- and rebuild then repackages that tree into a fresh zip
+    (asserted a valid, non-empty, unsigned APK). skip != pass: skips only when
+    apktool is not installed, resolved the way the service does.
+    """
+    if Settings.load().apktool is None:
+        pytest.skip("apktool is not installed — live Gate not run (skip != pass)")
+    apk = _build_valid_apk(tmp_path / "sample.apk")
+    service = AnalysisService()
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+
+        decoded = service.apk_decode(session_id, no_resources=True)
+        assert decoded.ok, decoded.error
+        assert "smali" in decoded.data["smali_dirs"]
+        assert decoded.data["manifest"] is not None
+
+        repacked = service.apk_repack(session_id)
+        assert repacked.ok, repacked.error
+        assert repacked.data["signed"] is False
+        assert repacked.data["size"] > 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_apksigner_signs_the_repacked_apk(tmp_path: Path) -> None:
+    """Sign a freshly rebuilt APK with the real apksigner and let it verify.
+
+    apk.sign shells out to apksigner (sign, then a verify pass) but had no live
+    coverage. This decodes and rebuilds with apktool, then signs the rebuilt
+    APK against the standard Android debug keystore; apk.sign only returns ok
+    after apksigner's own verify confirms the signature, so a green result is a
+    genuinely signed, verifiable APK. skip != pass: skips when apktool or
+    apksigner is absent, or when no debug keystore exists to sign against.
+    """
+    settings = Settings.load()
+    if settings.apktool is None or settings.apksigner is None:
+        pytest.skip("apktool/apksigner not installed — live Gate not run (skip != pass)")
+    debug_keystore = Path.home() / ".android" / "debug.keystore"
+    if not debug_keystore.is_file():
+        pytest.skip("no Android debug keystore to sign against (skip != pass)")
+    apk = _build_valid_apk(tmp_path / "sample.apk")
+    service = AnalysisService()
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+        assert service.apk_decode(session_id, no_resources=True).ok
+        assert service.apk_repack(session_id).ok
+
+        signed = service.apk_sign(session_id)
+        assert signed.ok, signed.error
+        assert signed.data["signed"] is True
+        assert signed.data["debug_keystore"] is True
+        assert signed.data["size"] > 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_android_pe_tool_rejects_apk_session(tmp_path: Path) -> None:
     apk = _build_valid_apk(tmp_path / "sample.apk")
     service = AnalysisService()
