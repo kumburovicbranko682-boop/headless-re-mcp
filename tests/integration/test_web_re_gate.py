@@ -7,8 +7,12 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -68,6 +72,91 @@ def test_web_cdp_open_and_inspect() -> None:
             service.web_close(session_id)
     finally:
         service.close_all()
+
+
+_NET_APP_JS = b"console.log('gate-net-asset');window.__loaded=1;\n"
+_NET_INDEX_HTML = (
+    b"<!doctype html><html><head><title>net-gate</title>"
+    b'<script src="app.js"></script></head><body>hi</body></html>'
+)
+
+
+class _NetHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path.startswith("/app.js"):
+            body, ctype = _NET_APP_JS, "application/javascript"
+        else:
+            body, ctype = _NET_INDEX_HTML, "text/html"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args: object) -> None:  # keep the gate output quiet
+        del args
+
+
+@pytest.mark.integration
+def test_web_cdp_network_capture_and_body(tmp_path: Path) -> None:
+    """A real sub-resource is captured and its body retrieved through CDP.
+
+    test_web_cdp_open_and_inspect drives a data: URL, which makes no network
+    requests, so network_list / network_get had only unit coverage against fake
+    runners -- including the recent fix that tells a wedged session (WebError,
+    re-raised) apart from a one-off missing body (body_error). This loads an
+    http page that pulls a known app.js, then asserts the request was recorded
+    and its body comes back through Network.getResponseBody (the healthy path
+    the unit tests could not exercise).
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP network Gate not run (skip != pass)")
+    server = HTTPServer(("127.0.0.1", 0), _NetHandler)
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, name="web-net-gate", daemon=True)
+    thread.start()
+    service = AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+    try:
+        created = service.create_session(f"http://127.0.0.1:{port}/", target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                "chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            # The sub-resource is fetched during load, but its responseReceived
+            # event can land just after web_open returns; poll briefly for it.
+            deadline = time.monotonic() + 15.0
+            asset: dict[str, Any] | None = None
+            requests: list[dict[str, Any]] = []
+            while time.monotonic() < deadline:
+                listed = service.web_network_list(session_id)
+                assert listed.ok, listed.error
+                requests = listed.data["requests"]
+                asset = next(
+                    (r for r in requests if str(r.get("url", "")).endswith("/app.js")),
+                    None,
+                )
+                if asset is not None:
+                    break
+                time.sleep(0.2)
+            assert asset is not None, f"app.js was never captured: {requests}"
+            assert asset["status"] == 200
+
+            got = service.web_network_get(session_id, asset["requestId"])
+            assert got.ok, got.error
+            # The healthy path: a real body, not the body_error degrade branch.
+            assert "body_error" not in got.data, got.data.get("body_error")
+            assert "gate-net-asset" in got.data["body"]
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+        server.shutdown()
 
 
 @pytest.mark.integration
