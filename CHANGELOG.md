@@ -24,11 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
-### 修复（.NET IL 反汇编越过 switch 后错位、并把跳转表字节当成 call_tokens）
+### 修复（.NET IL 反汇编越过带操作数的 opcode 后错位、并把操作数字节当成 call_tokens）
 
-- `dotnet/metadata_enum.py` 的 `_disassemble_il` 只覆盖一小撮 opcode，`switch`（0x45）不在表里，于是被当成 1 字节未知 opcode 处理——但 `switch` 带变长操作数：一个 u32 case 数，后接同样数量的 i32 目标偏移。结果 `switch` 之后的整张跳转表被当作指令继续解码，`switch` 后的反汇编全是垃圾；更糟的是某个目标偏移只要首字节恰为 0x28/0x6f/0x73，就会被 `call_tokens` 收成一条“此方法调用了某方法”的假记录，且整个结果仍以 `partial=false` 上报，把错的东西当完整结果给出。
-- 现按 ECMA-335 正确处理 `switch`：读出 case 数、整段跳过 `1 + 4 + N*4` 字节的跳转表，把 case 数作为 operand 暴露（是计数、不是 metadata token，故不会进 `call_tokens`）；跳转表被截断（含敌意的超大 N，如 0xFFFFFFFF）或 opcode 落在 IL 末尾无处读计数时，如实标记 `partial=true` 而不再臆造指令或分配内存。
-- 新增 4 项针对 `_disassemble_il` 的回归用例：验证 switch 之后从正确偏移续解码且不产生假 call_tokens、截断跳转表报 partial、敌意计数不挂起不分配、以及末尾裸 switch 报 partial。
+- `dotnet/metadata_enum.py` 的 `_disassemble_il` 只按名字覆盖一小撮 opcode，但反汇编器仍必须按每条指令的完整长度前进。凡是不在这张“命名子集”里、却带操作数的 opcode，过去都被当成 1 字节步过，其操作数字节随即被当作后续指令继续解码——`switch`（0x45）的变长跳转表、`ldc.i8`/`ldc.r8` 的 8 字节立即数、长分支偏移、以及 `castclass`/`ldtoken`/`ldftn` 等的 4 字节 metadata token 全都会解成垃圾指令；更糟的是这些字节里只要出现 0x28/0x6f/0x73，就会被 `call_tokens` 收成一条“此方法调用了某方法”的假记录，且整个结果仍以 `partial=false` 上报，把错的东西当完整结果给出。`call_tokens` 是直接呈现给分析者的字段，因此这些幻影调用会实打实地误导人。
+- 现让解码对每条指令都按 ECMA-335 Partition III 的操作数宽度前进：`switch` 单独按 `1 + 4 + N*4` 跳过跳转表并把 case 数作为 operand 暴露；其余单字节 opcode 用 `_UNNAMED_OPERAND_SIZE`（1/4/8 字节）整段跳过操作数、双字节 `0xFE` 前缀 opcode 用 `_FE_OPERAND_SIZE`（含 `ldftn`/`initobj`/`constrained.`/`sizeof` 的 4 字节 token 与 `ldarg` 等的 2 字节）跳过。未命名的 opcode 仍以 `op_XX` / `fe_XX` 标注，但字节保持对齐，不再臆造指令或收进假 `call_tokens`。仅当操作数或跳转表越过被截取的 IL（含敌意超大 N）时才如实标 `partial=true`，且不额外分配内存。
+- 新增回归用例覆盖：`ldc.i8` 立即数不再被走成指令或假 call_token、`0xFE` 双字节 opcode（含 `ldftn`）整体对齐、一条穿过全部操作数宽度类（1/4/8 字节单字节、`0xFE` 双字节、`switch`）的混合方法体让末尾哨兵 `ret` 精确落位且 `call_tokens` 只含真实调用、以及被截断的未命名操作数如实报 partial；连同此前的 4 项 `switch` 用例（跳表跳过、截断报 partial、敌意计数不挂起、末尾裸 switch 报 partial）。
 
 ### 新增（监控台工作台）
 

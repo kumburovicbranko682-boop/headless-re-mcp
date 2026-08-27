@@ -82,6 +82,58 @@ _SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
     {"br.s", "brfalse.s", "brtrue.s", "br", "brfalse", "brtrue", "ldc.i4"}
 )
 
+# Operand byte counts for single-byte opcodes that are *not* in the named subset
+# above. The subset only names the opcodes worth reading back, but the decoder
+# still has to advance by the full instruction length for every opcode it meets.
+# A one-byte step past an opcode that actually carries an operand walked the
+# operand bytes as if they were more instructions: ldc.i8's eight immediate
+# bytes, a long-form branch delta, or a 4-byte metadata token then disassembled
+# to nonsense, and a token byte that happened to be 0x28/0x6f/0x73 was harvested
+# into call_tokens as a call the method never makes -- all while partial stayed
+# false. Sizes are the ECMA-335 Partition III operand widths; unnamed opcodes
+# keep their op_XX label but their operand is skipped so decoding stays aligned.
+_UNNAMED_OPERAND_SIZE: Final[dict[int, int]] = {
+    # ShortInlineVar / ShortInlineI / ShortInlineBrTarget: one byte.
+    0x0E: 1, 0x0F: 1, 0x10: 1, 0x11: 1, 0x12: 1, 0x13: 1,  # ldarg.s..stloc.s
+    0x1F: 1,  # ldc.i4.s
+    0x2E: 1, 0x2F: 1, 0x30: 1, 0x31: 1, 0x32: 1,  # beq.s..blt.s
+    0x33: 1, 0x34: 1, 0x35: 1, 0x36: 1, 0x37: 1,  # bne.un.s..blt.un.s
+    0xDE: 1,  # leave.s
+    # ShortInlineR / InlineMethod / InlineSig / InlineBrTarget / InlineType /
+    # InlineField / InlineString / InlineTok: four bytes.
+    0x22: 4,  # ldc.r4
+    0x27: 4, 0x29: 4,  # jmp, calli
+    0x3B: 4, 0x3C: 4, 0x3D: 4, 0x3E: 4, 0x3F: 4,  # beq..blt
+    0x40: 4, 0x41: 4, 0x42: 4, 0x43: 4, 0x44: 4,  # bne.un..blt.un
+    0x70: 4, 0x71: 4,  # cpobj, ldobj
+    0x74: 4, 0x75: 4,  # castclass, isinst
+    0x79: 4,  # unbox
+    0x7C: 4, 0x7E: 4, 0x7F: 4, 0x80: 4,  # ldflda, ldsfld, ldsflda, stsfld
+    0x81: 4,  # stobj
+    0x8D: 4, 0x8F: 4,  # newarr, ldelema
+    0xA3: 4, 0xA4: 4, 0xA5: 4,  # ldelem, stelem, unbox.any
+    0xC2: 4, 0xC6: 4,  # refanyval, mkrefany
+    0xD0: 4,  # ldtoken
+    0xDD: 4,  # leave
+    # InlineI8 / InlineR: eight bytes.
+    0x21: 8, 0x23: 8,  # ldc.i8, ldc.r8
+}
+
+# Operand byte counts for the two-byte 0xFE-prefixed opcodes, keyed by the
+# second byte. Reading 0xFE as a bare one-byte prefix left the real opcode byte
+# and its operand to be walked as instructions -- the same derailment as above,
+# and ldftn/ldvirtftn/initobj/constrained./sizeof each carry a 4-byte token
+# whose bytes could surface as a phantom call. Second bytes not listed here
+# carry no operand (ceq/cgt/clt/...), so the two opcode bytes advance alone.
+_FE_OPERAND_SIZE: Final[dict[int, int]] = {
+    0x06: 4, 0x07: 4,  # ldftn, ldvirtftn
+    0x09: 2, 0x0A: 2, 0x0B: 2, 0x0C: 2, 0x0D: 2, 0x0E: 2,  # ldarg..stloc
+    0x12: 1,  # unaligned.
+    0x15: 4, 0x16: 4,  # initobj, constrained.
+    0x19: 1,  # no.
+    0x1C: 4,  # sizeof
+}
+
 
 @dataclass(frozen=True, slots=True)
 class Page:
@@ -692,9 +744,21 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
         start = i
         op = il[i]
         if op == 0xFE:
-            rebuilt.append({"ip": start, "mnemonic": "prefix.fe", "operand": None})
-            i += 1
-            partial = True
+            # Two-byte opcode: the real opcode is the next byte and it may carry
+            # its own operand. Skipping only the 0xFE byte let the opcode byte
+            # and operand be decoded as instructions.
+            if i + 2 > len(il):
+                rebuilt.append({"ip": start, "mnemonic": "fe", "operand": None})
+                partial = True
+                break
+            second = il[i + 1]
+            extra = _FE_OPERAND_SIZE.get(second, 0)
+            if i + 2 + extra > len(il):
+                rebuilt.append({"ip": start, "mnemonic": f"fe_{second:02x}", "operand": None})
+                partial = True
+                break
+            rebuilt.append({"ip": start, "mnemonic": f"fe_{second:02x}", "operand": None})
+            i += 2 + extra
             continue
         if op == 0x45:
             # switch carries a variable-length operand: a u32 case count then
@@ -718,8 +782,16 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
             continue
         info = _OPCODES.get(op)
         if info is None:
+            # Not named in the subset, but if it is a known IL opcode carrying an
+            # operand we still have to skip that operand or the bytes after it
+            # decode as bogus instructions (and can fabricate call_tokens).
+            extra = _UNNAMED_OPERAND_SIZE.get(op, 0)
+            if extra and i + 1 + extra > len(il):
+                rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})
+                partial = True
+                break
             rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})
-            i += 1
+            i += 1 + extra
             continue
         name, imm = info
         i += 1

@@ -157,6 +157,120 @@ def test_il_switch_opcode_at_eof_is_partial() -> None:
     assert partial is True
 
 
+def test_il_unnamed_operand_opcode_is_skipped_not_walked_as_code() -> None:
+    """A known opcode outside the named subset must still skip its operand.
+
+    The decoder names only a subset of opcodes but has to advance by the full
+    instruction length for every one it meets. ldc.i8 (0x21) is unnamed and
+    carries an eight-byte immediate; stepping a single byte past it walked those
+    eight bytes as instructions, so a ``0x28`` inside the constant surfaced in
+    call_tokens as a call the method never makes -- and partial stayed false.
+    """
+    il = (
+        bytes([0x21])
+        + (0).to_bytes(3, "little")
+        + bytes([0x28])  # a call opcode byte inside the ldc.i8 immediate
+        + (0xDEADBEEF).to_bytes(4, "little")
+        + bytes([0x2A])  # ret, at the real continuation offset 9
+    )
+
+    instructions, partial = _disassemble_il(il, max_insns=32)
+
+    assert [(insn["mnemonic"], insn["ip"]) for insn in instructions] == [
+        ("op_21", 0),
+        ("ret", 9),
+    ]
+    assert partial is False
+    harvested = [
+        insn["operand"]
+        for insn in instructions
+        if insn["mnemonic"] in {"call", "callvirt", "newobj"}
+    ]
+    assert harvested == []
+
+
+def test_il_fe_prefixed_opcode_skips_its_operand() -> None:
+    """0xFE names a two-byte opcode; its own operand is not instructions.
+
+    Consuming only the 0xFE byte left the real opcode byte and, for ldftn
+    (0xFE 0x06) and friends, its four-byte metadata token to be decoded as code.
+    A comparison such as ceq (0xFE 0x01) also produced a bogus extra instruction
+    from the opcode byte. Both must decode as a single aligned instruction.
+    """
+    il = (
+        bytes([0xFE, 0x01])  # ceq, no operand
+        + bytes([0xFE, 0x06])
+        + (0x0A000009).to_bytes(4, "little")  # ldftn <token>
+        + bytes([0x2A])  # ret at offset 8
+    )
+
+    instructions, partial = _disassemble_il(il, max_insns=32)
+
+    assert [(insn["mnemonic"], insn["ip"]) for insn in instructions] == [
+        ("fe_01", 0),
+        ("fe_06", 2),
+        ("ret", 8),
+    ]
+    assert partial is False
+    harvested = [
+        insn["operand"]
+        for insn in instructions
+        if insn["mnemonic"] in {"call", "callvirt", "newobj"}
+    ]
+    assert harvested == []
+
+
+def test_il_stays_aligned_across_every_operand_size_class() -> None:
+    """Mixed operand widths must all advance correctly for the stream to align.
+
+    A sentinel ``ret`` is placed at a known offset after one opcode from each
+    size class (1/4/8-byte single-byte, 0xFE two-byte, and switch). If any
+    advance is wrong the sentinel is decoded at the wrong place or as garbage,
+    and only the three genuine calls may appear in call_tokens.
+    """
+    body = bytearray()
+    ips: list[int] = []
+
+    def emit(chunk: bytes) -> None:
+        ips.append(len(body))
+        body.extend(chunk)
+
+    emit(bytes([0x0E, 0x02]))  # ldarg.s (unnamed, 1)
+    emit(bytes([0x21]) + (7).to_bytes(8, "little"))  # ldc.i8 (unnamed, 8)
+    emit(bytes([0x23]) + (0).to_bytes(8, "little"))  # ldc.r8 (unnamed, 8)
+    emit(bytes([0x3B]) + (4).to_bytes(4, "little", signed=True))  # beq (unnamed, 4)
+    emit(bytes([0x28]) + (0x0A000001).to_bytes(4, "little"))  # call (named, 4)
+    emit(bytes([0x73]) + (0x06000002).to_bytes(4, "little"))  # newobj (named, 4)
+    emit(bytes([0xD0]) + (0x04000003).to_bytes(4, "little"))  # ldtoken (unnamed, 4)
+    emit(bytes([0xFE, 0x06]) + (0x0A000004).to_bytes(4, "little"))  # ldftn (fe, 4)
+    emit(bytes([0xFE, 0x09]) + (1).to_bytes(2, "little"))  # ldarg (fe, 2)
+    emit(bytes([0x45]) + (1).to_bytes(4, "little") + (0).to_bytes(4, "little", signed=True))
+    ret_ip = len(body)
+    body.extend(bytes([0x2A]))  # ret sentinel
+
+    instructions, partial = _disassemble_il(bytes(body), max_insns=200)
+
+    assert partial is False
+    assert [insn["ip"] for insn in instructions] == [*ips, ret_ip]
+    assert instructions[-1]["mnemonic"] == "ret"
+    calls = [
+        insn["operand"]
+        for insn in instructions
+        if insn["mnemonic"] in {"call", "callvirt", "newobj"}
+    ]
+    assert calls == [0x0A000001, 0x06000002]
+
+
+def test_il_truncated_unnamed_operand_is_reported_partial() -> None:
+    """An unnamed opcode whose operand runs off the buffer is not complete."""
+    il = bytes([0x21]) + (0).to_bytes(4, "little")  # ldc.i8 with only 4 of 8 bytes
+
+    instructions, partial = _disassemble_il(il, max_insns=32)
+
+    assert [(insn["mnemonic"], insn["operand"]) for insn in instructions] == [("op_21", None)]
+    assert partial is True
+
+
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     binary = tmp_path / "empty_tables.exe"
     _write_minimal_clr(binary)
