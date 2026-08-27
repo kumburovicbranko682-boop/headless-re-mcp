@@ -230,12 +230,52 @@ def test_strip_secrets_covers_the_full_credential_vocabulary() -> None:
         "PrivateKey": "-----BEGIN-----",
         "access_key": "AKIA",
         "AccessKey": "AKIA",
+        # The agent's provider->key map: masked by the redaction module (its own
+        # literal, plus the ``apikey`` substring), so the exact-key stripper must
+        # list it too, or it survives a copy-pasted bundle. Both spellings.
+        "providerApiKeys": {"openai": "sk-live"},
+        "provider_api_keys": {"openai": "sk-live"},
         # A near-miss that must still survive the exact-key rule.
         "credentials_checked": 2,
     }
     cleaned = _strip_secrets(payload)
 
     assert cleaned == {"credentials_checked": 2}
+
+
+def test_strip_secrets_matches_the_structured_redactor_vocabulary() -> None:
+    """Pin the documented invariant: every key redaction hides, this hides too.
+
+    The relationship is one-directional. config_generate may hide *more* than
+    the redaction module (it also drops ``ida_license`` / ``rpc_token``, which
+    the general redactor does not know), but it must never hide *less*, or a
+    credential the redaction module masks everywhere else survives in a
+    copy-pasted config bundle. Drive each of the structured module's own
+    credential words -- crucially the substring redactor and this exact-key set
+    agree that ``providerApiKeys`` is one -- through the stripper and require
+    they all vanish, so a future addition to redaction.py that this set forgets
+    is caught here rather than in a leaked bundle.
+    """
+    from headless_re_mcp.config_generate import _strip_secrets
+    from headless_re_mcp.redaction import is_secret_key
+
+    structured_words = [
+        "api_key",
+        "private_key",
+        "access_key",
+        "authorization",
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "providerApiKeys",
+    ]
+    # Guard the premise: each word is what the structured redactor calls secret.
+    for word in structured_words:
+        assert is_secret_key(word)
+    payload = {word: "x" for word in structured_words}
+    assert _strip_secrets(payload) == {}
 
 
 def _poisoned_report(*, ready: bool):
