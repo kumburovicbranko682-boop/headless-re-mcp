@@ -14,6 +14,8 @@ a session is funnelled onto that session's own thread -- see ``_Runner``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import queue
 import threading
@@ -146,6 +148,40 @@ def _spill_text(
         )
     preview = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
     return preview, out, True
+
+
+def _spill_bytes(
+    payload: bytes,
+    *,
+    artifact_dir: Path,
+    filename: str,
+    kind: str,
+) -> tuple[int, Path]:
+    """Write a binary blob (e.g. a Wasm module) to the session artifact dir.
+
+    Binary payloads are never inlined -- they always land in a file so a tool
+    like ``wasm.wat`` can read them back. Refuses past the capture cap.
+    """
+    size = len(payload)
+    if size > UNREGISTERED_CAPTURE_MAX_BYTES:
+        raise WebError(
+            "too_large",
+            f"{kind} exceeds capture cap",
+            size=size,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+    ):
+        raise WebError("invalid_params", f"invalid {kind} artifact filename")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    out = artifact_dir / filename
+    out.write_bytes(payload)
+    return size, out
 
 
 class _Runner:
@@ -656,6 +692,26 @@ class WebBackend:
         }
         if spill is not None:
             result["source_path"] = str(spill)
+        # A WebAssembly module returns its bytes in ``bytecode`` (base64), not
+        # ``scriptSource`` (which is empty for Wasm). Without this, listing a
+        # Wasm module over web.wasm.list gave no way to get the bytes for the
+        # wasm.* tools. Spill the module so it can be analysed offline.
+        bytecode = resp.get("bytecode")
+        if isinstance(bytecode, str) and bytecode:
+            try:
+                raw = base64.b64decode(bytecode, validate=True)
+            except (ValueError, binascii.Error):
+                raw = b""
+            if raw:
+                wasm_size, wasm_out = _spill_bytes(
+                    raw,
+                    artifact_dir=artifact_dir,
+                    filename=f"module-{uuid4().hex}.wasm",
+                    kind="wasm module",
+                )
+                result["is_wasm"] = True
+                result["wasm_bytes"] = wasm_size
+                result["wasm_path"] = str(wasm_out)
         return result
 
     def dom_snapshot(self, session_id: str) -> JsonObject:

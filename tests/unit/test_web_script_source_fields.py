@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -68,3 +69,41 @@ def test_web_script_source_names_source_and_says_when_it_was_cut(
     assert "source" in doc
     assert "truncated" in doc
     assert "source_path" in doc
+
+
+_WASM_BYTES = b"\x00asm\x01\x00\x00\x00\x01\x04\x01\x60\x00\x00"
+
+
+class _CdpWasm:
+    """CDP getScriptSource for a Wasm script: empty source, base64 bytecode."""
+
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, str]:
+        return {
+            "scriptSource": "",
+            "bytecode": base64.b64encode(_WASM_BYTES).decode("ascii"),
+        }
+
+
+def test_web_script_source_pulls_the_wasm_bytecode(tmp_path: Path, monkeypatch: Any) -> None:
+    """A Wasm script returns its bytes in bytecode, not scriptSource.
+
+    Chromium leaves scriptSource empty for Wasm and puts the module in the
+    bytecode field, which the client dropped -- so a listed Wasm module had no
+    retrievable bytes. Assert the module now lands as an is_wasm payload with a
+    wasm_path file that is byte-identical to what CDP returned.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(cdp=_CdpWasm()))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.script_source("s", "7", tmp_path)
+    assert payload["is_wasm"] is True
+    assert payload["source"] == ""
+    assert payload["wasm_bytes"] == len(_WASM_BYTES)
+    assert "wasm_path" in payload
+    wasm_file = Path(str(payload["wasm_path"]))
+    assert wasm_file.is_file()
+    assert wasm_file.read_bytes() == _WASM_BYTES
+    assert wasm_file.suffix == ".wasm"
+    # A plain JS script must not grow wasm fields.
+    doc = _tool_docstring("web.script.source")
+    assert "wasm_path" in doc

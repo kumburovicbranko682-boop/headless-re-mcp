@@ -198,6 +198,16 @@ class WebAnalysisMixin:
                     source="web.script.source",
                     payload=data,
                 )
+            wasm_spill = data.get("wasm_path")
+            if isinstance(wasm_spill, str):
+                data = _register_capture(
+                    self,
+                    session_id,
+                    Path(wasm_spill),
+                    kind="web_wasm_module",
+                    source="web.script.source",
+                    payload=data,
+                )
             return _success(data, session_id=session_id, backend="web")
         except WebError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)

@@ -7,6 +7,7 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import time
@@ -98,6 +99,48 @@ _WASM_PAGE = (
     b"WebAssembly.instantiate(bytes).then(() => console.log('wasm-ready'));"
     b"</script></head><body>wasm</body></html>"
 )
+
+# A real module exporting add(i32,i32)->i32, so the bytes pulled back out of the
+# live page disassemble to something an analyst can read (a func and an export),
+# not just a header. Hand-assembled: type, function, export and code sections.
+_WASM_ADD_MODULE = (
+    b"\x00asm\x01\x00\x00\x00"  # magic + version
+    b"\x01\x07\x01\x60\x02\x7f\x7f\x01\x7f"  # type: (i32,i32)->i32
+    b"\x03\x02\x01\x00"  # function: one func, type 0
+    b"\x07\x07\x01\x03add\x00\x00"  # export "add" = func 0
+    b"\x0a\x09\x01\x07\x00\x20\x00\x20\x01\x6a\x0b"  # code: local.get 0/1, i32.add
+)
+_WASM_ADD_B64 = base64.b64encode(_WASM_ADD_MODULE).decode("ascii")
+_WASM_EXTRACT_PAGE = (
+    b"<!doctype html><html><head><title>wasm-extract</title><script>"
+    b"const bytes = Uint8Array.from(atob('" + _WASM_ADD_B64.encode("ascii") + b"'), "
+    b"c => c.charCodeAt(0));"
+    b"WebAssembly.instantiate(bytes).then(() => console.log('wasm-ready'));"
+    b"</script></head><body>wasm</body></html>"
+)
+
+
+@contextmanager
+def _wasm_extract_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(_WASM_EXTRACT_PAGE)))
+            self.end_headers()
+            self.wfile.write(_WASM_EXTRACT_PAGE)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
 
 
 @contextmanager
@@ -349,6 +392,67 @@ def test_web_cdp_lists_a_wasm_module_in_the_page() -> None:
             everything = service.web_scripts(session_id)
             assert everything.ok, everything.error
             assert everything.data["total"] > listing["total"]
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
+def test_web_cdp_extracts_wasm_bytecode_for_offline_analysis() -> None:
+    """web.wasm.list found modules but there was no way to get their bytes.
+
+    Chromium returns a Wasm module's bytes in getScriptSource's ``bytecode``
+    field (``scriptSource`` is empty for Wasm), which the client used to drop --
+    so the live-page-to-wasm.* pipeline was broken end to end. Drive a page with
+    a real add() module, pull the bytes back through web.script.source, and
+    assert they are byte-identical to what the page instantiated, land in a
+    registered .wasm artifact, and (when wabt is present) disassemble to a module
+    whose exported function is visible.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web WASM extract Gate not run (skip != pass)")
+    with _wasm_extract_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            def _wasm_script() -> dict[str, Any] | None:
+                listing = service.web_wasm_list(session_id)
+                assert listing.ok, listing.error
+                for script in listing.data["scripts"]:
+                    if str(script.get("language", "")).lower() == "webassembly":
+                        return script
+                return None
+
+            wasm_script = _poll(_wasm_script)
+            assert wasm_script is not None, "no WebAssembly script was reported over CDP"
+
+            source = service.web_script_source(session_id, wasm_script["scriptId"])
+            assert source.ok, source.error
+            data = source.data
+            assert data.get("is_wasm") is True, "the wasm module was not recognised"
+            assert data["wasm_bytes"] == len(_WASM_ADD_MODULE)
+            assert data.get("artifact_id"), "the wasm module was not registered as a capture"
+            wasm_path = Path(data["wasm_path"])
+            assert wasm_path.is_file()
+            raw = wasm_path.read_bytes()
+            assert raw == _WASM_ADD_MODULE, "the extracted bytes are not the module the page ran"
+
+            # The whole point is offline analysis: feed the pulled bytes to the
+            # wasm.* line and confirm it decodes to a readable module.
+            if WasmClient().available:
+                wat = service.wasm_wat(str(wasm_path))
+                assert wat.ok, wat.error
+                assert "module" in wat.data["wat"]
+                assert "func" in wat.data["wat"]
         finally:
             service.close_all()
 

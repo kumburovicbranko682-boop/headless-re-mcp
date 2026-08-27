@@ -134,6 +134,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         source_path when the text was cut at the buffer. There is no code
         or text field. A source over the capture cap is refused rather
         than written to disk.
+
+        For a WebAssembly module (a scriptId from web.wasm.list) source is
+        empty -- the bytes come back as is_wasm true, wasm_bytes and a
+        wasm_path .wasm artifact you can hand to wasm.wat / wasm.info for
+        offline analysis.
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 

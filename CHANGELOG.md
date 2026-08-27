@@ -236,6 +236,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   两条摘要列表也各加 `has_request_body` 提示：`proxy.flows` 按 `request.raw_content` 是否非空标记，
   `web.network.list` 沿用 CDP 的 `requestWillBeSent`——扫一眼列表即可把 `flow.get`/`network.get` 指向
   真正带请求体的那几条，不必逐个打开。
+- **页面里的 WebAssembly 模块列得出、却取不到字节**。`web.wasm.list` 能报出页面加载的 wasm 模块（scriptId、
+  `wasm://` url），但唯一取内容的 `web.script.source` 只读 CDP `getScriptSource` 的 `scriptSource`——而对 wasm
+  该字段恒为空，模块字节其实在 `bytecode`（base64）里，代码整份丢弃。结果「实时页面发现 wasm → 交给 `wasm.*`
+  离线分析」这条链整条断了：列得到、却拿不到 `.wasm` 喂给 `wasm.wat`/`wasm.info`。现在 `web.script.source` 命中
+  wasm 时解出 `bytecode`、落一个 `.wasm` 产物并登记为可下载捕获，返回 `is_wasm`、`wasm_bytes` 与 `wasm_path`
+  （超捕获上限则拒绝）。活体门用一个真的 `add(i32,i32)->i32` 模块跑通：`web.wasm.list` 找到它、`web.script.source`
+  取回与页面实际实例化**逐字节一致**的字节、并在装了 wabt 时把 `wasm_path` 喂给 `wasm.wat` 反汇编出可读模块
+  （缺浏览器 / wabt 时 skip≠pass）；另加不依赖浏览器的单测用 mock 的 CDP `bytecode` 锁住该行为。
 - **HTTPS 抓包对自签/私有 CA/固定证书的上游无法解密，且失败时静默**。MITM 代理的核心价值就是解密 TLS，
   但 `proxy.start` 不暴露任何上游 TLS 选项，mitmproxy 默认要校验上游证书——而本工具面向的 App、
   移动端与自建/测试服务器几乎清一色用自签或私有 CA 证书。实测这类上游会被判 502、且**整条 flow 都不记录**
