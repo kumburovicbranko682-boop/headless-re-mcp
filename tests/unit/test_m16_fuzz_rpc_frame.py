@@ -69,3 +69,25 @@ def test_json_roundtrip_via_stdlib() -> None:
     frame = len(raw.encode()).to_bytes(4, "little") + raw.encode()
     parsed = parse_rpc_frame(frame)
     validate_rpc_envelope(parsed, request_id="9")
+
+
+@pytest.mark.parametrize(
+    ("envelope", "message"),
+    [
+        ({"protocol": "other"}, "protocol mismatch"),
+        ({"protocol": "headless-re-xdbg", "version": 2}, "version mismatch"),
+        (
+            {"protocol": "headless-re-xdbg", "version": 1, "id": "other", "ok": True},
+            "id mismatch",
+        ),
+        (
+            {"protocol": "headless-re-xdbg", "version": 1, "id": "9", "ok": "yes"},
+            "ok must be boolean",
+        ),
+    ],
+)
+def test_envelope_validation_rejects_each_mismatch(
+    envelope: dict[str, object], message: str
+) -> None:
+    with pytest.raises(XdbgRpcError, match=message):
+        validate_rpc_envelope(envelope, request_id="9")
