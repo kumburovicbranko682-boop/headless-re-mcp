@@ -330,13 +330,19 @@ def _bounded_ws_messages(flow: Any) -> tuple[list[JsonObject], int, bool]:
     handing the whole list back would be unbounded. The first ``_MAX_WS_MESSAGES``
     frames are returned in order -- the start of a socket carries the auth /
     subscribe handshake an analyst most wants -- each with ``from_client`` and the
-    decoded ``size``; a short valid-UTF-8 frame also carries ``text``. A short
-    binary frame carries ``base64`` -- the actual bytes, base64-encoded -- so a
-    binary WebSocket protocol (protobuf, msgpack, a game's wire format) is
-    reverse-engineerable rather than a dead end; only an oversized frame reports
-    ``omitted`` ("too_large"), since inlining it would break the byte bound.
-    ``truncated`` is set when more frames existed than were returned so a reader
-    never mistakes the slice for the whole conversation.
+    decoded ``size`` and, when mitmproxy recorded it, the wall-clock ``time``
+    the frame crossed (so an analyst can read heartbeat intervals and
+    request/response latency, and it maps to Chrome's per-frame ``time``). A
+    text frame carries ``text``; a binary frame carries ``base64`` -- the actual
+    bytes, base64-encoded -- so a binary WebSocket protocol (protobuf, msgpack,
+    a game's wire format) is reverse-engineerable rather than a dead end. Text
+    vs binary is taken from the frame's real opcode (``frame.type``), not
+    guessed from whether the bytes happen to be valid UTF-8: a binary frame
+    carrying ASCII would otherwise be mislabeled text (and exported with the
+    wrong HAR opcode). Only an oversized frame reports ``omitted`` ("too_large"),
+    since inlining it would break the byte bound. ``truncated`` is set when more
+    frames existed than were returned so a reader never mistakes the slice for
+    the whole conversation.
     """
     ws = getattr(flow, "websocket", None)
     frames = getattr(ws, "messages", None)
@@ -353,18 +359,41 @@ def _bounded_ws_messages(flow: Any) -> tuple[list[JsonObject], int, bool]:
             "from_client": bool(getattr(frame, "from_client", False)),
             "size": len(content),
         }
+        timestamp = getattr(frame, "timestamp", None)
+        if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool):
+            entry["time"] = float(timestamp)
         if len(content) > _MAX_WS_MESSAGE_BYTES:
             entry["omitted"] = "too_large"
+        elif _ws_frame_is_binary(frame):
+            # A binary frame's bytes, kept instead of dropped: base64 under the
+            # same per-frame cap, the way CDP itself hands binary frames over,
+            # so the payload is retrievable and bounded.
+            entry["base64"] = base64.b64encode(content).decode("ascii")
         else:
+            # Text (or, for a fake frame with no opcode, unknown): keep the text
+            # when it decodes, else fall back to base64 rather than mojibake.
             try:
                 entry["text"] = content.decode("utf-8")
             except UnicodeDecodeError:
-                # Not text: keep the bytes instead of dropping them. base64
-                # under the same per-frame cap, the way CDP itself hands binary
-                # frames over, so the payload is retrievable and bounded.
                 entry["base64"] = base64.b64encode(content).decode("ascii")
         out.append(entry)
     return out, total, total > _MAX_WS_MESSAGES
+
+
+def _ws_frame_is_binary(frame: Any) -> bool:
+    """Whether a mitmproxy WebSocket frame is a binary (opcode 2) message.
+
+    mitmproxy records the real opcode on ``frame.type`` (an ``Opcode`` IntEnum,
+    TEXT=1 / BINARY=2). Trust it rather than sniffing the content: a binary
+    frame whose payload happens to be valid UTF-8 (an ASCII protobuf field, a
+    JSON string sent over a binary channel) must not be reported as text. When
+    the opcode is absent (a hand-built fake, or an exotic version) fall back to
+    the content sniff at the call site by returning False here.
+    """
+    opcode = getattr(frame, "type", None)
+    if isinstance(opcode, bool) or not isinstance(opcode, int):
+        return False
+    return int(opcode) == 2
 
 
 def _har_ws_message(frame: JsonObject) -> JsonObject:
@@ -376,10 +405,13 @@ def _har_ws_message(frame: JsonObject) -> JsonObject:
     ``base64`` maps straight to an opcode-2 entry -- the binary payload rides
     along faithfully instead of as an empty string. An oversized frame we had
     to omit has no bytes to write, so ``data`` is empty; its opcode is unknown
-    (we never decoded it) and defaults to 1. No ``time`` is emitted because the
-    capture records no per-frame timestamp.
+    (we never decoded it) and defaults to 1. ``time`` (the frame's wall-clock
+    timestamp, Chrome's per-frame field) rides along when the capture recorded
+    it.
     """
     entry: JsonObject = {"type": "send" if frame.get("from_client") else "receive"}
+    if "time" in frame:
+        entry["time"] = frame["time"]
     if "base64" in frame:
         entry["opcode"] = 2
         entry["data"] = frame["base64"]

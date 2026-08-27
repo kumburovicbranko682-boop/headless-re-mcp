@@ -38,8 +38,21 @@ def _handshake_flow(flow_id: str) -> SimpleNamespace:
     )
 
 
-def _frame(content: bytes, *, from_client: bool) -> SimpleNamespace:
-    return SimpleNamespace(from_client=from_client, content=content)
+def _frame(
+    content: bytes,
+    *,
+    from_client: bool,
+    opcode: int | None = None,
+    timestamp: float | None = None,
+) -> SimpleNamespace:
+    # mitmproxy frames carry the real opcode (type) and a wall-clock timestamp;
+    # tests that care pass them, others leave them off to mimic a bare fake.
+    ns = SimpleNamespace(from_client=from_client, content=content)
+    if opcode is not None:
+        ns.type = opcode
+    if timestamp is not None:
+        ns.timestamp = timestamp
+    return ns
 
 
 def test_recorder_rolls_frame_count_and_bytes_onto_the_101_row() -> None:
@@ -179,6 +192,47 @@ def test_flow_get_returns_bounded_frames_with_text_and_omitted_flags(
     assert msgs[2]["size"] == len(binary)
     # Only a frame past the per-frame cap is dropped.
     assert msgs[3]["omitted"] == "too_large" and msgs[3]["size"] == 20000
+
+
+def test_flow_get_classifies_binary_by_opcode_not_by_content(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # A binary frame (opcode 2) whose bytes are valid ASCII must be reported as
+    # binary (base64), not as text -- the real opcode is authoritative, the
+    # UTF-8 sniff is not. A text frame (opcode 1) stays text.
+    request = SimpleNamespace(method="GET", pretty_url="ws://x/chat", headers={}, raw_content=None)
+    response = SimpleNamespace(status_code=101, headers={}, raw_content=None)
+    ascii_bytes = b"plain-ascii-but-binary"
+    frames = [
+        _frame(b"hi there", from_client=True, opcode=1),  # real text frame
+        _frame(ascii_bytes, from_client=False, opcode=2),  # binary carrying ASCII
+    ]
+    flow = SimpleNamespace(
+        request=request, response=response, websocket=SimpleNamespace(messages=frames)
+    )
+    backend = _backend_with_flow(monkeypatch, flow)
+
+    msgs = backend.flow_get("s", "ws1", tmp_path)["websocket_messages"]
+    assert msgs[0]["text"] == "hi there" and "base64" not in msgs[0]
+    assert "text" not in msgs[1], msgs[1]
+    assert base64.b64decode(msgs[1]["base64"]) == ascii_bytes
+
+
+def test_flow_get_carries_per_frame_timestamps(tmp_path: Path, monkeypatch: Any) -> None:
+    request = SimpleNamespace(method="GET", pretty_url="ws://x/chat", headers={}, raw_content=None)
+    response = SimpleNamespace(status_code=101, headers={}, raw_content=None)
+    frames = [
+        _frame(b"one", from_client=True, opcode=1, timestamp=1000.5),
+        _frame(b"two", from_client=False, opcode=1, timestamp=1001.25),
+    ]
+    flow = SimpleNamespace(
+        request=request, response=response, websocket=SimpleNamespace(messages=frames)
+    )
+    backend = _backend_with_flow(monkeypatch, flow)
+
+    msgs = backend.flow_get("s", "ws1", tmp_path)["websocket_messages"]
+    assert msgs[0]["time"] == 1000.5
+    assert msgs[1]["time"] == 1001.25
 
 
 def test_flow_get_truncates_a_flood_of_frames_and_says_so(
@@ -328,3 +382,55 @@ def test_export_har_carries_ws_frames_as_websocketmessages(
         {"type": "receive", "opcode": 1, "data": '{"tick":1}'},
         {"type": "receive", "opcode": 2, "data": base64.b64encode(binary).decode("ascii")},
     ]
+
+
+def test_export_har_carries_per_frame_time_and_real_opcode(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # A binary frame with ASCII bytes plus a timestamp: the HAR entry must show
+    # opcode 2 (from the real opcode, not a UTF-8 guess) and the frame's time.
+    ascii_bytes = b"ascii-over-binary"
+    ws_flow = SimpleNamespace(
+        websocket=SimpleNamespace(
+            messages=[
+                _frame(b"hello", from_client=True, opcode=1, timestamp=2000.0),
+                _frame(ascii_bytes, from_client=False, opcode=2, timestamp=2000.5),
+            ]
+        )
+    )
+    summaries = [
+        {
+            "id": "ws1",
+            "method": "GET",
+            "url": "ws://x/chat",
+            "status": 101,
+            "content_type": "",
+            "response_size": 0,
+            "websocket": True,
+            "ws_messages": 2,
+            "ws_bytes": len(ascii_bytes) + 5,
+        }
+    ]
+
+    class _Recorder:
+        def snapshot(self) -> list[dict[str, Any]]:
+            return summaries
+
+        def raw(self, flow_id: str) -> Any:
+            return ws_flow if flow_id == "ws1" else None
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+
+    frames = json.loads(out.read_text(encoding="utf-8"))["log"]["entries"][0][
+        "_webSocketMessages"
+    ]
+    assert frames[0] == {"type": "send", "time": 2000.0, "opcode": 1, "data": "hello"}
+    assert frames[1]["type"] == "receive"
+    assert frames[1]["time"] == 2000.5
+    assert frames[1]["opcode"] == 2
+    assert base64.b64decode(frames[1]["data"]) == ascii_bytes

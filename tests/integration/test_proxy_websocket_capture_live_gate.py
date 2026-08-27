@@ -17,7 +17,9 @@ non-UTF-8 bytes is exchanged too, and the gate asserts it comes back
 retrievable as base64 (not a dead "omitted") through both flow.get and the
 HAR -- a binary WebSocket protocol is what an RE session most needs to read.
 proxy.export_har carries those frames as Chrome DevTools' _webSocketMessages
-array (binary data base64, opcode 2) rather than leaving a bare 101 entry.
+array (binary data base64, opcode 2, with each frame's wall-clock time)
+rather than leaving a bare 101 entry. Frames are classified text vs binary by
+their real opcode, and each carries the timestamp it crossed.
 The client then closes with a distinctive 1001
 "going away", and the gate asserts the close lands on the row (ws_closed,
 ws_close_code, ws_closed_by_client) and in flow.get -- how a socket ended is an
@@ -166,6 +168,11 @@ def test_proxy_captures_websocket_frames_both_directions(tmp_path: Path) -> None
         }
         assert _BINARY_FRAME in blobs, blobs
         assert b"echo:" + _BINARY_FRAME in blobs, blobs
+        # Every captured frame carries a wall-clock timestamp, and they run
+        # forward -- what an analyst reads heartbeat/latency timing from.
+        times = [m["time"] for m in msgs]
+        assert all(isinstance(t, float) and t > 0 for t in times), times
+        assert times == sorted(times), times
         assert detail["websocket_closed"] is True
         assert detail["websocket_close_code"] == 1001
         assert detail["websocket_closed_by_client"] is True
@@ -184,11 +191,15 @@ def test_proxy_captures_websocket_frames_both_directions(tmp_path: Path) -> None
         assert ("send", "hello") in pairs, pairs
         assert ("receive", "echo:hello") in pairs, pairs
         # Chrome's format stores a binary frame's payload base64 in data with
-        # opcode 2, so the binary payload survives the HAR round-trip too.
+        # opcode 2, so the binary payload survives the HAR round-trip too. The
+        # binary frames are classified by their real opcode, so a binary frame
+        # is opcode 2 even though its echo ("echo:" + bytes) starts with ASCII.
         har_blobs = {
             base64.b64decode(m["data"]) for m in frames if m.get("opcode") == 2 and m.get("data")
         }
         assert _BINARY_FRAME in har_blobs, har_blobs
         assert b"echo:" + _BINARY_FRAME in har_blobs, har_blobs
+        # Every HAR frame carries Chrome's per-frame time.
+        assert all(isinstance(m.get("time"), float) for m in frames), frames
     finally:
         backend.stop("ws-gate")

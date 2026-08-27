@@ -93,6 +93,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   对二进制帧的表示，故此举比先前写空串更贴合格式，也让 HAR 里二进制会话可还原。文本帧仍走 `text`。
   live gate 现在额外互发一条含非 UTF-8 字节的二进制帧，断言其经真实 mitmproxy 往返后在 flow.get
   与导出 HAR 里都能按 base64 完整取回（客户端原始字节与源端回显各一，4/4 稳定通过）。
+  再修一处帧分类错误并补上逐帧时间：此前文本/二进制是靠"内容能否按 UTF-8 解码"来猜的，可 mitmproxy
+  在 `frame.type` 上记着真实 opcode（TEXT=1/BINARY=2）——一条负载恰为 ASCII 的二进制帧（如字段为
+  ASCII 的 protobuf、走二进制通道的 JSON 字符串）会被误判成文本、导出的 HAR opcode 也随之写错。现改为
+  以 `frame.type` 为准（缺失时才回退到内容嗅探），二进制帧一律走 base64/opcode 2。同时 mitmproxy 在每帧
+  记有墙钟 `timestamp`，此前整个丢弃；现每帧带 `time`（flow.get 与 HAR 皆然），正是 Chrome
+  `_webSocketMessages` 的逐帧字段，让分析者能读心跳间隔与请求/响应延迟。单测新增：ASCII 二进制帧按
+  opcode 判为 base64、逐帧 time 透传、HAR 条目带真实 opcode 与 time；live gate 额外断言所有帧带正向递增的
+  墙钟 time、且二进制帧即便回显以 ASCII 开头仍按 opcode 2 分类。
 
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
