@@ -576,7 +576,7 @@ class AdbBackend:
         char_truncated = len(text) > _MAX_LOGCAT_CHARS
         if char_truncated:
             text = text[-_MAX_LOGCAT_CHARS:]
-        lines = text.splitlines()[-capped:]
+        rows = text.splitlines()[-capped:]
         # Bound the line list by its JSON-encoded size too, not just the joined
         # 200k-char cap: logcat lines carry quotes/backslashes/control chars that
         # inflate when encoded, and the array's own quoting and commas add to
@@ -586,11 +586,11 @@ class AdbBackend:
         # the reversed list (fit_json_list keeps a leading run) and restore
         # order.
         kept_recent, _dropped_old, budget_cut = fit_json_list(
-            list(reversed(lines)), reserve=_LIST_FIELD_RESERVE
+            list(reversed(rows)), reserve=_LIST_FIELD_RESERVE
         )
-        lines = list(reversed(kept_recent))
+        rows = list(reversed(kept_recent))
         return {
-            "lines": lines,
+            "lines": rows,
             "requested": capped,
             "truncated": char_truncated or budget_cut,
         }
