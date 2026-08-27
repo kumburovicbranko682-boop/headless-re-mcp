@@ -51,6 +51,13 @@ describe("agent reducer", () => {
     expect(state.error).toContain("\u4e0d\u662f\u81ea\u5df1\u4e0b\u73ed");
   });
 
+  it("tells the operator a rejected write stopped the round", () => {
+    let state = reducer(initialState, { type: "run", runId: "r", userMessage: "go" });
+    state = reducer(state, { type: "event", event: { run_id: "r", seq: 1, type: "run.rejected", data: {}, created_at: "" } });
+    expect(state.activeRun).toBeNull();
+    expect(state.error).toBe("\u5199\u64cd\u4f5c\u88ab\u62d2\u7edd\uff0c\u672c\u8f6e\u5df2\u505c");
+  });
+
   it("does not present a spent tool-round budget as a crash", () => {
     let state = reducer(initialState, { type: "run", runId: "r", userMessage: "go" });
     state = reducer(state, {
