@@ -35,7 +35,18 @@ def _this_process() -> Any:
     except ImportError:
         return None
     process = psutil.Process()
-    return process if hasattr(process, "num_handles") else None
+    # Windows counts OS handles; POSIX counts file descriptors. The console
+    # object leak this test guards would grow either one, so accept whichever
+    # this platform's psutil exposes rather than skipping everywhere but Windows.
+    if hasattr(process, "num_handles") or hasattr(process, "num_fds"):
+        return process
+    return None
+
+
+def _open_handle_count(process: Any) -> int:
+    """Open OS handles on Windows, or open file descriptors on POSIX."""
+    counter = getattr(process, "num_handles", None) or getattr(process, "num_fds", None)
+    return int(counter())
 
 
 def _free_port() -> int:
@@ -147,16 +158,17 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
     """Console capture used to arrive as remote objects nobody disposed.
 
     Measured before the fix on a page logging 60 lines: 120 OS handles per
-    navigation, still climbing linearly at sixty navigations, released only when
-    the browser closed -- so an overnight capture accumulated them for as long
-    as it ran. Nothing else in this wiring behaves that way, because everything
-    else takes plain CDP data.
+    navigation on Windows, still climbing linearly at sixty navigations,
+    released only when the browser closed -- so an overnight capture accumulated
+    them for as long as it ran. The same leak grows file descriptors on POSIX
+    (measured zero growth on Linux once fixed). Nothing else in this wiring
+    behaves that way, because everything else takes plain CDP data.
     """
     if not _playwright_available():
         pytest.skip("playwright not installed — browser lifecycle Gate not run (skip != pass)")
     process = _this_process()
     if process is None:
-        pytest.skip("handle counts are not available here (skip != pass)")
+        pytest.skip("handle/fd counts are not available here (skip != pass)")
 
     backend = WebBackend()
     try:
@@ -167,16 +179,16 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
 
         for _ in range(5):
             backend.navigate("loud", _LOUD)
-        settled = process.num_handles()
+        settled = _open_handle_count(process)
         for _ in range(20):
             backend.navigate("loud", _LOUD)
-        after = process.num_handles()
+        after = _open_handle_count(process)
 
         captured = backend.console("loud", limit=500)
         assert captured["count"] > 0, "the console must still be captured"
         assert any("line " in str(item.get("text")) for item in captured["console"])
-        # A few handles of ordinary churn are fine; per-navigation growth is not.
-        assert after - settled < 100, f"handles grew by {after - settled} over 20 navigations"
+        # A few of ordinary churn are fine; per-navigation growth is not.
+        assert after - settled < 100, f"handles/fds grew by {after - settled} over 20 navigations"
     finally:
         backend.close_all()
 
