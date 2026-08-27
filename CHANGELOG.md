@@ -267,6 +267,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 同一文件补 `proxy.replay` 活体覆盖(此前无):捕获一条 GET 后 replay 它,不只信 `replayed=True`
   信封——用计数版 origin 证明重放**真的再次打到源站**(命中数 1→2)、代理也随之记成第二条 flow。
   再钉死 replay 未知 flow id 得结构化 `not_found`。仅当 mitmproxy 缺失时 skip。
+- 同一文件补拦截 CA Gate:HTTPS 拦截与 `proxy.ca_install_android`(把该证书推到设备)全都建立在
+  mitmproxy 首次启动时铸的 CA 上,却从没断言它真被生成、真合法。新 Gate 启代理后轮询 `ca_cert_path`
+  拿到证书文件,断言它解析成自签 X.509 CA(`BasicConstraints CA=True`、issuer==subject)——把整条
+  HTTPS 拦截/设备装证的地基钉在真实产物上,无需设备。仅当 mitmproxy 缺失时 skip。
 - Android 静态线新增**活体** androguard Gate:此前所有 Android 断言都跑在合成包上,而它的 manifest
   不是合法 AXML,androguard 只可能被走到失败路径。新增手工编码的最小**合法**二进制 AndroidManifest
   (纯 stdlib `struct`+`zipfile`,不需要 Android SDK/aapt),现造一个 androguard 真能解析的 APK,断言

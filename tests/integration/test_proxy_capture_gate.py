@@ -227,3 +227,38 @@ def test_proxy_replay_rejects_an_unknown_id() -> None:
         assert info.value.code == "not_found"
     finally:
         backend.stop("noreplay")
+
+
+@pytest.mark.integration
+def test_proxy_generates_a_valid_interception_ca() -> None:
+    """The CA the proxy would install on a device is real and well-formed.
+
+    HTTPS interception -- and proxy.ca_install_android, which pushes this file to
+    a device -- rests entirely on the CA mitmproxy mints on first start. Nothing
+    asserted it is actually generated or valid. Start the proxy, then assert
+    ca_cert_path finds a file that parses as a self-signed X.509 CA
+    (BasicConstraints CA=True). No device needed; mitmproxy pulls in cryptography
+    so parsing is always available when the proxy backend is.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy CA Gate not run (skip != pass)")
+    from cryptography import x509
+
+    backend = ProxyBackend()
+    backend.start("ca", host="127.0.0.1", port=_free_port())
+    try:
+        ca_path = None
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            ca_path = backend.ca_cert_path()
+            if ca_path is not None:
+                break
+            time.sleep(0.1)
+        assert ca_path is not None, "proxy start did not materialise a CA certificate"
+        assert ca_path.is_file()
+        cert = x509.load_pem_x509_certificate(ca_path.read_bytes())
+        basic = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        assert basic.ca is True
+        assert cert.issuer == cert.subject  # a self-signed root
+    finally:
+        backend.stop("ca")
