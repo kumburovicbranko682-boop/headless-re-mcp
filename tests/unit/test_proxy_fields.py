@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
+import headless_re_mcp.backends.proxy.client as proxy_client
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOWS,
     ProxyBackend,
+    ProxyError,
     _FlowRecorder,
 )
 from headless_re_mcp.tools.proxy import build_proxy_tools
@@ -205,9 +210,10 @@ def test_proxy_export_har_names_path_and_entry_count(
 ) -> None:
     """The catalog said a HAR artifact and never named the payload.
 
-    Measured: 4 flows -> path ending capture.har, entry_count 4, no har or
-    output key. Looking for har after a successful export reads as a missing
-    capture.
+    Measured: 4 flows -> path ending capture.har, entry_count 4, truncated
+    False, size matching the file on disk, no har or output key. Looking for
+    har after a successful export reads as a missing capture, and a HAR with
+    no truncated flag reads as guaranteed-whole even when it was cut.
     """
     recorder = _FlowRecorder()
     for index in range(4):
@@ -222,11 +228,73 @@ def test_proxy_export_har_names_path_and_entry_count(
         )
     backend = ProxyBackend()
     backend._instances["s"] = SimpleNamespace(recorder=recorder)
-    payload = backend.export_har("s", tmp_path / "capture.har")
+    out = tmp_path / "capture.har"
+    payload = backend.export_har("s", out)
     assert "har" not in payload
     assert "output" not in payload
     assert payload["entry_count"] == 4
+    assert payload["truncated"] is False
+    assert payload["size"] == out.stat().st_size
     assert payload["path"].endswith("capture.har")
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+    assert "size" in doc
+    assert "truncated" in doc
+
+
+def test_proxy_export_har_caps_and_reports_truncation(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The count-bounded ring still serialises to a HAR nothing bounded by bytes.
+
+    Measured: cap forced to 4096 bytes, 200 flows with long URLs -> the written
+    HAR is at most the cap, truncated True, entry_count below 200, and the file
+    is still valid JSON. A HAR that quietly filled the disk is the overnight OOM
+    the count cap alone did not prevent.
+    """
+    monkeypatch.setattr(proxy_client, "UNREGISTERED_CAPTURE_MAX_BYTES", 4096)
+    recorder = _FlowRecorder()
+    for index in range(200):
+        request = SimpleNamespace(
+            method="GET", pretty_url="http://x/" + "a" * 500 + f"/{index}", host="x"
+        )
+        response = SimpleNamespace(
+            status_code=200, headers={"content-type": "text/plain"}
+        )
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+    out = tmp_path / "capture.har"
+    payload = backend.export_har("s", out)
+    assert payload["truncated"] is True
+    assert 0 < payload["entry_count"] < 200
+    assert payload["size"] <= 4096
+    assert payload["size"] == out.stat().st_size
+    parsed = json.loads(out.read_text(encoding="utf-8"))
+    assert len(parsed["log"]["entries"]) == payload["entry_count"]
+
+
+def test_proxy_export_har_refuses_when_even_empty_exceeds_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A cap below the empty-log skeleton refuses rather than writing a lie.
+
+    Measured: cap forced to 8 bytes -> too_large, and no file is left behind.
+    Writing a HAR that overflows the capture cap is exactly what the byte
+    ceiling exists to stop.
+    """
+    monkeypatch.setattr(proxy_client, "UNREGISTERED_CAPTURE_MAX_BYTES", 8)
+    recorder = _FlowRecorder()
+    request = SimpleNamespace(method="GET", pretty_url="http://x/1", host="x")
+    response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+    recorder.response(SimpleNamespace(id="1", request=request, response=response))
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+    out = tmp_path / "capture.har"
+    with pytest.raises(ProxyError) as excinfo:
+        backend.export_har("s", out)
+    assert excinfo.value.code == "too_large"
+    assert not out.exists()
