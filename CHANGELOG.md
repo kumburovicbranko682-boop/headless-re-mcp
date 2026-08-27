@@ -218,6 +218,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `artifact_root/ghidra/<id>` 建/删工程并落 `export_<mode>.json`，未经 `_is_safe_session_segment`；
   `registry.get` 虽会先挡掉伪造 id，但路径构造本身不该依赖这一顺序——现补齐与 web/proxy/apk/jadx
   一致的守卫，`.`/`..`/空/含分隔符一律 `invalid_params`。
+- **浏览器崩溃后 web 会话说谎且第一跤要摔 60 秒**。实测把 node driver 树 SIGKILL 后：
+  `web.status` 仍报 open=True 带陈旧 url（`page.url` 出自 driver 侧镜像，标题探测把错误吞掉）；
+  第一个真正触达浏览器的调用在死管道上阻塞满 60 秒 `_CALL_TIMEOUT` 才回 `timeout` 并把
+  runner 判为 wedged；`web.close` 再对着尸体走完 20 秒拆除预算。现在 driver pid 作为派发前的
+  活性门（僵尸也算死）：status 从本线程即时报 `responsive:false, exited:true`，触达调用毫秒级回
+  `invalid_state` 并指引 close/reopen，close 跳过死 driver 直接收割进程树；已捕获的
+  requests/console/scripts 缓冲在崩溃后仍可读。Chromium 死而 driver 活着的形态客户端标志永不翻转
+  （SIGKILL 整棵 chromium 树 4 秒后 `is_connected()` 仍为 True），status 本来就要做的 title
+  往返现兼作探针，`TargetClosedError` 即报 exited。
+- **Linux 上按镜像名把关的进程收割全部空转**。`process_image_path` 在非 Windows 无条件返回
+  None，`_reap_driver_pid` 于是匹配不到任何 marker：wedged 的 web 会话在 Linux 泄漏整棵
+  node driver + Chromium 树——这正是收割逻辑要防的泄漏，而既有测试 monkeypatch 了一个
+  Windows 路径把它盖住了。现补 POSIX 分支读 `/proc/<pid>/exe`，读不到仍返回 None，
+  身份把关的击杀保持失败关闭。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
