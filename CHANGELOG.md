@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.dom.snapshot` 内联 HTML 按字符截断，多字节页超出字节预算）
+
+- `_MAX_INLINE_BODY` 在别处是字节预算：`web.script.source`、`web.network.get` 都先
+  `encode("utf-8")` 再按 `len(bytes)` 截断。但 `web.dom.snapshot` 在页面内的脚本里按
+  `text.slice(0, cap)`（字符数）裁剪，随后 Python 侧的 `text[:_MAX_INLINE_BODY]` 与
+  `len(text) > _MAX_INLINE_BODY` 也都按字符计——脚本已按字符裁到上限后，字符长度再不可能
+  超过 `cap`，于是这段切片是空操作、字节溢出永远不被标记。结果对 CJK / emoji 等多字节页面，
+  内联 `html` 最多可达字节预算的约四倍，比按字节计量的兄弟读取器大出数倍，`truncated` 也不
+  会因字节超限而置位。现改为复用按字节裁剪的 `_bounded_metadata`：`html` 以 UTF-8 字节为准
+  裁到 `_MAX_INLINE_BODY`，`truncated` 在脚本字符截断或字节截断任一发生时置位。纯 ASCII
+  页面字节数等于字符数，行为不变。新增一条直测：全 3 字节字符、字符数不超上限但字节数约两倍的
+  页面，回包 `html` 的 UTF-8 字节数不超过 `_MAX_INLINE_BODY` 且 `truncated` 为真。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

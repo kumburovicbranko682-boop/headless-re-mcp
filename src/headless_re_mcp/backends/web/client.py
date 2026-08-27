@@ -773,11 +773,23 @@ class WebBackend:
                 raise WebError("backend_error", "dom snapshot returned no document")
             html = clipped.get("html")
             text = html if isinstance(html, str) else ""
+            # Bound the inline HTML by UTF-8 bytes, the way script.source and
+            # network.get measure the same _MAX_INLINE_BODY budget. The script
+            # above clips to _MAX_INLINE_BODY *characters*, which for a multi-byte
+            # page (CJK, emoji) is up to four times that many bytes, so the reply
+            # ran several times larger than the byte-metered readers for the same
+            # cap. The old Python guard looked like it byte-bounded but did not:
+            # ``text[:_MAX_INLINE_BODY]`` and ``len(text) > _MAX_INLINE_BODY``
+            # both count characters, and after the character clip above the length
+            # can never exceed the cap, so the slice was a no-op and the overflow
+            # was never flagged. Re-clip on bytes so the payload matches the other
+            # inline readers and truncated fires when the byte budget is the limit.
+            inline, byte_truncated = _bounded_metadata(text, _MAX_INLINE_BODY)
             return {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
-                "html": text[:_MAX_INLINE_BODY],
-                "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
+                "html": inline,
+                "truncated": bool(clipped.get("truncated")) or byte_truncated,
             }
 
         return self._runner(handle).call(work)
