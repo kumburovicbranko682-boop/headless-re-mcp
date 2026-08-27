@@ -138,6 +138,33 @@ def _tls_origin_server() -> Iterator[str]:
         thread.join(timeout=5.0)
 
 
+@contextmanager
+def _counting_origin_server() -> Iterator[tuple[str, dict[str, int]]]:
+    """An HTTP origin that tallies GETs, so a replay can be proven to reach it."""
+    hits = {"count": 0}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            hits["count"] += 1
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(_ORIGIN_BODY)))
+            self.end_headers()
+            self.wfile.write(_ORIGIN_BODY)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/api/thing", hits
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
 def _poll(predicate: Callable[[], Any], *, timeout: float = 10.0) -> Any:
     deadline = time.monotonic() + timeout
     found = predicate()
@@ -304,6 +331,54 @@ def test_proxy_decrypts_https_when_ssl_insecure_is_set() -> None:
             assert detail["response"]["body"] == _TLS_ORIGIN_BODY.decode("utf-8")
         finally:
             backend.stop("gate-tls")
+
+
+@pytest.mark.integration
+def test_proxy_replay_reissues_a_captured_request_to_the_origin() -> None:
+    """replay is a first-class RE move -- re-send a captured call -- with no test.
+
+    mitmproxy's replay.client command changes across versions and runs on the
+    proxy's own event loop, so "did it actually re-hit the server" was never
+    verified live. Capture one GET, replay it, and assert the origin receives a
+    second request and the replayed call is itself recorded.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy replay Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _counting_origin_server() as (origin_url, hits):
+        backend.start("gate-replay", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            with opener.open(origin_url, timeout=10) as response:
+                assert response.status == 200
+
+            flow = _poll(
+                lambda: next(
+                    (
+                        f
+                        for f in backend.flows("gate-replay")["flows"]
+                        if str(f.get("url", "")).endswith("/api/thing")
+                    ),
+                    None,
+                )
+            )
+            assert flow is not None, "the original request was never recorded"
+            assert hits["count"] == 1
+
+            result = backend.replay("gate-replay", flow["id"])
+            assert result["replayed"] is True
+            assert result["flow_id"] == flow["id"]
+
+            assert _poll(lambda: hits["count"] >= 2, timeout=10.0), (
+                "replay reported success but the origin never got the second request"
+            )
+            # the replayed request is itself intercepted, so the capture grows.
+            assert _poll(lambda: backend.flows("gate-replay")["total"] >= 2, timeout=10.0)
+        finally:
+            backend.stop("gate-replay")
 
 
 @pytest.mark.integration

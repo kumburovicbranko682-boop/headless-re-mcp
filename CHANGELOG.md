@@ -244,6 +244,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   代理照旧向客户端出示自己的 CA）：开启后客户端（信任代理 CA）拿到 200，`flow.get` 能回读代理从 TLS 流里
   解出的明文正文。`proxy.start` 返回值补上 `ssl_insecure`。新增活体门用现搓的自签 HTTPS origin 跑通整条
   解密链路（缺 mitmproxy 时 skip≠pass）。
+- **`proxy.replay` 从来没有活体门**。重放（把抓到的请求原样再发一遍——改凭据/参数复现接口是逆向的常规动作）
+  的成功标准是「上游真的又收到一次请求」，而 mitmproxy 的 `replay.client` 命令跨版本会变、又跑在代理自己的
+  事件循环上，这条一直只有「命令是否排进去」的单测、没验证过真发出去。新增 `test_proxy_replay_reissues_a_captured_request_to_the_origin`：
+  用会计数的本地 origin 抓一条 GET、重放它，断言 origin 计数从 1 涨到 2、且重放出的请求本身也被记进抓包
+  （缺 mitmproxy 时 skip≠pass）。
+- **`web.screenshot` / `web.har.export` 两个取证工具没有活体门**。二者都以 mock 挡不住的方式跨 Playwright 边界：
+  截图走 `page.screenshot()`、必须真落一个 PNG 文件并登记为可下载产物；HAR 要把会话记录的请求序列化成合法的
+  HAR 1.2 日志、含首文档与子资源。Playwright API 漂移会静默弄坏其一。新增
+  `test_web_cdp_screenshot_and_har_export`：驱动本地页面后截图（校验 PNG 魔数、`size` 与真实字节一致、
+  `artifact_id` 已登记）并导出 HAR（`entry_count>=2`、`log.version==1.2`、条目含首文档与 `/data.json` 子资源；
+  缺浏览器时 skip≠pass）。
 - **APK 静态线整条没有活体覆盖**。androguard 单测全是 mock，一旦 androguard 升级改了 API（方法被删/改名、
   manifest 解码变化），单测照过、生产才炸——正是 frida `Memory.read*` 被删那类漏检。仓库此前没有任何 APK 夹具，
   于是 `apk.open/manifest/permissions/components/certificates/native_libs` 以及 `AnalyzeAPK` 分析流水线

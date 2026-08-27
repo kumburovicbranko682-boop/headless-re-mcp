@@ -7,6 +7,7 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -242,6 +243,68 @@ def test_web_cdp_captures_network_and_script_source() -> None:
             assert posted.ok, posted.error
             assert posted.data["method"] == "POST"
             assert posted.data.get("request_body") == _LOCAL_POST_BODY
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
+def test_web_cdp_screenshot_and_har_export() -> None:
+    """The two evidence-capture tools -- screenshot and HAR -- had no live test.
+
+    Both cross the Playwright boundary in ways unit mocks can't vouch for: the
+    screenshot rides page.screenshot() and must land a real PNG file that gets
+    registered as a capture, and the HAR must serialise the session's recorded
+    requests into a valid HAR 1.2 log containing the page and its subresources.
+    A Playwright API drift would silently break either, so pin them here.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web screenshot/HAR Gate not run (skip != pass)")
+    with _local_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            # Wait for a subresource so the HAR has more than the top document.
+            def _data_seen() -> bool:
+                listing = service.web_network_list(session_id, limit=1000)
+                assert listing.ok, listing.error
+                return any(
+                    str(r.get("url", "")).endswith("/data.json")
+                    for r in listing.data["requests"]
+                )
+
+            assert _poll(_data_seen), "the /data.json subresource was never captured"
+
+            shot = service.web_screenshot(session_id)
+            assert shot.ok, shot.error
+            shot_path = Path(shot.data["path"])
+            assert shot_path.is_file(), "screenshot reported a path that is not a file"
+            raw = shot_path.read_bytes()
+            assert raw[:8] == b"\x89PNG\r\n\x1a\n", "screenshot is not a real PNG"
+            assert shot.data["size"] == len(raw) > 100
+            assert shot.data.get("artifact_id"), "the screenshot was not registered as a capture"
+
+            har = service.web_har_export(session_id)
+            assert har.ok, har.error
+            assert har.data["entry_count"] >= 2
+            log = json.loads(Path(har.data["path"]).read_text(encoding="utf-8"))["log"]
+            assert log["version"] == "1.2"
+            urls = [entry["request"]["url"] for entry in log["entries"]]
+            assert any(u.rstrip("/").endswith(str(url).rstrip("/")) or u == url for u in urls), (
+                "the HAR is missing the top document"
+            )
+            assert any(u.endswith("/data.json") for u in urls), (
+                "the HAR is missing the /data.json subresource"
+            )
         finally:
             service.close_all()
 
