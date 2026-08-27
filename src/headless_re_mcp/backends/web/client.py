@@ -1027,14 +1027,28 @@ class WebBackend:
         session_id: str,
         *,
         wasm_only: bool = False,
+        dynamic_only: bool = False,
         offset: int = 0,
         limit: int = 100,
+        url_filter: str = "",
     ) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
             values = list(handle.scripts.values())
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
+        # Runtime-generated scripts (eval / new Function / document.write) carry
+        # dynamic=True and usually a blank url, so a url_filter cannot reach them
+        # -- yet they are where a packer's unpacked payload lands. dynamic_only
+        # isolates exactly those, applied before paging so total is their count.
+        if dynamic_only:
+            values = [s for s in values if s.get("dynamic")]
+        # A case-insensitive url substring filter, applied before paging, so one
+        # script is reachable on a page that parsed hundreds instead of only by
+        # walking every page; total then reports the match count.
+        needle = url_filter.strip().lower() if isinstance(url_filter, str) else ""
+        if needle:
+            values = [s for s in values if needle in str(s.get("url", "")).lower()]
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = values[start : start + cap]

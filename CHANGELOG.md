@@ -218,6 +218,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`web.scripts` 无法只看运行时生成脚本，也不能按 URL 定位**。给它加上 `dynamic_only` 与 `url_filter`：前者只留
+  `dynamic=True` 的脚本（`eval`/`new Function`/注入 `<script>`，其 url 通常为空，正是加壳器解包后 payload 的落点，url 过滤够不着），
+  后者对 url 做大小写不敏感子串匹配；二者都在分页前应用，于是 `total` 即匹配数——在解析了成百上千脚本的页面上直接锁定目标。
 - **`web.console` 没有类型过滤，报错淹没在海量 log 里**。延续 `url_filter` 的思路，给 `web.console` 加上 `type_filter`：对条目
   `type` 做大小写不敏感的精确匹配（`error`/`warning`/`log`…），在取尾之前应用，于是能把失败（包括折叠进来的未捕获异常，其
   type 为 error）从被 log 刷屏的控制台里单独拉出来；`has_more` 随之反映更早的匹配项，`dropped` 仍为环形缓冲淘汰计数。

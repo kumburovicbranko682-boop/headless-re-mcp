@@ -147,6 +147,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         wasm_only: bool = False,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        dynamic_only: bool = False,
+        url_filter: str = "",
     ) -> dict[str, Any]:
         """List parsed scripts seen by the debugger, one page at a time.
 
@@ -159,11 +161,19 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         blank url and is flagged dynamic true -- a packer's unpacked payload
         lands there, so point web.script.source at it; length, when the engine
         reported it, is the script's character count for sizing which blank-url
-        blob to pull.
+        blob to pull. dynamic_only keeps just those runtime-generated scripts
+        (which a url_filter cannot reach, their url being blank). url_filter
+        keeps only scripts whose url contains that substring (case-insensitive);
+        both are applied before paging, so total is the match count.
         """
         return _dump(
             analysis.web_scripts(
-                session_id, wasm_only=wasm_only, offset=offset, limit=limit
+                session_id,
+                wasm_only=wasm_only,
+                offset=offset,
+                limit=limit,
+                dynamic_only=dynamic_only,
+                url_filter=url_filter,
             )
         )
 

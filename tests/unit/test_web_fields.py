@@ -485,6 +485,36 @@ def test_web_captures_headers_from_cdp_and_keeps_them_off_the_list(
     assert "response_headers" in doc
 
 
+def test_web_scripts_isolates_dynamic_and_filters_by_url(monkeypatch: Any) -> None:
+    """dynamic_only reaches the blank-url runtime blobs; url_filter finds a named one."""
+    backend = WebBackend()
+    handle = _FakeHandle(0)
+    handle.scripts = {
+        "1": {"scriptId": "1", "url": "https://x/app.js", "language": "JavaScript"},
+        "2": {
+            "scriptId": "2",
+            "url": "",
+            "language": "JavaScript",
+            "dynamic": True,
+            "length": 4096,
+        },
+        "3": {"scriptId": "3", "url": "https://x/vendor.js", "language": "JavaScript"},
+        "4": {"scriptId": "4", "url": "", "language": "JavaScript", "dynamic": True},
+    }
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    dynamic = backend.scripts("s", dynamic_only=True)
+    assert dynamic["total"] == 2
+    assert {row["scriptId"] for row in dynamic["scripts"]} == {"2", "4"}
+    named = backend.scripts("s", url_filter="VENDOR")
+    assert named["total"] == 1
+    assert named["scripts"][0]["scriptId"] == "3"
+    # No filter returns everything.
+    assert backend.scripts("s")["total"] == 4
+    doc = _tool_docstring("web.scripts")
+    assert "dynamic_only" in doc
+    assert "url_filter" in doc
+
+
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     monkeypatch: Any,
 ) -> None:

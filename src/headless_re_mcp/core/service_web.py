@@ -184,14 +184,18 @@ class WebAnalysisMixin:
         wasm_only: bool = False,
         offset: int = 0,
         limit: int = 100,
+        dynamic_only: bool = False,
+        url_filter: str = "",
     ) -> Result[JsonObject]:
         return self._web_wrap(
             session_id,
             "scripts",
             session_id,
             wasm_only=wasm_only,
+            dynamic_only=dynamic_only,
             offset=offset,
             limit=limit,
+            url_filter=url_filter,
         )
 
     def web_wasm_list(
