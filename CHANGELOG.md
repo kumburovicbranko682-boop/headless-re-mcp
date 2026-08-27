@@ -218,6 +218,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **doctor 对 JVM/node 启动器只看文件存在就报 `detected`**。jadx/apktool/apksigner 都是拉起 JVM
+  的脚本、webcrack 是拉起 node 的 npm shim，启动器在场不代表能跑；`probe_ghidra` 早就在 `java`
+  不在 PATH 时拒绝把 analyzeHeadless 报成可用，这四条却报纯 `detected`，操作者要自己把顶层
+  `java` 探针和它们联系起来。现在同样如实：状态仍是 `detected`（可选项从不阻塞就绪），但 summary
+  点名缺席的运行时、details 带 `missing_runtime`、remediation 说明装什么。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时

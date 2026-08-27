@@ -414,6 +414,87 @@ def test_upx_probe_blocks_without_usable_version(
     assert probe_upx(settings).status == ProbeStatus.BLOCKED
 
 
+def test_jvm_launcher_probe_names_the_missing_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """jadx/apktool/apksigner are scripts that start a JVM.
+
+    probe_ghidra already refuses to call analyzeHeadless usable without java on
+    PATH; the optional-tool probe used to say plain "detected" on file presence
+    alone, implying the tool could run when it could not.
+    """
+    executable = tmp_path / "jadx"
+    executable.touch()
+    settings = replace(_settings(None, tmp_path / "artifacts"), jadx=executable)
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda command: None)
+
+    probe = doctor_module.probe_optional_tool(
+        "jadx", settings, "jadx", ("jadx",), runtime=("java",)
+    )
+
+    # Still detected: optional tools never block overall readiness.
+    assert probe.status == ProbeStatus.DETECTED
+    assert "java is not on PATH" in probe.summary
+    assert probe.details["missing_runtime"] == ["java"]
+    assert "java" in (probe.remediation or "")
+
+
+def test_jvm_launcher_probe_is_quiet_when_the_runtime_is_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "jadx"
+    executable.touch()
+    settings = replace(_settings(None, tmp_path / "artifacts"), jadx=executable)
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda command: f"/usr/bin/{command}")
+
+    probe = doctor_module.probe_optional_tool(
+        "jadx", settings, "jadx", ("jadx",), runtime=("java",)
+    )
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.summary == "jadx configured"
+    assert "missing_runtime" not in probe.details
+    assert probe.remediation is None
+
+
+def test_launcher_found_on_path_still_reports_its_missing_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(None, tmp_path / "artifacts")
+
+    def which(command: str) -> str | None:
+        return "/usr/local/bin/webcrack" if command == "webcrack" else None
+
+    monkeypatch.setattr(doctor_module.shutil, "which", which)
+
+    probe = doctor_module.probe_optional_tool(
+        "webcrack", settings, "webcrack", ("webcrack",), runtime=("node",)
+    )
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert "node is not on PATH" in probe.summary
+    assert probe.details["webcrack"] == "/usr/local/bin/webcrack"
+    assert probe.details["missing_runtime"] == ["node"]
+
+
+def test_a_missing_tool_stays_missing_regardless_of_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(None, tmp_path / "artifacts")
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda command: None)
+
+    probe = doctor_module.probe_optional_tool(
+        "apktool", settings, "apktool", ("apktool",), runtime=("java",)
+    )
+
+    assert probe.status == ProbeStatus.MISSING
+    assert "missing_runtime" not in probe.details
+
+
 def test_isolation_probe_blocks_on_elevated_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

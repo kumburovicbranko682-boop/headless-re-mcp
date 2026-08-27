@@ -199,13 +199,17 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         probe_python_module("androguard", "androguard"),
         probe_python_module("adbutils", "adbutils"),
         probe_optional_tool("adb", current, "adb", ("adb",)),
-        probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat")),
-        probe_optional_tool("apktool", current, "apktool", ("apktool", "apktool.bat")),
-        probe_optional_tool("apksigner", current, "apksigner", ("apksigner", "apksigner.bat")),
+        probe_optional_tool("jadx", current, "jadx", ("jadx", "jadx.bat"), runtime=("java",)),
+        probe_optional_tool(
+            "apktool", current, "apktool", ("apktool", "apktool.bat"), runtime=("java",)
+        ),
+        probe_optional_tool(
+            "apksigner", current, "apksigner", ("apksigner", "apksigner.bat"), runtime=("java",)
+        ),
         # Web reverse-engineering (all optional).
         probe_python_module("playwright", "playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
-        probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
+        probe_optional_tool("webcrack", current, "webcrack", ("webcrack",), runtime=("node",)),
         probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
     ]
     return DoctorReport(
@@ -1085,16 +1089,41 @@ def probe_optional_tool(
     settings: Settings,
     settings_attr: str,
     commands: tuple[str, ...],
+    *,
+    runtime: tuple[str, ...] = (),
 ) -> Probe:
-    """Detect an optional CLI from its configured path or PATH, never blocking."""
+    """Detect an optional CLI from its configured path or PATH, never blocking.
+
+    ``runtime`` names host commands the tool is only a launcher for: jadx,
+    apktool and apksigner are scripts that start a JVM, and webcrack is an npm
+    shim that starts node. Finding the launcher says nothing about whether it
+    can run, and probe_ghidra already refuses to call analyzeHeadless usable
+    without java on PATH. Report the same way here -- still detected, these are
+    optional and never block, but name the absent runtime instead of implying
+    the tool works.
+    """
     configured = getattr(settings, settings_attr, None)
     if configured is not None and Path(str(configured)).is_file():
-        return Probe(name, ProbeStatus.DETECTED, f"{name} configured", {"path": str(configured)})
-    found = {candidate: shutil.which(candidate) for candidate in commands}
-    found = {candidate: path for candidate, path in found.items() if path}
-    if found:
-        return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
-    return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+        found: dict[str, str] = {"path": str(configured)}
+        summary = f"{name} configured"
+    else:
+        which = {candidate: shutil.which(candidate) for candidate in commands}
+        found = {candidate: path for candidate, path in which.items() if path}
+        summary = f"{name} command detected"
+    if not found:
+        return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+    missing_runtime = [command for command in runtime if shutil.which(command) is None]
+    if missing_runtime:
+        absent = ", ".join(missing_runtime)
+        return Probe(
+            name,
+            ProbeStatus.DETECTED,
+            f"{summary}, but {absent} is not on PATH",
+            {**found, "missing_runtime": missing_runtime},
+            f"Install {absent} and put it on PATH; {name} is a launcher that "
+            "cannot run without it.",
+        )
+    return Probe(name, ProbeStatus.DETECTED, summary, found)
 
 
 def probe_python_module(name: str, module: str) -> Probe:
