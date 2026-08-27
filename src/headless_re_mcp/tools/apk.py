@@ -57,7 +57,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with certificates (subject, issuer, serial, sha256),
         signature_files, v1_signed, and has_more so a list that filled the
-        cap is not read as every signer. There is no certs or signatures field.
+        cap is not read as every signer. subject and issuer are human-readable
+        distinguished names (e.g. "Common Name: Acme, Organization: Co"), not
+        the raw asn1crypto object repr. There is no certs or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 

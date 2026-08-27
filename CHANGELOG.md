@@ -24,6 +24,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（apk.certificates 把 subject/issuer 渲染成可读 DN，不再吐 asn1crypto 对象串）
+
+- androguard 的 `APK.get_certificates()` 回的是 `asn1crypto.x509.Certificate`，其 `subject` / `issuer`
+  是 `asn1crypto.x509.Name`。后端过去直接 `str()` 它，得到的是对象 repr——
+  `<asn1crypto.x509.Name 0x… b'0\x81…'>`，即一个内存地址加原始 DER 字节，根本不是人能读的可分辨名称。
+  asn1crypto 早把可读形式放在 `human_friendly`（如「Common Name: Acme, Organization: Co, Country: US」）。
+  所有旧单测的假证书把 `subject` 设成普通字符串，`str()` 看着正常，divergence 只在真 asn1crypto 对象上才现形——
+  又是 mock 与真库脱节那类。现抽出纯函数 `_readable_name`：有 `human_friendly` 就用它、否则回退 `str()`，
+  `None` 回空且属性访问异常也安全回退（不再把整张证书吞掉）。单测除保留原有 capping/字段名断言外，新增三项：
+  `_readable_name` 优先 human_friendly、回退与 None 处理、以及对**真 asn1crypto Name**（用 cryptography 造 DER 再
+  load 回来，正是 androguard 所返回的类型）断言渲染成可读 DN 而非对象串。新增 live gate
+  （`test_apk_certificates_live_gate.py`）配一枚随仓库提交的**真 v1（JAR）签名 APK** 夹具
+  `fixtures/android/signed_sample.apk`（keytool 造 `CN=Gate Signer, O=Headless RE MCP, C=US` 的自签名，
+  jarsigner 以 SHA256withRSA 签名），过真 androguard 断言 `subject`/`issuer` 落成含该 DN 的可读文本、带
+  `Common Name`、绝不含 `asn1crypto`，且 serial/sha256 仍在。`apk.certificates` 文档串同步说明 subject/issuer
+  是可读 DN。CI 新增 `linux-apk-certificates` job 装 androguard 跑该 gate，skip≠pass 守卫在 androguard 已装却仍
+  skip 时判失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

@@ -5,7 +5,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from headless_re_mcp.backends.apk.client import ApkClient
+import pytest
+
+from headless_re_mcp.backends.apk.client import ApkClient, _readable_name
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -66,3 +68,108 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+
+
+class _FriendlyName:
+    """Stand-in for asn1crypto.x509.Name.
+
+    ``str()`` yields the useless object repr the bug shipped, while the readable
+    distinguished name lives on ``.human_friendly`` -- exactly the shape the fix
+    has to reach for.
+    """
+
+    def __init__(self, friendly: str) -> None:
+        self._friendly = friendly
+
+    @property
+    def human_friendly(self) -> str:
+        return self._friendly
+
+    def __str__(self) -> str:
+        return "<asn1crypto.x509.Name 0x7f00 b'0\\x81...'>"
+
+
+class _FriendlyCert:
+    def __init__(self) -> None:
+        self.subject = _FriendlyName("Common Name: Example Signer, Organization: Acme Co")
+        self.issuer = _FriendlyName("Common Name: Example CA, Country: US")
+        self.serial_number = 12345
+        self.sha256_fingerprint = "ab"
+
+
+class _FriendlyApk:
+    def get_signature_names(self) -> list[str]:
+        return ["META-INF/CERT.RSA"]
+
+    def get_certificates(self) -> list[_FriendlyCert]:
+        return [_FriendlyCert()]
+
+
+def test_readable_name_prefers_human_friendly_over_object_repr() -> None:
+    name = _FriendlyName("Common Name: Acme, Organization: Co, Country: US")
+    rendered = _readable_name(name)
+    assert rendered == "Common Name: Acme, Organization: Co, Country: US"
+    # The object repr (memory address, raw DER) must never leak through.
+    assert "asn1crypto" not in rendered
+
+
+def test_readable_name_falls_back_to_str_and_handles_none() -> None:
+    # A plain string (older/other cert shape) is returned as-is, not dropped.
+    assert _readable_name("CN=plain") == "CN=plain"
+    assert _readable_name(None) == ""
+
+
+def test_certificates_render_subject_and_issuer_as_readable_dns() -> None:
+    """subject/issuer come back as readable DNs, never the <asn1crypto...> repr."""
+    client = ApkClient()
+    client._apk = lambda _path: _FriendlyApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    cert = payload["certificates"][0]
+    assert cert["subject"] == "Common Name: Example Signer, Organization: Acme Co"
+    assert cert["issuer"] == "Common Name: Example CA, Country: US"
+    assert "asn1crypto" not in cert["subject"]
+    assert "asn1crypto" not in cert["issuer"]
+
+
+def test_readable_name_on_a_real_asn1crypto_name() -> None:
+    """Pin the fix against the exact type androguard returns, not just a fake.
+
+    Builds a real X.509 Name with cryptography, reloads it through asn1crypto
+    (what ``APK.get_certificates()`` hands back), and proves ``_readable_name``
+    yields the human-friendly DN rather than ``str(Name)``'s object repr.
+    """
+    cryptography = pytest.importorskip("cryptography")
+    asn1_x509 = pytest.importorskip("asn1crypto.x509")
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, "Example Signer"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Acme Co"),
+        ]
+    )
+    now = datetime.datetime.now(datetime.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    der = cert.public_bytes(serialization.Encoding.DER)
+    real_name = asn1_x509.Certificate.load(der).subject
+
+    rendered = _readable_name(real_name)
+    assert "Example Signer" in rendered
+    assert "asn1crypto" not in rendered
+    assert rendered != str(real_name)
+    assert cryptography is not None

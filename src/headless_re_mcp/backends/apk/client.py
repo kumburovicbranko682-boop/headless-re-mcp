@@ -56,6 +56,28 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _readable_name(value: Any) -> str:
+    """Render an X.509 subject/issuer as a human-readable distinguished name.
+
+    androguard hands back ``asn1crypto.x509.Name`` objects for a certificate's
+    subject and issuer. ``str()`` on one yields the object repr --
+    ``<asn1crypto.x509.Name 0x... b'0\\x81...'>``, i.e. a memory address and the
+    raw DER bytes -- not a name any caller can read. asn1crypto exposes the
+    readable form as ``human_friendly`` (e.g. "Common Name: Acme, Organization:
+    Co, Country: US"); prefer it and fall back to ``str()`` only for other or
+    older object shapes.
+    """
+    if value is None:
+        return ""
+    try:
+        friendly = value.human_friendly
+    except Exception:  # noqa: BLE001 - property access varies across versions
+        friendly = None
+    if isinstance(friendly, str) and friendly:
+        return friendly
+    return str(value)
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -270,8 +292,8 @@ class ApkClient:
             try:
                 items.append(
                     {
-                        "subject": str(getattr(cert, "subject", "")),
-                        "issuer": str(getattr(cert, "issuer", "")),
+                        "subject": _readable_name(getattr(cert, "subject", "")),
+                        "issuer": _readable_name(getattr(cert, "issuer", "")),
                         "serial": str(getattr(cert, "serial_number", "")),
                         "sha256": cert.sha256_fingerprint
                         if hasattr(cert, "sha256_fingerprint")

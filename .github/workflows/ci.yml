@@ -199,3 +199,37 @@ jobs:
             throw "committed SPA is stale - run 'npm run build' in webui and commit src/headless_re_mcp/web/spa"
           }
           Write-Host "committed SPA matches webui/src"
+
+  linux-apk-certificates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the package with androguard
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]" androguard
+          python -c "import androguard, asn1crypto; print('androguard ready')"
+
+      - name: apk.certificates gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_apk_certificates_live_gate.py \
+            -rs --tb=short --junitxml=apk-certificates-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("apk-certificates-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          if not cases:
+              sys.exit("no apk-certificates gate was collected")
+          if skipped:
+              sys.exit(f"apk-certificates gate skipped despite an installed androguard: {skipped}")
+          print(f"apk-certificates gate ran for real: {[c.get('name') for c in cases]}")
+          PY
