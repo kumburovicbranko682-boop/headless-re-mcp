@@ -197,7 +197,9 @@ class GhidraClient:
         out_path = project_dir / f"export_{mode}.json"
         if out_path.exists():
             out_path.unlink()
-        addr = "" if address is None else (hex(address) if isinstance(address, int) else str(address))
+        addr = (
+            "" if address is None else (hex(address) if isinstance(address, int) else str(address))
+        )
         capped = max(1, min(int(limit), 1024))
         extra = [
             "-scriptPath",
@@ -312,9 +314,7 @@ class GhidraClient:
             cmd.append("-deleteProject")
         try:
             with _project_lock(project_dir):
-                completed = run_bounded(
-                    cmd, timeout=timeout, creationflags=creationflags, env=env
-                )
+                completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
         except TimedOut as exc:
             # analyzeHeadless is a script that starts a JVM. Killing the script
             # alone left that JVM analysing a large binary with nobody waiting
@@ -356,13 +356,19 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
-        candidate = home / rel
-        if candidate.is_file():
-            return candidate
+    # A Ghidra install ships BOTH launchers side by side: analyzeHeadless (a
+    # shell script) and analyzeHeadless.bat. Trying the .bat first regardless
+    # of platform handed every Linux run a Windows batch file, which Popen
+    # refuses with EACCES, so ghidra.* never worked against a stock install on
+    # Linux. Prefer the native launcher; keep the other as a last resort for
+    # trimmed installs that only carry one of the two.
+    if os.name == "nt":
+        names = ("analyzeHeadless.bat", "analyzeHeadless")
+    else:
+        names = ("analyzeHeadless", "analyzeHeadless.bat")
+    for subdir in ("support", ""):
+        for name in names:
+            candidate = home / subdir / name if subdir else home / name
+            if candidate.is_file():
+                return candidate
     return None

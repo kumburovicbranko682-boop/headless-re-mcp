@@ -8,6 +8,13 @@ import json
 from ghidra.app.decompiler import DecompInterface
 from ghidra.util.task import ConsoleTaskMonitor
 
+# analyzeHeadless hands -postScript arguments to the script through
+# getScriptArgs(); Ghidra's Jython injects no ARGS global. Reading one raised
+# NameError on every real run, the export JSON was never written, and every
+# ghidra.functions/symbols/xrefs/decompile call failed with "export JSON
+# missing after postScript" (verified against Ghidra 11.3.2 headless).
+ARGS = [str(arg) for arg in getScriptArgs()]  # noqa: F821 - injected by GhidraScript
+
 mode = ARGS[0] if ARGS else "functions"
 out_path = ARGS[1] if len(ARGS) > 1 else None
 limit = 256

@@ -453,3 +453,71 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def test_find_analyze_headless_prefers_the_native_launcher(tmp_path: Path) -> None:
+    """A stock Ghidra ships analyzeHeadless AND analyzeHeadless.bat side by side.
+
+    Discovery used to try the .bat first on every platform, so a Linux run
+    always handed Popen a Windows batch file and died with EACCES before any
+    analysis. The platform's own launcher must win when both exist.
+    """
+    home = tmp_path / "ghidra"
+    support = home / "support"
+    support.mkdir(parents=True)
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+
+    found = ghidra_client._find_analyze_headless(home)
+
+    assert found is not None
+    expected = "analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless"
+    assert found.name == expected
+
+
+def test_find_analyze_headless_still_accepts_a_single_launcher_install(
+    tmp_path: Path,
+) -> None:
+    """A trimmed install carrying only one launcher must still be discovered."""
+    home = tmp_path / "ghidra"
+    support = home / "support"
+    support.mkdir(parents=True)
+    only = "analyzeHeadless" if os.name == "nt" else "analyzeHeadless.bat"
+    (support / only).write_text("launcher\n", encoding="utf-8")
+
+    found = ghidra_client._find_analyze_headless(home)
+
+    assert found is not None
+    assert found.name == only
+
+
+def test_export_json_reads_its_arguments_from_get_script_args() -> None:
+    """Ghidra's Jython injects no ARGS global; getScriptArgs() is the API.
+
+    The packaged script read a bare ARGS name, which raised NameError inside
+    every real analyzeHeadless run: the export JSON was never written and each
+    ghidra.functions/symbols/xrefs/decompile call failed with "export JSON
+    missing after postScript" (measured against Ghidra 11.3.2). Pin that the
+    script assigns ARGS from getScriptArgs() before the first read.
+    """
+    script = Path(ghidra_client.__file__).parent / "scripts" / "ExportJson.py"
+    tree = ast.parse(script.read_text(encoding="utf-8"))
+
+    stores: list[int] = []
+    loads: list[int] = []
+    get_script_args_calls: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "ARGS":
+            (stores if isinstance(node.ctx, ast.Store) else loads).append(node.lineno)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getScriptArgs"
+        ):
+            get_script_args_calls.append(node.lineno)
+
+    assert stores, "ExportJson.py must assign ARGS itself"
+    assert loads, "ExportJson.py should still read ARGS after building it"
+    assert min(stores) < min(loads), "ARGS is read before it is assigned"
+    assert get_script_args_calls, "arguments must come from getScriptArgs()"
+    assert min(get_script_args_calls) <= min(stores)
