@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（脱壳状态快照写盘失败会把已成功的 dump 步骤报成失败）
+
+- 每步脱壳编排都会把会话镜像到两份纯取证文件：先 `write_timeline_jsonl` 写 `timeline.jsonl`
+  （冗余副本），再 `persist_state_snapshot` 写 `state.json`。`write_timeline_jsonl` 已被硬化为
+  「只上报不抛」——它的 docstring 记着那条 bug：磁盘写满时它先抛 `OSError`，把一个 dump 已经成功
+  的步骤整个报成失败，且内存里的状态已经领先于盘上。但紧随其后的 `persist_state_snapshot` 仍会抛
+  `OSError`，于是同一故障只是晚一行重现：卷满/目录不可写/权限不足时，`unpack.*` 工具在真正的
+  dump/test/rebuild 已完成后仍返回失败。而权威状态本就由 `_unpack_owner` 持在内存，`state.json`
+  从不回读（脱壳会话绑定活体 debuggee，重启无处可续），丢了它「不损失别处没有的东西」。现让
+  `persist_state_snapshot` 与 `write_timeline_jsonl` 同契约：捕获 `OSError`、清掉 `.partial`、
+  返回错误字符串而非抛出；成功仍返回 `None` 并原子替换目标文件。新增回归
+  `test_an_unwritable_state_snapshot_is_reported_not_raised`（父目录是文件时快照写盘上报而非抛，
+  成功路径仍返回 `None` 且内容正确）；去掉修复后该回归因 `FileExistsError` 冒泡而失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

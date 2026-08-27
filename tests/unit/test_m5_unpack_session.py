@@ -50,6 +50,27 @@ def test_an_unwritable_timeline_copy_does_not_block_the_state_snapshot(
     assert saved["session_id"] == "abc123"
 
 
+def test_an_unwritable_state_snapshot_is_reported_not_raised(tmp_path: Path) -> None:
+    """The snapshot write is best-effort too, sharing the timeline copy's contract.
+
+    Both forensic files are written from one persistence step; hardening only the
+    copy left the snapshot able to raise a full-volume ``OSError`` one write
+    later, again failing an unpack step whose dump had already succeeded. The
+    caller holds the authoritative state in memory and ``state.json`` is never
+    read back, so a failed mirror must be reported, not raised.
+    """
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    state = create_unpack_session("abc123", route="upx", timeout_seconds=60)
+
+    failure = persist_state_snapshot(state, blocked / "state.json")
+    assert failure is not None, "an unwritable snapshot must be reported, not raised"
+
+    ok_path = tmp_path / "session" / "state.json"
+    assert persist_state_snapshot(state, ok_path) is None
+    assert json.loads(ok_path.read_text(encoding="utf-8"))["session_id"] == "abc123"
+
+
 def _write_pe(path: Path) -> None:
     image = bytearray(0x400)
     pe_offset = 0x80

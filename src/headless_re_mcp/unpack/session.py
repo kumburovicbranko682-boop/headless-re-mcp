@@ -473,11 +473,30 @@ def write_timeline_jsonl(state: UnpackSessionState, path: Path) -> str | None:
     return None
 
 
-def persist_state_snapshot(state: UnpackSessionState, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def persist_state_snapshot(state: UnpackSessionState, path: Path) -> str | None:
+    """Mirror the session state to ``state.json``. Reports failure, never raises.
+
+    This is the sibling of :func:`write_timeline_jsonl` and shares its contract.
+    Both run from the same persistence step, and a failure to write either
+    forensic file must not fail an unpack step whose real work (dump / test /
+    rebuild) has already completed. The authoritative state is held in memory by
+    the caller; ``state.json`` is never read back (an unpack session is bound to
+    a live debuggee, so a restart has nothing to resume into), so losing it
+    costs nothing that is not held elsewhere. It used to raise ``OSError`` here
+    -- a full volume then failed the whole step after the dump it was recording
+    had already succeeded, the exact fault ``write_timeline_jsonl`` (written just
+    before it) was hardened against, only one write later.
+    """
     partial = path.with_suffix(path.suffix + ".partial")
-    partial.write_text(
-        json.dumps(state.to_dict(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    partial.replace(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_text(
+            json.dumps(state.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        partial.replace(path)
+    except OSError as exc:
+        with suppress(OSError):
+            partial.unlink()
+        return f"{type(exc).__name__}: {exc}"
+    return None
