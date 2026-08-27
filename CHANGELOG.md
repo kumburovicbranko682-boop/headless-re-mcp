@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`ui.windows.list` 子 PID 提示探测崩溃被伪装成“没有子窗口”）
+
+- `ui.windows.list` 在窗口列表为空且被调试进程仍存活时,会探测子 PID 上的窗口以给出
+  提示(`hint=windows_on_child_pids`)。这个探测过去被 `except Exception: children = []`
+  静默吞掉:探测崩溃与“确实没有子窗口”返回完全一样——都是空列表、没有提示。于是一个真实
+  窗口挂在子 PID 上的启动器,被无人值守的调用方读成“没有界面”而放弃。现改为在探测异常时
+  给回包打 `child_window_probe_failed=true` 与有界的 `child_window_probe_error`,提示调用方
+  自行运行 `ui.process_tree` 复查,而不是当作 headless。探测正常返回空时不打这两个字段。
+  与早前 `dynamic.attach` 的同类修复对齐,但那处只改了 `dynamic_attach`,未覆盖本路径。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
