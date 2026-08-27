@@ -390,14 +390,15 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 85 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 85 passed / 12 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、Android 静态实测
   （androguard 从手工编码的合法二进制 AndroidManifest 真解出包名/版本/SDK/权限/启动 Activity/ABI，
   再从手工编码的合法 classes.dex 真解出类/方法/字符串/调用图 xrefs，并从测试内用 cryptography 现签的
   合法 v1(JAR) APK 真解出经校验的签名证书（CN/O、自签发者、序列号、SHA-256 指纹），而非只在坏 APK
   上优雅降级）、浏览器生命周期、浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
-- 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
-  wabt（1）、以及 2 个有文档说明的故意跳过
+- 12 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
+  wabt（1）、未安装 jadx（3；Android jadx 反编译 Gate——把手工编码的 DEX 真反编回 Java，含
+  gateCaller 调 gateSecret 的调用边，在装了 jadx 的机器上跑，本机未装故跳过）、以及 2 个有文档说明的故意跳过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
   结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
   校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。

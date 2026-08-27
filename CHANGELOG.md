@@ -79,6 +79,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   证明抽取反映的是真实签名状态而非常量。无需 keystore 或 Android SDK。至此 Android 静态 manifest 级面
   （open/manifest/permissions/components/native_libs/certificates）全部有真解码实测。
 
+### 测试（Android jadx 反编译线首次有真解码的实测 Gate）
+
+- jadx（`apk.decompile` / `apk.export_sources`）此前在现场 gate 里只被要求“优雅降级”，从未证明它真能
+  反编译出东西。新增 `tests/integration/test_android_jadx_gate.py`，无需 Android SDK，只要一个 JRE 加
+  jadx CLI：复用 androguard 静态 gate 那份手工编码的合法 `classes.dex`（类 `Lcom/gate/sample/Gate;`、
+  两个直接方法，`gateCaller` 以 `invoke-static` 调 `gateSecret`），经真实工具面驱动 jadx 并断言**反编译出的
+  Java**：`apk.export_sources` 写出的源码树里有 `com/gate/sample/Gate.java` 且是干净跑（无 `tool_failed`）；
+  `apk.decompile` 返回的该类源码里，包名、类、两个方法、以及**关键的** `gateCaller` 里对 `gateSecret()` 的
+  调用都挺过了 DEX→Java 的往返（证明 invoke-static 这条边被反编译出来了，而不只是文件冒出来了）；对 DEX 里
+  不存在的类，`apk.decompile` 干净地返回 `not_found`。jadx 从 `HEADLESS_RE_JADX` 或 PATH 解析，缺它时
+  如实跳过（skip 不等于 pass）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
