@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **270（153 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **271（154 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1332,6 +1332,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `count`/`total`/`offset`/`has_more`/`incomplete`。解析器沿用同一有界读:名字映射子段被截断或触达条目上限置 `incomplete`,越界不读、非模块才硬报错。工具面 269→**270**(152→**153** 只读)。单测
   (`test_wasm_imports_exports.py`):模块名+函数名解析、`producers` 段不被误当 name 段(`present` 假)、截断映射置 `incomplete`、WasmClient 无 wabt 分页读盘、剥符号模块 `present` 假。实机测试
   (`test_m11_wasm_live_gate.py`)对一枚带 name 段的模块读回 `gate` 模块名与 `add`/`run` 函数名,并确认真实 wat2wasm 产物(无 name 段)`present` 为假。
+
+- **新增 `apk.string_xrefs`:回答「这个字符串常量在哪被用到」——把 `apk.strings` 只能证明「存在」的一条字符串定位到读取它的方法。** 追踪硬编码的 URL/密钥/命令时,光有字符串列表不够,
+  还要知道谁引用它;androguard 的 `StringAnalysis` 与方法一样携带 xref-from 边,`get_xref_from()` 给出 `(ClassAnalysis, MethodAnalysis)` 对,取其方法端即得引用者。默认 `value` 精确匹配
+  (`match="exact"`);置 `contains=true` 则匹配任何含该子串的字符串(`match="contains"`),此时可能命中多条不同字符串,每行的 `string` 标明本条边属于哪一条,使子串命中可归因。回 `xrefs`
+  (每行 `{class, method, string}`)、`value`、`match`、`strings_matched`(命中的不同字符串条数)、`count`(返回的引用行数)、`has_more`(行数上限或字节预算裁剪;无 offset,故裁剪即省略其余)、
+  `scan_capped`(字符串扫描在遍历完整个 DEX 前触达上限,故空/短结果不被读成「别处再无引用」)。空 `value` 按 `invalid_params` 拒绝(否则 contains 模式会匹配全部字符串)。工具面 270→**271**
+  (153→**154** 只读,写不变)。单测(`test_apk_fields.py`):精确匹配列出两个引用方法且不含无关串、contains 命中多条并逐行标注所属串而精确同串命中零、`limit` 截断置 `has_more`、空 `value` 报
+  `invalid_params`。实机 gate(`test_m11_android_apk_live_gate.py`)对真实 dex:`APK_GATE_MARKER_STRING` 由 `callee` 引用,精确查询命中 `callee`,`MARKER` 子串查询经 contains 命中同一条边——
+  读的是真实 androguard 的 `StringAnalysis.get_xref_from`(区别于方法 xref-from/xref-to),而非 mock。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
