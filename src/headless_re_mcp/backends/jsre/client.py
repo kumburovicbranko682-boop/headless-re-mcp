@@ -199,7 +199,17 @@ class JsClient:
         limit: int = 100,
     ) -> JsonObject:
         resolved = self._require_input(path)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack creates the -o directory itself (missing parents included)
+        # and refuses to run if it already exists, even when empty. This used to
+        # pre-create it with mkdir(exist_ok=True), so every unpack aborted with
+        # "output directory already exists" and the capability never once
+        # succeeded. Ensure only the parent exists and hand the target to
+        # webcrack. A leftover empty directory from a failed run is removed so a
+        # retry can proceed; a non-empty directory is left intact for webcrack
+        # to refuse, so files an analyst placed there are never overwritten.
+        out_dir.parent.mkdir(parents=True, exist_ok=True)
+        if out_dir.is_dir() and not any(out_dir.iterdir()):
+            out_dir.rmdir()
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)],
             timeout=timeout,
