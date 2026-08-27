@@ -63,8 +63,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   decode 一次包名依旧完好。build 的 unsigned/非空 zip 契约、decode 的 manifest 存在性检查都在真 apktool 上跑过。
   apktool 未配置时明确 skip(skip != pass)。CI 侧复用给 jadx 加的 temurin JDK 21,补上带缓存的 apktool 3.0.3
   jar 下载与包装脚本,并把 `HEADLESS_RE_APKTOOL` 指向它,该 gate 在 CI 上真跑。Android 重打包路径(decode/build)
-  自此有了真后端回归护栏;`sign` 仍走 apksigner(需 Android SDK build-tools 与 keystore),暂留 capability 降级
-  路径。
+  自此有了真后端回归护栏。
+
+### 新增（apksigner 签名路径拿到真机 gate：签名重打包 APK 并独立验签，Android 面自此全覆盖）
+
+- **`apk.sign` 的 apksigner 路径此前也没有真后端覆盖**。它最要紧的一环——密码经环境变量交给 apksigner
+  (`env:APKSIGNER_KS_PASS`,而非 argv,好让密钥库口令在签名 JVM 存活期间不出现在全局可读的进程表里)、客户端在
+  宣告成功前自己再跑一遍 `apksigner verify`、以及 debug keystore 默认逻辑——全都只在打桩子进程上跑过。原以为这需要
+  整套 Android SDK build-tools,实测发现 Debian/Ubuntu 有独立的 `apksigner` 包(不含全套 SDK),且 JDK 自带的
+  `keytool` 能生成客户端默认认的那把 `~/.android/debug.keystore`(别名 `androiddebugkey`、口令 `android`)。
+  新增第二条 gate `test_apktool_sign_produces_a_verifiable_apk`:build→repack 出真 APK 后,经 service 用默认
+  debug keystore 签名(不传 keystore 参数,正好走「debug 默认」分支——注意 `apk.sign` 对**自定义** keystore 会用
+  `_require_session_path` 限制在会话制品树内,故只有 debug 默认这条能不往会话目录里塞文件),并给出独立于工具自述的
+  确凿证据:v1 签名会把 `<ALIAS>.(RSA|DSA|EC)` 与 `MANIFEST.MF` 写进 zip 的 META-INF(未签名的 repack 产物没有),
+  再另起一个 `apksigner verify` 进程(不是客户端内部那次)必须接受该签名。apktool / apksigner / debug keystore 任一
+  缺席即明确 skip(skip != pass)。CI 侧用 apt 装独立 `apksigner`(自动上 PATH,`shutil.which` 即可解析),并用
+  `keytool` 现场生成标准 debug keystore,该 gate 在 CI 上真跑。**至此 Android 目标域四个后端
+  (androguard / jadx / apktool / apksigner)全部有真后端集成护栏,与 PE 线看齐。**
 
 ### 新增（jadx 反编译后端首次拿到真机 gate：用同一手工 DEX 跑通 export_sources 与 decompile）
 

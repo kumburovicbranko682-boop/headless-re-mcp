@@ -10,7 +10,8 @@
 #   * Android   -- androguard APK metadata, a real hand-assembled DEX parsed
 #                  end to end (classes/methods/strings/xrefs), jadx decompiling
 #                  that DEX to Java, apktool decode/build round-tripping a real
-#                  APK, and safe degradation with no device
+#                  APK, apksigner signing the rebuilt APK, and safe degradation
+#                  with no device
 #   * Static    -- radare2 against a locally built ELF (the non-PE mapping path)
 # tests/integration/conftest.py skips the Windows-only gates by name, and -rs
 # prints every remaining skip reason, so a skip here never reads as a pass.
@@ -69,9 +70,24 @@ jobs:
         run: |
           # radare2: cross-platform static analysis. wabt: wasm2wat / wasm-objdump.
           # gcc: builds the portable ELF fixture so the radare2 non-PE gate runs
-          # instead of skipping for want of a compiler.
+          # instead of skipping for want of a compiler. apksigner: Debian's
+          # standalone package (no full Android SDK) so the APK sign gate runs.
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends radare2 wabt gcc
+          sudo apt-get install -y --no-install-recommends radare2 wabt gcc apksigner
+
+      - name: Android debug keystore
+        # apk.sign defaults to ~/.android/debug.keystore with the standard debug
+        # alias/password; keytool (from the JDK above) mints exactly that so the
+        # sign gate exercises the real signer instead of skipping.
+        run: |
+          mkdir -p "$HOME/.android"
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore "$HOME/.android/debug.keystore" \
+              -storepass android -keypass android \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
       - name: Cache jadx
         id: jadx-cache
