@@ -58,11 +58,26 @@ def test_require_binary_explains_a_locator_only_session() -> None:
 
     assert caught.value.code == "target_mismatch"
     assert caught.value.details["actual_target"] == TargetKind.WEB.value
-    # A PE or an APK is the thing that would have a local file.
+    # A PE, an APK or a native ELF/Mach-O is the thing that would have a file.
     assert set(caught.value.details["expected_targets"]) == {
         TargetKind.PE.value,
         TargetKind.APK.value,
+        TargetKind.NATIVE.value,
     }
+
+
+def test_require_pe_refuses_a_native_session_with_a_structured_mismatch(tmp_path: Path) -> None:
+    """A native ELF/Mach-O has a binary but no PE machine type.
+
+    The portable backends read it via require_binary; the PE-only debuggers must
+    still refuse it cleanly rather than trying to parse a PE header out of it.
+    """
+    session = _session(TargetKind.NATIVE, binary=tmp_path / "prog.elf")
+
+    assert session.require_binary() == tmp_path / "prog.elf"
+    with pytest.raises(TargetMismatch) as caught:
+        session.require_pe()
+    assert caught.value.details["actual_target"] == TargetKind.NATIVE.value
 
 
 def test_require_architecture_needs_a_known_machine_type() -> None:

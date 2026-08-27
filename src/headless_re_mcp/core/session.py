@@ -393,9 +393,33 @@ def classify_target(reference: str | Path) -> TargetKind:
         return TargetKind.PE
     if magic.startswith(b"\x00asm"):
         return TargetKind.WEB
+    if _is_native_binary(magic):
+        # ELF / Mach-O: no PE machine type, but radare2 and Ghidra analyse it.
+        # Left as PE before, it was rejected at creation as "not a PE file".
+        return TargetKind.NATIVE
     if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
         return TargetKind.APK
     return TargetKind.PE
+
+
+# Mach-O thin magics only. The fat/universal magic 0xCAFEBABE is deliberately
+# omitted: it collides byte-for-byte with a Java .class file, and misclassifying
+# one is worse than leaving a rare fat binary on the PE fallback.
+_MACHO_MAGICS = frozenset(
+    {
+        b"\xfe\xed\xfa\xce",  # 32-bit, big-endian
+        b"\xfe\xed\xfa\xcf",  # 64-bit, big-endian
+        b"\xce\xfa\xed\xfe",  # 32-bit, little-endian
+        b"\xcf\xfa\xed\xfe",  # 64-bit, little-endian
+    }
+)
+
+
+def _is_native_binary(magic: bytes) -> bool:
+    """True for an ELF or thin Mach-O header, the non-PE native formats."""
+    if magic.startswith(b"\x7fELF"):
+        return True
+    return magic[:4] in _MACHO_MAGICS
 
 
 def _is_android_package(path: Path) -> bool:

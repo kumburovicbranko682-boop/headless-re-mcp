@@ -21,6 +21,7 @@ import pytest
 
 from headless_re_mcp.backends.ghidra.client import GhidraClient
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _BUILT_FIXTURE = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "headless_fixture.exe"
@@ -237,6 +238,32 @@ def test_ghidra_decompiles_a_wasm_module_via_the_configured_plugin(tmp_path: Pat
     # The module adds its two parameters; the exact parameter names vary, the
     # addition does not.
     assert "+" in body, body[:200]
+
+
+@pytest.mark.integration
+def test_ghidra_analyzes_a_native_elf_through_the_service(tmp_path: Path) -> None:
+    """The ELF must reach Ghidra through create_session, not only the client.
+
+    The client-level ELF gate above bypasses session creation, which is exactly
+    where an ELF used to be rejected as "not a PE file". This proves the real
+    agent entry point now classifies the ELF as native, opens it, and lets
+    ghidra.functions recover the named function. skip != pass.
+    """
+    if not GhidraClient(home=getattr(Settings.load(), "ghidra_home", None)).available:
+        pytest.skip("Ghidra analyzeHeadless not configured — service ELF Gate (skip != pass)")
+    elf = _build_elf_fixture(tmp_path)
+    service = AnalysisService(Settings.load())
+    created = service.create_session(str(elf))
+    assert created.ok and created.data is not None, created.error
+    assert created.data["session"].get("target") == "native"
+    session_id = str(created.data["session"]["id"])
+    try:
+        funcs = service.ghidra_functions(session_id, timeout=_TIMEOUT)
+        assert funcs.ok and funcs.data is not None, funcs.error
+        names = {item.get("name") for item in funcs.data.get("items", [])}
+        assert "re_mcp_triple" in names, sorted(names)
+    finally:
+        service.close_session(session_id)
 
 
 @pytest.mark.integration

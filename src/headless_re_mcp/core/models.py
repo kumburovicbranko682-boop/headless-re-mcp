@@ -45,11 +45,18 @@ class TargetKind(StrEnum):
     Android and browser targets share the session lifecycle, artifacts and
     knowledge store but cannot answer PE questions, so every tool that needs a
     PE says so explicitly rather than failing deep inside a backend.
+
+    NATIVE is a non-PE native binary (ELF, Mach-O). It has no PE machine type,
+    so the PE-only debuggers refuse it, but the portable backends (radare2,
+    Ghidra) analyse it exactly like a PE. Without this an ELF fell through to
+    PE and was rejected at session creation with "not a PE file", making the
+    portable backends unreachable for their most common non-Windows target.
     """
 
     PE = "pe"
     APK = "apk"
     WEB = "web"
+    NATIVE = "native"
 
 
 class TargetMismatch(RuntimeError):
@@ -181,7 +188,7 @@ class Session(BaseModel):
         if self.binary is None:
             raise TargetMismatch(
                 f"session target {self.target.value} is not backed by a local file",
-                expected=(TargetKind.PE, TargetKind.APK),
+                expected=(TargetKind.PE, TargetKind.APK, TargetKind.NATIVE),
                 actual=self.target,
             )
         return self.binary

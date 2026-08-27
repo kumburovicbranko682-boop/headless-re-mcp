@@ -10,6 +10,8 @@ is absent; the committed in-tree PE keeps it runnable on any host.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,12 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _BUILT_FIXTURE = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "headless_fixture.exe"
 _COMMITTED_FIXTURE = _PROJECT_ROOT / "fixtures" / "upx" / "console_fixture-x64.pre-upx.exe"
 
+# A named, un-inlinable function so the native (ELF) gate can find it by name.
+_ELF_SOURCE = (
+    "int re_mcp_triple(int x) { return x * 3 + 1; }\n"
+    "int main(void) { return re_mcp_triple(7); }\n"
+)
+
 
 def _gate_fixture() -> Path:
     if _BUILT_FIXTURE.is_file():
@@ -29,6 +37,30 @@ def _gate_fixture() -> Path:
     if _COMMITTED_FIXTURE.is_file():
         return _COMMITTED_FIXTURE
     pytest.skip(f"no r2 fixture available: {_BUILT_FIXTURE} nor {_COMMITTED_FIXTURE}")
+
+
+def _build_elf_fixture(tmp_path: Path) -> Path:
+    """Compile a tiny ELF with the host C compiler, or skip (skip != pass)."""
+    compiler = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if compiler is None:
+        pytest.skip("no C compiler (cc/gcc/clang) — native ELF Gate not run (skip != pass)")
+    source = tmp_path / "re_mcp_probe.c"
+    source.write_text(_ELF_SOURCE, encoding="utf-8")
+    out = tmp_path / "re_mcp_probe.elf"
+    try:
+        completed = subprocess.run(
+            [compiler, "-O0", "-o", str(out), str(source)],
+            capture_output=True,
+            timeout=120.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover - host dependent
+        pytest.skip(f"C compiler unusable ({exc}) — native ELF Gate not run (skip != pass)")
+    if completed.returncode != 0 or not out.is_file():
+        pytest.skip(
+            "C compiler produced no ELF "
+            f"({completed.stderr.decode('utf-8', 'replace')[:200]}) — skip != pass"
+        )
+    return out
 
 
 def _assert_mapped(address: object) -> None:
@@ -89,6 +121,43 @@ def test_r2_service_functions_disasm_xrefs_end_to_end() -> None:
             assert isinstance(row.get("from"), int) and isinstance(row.get("to"), int), row
             _assert_mapped(row.get("from_address"))
             _assert_mapped(row.get("to_address"))
+    finally:
+        service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
+    """A native ELF must open as a session and analyse through r2 -- the portable
+    backend's whole point on non-Windows targets.
+
+    Before native classification, create_session rejected an ELF as "not a PE
+    file", so this path was unreachable. Now it must classify as native, open,
+    and let r2 recover the named function and disassemble it. skip != pass.
+    """
+    if not R2Client().available:
+        pytest.skip("radare2/rizin not installed — native ELF Gate not run (skip≠pass)")
+    elf = _build_elf_fixture(tmp_path)
+    service = AnalysisService(Settings.load())
+    created = service.create_session(str(elf))
+    assert created.ok and created.data is not None, created.error
+    assert created.data["session"].get("target") == "native"
+    session_id = str(created.data["session"]["id"])
+    try:
+        assert service.r2_open(session_id, timeout=60.0).ok
+
+        funcs = service.r2_functions(session_id, timeout=60.0)
+        assert funcs.ok and funcs.data is not None, funcs.error
+        assert funcs.data.get("parsed") is True
+        by_name = {item.get("name"): item for item in funcs.data.get("items", [])}
+        assert "main" in by_name, sorted(by_name)
+        assert any("re_mcp_triple" in (name or "") for name in by_name), sorted(by_name)
+
+        entry = int(by_name["main"]["offset"])
+        dis = service.r2_disasm(session_id, entry, count=8, timeout=60.0)
+        assert dis.ok and dis.data is not None, dis.error
+        assert dis.data.get("parsed") is True
+        assert dis.data.get("invalid_count") == 0, dis.data
+        assert dis.data.get("items"), "main disassembled to nothing"
     finally:
         service.close_session(session_id)
 
