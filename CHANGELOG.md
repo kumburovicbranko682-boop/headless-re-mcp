@@ -127,6 +127,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`batch.analyze` 静默丢弃空白路径,count 比提交数小却不说原因）
+
+- `batch.analyze` 在分析前会用 `str(item).strip()` 过滤掉空白/纯空格的路径条目。
+  过去这一步是静默的:调用方(或用模板/自动拼接列表的 agent)提交 5 条、其中 2 条为空,
+  回包 `count=3` 却没有任何字段解释少了 2 条——被丢弃的空白条目与“某个真实路径没跑成”
+  完全无法区分。现回包新增 `submitted`(原始提交条数)与 `skipped_blank`(被丢弃的空白条数),
+  恒有 `count == submitted - skipped_blank`,让 count 变小有据可查。工具 docstring 一并说明。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
