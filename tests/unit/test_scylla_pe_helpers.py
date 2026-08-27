@@ -136,15 +136,21 @@ def test_run_scylla_refuses_output_that_resolves_to_the_input(tmp_path: Path) ->
     exe = tmp_path / "scylla.exe"
     exe.write_bytes(b"MZ")
     source = _write_pe(tmp_path / "input.exe")
-    # A different-looking path that normalizes back onto the input; the output
-    # does not yet exist, so this must trip the "must differ" guard, not the
-    # earlier "must not already exist" one.
+    # A different-looking path that normalizes back onto the input. Both guards
+    # refuse the same danger -- an output that aliases the input -- but which
+    # fires is platform-dependent: POSIX Path.exists() does not resolve a ".."
+    # through the missing "nope" directory, so the path reads as not-yet-existing
+    # and execution reaches the "must differ" guard; Windows collapses the ".."
+    # lexically onto the existing input, so the earlier "must not already exist"
+    # guard fires first. Since source must exist to get here, "must differ" is
+    # unreachable on Windows, so accept either refusal.
     output = tmp_path / "nope" / ".." / "input.exe"
 
     with pytest.raises(ScyllaError) as excinfo:
         run_scylla(exe, source, output, input_sha256=file_sha256(source))
     assert excinfo.value.code == ScyllaErrorCode.INVALID_ARGUMENT
-    assert "differ" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "differ" in message or "must not already exist" in message
 
 
 def test_run_scylla_propagates_a_cancellation(
