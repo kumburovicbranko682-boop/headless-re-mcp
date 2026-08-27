@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（serve-web 真 HTTP 启动 Gate）
+
+- 新集成 Gate `tests/integration/test_serve_web_http_gate.py`（纯 Python，任何平台可跑）第一次把
+  操作员真正依赖的整条链路——`python -m headless_re_mcp serve-web` CLI、uvicorn 启动、真实 TCP
+  端口、真实请求来源、进程退出——放进测试；此前所有控制台测试都走进程内 TestClient，恰好跳过
+  这些。令牌文件与全部状态经隔离配置家目录与制品根落在临时目录，预播种已知令牌。
+- 钉住三组契约：**门**（无令牌/错令牌的 API 一律 401，`/` 无令牌回 401 提示页，`?token=` 出 SPA
+  并种 HttpOnly bootstrap cookie，其后仅凭 cookie（无 Bearer、无查询串——SPA 会从 URL 剥掉
+  令牌）即可调 API）；**探针**（`/healthz` 报活性与含平台支持级别的构建信息，Linux 上
+  `support_level=core`；`/readyz` 200 且 store 与 artifact_root 检查全过；`/metrics` 出
+  Prometheus 文本——三者都免凭据，正如 supervisor 的调用方式）；**工作**（对提交的 PE 夹具
+  经纯 HTTP 走完 创建→列表→查询→报告→时间线→关闭 的完整会话生命周期，每个响应都是结构化信封，
+  报告注册为制品、时间线含 `session.created`、事后无 unclean 残留）。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
