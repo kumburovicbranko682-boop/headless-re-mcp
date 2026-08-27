@@ -41,7 +41,9 @@ class ProxyAnalysisMixin:
         return self._proxy_backend
 
     def _proxy_artifact_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        if not _is_safe_session_segment(session_id):
             raise ProxyError("invalid_params", "invalid session id")
         self.registry.get(session_id)
         root = self.settings.artifact_root.expanduser().resolve() / "proxy" / session_id
