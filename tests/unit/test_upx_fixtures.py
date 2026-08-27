@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from contextlib import suppress
 from pathlib import Path
 
@@ -15,9 +16,15 @@ from headless_re_mcp.detection.pe import scan_pe
 REPO = Path(__file__).resolve().parents[2]
 FIXTURES = REPO / "fixtures" / "upx"
 UPX_ENV = os.environ.get("HEADLESS_RE_UPX")
+# Mirror config.py's resolver: an explicit env/pinned build first, then any
+# upx on PATH. Without the PATH probe these real fixture tests skipped on a box
+# that had upx-ucl installed -- a skip that meant "resolver too narrow", not
+# "tool absent", which is exactly the skip != pass trap the suite guards against.
+_WHICH_UPX = shutil.which("upx")
 UPX_CANDIDATES = [
     Path(UPX_ENV) if UPX_ENV else None,
     REPO / "artifacts" / "tools" / "upx-5.2.0" / "upx.exe",
+    Path(_WHICH_UPX) if _WHICH_UPX else None,
 ]
 
 
