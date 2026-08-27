@@ -216,6 +216,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `C:\Program Files\vm\revert.ps1` 整行变成一个参数。现在按命令行拆并保住路径。
 - **jadx / apktool / ghidra 写入后 prune 共享父目录会删掉其它会话**。关闭时只清自己的
   工作树。Ghidra 的 `export_*.json` 已登记为产物，关会话不再一并 `rmtree`。
+- **APK `classes` / `methods` / `strings` 直接按原始 `offset` / `limit` 切片**。工具层
+  的 pydantic 约束（`offset>=0`、`1<=limit<=…`）挡住了 MCP 调用，但客户端会被直接
+  import 使用；`limit=-1` 走 `items[start:start-1]` 会返回“除最后一个以外的全部”，负
+  `offset` 则从尾部索引——都不是一页。新增 `_window` 在客户端边界夹紧 `offset`/`limit`，
+  与同文件的 `xrefs`、以及 `jsre.unpack_bundle` 的既有做法一致；合法工具调用行为不变。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。

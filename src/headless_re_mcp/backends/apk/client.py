@@ -27,6 +27,9 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# A defensive ceiling on a single page, mirrored from the tool-layer clamp so a
+# direct client caller cannot slice with a negative or absurd window.
+_MAX_PAGE = 2000
 
 
 class ApkError(RuntimeError):
@@ -35,6 +38,22 @@ class ApkError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _window(items: list[Any], offset: int, limit: int) -> tuple[list[Any], int]:
+    """Clamp a page request the way the tool layer does, for direct callers too.
+
+    ``xrefs`` here and ``jsre.unpack_bundle`` already clamp offset/limit at the
+    client edge; ``classes``/``methods``/``strings`` sliced with the raw values,
+    so a direct call with a negative ``limit`` returned ``items[start:start-n]``
+    -- almost the whole collected list -- rather than a page, and a negative
+    ``offset`` indexed from the end. The tool schema forbids both, but the client
+    is imported and called directly, so bound it here as well. Returns the page
+    and the clamped start so the envelope reports the offset actually used.
+    """
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_PAGE))
+    return items[start : start + cap], start
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
@@ -303,13 +322,13 @@ class ApkClient:
                 break
             names.append(klass.name)
         names.sort()
-        window = names[offset : offset + limit]
+        window, start = _window(names, offset, limit)
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
-            "offset": offset,
-            "has_more": offset + len(window) < len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
             "scan_capped": scan_more,
         }
 
@@ -348,14 +367,14 @@ class ApkClient:
                 )
             if scan_more:
                 break
-        window = methods[offset : offset + limit]
+        window, start = _window(methods, offset, limit)
         return {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
             "total": len(methods),
-            "offset": offset,
-            "has_more": offset + len(window) < len(methods),
+            "offset": start,
+            "has_more": start + len(window) < len(methods),
             "scan_capped": scan_more,
         }
 
@@ -369,13 +388,13 @@ class ApkClient:
                 break
             seen.add(str(item.get_value())[:_MAX_STRING_LEN])
         values = sorted(seen)
-        window = values[offset : offset + limit]
+        window, start = _window(values, offset, limit)
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
-            "offset": offset,
-            "has_more": offset + len(window) < len(values),
+            "offset": start,
+            "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
         }
 

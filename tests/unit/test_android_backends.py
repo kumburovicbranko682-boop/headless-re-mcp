@@ -268,6 +268,105 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class _FakeClass:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def is_external(self) -> bool:
+        return False
+
+
+class _FakeString:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def get_value(self) -> str:
+        return self._value
+
+
+class _FakeAnalysis:
+    def __init__(
+        self, classes: list[_FakeClass] | None = None, strings: list[_FakeString] | None = None
+    ) -> None:
+        self.analysis = self
+        self._classes = classes or []
+        self._strings = strings or []
+
+    def get_classes(self) -> list[_FakeClass]:
+        return self._classes
+
+    def get_strings(self) -> list[_FakeString]:
+        return self._strings
+
+
+class TestApkPaginationClampsBadWindows:
+    """classes/methods/strings must page, not slice with raw offset/limit.
+
+    The tool schema forbids a negative offset, a limit below one, or a limit
+    above the ceiling, but the client is imported and called directly. Sliced
+    raw, ``limit=-1`` returned all-but-one row and a negative offset indexed
+    from the end; ``_window`` clamps both, matching xrefs and unpack_bundle.
+    """
+
+    def _client(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        classes: list[_FakeClass] | None = None,
+        strings: list[_FakeString] | None = None,
+    ) -> Any:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        client = ApkClient()
+        analysis = _FakeAnalysis(classes=classes, strings=strings)
+        monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: analysis)
+        return client
+
+    def test_negative_offset_clamps_to_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(
+            monkeypatch, classes=[_FakeClass(f"L{i:03d};") for i in range(5)]
+        )
+        result = client.classes(tmp_path / "a.apk", offset=-3, limit=2)
+
+        assert result["offset"] == 0
+        assert result["count"] == 2
+        assert result["classes"] == ["L000;", "L001;"]
+
+    def test_negative_limit_does_not_return_the_whole_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(
+            monkeypatch, classes=[_FakeClass(f"L{i:03d};") for i in range(5)]
+        )
+        result = client.classes(tmp_path / "a.apk", offset=0, limit=-1)
+
+        assert result["count"] == 1
+
+    def test_huge_limit_is_capped_at_the_page_ceiling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_PAGE
+
+        client = self._client(
+            monkeypatch, classes=[_FakeClass(f"L{i:05d};") for i in range(_MAX_PAGE + 500)]
+        )
+        result = client.classes(tmp_path / "a.apk", offset=0, limit=10_000_000)
+
+        assert result["count"] == _MAX_PAGE
+
+    def test_strings_negative_limit_is_clamped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(
+            monkeypatch, strings=[_FakeString(f"s{i}") for i in range(5)]
+        )
+        result = client.strings(tmp_path / "a.apk", offset=0, limit=-2)
+
+        assert result["count"] == 1
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 
