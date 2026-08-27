@@ -4,6 +4,7 @@ import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,7 @@ from headless_re_mcp.doctor import (
     probe_exeinfope,
     probe_ghidra,
     probe_optional_tool,
+    probe_playwright,
     probe_upx,
     probe_x64dbg_binaries,
     probe_x64dbg_source,
@@ -743,3 +745,95 @@ def test_probe_ghidra_ready_when_pyghidra_package_present(
     )
     probe = probe_ghidra(settings)
     assert probe.status == ProbeStatus.READY
+
+
+def test_playwright_probe_is_missing_when_the_module_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor_module.importlib.util, "find_spec", lambda _name: None)
+
+    probe = probe_playwright()
+
+    assert probe.status == ProbeStatus.MISSING
+    assert probe.remediation is None
+
+
+def test_playwright_probe_flags_a_missing_browser_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The module imports but no browser is installed: DETECTED plus a hint.
+
+    This is what a default install then a forgotten `playwright install` leaves,
+    and web.* cannot open a page in it.
+    """
+    monkeypatch.setattr(
+        doctor_module.importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin="/site-packages/playwright/__init__.py"),
+    )
+    monkeypatch.setattr(doctor_module, "_playwright_has_chromium", lambda: False)
+
+    probe = probe_playwright()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details["browser_installed"] is False
+    assert probe.remediation is not None
+    assert "playwright install chromium" in probe.remediation
+
+
+def test_playwright_probe_is_clean_when_a_browser_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        doctor_module.importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin="/site-packages/playwright/__init__.py"),
+    )
+    monkeypatch.setattr(doctor_module, "_playwright_has_chromium", lambda: True)
+
+    probe = probe_playwright()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details["browser_installed"] is True
+    assert probe.remediation is None
+
+
+def test_playwright_probe_makes_no_claim_when_the_registry_is_unresolvable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PLAYWRIGHT_BROWSERS_PATH=0 installs beside the package; do not guess."""
+    monkeypatch.setattr(
+        doctor_module.importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin="/site-packages/playwright/__init__.py"),
+    )
+    monkeypatch.setattr(doctor_module, "_playwright_has_chromium", lambda: None)
+
+    probe = probe_playwright()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert "browser_installed" not in probe.details
+    assert probe.remediation is None
+
+
+def test_playwright_browser_detection_reads_the_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The detector finds a real chromium build and reports an empty one missing."""
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+
+    assert doctor_module._playwright_has_chromium() is False
+
+    chrome = tmp_path / "chromium-1234" / "chrome-linux" / "chrome"
+    chrome.parent.mkdir(parents=True)
+    chrome.write_bytes(b"")
+
+    assert doctor_module._playwright_has_chromium() is True
+
+
+def test_playwright_browser_detection_is_unknown_for_the_package_local_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+
+    assert doctor_module._playwright_has_chromium() is None

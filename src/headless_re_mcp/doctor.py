@@ -207,7 +207,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             "apksigner", current, "apksigner", ("apksigner", "apksigner.bat"), needs_java=True
         ),
         # Web reverse-engineering (all optional).
-        probe_python_module("playwright", "playwright"),
+        probe_playwright(),
         probe_python_module("mitmproxy", "mitmproxy"),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
         probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
@@ -1139,6 +1139,86 @@ def probe_python_module(name: str, module: str) -> Probe:
         ProbeStatus.DETECTED,
         f"Optional Python module {module} detected",
         {"origin": spec.origin},
+    )
+
+
+def _playwright_browsers_root() -> Path | None:
+    """The directory Playwright resolves browser builds into, or None if unknown.
+
+    Mirrors Playwright's own resolution: the ``PLAYWRIGHT_BROWSERS_PATH``
+    override when it names a real path, otherwise the per-OS cache dir. The
+    special value ``0`` (install beside the package) is not something we can
+    locate cheaply, so it reads as unknown rather than a false "missing".
+    """
+    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if override:
+        return None if override == "0" else Path(override)
+    home = Path.home()
+    if sys.platform == "darwin":
+        return home / "Library" / "Caches" / "ms-playwright"
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA")
+        base = Path(local) if local else home / "AppData" / "Local"
+        return base / "ms-playwright"
+    return home / ".cache" / "ms-playwright"
+
+
+def _playwright_has_chromium() -> bool | None:
+    """Best-effort: is a Chromium build installed for Playwright?
+
+    ``True``/``False`` when the browsers registry can be inspected, ``None``
+    when its location cannot be resolved (so the probe makes no claim). Never
+    launches the driver: doctor must stay fast and cannot depend on spawning
+    node to answer a readiness question.
+    """
+    root = _playwright_browsers_root()
+    if root is None:
+        return None
+    if not root.is_dir():
+        return False
+    for entry in root.glob("chromium*"):
+        if not entry.is_dir():
+            continue
+        for name in ("chrome", "chrome.exe", "headless_shell", "headless_shell.exe"):
+            if next(entry.rglob(name), None) is not None:
+                return True
+    return False
+
+
+def probe_playwright() -> Probe:
+    """playwright is only usable with a browser build; a bare module cannot open a page.
+
+    ``probe_python_module`` would report DETECTED on import alone, so a caller
+    with the module but no browser -- the state a default ``pip install`` plus a
+    forgotten ``playwright install`` leaves -- got no signal that web.* would
+    fail at first use. Keep DETECTED (the module is genuinely there) but, when no
+    Chromium build is found, carry the remediation the way the Ghidra probe flags
+    a missing JRE.
+    """
+    spec = importlib.util.find_spec("playwright")
+    if spec is None:
+        return Probe(
+            "playwright", ProbeStatus.MISSING, "Optional Python module playwright is not installed"
+        )
+    has_browser = _playwright_has_chromium()
+    details: dict[str, Any] = {"origin": spec.origin}
+    if has_browser is False:
+        details["browser_installed"] = False
+        return Probe(
+            "playwright",
+            ProbeStatus.DETECTED,
+            "playwright is installed but no browser build was found",
+            details,
+            "Run `python -m playwright install chromium` to fetch the browser the "
+            "web.* tools drive; the module alone cannot open a page.",
+        )
+    if has_browser is True:
+        details["browser_installed"] = True
+    return Probe(
+        "playwright",
+        ProbeStatus.DETECTED,
+        "Optional Python module playwright detected",
+        details,
     )
 
 
