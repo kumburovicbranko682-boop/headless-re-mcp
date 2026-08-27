@@ -8,9 +8,12 @@ reported as a running capture.
 
 from __future__ import annotations
 
+import http.server
 import socket
 import threading
 import time
+import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -154,6 +157,85 @@ def test_concurrent_starts_do_not_cross_the_mitmproxy_global_ctx() -> None:
     finally:
         backend.close_all()
     assert not failures, "concurrent proxy starts failed:\n" + "\n".join(failures)
+
+
+class _OriginHandler(http.server.BaseHTTPRequestHandler):
+    _BODY = b"mitm-capture-ok"
+
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(self._BODY)))
+        self.end_headers()
+        self.wfile.write(self._BODY)
+
+    def log_message(self, *args: object) -> None:  # keep the gate output quiet
+        del args
+
+
+@pytest.mark.integration
+def test_proxy_captures_a_real_request_and_reads_it_back(tmp_path: Path) -> None:
+    """The lifecycle gate proves the port binds; this proves capture works.
+
+    Starting means listening is necessary but not sufficient: an unattended
+    session depends on mitmproxy actually invoking the recorder addon on each
+    response and on flows/flow_get/export_har reading that capture back. The
+    mitmproxy addon and flow API drift across versions (the client says so), so
+    this drives a real HTTP request through the proxy to a throwaway local
+    origin and asserts the flow is recorded and retrievable on the installed
+    mitmproxy -- plain HTTP, no TLS/CA trust needed. skip != pass when mitmproxy
+    is absent.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy capture Gate not run (skip != pass)")
+
+    origin = http.server.HTTPServer(("127.0.0.1", 0), _OriginHandler)
+    origin_port = int(origin.server_port)
+    origin_thread = threading.Thread(target=origin.serve_forever, daemon=True)
+    origin_thread.start()
+
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    session = "capture-session"
+    backend.start(session, host="127.0.0.1", port=proxy_port)
+    try:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+        )
+        target = f"http://127.0.0.1:{origin_port}/probe"
+        with opener.open(target, timeout=10) as response:
+            assert response.read() == _OriginHandler._BODY
+
+        # The addon records on the response event, which fires after the proxied
+        # request completes; poll until the flow lands rather than racing it.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if backend.status(session)["flow_count"] >= 1:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("proxy forwarded the request but captured no flow")
+
+        listing = backend.flows(session)
+        assert listing["total"] >= 1
+        match = next((f for f in listing["flows"] if "/probe" in f.get("url", "")), None)
+        assert match is not None, listing["flows"]
+        assert match["method"] == "GET"
+        assert match["status"] == 200
+        assert match["host"] == "127.0.0.1"
+
+        detail = backend.flow_get(session, match["id"], tmp_path)
+        assert detail["request"]["method"] == "GET"
+        assert "/probe" in detail["request"]["url"]
+        assert detail["response"]["status"] == 200
+        assert detail["response"].get("body") == _OriginHandler._BODY.decode()
+
+        har = backend.export_har(session, tmp_path / "capture.har")
+        assert har["entry_count"] >= 1
+    finally:
+        backend.stop(session)
+        origin.shutdown()
+        origin.server_close()
 
 
 @pytest.mark.integration
