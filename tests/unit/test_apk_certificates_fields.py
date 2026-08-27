@@ -206,3 +206,116 @@ def test_apk_certificates_reports_a_v31_only_apk_as_signed() -> None:
     assert payload["signed_v31"] is True
     assert payload["signed"] is True
     assert len(payload["certificates"]) == 1
+
+
+class _SchemeCert:
+    """A signer cert whose sha256 digest is the join key across scheme blocks."""
+
+    def __init__(self, tag: str) -> None:
+        self.subject = f"CN={tag}"
+        self.issuer = "CN=ca"
+        self.serial_number = 1
+        self.sha256_fingerprint = tag
+        self.sha256 = tag.encode("ascii")
+
+
+class _RotationApk:
+    """A key-rotation APK: the old key sits in v3, the rotated key in v3.1.
+
+    ``get_certificates()`` unions and dedupes both, so without per-cert scheme
+    labels an analyst cannot tell which identity is current.
+    """
+
+    def get_signature_names(self) -> list[str]:
+        return []
+
+    def get_certificates(self) -> list[_SchemeCert]:
+        return [_SchemeCert("old"), _SchemeCert("new")]
+
+    def is_signed_v2(self) -> bool:
+        return False
+
+    def is_signed_v3(self) -> bool:
+        return True
+
+    def is_signed_v31(self) -> bool:
+        return True
+
+    def get_certificates_v1(self) -> list[_SchemeCert]:
+        return []
+
+    def get_certificates_v2(self) -> list[_SchemeCert]:
+        return []
+
+    def get_certificates_v3(self) -> list[_SchemeCert]:
+        return [_SchemeCert("old")]
+
+    def get_certificates_v31(self) -> list[_SchemeCert]:
+        return [_SchemeCert("new")]
+
+
+class _MultiSchemeApk:
+    """One key signed into v1, v2 and v3 at once -- the common modern case."""
+
+    def get_signature_names(self) -> list[str]:
+        return ["META-INF/CERT.RSA"]
+
+    def get_certificates(self) -> list[_SchemeCert]:
+        return [_SchemeCert("k")]
+
+    def is_signed_v2(self) -> bool:
+        return True
+
+    def is_signed_v3(self) -> bool:
+        return True
+
+    def get_certificates_v1(self) -> list[_SchemeCert]:
+        return [_SchemeCert("k")]
+
+    def get_certificates_v2(self) -> list[_SchemeCert]:
+        return [_SchemeCert("k")]
+
+    def get_certificates_v3(self) -> list[_SchemeCert]:
+        return [_SchemeCert("k")]
+
+    def get_certificates_v31(self) -> list[_SchemeCert]:
+        return []
+
+
+def test_apk_certificates_tag_each_cert_with_its_signing_schemes() -> None:
+    """A key rotation must show which cert is v3.1 (new) and which is v3 (old).
+
+    The flat, sha256-deduped union from get_certificates() hides the lineage.
+    Keying each scheme's certs by digest lets the view label the rotated key as
+    v3.1 and the retained key as v3, so the current signer is identifiable.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _RotationApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    by_subject = {c["subject"]: c for c in payload["certificates"]}
+    assert by_subject["CN=old"]["schemes"] == ["v3"]
+    assert by_subject["CN=new"]["schemes"] == ["v3.1"]
+    assert payload["signed_v3"] is True
+    assert payload["signed_v31"] is True
+
+
+def test_apk_certificates_list_every_scheme_a_shared_key_signs() -> None:
+    """A key present in v1, v2 and v3 is labelled with all three, in order."""
+    client = ApkClient()
+    client._apk = lambda _path: _MultiSchemeApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    cert = payload["certificates"][0]
+    assert cert["schemes"] == ["v1", "v2", "v3"]
+
+
+def test_apk_certificates_omit_schemes_when_the_build_cannot_report_them() -> None:
+    """Older androguard without per-scheme getters must not grow an empty label.
+
+    _FakeApk exposes only get_certificates()/get_signature_names(), like a build
+    predating the v2/v3 accessors. The scheme index is then empty, so the cert
+    entries carry no schemes key rather than a misleading empty list.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert all("schemes" not in cert for cert in payload["certificates"])

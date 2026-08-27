@@ -86,6 +86,45 @@ def _scheme_flag(apk: Any, method: str) -> bool:
         return False
 
 
+_CERT_SCHEME_METHODS = (
+    ("v1", "get_certificates_v1"),
+    ("v2", "get_certificates_v2"),
+    ("v3", "get_certificates_v3"),
+    ("v3.1", "get_certificates_v31"),
+)
+
+
+def _cert_scheme_index(apk: Any) -> dict[Any, list[str]]:
+    """Map each signer certificate (by sha256 digest) to the schemes carrying it.
+
+    ``get_certificates()`` returns a flat, sha256-deduped union across
+    v1/v2/v3/v3.1, so on its own it cannot say whether an identity is the old key
+    kept in the v3 lineage or the rotated key introduced in the v3.1 block -- the
+    exact distinction an analyst inspecting a key rotation needs. Re-reading each
+    scheme's certificates and keying on the digest lets every unioned cert be
+    tagged with the scheme(s) it appears in, in canonical v1->v3.1 order. A build
+    missing a per-scheme getter simply contributes nothing, so the label degrades
+    to absent rather than raising, matching ``_scheme_flag``.
+    """
+    index: dict[Any, list[str]] = {}
+    for scheme, method in _CERT_SCHEME_METHODS:
+        getter = getattr(apk, method, None)
+        if not callable(getter):
+            continue
+        try:
+            certs = getter()
+        except Exception:  # noqa: BLE001 - scheme blocks vary by androguard build
+            continue
+        for cert in certs or []:
+            fp = getattr(cert, "sha256", None)
+            if fp is None:
+                continue
+            schemes = index.setdefault(fp, [])
+            if scheme not in schemes:
+                schemes.append(scheme)
+    return index
+
+
 class _ParsedApk:
     __slots__ = ("apk", "analysis", "_dex")
 
@@ -264,22 +303,25 @@ class ApkClient:
                 files_more = True
                 break
             sig_files.append(str(name))
+        scheme_index = _cert_scheme_index(apk)
         certs_more = False
         for cert in apk.get_certificates():
             if len(items) >= _MAX_CERTIFICATES:
                 certs_more = True
                 break
             try:
-                items.append(
-                    {
-                        "subject": _name_text(getattr(cert, "subject", None)),
-                        "issuer": _name_text(getattr(cert, "issuer", None)),
-                        "serial": str(getattr(cert, "serial_number", "")),
-                        "sha256": cert.sha256_fingerprint
-                        if hasattr(cert, "sha256_fingerprint")
-                        else "",
-                    }
-                )
+                item: JsonObject = {
+                    "subject": _name_text(getattr(cert, "subject", None)),
+                    "issuer": _name_text(getattr(cert, "issuer", None)),
+                    "serial": str(getattr(cert, "serial_number", "")),
+                    "sha256": cert.sha256_fingerprint
+                    if hasattr(cert, "sha256_fingerprint")
+                    else "",
+                }
+                fp = getattr(cert, "sha256", None)
+                if fp is not None and fp in scheme_index:
+                    item["schemes"] = list(scheme_index[fp])
+                items.append(item)
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
         v1_signed = bool(names)

@@ -54,13 +54,16 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_certificates(session_id: str) -> dict[str, Any]:
         """List signing certificates and the signature schemes in force.
 
-        Answers with certificates (subject, issuer, serial, sha256),
-        signature_files, v1_signed, signed_v2, signed_v3, signed_v31, signed
-        and has_more so a list that filled the cap is not read as every signer.
-        signed is the one to trust for "is this signed at all": an app targeting
-        API 24+ is commonly v2/v3-only and a key-rotation app on Android 13+ can
-        be v3.1-only, so v1_signed false does not mean unsigned. There is no
-        certs or signatures field.
+        Answers with certificates (subject, issuer, serial, sha256, and schemes
+        -- the v1/v2/v3/v3.1 blocks that carry that identity), signature_files,
+        v1_signed, signed_v2, signed_v3, signed_v31, signed and has_more so a
+        list that filled the cap is not read as every signer. schemes tells a
+        rotated key (v3.1) apart from the old key kept in the v3 lineage, which
+        the flat certificate union otherwise hides. signed is the one to trust
+        for "is this signed at all": an app targeting API 24+ is commonly
+        v2/v3-only and a key-rotation app on Android 13+ can be v3.1-only, so
+        v1_signed false does not mean unsigned. There is no certs or signatures
+        field.
         """
         return _dump(analysis.apk_certificates(session_id))
 
