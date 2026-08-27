@@ -485,6 +485,10 @@ _LC_LOAD_DYLINKER = 0x0E  # names the dynamic linker -- the Mach-O PT_INTERP
 _LC_ID_DYLIB = 0x0D  # a dylib's own install name -- the Mach-O DT_SONAME
 _LC_UUID = 0x1B  # the build's unique id -- the Mach-O GNU build-id
 _LC_MAIN = 0x80000028  # entry point as a file offset of main() -- the Mach-O e_entry
+# The @rpath search paths baked into the image -- the Mach-O DT_RPATH/DT_RUNPATH.
+# Same hijack-triage weight as on ELF: a writable or relative entry lets an
+# attacker plant a dylib that @rpath resolution picks up first.
+_LC_RPATH = 0x8000001C
 _LC_SEGMENT = 0x01
 _LC_SEGMENT_64 = 0x19
 _MACHO_MAX_LOAD_CMDS = 4096
@@ -2467,6 +2471,9 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         lc = _macho_load_commands(cmds, order, ncmds)
         if lc["dylibs"] is not None:
             facts["dylibs"] = lc["dylibs"]
+        # LC_RPATH entries, the ELF rpath/runpath analogue; absent stays absent.
+        if lc["rpaths"]:
+            facts["rpath"] = lc["rpaths"]
         for key in ("interpreter", "install_name", "uuid"):
             if lc[key] is not None:
                 facts[key] = lc[key]
@@ -2552,8 +2559,9 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     ``uuid`` (LC_UUID, the build id), ``entryoff`` (LC_MAIN's file offset of
     main, or None), ``segments`` ((vmaddr, fileoff, filesize) per LC_SEGMENT
     / LC_SEGMENT_64, for mapping that offset to an address), ``symtab``
-    (LC_SYMTAB's (stroff, strsize), for the canary scan) and ``cryptid``
-    (LC_ENCRYPTION_INFO's crypt id, or None when the image carries none).
+    (LC_SYMTAB's (stroff, strsize), for the canary scan), ``cryptid``
+    (LC_ENCRYPTION_INFO's crypt id, or None when the image carries none) and
+    ``rpaths`` (the LC_RPATH search paths, the DT_RPATH/DT_RUNPATH analogue).
     Bounded by the command count and the region already sized; a command whose
     body runs past that region stops the walk.
     """
@@ -2566,13 +2574,16 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         "segments": [],
         "symtab": None,
         "cryptid": None,
+        "rpaths": [],
     }
     if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
         return result
     names: list[str] = []
     segments: list[tuple[int, int, int]] = []
+    rpaths: list[str] = []
     result["dylibs"] = names
     result["segments"] = segments
+    result["rpaths"] = rpaths
     pos = 0
     for _ in range(ncmds):
         if pos + 8 > len(cmds):
@@ -2585,6 +2596,12 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             name = _macho_lc_str(cmds, pos, cmdsize, order)
             if name:
                 names.append(name)
+        elif cmd == _LC_RPATH and len(rpaths) < _MACHO_MAX_DYLIBS:
+            # rpath_command is an lc_str like the dylinker's; @loader_path /
+            # @executable_path tokens stay verbatim -- expansion is dyld's job.
+            rpath = _macho_lc_str(cmds, pos, cmdsize, order)
+            if rpath:
+                rpaths.append(rpath)
         elif cmd == _LC_LOAD_DYLINKER and result["interpreter"] is None:
             result["interpreter"] = _macho_lc_str(cmds, pos, cmdsize, order)
         elif cmd == _LC_ID_DYLIB and result["install_name"] is None:

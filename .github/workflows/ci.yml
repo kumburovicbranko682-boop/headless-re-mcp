@@ -226,14 +226,16 @@ jobs:
           chmod +x /tmp/apktoolbin/apktool
           echo "/tmp/apktoolbin" >> "$GITHUB_PATH"
 
-      - name: Install apksigner and monodis for the Android sign / .NET cross-check gates
+      - name: Install apksigner, monodis and llvm for the cross-check gates
         # apksigner's standalone package is just apksigner.jar plus a wrapper (a
         # few MB), not the whole Android SDK; the sign gate builds the debug
         # keystore itself with keytool from the JDK above. mono-utils supplies
         # monodis (an independent ECMA-335 parser the metadata gate cross-checks
         # the pure-Python reader against) and pedump (which decodes the CLI
         # header, so the corflags gate cross-checks il_only/32-bit/strong-name).
-        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils
+        # llvm supplies llvm-objdump, the independent (and strict) Mach-O
+        # decoder the toolchain gate cross-checks the LC_RPATH fact against.
+        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils llvm
 
       - name: Install Ghidra for the headless analysis gate
         run: |

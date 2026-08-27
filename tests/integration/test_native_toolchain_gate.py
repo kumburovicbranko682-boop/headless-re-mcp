@@ -1,15 +1,18 @@
-"""ELF search paths (DT_RPATH/DT_RUNPATH), cross-validated against readelf.
+"""Native search paths (ELF DT_RPATH/DT_RUNPATH, Mach-O LC_RPATH) vs binutils/llvm.
 
 The baked-in library search path is a first-order hijack/supply-chain triage
 fact: a writable or relative entry lets an attacker plant a library the loader
 picks up. The other native gates cross-check the stdlib reader against radare2
 on system binaries, but system binaries almost never carry a search path, so
-the positive case needs a binary that does. This gate builds one with the real
-toolchain: gcc links a probe with a known rpath (old tags) and another with a
-known runpath (new tags), the session's tool-free facts must name those exact
-paths, and readelf -d -- binutils' independent decoder of the same dynamic
-table -- must agree entry for entry. skip != pass when gcc or readelf is
-missing; both are present on the Linux CI lane, so it runs there.
+the positive case needs binaries that do. For ELF this gate builds them with
+the real toolchain: gcc links a probe with a known rpath (old tags) and another
+with a known runpath (new tags), the session's tool-free facts must name those
+exact paths, and readelf -d -- binutils' independent decoder of the same
+dynamic table -- must agree entry for entry. For Mach-O the committed fixture
+carries an LC_RPATH, and llvm-objdump --macho (LLVM's independent Mach-O
+decoder, strict enough to have rejected the fixture's earlier 4-byte-aligned
+load commands) must report the same path. skip != pass when a tool is missing;
+gcc/readelf ship with the CI runner and llvm is installed on the Linux lane.
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ from typing import Any, cast
 import pytest
 
 from headless_re_mcp.core.service import AnalysisService
+
+_MACHO_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "native" / "minimal.macho"
 
 # readelf -d prints e.g. " 0x...f (RPATH)  Library rpath: [/opt/lib:$ORIGIN]".
 _READELF_RPATH_RE = re.compile(r"\(RPATH\)\s+Library rpath: \[([^\]]*)\]")
@@ -117,4 +122,42 @@ def test_elf_search_paths_agree_with_readelf(tmp_path: Path) -> None:
             assert facts["entry"] > 0
     finally:
         for session_id in sessions:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_macho_rpath_agrees_with_llvm_objdump() -> None:
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — Mach-O rpath gate not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    # llvm-objdump validates every load command before it prints anything (it
+    # is what caught the fixture's earlier 4-byte-aligned commands), so a zero
+    # exit is itself a well-formedness check on the committed image.
+    result = subprocess.run(
+        [objdump, "--macho", "--rpaths", str(_MACHO_FIXTURE)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    # Output is the file name line, then one search path per line.
+    llvm_rpaths = [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip() and not line.strip().endswith(":")
+    ]
+    assert llvm_rpaths, result.stdout
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, _MACHO_FIXTURE)
+        # The tool-free LC_RPATH walk and LLVM's decoder name the same paths,
+        # verbatim (no @loader_path expansion) and in the same order.
+        assert native["rpath"] == llvm_rpaths == ["@loader_path/../Frameworks"]
+    finally:
+        if session_id is not None:
             service.close_session(session_id)

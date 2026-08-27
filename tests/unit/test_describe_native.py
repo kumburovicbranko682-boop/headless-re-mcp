@@ -92,6 +92,17 @@ def _lc_load_dylinker(path: str) -> bytes:
     return bytes(cmd)
 
 
+def _lc_rpath(path: str, *, name_offset: int = 12) -> bytes:
+    raw = path.encode() + b"\x00"
+    total = (12 + len(raw) + 7) & ~7  # rpath_command is an lc_str like the dylinker's
+    cmd = bytearray(total)
+    cmd[0:4] = (0x8000001C).to_bytes(4, "little")  # LC_RPATH
+    cmd[4:8] = total.to_bytes(4, "little")
+    cmd[8:12] = name_offset.to_bytes(4, "little")
+    cmd[12 : 12 + len(raw)] = raw
+    return bytes(cmd)
+
+
 def _lc_filler(size: int) -> bytes:
     # A load command the reader does not recognise, used to push later commands
     # past the header window so the streamed read is what reaches them.
@@ -716,6 +727,38 @@ def test_macho_records_its_dynamic_linker(tmp_path: Path) -> None:
     assert facts["dylibs"] == [lib]
 
 
+def test_macho_rpaths_collected_in_command_order(tmp_path: Path) -> None:
+    # LC_RPATH is the Mach-O rpath/runpath: each command carries one search
+    # path, kept verbatim (dyld expands @loader_path, not the reader) and in
+    # the order dyld would walk them.
+    data = _macho64_full(
+        filetype=2,  # MH_EXECUTE
+        flags=0x4,  # MH_DYLDLINK
+        load_cmds=_lc_rpath("@loader_path/../Frameworks") + _lc_rpath("/opt/lib"),
+        ncmds=2,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["rpath"] == ["@loader_path/../Frameworks", "/opt/lib"]
+
+
+def test_macho_without_lc_rpath_has_no_rpath_fact(tmp_path: Path) -> None:
+    data = _macho64_full(filetype=2, flags=0x4, load_cmds=_lc_uuid(), ncmds=1)
+    assert "rpath" not in describe_native(_write(tmp_path, "a.bin", data))["native"]
+
+
+def test_macho_rpath_with_a_hostile_string_offset_is_dropped(tmp_path: Path) -> None:
+    # An lc_str offset pointing past its own command cannot be resolved; that
+    # command is skipped rather than read out of bounds or guessed.
+    data = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_rpath("/opt/lib", name_offset=4096) + _lc_rpath("/usr/lib"),
+        ncmds=2,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["rpath"] == ["/usr/lib"]
+
+
 def test_macho_records_uuid_and_install_name(tmp_path: Path) -> None:
     # LC_ID_DYLIB is the Mach-O DT_SONAME and LC_UUID the Mach-O build-id, so a
     # dylib reports both the way an ELF shared object reports soname/build_id.
@@ -836,12 +879,15 @@ def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     if not fixture.is_file():
         pytest.skip(f"fixture missing: {fixture}")
     facts = describe_native(fixture)["native"]
-    assert facts["entry"] == 0x100000238
+    assert facts["entry"] == 0x100000268
     # Its build posture, cross-checked against radare2 by the r2 gate: NX on,
     # stack-protector imports present, no FairPlay encryption.
     assert facts["nx"] is True
     assert facts["canary"] is True
     assert facts["encrypted"] is False
+    # The @rpath search path baked in by LC_RPATH, which llvm-objdump
+    # independently confirms in the toolchain gate.
+    assert facts["rpath"] == ["@loader_path/../Frameworks"]
 
 
 def test_macho_reads_load_commands_past_the_header_window(tmp_path: Path) -> None:

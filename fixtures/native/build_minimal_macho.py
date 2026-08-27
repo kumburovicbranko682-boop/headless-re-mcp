@@ -15,8 +15,13 @@ undefined imports include the ``___stack_chk_guard``/``___stack_chk_fail``
 pair a clang ``-fstack-protector`` build pulls from libSystem -- so the
 canary posture fact has a positive case radare2 independently confirms (r2
 keys its own canary line on that import, reached through the dysymtab's
-indirect-symbol table). No macOS toolchain is required; the output is
-deterministic and committed as ``minimal.macho`` next to this file.
+indirect-symbol table) -- and an ``LC_RPATH`` so the @rpath search-path fact
+(the ELF rpath/runpath analogue) has a positive case llvm-objdump confirms.
+Variable-length load commands are 8-byte aligned: the 64-bit Mach-O spec
+requires it and llvm-objdump rejects the image otherwise (radare2 merely
+tolerates 4-byte alignment, which is how the earlier misalignment went
+unnoticed). No macOS toolchain is required; the output is deterministic and
+committed as ``minimal.macho`` next to this file.
 
 Run ``python fixtures/native/build_minimal_macho.py`` to regenerate it.
 """
@@ -35,6 +40,9 @@ CODE = b"\x55\x48\x89\xe5\x31\xc0\x5d\xc3"
 # interpreter and libSystem as the (at minimum) linked dylib.
 DYLINKER = "/usr/lib/dyld"
 DYLIB = "/usr/lib/libSystem.B.dylib"
+# The @rpath search path an app-bundle binary typically bakes in; kept verbatim
+# (unexpanded) by every reader, so it round-trips exactly.
+RPATH = "@loader_path/../Frameworks"
 
 # The stack-protector imports every hardened clang build carries; both the
 # stdlib reader (string-table scan) and radare2 (undefined-import walk) derive
@@ -54,28 +62,36 @@ _LC_LOAD_DYLIB = 0x0C
 _LC_LOAD_DYLINKER = 0x0E
 _LC_UUID = 0x1B
 _LC_MAIN = 0x80000028
+_LC_RPATH = 0x8000001C
 _S_CSTRING_LITERALS = 0x00000002
 _S_ATTR_PURE_INSTRUCTIONS_SOME = 0x80000400
 _VM_BASE = 0x100000000
 
 
-def _align4(value: int) -> int:
-    return (value + 3) & ~3
+def _align8(value: int) -> int:
+    # 64-bit load commands must be 8-byte aligned; llvm-objdump enforces this.
+    return (value + 7) & ~7
 
 
 def _lc_load_dylinker(path: str) -> bytes:
     raw = path.encode() + b"\x00"
-    total = _align4(12 + len(raw))  # cmd, cmdsize, name offset -- then the path
+    total = _align8(12 + len(raw))  # cmd, cmdsize, name offset -- then the path
     return struct.pack("<III", _LC_LOAD_DYLINKER, total, 12) + raw.ljust(total - 12, b"\x00")
 
 
 def _lc_load_dylib(path: str) -> bytes:
     raw = path.encode() + b"\x00"
-    total = _align4(24 + len(raw))  # dylib_command header is 24 bytes, then the name
+    total = _align8(24 + len(raw))  # dylib_command header is 24 bytes, then the name
     header = struct.pack(
         "<IIIIII", _LC_LOAD_DYLIB, total, 24, 0, 0x10000, 0x10000
     )  # name offset, timestamp, current/compat version
     return header + raw.ljust(total - 24, b"\x00")
+
+
+def _lc_rpath(path: str) -> bytes:
+    raw = path.encode() + b"\x00"
+    total = _align8(12 + len(raw))  # rpath_command is an lc_str like the dylinker's
+    return struct.pack("<III", _LC_RPATH, total, 12) + raw.ljust(total - 12, b"\x00")
 
 
 def _seg64(
@@ -128,6 +144,7 @@ def _symtab_blob(code_addr: int) -> tuple[bytes, bytes]:
 def build() -> bytes:
     dylinker = _lc_load_dylinker(DYLINKER)
     dylib = _lc_load_dylib(DYLIB)
+    rpath = _lc_rpath(RPATH)
     seg_pagezero = 72
     seg_text = 72 + 80 * 2  # two sections: __text and __cstring
     lc_main = 24
@@ -139,12 +156,13 @@ def build() -> bytes:
         + seg_text
         + len(dylinker)
         + len(dylib)
+        + len(rpath)
         + lc_main
         + lc_uuid
         + lc_symtab
         + lc_dysymtab
     )
-    ncmds = 8
+    ncmds = 9
     code_off = 32 + sizeofcmds
     cstr_off = code_off + len(CODE)
     total = cstr_off + len(MARKER)
@@ -192,7 +210,7 @@ def build() -> bytes:
     text = _seg64("__TEXT", _VM_BASE, 0x1000, 0, total, 5, 5, 2, 0) + text_sect + cstr_sect
     main = struct.pack("<IIQQ", _LC_MAIN, 24, code_off, 0)  # entryoff, stacksize
     uuid = struct.pack("<II", _LC_UUID, 24) + bytes(range(16))
-    blob = header + pagezero + text + dylinker + dylib + main + uuid + symtab + dysymtab
+    blob = header + pagezero + text + dylinker + dylib + rpath + main + uuid + symtab + dysymtab
     blob += CODE + MARKER
     blob += b"\x00" * padding
     blob += nlists + strtab + indirect
