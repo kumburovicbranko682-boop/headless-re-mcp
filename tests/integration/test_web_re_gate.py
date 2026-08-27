@@ -18,6 +18,22 @@ from headless_re_mcp.core.service import AnalysisService
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
 
+# A real (not empty) WebAssembly module: exports add(i32, i32) -> i32 whose body
+# is `local.get 0; local.get 1; i32.add`. Hand-assembled so the gate needs no
+# wat2wasm (wabt's apt package ships wasm2wat/wasm-objdump but not wat2wasm).
+# Sections: type (0x01), function (0x03), export (0x07), code (0x0a). Driving a
+# module with a typed, named, bodied function is what lets wasm.wat/wasm.info
+# assert real decoded content instead of just "module", so a wabt that runs but
+# decodes nothing fails the gate.
+_WASM_ADD_MODULE = bytes.fromhex(
+    # bytes.fromhex ignores the spaces; each line is one WebAssembly section.
+    "0061736d 01000000"  # magic "\0asm" + version 1
+    "01 07 01 60 02 7f7f 01 7f"  # type section: (i32, i32) -> i32
+    "03 02 01 00"  # function section: one func of type 0
+    "07 07 01 03 616464 00 00"  # export section: "add" -> func 0
+    "0a 09 01 07 00 2000 2001 6a 0b"  # code: local.get 0; local.get 1; i32.add
+)
+
 _DATA_URL = (
     "data:text/html,"
     "<html><head><title>gate</title>"
@@ -128,13 +144,51 @@ def test_js_unpack_bundle_when_webcrack_present() -> None:
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
-    # The smallest valid module: magic + version, no sections.
-    module = tmp_path / "empty.wasm"
-    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    # A real module, not the 8-byte empty one: asserting only "module" in the wat
+    # passes for an empty header and proves nothing about decoding. Drive the
+    # add(i32,i32)->i32 module and require the recovered signature, export name,
+    # and body instructions -- verified against wabt's wasm2wat -- so a wabt that
+    # runs but decodes nothing fails here instead of reading green.
+    module = tmp_path / "add.wasm"
+    module.write_bytes(_WASM_ADD_MODULE)
     service = AnalysisService()
     try:
         result = service.wasm_wat(str(module))
         assert result.ok, result.error
-        assert "module" in result.data["wat"]
+        wat = result.data["wat"]
+        assert result.data["bytes"] > 0
+        assert "(func" in wat  # a function was decompiled, not just "(module)"
+        assert "(param i32 i32)" in wat  # the type signature was recovered
+        assert "(result i32)" in wat
+        assert "add" in wat  # the export name survived
+        assert "i32.add" in wat  # the body instructions were decoded
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
+    """wasm.info (wasm-objdump) had no live gate at all.
+
+    The WASM smoke path only exercised wasm.wat; wasm.info runs a different tool
+    (wasm-objdump -h -x) with its own argument shape and output, so a break in it
+    -- a wabt packaging that ships wasm2wat but not wasm-objdump, an argument the
+    installed objdump rejects -- would ship unseen. Drive the same real module
+    and require the section headers wasm-objdump prints for it.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM info Gate not run (skip != pass)")
+    module = tmp_path / "add.wasm"
+    module.write_bytes(_WASM_ADD_MODULE)
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(module))
+        assert result.ok, result.error
+        dump = result.data["objdump"]
+        assert isinstance(dump, str)
+        # -h -x prints a Sections listing; this module carries Type and Export
+        # sections, so both must appear or the dump did not really parse it.
+        assert "Type" in dump
+        assert "Export" in dump
     finally:
         service.close_all()
