@@ -24,6 +24,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（控制台观测面 Gate）
+
+- 新集成 Gate `tests/integration/test_console_observability_gate.py`（纯 Python,任何平台可跑,
+  经真实 `serve-web` 子进程)钉住操作员实际盯着看、取证据用的那部分控制台,此前这些端点零集成覆盖:
+  - **实时监控**:`GET /api/sessions/{id}/monitor` 一次性快照如实反映刚发生的事(timeline 条目、
+    刚生成的报告工件);`/monitor/stream` SSE 流按 EventSource 的方式鉴权(token 走查询串,
+    浏览器 EventSource 设不了头),`max_frames` 有界地吐 `event: monitor` 帧后以 `event: end`
+    干净收束;消失的会话得到 `ok=false` 带错误码的诚实帧;无 token 直接 401。
+  - **工件面**:`GET /api/artifacts` 列出报告工件,`GET /api/artifacts/{id}/file` 下载回来的
+    是工件的**真实字节**(与 report.generate 返回的 markdown 逐字相等),伪造 id 得 404。
+  - **审计读面**:`GET /api/audit?session_id=` 的条目把真实操作(`session.create`)如实归属到
+    真实会话,且逐条 `ok`。
+  - **通用写代理**:`POST /api/write/{action}` 缺 `confirm` 得 400 `confirm_required`,未知
+    动作 400 `unknown_or_disallowed_write`,坏参数 400 而非 500,确认后的 `artifacts.gc`
+    真正执行成功。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
