@@ -8,13 +8,25 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
+# Every ghidra tool schema declares 0 < timeout <= 600. FastMCP enforces that
+# on the MCP path, but the agent transport invokes handlers straight from model
+# arguments with no schema check (see clamp_cli_timeout), so a model-supplied
+# timeout only becomes a real bound when clamped here -- the same guard r2,
+# jadx, apktool and jsre apply. analyzeHeadless starts a JVM on a large sample;
+# an unclamped 1e9 would hold a core and the project lock for that long.
+_MAX_ANALYZE_TIMEOUT_S = 600.0
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
 
 
@@ -290,6 +302,10 @@ class GhidraClient:
         delete_project: bool,
     ) -> tuple[str, str, int]:
         assert self.analyze is not None
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_ANALYZE_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise GhidraError("invalid_params", str(exc)) from exc
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         env = os.environ.copy()
         # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free. Prepend, do

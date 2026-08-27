@@ -6,9 +6,25 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
+# The windbg tool schemas declare 0 < timeout <= 300 for dump commands and
+# <= 120 for the non-invasive live probes. FastMCP enforces those on the MCP
+# path, but the agent transport calls handlers straight from model arguments
+# with no schema check (see clamp_cli_timeout), so the deadline that reaches
+# run_bounded is only bounded when clamped here -- the same guard r2, jadx,
+# apktool and jsre already apply. Without it a model-supplied timeout of 1e9
+# holds a cdb worker for that long, and a non-positive or NaN value makes
+# run_bounded kill the child immediately and report a timeout for what is
+# really a bad parameter.
+_MAX_DUMP_TIMEOUT_S = 300.0
+_MAX_LIVE_TIMEOUT_S = 120.0
 _ALLOWED_CMDS = frozenset({"lm", "k", "r", "u", "~*", "version", "vertarget"})
 # cdb -c treats these as command composition, so a head token of `lm` must
 # not smuggle `lm; !process` or `k\n.shell` past the allow-list. `&` is the
@@ -237,6 +253,10 @@ class WindbgClient:
                 pid=pid,
                 allowed_pid=allowed_pid,
             )
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_LIVE_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise WindbgError("invalid_params", str(exc)) from exc
         for cmd in commands:
             _require_allowed_cmd(cmd)
         script = "; ".join([*commands, "q"])
@@ -277,6 +297,10 @@ class WindbgClient:
 
     def _run_dump(self, dump: Path, commands: list[str], *, timeout: float) -> JsonObject:
         cdb = self._require_cdb()
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_DUMP_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise WindbgError("invalid_params", str(exc)) from exc
         if not dump.is_file():
             raise WindbgError("not_found", "dump file not found", path=str(dump))
         for cmd in commands:
