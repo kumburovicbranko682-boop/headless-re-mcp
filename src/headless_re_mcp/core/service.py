@@ -17,7 +17,7 @@ from uuid import uuid4
 from headless_re_mcp.backends.adb import AdbBackend
 from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.backends.ida.client import IdaWorkerClient, IdaWorkerError
-from headless_re_mcp.backends.proxy import ProxyBackend
+from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
 from headless_re_mcp.backends.web import WebBackend, WebError
 from headless_re_mcp.backends.x64dbg.client import XdbgClient, XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import (
@@ -1087,9 +1087,21 @@ class AnalysisService(
                     f"browser cleanup failed: {type(exc).__name__}: {exc}",
                     cause_type=type(exc).__name__,
                 )
+        proxy_close_error: BaseException | None = None
         if proxy_backend is not None:
-            with suppress(BaseException):
+            try:
                 proxy_backend.stop(session_id)
+            except ProxyError as exc:
+                # ProxyError("timeout") means the listener thread and its port
+                # are still alive. Calling this a clean close would hide a
+                # resource the backend deliberately kept tracked for a retry.
+                proxy_close_error = exc
+            except BaseException as exc:  # noqa: BLE001 - recorded, not propagated
+                proxy_close_error = ProxyError(
+                    "proxy_cleanup_failed",
+                    f"proxy cleanup failed: {type(exc).__name__}: {exc}",
+                    cause_type=type(exc).__name__,
+                )
         if apk_binary is not None:
             with suppress(BaseException):
                 ApkClient.release(apk_binary)
@@ -1118,12 +1130,16 @@ class AnalysisService(
                     reason="session_closed" if not close_errors else "worker_close_failed",
                 )
 
+        # Surfaced ahead of the runtime failures and in teardown order (web,
+        # then proxy): browser/proxy teardown ran before the worker-close loop
+        # and is what those callers wait on. Prepended after the loop so the
+        # trace-reason check above sees only the debugger workers it finalises.
+        backend_close_errors: list[tuple[str, BaseException]] = []
         if web_close_error is not None:
-            # Surfaced ahead of the runtime failures: browser teardown ran first
-            # and its incomplete or failed close is what the web caller waits on.
-            # Inserted after the loop so the trace-reason check above sees only
-            # the debugger workers it is finalising.
-            close_errors.insert(0, ("web", web_close_error))
+            backend_close_errors.append(("web", web_close_error))
+        if proxy_close_error is not None:
+            backend_close_errors.append(("proxy", proxy_close_error))
+        close_errors[:0] = backend_close_errors
 
         # Cleared only now: the loop above is what finalises and registers a
         # trace whose worker went away, and it needs the state to do it.
@@ -1278,7 +1294,20 @@ class AnalysisService(
                     )
         proxy_backend = getattr(self, "_proxy_backend", None)
         if proxy_backend is not None:
-            proxy_backend.close_all()
+            try:
+                proxy_backend.close_all()
+            except BaseException as exc:  # noqa: BLE001 - reported, not propagated
+                # Same boundary as the browser above: a wedged proxy used to
+                # throw past the adb cleanup after it and discard every count and
+                # error already collected.
+                failure = _failure(exc, backend="proxy")
+                if failure.error is not None:
+                    errors.append(
+                        {
+                            "backend": "proxy",
+                            "error": failure.error.model_dump(mode="json"),
+                        }
+                    )
         adb_backend = getattr(self, "_adb_backend", None)
         if adb_backend is not None:
             with suppress(BaseException):

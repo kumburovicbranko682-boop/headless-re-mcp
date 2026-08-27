@@ -12,6 +12,7 @@ from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, TimedOut
 from headless_re_mcp.backends.ida.client import IdaWorkerError
+from headless_re_mcp.backends.proxy.client import ProxyError
 from headless_re_mcp.backends.web.client import WebError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import StealthError
@@ -119,6 +120,15 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             message=exc.message,
             details={**details, **exc.details},
             retryable=exc.code in {"timeout", "web_cleanup_failed"},
+        )
+    elif isinstance(exc, ProxyError):
+        # A stop that timed out or failed can be retried: the listener thread is
+        # kept tracked so another attempt can reach it and free the port.
+        error = RpcError(
+            code=exc.code,
+            message=exc.message,
+            details={**details, **exc.details},
+            retryable=exc.code in {"timeout", "proxy_cleanup_failed"},
         )
     elif isinstance(exc, SessionNotFound):
         # Only this type. Any KeyError used to become session_not_found, so a

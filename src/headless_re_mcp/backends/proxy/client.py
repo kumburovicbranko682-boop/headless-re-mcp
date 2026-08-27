@@ -534,6 +534,18 @@ class _ProxyInstance:
         # never runs its finally, and a stale handler is the one piece of a dead
         # proxy that keeps costing the whole process something.
         _uninstall_master_logging(master)
+        if thread is not None and thread.is_alive():
+            # The listener may still own its port. Clearing the loop/master and
+            # reporting success would lose the only handle that could retry the
+            # shutdown: one wedged thread would become zero tracked instances
+            # while staying alive. Keep the handle intact and fail honestly.
+            raise ProxyError(
+                "timeout",
+                "proxy thread did not stop within 10 seconds",
+                host=self.host,
+                port=self.port,
+                timeout_s=10.0,
+            )
         self._master = None
         self._loop = None
 
@@ -608,7 +620,15 @@ class ProxyBackend:
             inst = self._instances.pop(session_id, None)
         if inst is None:
             return {"stopped": False, "note": "no proxy was running"}
-        inst.stop()
+        try:
+            inst.stop()
+        except BaseException:
+            # stop() failed -- the listener thread is likely wedged and its port
+            # may still be held. Keep the handle so a later stop/close_all can
+            # retry, unless a new start already claimed this session id.
+            with self._lock:
+                self._instances.setdefault(session_id, inst)
+            raise
         return {"stopped": True}
 
     def status(self, session_id: str) -> JsonObject:
@@ -762,7 +782,17 @@ class ProxyBackend:
 
     def close_all(self) -> None:
         with self._lock:
-            instances = list(self._instances.values())
-            self._instances.clear()
-        for inst in instances:
-            inst.stop()
+            session_ids = list(self._instances)
+        first_error: BaseException | None = None
+        for session_id in session_ids:
+            # Bulk teardown is the last chance to release every listening socket,
+            # so a wedged instance must not skip the ones behind it. stop retains
+            # the handle of any instance it could not stop; the first failure is
+            # surfaced after every stop has been attempted.
+            try:
+                self.stop(session_id)
+            except BaseException as exc:  # noqa: BLE001 - re-raised after the sweep
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
