@@ -461,3 +461,33 @@ def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
             described = ast.get_docstring(node) or ""
     assert "Answers with raw" in described
     assert "no format, arch, bits" in described
+
+
+def test_r2_info_surfaces_a_threaded_architecture_on_a_non_pe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The unparsed ``i`` path still carries the session's architecture.
+
+    r2.info returns raw text (parsed False), so its architecture cannot come
+    from the listing -- and on an ELF it cannot come from the PE header either.
+    It has to be the architecture describe_native put on the session, threaded
+    through exactly like the parsed tools; without threading a native r2.info
+    reported no architecture at all. image_base stays absent: there is no PE
+    preferred base to report on a native binary.
+    """
+    binary = _non_pe(tmp_path)
+    text = b"arch     x86\nbits     64\nos       linux\nendian   little\n"
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=text, stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    payload = r2_client.R2Client(_stub_executable(tmp_path)).run(
+        binary, ["i"], architecture=Architecture.X64
+    )
+
+    assert payload["parsed"] is False
+    assert payload["raw"] == text.decode()
+    assert payload["architecture"] == "x64"
+    assert "image_base" not in payload
