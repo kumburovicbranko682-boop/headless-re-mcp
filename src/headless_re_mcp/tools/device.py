@@ -71,6 +71,22 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.connections")
+    def device_connections(
+        serial: str, limit: Annotated[int, Field(ge=1, le=1000)] = 500
+    ) -> dict[str, Any]:
+        """List active TCP sockets (/proc/net/tcp and /proc/net/tcp6).
+
+        The device's live network surface: LISTENing ports and connected
+        remote endpoints with the decoded TCP state and owning uid, so an RE
+        session can see what an app talks to. Answers with connections (each
+        carrying proto, local, remote, state, uid, inode), count, has_more, and
+        unavailable (the address families the device refused, when any) so a
+        bounded read is not read as every socket and a refused family is not
+        read as none. Only when both families fail is the call an error.
+        """
+        return _dump(analysis.device_connections(serial, limit=limit))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

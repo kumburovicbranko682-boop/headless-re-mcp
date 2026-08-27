@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -23,6 +23,16 @@ CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去�
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
+
+### 新增（设备：TCP 连接枚举）
+
+- `device.connections`（只读）：解析 `/proc/net/tcp` 与 `/proc/net/tcp6`，列出设备正在监听的端口与
+  已建立的连接，带解码后的 TCP 状态与属主 uid——这是逆向查看「某个应用在跟谁通信」的实时网络面。
+  `adb shell` 跑在有权读 `/proc/net` 的 shell 域（普通不可信应用读不到）。地址按内核写法（每个 32 位
+  字小端）精确还原：IPv4 单字、IPv6 四字，`::1` 与 `::ffff:127.0.0.1` 都能正确往返。两个地址族分别
+  读取，某个族被设备拒绝（IPv6 关闭，或 SELinux）进 `unavailable` 而不是丢弃，只有两族都失败才算
+  整体失败。回带 `connections`（每条含 `proto`、`local`、`remote`、`state`、`uid`、`inode`）、
+  `count`、`has_more` 与 `unavailable`（有则带），封顶 1000，装满上限的一次读取不会被当成全部连接。
 
 ### 新增（监控台工作台）
 

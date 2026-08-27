@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import socket
 import stat
 import threading
 import zipfile
@@ -40,7 +41,23 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_CONNECTIONS = 1000
 _MAX_DEVICES = 64
+# TCP states as the kernel writes them in /proc/net/tcp (net/tcp_states.h).
+_TCP_STATES = {
+    "01": "ESTABLISHED",
+    "02": "SYN_SENT",
+    "03": "SYN_RECV",
+    "04": "FIN_WAIT1",
+    "05": "FIN_WAIT2",
+    "06": "TIME_WAIT",
+    "07": "CLOSE",
+    "08": "CLOSE_WAIT",
+    "09": "LAST_ACK",
+    "0A": "LISTEN",
+    "0B": "CLOSING",
+    "0C": "NEW_SYN_RECV",
+}
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -174,6 +191,45 @@ def _device_shell(dev: Any, args: str | list[str], *, timeout: float = _ADB_SHEL
             raise AdbError("timeout", f"adb timed out after {timeout:g}s") from exc
         raise AdbError("backend_error", f"adb shell failed: {exc}") from exc
     return str(raw)
+
+
+def _hex_to_ip(hexip: str) -> str | None:
+    """Decode a /proc/net address field into a printable IP.
+
+    IPv4 is a single 32-bit word written little-endian per byte; IPv6 is four
+    such words. Reversing each word and handing the bytes to inet_ntop is the
+    standard, exact conversion (::1 and ::ffff:127.0.0.1 round-trip correctly).
+    """
+    try:
+        raw = bytes.fromhex(hexip)
+    except ValueError:
+        return None
+    if len(raw) == 4:
+        return socket.inet_ntop(socket.AF_INET, raw[::-1])
+    if len(raw) == 16:
+        reordered = b"".join(raw[i : i + 4][::-1] for i in range(0, 16, 4))
+        return socket.inet_ntop(socket.AF_INET6, reordered)
+    return None
+
+
+def _decode_hex_endpoint(token: str) -> tuple[str, int] | None:
+    """Split a ``<hexip>:<hexport>`` /proc/net token into (ip, port)."""
+    if ":" not in token:
+        return None
+    hexip, hexport = token.rsplit(":", 1)
+    try:
+        port = int(hexport, 16)
+    except ValueError:
+        return None
+    ip = _hex_to_ip(hexip)
+    if ip is None:
+        return None
+    return ip, port
+
+
+def _fmt_endpoint(ip: str, port: int) -> str:
+    """Render an endpoint, bracketing IPv6 so the port stays unambiguous."""
+    return f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
 
 
 def _is_host_error_output(text: str) -> bool:
@@ -525,6 +581,81 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def connections(self, serial: str, *, limit: int = 500) -> JsonObject:
+        """List active TCP sockets from /proc/net/tcp and /proc/net/tcp6.
+
+        The device's live network surface: which ports are LISTENing and which
+        remote endpoints are connected, with the decoded TCP state and the
+        owning uid, which is what an RE session uses to see what an app talks
+        to. adb shell runs in the privileged shell domain that can read
+        /proc/net, unlike an untrusted app. Each family is read separately; one
+        that the device refuses (IPv6 disabled, or SELinux) is reported under
+        unavailable rather than dropped, and only when both fail is the call an
+        error. The list is capped with has_more so a bounded read is not
+        mistaken for every socket.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_CONNECTIONS))
+        connections: list[JsonObject] = []
+        unavailable: list[str] = []
+        has_more = False
+        for proto, source in (("tcp", "/proc/net/tcp"), ("tcp6", "/proc/net/tcp6")):
+            if has_more:
+                break
+            try:
+                raw = _device_shell(dev, f"cat {source}")
+            except AdbError:
+                unavailable.append(proto)
+                continue
+            text = str(raw)
+            # A successful /proc/net read always carries the kernel's
+            # ``local_address`` header; permission-denied or no-such-file text
+            # does not, so its absence is exactly the unavailable signal.
+            if "local_address" not in text.lower():
+                unavailable.append(proto)
+                continue
+            for line in text.splitlines():
+                fields = line.split()
+                if len(fields) < 10 or not fields[0].endswith(":"):
+                    continue
+                local = _decode_hex_endpoint(fields[1])
+                remote = _decode_hex_endpoint(fields[2])
+                if local is None or remote is None:
+                    continue
+                if len(connections) >= capped:
+                    has_more = True
+                    break
+                try:
+                    uid: int | None = int(fields[7])
+                except ValueError:
+                    uid = None
+                try:
+                    inode: int | None = int(fields[9])
+                except ValueError:
+                    inode = None
+                connections.append(
+                    {
+                        "proto": proto,
+                        "local": _fmt_endpoint(local[0], local[1]),
+                        "remote": _fmt_endpoint(remote[0], remote[1]),
+                        "state": _TCP_STATES.get(fields[3].upper(), fields[3]),
+                        "uid": uid,
+                        "inode": inode,
+                    }
+                )
+        if len(unavailable) == 2:
+            raise AdbError(
+                "backend_error", "reading /proc/net/tcp failed", sources=unavailable
+            )
+        result: JsonObject = {
+            "connections": connections,
+            "count": len(connections),
+            "has_more": has_more,
+        }
+        if unavailable:
+            result["unavailable"] = unavailable
+        return result
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
