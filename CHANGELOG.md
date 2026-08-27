@@ -85,6 +85,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:前缀相邻的邻居在跑时 `force_stop` 仍回 `stopped=true`/`remaining_pids=[]`、目标包及其
   `包名:子进程` 行被如实计入、`_pids_from_ps` 精确匹配名字(拒 `app2`/`appstore`)、空行与表头不崩、
   海量进程表封顶 16 条。
+- 同一处 `_pids_for_package` 还补了主机错误守卫:adbutils 有时把 adb 主机端的 `error:` / `adb:`
+  行当 stdout 返回而不抛(设备掉线时 `pidof` / `ps -A` 都可能这样)。`pidof` 那行更棘手——它含
+  "not found",本会把逻辑带进 `ps -A` 回退,而掉线设备的 `ps -A` 又匹配不到任何进程行,读成
+  「无残留即已停」的假 `stopped=true`。现在 `pidof` 与 `ps -A` 两处输出都过 `_is_host_error_output`,
+  命中即回 `None`(核实没跑成),让 `force_stop` 如实报 could-not-verify;真正的 `pidof: not found`
+  不带主机错误前缀,照旧落到回退。新增两条回归:`pidof` 回主机错误串、以及回退里 `ps -A` 回主机错误串,
+  `stopped` 均为 null 而非 true。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 

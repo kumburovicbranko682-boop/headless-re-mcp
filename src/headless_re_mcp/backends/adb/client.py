@@ -314,6 +314,18 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
     except AdbError:
         return None
     text = str(raw).strip()
+    # adbutils can echo the adb host's own error:/adb: line as stdout instead
+    # of raising, the same failure _pm_path / getprop / pm list already guard.
+    # For pidof it is doubly wrong: a host error carries no pids, and an
+    # "error: device '...' not found" line even contains "not found", which
+    # would trip the pidof-missing fallback below into ps -A -- and on the same
+    # offline device that fallback matches no process line and returns [], which
+    # force_stop reads as a clean stop. Treat a host error as "could not read"
+    # (None) so force_stop reports the honest could-not-verify note rather than
+    # a false stopped=True. A genuine "pidof: not found" carries no such prefix
+    # and still falls through to the fallback.
+    if _is_host_error_output(text):
+        return None
     if not text:
         return []
     lower = text.lower()
@@ -322,7 +334,13 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
             ps = _device_shell(dev, "ps -A", timeout=_ADB_PROBE_TIMEOUT_S)
         except AdbError:
             return None
-        return _pids_from_ps(str(ps), package)
+        ps_text = str(ps)
+        # Same host-error trap on the fallback: an offline device answers ps -A
+        # with a host-error line too, which matches no package row and would
+        # otherwise read as "no survivors, so stopped".
+        if _is_host_error_output(ps_text):
+            return None
+        return _pids_from_ps(ps_text, package)
     pids = [int(token) for token in text.replace(",", " ").split() if token.isdigit()]
     if not pids:
         return None
