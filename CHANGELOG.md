@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（dynamic.trace_api_arguments 披露被 resume 失败截断的 trace）
+
+- `trace_api_arguments` 在断点上逐次 resume 采集 API 参数,循环有三个终止条件,但只有两个
+  被披露:填满命中预算(`truncated`)、停在别处(`stopped_elsewhere`)。第三个——某次
+  `dynamic_resume` 无法继续(被调试进程退出,或调试器中途报错)——只是静默 `break`,返回
+  一个看起来干净的短 trace:`hit_count` 小于 `max_hits`,`truncated` 与 `stopped_elsewhere`
+  都为 false,与"这个 API 恰好只被调用了这么多次、进程正常跑完"无从区分。尤其调试器中途
+  RPC 故障导致的不完整 trace 被当成成功结果。现在结果带上 `resume_failed`(布尔)与
+  `resume_error`(底层错误的 `code`/`message`,失败时才非空),使"调用了恰好 N 次、运行结束"
+  与"trace 在 N 次后断了"可区分;断点仍照常移除,干净 trace 三个字段保持 false/false/None。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

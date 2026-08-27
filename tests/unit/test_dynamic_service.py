@@ -2035,6 +2035,8 @@ def test_trace_api_arguments_captures_register_arguments(tmp_path: Path) -> None
     assert data["hit_count"] == 2
     assert data["truncated"] is True
     assert data["stopped_elsewhere"] is False
+    assert data["resume_failed"] is False
+    assert data["resume_error"] is None
     assert data["convention"] == "microsoft_x64_integer_registers"
     first = data["hits"][0]
     assert first["instruction_pointer"] == api_address
@@ -2049,6 +2051,64 @@ def test_trace_api_arguments_captures_register_arguments(tmp_path: Path) -> None
 
     commands = [command for command, _ in worker.requests]
     assert commands.count("breakpoints.set") == 1
+    assert commands.count("breakpoints.remove") == 1
+
+
+class _ResumeFailsAfterWorker(_ArgumentRegisterWorker):
+    """Parks on the API for a few hits, then the next resume errors mid-trace."""
+
+    def __init__(self, api_address: int, *, allowed_resumes: int) -> None:
+        super().__init__(api_address)
+        self.allowed_resumes = allowed_resumes
+        self.resume_calls = 0
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "debug.resume":
+            self.resume_calls += 1
+            if self.resume_calls > self.allowed_resumes:
+                self.requests.append((command, params or {}))
+                raise XdbgRpcError(
+                    "debugger_command_failed",
+                    "debuggee exited before the next hit",
+                    details={"method": "debug.resume"},
+                )
+        return super().request(command, params, timeout=timeout)
+
+
+def test_trace_api_arguments_discloses_a_resume_that_broke_the_trace(tmp_path: Path) -> None:
+    """A trace cut short by a failed resume must not read as a clean count.
+
+    The loop's other exits -- filling the hit budget and pausing at another
+    address -- each set a flag, so a resume that could not continue was the one
+    stop that came back looking complete: hit_count below max_hits with
+    truncated and stopped_elsewhere both false, indistinguishable from an API
+    that was simply called that many times. The trace now reports resume_failed
+    with the resume's own error, and still removes the breakpoint.
+    """
+    api_address = 0x140002000
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _ResumeFailsAfterWorker(api_address, allowed_resumes=2)
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    traced = service.trace_api_arguments(session_id, address=api_address, max_hits=6)
+
+    assert traced.ok and traced.data is not None
+    data = traced.data
+    assert data["hit_count"] == 2
+    assert data["truncated"] is False
+    assert data["stopped_elsewhere"] is False
+    assert data["resume_failed"] is True
+    assert data["resume_error"]["code"] == "debugger_command_failed"
+    commands = [command for command, _ in worker.requests]
     assert commands.count("breakpoints.remove") == 1
 
 
