@@ -61,7 +61,17 @@ def prune_jsre_unpack_dirs(root: Path, *, keep: int = _MAX_JSRE_UNPACK_DIRS) -> 
 
 
 def _as_rpc(exc: JsReError) -> XdbgRpcError:
-    return XdbgRpcError(exc.code, exc.message, details=dict(exc.details))
+    # A tool timeout is transient and retryable, exactly as the upx/die/de4dot
+    # siblings report it. JsReError carries no retryable flag and XdbgRpcError
+    # defaults it to False, so without deriving it here a webcrack/wabt timeout
+    # reached the caller as a permanent failure -- and an unattended agent that
+    # retries on the flag gave up on what a second run typically clears.
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code == "timeout",
+    )
 
 
 class JsReAnalysisMixin:

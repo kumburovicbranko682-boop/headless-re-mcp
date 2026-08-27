@@ -503,6 +503,7 @@ class UnpackCliMixin:
                     code=str(exc.code),
                     message=str(exc),
                     details=dict(exc.details),
+                    retryable=bool(exc.retryable),
                 ),
             )
         except BaseException as exc:
@@ -661,6 +662,7 @@ class UnpackCliMixin:
                     code=str(exc.code),
                     message=str(exc),
                     details=dict(exc.details),
+                    retryable=bool(exc.retryable),
                 ),
             )
         except BaseException as exc:
@@ -755,6 +757,7 @@ class UnpackCliMixin:
                     code=str(exc.code),
                     message=str(exc),
                     details=dict(exc.details),
+                    retryable=bool(exc.retryable),
                 ),
             )
         except BaseException as exc:

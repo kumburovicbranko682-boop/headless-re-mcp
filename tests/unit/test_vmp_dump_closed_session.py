@@ -7,7 +7,11 @@ from typing import Any
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import file_sha256
-from headless_re_mcp.unpack.vmp_dumper import VmpDumperResult
+from headless_re_mcp.unpack.vmp_dumper import (
+    VmpDumperError,
+    VmpDumperErrorCode,
+    VmpDumperResult,
+)
 
 
 def _write_pe(path: Path) -> None:
@@ -113,6 +117,34 @@ def test_unpack_vmp_dump_on_a_closed_session_does_not_start_the_cli(
         assert runs == []
         out_dir = (tmp_path / "artifacts").resolve() / "unpack" / session_id
         assert not out_dir.exists()
+    finally:
+        service.close_all()
+
+
+def test_unpack_vmp_dump_timeout_stays_retryable(tmp_path: Path) -> None:
+    """A VMPDump timeout must reach the caller with retryable=True.
+
+    The adapter marks a timeout retryable, but the handler translated
+    VmpDumperError to an RpcError without forwarding the flag, dropping the
+    retry signal for a transient failure. A live PID is supplied so the run
+    reaches the runner rather than failing the debuggee precondition first.
+    """
+
+    def runner(*args: Any, **kwargs: Any) -> Any:
+        raise VmpDumperError(VmpDumperErrorCode.TIMEOUT, "vmpdump timed out", retryable=True)
+
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _service(tmp_path, runner)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        result = service.unpack_vmp_dump(session_id, pid=4242)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
     finally:
         service.close_all()
 

@@ -7,7 +7,7 @@ from typing import Any
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import file_sha256
-from headless_re_mcp.unpack.xvlkc import XvlkcResult
+from headless_re_mcp.unpack.xvlkc import XvlkcError, XvlkcErrorCode, XvlkcResult
 
 
 def _write_pe(path: Path) -> None:
@@ -147,5 +147,32 @@ def test_unpack_xvlkc_unpack_does_not_report_success_if_the_session_closes_durin
         assert result.error is not None
         assert result.error.code == "invalid_request"
         assert "closed" in result.error.message
+    finally:
+        service.close_all()
+
+
+def test_unpack_xvlkc_unpack_timeout_stays_retryable(tmp_path: Path) -> None:
+    """An XVLKC timeout must reach the caller with retryable=True.
+
+    The adapter marks a timeout retryable, but the handler translated
+    XvlkcError to an RpcError without forwarding the flag, so a caller that
+    retries on retryable saw a permanent failure for a transient one.
+    """
+
+    def runner(*args: Any, **kwargs: Any) -> Any:
+        raise XvlkcError(XvlkcErrorCode.TIMEOUT, "xvlkc timed out", retryable=True)
+
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _service(tmp_path, runner)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        result = service.unpack_xvlkc_unpack(session_id)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
     finally:
         service.close_all()

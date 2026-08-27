@@ -181,3 +181,59 @@ def test_docstrings_name_the_nonzero_exit_fields() -> None:
         doc = _tool_docstring(name)
         assert "exit_code" in doc
         assert "tool_failed" in doc
+
+
+def test_as_rpc_marks_only_a_timeout_retryable() -> None:
+    """The jsre->rpc translation must forward the transient-timeout signal.
+
+    JsReError carries no retryable flag and XdbgRpcError defaults it to False,
+    so _as_rpc has to derive it from the code the way the upx/die/de4dot
+    siblings do. A webcrack/wabt timeout is the one transient case; a launch or
+    parse failure is permanent and stays non-retryable.
+    """
+    from headless_re_mcp.core.service_jsre import _as_rpc
+
+    assert _as_rpc(JsReError("timeout", "tool timed out")).retryable is True
+    assert _as_rpc(JsReError("backend_error", "webcrack failed")).retryable is False
+    assert _as_rpc(JsReError("too_large", "input too big")).retryable is False
+
+
+def test_js_deobfuscate_timeout_stays_retryable(tmp_path: Path) -> None:
+    """A webcrack timeout must reach the caller with retryable=True.
+
+    _run raises JsReError("timeout") on a TimedOut, but the service used to
+    translate it to an XdbgRpcError without a retryable flag (defaulting False),
+    so an unattended caller that retries on the flag gave up on what a second
+    run typically clears.
+    """
+    from headless_re_mcp.backends.common.bounded_run import TimedOut
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+
+    webcrack = tmp_path / "webcrack.exe"
+    webcrack.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+
+    def timing_out_run(cmd: list[str], **kwargs: Any) -> Completed:
+        raise TimedOut(120.0, killed=[4321])
+
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+            webcrack=webcrack,
+        )
+    )
+    try:
+        with patch("headless_re_mcp.backends.jsre.client.run_bounded", timing_out_run):
+            result = service.js_deobfuscate(str(src))
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
+    finally:
+        service.close_all()

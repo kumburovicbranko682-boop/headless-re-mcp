@@ -7,7 +7,7 @@ from typing import Any
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import file_sha256
-from headless_re_mcp.unpack.scylla import ScyllaResult
+from headless_re_mcp.unpack.scylla import ScyllaError, ScyllaErrorCode, ScyllaResult
 
 
 def _write_pe(path: Path) -> None:
@@ -147,5 +147,33 @@ def test_unpack_scylla_rebuild_does_not_report_success_if_the_session_closes_dur
         assert result.error is not None
         assert result.error.code == "invalid_request"
         assert "closed" in result.error.message
+    finally:
+        service.close_all()
+
+
+def test_unpack_scylla_rebuild_timeout_stays_retryable(tmp_path: Path) -> None:
+    """A Scylla timeout must reach the caller with retryable=True.
+
+    run_scylla marks a timeout retryable exactly as the de4dot/upx siblings do,
+    but the handler translated ScyllaError to an RpcError without forwarding the
+    flag, so an unattended caller that retries on retryable saw a permanent
+    failure for what a second run often clears.
+    """
+
+    def runner(*args: Any, **kwargs: Any) -> Any:
+        raise ScyllaError(ScyllaErrorCode.TIMEOUT, "scylla timed out", retryable=True)
+
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _service(tmp_path, runner)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        result = service.unpack_scylla_rebuild(session_id)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
     finally:
         service.close_all()
