@@ -29,7 +29,18 @@ def _playwright_available() -> bool:
 
 
 def _this_process() -> Any:
-    """psutil if it happens to be installed; it is not a project dependency."""
+    """psutil if it happens to be installed; it is not a project dependency.
+
+    Deliberately gated on num_handles, not num_fds. The leak this file guards is
+    undisposed remote JSHandle wrappers from the high-level console event (see
+    the client's Runtime.consoleAPICalled comment): each wrapper cost a Windows
+    OS *handle*, so num_handles tracks it directly. The same wrappers reference
+    browser-side objects over the one shared CDP pipe and hold no per-object
+    file descriptor in this process, so on POSIX num_fds does not move with the
+    leak -- swapping it in would turn this into an always-pass that guards
+    nothing, which is a false pass, not a run. So the gate honestly skips where
+    only num_fds exists and runs where num_handles does (Windows CI).
+    """
     try:
         import psutil
     except ImportError:
@@ -156,7 +167,10 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
         pytest.skip("playwright not installed — browser lifecycle Gate not run (skip != pass)")
     process = _this_process()
     if process is None:
-        pytest.skip("handle counts are not available here (skip != pass)")
+        pytest.skip(
+            "OS handle counts are Windows-only; this leak does not surface as "
+            "POSIX file descriptors, so num_fds would be a false pass (skip != pass)"
+        )
 
     backend = WebBackend()
     try:
