@@ -569,6 +569,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
+- **`frida.applications` 报了 `total` 却没有 `offset`，第一页之后的应用够不着**。
+  `enumerate_applications()` 本就把整台设备的已安装应用一次列全、`total` 也照实数了，却只回前
+  `limit` 个（默认 256、上限 1000）；应用多于一页的设备只能看见「还有」却翻不过去。因为整表已
+  物化、不像 java 枚举那样需要早停，改为按 `offset` 切片，回 `offset` 并按位置算 `has_more`；
+  `offset` 在工具 schema 与后端都钉在非负（负值会从尾部切窗）。
 
 ### 新增（项目文档）
 
