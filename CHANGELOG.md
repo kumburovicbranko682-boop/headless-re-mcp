@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **273（154 只读 / 119 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **274（155 只读 / 119 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -401,6 +401,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   信封（纯 Python，不依赖外部工具，总会跑）；另有一条在装了 wat2wasm 时把 WAT 现编成真模块交叉校验宿主导入/命名导出/内存/
   start（缺 wabt 时 skip≠pass）。单测手工构造模块字节覆盖导入/导出/内存/计数解析、导出表按上限截断、坏 magic、截断
   section 与超长 LEB128 的拒绝。该工具计入读效果，工具面因此 272→273。
+- **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
+  「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
+  `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`
+  （按 2xx/3xx/4xx/5xx 计数；还没有状态的流——失败或在途——不计入这里，改计入 `no_status`）、`top_hosts` 与
+  `top_content_types`（各是 `{host|content_type, count}` 列表，排序后按 50 截断，另给 `host_count`/`content_type_count`
+  的去重总数，好让被截断的列表看得见），以及 `failed`、`websockets`、`with_request_body`、`no_status` 计数；`dropped` 同
+  `proxy.flows`，是 ring 已淘汰、摘要再也看不到的条数。内容类型按 `;` 前缀归一，`text/html; charset=utf-8` 与
+  `text/html` 归一桶。活体门在本地起 HTTP 服务经代理打 GET/POST/404，断言 `proxy.stats` 的方法计数、状态类计数、
+  `top_hosts` 命中该主机、`with_request_body` 记到 POST；单测直接喂合成 ring 覆盖方法/状态类/主机/内容类型聚合、
+  失败与 websocket 计数、以及 host/content-type 上限截断与去重计数。该工具计入读效果，工具面因此 273→274。
 - **JS/WASM 输出超过 400 KB 就被截断且无从取回**。`js.deobfuscate`/`js.beautify`（webcrack）、`wasm.wat`
   （wasm2wat）、`wasm.info`（wasm-objdump）都只把结果内联返回、超 400 KB 直接切掉——而一份反混淆后的打包脚本常有
   几 MB，一个非平凡 WASM 模块的 WAT 反汇编动辄上兆，于是分析者拿到的是残缺的前 400 KB、且没有任何办法读到其余部分

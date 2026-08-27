@@ -44,6 +44,11 @@ _MAX_WS_MESSAGES = 500
 _MAX_WS_FLOWS = 64
 _MAX_WS_RETAINED_BYTES = 16 * 1024 * 1024
 _MITM_WS_TAIL = 4
+# proxy.stats returns the top hosts and content types rather than every one; a
+# capture can touch hundreds of distinct hosts (ad/analytics fan-out), and the
+# point of the summary is triage, not a second full listing.
+_MAX_STATS_HOSTS = 50
+_MAX_STATS_CONTENT_TYPES = 50
 
 
 class ProxyError(RuntimeError):
@@ -838,6 +843,72 @@ class ProxyBackend:
             "retained_max": _MAX_FLOWS,
             "retained_bytes": inst.recorder.retained_bytes(),
             "retained_bytes_max": _MAX_RETAINED_BYTES,
+        }
+
+    def stats(self, session_id: str) -> JsonObject:
+        """Aggregate the whole capture into a triage summary.
+
+        proxy.flows is a paged listing; on a capture of hundreds of flows a
+        caller had to walk every page to learn what hosts, methods, statuses and
+        content types are present before it could sensibly filter. This folds the
+        ring once into counts: by method, by status class (2xx/4xx/...), the top
+        hosts and content types (capped, with the distinct totals so a trimmed
+        list is visible), and how many flows failed, upgraded to WebSocket or
+        carried a request body. dropped mirrors proxy.flows: the ring evictions
+        the summary can no longer see.
+        """
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        total = len(items)
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - total)
+        by_method: dict[str, int] = {}
+        by_status_class: dict[str, int] = {}
+        host_counts: dict[str, int] = {}
+        content_counts: dict[str, int] = {}
+        failed = websockets = with_request_body = no_status = 0
+        for summary in items:
+            method = (str(summary.get("method", "") or "").upper()) or "UNKNOWN"
+            by_method[method] = by_method.get(method, 0) + 1
+            status = summary.get("status")
+            if isinstance(status, int):
+                cls = f"{status // 100}xx"
+                by_status_class[cls] = by_status_class.get(cls, 0) + 1
+            else:
+                no_status += 1
+            host = str(summary.get("host", "") or "")
+            if host:
+                host_counts[host] = host_counts.get(host, 0) + 1
+            # Drop the ``; charset=...`` parameter so the same media type is one
+            # bucket, not several.
+            ctype = str(summary.get("content_type", "") or "").split(";")[0].strip().lower()
+            if ctype:
+                content_counts[ctype] = content_counts.get(ctype, 0) + 1
+            if summary.get("failed"):
+                failed += 1
+            if summary.get("is_websocket"):
+                websockets += 1
+            if summary.get("has_request_body"):
+                with_request_body += 1
+
+        def _top(counts: dict[str, int], key: str, cap: int) -> list[JsonObject]:
+            ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            return [{key: name, "count": count} for name, count in ranked[:cap]]
+
+        return {
+            "total": total,
+            "dropped": dropped,
+            "by_method": by_method,
+            "by_status_class": by_status_class,
+            "top_hosts": _top(host_counts, "host", _MAX_STATS_HOSTS),
+            "host_count": len(host_counts),
+            "top_content_types": _top(content_counts, "content_type", _MAX_STATS_CONTENT_TYPES),
+            "content_type_count": len(content_counts),
+            "failed": failed,
+            "websockets": websockets,
+            "with_request_body": with_request_body,
+            "no_status": no_status,
         }
 
     def flows(

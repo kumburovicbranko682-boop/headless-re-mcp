@@ -380,6 +380,55 @@ def test_proxy_flows_filter_narrows_a_capture() -> None:
 
 
 @pytest.mark.integration
+def test_proxy_stats_summarizes_a_live_capture() -> None:
+    """On a real capture, stats must fold the ring into an accurate summary.
+
+    Drive a GET (200) and a POST with a body (201) through the proxy, then assert
+    proxy.stats counts both methods, files both under the 2xx class, ranks the
+    origin host, and tallies the request body -- the triage view a caller reads
+    before deciding what to filter for, without paging the whole log.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy stats Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _origin_server() as origin_url:
+        backend.start("gate-stats", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            base = origin_url.rsplit("/", 1)[0]  # .../api
+            with opener.open(origin_url, timeout=10) as response:  # GET -> 200
+                assert response.status == 200
+            post = urllib.request.Request(
+                base + "/login",
+                data=b'{"user":"alice"}',
+                headers={"Content-Type": "application/json"},
+            )
+            with opener.open(post, timeout=10) as response:  # POST -> 201
+                assert response.status == 201
+
+            assert _poll(lambda: backend.flows("gate-stats")["total"] >= 2), (
+                "both requests through the proxy were never recorded"
+            )
+            stats = backend.stats("gate-stats")
+            assert stats["total"] >= 2
+            assert stats["by_method"].get("GET", 0) >= 1
+            assert stats["by_method"].get("POST", 0) >= 1
+            # 200 and 201 both fall in the 2xx class.
+            assert stats["by_status_class"].get("2xx", 0) >= 2
+            assert stats["with_request_body"] >= 1
+            hosts = {row["host"] for row in stats["top_hosts"]}
+            assert "127.0.0.1" in hosts
+            assert stats["host_count"] >= 1
+            # There is no per-flow listing on the summary.
+            assert "flows" not in stats
+        finally:
+            backend.stop("gate-stats")
+
+
+@pytest.mark.integration
 def test_proxy_decodes_a_gzip_response_body() -> None:
     """A gzip'd upstream response must reach the analyst as the payload.
 

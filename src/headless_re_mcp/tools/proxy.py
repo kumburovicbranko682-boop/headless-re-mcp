@@ -63,6 +63,24 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_status(session_id))
 
+    @tools.tool(name="proxy.stats")
+    def proxy_stats(session_id: str) -> dict[str, Any]:
+        """Aggregate the whole capture into a triage summary.
+
+        proxy.flows is a paged listing; this folds the ring once so a caller can
+        see what a large capture holds before deciding what to filter for.
+        Answers with total, by_method (a count per HTTP method), by_status_class
+        (a count per 2xx/3xx/4xx/5xx; flows with no status yet are not counted
+        here and show up in no_status instead), top_hosts and top_content_types
+        (each a list of {host|content_type, count}, ranked and capped at 50 with
+        host_count/content_type_count giving the distinct totals so a trimmed
+        list is visible), and the counts failed, websockets, with_request_body
+        and no_status. dropped is the ring-eviction count, same as proxy.flows.
+        There is no flows, items or requests field here -- use proxy.flows to
+        list, this to summarize.
+        """
+        return _dump(analysis.proxy_stats(session_id))
+
     @tools.tool(name="proxy.flows")
     def proxy_flows(
         session_id: str,
