@@ -58,13 +58,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   现按平台选启动器（POSIX 优先无扩展名脚本，Windows 优先 `.bat`），另一个仅作兜底，
   于是 Ghidra 这条可移植后端在 Linux 上第一次真能跑起来。新增
   `tests/unit/test_ghidra_launcher_selection.py`（伪造完整安装、翻转 `os.name` 两个平台都钉住）
-  与 `tests/integration/test_ghidra_linux_elf_gate.py`（现编一个小 ELF，用 `analyze_binary`
-  真跑一遍 analyzeHeadless 的导入+自动分析，断言输出里出现 `Analysis succeeded`；缺 home 或
-  缺编译器时如实 skip）。
-- 附带发现（本次未改）：`functions` / `symbols` / `xrefs` / `decompile` 走的
-  `ExportJson.py` 标的是 `@runtime Jython`，而 Ghidra 11.3+ 已移除内置 Jython，该 postScript
-  会 abort，与平台无关；需把脚本移植到 PyGhidra/Java 才能在新版 Ghidra 上恢复，属独立议题，
-  故上面的 gate 不断言这几条路径。
+  与 `tests/integration/test_ghidra_linux_elf_gate.py`（现编一个小 ELF，跑 `functions` 与
+  `decompile`，断言认出源码里的 `main` / `helper_compute` 且反编译出的 C 里确有 `helper_compute`
+  调用；缺 home 或缺编译器时如实 skip）。
+
+### 修复（Ghidra 导出脚本改用 Java，摆脱已被移除的 Jython）
+
+- `functions` / `symbols` / `xrefs` / `decompile` 都经 `ExportJson.py` 导出，而它标着
+  `@runtime Jython`；Ghidra 11.3+ 已移除内置 Jython，该 postScript 在**任何平台**上都以
+  `JythonStubException` abort——这四个工具在当前所有 Ghidra 版本上其实早已失效（analyze 成功、
+  postScript 崩），只是没有实测覆盖，没人发现。现把脚本改写为 Java GhidraScript
+  `ExportJson.java`：Ghidra 在任意受支持版本上都能即时编译 Java 脚本，只用长期稳定的 API
+  （`FunctionManager` / `SymbolTable` / `ReferenceManager` / `DecompInterface`），并用 Ghidra
+  自带的 gson 产出**与原脚本完全一致**的 JSON schema，故 `GhidraClient` 与工具描述无需改动。
+  已在 Ghidra 12.1.3 + JDK 21 上实测：`functions` 认出 19 个函数含 `main` / `helper_compute`，
+  `decompile(main)` 返回带 `helper_compute(3)` 调用的真实 C。wheel 打包已含
+  `ExportJson.java`（hatchling 默认收包内所有文件，不限 `.py`）。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 

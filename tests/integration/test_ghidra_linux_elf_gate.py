@@ -1,23 +1,19 @@
-"""Ghidra headless live gate: a real analyzeHeadless import on Linux.
+"""Ghidra headless live gate: import, function recovery and decompilation.
 
-The only Ghidra coverage anywhere is the degradation path in
-``test_m11_optional_backends_gate`` -- it asserts the *errors* are well-shaped
-when analyzeHeadless is missing, and unit tests drive fakes. Nothing on any
-platform proved a real analyzeHeadless can be launched and import a binary.
+The only other Ghidra coverage is the degradation path in
+``test_m11_optional_backends_gate`` (it asserts the *errors* are well-shaped
+when analyzeHeadless is missing) and unit tests driving fakes. Nothing proved a
+real analyzeHeadless can launch, import a binary, run ``ExportJson`` under the
+script runtime it ships for, and decompile.
 
-This gate compiles a tiny ELF and drives ``GhidraClient.analyze_binary``, which
-imports and auto-analyzes without the Jython postScript, so it exercises the
-launcher and the analyzer end to end on Linux. It surfaced the bug fixed
-alongside it: discovery preferred ``analyzeHeadless.bat`` over the POSIX
-``analyzeHeadless``, so a correct Linux install launched the Windows batch file
-and failed with Errno 13.
+This gate compiles a tiny ELF with named functions and drives GhidraClient end
+to end. It guards two fixes made alongside it: launcher discovery picking the
+Windows ``.bat`` over the POSIX ``analyzeHeadless`` on Linux (Errno 13), and
+``ExportJson`` being a Jython script that Ghidra 11.3+ can no longer run, which
+had silently broken ``functions``/``decompile`` on every current release.
 
-Scope note: ``functions``/``symbols``/``xrefs``/``decompile`` route through
-``ExportJson.py`` (``@runtime Jython``). Ghidra 11.3+ dropped the bundled
-Jython, so that postScript aborts until it is ported to PyGhidra/Java -- a
-version-compat gap independent of this Linux launcher fix, so this gate does
-not assert those paths. skip != pass: it skips honestly when
-HEADLESS_RE_GHIDRA_HOME is unset or no C compiler exists.
+skip != pass: it skips honestly when HEADLESS_RE_GHIDRA_HOME is unset or no C
+compiler exists.
 """
 
 from __future__ import annotations
@@ -32,6 +28,8 @@ import pytest
 from headless_re_mcp.backends.ghidra.client import GhidraClient
 from headless_re_mcp.config import Settings
 
+# -O0 keeps the functions distinct and inlining-free; the names are asserted
+# below to prove real analysis rather than just a zero exit code.
 _SOURCE = """\
 #include <stdio.h>
 static int helper_add(int a, int b) { return a + b; }
@@ -72,7 +70,7 @@ def _build_elf(tmp_path: Path) -> Path:
 
 @pytest.mark.integration
 @pytest.mark.skipif(os.name != "posix", reason="POSIX ELF gate; Windows lanes use PE fixtures")
-def test_ghidra_headless_imports_and_analyzes_a_linux_elf(tmp_path: Path) -> None:
+def test_ghidra_headless_recovers_and_decompiles_a_linux_elf(tmp_path: Path) -> None:
     client = GhidraClient(home=Settings.load().ghidra_home)
     if not client.available:
         pytest.skip(
@@ -85,10 +83,21 @@ def test_ghidra_headless_imports_and_analyzes_a_linux_elf(tmp_path: Path) -> Non
 
     elf = _build_elf(tmp_path)
     project_dir = tmp_path / "ghidra_project"
-    result = client.analyze_binary(elf, project_dir, timeout=300.0)
 
-    # A launcher that merely exited 0 is not enough: the analyzer must report it
-    # actually imported and analysed the binary. analyzeHeadless prints this
-    # only after the auto-analysis pipeline runs to completion.
-    assert "Analysis succeeded" in result["stdout_excerpt"], result["stdout_excerpt"][-800:]
-    assert "deleted" in result["note"]
+    # Function recovery: analyzeHeadless imports and analyses, then the Java
+    # ExportJson postScript writes the listing. Seeing the source's own symbols
+    # proves both the analyzer and the (previously Jython-broken) export ran.
+    listed = client.functions(elf, project_dir, limit=512, timeout=600.0)
+    items = listed.get("items")
+    assert isinstance(items, list) and listed.get("count", 0) >= 1, listed
+    by_name = {str(item.get("name") or ""): item for item in items}
+    assert "main" in by_name, sorted(by_name)
+    assert "helper_compute" in by_name, sorted(by_name)
+
+    # Decompiling main must yield real C that names the helper it calls; an
+    # empty or header-only result cannot contain the callee's symbol.
+    entry = "0x" + str(by_name["main"]["entry"])
+    decompiled = client.decompile(elf, project_dir, entry, timeout=600.0)
+    assert decompiled.get("found") is True, decompiled
+    assert str(decompiled.get("function") or "") == "main"
+    assert "helper_compute" in str(decompiled.get("decompiled") or ""), decompiled
