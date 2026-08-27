@@ -203,7 +203,7 @@ def _run_xdbg_gates(
 
 def _run_supervisor(settings: Settings, args: argparse.Namespace) -> int:
     """Keep a server process alive, restarting it on exit or lost readiness."""
-    from headless_re_mcp.supervisor import Supervisor, build_child_argv
+    from headless_re_mcp.supervisor import Supervisor, build_child_argv, readyz_url
 
     host = args.host or settings.http_host
     port = args.port if args.port is not None else settings.http_port
@@ -212,7 +212,7 @@ def _run_supervisor(settings: Settings, args: argparse.Namespace) -> int:
     ready_url = (
         None
         if args.no_readiness or args.target != "serve-web"
-        else f"http://{host}:{port}/readyz"
+        else readyz_url(host, int(port))
     )
     supervisor = Supervisor(
         build_child_argv(

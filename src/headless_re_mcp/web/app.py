@@ -170,7 +170,10 @@ def run_web(
         if not quiet_banner:
             if reason == "fallback":
                 print(f"端口 {preferred} 已被占用，自动改用 {bind_port}")
-            print(f"监控台已启动：http://{bind_host}:{bind_port}/?token=…")
+            # An IPv6 literal must be bracketed or the printed URL cannot be
+            # pasted into a browser (::1:8765 parses as an empty hostname).
+            shown_host = f"[{bind_host}]" if ":" in bind_host else bind_host
+            print(f"监控台已启动：http://{shown_host}:{bind_port}/?token=…")
             print(f"Token 文件：{token_path}")
             print("仅本机回环可访问；非本机连接将返回 403。")
 

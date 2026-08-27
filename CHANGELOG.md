@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（supervise 探活 URL 不给 IPv6 回环加方括号，健康的 `--host ::1` 子进程被无限杀重启）
+
+- `serve-web` 经 `ipaddress.is_loopback` 接受任何回环地址，`supervise --target serve-web
+  --host ::1` 起的子进程正常绑定、正常服务。但 `_run_supervisor` 用
+  `f"http://{host}:{port}/readyz"` 拼探活 URL，对 IPv6 字面量拼出
+  `http://::1:8765/readyz`——URL authority 里的 IPv6 必须加方括号，`urlsplit` 把它的
+  hostname 解析成空串，`probe_ready` 于是**每次**都回 `unreachable`。三振之后监督器把
+  健康子进程判成 unhealthy 杀掉重启；而 unhealthy 重启不计入 crash-loop 上限（uptime
+  也不算 short-lived），这个循环**永不触底**：一台 24/7 无人值守的机器就此每分钟杀一次
+  自己的服务。新增 `supervisor.readyz_url(host, port)`：含冒号的主机加 `[...]`，IPv4 原样
+  （既有 `http://127.0.0.1:9100/readyz` 断言不变），CLI 改用它拼 URL；子进程 argv 仍传
+  裸 `::1`（方括号属于 URL，不属于 `--host`）。顺带把 `run_web` 启动横幅里同样裸拼的
+  `http://{bind_host}:{bind_port}/?token=…` 加上括号，`::1` 下打印的地址才贴得进浏览器。
+  新增回归：真起一个 `::1` HTTP 监听，经 `readyz_url` 探测得 `http 200`，而旧的无括号
+  形式对同一活着的监听只能报 `unreachable`（留作案底）；另钉住 CLI 布线产出
+  `http://[::1]:9106/readyz` 且 child argv 仍是裸字面量。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

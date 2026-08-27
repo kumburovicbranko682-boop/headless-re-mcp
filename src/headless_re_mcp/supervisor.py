@@ -41,6 +41,22 @@ BACKOFF_START_S = 1.0
 BACKOFF_CAP_S = 30.0
 
 
+def readyz_url(host: str, port: int) -> str:
+    """Build the /readyz probe URL, bracketing an IPv6 literal host.
+
+    ``f"http://{host}:{port}"`` is wrong for exactly one of the hosts serve-web
+    accepts: an IPv6 loopback. ``run_web`` admits any ``is_loopback`` address,
+    so a child started with ``--host ::1`` binds and serves -- but
+    ``urlsplit("http://::1:8765/readyz")`` reads the hostname as empty (the
+    authority needs brackets), so :func:`probe_ready` reported that child
+    unreachable on every check. Three strikes later the supervisor killed a
+    healthy server, and because "unhealthy" restarts never count toward the
+    crash-loop bound, it did so again every cycle, forever.
+    """
+    authority = f"[{host}]" if ":" in host else host
+    return f"http://{authority}:{int(port)}/readyz"
+
+
 def probe_ready(url: str, *, timeout: float) -> tuple[bool, str]:
     """Ask the child whether it can accept work.
 
