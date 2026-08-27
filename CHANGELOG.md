@@ -282,6 +282,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **Scylla 探针超时仍报 READY**。GUI 起得来但从不退出，doctor 会把可选工具
   标成可用。超时现在是 `timeout_after_start` 且 `ok=False`。
 - **`proxy.ca.install_android` 在会话关闭后仍会 push 证书**。开关会话前后都检查状态。
+- **`frida.hook.template` 在设备会话关闭后仍会注入钩子**。close 只翻状态、不清
+  `frida_authorized` 元数据，已关闭会话仍可解析；其它设备 frida 操作都经 `_frida_auth`
+  的开放态检查把关，唯独 hook.template 直接从元数据取 pid，于是一次迟到的调用会把脚本注入
+  一个已消失会话的设备进程。现在设备分支也拒绝 CLOSING/CLOSED/FAILED 状态（本地 PE 分支本就
+  被 `_require_debuggee_pid` 挡住）。
 
 同一轮审计在核心侧（与本次新后端无关，早已存在）查出三处同类问题：
 
