@@ -126,10 +126,12 @@ jobs:
           python -m pip check
 
       - name: Linux unit tests
-        # Same two bounds as the Windows quality job: --timeout names and fails
-        # a single stuck test, --session-timeout stops a hang outside any one
-        # test from silently burning the 30-minute job ceiling.
-        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --session-timeout=1200 --cov --cov-report=term
+        # --session-timeout stops a hang outside any one test from silently
+        # burning the 30-minute job ceiling. No per-test --timeout here: unlike
+        # the Windows job (thread method), pytest-timeout defaults to the signal
+        # method on Linux, whose SIGALRM perturbs the process-group reaping
+        # tests -- so the session bound is added on its own.
+        run: python -m pytest tests/unit -q -rs --tb=short --session-timeout=1200 --cov --cov-report=term
 
       - name: Doctor and core service smoke
         run: |

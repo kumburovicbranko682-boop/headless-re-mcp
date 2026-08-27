@@ -126,13 +126,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 修复（CI 挂起护栏）
 
-- CI 的单测步骤加 `--session-timeout=1200`，`linux-quality` 另补上与 Windows `quality` 一致的
-  `--timeout=120`。`--timeout` 只管单个测试的 setup/call/teardown：卡在某个测试里会在 120s 被
-  掐断并 dump 全部线程栈。但 CI 曾出现整轮跑到 30 分钟 job 上限被 GitHub 取消、且不留任何 pytest
-  日志的情况——这类挂起发生在单测之外（收集阶段、两测试之间的间隙、或套件没能回收的子进程），
-  per-test 计时器看不到。`--session-timeout` 在两测试之间检查整轮耗时，在远低于 job 上限处以
-  非零退出失败并打印 `session-timeout … exceeded`，把静默的 job 取消变成一条带诊断的红色失败。
-  取值 1200s 远高于健康跑时（约数分钟）、远低于 30 分钟上限，正常跑不会误伤。
+- CI 的 `quality` 与 `linux-quality` 单测步骤加 `--session-timeout=1200`。曾出现整轮跑到 30 分钟
+  job 上限、被 GitHub 静默取消且不留任何 pytest 日志的情况——这类挂起发生在单个测试之外（收集
+  阶段、两测试之间的间隙、或套件没能回收的子进程），Windows job 已有的 per-test `--timeout=120`
+  看不到。`--session-timeout` 在两测试之间检查整轮耗时，在远低于 job 上限处以非零退出失败并打印
+  `session-timeout … exceeded`，把静默的 job 取消变成一条带诊断的红色失败。取值 1200s 远高于健康
+  跑时（约数分钟）、远低于 30 分钟上限，正常跑不会误伤。Linux job 不加 per-test `--timeout`：
+  pytest-timeout 在 Linux 默认用 signal 法，其 SIGALRM 会扰动进程组回收类测试，故只加会话级护栏。
 
 ### 新增（会话目标类型）
 
