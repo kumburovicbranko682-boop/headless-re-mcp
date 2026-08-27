@@ -268,6 +268,80 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class TestApkReadsFailStructuredNotAsInternalErrors:
+    """androguard does not raise on a malformed manifest; its *getters* do.
+
+    ``APK()`` logs the parse error and hands back an object, and a later
+    ``get_main_activity`` / ``get_permissions`` then raises a bare
+    ``KeyError('Name')`` from walking the tree that never parsed. ``_apk`` /
+    ``_parsed`` only guard construction, so that escaped unwrapped and the
+    service envelope filed it as ``internal_error`` with a logged incident --
+    casting a property of the input file as a server defect. Every read now has
+    to answer with a structured ``ApkError`` instead.
+    """
+
+    def _malformed_apk(self, path: Path) -> Path:
+        # A real zip whose AndroidManifest.xml is not valid AXML: androguard
+        # opens the archive, fails to parse the manifest, and raises from the
+        # getters rather than the constructor -- the exact shape of the bug.
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("classes.dex", b"dex\n035\x00placeholder")
+            archive.writestr("resources.arsc", b"\x02\x00placeholder")
+        return path
+
+    @pytest.mark.parametrize(
+        ("op", "args"),
+        [
+            ("open", ()),
+            ("manifest", ()),
+            ("permissions", ()),
+            ("certificates", ()),
+            ("components", ()),
+            ("native_libs", ()),
+            ("classes", ()),
+            ("methods", ("La/b;",)),
+            ("strings", ()),
+            ("xrefs", ("decrypt",)),
+        ],
+    )
+    def test_every_read_of_a_malformed_apk_raises_a_structured_error(
+        self, tmp_path: Path, op: str, args: tuple[Any, ...]
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        client = ApkClient()
+        if not client.available:
+            pytest.skip("androguard not installed — cannot exercise the getter path (skip != pass)")
+        apk = self._malformed_apk(tmp_path / "broken.apk")
+        method = getattr(client, op)
+        try:
+            method(apk, *args)
+        except ApkError as exc:
+            # backend_error (parse failed) is the honest answer; the point is
+            # that it is an ApkError with a deliberate code, never a raw
+            # exception that the service would mint an incident for.
+            assert exc.code in {"backend_error", "invalid_params", "not_found"}
+        except Exception as exc:  # noqa: BLE001
+            raise AssertionError(
+                f"{op} leaked a raw {type(exc).__name__}; the service would file it as "
+                "internal_error with an incident"
+            ) from exc
+
+    def test_the_guard_passes_deliberate_codes_through_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """not_found for a missing file must not be relabelled backend_error."""
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        client = ApkClient()
+        if not client.available:
+            pytest.skip("androguard not installed (skip != pass)")
+        with pytest.raises(ApkError) as caught:
+            client.open(tmp_path / "does-not-exist.apk")
+        assert caught.value.code == "not_found"
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 

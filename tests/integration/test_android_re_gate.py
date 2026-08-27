@@ -50,11 +50,29 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
         session_id = session["id"]
 
-        # androguard opens a real APK; on the synthetic archive it must still
-        # answer with a structured envelope rather than raising.
-        opened = service.apk_open(session_id)
-        assert isinstance(opened.ok, bool)
-        assert opened.ok or opened.error is not None
+        # androguard opens a real APK; on the synthetic archive its manifest
+        # does not parse, and every read must answer with a *structured*
+        # envelope. Not merely "an error": a raw getter exception (a bare
+        # KeyError from walking the unparsed manifest) used to reach the
+        # service as internal_error with a logged incident, casting a property
+        # of the input file as a server defect. The read failing is fine; the
+        # read minting an incident is the regression this guards.
+        for read in (
+            service.apk_open,
+            service.apk_manifest,
+            service.apk_permissions,
+            service.apk_certificates,
+            service.apk_components,
+            service.apk_native_libs,
+        ):
+            result = read(session_id)
+            assert isinstance(result.ok, bool)
+            if not result.ok:
+                assert result.error is not None
+                assert result.error.code != "internal_error", (
+                    f"{read.__name__} filed a malformed APK as an internal incident: "
+                    f"{result.error.message}"
+                )
 
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()
