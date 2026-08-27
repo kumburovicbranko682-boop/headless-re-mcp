@@ -90,3 +90,31 @@ def test_ghidra_xrefs_and_decompile_at_a_real_function(tmp_path: Path) -> None:
     assert "decompiled" in decompiled
     assert decompiled.get("truncated") is False
     assert decompiled.get("function")
+
+
+@pytest.mark.integration
+def test_ghidra_decompile_and_xrefs_at_a_non_function_address_stay_empty(tmp_path: Path) -> None:
+    """A bad target must fail soft: empty result, no crash, no internal_error.
+
+    Agents routinely point decompile/xrefs at an address that turns out to be
+    data, padding, or below the image base. 0x0 is in no function and has no
+    references, so the export must come back as a clean empty envelope -- not an
+    exception and not a half-formed object. A regression that let the Java export
+    throw (or the client surface internal_error) on a missing function would be
+    caught here.
+    """
+    client = _client()
+    fixture = _gate_fixture()
+
+    decompiled = client.decompile(fixture, tmp_path / "dc0", "0x0", timeout=_TIMEOUT)
+    assert decompiled["mode"] == "decompile"
+    assert decompiled["decompiled"] == ""
+    assert decompiled["truncated"] is False
+    # No function contains 0x0, so the name/entry pair is omitted rather than
+    # echoed as empty strings an agent might mistake for a real function.
+    assert "function" not in decompiled
+
+    xrefs = client.xrefs(fixture, tmp_path / "xr0", "0x0", limit=8, timeout=_TIMEOUT)
+    assert xrefs["count"] == 0
+    assert xrefs["items"] == []
+    assert xrefs["has_more"] is False
