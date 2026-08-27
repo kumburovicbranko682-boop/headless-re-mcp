@@ -415,6 +415,19 @@ def test_vmp_resolves_pid_from_dynamic_state(tmp_path: Path) -> None:
     assert result.data["pid"] == 4242
 
 
+def test_vmp_ignores_non_positive_dynamic_pid(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+    service = _service(tmp_path, vmp_dumper=_tool(tmp_path, "vmp"))
+    session_id = _pe_session(service, binary)
+    service.dynamic_state = lambda *_a, **_k: Result(ok=True, data={"paused": True})  # type: ignore[method-assign]
+    service._annotate_debuggee_pids = lambda _sid, _state: {"debuggee_pid": 0}  # type: ignore[method-assign]
+    result = service.unpack_vmp_dump(session_id)
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "debuggee_required"
+
+
 def test_vmp_swallows_dynamic_state_error(tmp_path: Path) -> None:
     binary = tmp_path / "sample.exe"
     _write_minimal_pe(binary)
@@ -565,6 +578,63 @@ def test_auto_reports_awaiting_oep_for_dynamic_route(tmp_path: Path) -> None:
     assert result.ok and result.data is not None
     assert result.data["status"] == "awaiting_oep"
     assert result.data["next"] == "unpack.confirm_oep"
+
+
+def _dotnet_started(unpack: JsonObject, **extra: Any) -> Result[JsonObject]:
+    data: JsonObject = {"unpack": {"route": "dotnet", "phase": "routed_m6", **unpack}, **extra}
+    return Result(ok=True, data=data)
+
+
+def test_auto_dotnet_uses_bounded_probe(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    started = _dotnet_started(
+        {},
+        bounded_probe={
+            "next": ["dotnet.deobfuscate"],
+            "clr_verified": True,
+            "dotnet_inspect": {"assembly": "x"},
+        },
+    )
+    service.unpack_start = lambda *_a, **_k: started  # type: ignore[method-assign]
+    result = service.unpack_auto("sid")
+    assert result.ok and result.data is not None
+    assert result.data["status"] == "routed_m6"
+    assert result.data["next"] == ["dotnet.deobfuscate"]
+    assert result.data["dotnet"] == {"assembly": "x"}
+    assert result.data["clr_verified"] is True
+
+
+def test_auto_dotnet_defaults_next_without_probe(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.unpack_start = lambda *_a, **_k: _dotnet_started({})  # type: ignore[method-assign]
+    result = service.unpack_auto("sid")
+    assert result.ok and result.data is not None
+    assert result.data["status"] == "routed_m6"
+    assert result.data["next"] == ["dotnet.deobfuscate", "dotnet.verify"]
+    assert "dotnet" not in result.data
+
+
+def test_auto_dotnet_recovers_probe_from_timeline(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    timeline = [
+        {"event": "routed_m6", "details": {"next": ["dotnet.inspect"], "clr_verified": False}},
+        {"event": "planned"},
+    ]
+    service.unpack_start = lambda *_a, **_k: _dotnet_started({"timeline": timeline})  # type: ignore[method-assign]
+    result = service.unpack_auto("sid")
+    assert result.ok and result.data is not None
+    assert result.data["next"] == ["dotnet.inspect"]
+    assert result.data["clr_verified"] is False
+
+
+def test_auto_dotnet_timeline_entry_with_non_dict_details(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    timeline = [{"event": "routed_m6", "details": "not-a-dict"}]
+    service.unpack_start = lambda *_a, **_k: _dotnet_started({"timeline": timeline})  # type: ignore[method-assign]
+    result = service.unpack_auto("sid")
+    assert result.ok and result.data is not None
+    assert result.data["status"] == "routed_m6"
+    assert result.data["next"] == ["dotnet.deobfuscate", "dotnet.verify"]
 
 
 def test_auto_wraps_unexpected_error(tmp_path: Path) -> None:
