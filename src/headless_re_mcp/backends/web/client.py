@@ -14,6 +14,8 @@ a session is funnelled onto that session's own thread -- see ``_Runner``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import queue
 import threading
@@ -612,6 +614,14 @@ class WebBackend:
         source = resp.get("scriptSource", "")
         if not isinstance(source, str):
             source = str(source)
+        # WebAssembly modules come back with an empty scriptSource and the module
+        # bytes base64-encoded under "bytecode" instead. Without this branch
+        # script_source returns nothing for every wasm script a page loads: the
+        # module is discoverable via scripts(wasm_only=True) but its content is
+        # unreachable. Hand back the raw .wasm so the wabt static path can take it.
+        bytecode = resp.get("bytecode")
+        if not source and isinstance(bytecode, str) and bytecode:
+            return self._wasm_module_source(script_id, bytecode, artifact_dir)
         inline, spill, cut = _spill_text(
             source,
             artifact_dir=artifact_dir,
@@ -627,6 +637,51 @@ class WebBackend:
         if spill is not None:
             result["source_path"] = str(spill)
         return result
+
+    def _wasm_module_source(
+        self, script_id: str, bytecode: str, artifact_dir: Path
+    ) -> JsonObject:
+        """Spill a wasm module's raw bytes to a .wasm artifact.
+
+        The binary has no meaningful inline text form here, so it is always
+        written to disk and handed back by path (which the service registers as
+        a capture like any other spilled source).
+        """
+        try:
+            raw = base64.b64decode(bytecode, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise WebError(
+                "backend_error", f"wasm module bytecode was not valid base64: {exc}",
+                script_id=script_id,
+            ) from exc
+        size = len(raw)
+        if size > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise WebError(
+                "too_large",
+                "wasm module exceeds capture cap",
+                size=size,
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        out = artifact_dir / f"module-{uuid4().hex}.wasm"
+        out.write_bytes(raw)
+        written, over = capped_file_size(out, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
+        if over:
+            raise WebError(
+                "too_large",
+                "wasm module exceeds capture cap",
+                size=written,
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
+        return {
+            "scriptId": script_id,
+            "language": "WebAssembly",
+            "wasm": True,
+            "bytes": size,
+            "source": "",
+            "truncated": False,
+            "source_path": str(out),
+        }
 
     def dom_snapshot(self, session_id: str) -> JsonObject:
         handle = self._get(session_id)

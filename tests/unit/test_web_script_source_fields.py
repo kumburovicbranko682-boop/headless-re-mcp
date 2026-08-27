@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import ast
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from headless_re_mcp.backends.web.client import _MAX_INLINE_BODY, WebBackend
+import pytest
+
+from headless_re_mcp.backends.web.client import _MAX_INLINE_BODY, WebBackend, WebError
 from headless_re_mcp.tools.web import build_web_tools
 
 
@@ -40,6 +43,20 @@ class _Cdp:
         return {"scriptSource": "y" * (_MAX_INLINE_BODY + 40)}
 
 
+class _WasmCdp:
+    """Mimic CDP's wasm reply: empty scriptSource, module under bytecode."""
+
+    def __init__(self, reply: dict[str, str]) -> None:
+        self._reply = reply
+
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, str]:
+        return self._reply
+
+
+# A short blob standing in for a module; only the base64 round-trip matters here.
+_WASM_BLOB = bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x0A, 0x0B, 0x0C])
+
+
 def test_web_script_source_names_source_and_says_when_it_was_cut(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -68,3 +85,43 @@ def test_web_script_source_names_source_and_says_when_it_was_cut(
     assert "source" in doc
     assert "truncated" in doc
     assert "source_path" in doc
+
+
+def test_web_script_source_hands_back_wasm_module_bytes(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A wasm module arrives as empty scriptSource + base64 bytecode.
+
+    Reading only scriptSource returned an empty string for every wasm script;
+    the module bytes have to be decoded from bytecode and spilled as a real
+    .wasm so the static wabt path can pick them up.
+    """
+    reply = {
+        "scriptSource": "",
+        "bytecode": base64.b64encode(_WASM_BLOB).decode("ascii"),
+    }
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(cdp=_WasmCdp(reply)))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.script_source("s", "9", tmp_path)
+    assert payload["wasm"] is True
+    assert payload["language"] == "WebAssembly"
+    assert payload["bytes"] == len(_WASM_BLOB)
+    assert payload["source"] == ""
+    assert payload["truncated"] is False
+    out = Path(str(payload["source_path"]))
+    assert out.suffix == ".wasm"
+    assert out.read_bytes() == _WASM_BLOB
+
+
+def test_web_script_source_rejects_corrupt_wasm_bytecode(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Undecodable bytecode is a structured backend_error, not a raw traceback."""
+    reply = {"scriptSource": "", "bytecode": "not*valid*base64"}
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(cdp=_WasmCdp(reply)))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    with pytest.raises(WebError) as info:
+        backend.script_source("s", "9", tmp_path)
+    assert info.value.code == "backend_error"
