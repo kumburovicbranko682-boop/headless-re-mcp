@@ -70,6 +70,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（抓取到的文件不落盘时不再静默返回“少了 id 的成功”）
+
+- 截图 / HAR / 脚本源 / 网络响应体 / 代理导出 / 反混淆产物等所有落盘型抓取都汇入
+  `_register_capture` 登记：登记成功回 `artifact_id`,登记失败(仓库拒绝)回
+  `artifact_error`。但当后端声称成功、却没在承诺的路径上留下文件时（`page.screenshot`
+  空跑只给了路径、或写到了别处），`if not path.is_file(): return payload` 会把原样载荷
+  静默返回——既无 `artifact_id` 也无任何说明,和一次正常抓取只是"碰巧没带上 id"完全无法
+  区分,调用方读不到抓取物又不知为何。现让缺文件分支比照相邻的 `artifact_error` 分支如实
+  披露:回 `artifact_missing: true` 与 `artifact_path`,把"抓取物根本没落盘"说清楚。
+  docstring 也改写成明确列出三种互斥结局(`artifact_id` / `artifact_error` /
+  `artifact_missing`)。新增一条直测:后端只给路径不写文件时,`web.screenshot` 仍 `ok`,
+  但回 `artifact_missing=true`、无 `artifact_id`,且仓库里没有可回收的制品。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
