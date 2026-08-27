@@ -32,7 +32,7 @@ def _hook_return() -> str:
     source = Path(FridaClient.hook_template.__code__.co_filename).read_text(encoding="utf-8")
     start = source.index("def hook_template(self, pid: int")
     chunk = source[start : source.index("def _require(", start)]
-    return chunk[chunk.rindex("return {") :]
+    return chunk[chunk.rindex("result = {") :]
 
 
 def test_frida_hook_template_answers_with_loaded_not_hooked() -> None:
