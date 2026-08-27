@@ -933,6 +933,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   段与 `add` 符号(证明是段遍历解析成功,而非只读了文件头)。gate 像服务一样从 settings/PATH
   解析 wabt,缺失时干净 skip(skip≠pass)。已在 wabt 1.0.41 实测通过,并确认未配置 wabt 时按预期
   skip。
+- **`js.unpack_bundle` 在近代 webcrack 上根本写不出东西**。客户端先 `out_dir.mkdir(exist_ok=True)`
+  建好输出目录,再不带 `--force` 地跑 `webcrack <file> -o <out_dir>`;而 webcrack 的 `-o` 处理是
+  `if (force || !existsSync(output)) rm(output); else error("output directory already exists")`
+  ——目录已存在且没给 `--force` 时直接报错退出、什么都不写。由于客户端总是先建目录(服务层每次还发一个
+  全新的唯一路径),于是每次解包都非零退出、产物为空,`js.unpack_bundle` 在任何带这道「已存在即拒写」
+  防护的 webcrack 上都是死的。单测都 mock 掉 `_run`,从不跑真实的「already exists」判断,漂移一直没被
+  发现——与 r2 `axj`、Ghidra Jython、Frida 被删 API 同属版本漂移。现补上 `--force`,让 webcrack 清掉
+  并重写它自己拥有的这个目录;该 flag 与那道防护同在一个处理器里,凡会触发防护的 webcrack 必然也认
+  `--force`。已在 webcrack 2.16.0(Node 22)先复现故障、再验证修复。web RE gate 也顺势补强:原
+  `js.deobfuscate` gate 只断言「回了若干字节」,echo 或半路 bail 的 webcrack 照样能过;现夹具把密文藏成
+  转义串 `\x48\x33...`(解码后是 `H3adl3ss`,源码里从不以明文出现),断言输出里出现 `H3adl3ss`——echo
+  或坏 pass 伪造不出来;并新增 `js.unpack_bundle` 的端到端 gate,断言 webcrack 确实写出了
+  `deobfuscated.js`(正是 `--force` 修复的 live 守卫)。另加静态单测钉住解包命令必带 `--force`,让没装
+  webcrack 的 CI 也能挡住回归。
 
 ### 变更（Android 后端清理）
 
