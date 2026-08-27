@@ -6,6 +6,7 @@ import ctypes
 import os
 import signal
 import subprocess
+import sys
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
@@ -20,6 +21,29 @@ _MAX_CHILD_PIDS = 16
 # tool run, and the walk is bounded so a fork bomb cannot hold the killer.
 _MAX_KILL_DESCENDANTS = 64
 _MAX_KILL_DEPTH = 4
+
+
+def _enable_linux_child_subreaper() -> bool:
+    """Adopt orphaned tool grandchildren so this process can reap them.
+
+    Killing an orphan only turns it into a zombie; releasing its pid slot needs
+    a parent that calls waitpid, and after reparenting that parent is init. In
+    a container whose pid 1 does not reap orphans the corpse stays for the life
+    of the service, one pid slot per kill. PR_SET_CHILD_SUBREAPER makes this
+    process the adopter instead, so the kill sweeps below can reap what they
+    kill. Import-time on purpose: the flag has to be set before the first tool
+    orphan is created, not merely before the first kill.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        return bool(libc.prctl(36, 1, 0, 0, 0) == 0)  # PR_SET_CHILD_SUBREAPER
+    except (AttributeError, OSError):
+        return False
+
+
+_LINUX_CHILD_SUBREAPER = _enable_linux_child_subreaper()
 def _child_enum_limit(max_pids: int) -> int:
     """UI discovery defaults to 16; kill walks may ask for more.
 
@@ -253,6 +277,40 @@ def _proc_state_dead(pid: int) -> bool:
     return bool(fields) and fields[0] in {"Z", "X", "x"}
 
 
+def _reap_terminated(pids: list[int], wait_s: float) -> None:
+    """Best-effort reap of killed descendants the Linux subreaper adopted.
+
+    Only pids this module just signalled are waited on, and only with WNOHANG:
+    a targeted waitpid on an adopted orphan frees its pid slot, while a global
+    waitpid(-1) would steal exit statuses from Popen objects elsewhere in the
+    process. A pid that is not our child (ECHILD) or has not finished dying by
+    the deadline is simply left; the /proc-state wait in
+    terminate_process_group already treats its zombie as dead.
+    """
+    if not _LINUX_CHILD_SUBREAPER:
+        return
+    # getattr for the same reason as _kill_own_process_group: WNOHANG is
+    # POSIX-only and absent from the Windows stubs the quality job checks.
+    waitpid = getattr(os, "waitpid", None)
+    wnohang = getattr(os, "WNOHANG", None)
+    if waitpid is None or wnohang is None:
+        return
+    pending = {pid for pid in pids if pid > 0}
+    deadline = monotonic() + max(0.0, wait_s)
+    while pending:
+        for pid in tuple(pending):
+            try:
+                waited, _ = waitpid(pid, wnohang)
+            except (ChildProcessError, OSError):
+                pending.discard(pid)
+                continue
+            if waited == pid:
+                pending.discard(pid)
+        if not pending or monotonic() >= deadline:
+            return
+        sleep(0.01)
+
+
 def terminate_process_group(pgid: int, *, wait_s: float = 0.0) -> list[int]:
     """POSIX: kill every live member of process group ``pgid``. [] on Windows.
 
@@ -272,6 +330,10 @@ def terminate_process_group(pgid: int, *, wait_s: float = 0.0) -> list[int]:
         with suppress(Exception):
             _kill_pid(pid)
             killed.append(pid)
+    # Reap before the state wait: an adopted orphan that is actually reaped
+    # frees its pid slot outright, and its vanished /proc entry satisfies the
+    # wait below immediately. With wait_s == 0 this is one WNOHANG pass.
+    _reap_terminated(killed, min(max(wait_s, 0.0), 1.0))
     if wait_s > 0 and killed:
         deadline = monotonic() + wait_s
         pending = list(killed)
@@ -353,6 +415,7 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
     if kill_group and os.name != "nt" and isinstance(pid, int):
         with suppress(Exception):
             os.killpg(pid, 9)
+    _reap_terminated(killed, min(wait_s, 1.0))
     return killed
 
 
@@ -405,6 +468,7 @@ def terminate_pid_tree(pid: int) -> list[int]:
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    _reap_terminated(killed, 1.0)
     return killed
 
 

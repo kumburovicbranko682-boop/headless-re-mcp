@@ -2266,6 +2266,48 @@ def test_a_group_kill_with_a_deadline_only_returns_once_the_members_read_dead() 
             terminate_pid_tree(child)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the child subreaper is Linux (skip != pass)")
+def test_a_killed_orphan_is_reaped_not_left_as_a_zombie() -> None:
+    """Killing an orphan frees its pid slot, not just its memory.
+
+    Signalling only makes a zombie; the pid comes back when a parent calls
+    waitpid, and after reparenting that parent is init -- which in a container
+    without a reaping pid 1 never does. PR_SET_CHILD_SUBREAPER (enabled when
+    process_tree is imported) adopts the orphan into this process so the kill
+    sweep can reap it. This guard exists because the machinery was silently
+    dropped once already, in a merge that no test caught.
+    """
+    import subprocess
+    import sys
+    from contextlib import suppress
+    from pathlib import Path
+
+    from headless_re_mcp.core import process_tree
+
+    if not process_tree._LINUX_CHILD_SUBREAPER:
+        pytest.skip("PR_SET_CHILD_SUBREAPER unavailable in this environment")
+
+    launcher = subprocess.Popen(
+        [sys.executable, "-c", _EXIT0_LAUNCHER],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+    )
+    stdout, _ = launcher.communicate(timeout=10.0)
+    child = int(stdout.strip().split()[0])
+    try:
+        assert _pid_is_alive(child) is True
+        process_tree.terminate_process_group(launcher.pid, wait_s=2.0)
+        # Stronger than "reads dead": the whole /proc entry must be gone,
+        # which only a completed waitpid can achieve.
+        assert not Path(f"/proc/{child}").exists()
+    finally:
+        with suppress(Exception):
+            process_tree.terminate_pid_tree(child)
+
+
 class TestOnlyAMissingSessionSaysSessionNotFound:
     """Any KeyError used to be reported as a missing session.
 

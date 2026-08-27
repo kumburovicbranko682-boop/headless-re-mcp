@@ -65,6 +65,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `terminate_process_group` 新增可选 `wait_s`(默认 0,既有调用方行为不变),按 /proc
   状态有界等待每个被杀成员读作已死(僵尸即算死,收尸归 init);
   `terminate_leftover_process_tree` 把自己的截止时间透传给组清扫。
+- 恢复「Reap terminated Linux process trees」在合并中被静默丢弃的 subreaper 收尸机制:
+  `process_tree` 导入时启用 `PR_SET_CHILD_SUBREAPER`,工具孤儿改由本进程收养;各击杀路径
+  (`terminate_process_group` / `terminate_process_tree` / `terminate_pid_tree`)杀完后对
+  **且仅对刚击杀的 pid** 做有界 `waitpid(WNOHANG)` 收尸——绝不 `waitpid(-1)`,以免偷走
+  进程内其他 Popen 的退出状态。没有它,pid 1 不收尸的容器里每次击杀孤儿都永久占用一个
+  pid 槽位。该机制此前无测试钉住而在合并 PR #11 时丢失,本次补上守卫测试
+  (被杀孤儿的 /proc 条目须整体消失,而非仅读作僵尸)。
 
 ### 修复（监控台回环护栏）
 
