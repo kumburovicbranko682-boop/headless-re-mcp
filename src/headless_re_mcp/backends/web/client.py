@@ -49,6 +49,12 @@ _CALL_TIMEOUT = 60.0
 # web.navigate tool schema (``0 < timeout <= 120``). See ``_bound_nav_timeout``.
 _MAX_NAV_TIMEOUT_S = 120.0
 _OPENING = object()
+# A Playwright call that wedges leaves its runner thread blocked in the driver
+# with no way to interrupt it, so a wedged session's thread lives until the
+# process exits. Cap live runner threads and refuse new sessions once they are
+# all held, rather than letting close/open cycles grow threads without bound.
+_MAX_RUNNER_THREADS = 16
+_RUNNER_SLOTS = threading.BoundedSemaphore(_MAX_RUNNER_THREADS)
 
 
 class WebError(RuntimeError):
@@ -232,30 +238,48 @@ class _Runner:
     """
 
     def __init__(self, name: str) -> None:
-        self._queue: queue.SimpleQueue[tuple[Callable[[], Any], Future[Any]] | None] = (
-            queue.SimpleQueue()
-        )
-        self._wedged = False
-        self._closed = False
-        self._thread = threading.Thread(target=self._loop, name=name, daemon=True)
-        self._thread.start()
+        slots = _RUNNER_SLOTS
+        if not slots.acquire(blocking=False):
+            raise WebError(
+                "resource_exhausted",
+                f"all {_MAX_RUNNER_THREADS} browser runner threads are still occupied",
+            )
+        self._slot = slots
+        try:
+            self._queue: queue.SimpleQueue[
+                tuple[Callable[[], Any], Future[Any]] | None
+            ] = queue.SimpleQueue()
+            self._wedged = False
+            self._closed = False
+            self._thread = threading.Thread(target=self._loop, name=name, daemon=True)
+            self._thread.start()
+        except BaseException:
+            slots.release()
+            raise
 
     @property
     def wedged(self) -> bool:
         return self._wedged
 
     def _loop(self) -> None:
-        while True:
-            item = self._queue.get()
-            if item is None:
-                return
-            work, future = item
-            if not future.set_running_or_notify_cancel():
-                continue
-            try:
-                future.set_result(work())
-            except BaseException as exc:  # noqa: BLE001 - handed to the caller
-                future.set_exception(exc)
+        # The slot is released only when this loop actually exits. A wedged
+        # runner never reaches here, so it keeps holding its slot -- which is
+        # the point: a thread stuck in the driver must not free capacity for a
+        # replacement that would just add another stuck thread.
+        try:
+            while True:
+                item = self._queue.get()
+                if item is None:
+                    return
+                work, future = item
+                if not future.set_running_or_notify_cancel():
+                    continue
+                try:
+                    future.set_result(work())
+                except BaseException as exc:  # noqa: BLE001 - handed to the caller
+                    future.set_exception(exc)
+        finally:
+            self._slot.release()
 
     def call(self, work: Callable[[], T], *, timeout: float = _CALL_TIMEOUT) -> T:
         if self._closed:
