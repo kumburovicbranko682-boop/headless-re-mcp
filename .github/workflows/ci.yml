@@ -152,6 +152,44 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-proxy-capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package with the proxy extra
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,proxy]"
+
+      - name: Proxy capture gate runs for real (skip != pass)
+        run: |
+          python -c "from mitmproxy import version; print('mitmproxy', version.VERSION)"
+          python -m pytest tests/integration/test_proxy_capture_live_gate.py \
+            -rs --tb=short --junitxml=proxy-capture-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("proxy-capture-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # mitmproxy was just installed, so a skip here means the gate could not
+          # capture a flow through it -- the false-green "skip != pass" warns
+          # about. This is the only test that routes a request through the proxy
+          # and reads the recorded flow back end to end.
+          if not cases:
+              sys.exit("no proxy-capture gate was collected")
+          if skipped:
+              sys.exit(f"proxy-capture gate skipped despite an installed mitmproxy: {skipped}")
+          print(f"proxy-capture gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

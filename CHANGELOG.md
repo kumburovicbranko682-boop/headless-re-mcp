@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+抓包代理的流量捕获主流程首次有了真实执行覆盖。代理生命周期 gate 只证明监听端口能起能停能释放，且
+始终断言 `flow_count == 0`——而捕获流量这一代理存在的全部意义此前零 live 覆盖：没有测试把请求经代理
+发出再读回，`flows`/`flow_get`/`export_har`/`replay` 只对 mock 跑过（连代码注释里点名"曾经被整个丢弃"
+的请求体捕获路径也从没端到端跑过）。新增 `tests/integration/test_proxy_capture_live_gate.py`：以
+一次性 localhost HTTP 服务为源站，客户端经代理走明文 HTTP 发请求，因此无外网、无需 CA 信任即可真跑
+整条捕获，再经后端读回校验——记录到的 GET、其响应体（标记 `PROXY_FLOW_42`）、一次 POST 的请求体
+（标记 `CLIENT_BODY_99`）、HAR 导出、以及客户端 replay。新增 `linux-proxy-capture` CI job：装
+proxy extra、跑该 gate 并解析 junitxml，mitmproxy 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
