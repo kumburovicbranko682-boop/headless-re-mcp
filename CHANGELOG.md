@@ -134,6 +134,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (smali 与点号两种拼法都要解析到)、`apk.strings` 找回 DEX 里那条字符串、`apk.xrefs` 从字节码还原出
   `entry -> leaf` 这条调用。缺 androguard 时如实 skip(skip 不等于 pass)。
 
+### 新增（Frida 本地进程实测 Gate：非 Windows 那半边）
+
+- Frida 线唯一的真机 Gate(`test_m11_frida_live_gate`)只在有 Windows PE 夹具 + kernel32/ntdll 的机器上跑,
+  于是在 Linux 上整条 Frida 线——本地注入、模块/导出枚举、pid 授权闸、脚本加载——毫无真机覆盖,所有断言都
+  只压在单测的 mock 上。新增 `test_frida_local_gate`,对着**现开的子进程**(Python 解释器自己,哪里都在、
+  且动态链接 libc)驱动真的 `FridaClient`:先验 pid 授权闸(未授权的 pid 在注入前就被 `permission_denied`
+  挡下),再 attach、枚举模块(断言 libc 在列)、枚举 libc 导出(found 且 count≥1、名字/地址非空)、加载
+  canned `noop` 脚本(loaded 且 persisted=false)。全程无设备、无外网、无夹具可造。缺 frida 模块或非 POSIX
+  时如实 skip(Windows 由 PE Gate 覆盖);沙箱在 OS 层拒绝 ptrace(yama/seccomp/无 CAP_SYS_PTRACE)时按
+  frida 自己的措辞识别并诚实 skip,与"契约坏了"的真失败区分开——skip 不等于 pass。
+
 ### 新增（jadx 反编译实测 Gate：还原出的 Java 就是 DEX 里的调用）
 
 - Android 工具链的另一条线——jadx(`apk.export_sources` / `apk.decompile`)——此前零真机覆盖:它是
@@ -171,9 +182,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `windows-integration.yml` 的形态),但无需自托管 runner:非 PE 那几条线依赖的后端都能在 GitHub 自带的
   Ubuntu 镜像上装齐——apt 装 radare2 与 wabt、镜像自带 C 编译器供 r2 ELF 夹具、npm 装 webcrack、
   Playwright 装 Chromium、pip 装 mitmproxy。装完先打印各后端版本(装失败与 Gate 跳过可区分),再按非 PE
-  范围跑 `test_android_re_gate` / `test_android_jadx_gate` / `test_android_apktool_gate` / `test_web_re_gate` /
-  `test_web_lifecycle_gate` / `test_web_dynamic_gate` / `test_proxy_lifecycle_gate` / `test_proxy_capture_gate` /
-  `test_m11_r2_live_gate` / `test_agent_browser_smoke`,`-rs` 打印每条跳过原因。jadx 与 apktool 是自带的 Java
+  范围跑 `test_android_re_gate` / `test_android_jadx_gate` / `test_android_apktool_gate` / `test_frida_local_gate` /
+  `test_web_re_gate` / `test_web_lifecycle_gate` / `test_web_dynamic_gate` / `test_proxy_lifecycle_gate` /
+  `test_proxy_capture_gate` / `test_m11_r2_live_gate` / `test_agent_browser_smoke`,`-rs` 打印每条跳过原因。
+  Frida 由 `android` extra 一并装上;jadx 与 apktool 是自带的 Java
   工具(镜像已有 JRE),下载后落在 PATH 上供 `Settings.load()` 发现;apksigner 因只在 Android SDK
   build-tools 里、对托管 runner 太重而不纳入。PE 流水线的 Gate 需要 IDA/x64dbg/Windows 夹具,不纳入本 job。
 

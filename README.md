@@ -390,6 +390,8 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 Android 那条线补齐了一套围绕纯 Python 现造 APK 的实测 Gate——`fixtures/android/apk_fixture.py` 在测试运行时手工编码 AXML 清单 + 单类 DEX（无需 aapt/Java）造出一个合法 APK，其唯一类 `entry()` 用 invoke-static 调 `leaf()`：`test_android_re_gate` 断言 androguard 取回的包名/组件/类/方法/字符串/xref 就是造进去的事实；`test_android_jadx_gate` 断言 jadx 还原出的 Java 里 `entry` 体内真出现 `leaf();` 这句调用；`test_android_apktool_gate` 把 APK 过一遍 decode→build 后交回 androguard，断言重打包产物仍解析出同样的身份。签名（apksigner）因只在 Android SDK build-tools 里、对托管 runner 太重而仍靠单测守护。
 
+Frida 那条线此前唯一的真机 Gate 只认 Windows PE 夹具，Linux 上零覆盖；现补 `test_frida_local_gate`：对现开的子进程（Python 解释器自己）驱动真的 `FridaClient`，验 pid 授权闸、attach、模块与 libc 导出枚举、canned 脚本加载，无设备/无外网。沙箱在 OS 层拒绝 ptrace 时按 frida 自己的措辞诚实 skip。
+
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 

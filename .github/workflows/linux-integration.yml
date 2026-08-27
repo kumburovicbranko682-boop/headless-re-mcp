@@ -86,6 +86,7 @@ jobs:
           apktool --version || true
           python -c "import androguard, adbutils; print('androguard+adbutils ok')"
           python -c "import mitmproxy; print('mitmproxy', mitmproxy.__version__)"
+          python -c "import frida; print('frida', frida.__version__)"
 
       - name: Non-PE portable gates
         run: |
@@ -97,6 +98,7 @@ jobs:
             tests/integration/test_android_re_gate.py \
             tests/integration/test_android_jadx_gate.py \
             tests/integration/test_android_apktool_gate.py \
+            tests/integration/test_frida_local_gate.py \
             tests/integration/test_web_re_gate.py \
             tests/integration/test_web_lifecycle_gate.py \
             tests/integration/test_web_dynamic_gate.py \
