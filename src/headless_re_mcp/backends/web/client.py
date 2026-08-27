@@ -540,7 +540,17 @@ class WebBackend:
             )
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
+        except WebError:
+            # A wedged/timed-out/closed session is a session-health failure, not
+            # a per-request "body unavailable". Surface it -- exactly as
+            # script_source does -- so an unattended caller gets the "browser
+            # unresponsive; call web.close" signal and can recover, instead of a
+            # 200-shaped body_error that reads as "this one request had no body".
+            raise
         except Exception as exc:  # noqa: BLE001
+            # The CDP body fetch itself failing for this one request (a redirect
+            # with no body, an entry already evicted from CDP's cache) is the
+            # graceful case this note is for.
             return {**entry, "body_error": str(exc)}
         if not isinstance(body, str):
             body = str(body)

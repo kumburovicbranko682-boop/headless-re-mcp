@@ -122,6 +122,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   新增两个单元回归（webcrack 与 wasm2wat 各一）：把上限 monkeypatch 到 4 字节后断言超限输入以
   `too_large`（细节含 `max_file_size`）拒绝，并把 `_run` 换成必失败桩证明超限文件从未到达子进程。
 
+### 修复（web.network_get 把浏览器卡死误报成「该请求没有 body」）
+
+- `web.network_get` 用一个 `try` 兜住取响应体的 CDP 调用,失败就折成 `body_error` 注记、其余请求记录照常返回——
+  这对「本来就没有 body」的请求(重定向、已被 CDP 逐出缓存的条目)是对的。但同一个 `except Exception` 连
+  `WebError` 一起吞了:当 runner 线程卡死或超时(`.call` 抛 `WebError("timeout"/"backend_error")`)时,会话级
+  的健康故障被包装成 200 形态的 `body_error`,读起来像「这一个请求没有 body」,无人值守的调用方拿不到
+  「浏览器无响应、请 `web.close`」这个本该据以恢复的信号。`script_source` 早就 `except WebError: raise`;现在
+  `network_get` 对齐同一规则:`WebError` 上抛,只有单请求的 CDP 取体失败才降级为 `body_error`。新增回归覆盖
+  两条分支(卡死会话上抛 `timeout`;单请求取体失败仍返回带 `body_error` 的完整记录)。
+
 ### 新增（APK 解析缓存并发安全的回归）
 
 - `ApkClient` 的解析缓存是类级、被多线程同时访问（工具调用在线程池上跑，会话关闭又在同一批 dict 上调
