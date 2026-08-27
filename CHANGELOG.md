@@ -1040,6 +1040,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **r2 在非 PE 目标上的地址映射（只回 VA、不臆造 rva/module）由直测固定**：r2/rizin 是跨平台后端，
+  相对 Windows 专用工具的立身之本就是 ELF/Mach-O。每个 r2 回包都经 `mapping.py` 富化，`address_dict`
+  里 `if image_base is not None and va >= image_base: rva = va - image_base`——只有在存在 PE ImageBase
+  且地址不低于它时才补 `rva`（及必须随行的 `module`）。`pe_preferred_base` 对非 PE 回 `(None, None)`，
+  故 ELF 上地址是纯 VA：`{va, architecture}`，无 `rva`、无 `module`，回包也不带 `image_base`。两半守卫都
+  要紧、且既有 r2 用例（一律用 `_minimal_pe` 造 PE）都不覆盖：去掉 `image_base is not None`，ELF 会
+  `va - None` 抛 TypeError（或把 base 当 0，于是每个 ELF 地址凭空多出 `rva==va` 与假 `module`）；去掉
+  `va >= image_base`，低于基址的地址算出负 `rva`，被 `Address(ge=0)` 拒掉、该地址整个消失。
+  `test_r2_address_mapping.py` 钉的是 PE 方向，从不碰无基址一侧。新增用例直接钉非 PE 方向：`image_base=None`
+  与 `va < image_base` 都回纯 VA；对一个非 PE 文件跑整条 `enrich_r2_payload`，条目与请求地址都是纯 VA、
+  回包无 `image_base`，而调用方独立提供的 `architecture` 仍照常透出。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
