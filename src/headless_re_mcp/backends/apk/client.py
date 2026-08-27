@@ -16,6 +16,9 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
+from uuid import uuid4
+
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 
 JsonObject = dict[str, Any]
 T = TypeVar("T")
@@ -304,17 +307,42 @@ class ApkClient:
             ),
         }
 
-    def manifest(self, path: Path) -> JsonObject:
+    def manifest(self, path: Path, *, spill_dir: Path | None = None) -> JsonObject:
         apk = self._apk(path)
         try:
             xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
-        return {
+        truncated = len(xml) > _MAX_MANIFEST_CHARS
+        result: JsonObject = {
             "package": apk.get_package(),
             "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
-            "truncated": len(xml) > _MAX_MANIFEST_CHARS,
+            "truncated": truncated,
         }
+        # A manifest cut at the char cap is not even well-formed XML, and the
+        # tool had no way to hand back the rest. When it is cut, write the whole
+        # document beside the preview so the caller can parse the real thing;
+        # the caller keys it under a session artifact dir that retention prunes.
+        if truncated and spill_dir is not None:
+            spilled = self._spill_manifest(spill_dir, xml)
+            if spilled is not None:
+                result["manifest_path"] = str(spilled)
+        return result
+
+    @staticmethod
+    def _spill_manifest(spill_dir: Path, xml: str) -> Path | None:
+        try:
+            spill_dir.mkdir(parents=True, exist_ok=True)
+            out = spill_dir / f"manifest-{uuid4().hex}.xml"
+            out.write_bytes(xml.encode("utf-8", errors="replace"))
+        except OSError:
+            return None
+        # An absurdly large manifest (a bomb, not a real app) is deleted rather
+        # than left on disk; the caller still has the bounded inline preview.
+        _size, over = capped_file_size(out, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
+        if over:
+            return None
+        return out
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)

@@ -448,6 +448,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   那句「has_more 只表示还有已收集的行」正是这个坑。三者各加 `name_filter`：在**收集阶段、上限之前**按子串过滤
   （大小写敏感，与 frida 系列同一范式），于是非匹配项不占收集预算，目标即便排在原来的收集边界之后也能被扫进来、
   连同 `total`/`scan_capped` 一并如实反映过滤后的视图。既有无过滤行为不变（`name_filter` 默认空）。
+- **`apk.manifest` 过了 200 KB 就把 XML 从中间切断、剩下的没了，而截断处的 XML 根本不成文档**。它把
+  `manifest_xml` 内联切到 `_MAX_MANIFEST_CHARS`（200000 字符）、置 `truncated`，此外无任何补救——可
+  AndroidManifest 在组件/intent-filter/metadata 堆多了的大 App 里确实会超，被切的那份既解析不了（元素切一半）、
+  也无从取回完整正文。现在对齐 `web.dom.snapshot` 的溢出范式：一旦被切且服务层给了 `spill_dir`，就把**完整**
+  XML 写到 `apk/<session_id>/manifest-<uuid>.xml` 并回 `manifest_path`；服务层 `apk_manifest` 经 `_register_capture`
+  把它登记为 `apk_manifest` 制品（回 `artifact_id`），于是 `artifacts.read` 能打开、retention 能回收（裸路径两头
+  不通的老毛病）。落盘超过抓包容量上限（`UNREGISTERED_CAPTURE_MAX_BYTES`，只有清单炸弹才可能）时删文件、降级成
+  只有内联前缀而非报错整调用。新增 `apk/<session_id>` 到 `_session_artifact_roots` 使其成为会话自有子树（与
+  `web`/`proxy` 同一范式）。清单在内联上限内时行为不变（无 `manifest_path`、`truncated=False`）。
 - **`apk.xrefs` 只按方法名匹配、不认声明类，交叉引用因此既不精确也不完整**。它遍历所有方法、命中
   `method.name == 目标名` 就收集其调用点——文档原话「列出叫 method_name 的**每一个**方法的调用者」。可在混淆
   App 里方法全叫 `a`/`b`/`c`、或遇到 `decrypt`/`run`/`<init>` 这类常见名时，无数个毫不相干的同名方法的调用点被

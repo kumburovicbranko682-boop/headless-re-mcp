@@ -168,6 +168,71 @@ def test_apk_manifest_names_manifest_xml_and_says_when_it_was_cut(
     doc = _tool_docstring("apk.manifest")
     assert "manifest_xml" in doc
     assert "truncated" in doc
+    assert "manifest_path" in doc
+
+
+class _SmallManifestBody:
+    def get_xml(self) -> bytes:
+        return b"<manifest package='com.example.app'/>"
+
+
+class _SmallFakeApk:
+    def get_android_manifest_axml(self) -> _SmallManifestBody:
+        return _SmallManifestBody()
+
+    def get_package(self) -> str:
+        return "com.example.app"
+
+
+def test_apk_manifest_spills_the_whole_xml_when_it_is_cut(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A manifest cut at the char cap is not well-formed; the tail was lost.
+
+    With a spill_dir the whole document is written to manifest_path so the
+    caller can parse the real thing, while manifest_xml keeps the bounded
+    preview.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _FakeApk())
+    spill = tmp_path / "apk"
+    payload = client.manifest(tmp_path / "app.apk", spill_dir=spill)
+
+    assert payload["truncated"] is True
+    assert len(payload["manifest_xml"]) == _MAX_MANIFEST_CHARS
+    assert "manifest_path" in payload
+    written = Path(payload["manifest_path"])
+    assert written.parent == spill
+    full = written.read_text(encoding="utf-8")
+    assert len(full) > _MAX_MANIFEST_CHARS
+    assert full.startswith("<manifest/>")
+
+
+def test_apk_manifest_does_not_spill_when_it_fits(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A manifest within the buffer stays inline: no file, no manifest_path."""
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _SmallFakeApk())
+    spill = tmp_path / "apk"
+    payload = client.manifest(tmp_path / "app.apk", spill_dir=spill)
+
+    assert payload["truncated"] is False
+    assert "manifest_path" not in payload
+    assert not spill.exists() or not any(spill.iterdir())
+
+
+def test_apk_manifest_without_spill_dir_keeps_old_shape(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The backend called with no spill_dir behaves exactly as before."""
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _FakeApk())
+    payload = client.manifest(tmp_path / "app.apk")
+
+    assert payload["truncated"] is True
+    assert "manifest_path" not in payload
+
 
 class _FakeClass:
     def __init__(self, name: str, *, external: bool = False) -> None:

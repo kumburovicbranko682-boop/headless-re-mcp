@@ -20,7 +20,11 @@ from headless_re_mcp.config import Settings
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, _dir_size
 from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success, backend_error_is_retryable
-from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
+from headless_re_mcp.core.service_ext import (
+    _record_backend,
+    _register_capture,
+    _timeline_append,
+)
 from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
@@ -89,6 +93,14 @@ class ApkAnalysisMixin:
         root = self.settings.artifact_root.expanduser().resolve()
         return root / "jadx" / session_id
 
+    def _apk_artifact_dir(self, session_id: str) -> Path:
+        """Per-session home for registered apk.* spills (e.g. a full manifest)."""
+        if not session_id or Path(session_id).name != session_id:
+            raise ApkError("invalid_params", "invalid session id")
+        root = self.settings.artifact_root.expanduser().resolve() / "apk" / session_id
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
     def apk_open(self, session_id: str) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)
@@ -113,7 +125,24 @@ class ApkAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def apk_manifest(self, session_id: str) -> Result[JsonObject]:
-        return self._apk_call(session_id, "manifest")
+        try:
+            binary = self._apk_binary(session_id)
+            data = ApkClient().manifest(binary, spill_dir=self._apk_artifact_dir(session_id))
+            spill = data.get("manifest_path")
+            if isinstance(spill, str):
+                data = _register_capture(
+                    self,
+                    session_id,
+                    Path(spill),
+                    kind="apk_manifest",
+                    source="apk.manifest",
+                    payload=data,
+                )
+            return _success(data, session_id=session_id, backend="apk")
+        except ApkError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def apk_permissions(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "permissions")
