@@ -60,6 +60,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（device.pull 落地校验）
+
+- `device.pull` 现在核对真正落地的内容,不再把幽灵/半截传输当成功。`adb sync.pull`
+  可能不抛异常却什么都没写(传输声称成功、远端在 stat 与读取之间消失),而
+  `capped_file_size` 把不存在的路径读成 0 字节——过去这会被报成一次干净的 0 字节
+  pull。现落地后先确认本地文件确实存在,否则报 `backend_error`;并保留传输前 stat 得到
+  的远端大小,回传 `remote_size` 与 `complete`:拉到的字节数与远端不符时 `complete` 为
+  `false` 并附 `note`(短拉,远端可能在传输中变化),无法 stat 远端时 `complete` 为
+  `null`(保留文件但不声称已校验)。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

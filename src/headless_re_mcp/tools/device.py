@@ -160,7 +160,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_pull(serial: str, remote_path: str) -> dict[str, Any]:
         """Pull a device file to artifact_root/device/.
 
-        Answers with remote, local and size. The file is not a registered artifact
+        Answers with remote, local and size, plus remote_size and complete: the
+        pulled bytes are checked against the device's stat, so a short or
+        phantom transfer is reported (complete False, or a backend_error when
+        nothing landed) rather than passed off as success; complete is null when
+        the remote size could not be read. The file is not a registered artifact
         -- artifacts.read cannot open it -- only the newest 32 device captures
         are kept, and a file over 64 MiB is deleted and refused.
         """

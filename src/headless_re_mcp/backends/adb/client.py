@@ -599,6 +599,7 @@ class AdbBackend:
         local_path.parent.mkdir(parents=True, exist_ok=True)
         cap = UNREGISTERED_CAPTURE_MAX_BYTES
         sync = getattr(dev, "sync", None)
+        remote_size: int | None = None
         if sync is not None:
             try:
                 info = _call(sync.stat, remote_path, timeout=_ADB_PROBE_TIMEOUT_S)
@@ -620,6 +621,7 @@ class AdbBackend:
                         size=size,
                         cap=cap,
                     )
+                remote_size = size
         try:
             _call(dev.sync.pull, remote_path, str(local_path), timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
@@ -633,6 +635,17 @@ class AdbBackend:
                 "refusing to keep a pulled directory",
                 remote=remote_path,
             )
+        # sync.pull can return without raising yet leave nothing on disk (a
+        # transport that reported success, a remote that went away between the
+        # stat and the read). capped_file_size reads a missing path as 0 bytes,
+        # so without this a phantom pull would be reported as a 0-byte success.
+        if not local_path.exists():
+            raise AdbError(
+                "backend_error",
+                "pull reported success but no local file landed",
+                remote=remote_path,
+                local=str(local_path),
+            )
         pulled, over = capped_file_size(local_path, cap=cap)
         if over:
             raise AdbError(
@@ -642,7 +655,19 @@ class AdbBackend:
                 size=pulled,
                 cap=cap,
             )
-        return {"remote": remote_path, "local": str(local_path), "size": pulled}
+        result: JsonObject = {
+            "remote": remote_path,
+            "local": str(local_path),
+            "size": pulled,
+            "remote_size": remote_size,
+            "complete": None if remote_size is None else pulled == remote_size,
+        }
+        if remote_size is not None and pulled != remote_size:
+            result["note"] = (
+                f"pulled {pulled} of {remote_size} bytes; the remote file may "
+                "have changed during the transfer"
+            )
+        return result
 
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:
         dev = self._device(serial)

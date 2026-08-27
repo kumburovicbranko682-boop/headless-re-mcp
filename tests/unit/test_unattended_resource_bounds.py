@@ -3865,6 +3865,91 @@ class TestDevicePullRefusesTreesAndHugeFiles:
         assert out.exists() is False
 
 
+class TestDevicePullVerifiesLanding:
+    """pull re-stats what landed, so a phantom or short transfer is not success.
+
+    capped_file_size reads a missing path as 0 bytes, so a sync.pull that
+    returned without raising but wrote nothing would otherwise come back as a
+    clean size-0 pull. When the device could stat the source, the pulled bytes
+    are also checked against it so a truncated copy is not passed off as whole.
+    """
+
+    def _backend(self, dev: Any) -> Any:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        backend = AdbBackend()
+        backend._device = lambda serial: dev  # type: ignore[method-assign]
+        return backend
+
+    @staticmethod
+    def _sync(size: int, written: int | None, *, stat_ok: bool = True) -> Any:
+        from pathlib import Path
+
+        class Info:
+            mode = 0o100644
+
+            def __init__(self) -> None:
+                self.size = size
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> Info:
+                del remote, timeout
+                if not stat_ok:
+                    raise RuntimeError("this transport has no stat")
+                return Info()
+
+            def pull(self, remote: str, local: str, timeout: float | None = None) -> None:
+                del remote, timeout
+                if written is not None:
+                    Path(local).write_bytes(b"x" * written)
+
+        return Sync()
+
+    def test_a_pull_that_lands_nothing_is_an_error_not_a_zero_byte_success(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb.client import AdbError
+
+        class Dev:
+            sync = TestDevicePullVerifiesLanding._sync(1024, None)
+
+        with pytest.raises(AdbError) as caught:
+            self._backend(Dev()).pull("emulator-5554", "/sdcard/a.bin", tmp_path / "a.bin")
+        assert caught.value.code == "backend_error"
+        assert "no local file" in caught.value.message
+        assert (tmp_path / "a.bin").exists() is False
+
+    def test_a_short_pull_is_reported_incomplete(self, tmp_path: Any) -> None:
+        class Dev:
+            sync = TestDevicePullVerifiesLanding._sync(1024, 200)
+
+        result = self._backend(Dev()).pull("emulator-5554", "/sdcard/a.bin", tmp_path / "a.bin")
+        assert result["size"] == 200
+        assert result["remote_size"] == 1024
+        assert result["complete"] is False
+        assert "note" in result
+
+    def test_a_complete_pull_is_reported_complete(self, tmp_path: Any) -> None:
+        class Dev:
+            sync = TestDevicePullVerifiesLanding._sync(512, 512)
+
+        result = self._backend(Dev()).pull("emulator-5554", "/sdcard/a.bin", tmp_path / "a.bin")
+        assert result["size"] == 512
+        assert result["remote_size"] == 512
+        assert result["complete"] is True
+        assert "note" not in result
+
+    def test_a_pull_with_no_stat_is_kept_but_not_claimed_verified(self, tmp_path: Any) -> None:
+        class Dev:
+            sync = TestDevicePullVerifiesLanding._sync(0, 42, stat_ok=False)
+
+        result = self._backend(Dev()).pull("emulator-5554", "/sdcard/a.bin", tmp_path / "a.bin")
+        assert result["size"] == 42
+        assert result["remote_size"] is None
+        assert result["complete"] is None
+        assert "note" not in result
+
+
 class TestProxyReplayWaitsForTheCommand:
     def test_a_failed_replay_command_is_not_reported_replayed(self) -> None:
         from types import SimpleNamespace
