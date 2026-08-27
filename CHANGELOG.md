@@ -375,6 +375,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   通过、摘要照常打印，然后 `threading._shutdown` 永久等待，正是挂满 30 分钟、无输出
   可查的形态。测试工作线程现全部为守护线程，原先无存活断言的定时 join 补上断言，
   卡住的工作线程在自己的测试里具名失败，而不是在套件通过后拖垮整个 job。
+- `windows-integration` 的集成 gate 步骤补上同款步骤级超时（80 分钟，低于 90 分钟
+  job 上限）：真实后端 gate 卡死时步骤失败、日志保留，且 `always()` 的残留进程检查
+  仍会执行，能抓到挂死那轮泄漏的分析器进程；此前只有 job 级上限，整个 job 连同日志
+  一起被静默取消。
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
   `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。
   监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。

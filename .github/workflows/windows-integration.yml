@@ -63,6 +63,15 @@ jobs:
           Write-Host "pre-existing analyzer processes: $($before.Count)"
 
       - name: Integration gates
+        # Same reason the unit-test steps carry a step timeout: the 90-minute
+        # job ceiling cancels the whole job with its logs unrecoverable, so a
+        # wedged real-backend gate leaves nothing to say which gate hung. A step
+        # timeout fails the step instead, keeping the transcript, and -- because
+        # it is below the job ceiling -- still lets the always() Residue check
+        # run so a leak from the hung run is caught. Generous under the ceiling:
+        # a healthy full-gate run fits well inside 80 minutes, and a run that
+        # does not was going to be cancelled at 90 regardless.
+        timeout-minutes: 80
         run: |
           # Run every gate rather than a hardcoded subset, which silently omitted
           # newer gates. -rs prints each skip reason so skip never reads as pass.
