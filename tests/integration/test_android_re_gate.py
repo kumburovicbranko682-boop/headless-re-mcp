@@ -13,11 +13,14 @@ import hashlib
 import struct
 import zipfile
 import zlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from headless_re_mcp.backends.apk import ApkClient
+from headless_re_mcp.backends.jadx import JadxClient
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
@@ -280,6 +283,52 @@ def test_android_dex_operations_parse_a_real_dex(tmp_path: Path) -> None:
         assert uncalled.ok, uncalled.error
         assert uncalled.data["callers"] == []
         assert uncalled.data["count"] == 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_jadx_decompiles_the_real_dex(tmp_path: Path) -> None:
+    """apk.export_sources and apk.decompile against a real jadx run.
+
+    The jadx adapter had no live coverage at all -- export_sources / decompile,
+    the _class_to_java_path mapping, the sources-root escape guards, and the
+    _capped_java_listing tree summary were exercised only against a stubbed
+    subprocess in unit tests. jadx is a real Java decompiler that turns the same
+    hand-assembled DEX into Java, so this drives both service ops on it: export
+    must summarise a tree containing com/gate/Sample.java, and decompile of
+    Lcom/gate/Sample; must return source with the class and both methods (skip
+    != pass when jadx is not configured on this machine).
+    """
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    if not JadxClient(getattr(settings, "jadx", None)).available:
+        pytest.skip("jadx not configured — APK decompile Gate not run (skip != pass)")
+    apk = _build_dex_apk(tmp_path / "real.apk")
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        exported = service.apk_export_sources(session_id, timeout=120.0)
+        assert exported.ok, exported.error
+        assert exported.data["java_file_count"] >= 1
+        assert exported.data["sources_dir"] is not None
+        # The tree summary must name the class jadx recovered from the DEX.
+        assert any(
+            str(name).endswith("com/gate/Sample.java") for name in exported.data["java_files"]
+        ), exported.data["java_files"]
+
+        decompiled = service.apk_decompile(session_id, "Lcom/gate/Sample;", timeout=120.0)
+        assert decompiled.ok, decompiled.error
+        assert decompiled.data["path"].endswith("Sample.java")
+        assert decompiled.data["truncated"] is False
+        source = decompiled.data["source"]
+        # jadx reconstructs the class and both public-static methods; the
+        # invoke-static shows up as the secret() call inside caller().
+        assert "class Sample" in source
+        assert "secret" in source
+        assert "caller" in source
     finally:
         service.close_all()
 

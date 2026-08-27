@@ -8,8 +8,8 @@
 #   * Intercept -- mitmproxy lifecycle plus a real HTTP flow captured,
 #                  retrieved, exported to HAR, and replayed through the proxy
 #   * Android   -- androguard APK metadata, a real hand-assembled DEX parsed
-#                  end to end (classes/methods/strings/xrefs), and safe
-#                  degradation with no device
+#                  end to end (classes/methods/strings/xrefs), jadx decompiling
+#                  that DEX to Java, and safe degradation with no device
 #   * Static    -- radare2 against a locally built ELF (the non-PE mapping path)
 # tests/integration/conftest.py skips the Windows-only gates by name, and -rs
 # prints every remaining skip reason, so a skip here never reads as a pass.
@@ -31,6 +31,10 @@ jobs:
     # The backend installs dominate; the gates themselves finish in seconds. A
     # hung browser or proxy probe must name itself and fail well inside this.
     timeout-minutes: 30
+    env:
+      # Pin the jadx release so the cache key and download URL agree; bump
+      # deliberately. The extracted launcher lives at ~/jadx/bin/jadx.
+      JADX_VERSION: "1.5.6"
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +54,12 @@ jobs:
         with:
           node-version: "24"
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # jadx 1.5.x runs on JDK 11+; temurin 21 matches the Ghidra job.
+          java-version: "21"
+
       - name: System backends
         run: |
           # radare2: cross-platform static analysis. wabt: wasm2wat / wasm-objdump.
@@ -57,6 +67,25 @@ jobs:
           # instead of skipping for want of a compiler.
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends radare2 wabt gcc
+
+      - name: Cache jadx
+        id: jadx-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/jadx
+          key: jadx-${{ env.JADX_VERSION }}
+
+      - name: Install jadx (Android decompiler)
+        # A ~25 MB release zip with a launcher script -- the same one the adapter
+        # invokes -- so the APK decompile gate runs instead of skipping.
+        if: steps.jadx-cache.outputs.cache-hit != 'true'
+        run: |
+          url="https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"
+          curl -fsSL -o /tmp/jadx.zip "$url"
+          mkdir -p "$HOME/jadx"
+          unzip -q /tmp/jadx.zip -d "$HOME/jadx"
+          rm -f /tmp/jadx.zip
+          chmod +x "$HOME/jadx/bin/jadx"
 
       - name: JS deobfuscation backend (webcrack)
         run: |
@@ -83,6 +112,9 @@ jobs:
       - name: Portable non-PE integration gates
         env:
           PYTHONPATH: src
+          # Settings.load() reads this; the APK decompile gate resolves the
+          # launcher here instead of skipping for want of jadx.
+          HEADLESS_RE_JADX: /home/runner/jadx/bin/jadx
         run: |
           # The whole directory, never a hardcoded subset: conftest skips the
           # Windows-only and unconfigured (IDA / de4dot) gates, and running

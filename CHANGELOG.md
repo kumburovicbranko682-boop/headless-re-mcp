@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 新增（jadx 反编译后端首次拿到真机 gate：用同一手工 DEX 跑通 export_sources 与 decompile）
+
+- **jadx 适配器此前完全没有真后端覆盖**。`export_sources` / `decompile`、`_class_to_java_path` 的
+  smali→路径映射、sources 根目录的逃逸防护、`_capped_java_listing` 的树摘要,全都只在单元层对着一个被打桩的
+  子进程跑过。jadx 是个真正的 Java 反编译器,能把上面那枚手工组装的 DEX 变回 Java,所以新增
+  `test_android_jadx_decompiles_the_real_dex` 经 service 驱动两个操作:`apk.export_sources` 必须摘要出一棵
+  含 `com/gate/Sample.java` 的树(`java_file_count>=1`、`sources_dir` 非空),`apk.decompile("Lcom/gate/Sample;")`
+  必须回出含 `class Sample` 及 `secret` / `caller` 两个方法的源码(实测 jadx 1.5.6 把那条 invoke-static 还原成
+  `caller()` 里对 `secret()` 的调用),且 `path` 以 `Sample.java` 结尾、`truncated` 为 False。jadx 未配置时明确
+  skip(skip != pass)。CI 侧给 linux-integration 的快 gate job 补上 temurin JDK 21 与带缓存的 jadx 1.5.6 下载,
+  并把 `HEADLESS_RE_JADX` 指向解出的启动脚本,该 gate 在 CI 上真跑。Android 线的 jadx 反编译路径自此有了真后端
+  回归护栏,与 androguard 的 DEX 内容操作互补。
+
 ### 新增（Android DEX 内容操作首次拿到真机 gate：手工组装最小合法 classes.dex）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` / `apk.xrefs` 的成功路径此前从未跑过真 androguard**。
