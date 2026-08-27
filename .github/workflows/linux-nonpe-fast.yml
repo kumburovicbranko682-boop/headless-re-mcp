@@ -1,0 +1,100 @@
+# Fast non-PE backend gates, per PR — the light half of linux-integration.yml.
+#
+# linux-integration.yml runs the full non-PE gate set weekly, because the
+# Chromium download the browser / web-lifecycle gates need is too heavy for
+# every push. But the JS (webcrack), WASM (wabt), Android static (androguard)
+# and mitmproxy-lifecycle gates need only light, fast tools and no browser --
+# and those are exactly the backends where a regression can otherwise ride to
+# production in the days between weekly runs. The webcrack-2.x break that made
+# every js.unpack_bundle fail (fixed with -f in this branch) is the case in
+# point: a weekly job would have caught it a week late; per-PR catches it on the
+# PR. So run that light subset on any PR that touches the non-PE backends or
+# their gates. The heavy browser gates stay weekly in linux-integration.yml.
+#
+# Path-scoped on purpose: a PR that touches none of the non-PE code does not pay
+# for this job at all. The full weekly job still exercises everything, including
+# these files against a real browser, so nothing here reduces that coverage.
+#
+# Verified locally on ubuntu-24.04 / CPython 3.12 with webcrack + wabt +
+# androguard + mitmproxy present (no Chromium): 11 passed, 1 skipped. The single
+# skip is the Web CDP case, which honestly skips with no browser here (skip !=
+# pass); its real coverage lives in the weekly full job.
+name: linux-nonpe-fast
+
+on:
+  pull_request:
+    paths:
+      - "src/headless_re_mcp/backends/jsre/**"
+      - "src/headless_re_mcp/backends/apk/**"
+      - "src/headless_re_mcp/backends/proxy/**"
+      - "src/headless_re_mcp/core/service_jsre.py"
+      - "src/headless_re_mcp/core/service_apk.py"
+      - "tests/integration/test_web_re_gate.py"
+      - "tests/integration/test_android_re_gate.py"
+      - "tests/integration/test_proxy_lifecycle_gate.py"
+      - ".github/workflows/linux-nonpe-fast.yml"
+      - ".github/linux-gates-constraints.txt"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast-gates:
+    # Pinned like the weekly job: the apt wabt build and the exact tool versions
+    # this gate was validated against should not shift when the image alias rolls.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # Match linux-integration.yml: pin the version the JS gate was validated on
+      # so an upstream webcrack release cannot change the contract mid-stream.
+      WEBCRACK_VERSION: "2.16.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install wabt (wasm2wat / wasm-objdump)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wabt
+
+      - name: Install webcrack
+        run: npm install -g "webcrack@${WEBCRACK_VERSION}"
+
+      - name: Install package with the light non-PE extras (no browser)
+        # No [browser]: this job never launches Chromium, so it skips the 100+ MB
+        # download entirely. -c pins the pip-resolved backends to the versions the
+        # gate was validated against (the playwright pin is simply unused here).
+        run: |
+          python -m pip install -U pip
+          python -m pip install -c .github/linux-gates-constraints.txt \
+            -e ".[test,dev,web,proxy,android]"
+
+      - name: Tool sanity — a missing tool must fail here, not skip a gate
+        # No browser check here: this job intentionally has no Chromium, so the
+        # CDP case is expected to skip. Everything else must resolve up front so
+        # a broken install fails loudly instead of the job reading green on skips.
+        run: |
+          wasm2wat --version
+          webcrack --version
+          python -c "from headless_re_mcp.backends.jsre import JsClient, WasmClient; assert JsClient().available, 'webcrack not found'; assert WasmClient().available, 'wabt not found'; print('jsre backends available')"
+          python -c "from headless_re_mcp.backends.proxy import ProxyBackend; ProxyBackend()._check_available(); print('mitmproxy available')"
+          python -c "from headless_re_mcp.backends.apk import ApkClient; assert ApkClient().available, 'androguard not found'; print('androguard available')"
+
+      - name: Light non-PE gates (no browser; the CDP case honestly skips)
+        # -rs prints each skip reason so the CDP skip never quietly reads as a
+        # pass. test_web_lifecycle_gate.py is intentionally absent: it needs a
+        # browser, so it belongs to the weekly full job, not this light one.
+        run: |
+          python -m pytest -rs --tb=short --timeout=120 \
+            tests/integration/test_web_re_gate.py \
+            tests/integration/test_android_re_gate.py \
+            tests/integration/test_proxy_lifecycle_gate.py

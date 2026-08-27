@@ -69,6 +69,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   zip 而非 manifest 的 `native_libs`/`certificates` 的 best-effort 成功也允许。此前仅 `apk.open` 有此护栏，
   其余 androguard 面在敌意输入下的降级无任何覆盖——若某操作日后经服务层 `BaseException` 兜底把原始异常
   漏成 `internal_error`，该 gate 即失败。实测九个操作全部结构化降级、无 incident。
+- 新增 `.github/workflows/linux-nonpe-fast.yml`：把周跑全量 gate 的“轻量一半”下沉到按 PR 触发。周跑
+  job 因为要下载 Chromium 才跑浏览器/web 生命周期 gate，太重不宜每次提交；但 JS(webcrack)、WASM(wabt)、
+  Android 静态(androguard) 与 mitmproxy 生命周期这几条只需轻量工具、无需浏览器，且正是回归能在两次周跑
+  之间悄悄溜进生产的地方——本分支修的 webcrack 2.x 让 `js.unpack_bundle` 全数失败即是实例，周跑要一周
+  后才发现，按 PR 跑当场就拦。故对改动了非 PE 后端或其 gate 的 PR（`paths` 精确限定）跑这三条轻量 gate；
+  重的浏览器 gate 仍留在周跑 job。装包不带 `[browser]`，跳过 100+ MB 的 Chromium 下载；工具自检不查
+  浏览器（CDP 用例在此无浏览器下诚实 skip，真实覆盖在周跑全量 job）。本地 ubuntu-24.04 / CPython 3.12
+  实测（无 Chromium）：11 通过、1 跳过。
 - 新增 `.github/linux-gates-constraints.txt` 并在工作流以 `pip install -c` 应用：把 pip 解析的 RE
   后端（frida、androguard、adbutils、mitmproxy、playwright）钉到本 gate 验证过的确切版本，避免定时跑
   时悄悄拉到改了后端 API 的上游新版（正是 frida 17 删掉 `Memory.readByteArray` 那类漂移）。只钉叶子
