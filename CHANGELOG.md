@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 web 线的三个文本封顶 helper 钉进测试）
+
+- 浏览器回来的东西全是不可信且可能巨大——一个页面能 `console.log` 整份文档、把 `<title>` 设成一兆字节
+  ——所以三个纯 helper 在文本落进会话环或回信之前先给它封顶,但都没有直接单测:`_bounded_metadata` 把值
+  按字节上限裁剪并回报是否裁过;`_safe_title` 让页面标题过这道上限,且标题读失败时绝不外抛(回空串);
+  `_clip_console_text` 拼接 console 参数、参数间各记一个空格,并在 `_MAX_CONSOLE_TEXT` 处停手,免得一条巨型
+  `console.log` 把环占满整个会话生命周期。
+- 新增 `tests/unit/test_web_pure_helpers.py`(不起浏览器):`_bounded_metadata` 短文本原样、超上限裁剪并置
+  截断位、None/非串强转;`_safe_title` 正常标题过上限、`title()` 抛错回空串;`_clip_console_text` 无参回
+  空、值以单空格拼接、跳过非 dict 参数、`value`→`description`→`type` 逐级回退、单个超长参数裁剪、恰好填满
+  预算后下一参数触顶层守卫、参数间空格计入预算导致下一参数进不来即停。`web/client.py` 中 155-160、163-200、
+  1010-1014 补齐,纯补测、不改行为。
+
 ### 加固（把 jadx 的类名→路径守卫补全、并把 java 源列举钉进测试）
 
 - `_class_to_java_path` 把调用方给的类名映射成文件系统路径,是拦住构造类名(`..`、`\`、`:`、NUL、首尾点、
