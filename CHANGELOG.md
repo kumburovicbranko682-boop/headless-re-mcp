@@ -233,7 +233,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `env:` 口令源：口令放进仅子进程可见的复制环境，argv 里只剩变量名；stderr 抹除照旧保留作
   纵深防御。回归测试断言 sign 与 verify 两次调用的每个参数都不含口令、口令只出现在注入的
   环境里。
-### 修复（mitmproxy 12 停止代理后监听端口不再泄漏）
+
+### 修复（`apk.certificates` 报告 v2/v3/v3.1 签名方案，现代 APK 不再显示为未签名）
+
+- **只报 `v1_signed`，靠 v2/v3 签名的现代 APK 被当成未签名。**
+  target SDK 30+ 的 APK 常常完全放弃 v1 JAR 签名、只用 APK Signature Scheme v2/v3，此时
+  `apk.certificates` 的 `v1_signed` 为 `False`，调用方据此以为整个包没签名——尽管
+  `get_certificates()` 已经把 v1/v2/v3 的证书并在一起返回。现在额外报告 `v2_signed`、
+  `v3_signed`、`v31_signed` 及一个合并的 `signed`，据此可把真正未签名的 APK 与丢掉 v1 只留
+  v2/v3 的现代 APK 区分开。新增 `_scheme_signed` 辅助以 `getattr` 探测各 `is_signed_v*`：老版本
+  androguard 缺该方法、或畸形签名块令其抛错时，退化为「未证实即不声称」的 not-signed，而不是让
+  整个证书读取崩掉。补单测钉住新字段，并专门覆盖「v1 缺席、仅 v2/v3」这一现代场景。
 
 - **`proxy.stop` 只发 `master.shutdown()`，在 mitmproxy 12 上端口停不下来。**
   mitmproxy 在走向 12.x 的路上让 `Master.done()` 不再收拾 proxyserver 的监听 server——

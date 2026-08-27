@@ -56,6 +56,23 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _scheme_signed(apk: Any, method: str) -> bool:
+    """Whether ``apk`` carries the given APK signature scheme.
+
+    Each ``is_signed_v*`` re-parses the signing block and can raise on a
+    malformed one, and an older androguard may not expose every method; a probe
+    that cannot answer is reported as not-signed rather than crashing the whole
+    certificates read, which stays honest (unproven, so not claimed).
+    """
+    probe = getattr(apk, method, None)
+    if probe is None:
+        return False
+    try:
+        return bool(probe())
+    except Exception:  # noqa: BLE001 - signing-block parsing varies by version/APK
+        return False
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -280,10 +297,22 @@ class ApkClient:
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
+        # Modern APKs (target SDK 30+) often drop the v1 JAR signature entirely
+        # and rely on APK Signature Scheme v2/v3, so reporting only v1_signed made
+        # a fully-signed app read as unsigned. get_certificates already unions
+        # v1/v2/v3 certs; name the scheme each was found under too.
+        v1_signed = bool(names)
+        v2_signed = _scheme_signed(apk, "is_signed_v2")
+        v3_signed = _scheme_signed(apk, "is_signed_v3")
+        v31_signed = _scheme_signed(apk, "is_signed_v31")
         return {
             "signature_files": sig_files,
             "certificates": items,
-            "v1_signed": bool(names),
+            "v1_signed": v1_signed,
+            "v2_signed": v2_signed,
+            "v3_signed": v3_signed,
+            "v31_signed": v31_signed,
+            "signed": v1_signed or v2_signed or v3_signed or v31_signed,
             "has_more": certs_more or files_more,
         }
 
