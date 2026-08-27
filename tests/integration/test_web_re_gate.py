@@ -313,12 +313,21 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:
         pytest.skip("webcrack not installed — JS Gate not run (skip != pass)")
     assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    raw = _JS_FIXTURE.read_text(encoding="utf-8")
+    # The secret lives in the fixture only as hex escapes; if the literal string
+    # already appeared, decoding it would prove nothing.
+    assert "H3adl3ss" not in raw
     service = AnalysisService()
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # webcrack must have actually transformed the source, not echoed it: the
+        # hex-escaped string array decodes to a readable literal, so a no-op pass
+        # (or a webcrack that silently failed and returned input) fails here.
+        assert "H3adl3ss" in code
     finally:
         service.close_all()
 
@@ -348,13 +357,51 @@ def test_js_unpack_when_webcrack_present() -> None:
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
-    # The smallest valid module: magic + version, no sections.
-    module = tmp_path / "empty.wasm"
-    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
     service = AnalysisService()
     try:
-        result = service.wasm_wat(str(module))
+        # The smallest valid module: magic + version, no sections. Proves the
+        # tool runs and emits a module wrapper at all.
+        empty = tmp_path / "empty.wasm"
+        empty.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        result = service.wasm_wat(str(empty))
         assert result.ok, result.error
         assert "module" in result.data["wat"]
+
+        # A module with a real function and export must disassemble to WAT that
+        # names them -- an empty module never exercises wasm2wat's section
+        # decoding, so a decode regression would slip past the smoke case.
+        module = tmp_path / "add.wasm"
+        module.write_bytes(_WASM_ADD)
+        add = service.wasm_wat(str(module))
+        assert add.ok, add.error
+        wat = add.data["wat"]
+        assert "func" in wat
+        assert 'export "add"' in wat
+        assert "i32.add" in wat
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
+    """wasm.info drives wasm-objdump -h -x, a different wabt tool than wasm2wat.
+
+    wasm_wat covers wasm2wat; the objdump path (its own flags and section-header
+    output) never ran live. Point it at the add module and assert the section
+    dump lists the real Type/Function/Export/Code sections and the exported
+    name, so a wabt bump that moved objdump's flags or output fails here.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM info Gate not run (skip != pass)")
+    module = tmp_path / "add.wasm"
+    module.write_bytes(_WASM_ADD)
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(module))
+        assert result.ok, result.error
+        dump = result.data["objdump"]
+        for section in ("Type", "Function", "Export", "Code"):
+            assert section in dump, f"wasm-objdump omitted the {section} section"
+        assert '"add"' in dump
     finally:
         service.close_all()
