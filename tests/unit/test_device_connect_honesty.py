@@ -7,7 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from headless_re_mcp.backends.adb.client import AdbBackend
+import pytest
+
+from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
 from headless_re_mcp.core.service_device import DeviceAnalysisMixin
 from headless_re_mcp.tools.device import build_device_tools
 
@@ -103,3 +105,22 @@ def test_device_connect_names_connected_not_ok() -> None:
     assert "connected" in doc
     assert "result" in doc
     assert "envelope failure" in doc.lower() or "not an ok envelope" in doc.lower()
+
+
+@pytest.mark.parametrize("bad_port", [0, -1, 65536, 999999])
+def test_connect_rejects_a_bad_port_before_the_capability_gate(bad_port: int) -> None:
+    """A bad port must fail as invalid_params even when adbutils is absent.
+
+    connect() used to call _client() -- which raises capability_unavailable when
+    adbutils is not installed -- before validating the port, so a bad port on a
+    host without adbutils surfaced as capability_unavailable rather than the
+    invalid_params it was. The port and endpoint checks now run first, matching
+    proxy.start and the fail-fast convention: with _available forced False (so
+    the capability gate would fire if reached), a bad port still fails precisely.
+    """
+    backend = AdbBackend()
+    backend._available = False
+    with pytest.raises(AdbError) as caught:
+        backend.connect("127.0.0.1", bad_port)
+    assert caught.value.code == "invalid_params"
+    assert caught.value.details["port"] == bad_port

@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（device.connect 在触碰 adb 客户端之前先校验 port/endpoint，畸形端口不再被 capability_unavailable 盖过）
+
+- `device.connect` 过去先 `self._client()`——它在 adbutils 未安装时抛 `capability_unavailable`——再校验 `port`
+  范围与 endpoint 格式。于是在没装 adbutils 的主机上,一个越界端口会被 `capability_unavailable` 盖过,而不是它
+  应得的 `invalid_params`,与 `proxy.start`(本轮已修)、以及 frida/jadx/apk 的 fail-fast 惯例相悖。
+- 现把 `port` 范围校验与 `_check_serial(endpoint)`(都是纯本地检查)移到 `_client()` 之前:越界端口/畸形 endpoint
+  一律先拿到 `invalid_params`,与 adbutils 是否安装无关。
+- `tests/unit/test_device_connect_honesty.py` 新增参数化用例(在 `_available=False` 下四种越界端口都以
+  `invalid_params` 失败)。
+
 ### 加固（frida.server.ensure 在后端也校验 port 范围，不再只依赖会被非 MCP 传输绕过的 schema）
 
 - `frida.server.ensure` 的 `port` 在工具 schema 里已声明 `ge=1, le=65535`,但 agent / OpenAI-bridge 传输直接调用

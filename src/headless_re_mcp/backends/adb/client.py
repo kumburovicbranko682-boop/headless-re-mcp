@@ -438,11 +438,15 @@ class AdbBackend:
         return {"devices": page, "count": len(page), "has_more": has_more}
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:
-        client = self._client()
+        # Validate the cheap local inputs before touching the adb client, so a
+        # bad port or endpoint fails as invalid_params even when adbutils is
+        # absent -- matching proxy.start and the fail-fast convention rather than
+        # letting _client()'s capability_unavailable mask the parameter mistake.
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise AdbError("invalid_params", "port must be 1..65535", port=port)
         endpoint = f"{host}:{port}"
         _check_serial(endpoint)
+        client = self._client()
         try:
             message = client.connect(endpoint, timeout=10.0)
         except Exception as exc:  # noqa: BLE001
