@@ -43,9 +43,13 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Connect to an emulator over TCP (LDPlayer 5555, MuMu 7555, Nox 62001).
 
-        Answers with endpoint, result and connected. connected is true only
-        when adb reported a connection. There is no ok, serial or host field.
-        A refused TCP connect is an envelope failure, not connected false.
+        Answers with endpoint, result and connected, plus state and ready once
+        connected. connected is true only when adb reported a connection; ready
+        is true only when the device state is 'device'. A device that connects
+        while still booting or unauthorized reports connected true, ready false
+        and a note, so it is not mistaken for usable. There is no ok, serial or
+        host field. A refused TCP connect is an envelope failure, not connected
+        false.
         """
         return _dump(analysis.device_connect(host=host, port=port))
 
