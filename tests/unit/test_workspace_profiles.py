@@ -41,7 +41,11 @@ async def test_android_profile_hides_web_domain(tmp_path) -> None:
         analysis.close_all()
     assert "apk.open" in names
     assert "device.list" in names
-    assert not any(n.startswith(("web.", "js.", "wasm.", "proxy.")) for n in names)
+    assert not any(n.startswith(("web.", "js.", "wasm.")) for n in names)
+    # The interception proxy is shared by Android and Web, and
+    # proxy.ca.install_android is Android-only, so proxy.* stays in this profile.
+    assert "proxy.start" in names
+    assert "proxy.ca.install_android" in names
     # Core debugger tools remain available in every profile.
     assert "session.create" in names
     assert "frida.devices" in names
@@ -103,6 +107,15 @@ def test_profile_helpers_are_consistent() -> None:
     assert is_tool_visible("session.create", "pe") is True
 
 
+def test_shared_proxy_is_visible_in_android_and_web_but_not_pe() -> None:
+    # mitmproxy is documented as shared by Web and Android; only the pe direction
+    # (which hides every non-core surface) drops it.
+    for tool in ("proxy.start", "proxy.flows", "proxy.ca.install_android"):
+        assert is_tool_visible(tool, "android") is True
+        assert is_tool_visible(tool, "web") is True
+        assert is_tool_visible(tool, "pe") is False
+
+
 def test_agent_tool_surface_follows_workspace_profile(tmp_path) -> None:
     from headless_re_mcp.agent.config import ProviderConfigStore
     from headless_re_mcp.agent.orchestrator import AgentOrchestrator
@@ -129,8 +142,10 @@ def test_agent_tool_surface_follows_workspace_profile(tmp_path) -> None:
         android_names = {tool["function"]["name"] for tool in orchestrator._provider_tools()}
         assert "apk.open" in android_names
         assert not any(
-            n.startswith(("web.", "js.", "wasm.", "proxy.")) for n in android_names
+            n.startswith(("web.", "js.", "wasm.")) for n in android_names
         )
+        # Shared interception proxy stays available in the Android direction.
+        assert "proxy.start" in android_names
         assert "session.create" in android_names
 
         profile["value"] = "web"

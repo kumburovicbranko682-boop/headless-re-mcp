@@ -1368,7 +1368,11 @@ def test_workflow_cancel_stops_in_flight_navigation(tmp_path: Path) -> None:
             event_budget=8,
         )
 
-    thread = Thread(target=navigate)
+    # Daemon: if navigate wedges, the join assert below names the failure, and
+    # a daemon thread cannot then hold interpreter shutdown hostage after the
+    # suite ends -- no watchdog covers the post-suite join of non-daemon
+    # threads (pytest-timeout and faulthandler are both per-test).
+    thread = Thread(target=navigate, daemon=True)
     thread.start()
     assert entered.wait(5)
     started = monotonic()
@@ -2437,7 +2441,7 @@ def test_events_consume_during_navigation_does_not_read_native_or_kill_worker(
             event_budget=8,
         )
 
-    thread = Thread(target=navigate)
+    thread = Thread(target=navigate, daemon=True)
     thread.start()
     assert worker.entered.wait(5)
     native_reads = len(worker.event_reads)
@@ -2489,7 +2493,7 @@ def test_navigate_cursor_desync_does_not_kill_the_debuggee(tmp_path: Path) -> No
             event_budget=8,
         )
 
-    thread = Thread(target=navigate)
+    thread = Thread(target=navigate, daemon=True)
     thread.start()
     assert worker.entered.wait(5)
     runtime = service._runtime_owner.get(session_id, BackendKind.X64DBG)
