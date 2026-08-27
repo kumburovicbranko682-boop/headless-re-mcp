@@ -188,6 +188,9 @@ class DeviceAnalysisMixin:
     def device_current_activity(self, serial: str) -> Result[JsonObject]:
         return self._adb_wrap("current_activity", serial=serial)
 
+    def device_app_info(self, serial: str, package: str) -> Result[JsonObject]:
+        return self._adb_wrap("app_info", serial=serial, package=package)
+
     def device_logcat(self, serial: str, lines: int = 200) -> Result[JsonObject]:
         return self._adb_wrap("logcat", serial=serial, lines=lines)
 

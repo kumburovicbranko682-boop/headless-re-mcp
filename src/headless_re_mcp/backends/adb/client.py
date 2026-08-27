@@ -41,6 +41,10 @@ _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
+# dumpsys package lists every granted permission; bound the returned set and a
+# single parsed field so a hostile or verbose device cannot balloon the reply.
+_MAX_APP_PERMISSIONS = 500
+_MAX_APP_INFO_FIELD_CHARS = 512
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -84,6 +88,13 @@ def _check_package(package: str) -> str:
     if not _PACKAGE_RE.match(value):
         raise AdbError("invalid_params", "invalid package name", package=package)
     return value
+
+
+def _clip_field(value: str | None, cap: int = _MAX_APP_INFO_FIELD_CHARS) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped[:cap] if stripped else None
 
 
 def _require_apk_zip(path: Path) -> None:
@@ -525,6 +536,99 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def app_info(self, serial: str, package: str) -> JsonObject:
+        dev = self._device(serial)
+        pkg = _check_package(package)
+        raw = _device_shell(dev, ["dumpsys", "package", pkg])
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "dumpsys package failed", output=text[:800])
+        if f"Package [{pkg}]" not in text:
+            # An explicit "Unable to find package" is a clean not-installed.
+            # Any other shape (empty or unexpected output) we cannot classify,
+            # so installed stays null rather than a possibly-wrong false.
+            installed = False if "Unable to find package" in text else None
+            return {"package": pkg, "installed": installed}
+
+        def _search(pattern: str) -> str | None:
+            match = re.search(pattern, text)
+            return match.group(1).strip() if match else None
+
+        def _as_int(value: str | None) -> int | None:
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except ValueError:
+                return None
+
+        info: JsonObject = {"package": pkg, "installed": True}
+        # Only fields actually found are set; a missing key means this device's
+        # dumpsys shape did not carry it, never a guessed value.
+        version_name = _clip_field(_search(r"versionName=(\S+)"))
+        if version_name is not None:
+            info["version_name"] = version_name
+        version_code = _as_int(_search(r"versionCode=(\d+)"))
+        if version_code is not None:
+            info["version_code"] = version_code
+        min_sdk = _as_int(_search(r"minSdk=(\d+)"))
+        if min_sdk is not None:
+            info["min_sdk"] = min_sdk
+        target_sdk = _as_int(_search(r"targetSdk=(\d+)"))
+        if target_sdk is not None:
+            info["target_sdk"] = target_sdk
+        uid = _as_int(_search(r"userId=(\d+)"))
+        if uid is None:
+            uid = _as_int(_search(r"appId=(\d+)"))
+        if uid is not None:
+            info["uid"] = uid
+        data_dir = _clip_field(_search(r"dataDir=(\S+)"))
+        if data_dir is not None:
+            info["data_dir"] = data_dir
+        code_path = _clip_field(_search(r"codePath=(\S+)"))
+        if code_path is not None:
+            info["code_path"] = code_path
+        primary_abi = _clip_field(_search(r"primaryCpuAbi=(\S+)"))
+        if primary_abi is not None and primary_abi != "null":
+            info["primary_abi"] = primary_abi
+        installer = _clip_field(_search(r"installerPackageName=(\S+)"))
+        if installer is not None and installer != "null":
+            info["installer"] = installer
+        first_install = _clip_field(_search(r"firstInstallTime=(.+)"))
+        if first_install is not None:
+            info["first_install_time"] = first_install
+        last_update = _clip_field(_search(r"lastUpdateTime=(.+)"))
+        if last_update is not None:
+            info["last_update_time"] = last_update
+
+        flags_text = " ".join(
+            m.group(1) for m in re.finditer(r"(?:pkgFlags|flags)=\[([^\]]*)\]", text)
+        )
+        if flags_text.strip():
+            info["debuggable"] = "DEBUGGABLE" in flags_text
+            info["system"] = "SYSTEM" in flags_text
+
+        granted: list[str] = []
+        seen: set[str] = set()
+        granted_has_more = False
+        for line in text.splitlines():
+            match = re.match(r"\s*([A-Za-z][A-Za-z0-9_.]+):\s*granted=true", line)
+            if not match:
+                continue
+            name = match.group(1)
+            if name in seen:
+                continue
+            seen.add(name)
+            if len(granted) >= _MAX_APP_PERMISSIONS:
+                granted_has_more = True
+                break
+            granted.append(name)
+        granted.sort()
+        info["granted_permissions"] = granted
+        info["granted_permissions_count"] = len(granted)
+        info["granted_permissions_has_more"] = granted_has_more
+        return info
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a

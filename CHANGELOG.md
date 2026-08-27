@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -42,6 +42,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （tmd/Themida/WinLicense → `themida`）；open/launch 省略参数时按映射自动写 ini。
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
+
+### 新增（`device.app_info` 读设备侧安装态与运行时授权）
+
+- 静态的 `apk.permissions` 说的是清单里**请求**了哪些权限；设备上这个包到底装成什么样、真正
+  被**授予**了哪些运行时权限，此前没有任何工具能回。新增只读 `device.app_info`：解析
+  `dumpsys package <pkg>`，先回三态 `installed`（true/false，dumpsys 形态无法判定时为 null），
+  已安装再补上本机 dumpsys 确实带到的字段——`version_name`、`version_code`、`min_sdk`、
+  `target_sdk`、`uid`、`data_dir`、`code_path`、`primary_abi`、`installer`、`first_install_time`、
+  `last_update_time`，以及 flags 块存在时的 `debuggable` / `system`。`granted_permissions` 只收
+  dumpsys 报 `granted=true` 的权限名（排序去重、有界，配 `granted_permissions_count` /
+  `granted_permissions_has_more`），即该应用此刻**可用**的权限，而非清单里申报的那份。缺某个键即
+  表示这台设备的 dumpsys 没带它，绝不编造。包名照旧走严格正则校验（**不提供 `device.shell`
+  透传**），adb 主机端错误按 `backend_error` 上报。新增回归测试覆盖字段解析、三态 installed、
+  granted 去重排序、flags→debuggable/system 与「未安装」分支。
 
 ### 变更（监控台检查器）
 
@@ -522,7 +536,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   字符串/xrefs，jadx CLI 负责 `apk.decompile` 与 `apk.export_sources`。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
-- **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、
+- **设备**：`device.*` 16 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、
   logcat、截图、push/pull、端口转发。**刻意不提供 `device.shell`**——与既有「无
   `dynamic.command`」同一条原则；序列号与包名按严格正则校验，杜绝参数注入。
 - **动态**：Frida 后端从「只能本机、只能一个 pid」推广到设备维度（USB/模拟器/远程），

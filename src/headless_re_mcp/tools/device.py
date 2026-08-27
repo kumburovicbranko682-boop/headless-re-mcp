@@ -138,6 +138,25 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_current_activity(serial))
 
+    @tools.tool(name="device.app_info")
+    def device_app_info(serial: str, package: str) -> dict[str, Any]:
+        """Return the installed state of one package from dumpsys package.
+
+        This is the runtime counterpart to the static apk.* tools: it reports
+        what the device actually holds. Answers with package and installed
+        (true, false, or null when dumpsys could not be classified). When
+        installed, adds only the fields this device's dumpsys carried --
+        version_name, version_code, min_sdk, target_sdk, uid, data_dir,
+        code_path, primary_abi, installer, first_install_time,
+        last_update_time -- plus debuggable and system when a flags block was
+        present. granted_permissions lists the runtime/install permissions the
+        device reports as granted=true (sorted, deduped), which is what the app
+        may actually use now, not merely what its manifest requested; it is
+        paired with granted_permissions_count and granted_permissions_has_more.
+        A missing key means dumpsys did not carry it, never a guessed value.
+        """
+        return _dump(analysis.device_app_info(serial, package))
+
     @tools.tool(name="device.logcat")
     def device_logcat(
         serial: str, lines: Annotated[int, Field(ge=1, le=5000)] = 200
