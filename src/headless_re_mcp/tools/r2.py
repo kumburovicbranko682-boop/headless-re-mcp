@@ -76,13 +76,15 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def r2_imports(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
     ) -> dict[str, Any]:
-        """Imported symbols with the library each resolves to.
+        """Imported symbols with the PLT stub each resolves through.
 
-        Answers with items, each carrying name, lib, plt and address
-        (va/rva/module), plus count. There is no integer address field.
-        Read items_truncated, items_total and items_limit when the
-        list filled the cap (4096). There is no imports, truncated or
-        has_more field.
+        Answers with items, each carrying name, plt and, when the import
+        has a PLT stub, address (va/rva/module) for it, plus count. A plt of
+        0 is radare2's marker for an import with no stub (__libc_start_main,
+        a weak __gmon_start__); that entry carries no address rather than a
+        made-up one at va 0. There is no integer address field. Read
+        items_truncated, items_total and items_limit when the list filled
+        the cap (4096). There is no imports, truncated or has_more field.
         """
         return _dump(analysis.r2_imports(session_id, timeout=timeout))
 

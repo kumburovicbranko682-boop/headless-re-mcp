@@ -8,6 +8,10 @@ from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# radare2 uses UT64_MAX (0xFFFFFFFFFFFFFFFF) as "no value" for an address it
+# does not know -- most often the paddr of a .bss symbol that has no file
+# offset. It is not a location, so it must never become an Address.
+_UT64_MAX = 0xFFFFFFFFFFFFFFFF
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -121,12 +125,24 @@ def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
         if type(value) is int and value >= 0:
-            return value
-        if isinstance(value, str) and value:
+            va = value
+        elif isinstance(value, str) and value:
             try:
-                return int(value, 0)
+                va = int(value, 0)
             except ValueError:
                 continue
+        else:
+            continue
+        # Skip radare2's sentinels rather than minting an address from them.
+        # ``plt == 0`` marks an import with no PLT stub -- __libc_start_main and
+        # __gmon_start__ report it -- so treating it as a virtual address made
+        # r2.imports claim those symbols live at the null address 0. UT64_MAX is
+        # r2's "unknown" for any offset field. Neither is a real location.
+        if va == _UT64_MAX:
+            continue
+        if key == "plt" and va == 0:
+            continue
+        return va
     return None
 
 

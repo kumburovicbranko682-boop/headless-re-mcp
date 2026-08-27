@@ -49,6 +49,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（r2.imports 的 `plt: 0` 不再被伪造成 va 0 地址）
+
+- radare2 的 `iij` 会列出每个导入,对**没有 PLT stub** 的导入把 `plt` 设为 0——加载器入口
+  `__libc_start_main`、弱符号 `__gmon_start__` 在任何链了 libc 的 ELF 里都是这样。那个 0 是
+  哨兵、不是地址。可 `enrich_r2_payload` 的 `_item_va` 见到第一个非负的类地址字段就喂进
+  `Address`,于是 `plt: 0` 被铸成 `address: {va: 0}`:`r2.imports` 便声称这些符号住在空地址 0,
+  逆向的人拿到一个可以去追、却根本不存在的调用目标。radare2 还用 UT64_MAX(`0xFFFFFFFFFFFFFFFF`)
+  当"无偏移"哨兵(常见于 .bss 导出符号的 `paddr`),同样会被铸成 `va: 0xFFFF...` 的假地址。
+  `_item_va` 现在跳过这两个哨兵:`plt == 0` 与 `UT64_MAX` 都不当作地址,于是无 stub 的导入
+  **不带** `address`(而不是带一个 va 0 的),原始 `plt: 0` 字段照旧原样保留给需要的读者;有真
+  stub 的导入(`printf`/`strlen`,`plt != 0`)地址不变。`r2.imports` 文档串改写:导入带 `name`/`plt`,
+  仅当有 PLT stub 时才带 `address`,并说明 `plt` 为 0 是"无 stub"标记、该条不带地址;顺带去掉早先
+  承诺的 `lib` 字段(r2 5.x 对这些导入并不给)。单测新增「`plt: 0` 导入不带伪造地址、真 stub 仍解析、
+  原始 `plt` 保留」与「UT64_MAX 偏移不铸地址、真 vaddr 仍映射」两条,并钉死文档串。新增 live gate
+  (`test_r2_imports_plt_sentinel_live_gate.py`)配套夹具 `fixtures/elf/imports_sample`(stripped ELF,
+  `imports_sample.c` 附重建说明):先确认真 r2 的 `iij` 确实给出 `plt==0` 与 `plt!=0` 两类导入(守卫
+  这条守卫),再断言无 stub 导入不带 `address`、有 stub 导入的 `address.va` 等于其 `plt`。CI 新增
+  `linux-r2-imports` job 装 radare2 跑该 gate,skip≠pass 守卫在 radare2 已装却仍 skip 时判失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
