@@ -100,6 +100,22 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.sections")
+    def r2_sections(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Section/segment layout radare2 reports (the map of an ELF/.so or PE).
+
+        Runs ``iSj``. Answers with items, each carrying name, size, vsize,
+        paddr, vaddr, perm and address (va/rva/module), plus count -- the
+        layout that turns a raw address into "which section", so a pointer
+        into .text reads as code and one into .data as data. There is no
+        integer address field. Read items_truncated, items_total and
+        items_limit when the list filled the cap (4096). There is no sections,
+        truncated or has_more field.
+        """
+        return _dump(analysis.r2_sections(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,
