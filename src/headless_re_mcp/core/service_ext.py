@@ -472,11 +472,13 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def frida_modules(self, session_id: str, limit: int = 64) -> Result[JsonObject]:
+    def frida_modules(
+        self, session_id: str, offset: int = 0, limit: int = 64
+    ) -> Result[JsonObject]:
         try:
             pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
-            data = client.modules(pid, allowed_pid=pid, limit=limit)
+            data = client.modules(pid, allowed_pid=pid, offset=offset, limit=limit)
             _timeline_append(self, session_id, "frida.modules", "frida modules listed", count=data.get("count"))
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:

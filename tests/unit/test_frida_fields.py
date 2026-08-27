@@ -33,12 +33,19 @@ def _tool_docstring(name: str) -> str:
 
 
 class _Exports:
-    def modules(self, limit: int = 64) -> list[dict[str, Any]]:
-        del limit
-        return [
+    def modules(self, offset: int = 0, limit: int = 64) -> dict[str, Any]:
+        rows = [
             {"name": f"m{index}", "base": "0x1", "size": 1, "path": ""}
             for index in range(25)
         ]
+        start = max(0, offset)
+        # Mirror the on-device script: return the window at offset plus the
+        # full module count so the page position, not just the count, is known.
+        return {
+            "modules": rows[start : start + max(0, limit)],
+            "total": len(rows),
+            "offset": start,
+        }
 
 
 class _Script:
@@ -74,10 +81,41 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     payload = client.modules(1, allowed_pid=1, limit=10)
     assert payload["count"] == 10
     assert payload["total"] == 25
+    assert payload["offset"] == 0
     assert len(payload["modules"]) == 10
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.modules")
     assert "has_more" in doc
+    assert "offset" in doc
+
+
+def test_frida_modules_offset_reaches_past_the_first_page() -> None:
+    """modules named total and has_more but had no offset to reach the rest.
+
+    A process with more modules than a page could ever hold left everything
+    past the cap unreachable -- has_more said "there is more" with no way to
+    ask for it. Offset makes the tail addressable, and the last page reports
+    has_more False without overrunning the collected total.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+    page = client.modules(1, allowed_pid=1, offset=20, limit=10)
+    assert page["offset"] == 20
+    assert page["total"] == 25
+    assert page["count"] == 5
+    assert [row["name"] for row in page["modules"]] == [f"m{i}" for i in range(20, 25)]
+    assert page["has_more"] is False
+
+
+def test_frida_modules_refuses_a_negative_offset() -> None:
+    """A negative offset would slice from the tail and mislabel the window."""
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1, offset=-1, limit=10)
+    assert caught.value.code == "invalid_params"
 
 class _ExportApi:
     def exports(self, name: str, count: int) -> dict[str, Any]:
