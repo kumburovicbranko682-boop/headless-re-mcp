@@ -696,6 +696,31 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
             i += 1
             partial = True
             continue
+        if op == 0x45:
+            # switch is the one CIL opcode with a variable-length operand:
+            # uint32 count, then count * int32 branch targets. It cannot live in
+            # the fixed-width _OPCODES table, so without this it fell to the
+            # unknown-opcode branch below, which advances a single byte and then
+            # decodes the 4 + 4*count operand bytes as if they were opcodes --
+            # every instruction after a switch came back wrong and nothing said
+            # so. Advance past the whole jump table to keep the sweep aligned.
+            if i + 5 > len(il):
+                partial = True
+                break
+            count = int.from_bytes(il[i + 1 : i + 5], "little")
+            operand_end = i + 5 + count * 4
+            if operand_end > len(il):
+                partial = True
+                break
+            targets = [
+                int.from_bytes(il[i + 5 + k * 4 : i + 9 + k * 4], "little", signed=True)
+                for k in range(count)
+            ]
+            rebuilt.append(
+                {"ip": start, "mnemonic": "switch", "operand": count, "targets": targets}
+            )
+            i = operand_end
+            continue
         info = _OPCODES.get(op)
         if info is None:
             rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})
