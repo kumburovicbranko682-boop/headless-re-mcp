@@ -34,6 +34,11 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+# Real APKs ship a handful of ABIs (armeabi-v7a, arm64-v8a, x86, x86_64, ...);
+# 64 is headroom no genuine app reaches. A crafted APK can name millions of
+# distinct lib/<abi>/ entries, and the derived set is this client's own
+# allocation -- every other collection here is capped, so this one is too.
+_MAX_ABIS = 64
 
 
 class ApkError(RuntimeError):
@@ -71,6 +76,30 @@ def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     start = max(0, int(offset))
     cap = max(1, min(int(limit), max_limit))
     return start, cap
+
+
+def _collect_abis(files: Any, *, cap: int = _MAX_ABIS) -> tuple[list[str], bool]:
+    """Distinct native ABI directories under ``lib/``, deduplicated and bounded.
+
+    The names come straight from the APK's central directory, so a hostile
+    archive controls both how many there are and how distinct they look. Return
+    a sorted list and whether the cap hid any, the same shape every other
+    collection here uses.
+    """
+    abis: set[str] = set()
+    capped = False
+    for name in files or []:
+        text = str(name)
+        if not text.startswith("lib/"):
+            continue
+        parts = text.split("/")
+        if len(parts) < 3 or not parts[1] or parts[1] in abis:
+            continue
+        if len(abis) >= cap:
+            capped = True
+            continue
+        abis.add(parts[1])
+    return sorted(abis), capped
 
 
 class _ParsedApk:
@@ -211,13 +240,7 @@ class ApkClient:
             "target_sdk": apk.get_target_sdk_version(),
             "main_activity": apk.get_main_activity(),
             "permission_count": len(apk.get_permissions()),
-            "native_abis": sorted(
-                {
-                    name.split("/")[1]
-                    for name in apk.get_files()
-                    if name.startswith("lib/") and len(name.split("/")) >= 3
-                }
-            ),
+            "native_abis": _collect_abis(apk.get_files())[0],
         }
 
     def manifest(self, path: Path) -> JsonObject:
@@ -304,24 +327,22 @@ class ApkClient:
 
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
+        files = list(apk.get_files() or [])
+        abis, abis_more = _collect_abis(files)
         libs: list[str] = []
-        abis: set[str] = set()
-        has_more = False
-        for name in apk.get_files() or []:
+        has_more = abis_more
+        for name in files:
             text = str(name)
             if not text.startswith("lib/"):
                 continue
-            parts = text.split("/")
-            if len(parts) >= 3:
-                abis.add(parts[1])
             if len(libs) >= _MAX_NATIVE_LIBS:
                 has_more = True
-                continue
+                break
             libs.append(text)
         libs.sort()
         return {
             "native_libs": libs,
-            "abis": sorted(abis),
+            "abis": abis,
             "count": len(libs),
             "has_more": has_more,
         }
