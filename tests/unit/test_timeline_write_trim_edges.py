@@ -16,7 +16,13 @@ from pathlib import Path
 import pytest
 
 import headless_re_mcp.core.store.timeline as timeline
-from headless_re_mcp.core.store.timeline import _trim_timeline, append_session_timeline
+from headless_re_mcp.core.store.timeline import (
+    _dropped_sidecar,
+    _read_dropped,
+    _trim_timeline,
+    append_session_timeline,
+    list_session_timeline,
+)
 
 
 def test_append_reports_write_failure_when_even_a_truncated_entry_is_too_big(
@@ -49,6 +55,45 @@ def test_trim_keeps_a_tail_that_fits_entirely(tmp_path: Path) -> None:
 
     assert new_size == sum(len(line) for line in lines)
     assert path.read_bytes() == b"".join(lines)
+    # A trim that dropped nothing must leave no counter behind: dropped_total
+    # stays zero and no sidecar is created.
+    assert not _dropped_sidecar(path).exists()
+    assert _read_dropped(path) == 0
+
+
+def test_trim_records_dropped_entries_and_the_list_reports_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The count trimming removed is the count the reader gets back.
+
+    total is only what the file still holds, so on its own it cannot say a
+    session ever had more. The cumulative dropped_total is how a reader tells a
+    capped log from a complete one, and it survives across successive trims.
+    """
+    monkeypatch.setattr(timeline, "_TRIM_TO_BYTES", 25)
+    path = tmp_path / "timeline.jsonl"
+    # Five 8-byte lines. A 25-byte budget keeps the newest three (24 bytes); the
+    # fourth would reach 32, so two of the five fall off.
+    path.write_bytes(b'{"n":1}\n{"n":2}\n{"n":3}\n{"n":4}\n{"n":5}\n')
+
+    _trim_timeline(path, reserve=0)
+
+    assert _read_dropped(path) == 2
+    listed = list_session_timeline(path)
+    assert listed["total"] == 3
+    assert listed["dropped_total"] == 2
+    assert [event["n"] for event in listed["events"]] == [3, 4, 5]
+
+    # Trimming again with everything already fitting drops nothing more: the
+    # cumulative count holds rather than double-counting a no-op trim.
+    _trim_timeline(path, reserve=0)
+    assert _read_dropped(path) == 2
+
+    # New marks arrive and push the window again; the counter accumulates.
+    path.write_bytes(path.read_bytes() + b'{"n":6}\n{"n":7}\n')
+    _trim_timeline(path, reserve=0)
+    assert _read_dropped(path) == 4
+    assert list_session_timeline(path)["dropped_total"] == 4
 
 
 def test_trim_cleans_up_the_partial_and_reraises_when_replace_fails(

@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（时间线读取披露被裁剪掉的旧条目，而非把幸存者当成完整历史）
+
+- 会话时间线在文件版（生产路径 `SqliteAnalysisRepository` → `core/store/timeline.py`）到达
+  8 MiB 高水位时会裁剪到 6 MiB，内存版（`InMemoryAnalysisRepository`）按每会话条数上限裁剪；
+  两者的 `list_timeline` 都只报 `total`＝当前文件/内存中幸存的条数，对已被裁掉的旧条目只字不提。
+  一个长会话写了远超上限的活动，读回来的 `total` 却读起来像整段历史——分页、审阅、比对都会
+  据此得出「这就是全部」的错误结论。现两条路径都补上累计的 `dropped_total`：文件版在裁剪时把
+  丢弃的行数累加到一个紧邻日志的小 `timeline.jsonl.dropped` 计数旁文件（仅在真的丢了条目时写，
+  且在原子 replace 成功之后才记，永不让计数跑到一次失败的裁剪前面；写不成也绝不拖垮已成功的
+  裁剪，只会少计、绝不虚报），读取时把它作为 `dropped_total` 一并返回；内存版用每会话计数器同样
+  披露。`total` 仍是幸存条数，`dropped_total>0` 即表示这不是会话的完整历史。新增测试：文件版裁剪
+  按丢弃行数累加且跨多次裁剪保持、无丢弃的裁剪是 no-op（不建计数旁文件）；内存版每会话上限丢条
+  时如实计数；仓库契约测试（内存/SQLite 双参数）钉住未裁剪时 `dropped_total` 为 0；高并发裁剪
+  压测里 `dropped_total>0` 且旁文件不被误当作残留 scratch。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
