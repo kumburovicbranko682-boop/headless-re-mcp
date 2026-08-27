@@ -54,9 +54,10 @@ def test_classify_target_routes_elf_magic_to_the_elf_kind(tmp_path: Path) -> Non
     [
         (1, 0x03, Architecture.X86),   # EM_386
         (2, 0x3E, Architecture.X64),   # EM_X86_64
-        (1, 0x28, None),               # EM_ARM -- analyzable, but no enum member
-        (2, 0xB7, None),               # EM_AARCH64 -- same
-        (2, 0x08, None),               # EM_MIPS -- same
+        (1, 0x28, Architecture.ARM),   # EM_ARM
+        (2, 0xB7, Architecture.ARM64),  # EM_AARCH64
+        (2, 0x08, None),               # EM_MIPS -- analyzable, but no enum member
+        (2, 0xF3, None),               # EM_RISCV -- same
     ],
 )
 def test_detect_elf_architecture_names_only_what_the_enum_can(
@@ -93,10 +94,28 @@ def test_registry_create_binds_an_elf_session_with_no_pe_probe(tmp_path: Path) -
     assert session.sha256
 
 
-def test_registry_create_opens_an_arm_elf_with_unknown_architecture(tmp_path: Path) -> None:
+def test_registry_create_labels_an_aarch64_elf_session(tmp_path: Path) -> None:
     # The key regression: an AArch64 ELF used to die in the PE probe. Now it
-    # opens, carrying no architecture label -- the static backends read it.
+    # opens *and* carries the arm64 label the static backends can rely on.
     binary = _write_elf(tmp_path / "arm", ei_class=2, machine=0xB7)
+    session = SessionRegistry().create(binary)
+    assert session.target is TargetKind.ELF
+    assert session.architecture is Architecture.ARM64
+    assert session.binary == binary.resolve()
+
+
+def test_registry_create_labels_a_32bit_arm_elf_session(tmp_path: Path) -> None:
+    binary = _write_elf(tmp_path / "arm32", ei_class=1, machine=0x28)
+    session = SessionRegistry().create(binary)
+    assert session.target is TargetKind.ELF
+    assert session.architecture is Architecture.ARM
+    assert session.binary == binary.resolve()
+
+
+def test_registry_create_opens_an_unnamed_arch_elf_without_a_label(tmp_path: Path) -> None:
+    # A machine the enum cannot name (RISC-V here) must still open as a working
+    # ELF session with architecture=None -- the backends read it themselves.
+    binary = _write_elf(tmp_path / "riscv", ei_class=2, machine=0xF3)
     session = SessionRegistry().create(binary)
     assert session.target is TargetKind.ELF
     assert session.architecture is None
