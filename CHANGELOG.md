@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（apk.decompile 在整包 jadx 反编译之前先校验 class_name，避免白付一次全量反编译）
+
+- jadx 的 `decompile` 过去先 `export_sources`（对整个 APK 跑一次 jadx——最长 1800s、可能写出一整棵源码树）
+  再用 `_class_to_java_path` 校验 `class_name`。于是一个畸形 `class_name`(含 `\`、`:`、NUL,或 `..` / 空路径
+  段)要等整包反编译跑完才被拒成 `invalid_params`;在没装 jadx 的主机上更会被 `export_sources` 抛的
+  `capability_unavailable` 盖过,而不是它应得的 `invalid_params`。
+- `_class_to_java_path` 是纯本地校验(只看 `class_name` 字符串),现把它移到 `export_sources` 之前:畸形类名
+  一律先拿到 `invalid_params`,与 jadx 是否就绪、APK 有多大都无关;真正的整包反编译只在类名合法时才启动。
+  路径逃逸/容器校验(需要磁盘上已有 sources 树)仍留在 export 之后,行为不变。
+- `tests/unit/test_jadx_path_safety.py` 新增一例:四种畸形 `class_name` 各自在 `export_sources` 被调用之前即以
+  `invalid_params` 拒掉(记录式 spy 全程保持空),合法类名恰好触达 export 一次。
+
 ### 加固（frida.server.ensure 在解析设备前先校验 remote_path/bind_host/server_binary，与 install/push/forward 看齐）
 
 - `ensure_frida_server`（`frida.server.ensure` 背后、以 root 推送并启动 frida-server 的高风险设备变更）过去先

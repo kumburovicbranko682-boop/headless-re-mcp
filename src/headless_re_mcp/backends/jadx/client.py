@@ -126,8 +126,15 @@ class JadxClient:
         target = class_name.strip()
         if not target:
             raise JadxError("invalid_params", "class_name is required")
-        export = self.export_sources(apk, out_dir, timeout=timeout)
+        # Resolve the class name to its relative source path before the
+        # (whole-APK) decompile. _class_to_java_path is a pure local check, and a
+        # malformed class_name (a \, :, or NUL character, or a .. / empty path
+        # segment) is a cheap local fact that should fail fast as invalid_params
+        # -- not after paying for a full jadx run of the entire APK, and not
+        # masked by the capability_unavailable that export_sources raises when
+        # jadx is missing. A bad class name is bad with or without a decompiler.
         rel = _class_to_java_path(target)
+        export = self.export_sources(apk, out_dir, timeout=timeout)
         output_root = out_dir.expanduser().resolve()
         sources = (output_root / "sources").resolve()
         if sources == output_root or not sources.is_relative_to(output_root):

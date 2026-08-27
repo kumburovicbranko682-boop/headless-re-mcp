@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -55,6 +56,45 @@ def test_jadx_keeps_valid_dotted_and_smali_class_names() -> None:
     assert _class_to_java_path("Lcom/example/Main;") == Path("com/example/Main.java")
     # Surrounding whitespace is stripped before the path is built.
     assert _class_to_java_path("  com.example.Main  ") == Path("com/example/Main.java")
+
+
+def test_jadx_validates_class_name_before_the_whole_apk_decompile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed class_name must fail before export_sources launches jadx.
+
+    decompile() used to run the whole-APK export first and validate the
+    class_name via _class_to_java_path after -- so a class_name carrying a
+    backslash, a colon, a NUL, or a .. / empty path segment paid for a full jadx
+    run (up to the 1800s timeout, writing an entire source tree) before being
+    rejected, and on a host without jadx was masked by export_sources'
+    capability_unavailable rather than surfacing the invalid_params it was. The
+    resolution now runs first: a bad name is refused up front and the expensive
+    export is never reached, proven by a spy that must stay uncalled for every
+    malformed name and fire exactly once for a well-formed one.
+    """
+    calls: list[tuple[Any, ...]] = []
+
+    def _recording_export(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(args)
+        return {}
+
+    client = JadxClient(tmp_path / "jadx")
+    monkeypatch.setattr(client, "export_sources", _recording_export)
+
+    for bad in ("com.example.\x00Main", r"C:\outside", "../../outside", "com..outside"):
+        with pytest.raises(JadxError) as caught:
+            client.decompile(tmp_path / "app.apk", tmp_path / "out", bad)
+        assert caught.value.code == "invalid_params"
+    assert calls == [], "export_sources ran before the class_name was validated"
+
+    # A well-formed name does reach the export (the spy stands in for it) and
+    # then fails downstream because the spy wrote no tree -- proof the reorder
+    # did not simply short-circuit every call.
+    with pytest.raises(JadxError):
+        client.decompile(tmp_path / "app.apk", tmp_path / "out", "com.example.Main")
+    assert len(calls) == 1, "a valid class name must still reach export_sources exactly once"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="creating test symlinks needs Windows privileges")
