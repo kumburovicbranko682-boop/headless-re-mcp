@@ -18,6 +18,8 @@ CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服�
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
+Agent 上下文有界新增经真实 HTTP 的端到端 Gate（`tests/integration/test_agent_context_gate.py`）。长期无人值守线程有两种死法:送 provider 的请求无界增长直到 API 拒收,或压缩剪错位置送出没有前置 tool_calls 的 tool 消息——OpenAI 兼容端点对此直接 400,调度器把 provider 400 记为任务失败。压缩函数本身有单元证明,缺的是接线证明:Gate 用记录真实到线请求的假 LLM 驱动 `serve-web`,经公开数据面把线程灌到远超预算后起 run,断言到线的 messages 真被压缩(系统提示仍居首、省略公告在场并提醒工具输出不可信、总量不超预算、当前任务存活而最老历史被弃、线尾首条非 system 消息不是 tool)且持久线程一条不丢——压缩约束的是电线,不是记录。第二条用例证另一侧边界:模型失控吐出 30 万字节工具参数时被拒为 `arguments_too_large` 而非截断执行(截断的参数是另一条命令),拒绝作为普通工具结果回给模型故 run 照常完成、不算失败;失控负载在 propose 之前就被挡下,事件史无 tool.proposed、无会话被创建、金丝雀字符串不出现在事件与线程转录的任何角落,而拒绝本身留档可查。无真实 LLM、仅回环、纯 Python。
+
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
 
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
