@@ -824,6 +824,23 @@ class AgentStore:
                 rows = con.execute("SELECT * FROM missions WHERE status=? ORDER BY created_at DESC, id DESC LIMIT ?", (status.value, bounded)).fetchall()
         return [self._mission_from_row(row) for row in rows]
 
+    def count_missions(self, *, status: MissionStatus | None = None) -> int:
+        """How many missions match the filter, past the list's page cap.
+
+        list_missions returns at most 500 newest-first; a busy queue holds more.
+        This is the number that lets the mission view say it is showing only
+        part of the queue rather than passing a capped page off as all of it.
+        """
+        with self._reading() as con:
+            if status is None:
+                row = con.execute("SELECT COUNT(*) AS c FROM missions").fetchone()
+            else:
+                row = con.execute(
+                    "SELECT COUNT(*) AS c FROM missions WHERE status=?",
+                    (status.value,),
+                ).fetchone()
+        return int(row["c"]) if row is not None else 0
+
     def claim_next_mission(self) -> AgentMission | None:
         """Take the oldest pending mission, atomically.
 
