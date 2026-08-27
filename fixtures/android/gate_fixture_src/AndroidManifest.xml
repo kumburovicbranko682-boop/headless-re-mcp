@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Source tree for fixtures/android/gate_fixture.apk, the APK the Android gate
+  (tests/integration/test_android_re_gate.py) reads. It is a real, tiny,
+  v1-signed APK: apktool compiles this manifest to binary AXML and assembles
+  the hand-written small into a classes.dex, then jarsigner adds a self-signed
+  v1 (JAR) signature so androguard sees a package, permissions, components,
+  native ABIs, a certificate, and one internal class/method/string/xref.
+
+  Rebuild it (apktool 3.x + a JDK, both on PATH):
+
+    java -jar apktool.jar b fixtures/android/gate_fixture_src \
+        -o fixtures/android/gate_fixture.unsigned.apk
+    keytool -genkeypair -keystore /tmp/gate.keystore -storepass android \
+        -keypass android -alias gatekey -keyalg RSA -keysize 2048 \
+        -validity 10000 -dname "CN=headless-re apk gate, O=headless-re, C=US"
+    cp fixtures/android/gate_fixture.unsigned.apk fixtures/android/gate_fixture.apk
+    jarsigner -keystore /tmp/gate.keystore -storepass android -keypass android \
+        -sigalg SHA256withRSA -digestalg SHA-256 \
+        fixtures/android/gate_fixture.apk gatekey
+    rm fixtures/android/gate_fixture.unsigned.apk
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.headlessre.gatefixture"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk
+        android:minSdkVersion="21"
+        android:targetSdkVersion="33" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application android:label="GateFixture">
+        <activity android:name=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service android:name=".GateService" />
+        <receiver android:name=".GateReceiver" />
+    </application>
+</manifest>

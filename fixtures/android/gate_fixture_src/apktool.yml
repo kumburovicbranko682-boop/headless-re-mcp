@@ -1,0 +1,21 @@
+!!brut.androlib.meta.MetaInfo
+apkFileName: gate_fixture.apk
+doNotCompress: []
+isFrameworkApk: false
+packageInfo:
+  forcedPackageId: 127
+  renameManifestPackage: null
+sdkInfo:
+  minSdkVersion: 21
+  targetSdkVersion: 33
+sharedLibrary: false
+sparseResources: false
+unknownFiles: {}
+usesFramework:
+  ids:
+  - 1
+  tag: null
+version: 3.0.3
+versionInfo:
+  versionCode: 1
+  versionName: 1.0
