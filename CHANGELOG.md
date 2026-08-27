@@ -16,6 +16,8 @@ x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/
 
 CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建；真实 Windows 后端 gate 继续留在 Windows job，Linux 收集时给 Windows-only 集成测试明确 skip 原因。
 
+新增 `linux-portable-gates` CI 车道：装好全部可从公开源获取的后端（androguard/mitmproxy/Playwright+Chromium/webcrack/wabt/radare2/UPX，PE 夹具用 mingw-w64 交叉编译），在跑 Gate 前先断言这些工具确实在 PATH 上，再真跑 Android/Web/proxy/agent 工作台/r2/UPX 各 Gate。此前这些 Gate 只在人工配好的机器上跑过，裸 runner 上会静默 skip——`main` 上因此长期藏着"抓包端口停止后不释放"和"浏览器 Gate 写死 Windows 路径根本跑不起来"两个真 bug 而 CI 全绿。同车道还固定了"有夹具但没装 IDA 时 idalib Gate 必须如实 skip 而非抛 `RuntimeError`"这条契约（skip≠pass，但 error≠skip）。
+
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
