@@ -237,6 +237,7 @@ jobs:
           tests/integration/test_idalib_gate.py
           tests/integration/test_m8_static_batch1_gate.py
           tests/integration/test_m8_static_write_gate.py
+          tests/integration/test_mcp_static_idalib.py
           -q -rs --tb=short --timeout=180
 
       - name: Real-UPX unpack fixtures
