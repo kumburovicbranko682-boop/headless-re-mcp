@@ -7,7 +7,9 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from headless_re_mcp.backends.web.client import _MAX_INLINE_BODY, WebBackend
+import pytest
+
+from headless_re_mcp.backends.web.client import _MAX_INLINE_BODY, WebBackend, WebError
 from headless_re_mcp.tools.web import build_web_tools
 
 
@@ -55,6 +57,37 @@ class _HandleNoBody:
     lock = Lock()
     requests = {"r1": {"requestId": "r1", "url": "https://x", "status": 302}}
     cdp = _CdpNoBody()
+
+
+class _HandleEmpty:
+    lock = Lock()
+    requests: dict[str, Any] = {}
+    cdp = _Cdp()
+
+
+def test_web_network_get_names_eviction_when_the_request_id_is_gone(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A miss is as often a ring eviction as a bad id, so say so.
+
+    handle.requests evicts oldest-first past _MAX_REQUESTS (bumping
+    requests_dropped), so network_get on an id that has fallen off the ring
+    returns not_found -- and the message must name eviction as a cause, the way
+    proxy.flow_get does, rather than read as "you passed a wrong id". The CDP
+    body fetch must never run for a request that is not in the ring.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _HandleEmpty())
+
+    def _no_runner(handle: Any) -> Any:  # pragma: no cover - must not be reached
+        raise AssertionError("network_get fetched a body for an unknown request id")
+
+    monkeypatch.setattr(backend, "_runner", _no_runner)
+    with pytest.raises(WebError) as caught:
+        backend.network_get("s", "does-not-exist", tmp_path)
+    assert caught.value.code == "not_found"
+    assert "evicted from the capture ring" in caught.value.message
+    assert caught.value.details.get("request_id") == "does-not-exist"
 
 
 def test_web_network_get_names_body_truncated_not_truncated(

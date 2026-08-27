@@ -816,7 +816,15 @@ class WebBackend:
         with handle.lock:
             entry = handle.requests.get(request_id)
         if entry is None:
-            raise WebError("not_found", "unknown request id", request_id=request_id)
+            # Mirror proxy.flow_get: the request ring evicts oldest-first once it
+            # passes _MAX_REQUESTS (bumping requests_dropped), so a miss here is
+            # as often an eviction as a bad id. Say so, rather than let the
+            # caller read it as "you passed a wrong id".
+            raise WebError(
+                "not_found",
+                "unknown request id (it may have been evicted from the capture ring)",
+                request_id=request_id,
+            )
         body = ""
         base64_encoded = False
         try:

@@ -24,6 +24,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 观测（web.network_get 未命中时点明\"可能已被抓取环淘汰\"，与 proxy.flow_get 对齐，别让淘汰读成\"给错了 id\"）
+
+- `handle.requests` 是有界环:超过 `_MAX_REQUESTS` 就从最旧开始淘汰(并累加 `requests_dropped`),所以 `web.network_get`\
+  对一个已掉出环的 request_id 会 `not_found`——但旧消息只说\"unknown request id\",读起来像\"你给错了 id\",而真实\
+  原因往往是淘汰。`proxy.flow_get` 早已在同样场景写明\"(it may have been evicted from the capture ring)\"。现让\
+  `web.network_get` 的消息与之对齐,点明淘汰这一可能。新增后端测试钉住:未知/已淘汰的 request_id 得 `not_found`、\
+  消息含\"evicted from the capture ring\"、且对不在环里的 id 绝不发起 CDP 取 body(顺带覆盖此前未测到的 not_found 分支)。
+
 ### 测试（钉住 frida 授权窗口 _append_recent 的\"中段目标重生即成最近\"契约：Java 工具默认目标随之更新且不重复占位）
 
 - frida 的 Java 工具默认作用于 `_last_pid`(授权窗口末位)。此前的测试钉住了两不同值的近时序、封顶、以及\
