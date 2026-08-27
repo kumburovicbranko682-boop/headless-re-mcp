@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 device 服务层的只读透传、后端兜底与抓取分支钉进测试）
+
+- device 审计测试钉住每个变更与抓取的溯源、artifacts 测试钉住字节/条数上限,但还剩几条服务层路径没被
+  触及:只读透传(list/properties/packages/current_activity)、`_adb_wrap` 的 `except BaseException`
+  兜底、服务自身没持有后端时 `_backend()` 现构一个 AdbBackend 的兜底、`device.connect` 的 AdbError 臂
+  (跳过\"已连接\"降级判定)、抓取失败时跳过超限检查那条分支、`device.pull` 的超限拒绝,以及
+  `prune_device_artifacts` 的两处 OSError 守卫和\"未满\"提前返回。
+- 新增 `tests/unit/test_device_service_envelopes.py`,用假 AdbBackend(不需 adbutils 或真设备)在服务层
+  钉住:六个只读透传都带 backend 回信封且一个都不进审计;读遇 AdbError→原样 code、遇非 AdbError→
+  `internal_error`;无自持后端时 `_backend()` 兜底构出 AdbBackend;`device.connect` 的后端异常直接落失败
+  信封且仍带 code 记审计;抓取失败跳过超限检查、仍记审计;`device.pull` 命中超限被删并记成
+  `output_too_large`;`prune_device_artifacts` 对非目录静默返回、未满时空跑、排序途中 stat 失败按 age 0
+  兜底。`service_device` 覆盖率 92%→99%(仅剩 `_audit_device` 里一条 `_failure` 永不产生的防御分支),
+  纯补测、不改行为。
+
 ### 加固（把 frida 服务层的枚举/连接/java 路径与错误分类钉进测试）
 
 - frida 审计测试驱动 spawn/server.ensure/applications,closed-session 测试驱动入口与泄漏守卫,本地
