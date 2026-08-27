@@ -451,6 +451,83 @@ async def test_stdio_reader_drains_oversized_records_without_buffering_them() ->
     assert following_oversized is False
 
 
+@pytest.mark.asyncio
+async def test_read_bounded_line_reports_eof_so_the_reader_loop_stops() -> None:
+    """An empty read is how stdin_reader learns the stream closed and breaks.
+
+    If EOF came back as anything other than an empty record the reader would
+    spin instead of shutting down when the client goes away.
+    """
+    from io import BytesIO
+
+    from headless_re_mcp.mcp.stdio_errors import _read_bounded_line
+
+    line, oversized = await _read_bounded_line(BytesIO(b""), limit=64)
+
+    assert line == b""
+    assert oversized is False
+
+
+def test_a_well_formed_json_object_that_is_not_a_valid_request_still_gets_answered() -> None:
+    """The unattended promise is a reply for anything carrying an id.
+
+    A line can be valid JSON yet not a valid JSON-RPC request -- here a
+    non-string method. pydantic rejects it, but json.loads still recovers the
+    id, so the caller gets an INVALID_REQUEST naming its request instead of the
+    silence the SDK used to leave. The message is the real parse failure, not
+    the recursion phrasing reserved for depth blow-ups.
+    """
+    import json
+
+    from headless_re_mcp.mcp.stdio_errors import error_message_for_unreadable_line
+
+    reply = error_message_for_unreadable_line('{"jsonrpc":"2.0","id":11,"method":123}')
+
+    assert reply is not None
+    dumped = json.loads(reply.model_dump_json())
+    assert dumped["id"] == 11
+    assert dumped["error"]["code"] == -32600
+    assert "nested too deeply" not in dumped["error"]["message"]
+
+
+def test_a_string_request_id_is_preserved_in_the_refusal() -> None:
+    """Clients that use string ids must still be able to correlate the reply."""
+    import json
+
+    from headless_re_mcp.mcp.stdio_errors import error_message_for_unreadable_line
+
+    reply = error_message_for_unreadable_line('{"jsonrpc":"2.0","id":"req-1","method":123}')
+
+    assert reply is not None
+    dumped = json.loads(reply.model_dump_json())
+    assert dumped["id"] == "req-1"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"jsonrpc":"2.0","id":true,"method":123}',
+        '{"jsonrpc":"2.0","id":1.5,"method":123}',
+        '{"jsonrpc":"2.0","id":null,"method":123}',
+        '{"jsonrpc":"2.0","method":123}',
+        "[1,2,3]",
+    ],
+    ids=["boolean-id", "fractional-id", "null-id", "missing-id", "not-an-object"],
+)
+def test_a_request_without_a_correlatable_id_stays_silent(line: str) -> None:
+    """No id (or one that cannot name a reply) means the SDK's silence stands.
+
+    A boolean is not a JSON-RPC id even though Python would treat it as an int,
+    a fractional number and null cannot correlate a reply, and a value that is
+    not even an object has no id to read. Answering any of these would invent a
+    reply the caller could not match to a request.
+    """
+    from headless_re_mcp.mcp.stdio_errors import _request_id, error_message_for_unreadable_line
+
+    assert _request_id(line) is None
+    assert error_message_for_unreadable_line(line) is None
+
+
 def test_server_instructions_cover_apk_and_web_not_just_pe() -> None:
     """The initialize payload told the model it could only open a PE.
 
