@@ -257,6 +257,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 修复（`dotnet.il` 漏认 `ldc.i4.s` 导致方法体从此处起整体错位）
+
+- `_OPCODES` 覆盖了整族 `ldc.i4.0`..`ldc.i4.8`(0x16..0x1E)与 4 字节的 `ldc.i4`(0x20),
+  却漏掉了夹在中间的 `ldc.i4.s`(0x1F)——这是把 -128..127 常量压栈的短形式,真实 IL 里
+  极常见。缺表的操作码被当成零操作数的未知码,只前进 1 字节,于是紧随其后的那 1 字节有
+  符号常量被当成下一条指令的操作码:一句 `ldc.i4.s <n>` 就把后面所有指令整体错位一字节,
+  方法体后半段解成乱码(`op_1f`/`op_ff` 之类),并连累据此收集的 `call` token。现把
+  `0x1F: ("ldc.i4.s", 1)` 补进操作码表,并将其列入 `_SIGNED_OPERANDS`,于是 `ldc.i4.s -1`
+  解成 -1 而非 255、其后指令保持对齐。新增直测:`ldc.i4.s 10; ldc.i4.s -1; ret` 断言两条
+  常量各读出正确符号且末尾 `ret` 仍在流内。
+
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
 - `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
