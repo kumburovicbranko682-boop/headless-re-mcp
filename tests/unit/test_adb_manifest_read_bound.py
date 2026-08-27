@@ -67,3 +67,43 @@ def test_a_missing_manifest_returns_none(tmp_path: Path) -> None:
     with zipfile.ZipFile(apk, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("classes.dex", b"not a manifest")
     assert _apk_package_name(apk) is None
+
+
+def test_reads_the_package_from_a_compiled_binary_manifest(tmp_path: Path) -> None:
+    """A real APK ships a compiled AXML manifest, not the plaintext XML above.
+
+    aapt stores manifest strings in a UTF-16-LE string pool, so the literal
+    ``package="..."`` the UTF-8 regex looks for never appears in a shipped APK
+    -- the plaintext test is only the source-form case. The load-bearing path
+    for ``device.install``'s package readback is the UTF-16-LE fallback, and it
+    must clear two hazards a compiled manifest always presents:
+
+      * the binary chunk headers hold bytes (the 0xFFFFFFFF sentinels here)
+        that make the UTF-8 decode raise, which must be swallowed so the
+        fallback still runs rather than aborting the whole read; and
+      * the string pool lists framework strings -- the android namespace URI,
+        an ``android.permission.*`` value -- that also look like dotted package
+        ids. The ``android.``/``com.android.`` skip is what stops the readback
+        naming ``android.permission.INTERNET`` as the installed package; drop
+        it and this manifest resolves to the permission, not the real id.
+
+    The member models exactly what the fallback decodes: binary sentinels
+    (invalid UTF-8) followed by a UTF-16-LE run of pool strings ordered as aapt
+    emits them -- URI and attribute names first, then the ``package`` attribute
+    name, an ``android.permission`` value, and finally the real package.
+    """
+    pool = "\x00".join(
+        [
+            "manifest",
+            "http://schemas.android.com/apk/res/android",
+            "versionCode",
+            "package",
+            "android.permission.INTERNET",
+            "com.example.app",
+        ]
+    )
+    manifest = b"\x03\x00\x08\x00" + b"\xff\xff\xff\xff" + pool.encode("utf-16-le")
+    apk = tmp_path / "compiled.apk"
+    _write_apk(apk, manifest)
+
+    assert _apk_package_name(apk) == "com.example.app"
