@@ -15,6 +15,7 @@ from dataclasses import replace
 import pytest
 
 from headless_re_mcp.unpack.session import (
+    _MAX_TIMEOUT_SECONDS,
     UnpackPhase,
     UnpackSessionError,
     UnpackSessionState,
@@ -44,6 +45,52 @@ def test_create_rejects_blank_session_id() -> None:
 def test_create_rejects_non_positive_timeout() -> None:
     with pytest.raises(UnpackSessionError, match="timeout_seconds"):
         create_unpack_session("sess", route="upx", timeout_seconds=0)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        1e18,
+        _MAX_TIMEOUT_SECONDS + 1,
+        -5.0,
+        True,
+        "60",
+        None,
+    ],
+)
+def test_create_rejects_non_finite_or_out_of_range_timeout(bad: object) -> None:
+    # A non-finite or absurd timeout used to escape the ``<= 0`` guard: inf/huge
+    # made ``now + timedelta(seconds=...)`` raise OverflowError (mapped to a bogus
+    # internal_error incident) and NaN leaked a cryptic ValueError. The MCP schema
+    # (Field gt=0, le=600) rejects them first, but the agent transport calls the
+    # handler directly, so create_unpack_session must fail closed on its own.
+    with pytest.raises(UnpackSessionError, match="timeout_seconds"):
+        create_unpack_session("sess", route="upx", timeout_seconds=bad)  # type: ignore[arg-type]
+
+
+def test_create_accepts_timeout_at_and_within_bounds() -> None:
+    for value in (1, 60.0, 300.0, 600.0, _MAX_TIMEOUT_SECONDS):
+        state = create_unpack_session("sess", route="upx", timeout_seconds=value)
+        assert state.deadline_at is not None
+        assert state.timeout_seconds == value
+
+
+def test_out_of_range_timeout_maps_to_invalid_request_not_internal_error() -> None:
+    # End-to-end: the state-machine error is a ValueError subclass, so the service
+    # envelope renders it as invalid_request with no recorded incident -- proving
+    # the OverflowError -> internal_error fail-open is gone.
+    from headless_re_mcp.core.results import _failure
+
+    try:
+        create_unpack_session("sess", route="upx", timeout_seconds=1e18)
+    except UnpackSessionError as exc:
+        result = _failure(exc, session_id="sess")
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
 
 
 # --- can_transition / transition -----------------------------------------

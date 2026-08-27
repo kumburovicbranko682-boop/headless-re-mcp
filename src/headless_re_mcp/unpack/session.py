@@ -7,11 +7,25 @@ from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from math import isfinite
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 JsonObject = dict[str, Any]
+
+# One day: far above any real unpack deadline (the unpack.* tool schemas cap
+# timeout at 300-600s) yet comfortably inside the range timedelta can represent.
+# The bound matters because create_unpack_session turns timeout_seconds into a
+# deadline via ``now + timedelta(seconds=timeout_seconds)``: an inf/huge value
+# raises OverflowError and a NaN raises ValueError from deep inside timedelta.
+# On the MCP path pydantic's Field(gt=0, le=...) rejects those first, but the
+# agent transport invokes the handler straight from model arguments
+# (CommandCatalog.invoke -> spec.handler), so an agent-issued timeout reaches
+# here unchecked; the OverflowError then escapes the ValueError branch in
+# _failure and mints a bogus internal_error incident for what is really
+# malformed input. Bound it here so every caller agrees regardless of transport.
+_MAX_TIMEOUT_SECONDS: float = 86_400.0
 
 
 class UnpackPhase(StrEnum):
@@ -201,8 +215,15 @@ def create_unpack_session(
 ) -> UnpackSessionState:
     if not session_id.strip():
         raise UnpackSessionError("session_id must not be blank")
-    if timeout_seconds <= 0:
-        raise UnpackSessionError("timeout_seconds must be positive")
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not isfinite(timeout_seconds)
+        or not 0 < timeout_seconds <= _MAX_TIMEOUT_SECONDS
+    ):
+        raise UnpackSessionError(
+            f"timeout_seconds must be > 0 and <= {_MAX_TIMEOUT_SECONDS}"
+        )
     now = datetime.now(UTC)
     state = UnpackSessionState(
         unpack_id=uuid4().hex,
