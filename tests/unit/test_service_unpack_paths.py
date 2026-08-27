@@ -1330,3 +1330,310 @@ def test_advance_after_verify_ignores_a_failed_session(tmp_path: Path) -> None:
     )
     state = service._unpack_owner.get(session_id)
     assert state is not None and state.phase == UnpackPhase.FAILED
+
+
+# ---------------------------------------------------------------------------
+# unpack_iat_scan / unpack_iat_validate validation arms
+# ---------------------------------------------------------------------------
+
+
+def test_iat_scan_is_blocked_on_a_terminal_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session_id, _dump = _cancelled_session(service, tmp_path)
+    result = service.unpack_iat_scan(session_id, _MODULE_BASE)
+    assert not result.ok and result.error is not None
+
+
+def test_iat_scan_propagates_a_failed_imports_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    monkeypatch.setattr(
+        service,
+        "imports_scan",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="scan_failed", message="boom")
+        ),
+    )
+    result = service.unpack_iat_scan(session_id, _MODULE_BASE)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "scan_failed"
+
+
+def test_iat_scan_tolerates_non_list_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    monkeypatch.setattr(
+        service,
+        "imports_scan",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=True, data={"candidates": "nope", "module_size": 0x1000}
+        ),
+    )
+    result = service.unpack_iat_scan(session_id, _MODULE_BASE)
+    assert result.ok and result.data is not None
+    assert result.data["candidate_count"] == 0
+
+
+def test_iat_validate_is_blocked_on_a_terminal_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session_id, _dump = _cancelled_session(service, tmp_path)
+    result = service.unpack_iat_validate(session_id, iat_va=_MODULE_BASE, size=0x40)
+    assert not result.ok and result.error is not None
+
+
+def test_iat_validate_propagates_a_failed_imports_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    monkeypatch.setattr(
+        service,
+        "imports_read",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="read_failed", message="boom")
+        ),
+    )
+    result = service.unpack_iat_validate(session_id, iat_va=_MODULE_BASE, size=0x40)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "read_failed"
+
+
+def test_iat_validate_tolerates_non_list_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    monkeypatch.setattr(
+        service,
+        "imports_read",
+        lambda *a, **k: Result[dict[str, Any]](ok=True, data={"entries": "nope"}),
+    )
+    result = service.unpack_iat_validate(session_id, iat_va=_MODULE_BASE, size=0x40)
+    assert result.ok and result.data is not None
+    assert result.data["confirmed"] is False
+
+
+def test_iat_validate_analyses_a_supplied_dump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    dump = _session_unpack_dir(service, session_id) / "dump.bin"
+    dump.write_bytes(_runtime_dump())
+    monkeypatch.setattr(
+        service,
+        "imports_read",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=True,
+            data={
+                "entries": [
+                    {"kind": "api", "module": "kernel32.dll", "name": f"Api{i}"} for i in range(12)
+                ]
+            },
+        ),
+    )
+    result = service.unpack_iat_validate(
+        session_id,
+        iat_va=0x140002000,
+        size=0x40,
+        module_base=_MODULE_BASE,
+        dump_path=str(dump),
+    )
+    assert result.ok and result.data is not None
+    assert result.data["stub_coupling"] is not None
+
+
+# ---------------------------------------------------------------------------
+# unpack_plan / unpack_start propagation arms
+# ---------------------------------------------------------------------------
+
+
+def test_plan_propagates_a_failed_classify(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    monkeypatch.setattr(
+        service,
+        "packer_classify",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="classify_failed", message="boom")
+        ),
+    )
+    result = service.unpack_plan(session_id, use_die=False)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "classify_failed"
+
+
+def test_plan_tolerates_non_list_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    monkeypatch.setattr(
+        service,
+        "packer_classify",
+        lambda *a, **k: Result[dict[str, Any]](ok=True, data={"candidates": "nope"}),
+    )
+    result = service.unpack_plan(session_id, use_die=False)
+    assert result.ok and result.data is not None
+
+
+def test_unpack_start_propagates_a_failed_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    monkeypatch.setattr(
+        service,
+        "unpack_plan",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="plan_failed", message="boom")
+        ),
+    )
+    result = service.unpack_start(session_id, use_die=False, execute_upx=False)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "plan_failed"
+
+
+def test_unpack_start_forces_the_upx_route(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    started = service.unpack_start(session_id, use_die=False, execute_upx=True, force_route="upx")
+    assert started.ok and started.data is not None
+    # No UPX binary is configured, so the orchestration fails closed.
+    assert started.data["unpack"]["phase"] == UnpackPhase.FAILED.value
+
+
+# ---------------------------------------------------------------------------
+# unpack_dump_module fail-closed guard arms
+# ---------------------------------------------------------------------------
+
+
+def test_dump_module_propagates_a_failed_modules_dump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr(
+        service,
+        "modules_dump",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="dump_failed", message="boom")
+        ),
+    )
+    result = service.unpack_dump_module(session_id, _MODULE_BASE, size=0x200)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "dump_failed"
+
+
+def test_dump_module_records_a_headers_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr(
+        service,
+        "pe_headers_runtime",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="headers_failed", message="no headers")
+        ),
+    )
+    result = service.unpack_dump_module(session_id, _MODULE_BASE, size=0x200)
+    assert result.ok and result.data is not None
+    assert result.data["headers_ok"] is False
+    assert "headers_error" in result.data
+
+
+def _counting_guard(service: AnalysisService, block_on: int) -> None:
+    """Make _guard_unpack_active return a block Result on the Nth call only."""
+    calls = {"n": 0}
+
+    def fake_guard(session_id: str, *, stage: str) -> Any:
+        calls["n"] += 1
+        if calls["n"] == block_on:
+            return Result[dict[str, Any]](
+                ok=False,
+                error=RpcError(code="unpack_cancelled", message=f"blocked at {stage}"),
+                meta={"unpack": {"phase": "cancelled"}},
+            )
+        return None
+
+    service._guard_unpack_active = fake_guard  # type: ignore[method-assign]
+
+
+def test_dump_module_aborts_after_the_dump_when_the_second_guard_blocks(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    _counting_guard(service, block_on=2)
+    result = service.unpack_dump_module(session_id, _MODULE_BASE, size=0x200)
+    assert not result.ok and result.data is not None
+    assert result.data["aborted_after_dump"] is True
+    assert result.data["safe_rollback"] is False
+
+
+def test_dump_module_aborts_before_phase_advance_when_the_third_guard_blocks(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    _counting_guard(service, block_on=3)
+    result = service.unpack_dump_module(session_id, _MODULE_BASE, size=0x200)
+    assert not result.ok and result.data is not None
+    assert result.data["aborted_before_phase_advance"] is True
+
+
+def test_confirm_oep_auto_dump_reports_a_dump_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    _running_unpack_state(service, session_id)
+    monkeypatch.setattr(
+        service,
+        "unpack_dump_module",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="dump_failed", message="no dump")
+        ),
+    )
+    result = service.unpack_confirm_oep(
+        session_id, oep_rva=0x1000, auto_dump=True, module_base=_MODULE_BASE
+    )
+    assert not result.ok and result.error is not None
+    assert result.error.code == "dump_failed"
