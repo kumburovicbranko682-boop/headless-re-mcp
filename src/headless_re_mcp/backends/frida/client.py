@@ -117,7 +117,12 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // frida 17 removed the legacy Memory.readByteArray/readX helpers; the
+    // NativePointer method is the current API and works on older frida too.
+    // readByteArray returns null for unreadable memory, so guard it rather
+    // than let `new Uint8Array(null)` decide the shape.
+    var buffer = ptr(address).readByteArray(size);
+    return buffer === null ? [] : Array.from(new Uint8Array(buffer));
   }
 };
 """

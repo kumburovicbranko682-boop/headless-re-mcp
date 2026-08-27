@@ -59,7 +59,9 @@ _WINDOWS_ONLY_MODULES = frozenset(
         "test_m10_ui_drive_gate.py",
         "test_m10_ui_interact_gate.py",
         "test_m10_ui_pid_gate.py",
-        "test_m11_frida_live_gate.py",
+        # test_m11_frida_live_gate.py is intentionally not here: its PE test
+        # self-skips for the missing Windows fixture, and it also carries a
+        # Linux-native test that attaches to a spawned process and probes libc.
         "test_m11_optional_backends_gate.py",
         "test_m11_windbg_live_gate.py",
         "test_m12_persist_gate.py",
