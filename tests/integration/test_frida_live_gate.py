@@ -88,6 +88,43 @@ def test_frida_attaches_lists_and_reads_a_live_process() -> None:
 
 
 @pytest.mark.integration
+def test_frida_hook_template_compiles_against_a_live_process() -> None:
+    """hook_template really compiles+loads the script in the target, not a lookup.
+
+    A template that referenced a frida API the runtime no longer has would fail
+    to load; asserting the 'noop' template loads against a live process proves
+    the compile/inject path works. An unknown template is a structured
+    invalid_params that names the templates that do exist.
+    """
+    if not _frida_available():
+        pytest.skip("frida not installed — frida live gate not run (skip != pass)")
+    client = FridaClient()
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    try:
+        time.sleep(0.7)
+        pid = proc.pid
+        try:
+            loaded = client.hook_template(pid, "noop", allowed_pid=pid)
+        except FridaError as exc:
+            pytest.skip(
+                f"frida could not attach to a local process ({exc.code}) — "
+                f"gate not run (skip != pass)"
+            )
+        assert loaded["loaded"] is True
+        assert loaded["template"] == "noop"
+        assert loaded["device"] == "local"
+
+        with pytest.raises(FridaError) as info:
+            client.hook_template(pid, "no-such-template", allowed_pid=pid)
+        assert info.value.code == "invalid_params"
+        assert "noop" in info.value.details.get("allowed", [])
+    finally:
+        proc.terminate()
+        with suppress(Exception):
+            proc.wait(timeout=5)
+
+
+@pytest.mark.integration
 def test_frida_attach_rejects_a_pid_outside_the_authorised_one() -> None:
     """The pid guard is a real check: attaching to a pid != allowed_pid is denied."""
     if not _frida_available():

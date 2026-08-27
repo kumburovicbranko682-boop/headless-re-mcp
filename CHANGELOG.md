@@ -329,8 +329,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `NativePointer.readByteArray`,恰恰无人活体验证。新 Gate 起一个本地子进程、`attach`(设备 `local`)、
   枚举模块(断言含 libc)、列 libc 导出(`found`、条目带 name/address)、并按某模块基址 `memory_read`
   读回 4 字节——每个已加载模块都以 ELF 魔数打头,故断言读回 `\x7fELF`,把上面那处 API 修复对着真实
-  目标钉死。再钉 attach 的 pid 授权守卫:`pid != allowed_pid` 得 `permission_denied`。frida 缺失、或
-  宿主 ptrace 策略拒绝注入(环境限制而非代码缺陷)时 skip。
+  目标钉死。再把 `hook_template` 也对活体进程验证:`noop` 模板在目标里**真编译加载**(`loaded=true`,
+  不是查表),证明注入/编译链通;未知模板得结构化 `invalid_params` 且 `allowed` 点名现有模板。最后钉
+  attach 的 pid 授权守卫:`pid != allowed_pid` 得 `permission_denied`。frida 缺失、或宿主 ptrace 策略
+  拒绝注入(环境限制而非代码缺陷)时 skip。
 - 新增 GitHub 托管的 `linux-integration` CI 作业:装好 radare2、wabt、adb、upx、C 编译器、
   webcrack(npm)、androguard/adbutils/frida/mitmproxy/fastapi(`.[android,web,proxy,browser]`)
   与 Playwright Chromium,在每次 push/PR 上跑整个 `tests/integration`。此前 `linux-quality`
