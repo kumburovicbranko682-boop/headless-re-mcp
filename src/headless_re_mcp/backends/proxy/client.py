@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import errno
 import logging
 import os
 import re
@@ -92,6 +93,32 @@ def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     return False
 
 
+def _bind_probe(host: str, port: int) -> str:
+    """Classify a bind attempt: ``ok``, ``in_use``, or ``bad_host``.
+
+    A plain bool conflates two failures. ``socket.bind`` raises ``EADDRNOTAVAIL``
+    for an address that is not on any local interface and ``gaierror`` for a name
+    that does not resolve -- neither is a busy port, but both look like "not
+    bindable". Reporting them as "port already in use" sends the operator to
+    stop a listener that was never there, when the real problem is the host.
+    Everything else that refuses the bind (chiefly ``EADDRINUSE``) is the port.
+    """
+    try:
+        with socket.socket() as probe:
+            # Match what asyncio will do when it binds for real, so this probe
+            # never refuses a port the server itself would have taken.
+            if os.name != "nt":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((host, port))
+        return "ok"
+    except socket.gaierror:
+        return "bad_host"
+    except OSError as exc:
+        if exc.errno == errno.EADDRNOTAVAIL:
+            return "bad_host"
+        return "in_use"
+
+
 def _port_bindable(host: str, port: int) -> bool:
     """True when a listener could take host:port right now.
 
@@ -102,14 +129,7 @@ def _port_bindable(host: str, port: int) -> bool:
     cannot bind, and the caller waits out the whole readiness timeout for an
     answer that was available immediately.
     """
-    with contextlib.suppress(OSError), socket.socket() as probe:
-        # Match what asyncio will do when it binds for real, so this probe never
-        # refuses a port the server itself would have taken.
-        if os.name != "nt":
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind((host, port))
-        return True
-    return False
+    return _bind_probe(host, port) == "ok"
 
 
 def _uninstall_master_logging(
@@ -465,7 +485,24 @@ class _ProxyInstance:
         # below would see the foreign listener and call it success, which is the
         # same lie in a different disguise. Both questions have to be asked: a
         # holder that never accepts is invisible to the connect probe.
-        if _port_accepts(self.host, self.port) or not _port_bindable(self.host, self.port):
+        if _port_accepts(self.host, self.port):
+            raise ProxyError(
+                "invalid_state",
+                "port is already in use; stop the existing listener first",
+                host=self.host,
+                port=self.port,
+            )
+        probe = _bind_probe(self.host, self.port)
+        if probe == "bad_host":
+            # Not a busy port: the address is not on any local interface (or the
+            # name does not resolve), so no listener could ever take it here.
+            raise ProxyError(
+                "invalid_params",
+                "cannot bind host; it is not a local address on this machine",
+                host=self.host,
+                port=self.port,
+            )
+        if probe != "ok":
             raise ProxyError(
                 "invalid_state",
                 "port is already in use; stop the existing listener first",

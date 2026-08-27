@@ -60,9 +60,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   边界用严格集合（IPv4 字面量或简单主机名，和 frida-server `bind_host` 同一套）先校验 `host`：
   坏 host 与空串一律精确报 `invalid_params: invalid host`，`127.0.0.1` 默认与显式 `0.0.0.0`
   opt-in 暴露都保留；`proxy.start` 工具描述补上「默认只绑本机、`0.0.0.0` 才对外暴露」的说明，
-  与 frida-server 的措辞一致。新增 `tests/unit/test_proxy_start_host_validation.py` 钉住坏
-  host/空串/带 shell 元字符/带端口/IPv6 一律 `invalid_params`（且不再是端口占用），并用打桩的
-  实例 start 证明合法 host 能越过校验、无需真的拉起 mitmproxy。
+  与 frida-server 的措辞一致。此外把绑定探针的语义拆开：`socket.bind` 对不在任何本机网卡上的
+  地址抛 `EADDRNOTAVAIL`、对无法解析的名字抛 `gaierror`，二者都不是端口占用，却都被旧的
+  `_port_bindable` 记成「不可绑定」进而谎报端口占用。新增 `_bind_probe` 把结果分成
+  `ok`/`in_use`/`bad_host`（`_port_bindable` 改为其上的薄封装以保持既有 bool 契约），`start()`
+  遇到 `bad_host`（例如把代理绑到另一台机器的 LAN IP）时精确报 `invalid_params: cannot bind
+  host`，只有真正的端口冲突才报 `invalid_state`。新增 `tests/unit/test_proxy_start_host_validation.py`
+  钉住坏 host/空串/带 shell 元字符/带端口/IPv6 一律 `invalid_params`（且不再是端口占用）、
+  非本机地址 `192.0.2.1`（RFC 5737 TEST-NET）被判成 `bad_host` 而非忙端口，并用打桩的实例
+  start 证明合法 host 能越过校验、无需真的拉起 mitmproxy。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 

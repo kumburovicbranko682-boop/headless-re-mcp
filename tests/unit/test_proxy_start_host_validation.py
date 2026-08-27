@@ -50,6 +50,24 @@ def test_an_unresolvable_host_is_not_misreported_as_a_port_conflict() -> None:
     assert "port is already in use" not in raised.value.message
 
 
+def test_a_well_formed_but_non_local_address_is_a_bad_host_not_a_busy_port() -> None:
+    """A regex-valid IP that is not on any interface must not read as busy.
+
+    192.0.2.1 is TEST-NET-1 (RFC 5737): syntactically fine, so it clears the
+    host regex, but binding it raises EADDRNOTAVAIL because it is on no local
+    interface. Before, that tripped _port_bindable and start() blamed the port;
+    now it is a precise invalid_params about the host. Uses a real bind, so it
+    is deterministic and needs no DNS or mitmproxy.
+    """
+    backend = _backend()
+    with pytest.raises(ProxyError) as raised:
+        backend.start("s", host="192.0.2.1", port=9096)
+    assert raised.value.code == "invalid_params"
+    assert "port is already in use" not in raised.value.message
+    assert raised.value.details["host"] == "192.0.2.1"
+    assert "s" not in backend._instances
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0", "localhost", "192.168.1.10"])
 def test_start_accepts_well_formed_hosts_past_validation(
     host: str, monkeypatch: pytest.MonkeyPatch
