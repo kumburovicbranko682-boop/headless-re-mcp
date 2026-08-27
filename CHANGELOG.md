@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -61,6 +61,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   join 之后统一调用它。回归由 `test_unattended_resource_bounds` 的
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
+
+### 新增（web.cookies：读取浏览器会话的 cookie jar）
+
+- 新增只读工具 `web.cookies`：列出 Web 会话浏览器上下文当前持有的 cookie。做 Web 逆向时
+  认证/会话 token 常以 cookie 形式存在，此前的 12 个 `web.*` 工具只能从 `web.network.get`
+  的响应头里碰运气翻 `Set-Cookie`，拿不到上下文里的最终状态（含 JS 写入与跨请求累积）。
+  返回 `name/value/domain/path/expires/http_only/secure/same_site`，字段名按本仓库惯例用
+  下划线而非 Playwright 的驼峰。页面可以塞任意多、任意大的 cookie，所以列表封顶 1000 条、
+  单值封顶 8 KiB（截断的条目带 `value_truncated`），并带 `total/offset/has_more` 分页——
+  与 `web.network.list` 等兄弟工具同一套有界输出模型。工具面 265 → 266（读 148 → 149）。
 
 ### 修复（proxy.start 的 port 校验移到能力门之前，缺 mitmproxy 时也回 invalid_params）
 
@@ -705,7 +715,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **OpenAI 桥接 CLI 三形态**：默认输出完整导出(count==tools==name_map)、`--names-only`
   只剩 `{name_map,count}`、`--output` 把完整 JSON 写到(自动创建的)路径并在 stdout 报告而不
   把工具体打到屏幕(CI 只 smoke 了 `--names-only`)。
-- **全表面资源策略有界**：全部 265 个工具的 `resource_policy` 都有有限且为正的超时与为正的
+- **全表面资源策略有界**：全部 266 个工具的 `resource_policy` 都有有限且为正的超时与为正的
   输出上限——防止 0/负/非有限超时混入导致无人值守跑挂。
 - **ScyllaHide 画像映射纯函数直测**：别名/节名规范化与其 fail-closed 拒绝(空串或未知名会连
   同白名单一起报出)、3 字符短 token(`vmp`/`tmd`)只按词边界匹配以免命中别的词内部、非壳类
@@ -801,7 +811,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `static.functions`,`install_cursor_underscore_aliases` 在 `get_tool` 处解析且不新增 ListTools 项。
   它用普通 dict 建下划线→点名映射,两个折叠成同一下划线形的点名会互相静默覆盖(OpenAI 桥接对这类
   碰撞有守卫,这条路径没有)。catalog 存在多段点名(`breakpoints.condition.set`),碰撞并非假想。
-  新增契约:钉住出厂全表面 265 个 MCP 名折叠后无碰撞,并直测别名解析(点名/下划线/多段名都命中同一
+  新增契约:钉住出厂全表面 266 个 MCP 名折叠后无碰撞,并直测别名解析(点名/下划线/多段名都命中同一
   工具、无点名工具与未知名不受影响、无点名时 `get_tool` 保持原样不被闭包替换)。
 - **MCP server 的 `write_allowed` 接线回归**：`create_server` 从 `local_full_access` 读入共享
   catalog 的 `write_allowed`;该处的常驻注释记着它曾一度没被读、只读部署照拿全写面。此前没有任何

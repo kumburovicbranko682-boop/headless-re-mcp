@@ -39,6 +39,11 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Cookies are read for analysis (auth/session tokens are the point), but a page
+# can set an arbitrary number of them and a single value can be large, so the
+# list is capped and each value is bounded like every other captured field.
+_MAX_COOKIES = 1000
+_MAX_COOKIE_VALUE_BYTES = 8 * 1024
 # What page.goto is allowed to navigate to. http(s) are the real targets;
 # ``data:`` loads controlled inline content (the web gates use it) in an opaque,
 # sandboxed origin that cannot touch the local disk. Everything else is refused:
@@ -600,6 +605,50 @@ class WebBackend:
             "count": len(page),
             "has_more": len(held) > capped,
             "dropped": dropped,
+        }
+
+    def cookies(self, session_id: str, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> Any:
+            try:
+                return handle.context.cookies()
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"failed to read cookies: {exc}") from exc
+
+        raw = self._runner(handle).call(work)
+        if not isinstance(raw, list):
+            raw = []
+        items: list[JsonObject] = []
+        for cookie in raw[:_MAX_COOKIES]:
+            if not isinstance(cookie, dict):
+                continue
+            name, _ = _bounded_metadata(cookie.get("name"), _MAX_METADATA_BYTES)
+            value, value_cut = _bounded_metadata(cookie.get("value"), _MAX_COOKIE_VALUE_BYTES)
+            domain, _ = _bounded_metadata(cookie.get("domain"), _MAX_METADATA_BYTES)
+            path, _ = _bounded_metadata(cookie.get("path"), _MAX_METADATA_BYTES)
+            entry: JsonObject = {
+                "name": name,
+                "value": value,
+                "domain": domain,
+                "path": path,
+                "expires": cookie.get("expires"),
+                "http_only": bool(cookie.get("httpOnly")),
+                "secure": bool(cookie.get("secure")),
+                "same_site": cookie.get("sameSite"),
+            }
+            if value_cut:
+                entry["value_truncated"] = True
+            items.append(entry)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_COOKIES))
+        window = items[start : start + cap]
+        return {
+            "cookies": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": start,
+            "has_more": start + len(window) < len(items),
         }
 
     def scripts(
