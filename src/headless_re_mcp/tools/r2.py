@@ -111,7 +111,10 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items holding those instructions, plus address
         (va/rva/module), address_va (the integer that was asked) and count.
-        There is no integer address field.
+        There is no integer address field. invalid_count says how many of those
+        items were undecodable bytes (radare2 type "invalid", no opcode): point
+        this at data, padding or unmapped memory and every byte comes back as its
+        own invalid item, so invalid_count == count means the address is not code.
         """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 

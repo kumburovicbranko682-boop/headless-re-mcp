@@ -70,6 +70,8 @@ def test_r2_service_functions_disasm_xrefs_end_to_end() -> None:
             _assert_mapped(op.get("address"))
             assert op.get("opcode"), op
             assert op.get("bytes"), op
+        # Real code decodes cleanly: none of the rows are undecodable bytes.
+        assert dis.data.get("invalid_count") == 0, dis.data
 
         xref = service.r2_xrefs(session_id, entry, timeout=60.0)
         assert xref.ok and xref.data is not None, xref.error
@@ -178,6 +180,35 @@ def test_r2_service_xrefs_at_a_non_code_address_stay_empty() -> None:
         assert xref.data["parsed"] is True
         assert xref.data["count"] == 0
         assert xref.data["items"] == []
+    finally:
+        service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_r2_service_disasm_flags_non_code_bytes_as_invalid() -> None:
+    """Disassembling data/unmapped memory must be legible as "not code".
+
+    radare2 returns a row per byte at any address, each tagged invalid with no
+    opcode, so a decoded-looking count/items envelope comes back for a header or
+    a hole just as it does for a function. The service surfaces invalid_count so
+    an agent can tell them apart: at 0x0 (no code, unmapped/header bytes) every
+    returned row is invalid, and invalid_count equals count.
+    """
+    if not R2Client().available:
+        pytest.skip("radare2/rizin not installed — live Gate not run (skip≠pass)")
+    fixture = _gate_fixture()
+    service = AnalysisService(Settings.load())
+    created = service.create_session(str(fixture))
+    assert created.ok and created.data is not None
+    session_id = str(created.data["session"]["id"])
+    try:
+        assert service.r2_open(session_id, timeout=60.0).ok
+        dis = service.r2_disasm(session_id, 0x0, count=6, timeout=60.0)
+        assert dis.ok and dis.data is not None, dis.error
+        assert dis.data["parsed"] is True
+        # Every row at 0x0 is an undecodable byte, and it is said out loud.
+        assert dis.data["count"] >= 1
+        assert dis.data["invalid_count"] == dis.data["count"]
     finally:
         service.close_session(session_id)
 

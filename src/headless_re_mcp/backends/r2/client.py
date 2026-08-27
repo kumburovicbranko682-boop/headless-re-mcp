@@ -89,7 +89,19 @@ class R2Client:
         data = dict(data)
         data["address"] = address
         data["count"] = count
-        return enrich_r2_payload(data, binary=binary)
+        enriched = enrich_r2_payload(data, binary=binary)
+        # Point pdj at data, padding, or unmapped memory and r2 still returns a
+        # row per byte -- each tagged type "invalid" with no opcode. Structurally
+        # that is indistinguishable from a decoded run, so an agent that only
+        # reads count/items would treat header bytes as instructions. Count the
+        # undecodable rows out loud so "this address is not code" is legible
+        # without walking every item.
+        items = enriched.get("items")
+        if isinstance(items, list):
+            enriched["invalid_count"] = sum(
+                1 for item in items if isinstance(item, dict) and item.get("type") == "invalid"
+            )
+        return enriched
 
     def xrefs(
         self,
