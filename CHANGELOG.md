@@ -569,6 +569,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `add(19,23)=42`），`web.wasm.list` 枚举到 V8 上报的已编译模块（language 为 WebAssembly、
   url 形如 `wasm://`），且 `wasm_only` 是真过滤——不带过滤的脚本清单仍含页面的纯 JS 脚本，
   而 wasm-only 视图已将其排除。
+- 再加一例证明 `web.navigate`：从已开的 `/` 导航到同源第二页，断言 URL/标题/状态都换成新页
+  且活 DOM 确为第二页（首页 marker 已消失）；随后导航到一个返回 404 的路径，断言状态如实为
+  404——覆盖后端“4xx 主文档正常 resolve、必须把状态透出”的分支，杜绝错误页伪装成命中。
 
 ### 修复（HAR 导出规范与边界）
 
