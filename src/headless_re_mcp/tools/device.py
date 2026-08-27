@@ -171,7 +171,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Push a local file to a path on the device.
 
         Answers with local, remote and size. Files over the capture cap are
-        refused rather than copied onto the device.
+        refused rather than copied onto the device. A refused push is a
+        backend error, not a completed transfer.
         """
         return _dump(analysis.device_push(serial, local_path, remote_path))
 
@@ -181,6 +182,7 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with local and remote. Forwards stay on the adb server until
         close_all; this process will refuse a new one once the table is full.
+        A refused forward is a backend error, not an open port.
         """
         return _dump(analysis.device_forward(serial, local, remote))
 

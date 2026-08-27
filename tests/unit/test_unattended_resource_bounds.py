@@ -3841,6 +3841,32 @@ class TestDevicePullRefusesTreesAndHugeFiles:
             backend.push("emulator-5554", str(huge), "/data/local/tmp/huge.bin")
         assert caught.value.code == "too_large"
 
+    def test_a_push_refused_by_adbutils_is_not_reported_as_done(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        local = tmp_path / "payload.bin"
+        local.write_bytes(b"12345")
+
+        class Sync:
+            def push(self, *args: Any, **kwargs: Any) -> bool:
+                del args, kwargs
+                # adbutils returns a byte count / None on success; False is a
+                # refusal that used to be reported as a completed transfer.
+                return False
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(mod.AdbError) as caught:
+            backend.push("emulator-5554", str(local), "/data/local/tmp/payload.bin")
+        assert caught.value.code == "backend_error"
+        assert caught.value.message == "push was refused"
+        assert caught.value.details.get("pushed") is False
+
     def test_a_huge_screenshot_is_deleted_not_kept(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
