@@ -202,8 +202,7 @@ def test_sign_uses_a_distinct_key_password_when_the_caller_gives_one(
     fake_tool.write_text("x\n", encoding="utf-8")
     signer = tmp_path / "apksigner.bat"
     signer.write_text("x\n", encoding="utf-8")
-    apk = tmp_path / "a.apk"
-    apk.write_bytes(b"PK")
+    apk = _write_apk(tmp_path / "a.apk")
     keystore = tmp_path / "release.keystore"
     keystore.write_bytes(b"ks")
     out = tmp_path / "signed.apk"
@@ -250,8 +249,7 @@ def test_sign_scrubs_a_distinct_key_password_from_stderr(
     fake_tool.write_text("x\n", encoding="utf-8")
     signer = tmp_path / "apksigner.bat"
     signer.write_text("x\n", encoding="utf-8")
-    apk = tmp_path / "a.apk"
-    apk.write_bytes(b"PK")
+    apk = _write_apk(tmp_path / "a.apk")
     keystore = tmp_path / "release.keystore"
     keystore.write_bytes(b"ks")
     out = tmp_path / "signed.apk"
