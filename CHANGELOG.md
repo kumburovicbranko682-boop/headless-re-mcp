@@ -49,6 +49,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（Frida `_run_deadline` 超时会永久泄漏一个 worker 线程，无上限累积）
+
+- 一个卡住的原生 Frida 调用无法被安全终止：`_run_deadline` 把它丢在守护线程里、返回超时后
+  就再不回收那个线程。没有上限时，每次超时都多留一个永久线程，长活服务便无界累积。现用
+  `BoundedSemaphore(8)` 界定同时在飞的 deadline worker：槽位只在原生调用最终返回时才释放，
+  于是真正卡死的调用占着槽、新活儿被 `resource_exhausted` 拒绝而不是继续堆线程。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
