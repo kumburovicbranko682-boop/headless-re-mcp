@@ -186,6 +186,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分树时各字段齐备并经 export→decompile 透传、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及两个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 测试（frida 服务层把「本会话自己 spawn 的 pid」作为授权集交给客户端）
+
+- frida 伸进活进程的安全边界分处两层：客户端一半（`test_frida_authorization_boundary.py` 已钉）拒绝
+  不在所收 `allowed_pids` 里的 pid；但这道检查只和服务层交给它的集合一样强——`FridaDeviceMixin._java`
+  把**本会话** `frida_authorized` 元数据里记录的 `pids`（即本会话自己 spawn/attach 出来的 pid）作为
+  `allowed_pids` 传给 `java_enumerate`。一旦重构改传被请求的 pid（`allowed_pids=[target_pid]`，一个很好写错
+  的「授权我们正要打的那个」）或改传进程级列表，客户端的 `pid in allowed_pids` 就会对调用方随口报的任何 pid
+  放行，整道边界即告失守——而只驱动客户端、由测试自己喂集合的授权边界测试照样能过。
+- 服务这一半此前无人钉：`test_frida_spawn_closed_session.py` 只钉住 spawn 会**记录** pid（关闭会话则不记）；
+  新增 `test_frida_service_pid_scoping.py` 钉住 java 工具**把授权集限定到这些被记录的 pid**。桩客户端复刻真实
+  客户端的闸门（拒绝 `allowed_pids` 之外的 pid）并记录服务实际交来的 `pid`/`allowed_pids`，故每条用例既读作
+  运维会看到的端到端回绝，又直接断言授权集是会话的 pid 而非被请求的 pid：未 spawn 前 `pid=0` 以 `invalid_state`
+  在服务层止步、根本不碰客户端（`java_calls` 为空，不解析设备）；spawn pid 4242 后默认调用定向到它且授权集为
+  `[4242]`；报一个本会话从未 spawn 的 pid（5555）被 `permission_denied` 回绝，且回绝那一刻交给客户端的 `allowed_pids`
+  仍是 `[4242]`（不是 `[5555]`）；`frida_java_methods` 与 `frida_java_classes` 同经 `_java`，一并钉住。把服务改成
+  `allowed_pids=[target_pid]` 即让 5555 变「已授权」、两条限定用例同时失败。
+
 ### 修复（frida 设备解析卡死不再永占 worker）
 
 - **`_resolve_device` 与 `add_remote_device` 里对 frida 的设备查找此前不带可由本侧兜底的截止时间。**
