@@ -60,6 +60,41 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
+def _stop_proxy_servers(master: Any, loop: asyncio.AbstractEventLoop) -> None:
+    """Close mitmproxy's listening sockets before the loop is torn down.
+
+    ``master.shutdown()`` makes ``master.run()`` return, but in mitmproxy 12 the
+    proxyserver addon keeps its ``asyncio`` servers -- and therefore the bound
+    listen socket -- alive until each ``ServerInstance.stop()`` coroutine runs.
+    ``_shutdown_loop`` only cancels leftover tasks and never touches those
+    servers, so before this the port stayed bound after ``stop()`` and the next
+    capture on it could not start. Run the stop coroutines here, while the loop
+    is idle after ``run()`` returned but has not yet been closed.
+    """
+    if master is None:
+        return
+    addons = getattr(master, "addons", None)
+    proxyserver = None
+    if addons is not None:
+        with contextlib.suppress(Exception):
+            proxyserver = addons.get("proxyserver")
+    servers = getattr(proxyserver, "servers", None)
+    if servers is None:
+        return
+
+    async def _stop_all() -> None:
+        tasks = [
+            server.stop()
+            for server in list(servers)
+            if getattr(server, "is_running", True)
+        ]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    with contextlib.suppress(Exception):
+        loop.run_until_complete(_stop_all())
+
+
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     """True when something is listening and accepting on host:port."""
     with contextlib.suppress(OSError), socket.socket() as probe:
@@ -348,8 +383,11 @@ class _ProxyInstance:
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound
-            # and the next capture could never start. Unwind the tasks first.
+            # and the next capture could never start. Stop the proxy servers
+            # to release the bound socket, then unwind the remaining tasks.
             if loop is not None:
+                with contextlib.suppress(Exception):
+                    _stop_proxy_servers(self._master, loop)
                 with contextlib.suppress(Exception):
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
