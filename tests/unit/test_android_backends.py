@@ -281,6 +281,81 @@ def _axml_launcher_manifest(
     return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
 
 
+def _axml_uses_library_manifest(
+    libraries: list[tuple[str | None, bool | None]],
+    *,
+    package: str = "com.example.libs",
+) -> bytes:
+    """A compiled manifest whose <application> declares <uses-library> entries.
+
+    Each entry is ``(name, required)``: ``name`` is the android:name value
+    (None emits the element with no name at all, which the reader must skip)
+    and ``required`` the android:required flag (None leaves the attribute out,
+    which Android defaults to true).
+    """
+    order: list[str] = []
+    index: dict[str, int] = {}
+
+    def intern(text: str) -> int:
+        if text not in index:
+            index[text] = len(order)
+            order.append(text)
+        return index[text]
+
+    for fixed in ("name", "required", "package", "manifest", "application", "uses-library"):
+        intern(fixed)
+    intern(package)
+    for name, _required in libraries:
+        if name is not None:
+            intern(name)
+
+    def start(name_idx: int, attrs: list[tuple[int, int, int]]) -> bytes:
+        body = bytearray()
+        for name_index, data_type, value in attrs:
+            raw = value if data_type == 0x03 else -1
+            body += struct.pack("<iiiHBBI", -1, name_index, raw, 8, 0, data_type, value)
+        ext = struct.pack(
+            "<IIiIHHHHHH", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx, 20, 20, len(attrs), 0, 0, 0
+        )
+        chunk = ext + bytes(body)
+        return struct.pack("<HHI", 0x0102, 16, 8 + len(chunk)) + chunk
+
+    def end(name_idx: int) -> bytes:
+        body = struct.pack("<IIiI", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx)
+        return struct.pack("<HHI", 0x0103, 16, 8 + len(body)) + body
+
+    body = bytearray()
+    body += start(intern("manifest"), [(intern("package"), 0x03, intern(package))])
+    body += start(intern("application"), [])
+    for name, required in libraries:
+        attrs: list[tuple[int, int, int]] = []
+        if name is not None:
+            attrs.append((intern("name"), 0x03, intern(name)))
+        if required is not None:
+            attrs.append((intern("required"), 0x12, 0xFFFFFFFF if required else 0))
+        body += start(intern("uses-library"), attrs)
+        body += end(intern("uses-library"))
+    body += end(intern("application"))
+    body += end(intern("manifest"))
+
+    data = bytearray()
+    offsets: list[int] = []
+    for text in order:
+        offsets.append(len(data))
+        raw = text.encode("utf-8")
+        data += bytes([len(raw), len(raw)]) + raw + b"\x00"
+    while len(data) % 4:
+        data += b"\x00"
+    strings_start = 28 + len(order) * 4
+    pool = struct.pack(
+        "<HHIIIIII", 0x0001, 28, strings_start + len(data), len(order), 0, 1 << 8,
+        strings_start, 0,
+    )
+    pool += b"".join(struct.pack("<I", off) for off in offsets) + bytes(data)
+    payload = pool + bytes(body)
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
+
+
 _MAIN = "android.intent.action.MAIN"
 _LAUNCHER = "android.intent.category.LAUNCHER"
 
@@ -316,6 +391,14 @@ class TestManifestFactsWithoutAndroguard:
         # intent-filter carries MAIN + LAUNCHER; the apktool gate cross-checks
         # this same component against apktool's own decode.
         assert manifest["launcher_activity"] == "com.example.headless.MainActivity"
+        # The device shared libraries the app depends on (<uses-library>), in
+        # declaration order: one hard requirement (required left implicit,
+        # defaulting true) and one declared optional -- the manifest-level
+        # dependency list, cross-checked by the apktool and androguard gates.
+        assert manifest["uses_libraries"] == [
+            {"name": "org.apache.http.legacy", "required": True},
+            {"name": "androidx.window.extensions", "required": False},
+        ]
 
     def test_reads_a_utf8_pool_and_resolves_stripped_names_by_resource_id(
         self, tmp_path: Path
@@ -382,6 +465,53 @@ class TestManifestFactsWithoutAndroguard:
         assert manifest["allow_backup"] is True
         assert manifest["uses_cleartext_traffic"] is False
         assert "debuggable" not in manifest
+
+    def test_uses_library_defaults_to_required(self, tmp_path: Path) -> None:
+        # <uses-library> with no android:required attribute is a hard
+        # dependency: Android's documented default is true, so a missing
+        # library blocks install -- the reader must say required, not None.
+        manifest_bytes = _axml_uses_library_manifest([("org.apache.http.legacy", None)])
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "deps.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["uses_libraries"] == [
+            {"name": "org.apache.http.legacy", "required": True}
+        ]
+
+    def test_uses_library_required_carries_its_declared_value(self, tmp_path: Path) -> None:
+        # One explicit true and one explicit false in the same manifest, in
+        # declaration order -- so neither a stuck default nor an echo of a
+        # neighbour's value can pass.
+        manifest_bytes = _axml_uses_library_manifest(
+            [("com.vendor.hard", True), ("androidx.window.extensions", False)]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "mixed.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["uses_libraries"] == [
+            {"name": "com.vendor.hard", "required": True},
+            {"name": "androidx.window.extensions", "required": False},
+        ]
+
+    def test_uses_library_without_a_name_is_skipped(self, tmp_path: Path) -> None:
+        # A nameless <uses-library> declares nothing; the reader must skip it
+        # rather than invent an empty-named dependency, while still reading
+        # the well-formed sibling.
+        manifest_bytes = _axml_uses_library_manifest([(None, True), ("com.real.lib", None)])
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "nameless.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["uses_libraries"] == [{"name": "com.real.lib", "required": True}]
+
+    def test_no_uses_library_reads_as_an_empty_list(self, tmp_path: Path) -> None:
+        # An app that needs no device shared library reports an empty
+        # dependency list, not a missing fact -- "none" is a real answer here,
+        # exactly like an ELF with no DT_NEEDED.
+        manifest_bytes = _axml_uses_library_manifest([])
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "nodeps.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["uses_libraries"] == []
 
     def test_launcher_activity_from_a_main_launcher_intent_filter(self, tmp_path: Path) -> None:
         # The entry point: the <activity> whose intent-filter declares both

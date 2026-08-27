@@ -84,6 +84,17 @@ def test_android_apk_static_happy_path() -> None:
         # get_main_activity resolves -- a second independent cross-check of the
         # entry-point fact, alongside the apktool gate's.
         assert tool_free["launcher_activity"] == info["main_activity"]
+        # The <uses-library> dependency names the stdlib reader collected must
+        # be exactly the set androguard's get_libraries resolves -- the second
+        # independent decode of the manifest-level dependency list (the apktool
+        # gate checks names and required flags against its text rendering).
+        assert sorted(lib["name"] for lib in tool_free["uses_libraries"]) == info[
+            "uses_libraries"
+        ]
+        assert info["uses_libraries"] == [
+            "androidx.window.extensions",
+            "org.apache.http.legacy",
+        ]
 
         manifest = service.apk_manifest(session_id)
         assert manifest.ok, manifest.error

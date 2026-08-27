@@ -211,6 +211,10 @@ class ApkClient:
             "target_sdk": apk.get_target_sdk_version(),
             "main_activity": apk.get_main_activity(),
             "permission_count": len(apk.get_permissions()),
+            # Device shared libraries the manifest declares via <uses-library>,
+            # sorted for determinism -- the gate cross-checks these against the
+            # stdlib AXML reader's uses_libraries fact.
+            "uses_libraries": sorted(apk.get_libraries()),
             "native_abis": sorted(
                 {
                     name.split("/")[1]

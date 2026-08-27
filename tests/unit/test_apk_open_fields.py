@@ -50,6 +50,9 @@ class _FakeApk:
     def get_permissions(self) -> list[str]:
         return ["A"]
 
+    def get_libraries(self) -> list[str]:
+        return ["org.apache.http.legacy"]
+
     def get_files(self) -> list[str]:
         return ["lib/arm64-v8a/libx.so"]
 
@@ -72,6 +75,7 @@ def test_apk_open_names_version_name_and_native_abis_not_version() -> None:
     assert "abis" not in payload
     assert payload["version_name"] == "1.0"
     assert payload["native_abis"] == ["arm64-v8a"]
+    assert payload["uses_libraries"] == ["org.apache.http.legacy"]
     doc = _tool_docstring("apk.open")
     assert "Answers with package" in doc
     assert "version_name" in doc

@@ -5,7 +5,8 @@ There is no Android SDK on the machines that run this suite (no ``aapt2`` /
 purpose-built encoders:
 
 * the manifest as compiled binary XML (AXML) -- enough for androguard to read
-  the package, versions, SDK levels, one permission, and one launcher activity;
+  the package, versions, SDK levels, one permission, two shared-library
+  dependencies (<uses-library>), and one launcher activity;
 * ``classes.dex`` as a valid DEX carrying one class
   (``com.example.headless.Sample``) with one static method (``getSecret``) that
   returns the string ``flag{headless-re}`` -- enough for androguard's full
@@ -52,6 +53,12 @@ ANDROID_NS = "http://schemas.android.com/apk/res/android"
 PACKAGE = "com.example.headless"
 MAIN_ACTIVITY = "com.example.headless.MainActivity"
 PERMISSION = "android.permission.INTERNET"
+# Device shared-library dependencies (<uses-library>): one hard requirement
+# (no android:required attribute, which defaults to true) and one optional,
+# so the reader's default handling and the explicit-false encoding are both
+# exercised and cross-checkable against apktool/androguard.
+USES_LIBRARY_REQUIRED = "org.apache.http.legacy"
+USES_LIBRARY_OPTIONAL = "androidx.window.extensions"
 
 # Framework attribute resource ids for the android:* attributes we emit. The
 # string-pool entries for these names must lead the pool so their indices line
@@ -66,6 +73,7 @@ ATTR_RES_IDS = {
     "debuggable": 0x0101000F,
     "allowBackup": 0x01010280,
     "usesCleartextTraffic": 0x010104EC,
+    "required": 0x0101028E,
 }
 ATTR_NAMES = list(ATTR_RES_IDS)
 
@@ -187,6 +195,7 @@ def build_manifest() -> bytes:
         "manifest",
         "uses-sdk",
         "uses-permission",
+        "uses-library",
         "application",
         "activity",
         "intent-filter",
@@ -199,6 +208,8 @@ def build_manifest() -> bytes:
         "android.intent.action.MAIN",
         "android.intent.category.LAUNCHER",
         "Headless",
+        USES_LIBRARY_REQUIRED,
+        USES_LIBRARY_OPTIONAL,
     ):
         pool.add(value)
 
@@ -227,6 +238,15 @@ def build_manifest() -> bytes:
         Attr(ANDROID_NS, "allowBackup", False, is_bool=True),
         Attr(ANDROID_NS, "usesCleartextTraffic", True, is_bool=True),
     ])
+    body += _start_element(
+        pool, "uses-library", [Attr(ANDROID_NS, "name", USES_LIBRARY_REQUIRED)]
+    )
+    body += _end_element(pool, "uses-library")
+    body += _start_element(pool, "uses-library", [
+        Attr(ANDROID_NS, "name", USES_LIBRARY_OPTIONAL),
+        Attr(ANDROID_NS, "required", False, is_bool=True),
+    ])
+    body += _end_element(pool, "uses-library")
     body += _start_element(pool, "activity", [Attr(ANDROID_NS, "name", MAIN_ACTIVITY)])
     body += _start_element(pool, "intent-filter", [])
     body += _start_element(pool, "action", [Attr(ANDROID_NS, "name", "android.intent.action.MAIN")])

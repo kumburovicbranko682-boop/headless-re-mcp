@@ -609,7 +609,15 @@ _AXML_ATTR_BY_RES_ID = {
     # mobile-pentest findings, both read the same way debuggable is.
     0x01010280: "allowBackup",
     0x010104EC: "usesCleartextTraffic",
+    # <uses-library android:required=...>: whether a missing shared library
+    # blocks install (default true) or is optional. Its id, so a stripped
+    # required attribute still resolves alongside the library's name.
+    0x0101028E: "required",
 }
+# A shared library the app declares it needs on the device (<uses-library>),
+# the Android analogue of a native DT_NEEDED / a managed AssemblyRef; capped
+# like permissions so a hostile manifest cannot make the fact list unbounded.
+_AXML_MAX_USES_LIBRARIES = 4096
 # The intent-filter markers that make an <activity> the app's launcher -- its
 # entry point, the Android analogue of an ELF's e_entry or a .NET entry token.
 # An activity is launchable when one intent-filter carries both.
@@ -1134,6 +1142,7 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
     min_sdk: int | None = None
     target_sdk: int | None = None
     permissions: list[str] = []
+    uses_libraries: list[dict[str, Any]] = []
     debuggable: bool | None = None
     test_only: bool | None = None
     allow_backup: bool | None = None
@@ -1173,6 +1182,15 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
                 perm = _axml_str(attrs, "name")
                 if perm:
                     permissions.append(perm)
+            elif name == "uses-library" and len(uses_libraries) < _AXML_MAX_USES_LIBRARIES:
+                lib = _axml_str(attrs, "name")
+                if lib:
+                    # android:required defaults to true when the attribute is
+                    # absent -- a missing library then blocks install.
+                    required = _axml_bool(attrs, "required")
+                    uses_libraries.append(
+                        {"name": lib, "required": True if required is None else required}
+                    )
             elif name == "application":
                 if debuggable is None:
                     debuggable = _axml_bool(attrs, "debuggable")
@@ -1205,6 +1223,10 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
         "min_sdk": min_sdk,
         "target_sdk": target_sdk,
         "permissions": sorted(set(permissions)),
+        # Device shared libraries the app declares it needs (<uses-library>),
+        # each with whether it is required -- the manifest-level dependency list,
+        # in declaration order. Empty for an app that needs none.
+        "uses_libraries": uses_libraries,
         # The launchable activity (entry point), reported as declared in the
         # manifest -- None for a library/service-only APK with no launcher.
         "launcher_activity": launcher_activity,

@@ -56,6 +56,26 @@ def _apktool_manifest_text(apktool: Path, apk: Path, tmp_path: Path) -> str:
     return manifest.read_text(encoding="utf-8", errors="replace")
 
 
+def _apktool_uses_libraries(manifest_xml: str) -> list[dict[str, object]]:
+    """The <uses-library> dependencies in apktool's text manifest.
+
+    Parsed with a real XML parser in document order, applying Android's
+    documented default (a missing android:required means true) -- the same
+    shape the tool-free reader reports, decoded independently.
+    """
+    root = ET.fromstring(manifest_xml)
+    name_attr = f"{{{_ANDROID_NS}}}name"
+    required_attr = f"{{{_ANDROID_NS}}}required"
+    libraries: list[dict[str, object]] = []
+    for element in root.iter("uses-library"):
+        name = element.get(name_attr)
+        if name:
+            libraries.append(
+                {"name": name, "required": element.get(required_attr, "true") == "true"}
+            )
+    return libraries
+
+
 def _apktool_launcher_activity(manifest_xml: str) -> str | None:
     """The <activity>/<activity-alias> whose intent-filter has MAIN + LAUNCHER.
 
@@ -156,6 +176,15 @@ def test_android_apktool_decode_and_repack(tmp_path: Path) -> None:
         # intent-filter carries MAIN + LAUNCHER -- must be the same component
         # the tool-free reader named.
         assert _apktool_launcher_activity(manifest_xml) == reader_flags["launcher_activity"]
+        # The <uses-library> dependency list, name for name and flag for flag
+        # in declaration order: the fixture declares one implicitly-required
+        # and one optional library, so both the default-true rule and the
+        # explicit-false encoding are checked against apktool's decode.
+        assert _apktool_uses_libraries(manifest_xml) == reader_flags["uses_libraries"]
+        assert reader_flags["uses_libraries"] == [
+            {"name": "org.apache.http.legacy", "required": True},
+            {"name": "androidx.window.extensions", "required": False},
+        ]
 
         # apktool's own baksmali must have disassembled the fixture's class: the
         # method and the string it returns have to survive DEX -> smali.
