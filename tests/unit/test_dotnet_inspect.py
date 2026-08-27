@@ -179,6 +179,23 @@ def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
     # managed analogue of Mach-O's LC_BUILD_VERSION.
     assert report.target_framework == ".NETFramework,Version=v4.8"
     assert report.to_dict()["target_framework"] == ".NETFramework,Version=v4.8"
+    # The strong-name identity: the Assembly row's PublicKey is the 16-byte
+    # ECMA key, whose token -- the low 8 bytes of its SHA-1, reversed -- is the
+    # published constant b77a5c561934e089. Matching it proves the reader read
+    # the right blob and derived the token the way the CLR does.
+    assert report.public_key_token == "b77a5c561934e089"
+    assert report.to_dict()["public_key_token"] == "b77a5c561934e089"
+
+
+def test_inspect_without_a_public_key_reports_no_token(tmp_path: Path) -> None:
+    # A private, non-strong-named build carries no PublicKey blob; the token is
+    # None rather than a hash of nothing. The synthetic verified image has an
+    # Assembly row with a zero PublicKey index, exactly that case.
+    path = tmp_path / "unsigned.exe"
+    _write_verified_clr_pe(path)
+    report = inspect_dotnet(path)
+    assert report.public_key_token is None
+    assert report.to_dict()["public_key_token"] is None
 
 
 def _rowcount_offset(raw: bytes, table_bit: int) -> int:

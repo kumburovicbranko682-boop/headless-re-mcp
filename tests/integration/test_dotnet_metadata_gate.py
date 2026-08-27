@@ -93,6 +93,11 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         # fixture stamps on the assembly -- the monodis gate cross-checks this
         # same string against Mono's own decode of the attribute.
         assert report["target_framework"] == ".NETFramework,Version=v4.8"
+        # The strong-name identity: the token of the assembly's public key --
+        # the managed "who signed it". The monodis gate cross-checks it against
+        # Mono's own decode of the same key; the value is the published token
+        # of the ECMA key the fixture is signed with.
+        assert report["public_key_token"] == "b77a5c561934e089"
         stats = report["metadata_stats"]
         assert stats["type_count"] == 2
         assert stats["method_count"] == 2

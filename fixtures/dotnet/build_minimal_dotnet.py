@@ -10,9 +10,9 @@ smallest one that carries real metadata: a #~ tables stream with Module,
 TypeRef, TypeDef, Field, MethodDef, MemberRef, CustomAttribute, ModuleRef,
 Assembly and AssemblyRef rows, a #Strings heap, a #Blob heap carrying a real
 custom-attribute value (the TargetFrameworkAttribute every compiler stamps on
-an assembly), and two method bodies with actual CIL. No compiler is required;
-the output is deterministic and committed as ``minimal_assembly.exe`` next to
-this file.
+an assembly) and the assembly's strong-name public key, and two method bodies
+with actual CIL. No compiler is required; the output is deterministic and
+committed as ``minimal_assembly.exe`` next to this file.
 
 Run ``python fixtures/dotnet/build_minimal_dotnet.py`` to regenerate it.
 """
@@ -57,6 +57,14 @@ ASSEMBLY_REF_VERSION = (4, 0, 0, 0)
 TARGET_FRAMEWORK = ".NETFramework,Version=v4.8"
 TFA_TYPE_NAME = "TargetFrameworkAttribute"
 TFA_NAMESPACE = "System.Runtime.Versioning"
+# The strong-name identity: the Assembly row's PublicKey blob. This is the
+# 16-byte "ECMA" standard public key every framework assembly (mscorlib,
+# System, ...) is signed with; its public-key token -- the low 8 bytes of the
+# key's SHA-1 reversed, which the CLR, ildasm and sn all derive -- is the
+# published constant b77a5c561934e089, so the reader's token has an external
+# ground truth no code of ours computed.
+PUBLIC_KEY = bytes.fromhex("00000000000000000400000000000000")
+PUBLIC_KEY_TOKEN = "b77a5c561934e089"
 METADATA_VERSION = "v4.0.30319"
 ENTRY_POINT_TOKEN = 0x06000002  # Run
 CALL_TARGET_TOKEN = 0x0A000001  # MemberRef row 1
@@ -132,6 +140,8 @@ def build() -> bytes:
     # argument (packed length + UTF-8), zero named arguments.
     tfa_utf8 = TARGET_FRAMEWORK.encode("utf-8")
     b_ca_value = add_blob(bytes([0x01, 0x00, len(tfa_utf8)]) + tfa_utf8 + b"\x00\x00")
+    # The Assembly row's strong-name public key.
+    b_pubkey = add_blob(PUBLIC_KEY)
     blob_heap = _pad4(bytes(blob))
 
     # ---- method bodies (tiny format: (code_size << 2) | 0x02) ----
@@ -205,12 +215,14 @@ def build() -> bytes:
     tables += _u16((1 << 5) | 14) + _u16((2 << 3) | 3) + _u16(b_ca_value)
     # ModuleRef: Name -- the unmanaged DLL a P/Invoke binds to.
     tables += _u16(i_mod_ref)
-    # Assembly: HashAlgId Maj Min Build Rev Flags PublicKey Name Culture
+    # Assembly: HashAlgId Maj Min Build Rev Flags PublicKey Name Culture.
+    # Flags bit 0 (afPublicKey) marks the PublicKey field as a full public key,
+    # which points at the ECMA strong-name key in #Blob.
     tables += (
         _u32(0x8004)
         + _u16(1) + _u16(0) + _u16(0) + _u16(0)
-        + _u32(0)
-        + _u16(0) + _u16(i_asm) + _u16(0)
+        + _u32(0x0001)
+        + _u16(b_pubkey) + _u16(i_asm) + _u16(0)
     )
     # AssemblyRef: Maj Min Build Rev Flags PublicKeyOrToken Name Culture Hash
     # -- no leading HashAlgId, and a trailing HashValue blob, unlike Assembly.

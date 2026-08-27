@@ -8,10 +8,10 @@ unseen, and nothing proves the fixture is a genuine assembly rather than
 something only our reader accepts. This gate closes that loop with an
 independent parser: Mono's ``monodis`` must parse the same file and agree on
 every identity fact the reader surfaces -- assembly name and version, module
-name, MVID, the dependency lists, the target framework, and the type list. It
-is the .NET analogue of the native gate cross-checking the entry point against
-radare2 and Ghidra, and the proxy gate cross-checking the HAR reader against
-real mitmproxy output.
+name, MVID, the dependency lists, the target framework, the strong-name
+public-key token, and the type list. It is the .NET analogue of the native
+gate cross-checking the entry point against radare2 and Ghidra, and the proxy
+gate cross-checking the HAR reader against real mitmproxy output.
 
 monodis ships in Debian/Ubuntu's ``mono-utils``; skip != pass -- the gate skips,
 naming the missing tool, only when monodis is not installed.
@@ -19,6 +19,7 @@ naming the missing tool, only when monodis is not installed.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -50,6 +51,23 @@ _TFA_CA_RE = re.compile(
     r"^\d+:\s+Assembly:.*TargetFrameworkAttribute::'\.ctor'\(string\)\s+\[\"([^\"]+)\"\]",
     re.MULTILINE,
 )
+# monodis --assembly dumps the public key as hex rows under a "Dump:" line,
+# each "0x........: bb bb bb ...". These lines carry the raw key bytes Mono
+# reads from the same file -- the ground truth for what the token derives from.
+_PUBKEY_DUMP_RE = re.compile(r"^0x[0-9a-fA-F]+:\s+((?:[0-9a-fA-F]{2}\s+)+)$", re.MULTILINE)
+
+
+def _monodis_public_key(assembly_dump: str) -> bytes:
+    """The Assembly row's public key as Mono independently decodes it.
+
+    monodis prints the key between the ``PublicKey:`` and ``Culture:`` lines as
+    one or more hex dump rows; this stitches those bytes back together.
+    """
+    section = assembly_dump.split("PublicKey:", 1)[-1].split("Culture:", 1)[0]
+    key = bytearray()
+    for row in _PUBKEY_DUMP_RE.findall(section):
+        key.extend(int(b, 16) for b in row.split())
+    return bytes(key)
 
 
 def _monodis(*args: str) -> str:
@@ -140,6 +158,18 @@ def test_pure_python_reader_agrees_with_monodis(tmp_path: Path) -> None:
         assert facts["assembly_version"] == mono_version.group(1)
         assert facts["module_name"] == mono_module_name
         assert str(facts["mvid"]).lower() == mono_mvid
+
+        # The strong-name identity -- "who signed it" in the managed world.
+        # Mono reads the public key straight out of the Assembly row; the token
+        # is the low 8 bytes of that key's SHA-1, reversed (ECMA-335 II.6.3),
+        # the same derivation the CLR, ildasm and sn use. Deriving it from
+        # Mono's independently-decoded key bytes proves the reader hashed the
+        # right blob; the published b77a5c561934e089 anchors it externally.
+        mono_key = _monodis_public_key(assembly_dump)
+        assert mono_key, assembly_dump
+        expected_token = hashlib.sha1(mono_key).digest()[-8:][::-1].hex()  # noqa: S324
+        assert facts["public_key_token"] == expected_token
+        assert facts["public_key_token"] == "b77a5c561934e089"
         # The dependency list, ref for ref: name and compiled-against version
         # must both match Mono's decode of the same AssemblyRef rows.
         reader_refs = {(ref["name"], ref["version"]) for ref in facts["assembly_refs"]}
