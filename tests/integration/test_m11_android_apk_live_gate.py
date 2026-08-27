@@ -194,6 +194,18 @@ def test_m11_androguard_apk_surface() -> None:
     assert "com.example.gate.MainActivity" not in exported["activities"], exported
     assert all(names == [] for names in exported.values()), exported
 
+    # intent_filters walks the same decoded manifest for the IPC/deep-link
+    # surface. This fixture's MainActivity declares no intent-filter, so a
+    # working read returns an empty component list and total 0 off the real AXML
+    # decode -- proving the walk runs and degrades honestly (empty, not crash) on
+    # a manifest with nothing to find, the same tier as the exported check above.
+    # The populated shape (actions/categories/data + the deep_link flag) is
+    # covered against crafted manifests in test_apk_intent_filters.py.
+    intents = client.intent_filters(_APK)
+    assert intents["components"] == [], intents
+    assert intents["total"] == 0, intents
+    assert intents["scan_capped"] is False, intents
+
     # permissions() and native_libs() are the remaining manifest-side reads: the
     # first parses <uses-permission> out of the AXML, the second walks the APK's
     # lib/<abi>/ entries. The fixture declares exactly INTERNET and ships one

@@ -103,6 +103,34 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_components(session_id))
 
+    @tools.tool(name="apk.intent_filters")
+    def apk_intent_filters(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List components' intent-filters -- the deep-link / IPC entry surface.
+
+        apk.components says which components are exported; this says how they are
+        reached. Answers with components (only those that declare at least one
+        intent-filter), count, total, offset, has_more, and scan_capped. Each
+        component carries component (FQN), type (activities/services/receivers/
+        providers), exported (a component with a filter is exported unless it sets
+        android:exported="false"), and filters. Each filter carries actions,
+        categories, data (the declared android:* attributes of every <data>:
+        scheme, host, port, path/pathPrefix/pathPattern, mimeType, ssp ...), and
+        deep_link -- true when the filter is the classic browsable web entry (an
+        android.intent.action.VIEW action plus android.intent.category.BROWSABLE
+        category plus a data scheme), the hijack surface to check first. data is
+        reported per <data> element as declared, not merged, so read the schemes
+        and hosts it names rather than assuming a scheme://host URI. total is the
+        number of filtered components collected, capped at 256; scan_capped is
+        true when more existed. count may be below the limit when the result-size
+        budget trimmed the page, so read count, not limit, and page on has_more.
+        There is no filters or deep_links top-level field.
+        """
+        return _dump(analysis.apk_intent_filters(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.native_libs")
     def apk_native_libs(session_id: str) -> dict[str, Any]:
         """List bundled native libraries and their ABIs.

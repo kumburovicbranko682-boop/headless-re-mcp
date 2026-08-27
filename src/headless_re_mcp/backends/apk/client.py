@@ -34,6 +34,12 @@ _MAX_METHODS_COLLECT = 2000
 _MAX_INSTRUCTIONS_COLLECT = 20_000
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
+# Intent-filter extraction bounds: a hostile manifest can declare a great many
+# components, filters, and action/category/data children, so cap each dimension.
+_MAX_INTENT_COMPONENTS = 256
+_MAX_FILTERS_PER_COMPONENT = 64
+_MAX_FILTER_ITEMS = 64
+_MAX_INTENT_STR = 512
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
@@ -307,6 +313,137 @@ def _exported_components(apk: Any) -> dict[str, list[str]]:
     for key, names in groups.items():
         groups[key] = sorted(set(names))[:_MAX_COMPONENT_NAMES]
     return groups
+
+
+def _intent_names(filter_el: Any, tag: str) -> list[str]:
+    """The android:name values of a filter's ``action``/``category`` children.
+
+    De-duplicated, sorted, capped, each string bounded, so a manifest that spams
+    a filter with thousands of actions cannot bloat the reply. A child with no
+    android:name is skipped rather than emitted as an empty string.
+    """
+    names: set[str] = set()
+    try:
+        children = filter_el.findall(tag)
+    except Exception:  # noqa: BLE001 - findall varies by tree impl
+        return []
+    for child in children:
+        if len(names) >= _MAX_FILTER_ITEMS:
+            break
+        value = child.get(_ANDROID_NS + "name")
+        if value:
+            names.add(str(value)[:_MAX_INTENT_STR])
+    return sorted(names)
+
+
+def _intent_data(filter_el: Any) -> list[JsonObject]:
+    """The declared android:* attributes of each ``<data>`` in an intent-filter.
+
+    Android merges data attributes (scheme, host, port, path*, mimeType, ssp ...)
+    across all ``<data>`` elements of a filter, but reporting them per element as
+    declared stays faithful to the manifest without guessing the merge -- the
+    caller sees exactly which schemes/hosts/paths the filter names, which is the
+    deep-link attack surface. Only android-namespaced attributes are kept (the
+    namespace prefix stripped), each value bounded, empties skipped.
+    """
+    entries: list[JsonObject] = []
+    try:
+        data_els = filter_el.findall("data")
+    except Exception:  # noqa: BLE001 - findall varies by tree impl
+        return []
+    for data_el in data_els:
+        if len(entries) >= _MAX_FILTER_ITEMS:
+            break
+        attrs: JsonObject = {}
+        try:
+            items = list(data_el.attrib.items())
+        except Exception:  # noqa: BLE001 - odd element shapes
+            items = []
+        for raw_key, raw_value in items:
+            key = str(raw_key)
+            if not key.startswith(_ANDROID_NS):
+                continue
+            short = key[len(_ANDROID_NS) :]
+            if short and raw_value:
+                attrs[short] = str(raw_value)[:_MAX_INTENT_STR]
+        if attrs:
+            entries.append(attrs)
+    return entries
+
+
+def _intent_filters(apk: Any) -> tuple[list[JsonObject], bool]:
+    """Per-component intent-filters from the manifest tree, and a scan-capped flag.
+
+    androguard has no structured intent-filter getter, so the decoded manifest
+    XML (``get_android_manifest_xml``) is the source of truth: for each component
+    tag that declares at least one ``<intent-filter>``, record the component FQN,
+    kind, whether it is exported, and each filter's actions, categories and data.
+    A filter is flagged ``deep_link`` when it is the classic browsable web entry
+    (VIEW action + BROWSABLE category + a data scheme) -- the hijack surface a
+    review looks for first. Guarded end to end like :func:`_exported_components`:
+    a manifest that will not parse yields an empty list rather than raising. The
+    bool is True when the component cap was hit before the walk finished.
+    """
+    components: list[JsonObject] = []
+    try:
+        root = apk.get_android_manifest_xml()
+        package = str(apk.get_package() or "")
+    except Exception:  # noqa: BLE001 - manifest access varies by version
+        return [], False
+    if root is None:
+        return [], False
+    scan_capped = False
+    for tag, key in _COMPONENT_TAGS:
+        try:
+            elements = list(root.iter(tag))
+        except Exception:  # noqa: BLE001 - odd tree shapes iterate poorly
+            continue
+        for el in elements:
+            name = el.get(_ANDROID_NS + "name")
+            if not name:
+                continue
+            try:
+                filter_els = el.findall("intent-filter")
+            except Exception:  # noqa: BLE001 - findall varies by tree impl
+                filter_els = []
+            if not filter_els:
+                continue
+            if len(components) >= _MAX_INTENT_COMPONENTS:
+                scan_capped = True
+                break
+            exported_attr = el.get(_ANDROID_NS + "exported")
+            filters: list[JsonObject] = []
+            for filter_el in filter_els[:_MAX_FILTERS_PER_COMPONENT]:
+                actions = _intent_names(filter_el, "action")
+                categories = _intent_names(filter_el, "category")
+                data = _intent_data(filter_el)
+                deep_link = (
+                    "android.intent.action.VIEW" in actions
+                    and "android.intent.category.BROWSABLE" in categories
+                    and any(entry.get("scheme") for entry in data)
+                )
+                filters.append(
+                    {
+                        "actions": actions,
+                        "categories": categories,
+                        "data": data,
+                        "deep_link": deep_link,
+                    }
+                )
+            components.append(
+                {
+                    "component": _resolve_component_name(package, str(name)),
+                    "type": key,
+                    # A component with a filter is exported unless it says
+                    # exported="false"; the explicit attribute still wins.
+                    "exported": _component_is_exported(exported_attr, True),
+                    "filters": filters,
+                }
+            )
+        if scan_capped:
+            break
+    components.sort(key=lambda c: (str(c["type"]), str(c["component"])))
+    return components, scan_capped
 
 
 def _permission_protection(apk: Any, names: set[str]) -> tuple[dict[str, str], list[str]]:
@@ -626,6 +763,24 @@ class ApkClient:
             "main_activity": apk.get_main_activity(),
             "exported": _exported_components(apk),
             "has_more": a_more or s_more or r_more or p_more,
+        }
+
+    def intent_filters(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        apk = self._apk(path)
+        all_components, scan_capped = _intent_filters(apk)
+        start = max(0, int(offset))
+        window = all_components[start : start + max(1, int(limit))]
+        # Bound the page by encoded size too: a component can carry many filters
+        # with long data URIs, so a window can outgrow the budget. See classes().
+        window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
+        return {
+            "components": window,
+            "count": len(window),
+            "total": len(all_components),
+            "offset": start,
+            "has_more": start + len(window) < len(all_components),
+            # True when the component cap was hit before the manifest walk ended.
+            "scan_capped": scan_capped,
         }
 
     def native_libs(self, path: Path) -> JsonObject:
