@@ -124,6 +124,7 @@ class SessionRegistry:
                 architecture = detect_elf_architecture(path)
             elif kind is TargetKind.MACHO:
                 architecture = detect_macho_architecture(path)
+                metadata = describe_macho(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             session = Session(
@@ -378,6 +379,20 @@ _MACHO_MAGICS: dict[bytes, tuple[bool, Literal["big", "little"]]] = {
     b"\xfe\xed\xfa\xce": (False, "big"),
 }
 
+# Fat/universal Mach-O magics (always big-endian on disk), mapped to whether the
+# arch table uses 64-bit offsets. The magic 0xCAFEBABE collides with Java class
+# files, so a fat file is recognised structurally (see _read_fat_slices), never
+# by magic alone.
+_FAT_MAGICS: dict[bytes, bool] = {
+    b"\xca\xfe\xba\xbe": False,  # FAT_MAGIC
+    b"\xca\xfe\xba\xbf": True,   # FAT_MAGIC_64
+}
+# A hard ceiling on the slice count that also, by design, sits below the minimum
+# Java class major_version (45): a Java class read as a fat header yields
+# nfat_arch >= 45, so the count check alone rejects every real Java class, with
+# the per-slice structural validation as defence in depth.
+_FAT_MAX_ARCHS = 32
+
 
 def is_http_url(reference: str) -> bool:
     return reference.lower().startswith(("http://", "https://"))
@@ -410,6 +425,11 @@ def classify_target(reference: str | Path) -> TargetKind:
     if magic.startswith(b"\x7fELF"):
         return TargetKind.ELF
     if magic[:4] in _MACHO_MAGICS:
+        return TargetKind.MACHO
+    # A fat/universal Mach-O shares 0xCAFEBABE with Java class files, so it is
+    # only claimed when its arch table structurally checks out; a Java class
+    # falls through to the PE default, exactly as before.
+    if magic[:4] in _FAT_MAGICS and _read_fat_slices(path) is not None:
         return TargetKind.MACHO
     if magic.startswith(b"\x00asm"):
         return TargetKind.WEB
@@ -547,3 +567,72 @@ def detect_macho_architecture(path: Path) -> Architecture | None:
     _is64, endian = order
     cputype = int.from_bytes(header[4:8], endian)
     return _MACHO_CPUTYPE_TO_ARCH.get(cputype)
+
+
+def _read_fat_slices(path: Path) -> list[dict[str, Any]] | None:
+    """Parse a fat/universal Mach-O's architecture table, or None if not a fat.
+
+    Recognition is structural rather than magic-only because 0xCAFEBABE collides
+    with Java class files: the slice count must be sane and every declared slice
+    must sit wholly inside the file and begin with a thin Mach-O magic. A Java
+    class, whose bytes at the fat_arch positions are constant-pool data, points
+    its "slices" outside the file (and never at a Mach-O magic), so it is
+    rejected. Fat headers are always big-endian on disk.
+    """
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(8)
+            is64 = _FAT_MAGICS.get(head[:4])
+            if is64 is None or len(head) < 8:
+                return None
+            nfat = int.from_bytes(head[4:8], "big")
+            if not 1 <= nfat <= _FAT_MAX_ARCHS:
+                return None
+            entry_size = 32 if is64 else 20
+            table = stream.read(entry_size * nfat)
+            if len(table) < entry_size * nfat:
+                return None
+            file_size = path.stat().st_size
+            header_end = 8 + entry_size * nfat
+            slices: list[dict[str, Any]] = []
+            for index in range(nfat):
+                base = index * entry_size
+                cputype = int.from_bytes(table[base : base + 4], "big")
+                if is64:
+                    offset = int.from_bytes(table[base + 8 : base + 16], "big")
+                    size = int.from_bytes(table[base + 16 : base + 24], "big")
+                else:
+                    offset = int.from_bytes(table[base + 8 : base + 12], "big")
+                    size = int.from_bytes(table[base + 12 : base + 16], "big")
+                if offset < header_end or size < 4 or offset + size > file_size:
+                    return None
+                stream.seek(offset)
+                if stream.read(4) not in _MACHO_MAGICS:
+                    return None
+                arch = _MACHO_CPUTYPE_TO_ARCH.get(cputype)
+                slices.append(
+                    {
+                        "architecture": arch.value if arch is not None else None,
+                        "cputype": cputype,
+                        "offset": offset,
+                        "size": size,
+                    }
+                )
+            return slices
+    except OSError:
+        return None
+
+
+def describe_macho(path: Path) -> dict[str, Any]:
+    """Session metadata for a Mach-O: the slice table of a fat/universal file.
+
+    A thin Mach-O carries its architecture as the session label and needs no
+    metadata, so this returns ``{}`` for it. A fat file has no single
+    architecture, so its contained slices are listed here (architecture,
+    cputype, offset, size) the way ``describe_apk`` lists native ABIs, and the
+    session's own architecture stays None -- radare2 and Ghidra pick a slice.
+    """
+    slices = _read_fat_slices(path)
+    if slices is None:
+        return {}
+    return {"macho": {"fat": True, "slices": slices}}
