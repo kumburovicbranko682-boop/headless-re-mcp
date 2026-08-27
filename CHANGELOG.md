@@ -183,6 +183,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 测试（proxy：补上「抓一条真流并解码」——lifecycle gate 只测过端口）
+
+- **现场 proxy gate 只验 start/stop/端口，`flow_count` 还特意断言为 0——整条抓包+解码从没真跑过。**
+  `flows`（recorder addon 在真响应上触发）与 `flow_get`（把 mitmproxy 的 `req.method` /
+  `req.pretty_url` / `req.headers` / `resp.status_code` / `resp.raw_content` 解出来）都是版本敏感的
+  mitmproxy API——正是 mitmproxy-12 那次 `Master.done` 改动同一类漂移，一坏就只在对真流量跑时运行期
+  炸，fake 单测照过。新增 `test_proxy_capture_gate.py`：起一个一次性本地 HTTP origin，开代理，用 urllib
+  以显式 HTTP 代理发一条 GET 穿过它，再钉住流被抓到且解出真实的 method=`GET`、url 结尾 `/probe?x=1`、
+  status=200、body 等于已知 marker、origin 设的 `X-Gate-Marker` 响应头也在，并验证 `export_har` 落出
+  含该 URL 的条目。缺 mitmproxy 时明确 skip（skip≠pass）。mitmproxy 实测通过。
+
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
 - `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
