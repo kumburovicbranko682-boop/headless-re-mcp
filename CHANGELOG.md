@@ -900,6 +900,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   列出来，并给 `open_transport` 换上 120 秒的挂起上限。
 - **`device.packages` 仍会为了排序把完整包列表装进内存**。采集停在 limit 上。jadx / webcrack
   的文件列表同样不再为了 `file_count` 物化全部路径。
+- **`device.info` 每个身份字段都发一次 `getprop`**。model / device / sdk / release / abi 是五次
+  独立的 `getprop ro.x` 往返，外加一次 `get_state`——六次触设备，每一次都是一个会超时的点，
+  在远端/慢速传输上还各摊一份延迟。改为读一次 `getprop` 全量转储（外加 `get_state`），用和
+  `device.properties` 相同的 `[k]: [v]` 行格式解析出那五个键，其余忽略。字段与取值不变，触
+  设备从六次降到两次。
 - **`device.pull` 会把整棵目录拷到宿主机**。adbutils 在远端是目录时递归拉取，没有体积上限；
   一次 `/sdcard` 就能把磁盘写满，而产物表看不见这些文件。目录和超过捕获上限的文件在拷贝前
   拒绝。`device.push` 同样拒绝超过上限的本地文件。

@@ -29,21 +29,31 @@ def _tool_docstring(name: str) -> str:
     return ""
 
 
+_GETPROP_DUMP = "\n".join(
+    (
+        "[ro.product.model]: [Pixel]",
+        "[ro.product.device]: [oriole]",
+        "[ro.build.version.sdk]: [34]",
+        "[ro.build.version.release]: [14]",
+        "[ro.product.cpu.abi]: [arm64-v8a]",
+        "[persist.some.other.prop]: [ignored]",
+    )
+)
+
+
 class _FakeDev:
+    def __init__(self) -> None:
+        self.shell_calls: list[str] = []
+
     def get_state(self, timeout: float | None = None) -> str:
         del timeout
         return "device"
 
     def shell(self, args: Any, timeout: float | None = None) -> str:
         del timeout
-        mapping = {
-            "getprop ro.product.model": "Pixel",
-            "getprop ro.product.device": "oriole",
-            "getprop ro.build.version.sdk": "34",
-            "getprop ro.build.version.release": "14",
-            "getprop ro.product.cpu.abi": "arm64-v8a",
-        }
-        return mapping.get(args, "")
+        self.shell_calls.append(str(args))
+        # info reads one getprop dump, not one getprop per key.
+        return _GETPROP_DUMP if args == "getprop" else ""
 
 
 def test_device_info_names_sdk_and_abi_not_android_version() -> None:
@@ -71,6 +81,23 @@ def test_device_info_names_sdk_and_abi_not_android_version() -> None:
     assert "ABI" not in payload
     assert "android_version" not in payload
     assert "version" not in payload
+
+
+def test_device_info_reads_one_getprop_dump_not_a_call_per_key() -> None:
+    """info used to issue five getprop round-trips, one per identity key.
+
+    Each was a separate point that could time out and a separate latency on a
+    remote transport. It now reads a single getprop dump (plus the transport
+    get_state), parses the five identity keys from it, and ignores the rest.
+    """
+    dev = _FakeDev()
+    backend = AdbBackend()
+    backend._available = True
+    backend._device = lambda serial: dev  # type: ignore[method-assign]
+    payload = backend.info("emulator-5554")
+    assert dev.shell_calls == ["getprop"]
+    assert payload["model"] == "Pixel"
+    assert payload["abi"] == "arm64-v8a"
     doc = _tool_docstring("device.info")
     assert "Answers with serial" in doc
     assert "sdk" in doc

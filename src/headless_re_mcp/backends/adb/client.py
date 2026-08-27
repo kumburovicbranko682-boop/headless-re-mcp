@@ -86,6 +86,20 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _parse_getprop(text: str) -> dict[str, str]:
+    """Parse a ``getprop`` dump ([key]: [value] per line) into a mapping.
+
+    Same line shape ``properties()`` reads; used by ``info`` so it can pull
+    several identity keys from one dump instead of one round-trip per key.
+    """
+    props: dict[str, str] = {}
+    for line in text.splitlines():
+        match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
+        if match:
+            props[match.group(1)] = match.group(2)
+    return props
+
+
 def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> None:
     """Validate an adb forward endpoint, port range included.
 
@@ -422,24 +436,20 @@ class AdbBackend:
     def info(self, serial: str) -> JsonObject:
         dev = self._device(serial)
         try:
+            state = _call(dev.get_state, timeout=_ADB_PROBE_TIMEOUT_S)
+            # One getprop dump rather than one round-trip per identity key:
+            # fewer points that can time out and cheaper on a remote/slow
+            # transport, for the same five values (the [k]: [v] dump already
+            # trims the surrounding whitespace the per-key .strip() removed).
+            props = _parse_getprop(str(_device_shell(dev, "getprop", timeout=_ADB_PROBE_TIMEOUT_S)))
             return {
                 "serial": _check_serial(serial),
-                "state": _call(dev.get_state, timeout=_ADB_PROBE_TIMEOUT_S),
-                "model": _device_shell(
-                    dev, "getprop ro.product.model", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "device": _device_shell(
-                    dev, "getprop ro.product.device", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "sdk": _device_shell(
-                    dev, "getprop ro.build.version.sdk", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "release": _device_shell(
-                    dev, "getprop ro.build.version.release", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "abi": _device_shell(
-                    dev, "getprop ro.product.cpu.abi", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
+                "state": state,
+                "model": props.get("ro.product.model", ""),
+                "device": props.get("ro.product.device", ""),
+                "sdk": props.get("ro.build.version.sdk", ""),
+                "release": props.get("ro.build.version.release", ""),
+                "abi": props.get("ro.product.cpu.abi", ""),
             }
         except AdbError:
             raise
