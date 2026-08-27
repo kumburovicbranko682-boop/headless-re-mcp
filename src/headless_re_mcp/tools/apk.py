@@ -97,6 +97,26 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.largest_classes")
+    def apk_largest_classes(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Rank internal classes by size to surface complexity hotspots.
+
+        Where apk.classes lists names alphabetically and apk.packages counts per
+        package, this ranks the classes themselves by weight, so the "god
+        classes" where the real logic tends to live lead instead of hiding in a
+        flat list. Each row is class_name, num_methods and num_fields, sorted by
+        num_methods descending, then num_fields descending, then class_name, so
+        the heaviest lead and ties page stably. External classes are skipped.
+        Answers with classes, count, total, offset, and has_more so a page that
+        filled the limit is not read as every class. total is the number
+        collected, capped at 10000; scan_capped is true when more may exist.
+        """
+        return _dump(analysis.apk_largest_classes(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,

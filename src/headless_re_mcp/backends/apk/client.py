@@ -349,6 +349,50 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def largest_classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """Rank internal classes by size to surface complexity hotspots.
+
+        apk.classes lists names and apk.packages counts per package; this ranks
+        the classes themselves by weight, so the "god classes" where the real
+        logic tends to live lead instead of hiding in an alphabetical list. Each
+        row is class_name, num_methods and num_fields; rows are sorted by
+        num_methods descending, then num_fields descending, then class_name, so
+        the heaviest lead and ties page stably. External classes are skipped
+        (their members are not defined here). total is the number collected,
+        capped at 10000 with scan_capped when more may exist, and offset/has_more
+        page it.
+        """
+        parsed = self._parsed(path)
+        collected: list[tuple[int, int, str]] = []
+        scan_more = False
+        for klass in parsed.analysis.get_classes():
+            if klass.is_external():
+                continue
+            if len(collected) >= _MAX_CLASSES_COLLECT:
+                scan_more = True
+                break
+            try:
+                num_methods = int(klass.get_nb_methods())
+                num_fields = len(klass.get_fields())
+            except Exception:  # noqa: BLE001 - malformed classes vary across dexes
+                continue
+            collected.append((num_methods, num_fields, str(klass.name)))
+        collected.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        rows: list[JsonObject] = [
+            {"class_name": name, "num_methods": num_methods, "num_fields": num_fields}
+            for num_methods, num_fields, name in collected
+        ]
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_CLASSES_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "classes": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
     def methods(
         self,
         path: Path,
