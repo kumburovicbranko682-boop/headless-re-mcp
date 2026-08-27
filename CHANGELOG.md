@@ -969,6 +969,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`apk.strings` 会为了给出 total 把 DEX 里每一条字符串都装进一个集合再排序**。加壳
   样本可以有上百万条，一次调用就能把进程打满。采集上限 5000 条唯一值，超出回
   `has_more`，不再为了计数去物化全集。
+- 新增回归（`apk.open` 的 `native_abis` 派生：`lib/` 前缀过滤、`len>=3` 段数守卫、集合去重、
+  排序）：`open` 用一段内联推导（区别于 `native_libs` 方法）从 zip 文件表里取原生 ABI——
+  `sorted({name.split("/")[1] for name in get_files() if name.startswith("lib/") and
+  len(name.split("/")) >= 3})`。既有 `open` 测试只喂一条规整的 `lib/arm64-v8a/libx.so`，
+  于是每个判别子句都惰性：单条目既不触发去重、也不触发多 ABI 排序，更不会撞上非 lib 的
+  多段路径或缺文件名的畸形 lib 路径。补齐四条：`assets/models/model.tflite`（同为三段）
+  不得因 `split("/")[1]="models"` 泄漏成伪 ABI（唯 `lib/` 前缀过滤挡得住）；`lib/armeabi`
+  与裸 `lib/`（两段、无文件名）必须被 `len>=3` 守卫丢弃，否则 `native_abis` 混入目录名
+  "armeabi" 与空串；同一 ABI 下多个 `.so`（libssl/libcrypto）必须经集合折叠成一个而非逐文件
+  重复；多 ABI 以稳定排序返回。以变异逐一验证（去掉 `startswith("lib/")`、去掉 `len>=3`、
+  集合改列表破坏去重、`sorted` 改 `list` 破坏排序）均被新用例捕获（去前缀/去守卫两例中既有
+  单条目测试仍绿，佐证其无法捕获）。
 - **拆转发失败后就把记录扔掉**。`release_forwards` 先清空再逐条拆除；设备当时掉线，
   adb server 上的转发还在，而本进程已经忘了，以后的 `close_all` 再也不会去拆。失败
   的项重新挂回跟踪列表。
