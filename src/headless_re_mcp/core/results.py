@@ -12,6 +12,7 @@ from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, TimedOut
 from headless_re_mcp.backends.ida.client import IdaWorkerError
+from headless_re_mcp.backends.web.client import WebError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.backends.x64dbg.stealth import StealthError
 from headless_re_mcp.core.addressing import AddressSyncError
@@ -108,6 +109,16 @@ def _failure(exc: BaseException, **details: object) -> Result[JsonObject]:
             message=str(exc),
             details={**details, **exc.details},
             retryable=exc.retryable,
+        )
+    elif isinstance(exc, WebError):
+        # Cleanup that timed out or wholly failed can be retried; an incomplete
+        # close (driver reaped, Python runner still wedged) cannot be undone by
+        # another attempt, so it is not marked retryable.
+        error = RpcError(
+            code=exc.code,
+            message=exc.message,
+            details={**details, **exc.details},
+            retryable=exc.code in {"timeout", "web_cleanup_failed"},
         )
     elif isinstance(exc, SessionNotFound):
         # Only this type. Any KeyError used to become session_not_found, so a
