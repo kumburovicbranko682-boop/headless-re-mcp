@@ -12,6 +12,7 @@ run that wrote nothing still raises.
 from __future__ import annotations
 
 import ast
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,12 @@ def _jadx(tmp_path: Path) -> tuple[JadxClient, Path, Path]:
     tool = tmp_path / "jadx"
     tool.write_text("#!/bin/sh\n", encoding="utf-8")
     apk = tmp_path / "app.apk"
-    apk.write_bytes(b"PK\x03\x04")
+    # A readable zip, not bare magic bytes: jadx's _run now runs the shared
+    # declared-size guard (check_zip_expansion) before launching, and that
+    # refuses an archive whose central directory cannot be read at all.
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+        archive.writestr("classes.dex", b"dex\n035\x00")
     out = tmp_path / "out"
     return JadxClient(tool), apk, out
 

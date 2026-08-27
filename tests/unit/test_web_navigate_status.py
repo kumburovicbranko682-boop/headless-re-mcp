@@ -55,10 +55,12 @@ def test_navigate_reports_error_status_instead_of_bare_success(monkeypatch: Any)
 
 
 def test_navigate_omits_status_when_there_is_no_response(monkeypatch: Any) -> None:
-    # about:blank and same-document navigations resolve with no response;
-    # an absent status is honest there, a fabricated 200 would not be.
+    # A same-document navigation (a fragment change on the page already loaded)
+    # resolves with no response; an absent status is honest there, a fabricated
+    # 200 would not be. The target stays http(s) so the navigation-scheme guard
+    # admits it -- about:blank would now be refused before it could be probed.
     backend = _backend_with(monkeypatch, None)
-    payload = backend.navigate("s", "about:blank")
+    payload = backend.navigate("s", "https://old/#section")
     assert "status" not in payload
 
 
