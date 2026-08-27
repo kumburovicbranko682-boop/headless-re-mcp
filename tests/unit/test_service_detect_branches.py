@@ -155,6 +155,14 @@ def test_packer_classify_rejects_a_non_dict_report() -> None:
     assert "invalid report" in result.error.message
 
 
+def test_packer_classify_rejects_a_non_list_findings_field() -> None:
+    svc = _StubbedScan(_report_result({"findings": "oops"}), registry=_FakeRegistry())
+    result = svc.packer_classify("s")
+    assert not result.ok
+    assert result.error is not None
+    assert "invalid findings list" in result.error.message
+
+
 def test_packer_classify_keeps_only_packer_like_findings() -> None:
     report = {
         "findings": [
