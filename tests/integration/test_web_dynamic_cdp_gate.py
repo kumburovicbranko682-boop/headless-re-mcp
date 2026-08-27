@@ -19,6 +19,9 @@ every DevTools surface can be checked against real traffic:
                          is proven to be a real filter, not a passthrough.
 * ``web.screenshot``  -- a non-empty PNG is written and registered.
 * ``web.har_export``  -- the captured flows serialize to a HAR referencing them.
+* ``artifacts.*``     -- the screenshot and HAR register as artifacts and read
+                         back, byte-for-byte, through list/describe/read -- the
+                         loop an unattended agent uses to fetch what it captured.
 
 Everything is local, so the only external dependency is Playwright + a Chromium
 build. Each is checked up front and the gate skips loudly ("skip != pass") when
@@ -28,12 +31,14 @@ they are absent, rather than passing vacuously.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -388,6 +393,77 @@ def test_web_dynamic_screenshot_is_a_real_png(_service: AnalysisService) -> None
         with open(shot.data["path"], "rb") as fh:
             magic = fh.read(8)
         assert magic == b"\x89PNG\r\n\x1a\n", magic
+
+
+def test_web_captures_round_trip_through_the_artifact_store(_service: AnalysisService) -> None:
+    """A capture an agent asked for must read back through the artifact tools.
+
+    web.screenshot and web.har_export register what they wrote, because a bare
+    path is a dead end on the tool surface: nothing opens one, so an unattended
+    agent could not fetch the screenshot or HAR it just captured. Prove the whole
+    loop -- the id each returns is listed, describes to the file's real digest,
+    and reads back its exact bytes *through artifacts.read* rather than by
+    re-opening the path the capture happened to leak.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web dynamic CDP gate not run (skip != pass)")
+    with _origin() as url:
+        session_id = _open_on(_service, url)
+
+        shot = _service.web_screenshot(session_id, full_page=True)
+        assert shot.ok, shot.error
+        shot_id = shot.data.get("artifact_id")
+        assert isinstance(shot_id, str) and shot_id, shot.data
+
+        har = _service.web_har_export(session_id)
+        assert har.ok, har.error
+        har_id = har.data.get("artifact_id")
+        assert isinstance(har_id, str) and har_id, har.data
+
+        # Both captures are listed against this session with their kind and a
+        # non-zero size: the registry, not just the filesystem, knows them.
+        listed = _service.artifacts_list(session_id)
+        assert listed.ok, listed.error
+        by_id = {str(a["id"]): a for a in listed.data["artifacts"]}
+        assert shot_id in by_id and har_id in by_id, sorted(by_id)
+        assert by_id[shot_id]["kind"] == "web_screenshot", by_id[shot_id]
+        assert by_id[har_id]["kind"] == "web_har", by_id[har_id]
+        assert by_id[shot_id]["size"] > 0 and by_id[har_id]["size"] > 0, by_id
+
+        # describe carries the same digest the file has on disk -- the registry
+        # recorded the real sha256, not a placeholder.
+        described = _service.artifacts_describe(shot_id)
+        assert described.ok, described.error
+        meta = described.data["artifact"]
+        on_disk = hashlib.sha256(Path(meta["path"]).read_bytes()).hexdigest()
+        assert meta["sha256"] == on_disk, (meta["sha256"], on_disk)
+        assert meta["size"] == Path(meta["path"]).stat().st_size, meta
+
+        # Read the PNG *through* artifacts.read (hex-encoded) and confirm the
+        # signature: the bytes came back via the tool, not the raw path.
+        png = _service.artifacts_read(shot_id, limit=64)
+        assert png.ok, png.error
+        assert png.data["encoding"] == "hex", png.data
+        assert bytes.fromhex(png.data["data"])[:8] == b"\x89PNG\r\n\x1a\n", png.data["data"][:16]
+        assert png.data["size"] == meta["size"], png.data
+
+        # The HAR reads back through the same tool and parses to the real log,
+        # with at least the document flow this session served -- retrieval, not
+        # merely storage.
+        har_read = _service.artifacts_read(har_id, limit=200_000)
+        assert har_read.ok, har_read.error
+        parsed = json.loads(bytes.fromhex(har_read.data["data"]).decode("utf-8"))
+        entries = parsed["log"]["entries"]
+        assert entries, parsed
+        assert any(str(e["request"]["url"]).startswith(url) for e in entries), [
+            e["request"]["url"] for e in entries
+        ]
+
+        # An id that was never registered is a clean not_found, never a crash
+        # through the tool boundary.
+        missing = _service.artifacts_describe("deadbeef" * 4)
+        assert not missing.ok and missing.error is not None, missing
+        assert missing.error.code == "not_found", missing.error
 
 
 def _read_capture(payload: dict[str, Any]) -> str:

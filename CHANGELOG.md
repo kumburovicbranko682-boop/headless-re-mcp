@@ -572,6 +572,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 再加一例证明 `web.navigate`：从已开的 `/` 导航到同源第二页，断言 URL/标题/状态都换成新页
   且活 DOM 确为第二页（首页 marker 已消失）；随后导航到一个返回 404 的路径，断言状态如实为
   404——覆盖后端“4xx 主文档正常 resolve、必须把状态透出”的分支，杜绝错误页伪装成命中。
+- 再加一例把产物回路闭上：`web.screenshot` 与 `web.har.export` 各自登记的 `artifact_id`
+  必须能被 `artifacts.list` 列到（kind 为 `web_screenshot`/`web_har`、size 非零），
+  `artifacts.describe` 返回的 `sha256` 与磁盘文件重算一致（证明登记的是真摘要而非占位），
+  再经 `artifacts.read`（十六进制）把字节取回——PNG 校验到 `\x89PNG` 签名、HAR 解析回真正
+  的 `log` 且含本会话服务过的文档 flow。这条正是无人值守 agent 取回自己刚采集之物所走的路：
+  过去 Gate 只 `stat()` 磁盘路径，从未证明“裸路径是死胡同、登记后才可回读”的那一环真的通。
+  顺带断言未登记的 id 走 `artifacts.describe` 得到干净的 `not_found`，而非穿透工具边界崩掉。
 
 ### 修复（HAR 导出规范与边界）
 
