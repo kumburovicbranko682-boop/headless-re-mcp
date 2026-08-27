@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`prune_capped_dir` 在 mtime 撞秒时可能删掉刚写的抓包）
+
+- `prune_capped_dir` 给设备截图/pull 与 jsre 解包树这些不进制品表、retention 走查看不见的
+  抓包目录封顶，其文档承诺“保留最新那条，让刚写完路径的调用方仍能找到它”。但排序用的是
+  `float(st_mtime)`：临近当前纪元时 double 只剩约 390ns 的分辨率，把相差不到一毫秒的两次写
+  塌成同一个时间戳；撞上以后又靠 `iterdir` 返回的任意顺序破平，于是“最新”落到撞秒里随便一条，
+  刚写完的那条被当成最旧删掉的情况足够常见。现改为按整数 `st_mtime_ns` 排序（不丢亚微秒精度），
+  平局再按文件名破，淘汰顺序从此确定而非跟着文件系统的返回顺序走。
+- 另加显式 `keep` 形参点名一条必须留下的子项——即调用方刚写的那条路径。光靠时间戳无法保证它
+  存活：同一文件系统 tick 内写的两条抓包共享 mtime，按时间挑“最新”只会挑到任意一条。四个
+  `device.screenshot` / `device.pull` 站点与 `js.unpack.bundle` 现都把刚写的 `out` /
+  `out_dir` 作为 `keep` 传入，即便在撞秒下也守住这条契约。
+- 新增三条直测：`keep` 即使是最旧一条也被保留；四条同 mtime、刚写的那条命名到排在最前时仍靠
+  `keep` 存活；无 `keep` 时同 mtime 按文件名确定破平（强制 `iterdir` 逆序仍留下命名最大者，
+  正是旧 float 排序会留错那条的用例）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

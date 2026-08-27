@@ -111,6 +111,7 @@ class JsReAnalysisMixin:
                 out_dir.parent,
                 max_entries=JSRE_UNPACK_MAX_ENTRIES,
                 max_bytes=JSRE_UNPACK_MAX_BYTES,
+                keep=out_dir,
             )
             return _success(data, backend="webcrack")
         except JsReError as exc:

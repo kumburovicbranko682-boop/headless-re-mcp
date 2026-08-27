@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -191,6 +192,76 @@ def test_prune_terminates_when_a_deletion_keeps_failing(
     removed = limits.prune_capped_dir(root, max_entries=1, max_bytes=1)
     assert removed == 0
     assert len(list(root.iterdir())) == 3
+
+
+def test_prune_keeps_the_named_path_even_when_it_is_the_oldest(tmp_path: Path) -> None:
+    """``keep`` protects the just-written path against age-based eviction.
+
+    The entry cap forces three younger captures out, but the one the caller
+    named survives even though it is the oldest -- the guarantee the docstring
+    makes, now honoured explicitly rather than hoped for from age alone.
+    """
+    root = tmp_path / "captures"
+    root.mkdir()
+    keep = root / "just-written.bin"
+    keep.write_bytes(b"x" * 10)
+    _age(keep, 100)  # the oldest entry of the four
+    for index in range(3):
+        other = root / f"old{index}.bin"
+        other.write_bytes(b"x" * 10)
+        _age(other, 200 + index)
+    removed = limits.prune_capped_dir(root, max_entries=1, max_bytes=10_000, keep=keep)
+    assert removed == 3
+    assert {p.name for p in root.iterdir()} == {"just-written.bin"}
+
+
+def test_prune_keeps_the_just_written_path_under_an_mtime_tie(tmp_path: Path) -> None:
+    """A tie must not let the just-written capture be the one evicted.
+
+    All four entries share one mtime, so age cannot single out the newest. The
+    fresh file is even named to sort first, so the deterministic name tiebreak
+    would evict it first -- ``keep`` is what overrides that and keeps it.
+    """
+    root = tmp_path / "captures"
+    root.mkdir()
+    keep = root / "aaa-just-written.bin"
+    for name in ("aaa-just-written.bin", "m.bin", "y.bin", "z.bin"):
+        entry = root / name
+        entry.write_bytes(b"x" * 10)
+        _age(entry, 500)  # one identical mtime across all four: a pure tie
+    removed = limits.prune_capped_dir(root, max_entries=1, max_bytes=10_000, keep=keep)
+    assert removed == 3
+    assert {p.name for p in root.iterdir()} == {"aaa-just-written.bin"}
+
+
+def test_prune_breaks_mtime_ties_by_name_not_directory_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tied mtimes resolve by name, deterministically, not by iterdir order.
+
+    The old float-mtime sort was stable, so a directory of equally-aged
+    captures kept whatever ``iterdir`` happened to return last -- arbitrary,
+    and different from one filesystem to the next. Forcing a reversed directory
+    order shows the fix keeps the name-max regardless of what order the
+    filesystem hands back.
+    """
+    root = tmp_path / "captures"
+    root.mkdir()
+    for name in ("a.bin", "b.bin", "c.bin", "d.bin"):
+        entry = root / name
+        entry.write_bytes(b"x" * 10)
+        _age(entry, 700)  # one identical mtime across all four
+
+    real_iterdir = Path.iterdir
+
+    def _reversed_iterdir(self: Path) -> Any:
+        return iter(sorted(real_iterdir(self), key=lambda item: item.name, reverse=True))
+
+    monkeypatch.setattr(Path, "iterdir", _reversed_iterdir)
+
+    removed = limits.prune_capped_dir(root, max_entries=1, max_bytes=10_000)
+    assert removed == 3
+    assert {p.name for p in root.iterdir()} == {"d.bin"}
 
 
 def test_prune_sizes_and_evicts_subdirectories(tmp_path: Path) -> None:

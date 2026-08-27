@@ -120,12 +120,26 @@ def prune_capped_dir(
     *,
     max_entries: int,
     max_bytes: int,
+    keep: Path | None = None,
 ) -> int:
     """Delete oldest children until both caps hold. Never removes the newest.
 
     Capture directories that are not in the artifact table otherwise grow for
     as long as the service lives, and the retention walker cannot see them.
     The newest entry is kept so a caller that just wrote a path still finds it.
+
+    ``keep`` names a child that must survive regardless of age -- the path the
+    caller just wrote. Age alone could not promise that: two captures written
+    inside one filesystem tick share an mtime, and identifying the newest by
+    mtime then picks an arbitrary one of them, so the just-written file was the
+    one evicted often enough to matter on a coarse clock. ``keep`` makes the
+    contract this docstring already states hold even under a tie.
+
+    Ordering is by integer ``st_mtime_ns`` rather than ``float(st_mtime)``,
+    which loses sub-microsecond resolution near the current epoch and manufactured
+    ties between files a fraction of a millisecond apart, and ties break on the
+    name so eviction order is deterministic instead of following the arbitrary
+    order ``iterdir`` returns.
     """
     try:
         if not directory.is_dir():
@@ -133,24 +147,40 @@ def prune_capped_dir(
         children = list(directory.iterdir())
     except OSError:
         return 0
-    entries: list[tuple[float, Path, int]] = []
+    keep_resolved: Path | None = None
+    if keep is not None:
+        try:
+            keep_resolved = keep.resolve()
+        except OSError:
+            keep_resolved = None
+    entries: list[tuple[int, str, Path, int]] = []
     total = 0
     for child in children:
         try:
             stat = child.stat()
             size = int(stat.st_size) if child.is_file() else _dir_size(child)
-            entries.append((float(stat.st_mtime), child, size))
+            entries.append((int(stat.st_mtime_ns), child.name, child, size))
             total += size
         except OSError:
             continue
     if not entries:
         return 0
-    entries.sort(key=lambda item: item[0])
+    entries.sort(key=lambda item: (item[0], item[1]))
     removed = 0
-    while len(entries) > 1 and (len(entries) > max_entries or total > max_bytes):
-        _mtime, path, size = entries.pop(0)
+    survivors = len(entries)
+    for _mtime_ns, _name, path, size in entries:
+        if survivors <= 1 or (survivors <= max_entries and total <= max_bytes):
+            break
+        if keep_resolved is not None:
+            try:
+                protected = path.resolve() == keep_resolved
+            except OSError:
+                protected = False
+            if protected:
+                continue
         if _remove_entry(path):
             total = max(0, total - size)
+            survivors -= 1
             removed += 1
     return removed
 

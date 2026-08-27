@@ -201,12 +201,14 @@ class DeviceAnalysisMixin:
                     out.parent,
                     max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
                     max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES,
+                    keep=out,
                 )
                 return oversized
         prune_capped_dir(
             out.parent,
             max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
             max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES,
+            keep=out,
         )
         return result
 
@@ -220,12 +222,14 @@ class DeviceAnalysisMixin:
                     out.parent,
                     max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
                     max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES,
+                    keep=out,
                 )
                 return oversized
         prune_capped_dir(
             out.parent,
             max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
             max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES,
+            keep=out,
         )
         return result
 
