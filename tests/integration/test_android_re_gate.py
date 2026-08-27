@@ -291,6 +291,88 @@ def test_androguard_reads_permissions_components_and_native_libs(tmp_path: Path)
         service.close_all()
 
 
+def _v1_sign(apk: Path, tmp_path: Path) -> Path:
+    """Mint a key and produce a v1 (JAR) signed copy, or skip if tools are absent.
+
+    androguard's certificate reader parses the v1 signature block (META-INF
+    CERT/RSA), so the APK must be v1-signed for the success path to exist; the v2+
+    schemes it defaults to leave that block empty.
+    """
+    apksigner = shutil.which("apksigner")
+    keytool = shutil.which("keytool")
+    if apksigner is None or keytool is None:
+        pytest.skip("apksigner/keytool not installed — cannot v1-sign (skip != pass)")
+    keystore = tmp_path / "sign.jks"
+    subprocess.run(
+        [
+            keytool, "-genkeypair", "-keystore", str(keystore), "-alias", "k",
+            "-keyalg", "RSA", "-keysize", "2048", "-validity", "365",
+            "-storepass", "testpass", "-keypass", "testpass",
+            "-dname", "CN=GateTest,O=GateOrg,C=US",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    signed = tmp_path / "signed.apk"
+    proc = subprocess.run(
+        [
+            apksigner, "sign", "--ks", str(keystore), "--ks-pass", "pass:testpass",
+            "--ks-key-alias", "k", "--key-pass", "pass:testpass",
+            "--v1-signing-enabled", "true", "--v2-signing-enabled", "true",
+            "--out", str(signed), str(apk),
+        ],
+        capture_output=True,
+        timeout=120,
+    )
+    if proc.returncode != 0 or not signed.is_file():
+        pytest.skip(
+            f"apksigner v1 sign failed here — Gate not run (skip != pass): "
+            f"{proc.stderr.decode('utf-8', 'replace')[:200]}"
+        )
+    return signed
+
+
+@pytest.mark.integration
+def test_androguard_reads_a_v1_signature(tmp_path: Path) -> None:
+    """apk.certificates must parse a real v1 signature, not just the empty case.
+
+    The synthetic archive's fake CERT.RSA only reaches the degraded path, so the
+    certificate reader (androguard hands back asn1crypto objects, whose surface
+    it wraps defensively) never ran on a genuine signature. Sign a real APK with
+    the v1 scheme and assert the accessor reports it signed, finds the .RSA block,
+    returns one certificate, and computes a SHA-256 fingerprint -- so a break in
+    that parse fails here instead of silently reporting an app as unsigned.
+    """
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — success path not exercised (skip != pass)")
+    apk = _build_apk_with_manifest_extras(tmp_path)
+    signed = _v1_sign(apk, tmp_path)
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(signed), target="apk")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        certs = service.apk_certificates(session_id)
+        assert certs.ok, certs.error
+        assert certs.data["v1_signed"] is True
+        assert any(str(name).upper().endswith(".RSA") for name in certs.data["signature_files"])
+        certificates = certs.data["certificates"]
+        assert len(certificates) == 1
+        # A real fingerprint over the DER cert: non-empty and hex once the
+        # colon/space grouping androguard emits is stripped.
+        fingerprint = str(certificates[0]["sha256"])
+        hex_only = fingerprint.replace(":", "").replace(" ", "")
+        assert hex_only, "no sha256 fingerprint computed for the certificate"
+        assert all(ch in "0123456789abcdefABCDEF" for ch in hex_only)
+    finally:
+        service.close_all()
+
+
 @pytest.mark.integration
 def test_androguard_dex_analysis_reads_classes_methods_strings_xrefs(tmp_path: Path) -> None:
     """Drive the whole DEX surface against a real classes.dex, not a placeholder.
