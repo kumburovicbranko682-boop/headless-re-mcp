@@ -16,6 +16,7 @@ from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_pac
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.core.models import TargetKind
+from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target, describe_apk
 from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandTransport
 
@@ -266,6 +267,49 @@ class TestApkXrefsSayWhenTheyStopped:
 
         assert result["count"] == 10
         assert result["has_more"] is False
+
+
+class TestCreateSessionRefusesHostileApkInputs:
+    """A junk or manifest-less .apk must be refused, never filed as internal_error.
+
+    classify_target trusts the .apk extension before it looks at the bytes, so a
+    file that is not a zip -- or a zip with no AndroidManifest.xml -- still routes
+    to the APK path, where describe_apk raises ValueError. create_session has to
+    map that to a structured invalid_request the way the apk.open KeyError fix
+    restored for the open path, not let the raw exception fall through to an
+    internal_error incident. This is stdlib-only (no androguard), so it holds on
+    any machine, and it pins the session entry point every APK analysis passes
+    through.
+    """
+
+    def test_not_a_zip_apk_is_refused_with_a_structured_error(self, tmp_path: Path) -> None:
+        junk = tmp_path / "junk.apk"
+        junk.write_bytes(b"this is not a zip at all")
+        service = AnalysisService()
+        try:
+            created = service.create_session(str(junk))
+            assert created.ok is False
+            assert created.error is not None
+            assert created.error.code == "invalid_request"
+            assert created.error.code != "internal_error"
+        finally:
+            service.close_all()
+
+    def test_zip_without_manifest_is_refused_with_a_structured_error(
+        self, tmp_path: Path
+    ) -> None:
+        nomanifest = tmp_path / "nomanifest.apk"
+        with zipfile.ZipFile(nomanifest, "w") as archive:
+            archive.writestr("classes.dex", b"not-a-real-dex")
+        service = AnalysisService()
+        try:
+            created = service.create_session(str(nomanifest))
+            assert created.ok is False
+            assert created.error is not None
+            assert created.error.code == "invalid_request"
+            assert created.error.code != "internal_error"
+        finally:
+            service.close_all()
 
 
 class TestApkOpenDegradesOnUnparseableManifest:
