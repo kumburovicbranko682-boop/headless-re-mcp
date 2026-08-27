@@ -11,6 +11,11 @@ session's authorization never reaches another. Those are the invariants that
 keep a device-aware session from touching a process it never launched, and they
 are decided in the service layer from session metadata -- no hardware, so a
 device-less VM can prove them deterministically with a stub frida device.
+
+It also pins the two connect branches that decide whether a device is ever
+bound to a session: a remote endpoint resolves through a different client call
+than a USB alias, and connect re-checks the session after the device work so a
+session that closed mid-resolve is never recorded as holding a device.
 """
 
 from __future__ import annotations
@@ -101,6 +106,11 @@ def _stub_client_factory(ident: str, spawn_pid: int) -> Any:
         def _resolve_device(self, device_id: str | None) -> Any:
             del device_id
             return device
+
+        def add_remote_device(self, endpoint: str) -> dict[str, str]:
+            # The remote path resolves through the device manager, not
+            # get_usb_device; answer with the endpoint as the id, as frida does.
+            return {"id": endpoint, "name": "remote", "type": "remote"}
 
     return _StubClient
 
@@ -287,5 +297,90 @@ def test_frida_device_tools_refuse_a_closed_session(
             assert result.error is not None
             assert result.error.code == "invalid_request", result.error
             assert "closed" in result.error.message
+    finally:
+        service.close_all()
+
+
+def test_frida_remote_endpoint_connect_binds_that_device_and_still_gates_pids(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A remote endpoint resolves through a different client call than usb.
+
+    connect over an endpoint records the resolved remote id as the session's
+    device and the same allow-set rule then applies: spawn grants a pid over
+    that remote device, and a pid this session never spawned is refused.
+    """
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_frida.FridaClient",
+        _stub_client_factory("10.0.0.5:27042", spawn_pid=555),
+    )
+    service = _service(tmp_path)
+    try:
+        session_id = _web_session(service)
+
+        connected = service.frida_device_connect(
+            session_id, endpoint="10.0.0.5:27042"
+        )
+        assert connected.ok and connected.data is not None, connected.error
+        assert connected.data["device"]["id"] == "10.0.0.5:27042"
+        assert connected.data["device"]["type"] == "remote"
+        auth = service.registry.get(session_id).metadata["frida_authorized"]
+        assert auth["device_id"] == "10.0.0.5:27042"
+
+        spawned = service.frida_spawn(session_id, "com.remote.app")
+        assert spawned.ok and spawned.data is not None, spawned.error
+        assert spawned.data["pid"] == 555
+
+        allowed = service.frida_java_classes(session_id, pid=555)
+        assert allowed.ok and allowed.data is not None, allowed.error
+        refused = service.frida_java_classes(session_id, pid=1)
+        assert refused.ok is False
+        assert refused.error is not None
+        assert refused.error.code == "permission_denied", refused.error
+        assert refused.error.details["allowed_pids"] == [555]
+    finally:
+        service.close_all()
+
+
+def test_frida_connect_does_not_bind_if_the_session_closes_mid_resolve(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A close during device resolution must not leave a dead session bound.
+
+    connect re-checks the session after resolving the device, before it writes
+    frida_authorized. Without that re-check a session that closed while the USB
+    device was being resolved would still be recorded as holding a device, and
+    the model would follow with spawn on a session nothing can service. This is
+    the connect-path twin of the frida.server.ensure mid-run guard.
+    """
+    service = _service(tmp_path)
+    session_id = ""
+
+    class _CloseThenResolve:
+        def _resolve_device(self, device_id: str | None) -> Any:
+            del device_id
+            # The device came back, but the session closed while we waited.
+            service.close_session(session_id)
+
+            class _Device:
+                id = "ABCD1234"
+                name = "Pixel"
+                type = "usb"
+
+            return _Device()
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_frida.FridaClient",
+        lambda *args, **kwargs: _CloseThenResolve(),
+    )
+    try:
+        session_id = _web_session(service)
+        result = service.frida_device_connect(session_id, device_id="usb")
+
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request", result.error
+        assert "closed" in result.error.message
+        assert "frida_authorized" not in service.registry.get(session_id).metadata
     finally:
         service.close_all()
