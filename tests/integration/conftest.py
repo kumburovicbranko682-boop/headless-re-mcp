@@ -49,7 +49,6 @@ _WINDOWS_ONLY_MODULES = frozenset(
         "test_exeinfope_gate.py",
         "test_hidden_desktop_gate.py",
         "test_m4_unload_dump_gate.py",
-        "test_m5_unpack_live_gate.py",
         "test_m9_condition_breakpoint_gate.py",
         "test_m9_dynamic_ext_gate.py",
         "test_m9_target_exit_fail_closed_gate.py",
