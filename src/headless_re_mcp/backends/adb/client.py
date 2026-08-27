@@ -25,12 +25,18 @@ JsonObject = dict[str, Any]
 
 # A serial is either an emulator/host:port endpoint or a device id. Both are
 # constrained so nothing that reaches a shell command can carry metacharacters.
-_SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
-_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+# Every identifier pattern anchors its tail with ``\Z``, not ``$``: in Python
+# ``$`` also matches just before a trailing newline, so ``"pkg\n"`` would slip
+# past a ``$``-anchored guard and carry that newline into the value the docstring
+# promises can "never smuggle extra arguments" -- and inside an ``su -c '...'``
+# string a trailing newline splits the line into a second command. ``\Z`` binds
+# to the true end of the string, the same anchor the r2 command allowlist uses.
+_SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}\Z")
+_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+\Z")
 # frida-server's -l listen host. An IPv4 address or a simple hostname; the
 # strict set keeps a value that reaches the su -c command line from carrying
 # shell metacharacters, quotes, or the colon that separates host from port.
-_BIND_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,64}$")
+_BIND_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,64}\Z")
 _MAX_LOGCAT_LINES = 5000
 _MAX_LOGCAT_CHARS = 200_000
 # Only the package attribute near the top of the manifest is needed. Reading
@@ -121,16 +127,16 @@ def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> No
     forward would leak an adb-server listener and pin one of the tracked slots
     until the cap locks the process out. A remote 0 is simply not connectable.
     """
-    tcp = re.match(r"^tcp:(\d{1,5})$", spec or "")
+    tcp = re.match(r"^tcp:(\d{1,5})\Z", spec or "")
     if tcp is not None:
         if not 1 <= int(tcp.group(1)) <= 65535:
             raise AdbError(
                 "invalid_params", f"{side} tcp port must be 1..65535", **{side: spec}
             )
         return
-    if re.match(r"^localabstract:[\w.\-]+$", spec or ""):
+    if re.match(r"^localabstract:[\w.\-]+\Z", spec or ""):
         return
-    if allow_jdwp and re.match(r"^jdwp:\d+$", spec or ""):
+    if allow_jdwp and re.match(r"^jdwp:\d+\Z", spec or ""):
         return
     raise AdbError("invalid_params", f"invalid {side} forward spec", **{side: spec})
 
@@ -836,7 +842,7 @@ class AdbBackend:
         ``0.0.0.0`` to expose it on the network for a remote-by-IP connection.
         """
         dev = self._device(serial)
-        if not re.match(r"^/[\w./\-]+$", remote_path):
+        if not re.match(r"^/[\w./\-]+\Z", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
         if not _BIND_HOST_RE.match(bind_host or ""):
             raise AdbError("invalid_params", "invalid bind_host", bind_host=bind_host)
