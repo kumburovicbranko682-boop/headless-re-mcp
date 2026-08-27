@@ -6,6 +6,7 @@ import ctypes
 import os
 import signal
 import subprocess
+import sys
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
@@ -20,6 +21,27 @@ _MAX_CHILD_PIDS = 16
 # tool run, and the walk is bounded so a fork bomb cannot hold the killer.
 _MAX_KILL_DESCENDANTS = 64
 _MAX_KILL_DEPTH = 4
+
+
+def _enable_linux_child_subreaper() -> bool:
+    """Adopt orphaned tool grandchildren so this process can reap them.
+
+    PR_SET_CHILD_SUBREAPER makes a killed orphan reparent here instead of to
+    init, which lets terminate_*_tree waitpid it. init would reap it too, but
+    the unattended target is a container whose pid 1 does not, and there a long
+    run would otherwise accumulate one zombie per killed tool tree. Set once at
+    import; harmless on a host whose init does reap.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        return bool(libc.prctl(36, 1, 0, 0, 0) == 0)  # PR_SET_CHILD_SUBREAPER
+    except (AttributeError, OSError):
+        return False
+
+
+_LINUX_CHILD_SUBREAPER = _enable_linux_child_subreaper()
 def _child_enum_limit(max_pids: int) -> int:
     """UI discovery defaults to 16; kill walks may ask for more.
 
@@ -288,6 +310,38 @@ def _kill_own_process_group(pid: int) -> list[int]:
     return []
 
 
+def _reap_terminated(pids: list[int], wait_s: float) -> None:
+    """Best-effort reap of orphans the Linux subreaper adopted from us.
+
+    A grandchild we kill reparents to its nearest subreaper. When that is this
+    process (see ``_LINUX_CHILD_SUBREAPER``) it stays a zombie until waited on;
+    init would reap it, but the unattended target is a container whose pid 1 does
+    not. Only pids this process actually parents can be waited on -- others raise
+    ChildProcessError and are dropped -- so passing extra pids is harmless and it
+    never touches a tracked Popen's own child. No-op unless the subreaper is on.
+    """
+    if not _LINUX_CHILD_SUBREAPER:
+        return
+    waitpid = getattr(os, "waitpid", None)
+    wnohang = getattr(os, "WNOHANG", 1)
+    if waitpid is None:
+        return
+    pending = {pid for pid in pids if isinstance(pid, int) and pid > 0}
+    deadline = monotonic() + max(0.0, wait_s)
+    while pending:
+        for pid in tuple(pending):
+            try:
+                waited, _ = waitpid(pid, wnohang)
+            except (ChildProcessError, OSError):
+                pending.discard(pid)
+                continue
+            if waited == pid:
+                pending.discard(pid)
+        if not pending or monotonic() >= deadline:
+            return
+        sleep(0.01)
+
+
 def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: bool = False) -> list[int]:
     """Kill a spawned process and everything it started. Returns the killed PIDs.
 
@@ -305,9 +359,12 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
     killed: list[int] = []
     pid = getattr(process, "pid", None)
     descendants: list[int] = []
+    group_members: list[int] = []
     if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
+        with suppress(Exception):
+            group_members = collect_process_group(pid)
         killed.extend(_kill_own_process_group(pid))
 
     with suppress(OSError, AttributeError):
@@ -327,6 +384,9 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
     if kill_group and os.name != "nt" and isinstance(pid, int):
         with suppress(Exception):
             os.killpg(pid, 9)
+    # Reap the killed orphans this process adopted as subreaper so they do not
+    # linger as zombies; bounded so a survivor cannot hold the failure path.
+    _reap_terminated([*descendants, *group_members], min(wait_s, 1.0))
     return killed
 
 
@@ -371,9 +431,12 @@ def terminate_pid_tree(pid: int) -> list[int]:
     if not isinstance(pid, int) or pid <= 0:
         return []
     descendants: list[int] = []
+    group_members: list[int] = []
     if isinstance(pid, int) and pid > 0:
         with suppress(Exception):
             descendants = collect_descendants(pid)
+        with suppress(Exception):
+            group_members = collect_process_group(pid)
     killed: list[int] = []
     killed.extend(_kill_own_process_group(pid))
     with suppress(Exception):
@@ -383,6 +446,9 @@ def terminate_pid_tree(pid: int) -> list[int]:
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    # With no Popen handle nobody else will wait on pid; reap it and any orphan
+    # the subreaper adopted so a wedged browser tree leaves no zombies behind.
+    _reap_terminated([pid, *descendants, *group_members], 1.0)
     return killed
 
 

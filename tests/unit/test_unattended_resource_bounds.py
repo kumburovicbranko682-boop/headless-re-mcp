@@ -2213,6 +2213,49 @@ class TestATimeoutBindsWhatTheToolStarted:
             with suppress(Exception):
                 terminate_pid_tree(child)
 
+    def test_subreaper_adopts_and_reaps_a_killed_orphan(self) -> None:
+        """A merge once dropped PR_SET_CHILD_SUBREAPER and _reap_terminated.
+
+        Losing them is silent: killed orphans reparent to init, which reaps them
+        on a normal host, so no test failed -- but a container whose pid 1 does
+        not reap then leaks one zombie per killed tool tree over a long run.
+        Guard both the registration and the wiring so the drop cannot recur.
+        """
+        import os
+        import subprocess
+        import sys
+        import time
+        from contextlib import suppress
+
+        from headless_re_mcp.core import process_tree as pt
+
+        if not sys.platform.startswith("linux"):
+            pytest.skip("PR_SET_CHILD_SUBREAPER reaping is Linux-only (skip != pass)")
+
+        # The registration itself; without it the orphan never reparents here.
+        assert pt._LINUX_CHILD_SUBREAPER is True
+
+        launcher = subprocess.Popen(
+            [sys.executable, "-c", _EXIT0_LAUNCHER],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        assert launcher.stdout is not None
+        child = int(launcher.stdout.readline().strip())
+        try:
+            pt.terminate_process_tree(launcher, wait_s=2.0)
+            # Reaped, not merely killed: a zombie keeps its /proc entry until it
+            # is waited on, so a fully reaped pid has none.
+            deadline = time.monotonic() + 3.0
+            while os.path.exists(f"/proc/{child}") and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert not os.path.exists(f"/proc/{child}"), "orphan left unreaped as a zombie"
+        finally:
+            with suppress(Exception):
+                pt.terminate_pid_tree(child)
+
 
 def test_kill_walk_is_not_clamped_to_the_ui_page_size() -> None:
     from headless_re_mcp.core.process_tree import (
