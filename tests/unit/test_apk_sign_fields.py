@@ -157,3 +157,43 @@ def test_apk_sign_does_not_claim_signed_when_verify_fails(
         )
     assert caught.value.code == "backend_error"
     assert "not signed" in caught.value.message
+
+
+def test_apk_sign_refuses_an_empty_output_before_verify(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A zero-byte output is not a signed APK. It is refused with a precise
+    message before apksigner verify is even asked, and the useless file dropped.
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "debug.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    verified: list[str] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> tuple[str, str, int]:
+        if "verify" in cmd:
+            verified.append("verify")
+            return "", "", 0
+        out.write_bytes(b"")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+    client = ApktoolClient(fake_tool, signer)
+    with pytest.raises(ApktoolError) as caught:
+        client.sign(
+            apk,
+            out,
+            keystore=keystore,
+            keystore_password="android",
+            key_alias="androiddebugkey",
+        )
+    assert caught.value.code == "backend_error"
+    assert "empty apk" in caught.value.message
+    assert out.exists() is False
+    assert verified == []

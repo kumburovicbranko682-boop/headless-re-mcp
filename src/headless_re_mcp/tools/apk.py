@@ -180,7 +180,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with apk, size, signed (false until apk.sign), and note.
         There is no output, path or repacked field. A successful rebuild is
-        still unsigned.
+        still unsigned, and an empty rebuild is an envelope failure rather than
+        a size-0 success.
         """
         return _dump(analysis.apk_repack(session_id, decoded_dir=decoded_dir, timeout=timeout))
 
@@ -196,8 +197,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Sign a rebuilt APK with apksigner (defaults to the Android debug keystore).
 
         Answers with apk, size, signed, keystore, and debug_keystore.
-        signed is true only after apksigner verify succeeds. There is no
-        output, path or signed_apk field.
+        signed is true only after apksigner verify succeeds; an empty output is
+        refused before verify. There is no output, path or signed_apk field.
         """
         return _dump(
             analysis.apk_sign(

@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（APK 重打包/签名不再谎报空产物为成功）
+
+- `apk.repack`(apktool `build`)过去只在退出码非 0 或输出文件缺失时报错,却不看文件是否为空。
+  apktool 可能退出码 0 却留下 0 字节文件(半途写入、磁盘写满),而 APK 是 zip、绝不为空,于是
+  size 0 的「重打包成功」被回给调用方,它据此去 `apk.sign` 一个根本不存在内容的包。现 `build` 在
+  输出为 0 字节时删掉残留并抛 `backend_error`。
+- `apk.sign`(apksigner)在签名调用返回后、`apksigner verify` 之前,先拒绝 0 字节输出并给出明确
+  信息(不再依赖 verify 去发现空文件),同样删掉无用产物。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的

@@ -6,7 +6,9 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.apktool.client import ApktoolClient
+import pytest
+
+from headless_re_mcp.backends.apktool.client import ApktoolClient, ApktoolError
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -62,3 +64,29 @@ def test_apk_repack_names_apk_and_says_it_is_still_unsigned(
     doc = _tool_docstring("apk.repack")
     assert "Answers with apk" in doc
     assert "unsigned" in doc
+
+
+def test_apk_repack_refuses_an_empty_rebuild(tmp_path: Path, monkeypatch: Any) -> None:
+    """apktool can exit 0 yet leave a zero-byte file (partial write, full disk).
+
+    An APK is a zip and is never empty, so a size-0 rebuild that reports success
+    sends the agent on to apk.sign with nothing to sign.
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("@echo off\n", encoding="utf-8")
+    source = tmp_path / "decoded"
+    source.mkdir()
+    (source / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+    out = tmp_path / "out.apk"
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> tuple[str, str, int]:
+        out.write_bytes(b"")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+    client = ApktoolClient(fake_tool, None)
+    with pytest.raises(ApktoolError) as caught:
+        client.build(source, out)
+    assert caught.value.code == "backend_error"
+    assert "empty apk" in caught.value.message
+    assert out.exists() is False

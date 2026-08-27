@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -123,9 +124,22 @@ class ApktoolClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
+        size = out_apk.stat().st_size
+        if size == 0:
+            # apktool can exit 0 yet leave a zero-byte file behind (a partial
+            # write, a full disk). An APK is a zip and is never empty, so a
+            # size-0 "rebuild" reads as a build the caller then tries to sign.
+            with suppress(OSError):
+                out_apk.unlink()
+            raise ApktoolError(
+                "backend_error",
+                "apktool build produced an empty apk",
+                exit_code=code,
+                stderr=stderr[:_MAX_STDERR],
+            )
         return {
             "apk": str(out_apk),
-            "size": out_apk.stat().st_size,
+            "size": size,
             "signed": False,
             "note": "unsigned; call apk.sign before installing",
         }
@@ -189,6 +203,17 @@ class ApktoolClient:
                 "apksigner failed",
                 exit_code=code,
                 stderr=scrubbed[:_MAX_STDERR],
+            )
+        if out_apk.stat().st_size == 0:
+            # A zero-byte output is not a signed APK. Refuse it here with a
+            # precise message rather than leaning on verify to reject the empty
+            # file, and drop the useless artifact.
+            with suppress(OSError):
+                out_apk.unlink()
+            raise ApktoolError(
+                "backend_error",
+                "apksigner produced an empty apk",
+                exit_code=code,
             )
         verify_timeout = min(60.0, max(5.0, float(timeout)))
         _, verify_stderr, verify_code = _run(
