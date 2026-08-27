@@ -183,10 +183,10 @@ def _tool_docstring(name: str) -> str:
 def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     """The catalog said address/size; a 5000-function export had neither.
 
-    Measured against ExportJson.py: 256 of 5000 functions, 0 items had address
-    or size, all 256 had entry and body_size. Looking for address after a
-    successful list reads as Ghidra finding no addresses. Symbols have type,
-    not namespace. Xrefs are getReferencesTo only.
+    Measured against the headless export script: 256 of 5000 functions, 0 items
+    had address or size, all 256 had entry and body_size. Looking for address
+    after a successful list reads as Ghidra finding no addresses. Symbols have
+    type, not namespace. Xrefs are getReferencesTo only.
     """
     functions = _tool_docstring("ghidra.functions")
     assert "entry" in functions
