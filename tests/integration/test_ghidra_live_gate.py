@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,48 @@ def _build_elf_fixture(tmp_path: Path) -> Path:
             f"({completed.stderr.decode('utf-8', 'replace')[:200]}) — skip != pass"
         )
     return out
+
+
+_MACHO_MAGICS = {
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+}
+
+
+def _build_macho_fixture(tmp_path: Path) -> Path:
+    """Compile a tiny Mach-O x86_64 executable, or skip (skip != pass).
+
+    The other non-PE native format Ghidra claims is Mach-O. There is no host
+    Mach-O toolchain on a Linux runner, so ``zig cc -target x86_64-macos``
+    cross-links one (no macOS SDK needed for a headerless function); on a mac the
+    host compiler emits Mach-O directly. Absent either, skip honestly.
+    """
+    source = tmp_path / "re_mcp_probe_macho.c"
+    source.write_text(_ELF_SOURCE, encoding="utf-8")
+    out = tmp_path / "re_mcp_probe_macho"
+    commands: list[list[str]] = []
+    zig = shutil.which("zig")
+    if zig is not None:
+        commands.append([zig, "cc", "-target", "x86_64-macos", "-O0", "-o", str(out), str(source)])
+    if sys.platform == "darwin":
+        host = shutil.which("cc") or shutil.which("clang")
+        if host is not None:
+            commands.append([host, "-O0", "-o", str(out), str(source)])
+    if not commands:
+        pytest.skip("no Mach-O cross toolchain (zig / darwin cc) — skip != pass")
+    last = ""
+    for argv in commands:
+        try:
+            completed = subprocess.run(argv, capture_output=True, timeout=180.0)
+        except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover - host dependent
+            last = str(exc)
+            continue
+        if completed.returncode == 0 and out.is_file() and out.read_bytes()[:4] in _MACHO_MAGICS:
+            return out
+        last = completed.stderr.decode("utf-8", "replace")[:200]
+    pytest.skip(f"no toolchain emitted a Mach-O executable ({last}) — skip != pass")
 
 
 def _gate_fixture() -> Path:
@@ -264,6 +307,66 @@ def test_ghidra_analyzes_a_native_elf_through_the_service(tmp_path: Path) -> Non
         assert funcs.ok and funcs.data is not None, funcs.error
         names = {item.get("name") for item in funcs.data.get("items", [])}
         assert "re_mcp_triple" in names, sorted(names)
+    finally:
+        service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_ghidra_analyzes_a_native_macho_end_to_end(tmp_path: Path) -> None:
+    """Ghidra must handle Mach-O, the other non-PE native format it claims.
+
+    The ELF gate proves one native format; Mach-O is the other. This builds a
+    real Mach-O executable and drives the same functions -> decompile -> xrefs
+    surface: the named function is recovered, its decompiled C carries the x*3+1
+    arithmetic, and the call from main resolves as a reference to its entry.
+    skip != pass when Ghidra or a Mach-O toolchain is absent.
+    """
+    client = _client()
+    macho = _build_macho_fixture(tmp_path)
+
+    funcs = client.functions(macho, tmp_path / "fn", limit=256, timeout=_TIMEOUT)
+    assert funcs.get("count", 0) >= 1
+    by_name = {item["name"]: item for item in funcs.get("items", [])}
+    # Mach-O symbols carry a leading underscore; match re_mcp_triple by substring.
+    triple_name = next((n for n in by_name if "re_mcp_triple" in n), None)
+    assert triple_name is not None, sorted(by_name)
+    triple_entry = by_name[triple_name]["entry"]
+
+    decompiled = client.decompile(macho, tmp_path / "dc", triple_entry, timeout=_TIMEOUT)
+    assert decompiled.get("truncated") is False
+    body = decompiled.get("decompiled") or ""
+    assert "* 3" in body and "+ 1" in body, body[:200]
+
+    xrefs = client.xrefs(macho, tmp_path / "xr", triple_entry, limit=32, timeout=_TIMEOUT)
+    assert isinstance(xrefs.get("items"), list)
+    assert xrefs.get("count", 0) >= 1, "expected the call from main to reference re_mcp_triple"
+    for ref in xrefs["items"]:
+        assert set(ref) >= {"from", "to", "type"}
+
+
+@pytest.mark.integration
+def test_ghidra_analyzes_a_native_macho_through_the_service(tmp_path: Path) -> None:
+    """The Mach-O must reach Ghidra through create_session, not only the client.
+
+    Mirrors the ELF service gate for the other native format: create_session
+    classifies the Mach-O as native, and ghidra.functions recovers the named
+    function through the real agent entry point. skip != pass.
+    """
+    if not GhidraClient(home=getattr(Settings.load(), "ghidra_home", None)).available:
+        pytest.skip("Ghidra analyzeHeadless not configured — service Mach-O Gate (skip != pass)")
+    macho = _build_macho_fixture(tmp_path)
+    service = AnalysisService(Settings.load())
+    created = service.create_session(str(macho))
+    assert created.ok and created.data is not None, created.error
+    session = created.data["session"]
+    assert session.get("target") == "native"
+    assert session.get("metadata", {}).get("native", {}).get("format") == "macho"
+    session_id = str(session["id"])
+    try:
+        funcs = service.ghidra_functions(session_id, timeout=_TIMEOUT)
+        assert funcs.ok and funcs.data is not None, funcs.error
+        names = {item.get("name") for item in funcs.data.get("items", [])}
+        assert any("re_mcp_triple" in (n or "") for n in names), sorted(names)
     finally:
         service.close_session(session_id)
 
