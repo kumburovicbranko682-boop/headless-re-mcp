@@ -3779,7 +3779,10 @@ class TestDeviceInstallUninstallAreHonest:
         assert missing.value.code == "not_found"
 
         real = tmp_path / "app.apk"
-        real.write_bytes(b"PK\x03\x04")
+        # A real (if tiny) zip: install refuses a non-APK before resolving the
+        # device, and this test needs to reach the poisoned resolver.
+        with zipfile.ZipFile(real, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"manifest")
         with pytest.raises(AdbError) as present:
             backend.install("emulator-5554", str(real))
         assert present.value.code == "backend_error"
