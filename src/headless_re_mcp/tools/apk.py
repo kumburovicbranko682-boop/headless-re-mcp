@@ -154,6 +154,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with class_name, path and source, plus truncated when the
         Java was cut at the buffer. There is no java, code or text field.
+        Adds partial (with note) when jadx exited with errors while writing
+        sources, so this class read back but siblings/xrefs may be missing.
         """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 
@@ -220,7 +222,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with output_dir, sources_dir, java_file_count and java_files,
         plus has_more when the listed files were cut at the buffer. There is
-        no files or sources field.
+        no files or sources field. Adds partial (with note and exit_code) when
+        jadx exited with errors but still wrote sources, so java_files is not
+        the complete class list.
         """
         return _dump(
             analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)

@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（jadx 局部反编译不再把残缺产物谎报为完整导出）
+
+- `apk.export_sources`/`apk.decompile`(jadx `_run`)过去只在退出码非 0 **且**磁盘上一个 `.java`
+  都没有时才报错——注释说明 jadx 在逐类反编译失败时会以非 0 退出、却仍写出它能反编译的类。
+  于是「退出码非 0 但落了部分源码」这条路径被 `_run` 吞掉退出码、当成成功返回,`export_sources`
+  回给调用方的 `java_files` 看起来是完整类表,实则漏掉了 jadx 反编译失败的类;调用方据此断定
+  「这就是全部类」。现 `export_sources` 附 `partial`(`true`/`false`);局部时加 `exit_code`、
+  `note` 与截断后的 `stderr`,明说 java_files 不是完整类表。`decompile` 同样透传 `partial`/`note`:
+  取到的那一个类虽读回正常,但它所属的导出并不完整,交叉引用与相邻类未必都在;某个类找不到时,
+  若本次为局部反编译,`not_found` 会附 `partial=True` 并在消息里点明,免得调用方把它读成「类名写错」。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的

@@ -68,7 +68,7 @@ class JadxClient:
         no_imports: bool = False,
     ) -> JsonObject:
         """Decompile the whole APK into ``out_dir`` and summarise the tree."""
-        self._run(
+        _stdout, stderr, returncode = self._run(
             apk,
             ["--output-dir", str(out_dir), *(["--no-imports"] if no_imports else [])],
             out_dir,
@@ -78,13 +78,28 @@ class JadxClient:
         java_files, java_file_count, has_more = _capped_java_listing(
             out_dir, cap=_MAX_LISTED_FILES
         )
-        return {
+        result: JsonObject = {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
             "java_file_count": java_file_count,
             "java_files": java_files,
             "has_more": has_more,
+            "partial": returncode != 0,
         }
+        if returncode != 0:
+            # _run only fails hard when nothing landed; a non-zero exit with
+            # sources on disk is jadx's way of saying it decompiled what it
+            # could and gave up on the rest. Say so, because a caller reading
+            # java_files as the complete class list would silently miss the
+            # classes jadx failed on.
+            result["exit_code"] = returncode
+            result["note"] = (
+                "jadx exited with errors; some classes may be missing or only "
+                "partially decompiled"
+            )
+            if stderr.strip():
+                result["stderr"] = stderr[:_MAX_STDERR]
+        return result
 
     def decompile(
         self,
@@ -98,7 +113,8 @@ class JadxClient:
         target = class_name.strip()
         if not target:
             raise JadxError("invalid_params", "class_name is required")
-        self.export_sources(apk, out_dir, timeout=timeout)
+        export = self.export_sources(apk, out_dir, timeout=timeout)
+        partial = bool(export.get("partial"))
         rel = _class_to_java_path(target)
         output_root = out_dir.expanduser().resolve()
         sources = (output_root / "sources").resolve()
@@ -124,11 +140,20 @@ class JadxClient:
                 if len(matches) == 1:
                     match = matches[0]
             if match is None:
+                details: dict[str, object] = {
+                    "class_name": class_name,
+                    "expected": str(rel),
+                }
+                if partial:
+                    # jadx failed on some classes, so an absent class may have
+                    # failed to decompile rather than not existing. Flag it, or
+                    # the caller reads a flat not_found as "wrong class name".
+                    details["partial"] = True
                 raise JadxError(
                     "not_found",
-                    "decompiled class not found",
-                    class_name=class_name,
-                    expected=str(rel),
+                    "decompiled class not found"
+                    + ("; jadx decompile was partial" if partial else ""),
+                    **details,
                 )
             candidate = match
         try:
@@ -138,12 +163,22 @@ class JadxClient:
             raise JadxError("backend_error", f"failed to read source: {exc}") from exc
         truncated = len(raw) > _MAX_SOURCE_BYTES
         source = raw[:_MAX_SOURCE_BYTES].decode("utf-8", errors="replace")
-        return {
+        result: JsonObject = {
             "class_name": target,
             "path": str(candidate),
             "source": source,
             "truncated": truncated,
         }
+        if partial:
+            # This one class read back fine, but the export it came from was
+            # incomplete: cross-references and sibling classes the caller may
+            # reach for next are not guaranteed to be present.
+            result["partial"] = True
+            result["note"] = export.get("note") or (
+                "jadx exited with errors; other classes may be missing or only "
+                "partially decompiled"
+            )
+        return result
 
     def _run(
         self,
