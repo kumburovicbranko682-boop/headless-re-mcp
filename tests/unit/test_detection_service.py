@@ -15,7 +15,7 @@ from headless_re_mcp.detection import (
     FindingCategory,
     ScanMode,
 )
-from headless_re_mcp.detection.die import DieScanResult
+from headless_re_mcp.detection.die import DieProcessError, DieScanResult
 
 
 def _write_pe(path: Path) -> None:
@@ -92,6 +92,108 @@ def _die_result(path: Path) -> DieScanResult:
         returncode=0,
         scanned_at=datetime.now(UTC),
     )
+
+
+def _die_result_clean(path: Path) -> DieScanResult:
+    """A DIE scan that completed and found no packer/protector/obfuscator."""
+    return DieScanResult(
+        path=path,
+        size=path.stat().st_size,
+        mode=ScanMode.NORMAL,
+        findings=(),
+        source=DetectionSource(
+            name="diec", status="completed", version="3.21", summary="fake DIE"
+        ),
+        raw={"detects": []},
+        raw_json='{"detects": []}',
+        stdout='{"detects": []}',
+        stderr="",
+        returncode=0,
+        scanned_at=datetime.now(UTC),
+    )
+
+
+def test_packer_classify_inconclusive_when_die_unavailable(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_pe(binary)
+    # No diec configured: the primary packer detector never runs, so an empty
+    # candidate list must not read as a clean "none_detected".
+    service = AnalysisService(_settings(tmp_path))
+    session_id = _session_id(service.create_session(str(binary)))
+
+    classified = service.packer_classify(session_id)
+
+    assert classified.ok and classified.data is not None
+    assert classified.data["candidates"] == []
+    assert classified.data["conclusion"] == "inconclusive"
+    assert classified.data["signature_scan_completed"] is False
+    diec = next(s for s in classified.data["scanners"] if s["name"] == "diec")
+    assert diec["status"] == "unavailable"
+
+
+def test_packer_classify_none_detected_only_when_signature_scan_completes(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_pe(binary)
+    diec = tmp_path / "diec.exe"
+    diec.write_bytes(b"placeholder")
+    service = AnalysisService(
+        _settings(tmp_path, diec),
+        die_scanner=lambda executable, path, *, mode, timeout: _die_result_clean(path),
+    )
+    session_id = _session_id(service.create_session(str(binary)))
+
+    classified = service.packer_classify(session_id)
+
+    assert classified.ok and classified.data is not None
+    assert classified.data["candidates"] == []
+    assert classified.data["conclusion"] == "none_detected"
+    assert classified.data["signature_scan_completed"] is True
+    diec_scanner = next(s for s in classified.data["scanners"] if s["name"] == "diec")
+    assert diec_scanner["status"] == "completed"
+
+
+def test_packer_classify_failed_die_is_inconclusive_not_clean(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_pe(binary)
+    diec = tmp_path / "diec.exe"
+    diec.write_bytes(b"placeholder")
+
+    def _boom(executable: Path, path: Path, *, mode: ScanMode, timeout: float) -> DieScanResult:
+        raise DieProcessError("process_failed", "diec exited with status 1")
+
+    service = AnalysisService(_settings(tmp_path, diec), die_scanner=_boom)
+    session_id = _session_id(service.create_session(str(binary)))
+
+    classified = service.packer_classify(session_id)
+
+    assert classified.ok and classified.data is not None
+    assert classified.data["candidates"] == []
+    # A crashed scanner is not evidence of a clean sample.
+    assert classified.data["conclusion"] == "inconclusive"
+    assert classified.data["signature_scan_completed"] is False
+    diec_scanner = next(s for s in classified.data["scanners"] if s["name"] == "diec")
+    assert diec_scanner["status"] == "failed"
+
+
+def test_packer_classify_reports_candidates_with_scanner_disclosure(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_pe(binary)
+    diec = tmp_path / "diec.exe"
+    diec.write_bytes(b"placeholder")
+    service = AnalysisService(
+        _settings(tmp_path, diec),
+        die_scanner=lambda executable, path, *, mode, timeout: _die_result(path),
+    )
+    session_id = _session_id(service.create_session(str(binary)))
+
+    classified = service.packer_classify(session_id)
+
+    assert classified.ok and classified.data is not None
+    assert classified.data["conclusion"] == "candidates"
+    assert classified.data["signature_scan_completed"] is True
+    assert any(s["name"] == "diec" for s in classified.data["scanners"])
 
 
 def test_detection_service_uses_builtin_fallback_when_die_is_missing(tmp_path: Path) -> None:
