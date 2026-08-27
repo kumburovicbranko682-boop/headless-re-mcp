@@ -199,3 +199,42 @@ jobs:
             throw "committed SPA is stale - run 'npm run build' in webui and commit src/headless_re_mcp/web/spa"
           }
           Write-Host "committed SPA matches webui/src"
+
+  linux-apk-permissions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the package with androguard
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]" androguard
+          python -c "import androguard; print('androguard', androguard.__version__)"
+
+      - name: apk.permissions gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_apk_permissions_live_gate.py \
+            -rs --tb=short --junitxml=apk-permissions-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("apk-permissions-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # androguard was just installed and the fixture APK is committed, so a
+          # skip here means androguard could not decode a real binary manifest --
+          # the false-green "skip != pass" warns about. This gate proves the
+          # requested (<uses-permission>) and declared (<permission>) sets land
+          # in distinct fields, against real AXML rather than a mock.
+          if not cases:
+              sys.exit("no apk-permissions gate was collected")
+          if skipped:
+              sys.exit(f"apk-permissions gate skipped despite an installed androguard: {skipped}")
+          print(f"apk-permissions gate ran for real: {[c.get('name') for c in cases]}")
+          PY
