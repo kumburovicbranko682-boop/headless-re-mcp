@@ -74,11 +74,15 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List captured network requests.
 
-        Answers with requests (url, method, status, resourceType), count,
-        total, offset, has_more, and dropped so a page that filled the
-        limit is not read as the whole capture, and ring eviction is
-        visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        Answers with requests (url, method, status, resourceType,
+        response_size), count, total, offset, has_more, and dropped so a page
+        that filled the limit is not read as the whole capture, and ring
+        eviction is visible. response_size is the decoded response body length
+        in bytes (the size web.network.get would return as the body), summed as
+        the response arrives, so a large response is visible for triage without
+        fetching each body; it stays 0 for a bodyless response and for a cache
+        hit that sent nothing over the wire. metadata_truncated marks bounded
+        oversized request fields. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -185,8 +189,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with path, entry_count and truncated, plus artifact_id when
         the HAR was registered. truncated is true when the oldest entries were
-        dropped to keep the file under the capture cap. There is no har,
-        entries or artifact field.
+        dropped to keep the file under the capture cap. Each entry's
+        content.size and response.bodySize carry the decoded response body
+        length when the capture measured one (0 for a bodyless response or a
+        cache hit), instead of the -1 "unknown" sentinel, so an imported HAR
+        shows real response sizes. There is no har, entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

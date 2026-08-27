@@ -49,6 +49,31 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.network.list` / `web.har.export` 现报告响应体大小，不再恒缺）
+
+- 浏览器抓包接了 `Network.requestWillBeSent` 与 `Network.responseReceived`，却始终没接
+  `Network.dataReceived`，于是每一行网络记录和导出的每条 HAR entry 都没有响应体大小：
+  `proxy.flows` 早已给出 `response_size`，而 Web 这条线让分析者无法在不逐个抓取正文的情况下
+  分辨“2 字节的响应”和“2 MB 的响应”，导出的 HAR 里 `content.size` 也恒为 -1 的“未知”哨兵。
+  `Network.dataReceived.dataLength` 是**解码后（解压后）**的字节数——正是 `web.network.get`
+  作为正文返回的大小，也正是 HAR 规范 `content.size` 想要的值（`loadingFinished.encodedDataLength`
+  则是含响应头的在途传输量，故不能用它当正文大小）——所以把各分片的 `dataLength` 相加即可同时
+  填好两处。改法：`_wire_events` 新接 `Network.dataReceived`，在锁内把 `dataLength` 累加到该
+  requestId 的 entry 上（只存整型累计值，不留正文，无论响应多大都廉价）；entry 建立时把
+  `response_size` 播种为 0，这样每行都带该字段，且重定向（CDP 复用同一 requestId、会用新的
+  `requestWillBeSent` 覆盖 entry）会把计数归零，上一跳的正文不会漏入被跟随响应的合计。
+  `web.network.list` 每行随之带 `response_size`；`web.har.export` 把它作为 `response_body_size`
+  传给 `har_entry`，令 `content.size` 与 `response.bodySize` 填真实解码大小而非 -1。无正文的响应
+  （204/重定向）与只走缓存、在途零字节的命中都诚实地保持 0，绝不伪造。单测（不启浏览器，直接以
+  录制的 CDP 事件驱动真实回调）：两段 `dataReceived` 相加得 5000 落到行上、无 `dataReceived` 的
+  请求保持 0、重定向复用 requestId 时以最终跳的大小为准、导出 HAR 的 `content.size` / `bodySize`
+  等于测得的正文长度。新增 live gate（`test_web_network_response_size_live_gate.py`）：真实 Chromium
+  经本地源加载一个体积为特定非整数（24571 字节）的子资源，断言 `web.network.list` 该行的
+  `response_size` 与导出 HAR entry 的 `content.size` / `bodySize` 都恰为该值——证明字节数来自真实
+  `dataReceived` 流而非编造；并“守卫其守卫”——该大小是源端独选、既非 0 也非 HTML 长度，故通过
+  即意味着真的量到了正文字节。CI 新增 `linux-web-network-size` job 装 `browser` extra 与 Chromium
+  跑该 gate，skip≠pass 守卫在 Chromium 已装却仍 skip 时判失败。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

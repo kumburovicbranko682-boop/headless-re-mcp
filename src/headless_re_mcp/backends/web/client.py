@@ -472,6 +472,11 @@ class WebBackend:
                 "resourceType": resource_type,
                 "status": None,
                 "mimeType": None,
+                # Decoded response body length, summed from Network.dataReceived
+                # below. Seeded to 0 here so every row carries the field and a
+                # redirect (CDP reuses the requestId, replacing this entry) resets
+                # the count rather than keeping the previous hop's total.
+                "response_size": 0,
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
@@ -493,6 +498,24 @@ class WebBackend:
                     entry["mimeType"] = mime_type
                     if mime_truncated:
                         entry["metadata_truncated"] = True
+
+        def on_data(params: JsonObject) -> None:
+            # dataReceived.dataLength is the *decoded* (uncompressed) byte count
+            # for this chunk -- the size network.get would hand back as the body,
+            # and the number the HAR spec's content.size wants -- whereas
+            # loadingFinished.encodedDataLength is the on-wire transfer including
+            # response headers, so summing dataLength is what gives the true body
+            # length. Only the running total is kept (an int), never the bytes, so
+            # this stays cheap no matter how large the response. A cache hit fires
+            # no dataReceived, so its row honestly stays 0: nothing crossed the
+            # wire to measure, and the body would have to be fetched to size it.
+            length = params.get("dataLength")
+            if not isinstance(length, int) or length < 0:
+                return
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is not None:
+                    entry["response_size"] = int(entry.get("response_size") or 0) + length
 
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
@@ -530,6 +553,7 @@ class WebBackend:
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.dataReceived", on_data)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,
@@ -813,6 +837,7 @@ class WebBackend:
                     status=e.get("status"),
                     mime_type=e.get("mimeType") or "",
                     resource_type=e.get("resourceType"),
+                    response_body_size=e.get("response_size"),
                 )
                 for e in handle.requests.values()
             ]
