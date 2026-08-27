@@ -284,6 +284,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   真实 `status=200`/`application/json`、`web.network.get` 按 requestId 读回**源站发的确切字节**
   (`base64_encoded=false`、未截断、无 `body_error`),再钉死未知 requestId 得结构化 `not_found`。
   仅当 Playwright/Chromium 缺失时 skip。
+- `web.wasm.list` 补活体覆盖(此前 inspect Gate 只见 JS 脚本)。页面 `WebAssembly.instantiate` 一枚
+  手工编码的 `add(i32,i32)` 模块(免 wabt),轮询到 `Debugger.scriptParsed` 后断言 Chromium 把它
+  报成 `language=WebAssembly` 且 URL 以 `wasm://` 开头,整条 WASM 发现路径端到端验证。仅当
+  Playwright/Chromium 缺失时 skip。
 - 新增 GitHub 托管的 `linux-integration` CI 作业:装好 radare2、wabt、adb、upx、C 编译器、
   webcrack(npm)、androguard/adbutils/frida/mitmproxy/fastapi(`.[android,web,proxy,browser]`)
   与 Playwright Chromium,在每次 push/PR 上跑整个 `tests/integration`。此前 `linux-quality`

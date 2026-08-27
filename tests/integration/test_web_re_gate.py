@@ -329,6 +329,75 @@ def test_web_cdp_captures_a_network_request(tmp_path: Path) -> None:
             service.close_all()
 
 
+# Canonical "add(i32, i32) -> i32" module, hand-encoded so the gate needs no
+# wabt: magic+version, then the type / function / export / code sections. A page
+# that instantiates it makes Chromium parse a real WebAssembly script.
+_WASM_ADD_MODULE = bytes(
+    [
+        0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
+        0x03, 0x02, 0x01, 0x00,
+        0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00,
+        0x0A, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B,
+    ]
+)
+
+
+@pytest.mark.integration
+def test_web_cdp_lists_a_wasm_module() -> None:
+    """Live web.wasm.list: a page that instantiates WebAssembly is parsed as such.
+
+    web.wasm.list (web.scripts filtered to WebAssembly) had no live coverage;
+    the inspect gate only ever saw JavaScript scripts. This opens a page that
+    instantiates a hand-encoded module and asserts Chromium reports it as a
+    WebAssembly script with a wasm:// URL, so the WASM discovery path is proven
+    end to end. Skips only when Playwright/Chromium is absent (skip != pass).
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    import base64
+
+    b64 = base64.b64encode(_WASM_ADD_MODULE).decode("ascii")
+    page = (
+        "data:text/html,"
+        "<html><head><title>wasm-gate</title><script>"
+        f"const b=Uint8Array.from(atob('{b64}'),c=>c.charCodeAt(0));"
+        "WebAssembly.instantiate(b).then(m=>{window.__sum=m.instance.exports.add(2,3);});"
+        "</script></head><body>x</body></html>"
+    )
+    service = AnalysisService()
+    try:
+        created = service.create_session(page, target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                f"chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            # scriptParsed for the compiled module is async; poll for it.
+            wasm_scripts: list[dict[str, object]] = []
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                listed = service.web_wasm_list(session_id)
+                assert listed.ok, listed.error
+                wasm_scripts = list(listed.data["scripts"])
+                if wasm_scripts:
+                    break
+                time.sleep(0.1)
+            assert wasm_scripts, "no WebAssembly script was reported for the page"
+            first = wasm_scripts[0]
+            assert str(first["language"]).lower() == "webassembly"
+            assert str(first["url"]).startswith("wasm://")
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+
+
 @pytest.mark.integration
 def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:
