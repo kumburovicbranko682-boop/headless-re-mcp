@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 _pids_for_package 的三态：device.force_stop 是否成功全靠它，别把“没读到”当成“已停”）
+
+- `device.force_stop` 之所以能诚实作答,全靠 `_pids_for_package` 在一台它无法尽信的设备上区分三种结局:\
+  返回 pid 列表=进程还在(`stopped: False`);返回空列表=确认已停(`stopped: True`);返回 `None`=探针本身没跑成\
+  (`stopped: None` + “could not read process list”)。把 `None` 塌成 `[]`,force-stop 就会对一次根本没做的读取\
+  谎报成功;把 `[]` 塌成 `None`,又会对亲眼看着离场的进程含糊其辞。它还得扛住 `pidof` 缺失的设备(较老/精简\
+  Android)——回退到 `ps -A` 扫描并读取 pid 列,同时把该扫描封顶(16),使暴涨的进程表不能返回无界列表。这些此前\
+  只在活设备路径后面跑,一条都没钉。新增 `test_adb_pids_for_package.py` 用打桩的设备 shell(无 adbutils、无设备)\
+  钉住:空格/逗号分隔的 pid 解析、空输出=`[]`、纯噪声(无数字无 not-found 标记)=`None`、pidof 探针报错=`None`、\
+  pidof 缺失回退 ps 并读 pid 列、ps 无匹配行=`[]`、ps 回退报错=`None`、pid 只认前导列而非名字里的数字、以及\
+  16 条封顶。(纯测试补充,无行为变更。)
+
 ### 测试（钉住进程级 adb forward 的空闲回收门控：最后一个 Android 会话在时不回收，走后才回收）
 
 - `adb forward` 绑定活在 adb server 上而非本进程，关会话并不会移除它，后端又把进程持有的转发数封在\
