@@ -61,6 +61,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   "拒绝的 TCP 连接是失败信封、而非 connected=false"正交——信封成功仍以 `connected`(传输层)为
   准,`ready` 只做就绪性披露,与 `device.list` 早已强调的 offline/unauthorized 区分同构。回归测试
   覆盖 offline/unauthorized/device/无探测/探测抛错/被拒六种情形。
+### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
+
+- `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
+  `sys.platform` 强制成 `linux` 后再 monkeypatch `os.sysconf`，但 Windows 的 `os` 模块
+  根本没有 `sysconf` 属性，`monkeypatch.setattr` 默认 `raising=True` 便当场抛
+  `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
+  `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
+  非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
+  创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
