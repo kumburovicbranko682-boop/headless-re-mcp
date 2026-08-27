@@ -236,6 +236,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   两条摘要列表也各加 `has_request_body` 提示：`proxy.flows` 按 `request.raw_content` 是否非空标记，
   `web.network.list` 沿用 CDP 的 `requestWillBeSent`——扫一眼列表即可把 `flow.get`/`network.get` 指向
   真正带请求体的那几条，不必逐个打开。
+- **APK 静态线整条没有活体覆盖**。androguard 单测全是 mock，一旦 androguard 升级改了 API（方法被删/改名、
+  manifest 解码变化），单测照过、生产才炸——正是 frida `Memory.read*` 被删那类漏检。仓库此前没有任何 APK 夹具，
+  于是 `apk.open/manifest/permissions/components/certificates/native_libs` 以及 `AnalyzeAPK` 分析流水线
+  从未跑过真的 androguard。新增 `test_apk_static_gate.py`：用纯 Python 现搓一个**真正合法**的最小 APK
+  （手工编译的二进制 `AndroidManifest.xml` + 真实 zip 布局），经会话把整条 manifest 级接口跑通——包名、版本、
+  两项权限、四类组件、launcher activity、native ABI、证书（未签名），并断言无 `classes.dex` 时
+  `AnalyzeAPK`/`get_classes`/`get_strings` 仍干净返回空而非抛错（缺 androguard 时 skip≠pass）。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
