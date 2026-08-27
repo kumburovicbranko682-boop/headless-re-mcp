@@ -239,6 +239,40 @@ def terminate_process_group(pgid: int) -> list[int]:
     return killed
 
 
+def reap_orphaned_helpers(
+    process: Any,
+    *,
+    group_id: int,
+    readers_blocked: bool = False,
+    wait_s: float = 2.0,
+) -> bool:
+    """After a bounded tool exits on its own, kill any helper it detached.
+
+    A configured executable can be a wrapper that spawns a worker (a JVM, a
+    shell, a second CLI) and then exits ``0``. The worker keeps running on the
+    sample this call was told to release, and once the kernel reparents it to
+    ``init`` the parent/child walk from the launcher can no longer see it. So
+    enumerate what the launcher led -- its session group on POSIX, its
+    descendants on Windows -- and, when anything survived, kill the launcher's
+    tree and the recorded group. ``readers_blocked`` forces the sweep even when
+    enumeration missed the survivor: a reader still blocked on a pipe means a
+    child inherited it and is holding it open. Returns True when a kill ran.
+    """
+    pid = getattr(process, "pid", None)
+    if os.name == "nt":
+        lingering = readers_blocked or bool(
+            isinstance(pid, int) and pid > 0 and collect_descendants(int(pid))
+        )
+    else:
+        lingering = readers_blocked or bool(group_id and collect_process_group(int(group_id)))
+    if not lingering:
+        return False
+    terminate_process_tree(process, wait_s=wait_s, kill_group=os.name != "nt")
+    if os.name != "nt" and group_id:
+        terminate_process_group(int(group_id))
+    return True
+
+
 def _kill_own_process_group(pid: int) -> list[int]:
     """POSIX: kill ``pid``'s process group, but only when ``pid`` leads it.
 

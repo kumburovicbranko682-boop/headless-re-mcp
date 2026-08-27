@@ -387,6 +387,12 @@ def _capture_process(
             details={"executable": argv[0], "os_error": str(exc)},
         ) from exc
 
+    # start_new_session (POSIX) makes the scanner its own group leader; the
+    # group id is its pid. Used below to reap a wrapper's child that outlived a
+    # clean exit and was reparented to init, where the ppid walk sees nothing.
+    _pid = getattr(process, "pid", None)
+    group_id = int(_pid) if os.name != "nt" and _pid else 0
+
     stdout_pipe = process.stdout
     stderr_pipe = process.stderr
     if stdout_pipe is None or stderr_pipe is None:
@@ -472,6 +478,16 @@ def _capture_process(
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
         monitor_thread.join(timeout=1.0)
+        # A wrapper that exited cleanly may have detached a worker that still
+        # holds the sample; the terminate paths above already swept the abnormal
+        # exits, so only the clean exit needs this backstop.
+        if not (timed_out or limited or cancelled):
+            from headless_re_mcp.core.process_tree import reap_orphaned_helpers
+
+            readers_blocked = stdout_thread.is_alive() or stderr_thread.is_alive()
+            if reap_orphaned_helpers(process, group_id=group_id, readers_blocked=readers_blocked):
+                stdout_thread.join(timeout=1.0)
+                stderr_thread.join(timeout=1.0)
         # The readers close their own pipes; only close here when the reader has
         # finished, so a reader still blocked on a survivor's pipe never wedges
         # this thread on close().
