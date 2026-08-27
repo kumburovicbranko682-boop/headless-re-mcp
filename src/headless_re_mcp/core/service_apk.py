@@ -71,7 +71,9 @@ class ApkAnalysisMixin:
         return session.require_target(TargetKind.APK)
 
     def _jadx_out_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        if not _is_safe_session_segment(session_id):
             raise ApkError("invalid_params", "invalid session id")
         root = self.settings.artifact_root.expanduser().resolve()
         return root / "jadx" / session_id
@@ -251,7 +253,9 @@ class ApkAnalysisMixin:
         )
 
     def _repack_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        if not _is_safe_session_segment(session_id):
             raise ApkError("invalid_params", "invalid session id")
         root = self.settings.artifact_root.expanduser().resolve() / "apktool" / session_id
         root.mkdir(parents=True, exist_ok=True)

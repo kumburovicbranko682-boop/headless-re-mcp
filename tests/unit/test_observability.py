@@ -375,12 +375,17 @@ def test_two_readiness_probes_at_once_do_not_fail_each_other(tmp_path: Path) -> 
             if not check.ok:
                 failures.append(check.detail)
 
-    threads = [threading.Thread(target=hammer, name=f"probe-{i}") for i in range(6)]
+    # Daemon threads plus an aliveness check: a probe wedged in a file lock
+    # would otherwise outlive its timed join silently and then hang interpreter
+    # shutdown after the whole suite has passed -- the one phase no per-test
+    # watchdog covers.
+    threads = [threading.Thread(target=hammer, name=f"probe-{i}", daemon=True) for i in range(6)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=30)
 
+    assert not any(thread.is_alive() for thread in threads), "a probe thread wedged"
     assert not failures, f"{len(failures)} probes failed, first: {failures[0]}"
     assert list(root.iterdir()) == [], "a probe must still clean up after itself"
 

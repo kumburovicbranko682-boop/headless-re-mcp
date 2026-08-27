@@ -16,10 +16,17 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
+# apk.decode / repack / sign all declare le=1800 in their schema.
+_MAX_TIMEOUT_S = 1800.0
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
@@ -40,6 +47,10 @@ class ApktoolError(RuntimeError):
 def _run(
     cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
 ) -> tuple[str, str, int]:
+    try:
+        timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+    except InvalidTimeout as exc:
+        raise ApktoolError("invalid_params", str(exc)) from exc
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
