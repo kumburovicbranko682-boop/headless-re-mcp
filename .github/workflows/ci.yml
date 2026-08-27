@@ -193,7 +193,7 @@ jobs:
           for tool in r2 wat2wasm wasm2wat webcrack cc; do
             command -v "$tool" >/dev/null || { echo "::error::$tool not on PATH"; exit 1; }
           done
-          python -c "import mitmproxy, playwright, androguard, adbutils; print('python backends importable')"
+          python -c "import mitmproxy, playwright, androguard, adbutils, frida; print('python backends importable')"
 
       - name: Non-PE backend gates
         # -rs prints every skip reason: a gate that quietly skips (its backend
@@ -207,6 +207,7 @@ jobs:
             tests/integration/test_web_lifecycle_gate.py \
             tests/integration/test_m11_r2_live_gate.py \
             tests/integration/test_m11_optional_backends_gate.py \
+            tests/integration/test_m11_frida_live_gate.py \
             tests/integration/test_android_re_gate.py \
             tests/integration/test_agent_browser_smoke.py \
             -q -rs --tb=short --timeout=180
