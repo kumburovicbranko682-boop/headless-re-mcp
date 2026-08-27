@@ -24,6 +24,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 workspace.mode 的 fail-closed 包装钉进测试）
+
+- workspace 审计测试覆盖了正常路径、被拒的非法档、以及尽力而为的写审计,但两处 `except BaseException`
+  包装没被触及:`workspace.mode.get` 概述档位时出错、`workspace.mode.set` 持久化新档位时出错。后者尤其
+  要紧——若 `update_config_values` 抛错,进程内档位还没改,工具必须如实回失败而非报一个没达成的成功。
+- 新增 `tests/unit/test_workspace_mode_envelopes.py`:`mode.get` 概述出错时收敛成失败信封;`mode.set`
+  持久化失败时回 `internal_error`、运行档位保持不变、且这条没达成的变更不进审计。`service_workspace`
+  覆盖率 89%→100%,纯补测、不改行为。
+
 ### 加固（把 device 服务层的只读透传、后端兜底与抓取分支钉进测试）
 
 - device 审计测试钉住每个变更与抓取的溯源、artifacts 测试钉住字节/条数上限,但还剩几条服务层路径没被
