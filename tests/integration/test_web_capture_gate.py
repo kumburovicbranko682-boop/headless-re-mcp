@@ -139,6 +139,12 @@ def test_web_capture_chain_records_real_traffic(site: str) -> None:
             row = _poll(find_fetch_row, message="the page's /data.json fetch was never recorded")
             assert row["method"] == "GET"
             assert row["mimeType"] == "application/json"
+            # resourceType is the CDP request kind the summary carries and
+            # har.export turns into Chrome's _resourceType hint. The page reaches
+            # /data.json with fetch(), so the row must be tagged as a fetch rather
+            # than left blank. Allow XHR too: older Chromium labels the same call
+            # that way, and the point is that the kind was captured at all.
+            assert row["resourceType"] in {"Fetch", "XHR"}
 
             # network.get must round-trip the body the server actually sent.
             body = service.web_network_get(session_id, row["requestId"])
@@ -154,8 +160,19 @@ def test_web_capture_chain_records_real_traffic(site: str) -> None:
             har_path = Path(exported.data["path"])
             assert exported.data["size"] == har_path.stat().st_size
             document = json.loads(har_path.read_text(encoding="utf-8"))
-            har_urls = {entry["request"]["url"] for entry in document["log"]["entries"]}
+            entries = document["log"]["entries"]
+            har_urls = {entry["request"]["url"] for entry in entries}
             assert {site + "/", site + "/app.js", site + "/data.json"} <= har_urls
+            # The browser capture tags each entry with Chrome's _resourceType
+            # extension -- the hint separating a document from a script from a
+            # fetch, and the only reason har_entry emits a browser-only field the
+            # proxy export never sets. Pin that it survives to the HAR for the
+            # three request kinds this page makes; a capture that stopped
+            # recording the type would still satisfy the url assertion above.
+            by_url = {entry["request"]["url"]: entry for entry in entries}
+            assert by_url[site + "/"]["_resourceType"] == "Document"
+            assert by_url[site + "/app.js"]["_resourceType"] == "Script"
+            assert by_url[site + "/data.json"]["_resourceType"] in {"Fetch", "XHR"}
 
             # screenshot must be a real PNG, not merely a file that exists.
             shot = service.web_screenshot(session_id)
