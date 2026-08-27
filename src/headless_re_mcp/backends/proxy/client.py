@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.har import har_entry, serialize_har
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
+
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
 _REPLAY_WAIT_S = 15.0
@@ -562,24 +565,34 @@ class ProxyBackend:
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
         inst = self._get(session_id)
-        import json
-
         entries = [
-            {
-                "request": {"method": f.get("method"), "url": f.get("url")},
-                "response": {
-                    "status": f.get("status") or 0,
-                    "content": {"mimeType": f.get("content_type") or ""},
-                },
-            }
+            har_entry(
+                method=f.get("method"),
+                url=f.get("url"),
+                status=f.get("status"),
+                mime_type=f.get("content_type") or "",
+            )
             for f in inst.recorder.snapshot()
         ]
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
+        # Bounded like web.har.export: the flow ring holds up to 2000 rows whose
+        # URLs alone can be 16 KiB each, so an unbounded write would drop a
+        # multi-megabyte artifact the retention walker never budgeted for.
+        serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
+        if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise ProxyError(
+                "too_large",
+                "HAR export exceeds capture cap",
+                size=serialized.size,
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        out_path.write_text(serialized.text, encoding="utf-8")
+        return {
+            "path": str(out_path),
+            "entry_count": serialized.entry_count,
+            "truncated": serialized.truncated,
+            "size": serialized.size,
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):
