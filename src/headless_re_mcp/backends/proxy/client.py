@@ -88,6 +88,53 @@ def _port_bindable(host: str, port: int) -> bool:
     return False
 
 
+# DumpMaster wires up addons meant for the `mitmdump` CLI, not an embedded
+# capture-only proxy. These three are useless here and actively harmful across
+# versions, so they are stripped before the proxy is started:
+#   - ``errorcheck`` calls ``sys.exit(1)`` on *any* error logged during startup.
+#     One addon's benign complaint then takes down the capture thread, and when
+#     it fires from inside ``run()`` it raises ``SystemExit`` into our loop.
+#   - ``keepserving`` only matters when replaying flows from a file/stdin, which
+#     this recorder never does; on mitmproxy 12 its ``running`` hook also reads
+#     ``options.rfile`` (registered by the readfile addon), logging an error
+#     that ``errorcheck`` would otherwise turn fatal.
+#   - ``readfile`` / ``readfilestdin`` read flows from disk or stdin on startup,
+#     which an in-process proxy must never do.
+_EMBEDDED_HAZARD_ADDONS = ("errorcheck", "keepserving", "readfile", "readfilestdin")
+
+
+def _strip_embedded_hazards(master: Any) -> None:
+    """Drop DumpMaster addons that are unsafe or pointless for an embedded proxy.
+
+    Guarded per-addon so a rename or removal in a future mitmproxy release
+    degrades to a no-op rather than breaking startup.
+    """
+    for name in _EMBEDDED_HAZARD_ADDONS:
+        addon = master.addons.get(name)
+        if addon is None:
+            continue
+        with contextlib.suppress(Exception):
+            master.addons.remove(addon)
+
+
+async def _drain_proxy_servers(master: Any) -> None:
+    """Stop every listening server the proxy addon owns.
+
+    mitmproxy's ``master.shutdown()`` only sets ``should_exit``; it does not
+    close the ``Proxyserver`` listening socket. On mitmproxy 12 the port then
+    stays bound after the master loop unwinds, so the next capture on the same
+    port cannot start. Stopping the server instances here is what actually
+    frees the port. Runs on the master's own loop so the stop coroutines see
+    the socket they created.
+    """
+    proxyserver = master.addons.get("proxyserver")
+    if proxyserver is None:
+        return
+    for server in list(getattr(proxyserver, "servers", []) or []):
+        with contextlib.suppress(Exception):
+            await server.stop()
+
+
 def _uninstall_master_logging(
     master: Any, loop: asyncio.AbstractEventLoop | None = None
 ) -> None:
@@ -337,6 +384,7 @@ class _ProxyInstance:
                 master = DumpMaster(opts, loop=loop, with_termlog=False, with_dumper=False)
             except TypeError:
                 master = DumpMaster(opts)
+            _strip_embedded_hazards(master)
             master.addons.add(self.recorder)
             self._master = master
             self._started.set()
@@ -358,6 +406,17 @@ class _ProxyInstance:
         master = self._master
         loop = self._loop
         if master is not None and loop is not None:
+            # Close the listening socket before unwinding the loop. shutdown()
+            # alone leaves the port bound on mitmproxy 12, so a stop that
+            # "succeeded" would still block the next capture from binding it.
+            # Only attempt while the loop is live: a proxy that died during
+            # startup has no running loop and would just wait out the timeout.
+            if loop.is_running():
+                with contextlib.suppress(Exception):
+                    future = asyncio.run_coroutine_threadsafe(
+                        _drain_proxy_servers(master), loop
+                    )
+                    future.result(timeout=10.0)
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(master.shutdown)
         if self._thread is not None:
