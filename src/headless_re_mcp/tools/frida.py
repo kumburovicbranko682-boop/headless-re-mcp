@@ -118,8 +118,10 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Push and start frida-server on a rooted device/emulator via adb (best-effort).
 
         Answers with running, pushed and port, plus note when the process is
-        not visible. There is no ok field, no started field and no server field.
-        Envelope success with running false means the process is not visible.
+        not visible or could not be checked. There is no ok field, no started
+        field and no server field. Envelope success with running false means the
+        process is not visible; running null means the device did not answer the
+        process-list probe, so running could not be confirmed either way.
         bind_host is the interface frida-server listens on; it defaults to
         127.0.0.1, reachable over the USB/adb transport or an adb forward but
         not from the network. Pass 0.0.0.0 only to reach it by device IP.
