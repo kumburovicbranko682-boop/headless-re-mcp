@@ -87,6 +87,39 @@ def test_redaction_leaves_ordinary_diagnostics_intact() -> None:
     assert boundary._redact_text(text) == text
 
 
+def test_a_long_incident_message_is_marked_truncated_within_the_limit() -> None:
+    """A cut inline message must say it was cut, not read as the whole exception.
+
+    The full traceback lives in the incident log the envelope points to, but the
+    inline message is what an AI caller reads first. Silently cutting it at the
+    limit let a long message -- whose operative detail can sit past the cut --
+    read as complete, so mark the cut while keeping the length bound.
+    """
+    redacted = boundary._redact_text("x" * 5000, limit=1000)
+
+    assert len(redacted) <= 1000
+    assert redacted.endswith("...[truncated]")
+
+
+def test_a_short_message_is_never_marked_truncated() -> None:
+    """A message within the limit is returned whole, with no truncation marker."""
+    assert not boundary._redact_text("short and complete").endswith("...[truncated]")
+
+
+def test_a_secret_past_the_truncation_limit_never_survives() -> None:
+    """Redaction runs before the cut, so a trailing secret is masked or dropped.
+
+    The secret sits well past the limit here, so the slice removes it outright;
+    the point is that ordering the redaction first means truncation can never be
+    the thing that leaks it.
+    """
+    text = "filler " * 200 + "token=sk-DEADBEEFsecret"
+
+    redacted = boundary._redact_text(text, limit=1000)
+
+    assert "sk-DEADBEEFsecret" not in redacted
+
+
 def test_a_bearer_secret_never_reaches_the_envelope_or_the_log(
     incident_log: Path,
 ) -> None:
