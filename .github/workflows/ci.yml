@@ -233,6 +233,17 @@ jobs:
           unzip -oq /tmp/ghidra.zip -d /tmp/ghidra
           echo "HEADLESS_RE_GHIDRA_HOME=/tmp/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC" >> "$GITHUB_ENV"
 
+      - name: Allow local frida injection for the frida local gate
+        # Ubuntu runners ship kernel.yama.ptrace_scope=1, under which a tracer
+        # may only attach to its descendants. frida's local injector is a
+        # sibling of the target, so the frida local gate would skip unless this
+        # is relaxed. gdb/strace-based CI jobs do the same. The gate still skips
+        # (never fails) if the kernel refuses, so this only turns a skip into a
+        # real run where the sandbox permits it.
+        run: |
+          echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
+          cat /proc/sys/kernel/yama/ptrace_scope
+
       - name: Linux integration gates
         run: python -m pytest tests/integration -q -rs --tb=short --timeout=300
 
