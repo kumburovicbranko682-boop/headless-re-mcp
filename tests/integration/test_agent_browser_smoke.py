@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import socket
 import threading
@@ -11,8 +12,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import uvicorn
-from playwright.sync_api import Response, expect, sync_playwright
 
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
 from headless_re_mcp.config import Settings
@@ -20,6 +19,20 @@ from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.web.app import create_app
 
 JsonObject = dict[str, Any]
+
+# playwright (browser extra) and uvicorn (web extra) are optional. Importing
+# ``playwright.sync_api`` at module scope made a machine without it error during
+# collection -- and one collection error aborts the whole integration session by
+# default, so every other honest per-backend skip went down with it. Gate the
+# module on their presence and defer the imports into the test, matching the
+# sibling web gates that skip cleanly on a bare machine (skip != pass).
+_BROWSER_STACK_MISSING = [
+    name for name in ("playwright", "uvicorn") if importlib.util.find_spec(name) is None
+]
+pytestmark = pytest.mark.skipif(
+    bool(_BROWSER_STACK_MISSING),
+    reason=f"{'/'.join(_BROWSER_STACK_MISSING) or 'browser stack'} not installed (skip != pass)",
+)
 
 
 class BrowserFakeProvider:
@@ -72,6 +85,9 @@ _ROUND_TRIP_MS = 45_000
 
 @pytest.mark.integration
 def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import uvicorn
+    from playwright.sync_api import Response, expect, sync_playwright
+
     monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
     settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
     token = "browser-web-token-0123456789"
