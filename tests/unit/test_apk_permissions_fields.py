@@ -53,8 +53,31 @@ def test_apk_permissions_names_permissions_not_declared() -> None:
     assert payload["count"] == 256
     assert len(payload["permissions"]) == 256
     assert payload["has_more"] is True
+    # total is the full declared count (300), not the page kept (256), so a
+    # caller can tell how many were withheld; requested has its own total.
+    assert payload["total"] == 300
+    assert payload["requested_total"] == 1
     assert payload["requested_permissions"] == ["R"]
     doc = _tool_docstring("apk.permissions")
     assert "Answers with permissions" in doc
     assert "requested_permissions" in doc
     assert "has_more" in doc
+    assert "total" in doc
+
+
+class _SmallApk:
+    def get_permissions(self) -> list[str]:
+        return ["android.permission.INTERNET", "android.permission.CAMERA"]
+
+    def get_requested_permissions(self) -> list[str]:
+        return ["android.permission.INTERNET"]
+
+
+def test_apk_permissions_within_the_cap_reports_total_equal_to_count() -> None:
+    client = ApkClient()
+    client._apk = lambda _path: _SmallApk()  # type: ignore[method-assign]
+    payload = client.permissions(Path("dummy.apk"))
+    assert payload["count"] == 2
+    assert payload["total"] == 2
+    assert payload["requested_total"] == 1
+    assert payload["has_more"] is False

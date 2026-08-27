@@ -50,8 +50,27 @@ def test_apk_native_libs_names_native_libs_not_libraries() -> None:
     assert payload["count"] == 256
     assert len(payload["native_libs"]) == 256
     assert payload["has_more"] is True
+    # total counts every lib/ entry (300), not the page kept (256); the
+    # classes.dex is not a lib/ entry and must not inflate it.
+    assert payload["total"] == 300
     assert payload["abis"] == ["arm64-v8a"]
     doc = _tool_docstring("apk.native_libs")
     assert "Answers with native_libs" in doc
     assert "abis" in doc
     assert "has_more" in doc
+    assert "total" in doc
+
+
+class _SmallApk:
+    def get_files(self) -> list[str]:
+        return ["lib/x86/a.so", "lib/arm64-v8a/b.so", "res/x.png", "classes.dex"]
+
+
+def test_apk_native_libs_within_the_cap_reports_total_equal_to_count() -> None:
+    client = ApkClient()
+    client._apk = lambda _path: _SmallApk()  # type: ignore[method-assign]
+    payload = client.native_libs(Path("dummy.apk"))
+    assert payload["count"] == 2
+    assert payload["total"] == 2
+    assert payload["has_more"] is False
+    assert payload["abis"] == ["arm64-v8a", "x86"]
