@@ -176,6 +176,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分树时各字段齐备并经 export→decompile 透传、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及两个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 新增回归（`apk.decompile` 的类名兜底查找：要么回点名的那个类、要么什么都不回，由异构源码树直测固定）
+
+- `apk.decompile` 先整包反编译，再按类名回读单个类:`com.example.Main` 先查包路径推出的
+  `sources/com/example/Main.java`。jadx 并不总把类落在包路径上(`SourceFile` 属性、混淆重映射、
+  默认包都可能落到别处),故该路径不是文件时,`decompile` 兜底遍历整棵树找同「简单名」的文件——
+  `matches = rglob(简单名)`,`if len(matches) == 1: match = matches[0]`,否则 `match` 仍为 None 抛
+  `not_found`。`== 1` 这道闩是关键,其注释记着它修掉的回归:早先的简单名遍历「会回树里第一个
+  Main.java——也就是 jadx 恰好先吐出来的那个,未必是调用者点名的类」。于是精确路径落空后合同分三支:
+  全树恰好一个同名文件→回它;零个→`not_found`;两个及以上→同样 `not_found`(猜哪个都是把别的包的
+  类冒名顶替回去)。此前所有 jadx 用例要么把类精确写在推导路径上(`_writes_one_class` →
+  `sources/com/example/Main.java`)、要么整个 fake 掉 `decompile`(`_TrackingJadx`),`candidate.is_file()`
+  恒真,这条兜底——恢复、歧义拒绝、零命中的 `not_found`——从不触发:删掉兜底那些用例照绿,把 `== 1`
+  松成「命中第一个即取」也照绿。新增用例直测三支:类落在非推导路径时凭唯一同名文件恢复(并断言整包
+  失败判决 `exit_code`/`tool_failed`/`stderr` 仍随恢复路径透出)、推导路径存在时压过别处的同名诱饵、
+  两个同名文件时拒绝猜测回 `not_found`、全树无同名文件时回 `not_found` 并带上期望路径。
+
 ### 修复（frida 设备解析卡死不再永占 worker）
 
 - **`_resolve_device` 与 `add_remote_device` 里对 frida 的设备查找此前不带可由本侧兜底的截止时间。**
