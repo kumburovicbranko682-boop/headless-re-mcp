@@ -21,22 +21,33 @@ _MAX_TOOL_CALL_BUFFER_BYTES = 4 * 1024 * 1024
 # still fits inside one SSE line after the JSON envelope.
 _MAX_SSE_LINE_BYTES = _MAX_TOOL_CALL_BUFFER_BYTES + 64 * 1024
 _MAX_TOOL_CALLS = 128
+# Real content-part lists nest one or two levels; anything deeper is a
+# malformed or hostile payload, not text.
+_MAX_TEXT_PART_DEPTH = 8
 _reported_bad_proxy_env = False
 _ssl_context: Any = None
 _ssl_lock = Lock()
 _HIDDEN_DELTA_KEYS = ("reasoning_content", "reasoning", "thinking")
 
 
-def _plain_text(value: Any) -> str:
+def _plain_text(value: Any, _depth: int = 0) -> str:
     """Pull visible text out of a chat-completions delta field.
 
     Providers disagree: a string, a list of parts, or a small object with
     ``text`` / ``content``. Anything else is ignored rather than stringified.
+
+    The list branch recurses at two frames per nesting level (call plus the
+    join's generator), while the C json parser that produced ``value`` spends
+    about one recursion unit per level. A nested-list ``content`` around half
+    the interpreter's recursion limit therefore parses fine and then dies
+    here with RecursionError, so depth is capped instead of trusted.
     """
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        return "".join(_plain_text(item) for item in value)
+        if _depth >= _MAX_TEXT_PART_DEPTH:
+            return ""
+        return "".join(_plain_text(item, _depth + 1) for item in value)
     if isinstance(value, dict):
         for key in ("text", "content", "summary"):
             piece = value.get(key)
@@ -73,7 +84,14 @@ def _tool_argument_fragment(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False)
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except RecursionError as exc:
+            # The C encoder recurses per container level just like the parser
+            # that built this value, but from a few frames deeper -- a payload
+            # parsed right at the recursion limit can fail to serialize.
+            # Silently dropping it would assemble a wrong tool call, so refuse.
+            raise ValueError("provider emitted tool arguments nested too deeply") from exc
     return ""
 
 
@@ -380,7 +398,12 @@ class OpenAICompatibleProvider:
                     break
                 try:
                     chunk = _normalize_chunk(json.loads(data))
-                except json.JSONDecodeError as exc:
+                except (json.JSONDecodeError, RecursionError) as exc:
+                    # RecursionError joins JSONDecodeError because json.loads
+                    # raises it out of the C decoder on deeply nested input --
+                    # ~1 KiB of brackets, far under the SSE line cap -- and it
+                    # is a RuntimeError, so it would otherwise escape as an
+                    # opaque interpreter error instead of naming the provider.
                     raise ValueError(
                         f"provider emitted a stream chunk that is not JSON: {data[:200]}"
                     ) from exc
@@ -431,7 +454,10 @@ class OpenAICompatibleProvider:
         for index, item in sorted(tool_fragments.items()):
             try:
                 arguments = json.loads(item["arguments"] or "{}")
-            except json.JSONDecodeError as exc:
+            except (json.JSONDecodeError, RecursionError) as exc:
+                # Same trap as the chunk parse above: assembled fragments like
+                # "[" * 1001 are syntactically fine but too deep to decode, and
+                # the resulting RecursionError is not a ValueError.
                 raise ValueError(f"provider emitted invalid tool arguments at index {index}") from exc
             if not isinstance(arguments, dict) or not item["name"]:
                 raise ValueError(f"provider emitted incomplete tool call at index {index}")
@@ -485,7 +511,13 @@ class OpenAICompatibleProvider:
                     raise ValueError(
                         f"provider models response exceeded {_MAX_MODELS_BODY_BYTES} bytes"
                     )
-            payload = json.loads(body)
+            try:
+                payload = json.loads(body)
+            except (json.JSONDecodeError, RecursionError) as exc:
+                # probe_models surfaces the exception type and text to the
+                # operator; a raw JSONDecodeError or RecursionError points at
+                # this code rather than at the endpoint that sent the body.
+                raise ValueError("provider models response is not JSON") from exc
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             return []

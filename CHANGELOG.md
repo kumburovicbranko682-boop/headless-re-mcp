@@ -49,6 +49,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（OpenAI 兼容 provider 对深嵌套 JSON 不再以裸 RecursionError 崩掉运行）
+
+- `agent/providers/openai_compatible.py` 解析的是 provider 发来的不可信字节，而
+  `json.loads` 对深嵌套输入（如 `"[" * 20_000`，仅 20 KB，远低于 4 MiB 缓冲上限）抛的是
+  `RecursionError`——它是 `RuntimeError` 而非 `ValueError`，于是流式 chunk 解析
+  （`except json.JSONDecodeError`）、组装后 tool-call 参数的最终 `json.loads`、以及
+  `list_models` 的裸 `json.loads` 三处都接不住：重试包装器判为不可重试后原样上抛，
+  运行以一句指向解释器的 "maximum recursion depth exceeded" 收场，而不是命名 provider
+  的既定错误。三处 except 补上 `RecursionError` 并统一转成原有的 `ValueError` 文案。
+- 更隐蔽的一处：`_plain_text` 摊平嵌套 content 列表时每层递归消耗两个栈帧（函数调用 +
+  join 的生成器），而产出该值的 C json 解析器每层只记约一个递归单位——嵌套约 600 层的
+  content 能顺利通过 `json.loads`，随后在任何守卫之外死于 `_plain_text`。实测 600 层
+  夹具未修复时必现 RecursionError。现按 `_MAX_TEXT_PART_DEPTH`（8 层，真实 content
+  parts 只有一两层）截断，超深垃圾按“忽略而非字符串化”的既定语义丢弃，流继续。
+  另外 `_tool_argument_fragment` 对 snapshot 形式的 dict/list 参数做 `json.dumps` 时，
+  C 编码器从比解析器更深几帧的位置起跳，贴着递归上限解析成功的值可能序列化失败——
+  静默吞掉会拼出错误的 tool call，现改为显式拒绝（`ValueError`）。六条回归测试
+  （流 chunk / 组装参数 / 深嵌套 content / fragment 序列化 / models 两种畸形体）
+  未修复时全部以 RecursionError 失败，修复后通过。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
