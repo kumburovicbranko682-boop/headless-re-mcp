@@ -71,6 +71,23 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.services")
+    def device_services(
+        serial: str, limit: Annotated[int, Field(ge=1, le=1000)] = 500
+    ) -> dict[str, Any]:
+        """List registered binder services (name and AIDL interface).
+
+        Enumerates the device's system-service registry via service list: the
+        managers that are running and the interface each exposes, which is the
+        Android hook/attack surface. Answers with services (each carrying name
+        and interface, empty when the service publishes none), count, has_more,
+        and reported_total (the device's own Found N services count) so a page
+        that filled the cap is not read as every service. There is no items
+        field. An adb error line (a dead or offline device) is a failure, not
+        an empty registry.
+        """
+        return _dump(analysis.device_services(serial, limit=limit))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

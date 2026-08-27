@@ -40,6 +40,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_SERVICES = 1000
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -525,6 +526,53 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def services(self, serial: str, *, limit: int = 500) -> JsonObject:
+        """Enumerate registered binder services via ``service list``.
+
+        The device's system-service registry is the Android attack/hook
+        surface: which managers are running and the AIDL interface each one
+        exposes. ``service list`` prints one row per service as
+        ``<index> <name>: [<interface>]`` under a ``Found N services:`` header;
+        a service with no published interface prints ``[]`` and comes back with
+        an empty interface rather than being dropped. The list is capped and
+        sorted by name; reported_total is the device's own count so a bounded
+        page is not misread as every service.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_SERVICES))
+        raw = _device_shell(dev, "service list")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "service list failed", output=text[:800])
+        services: list[JsonObject] = []
+        has_more = False
+        reported_total: int | None = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            header = re.match(r"^Found\s+(\d+)\s+services", stripped)
+            if header:
+                reported_total = int(header.group(1))
+                continue
+            match = re.match(r"^\d+\s+(.+?):\s*\[(.*)\]$", stripped)
+            if not match:
+                continue
+            name = match.group(1).strip()
+            if not name:
+                continue
+            if len(services) >= capped:
+                has_more = True
+                break
+            services.append({"name": name, "interface": match.group(2).strip()})
+        services.sort(key=lambda item: item["name"])
+        result: JsonObject = {
+            "services": services,
+            "count": len(services),
+            "has_more": has_more,
+        }
+        if reported_total is not None:
+            result["reported_total"] = reported_total
+        return result
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
