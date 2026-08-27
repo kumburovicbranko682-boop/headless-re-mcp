@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from headless_re_mcp.core.event_log import PersistentDebugEventLog
+from headless_re_mcp.core.events import DebugEvent
 from headless_re_mcp.web.monitor import (
     _event_tail,
     _timeline_tail,
@@ -104,6 +106,53 @@ def test_event_tail_reports_a_render_safe_error_when_the_log_raises() -> None:
     assert error is not None
     assert error["code"] == "events_unavailable"
     assert "wedged" in error["message"]
+
+
+def test_event_frame_discloses_its_window_and_what_the_ring_lost() -> None:
+    """A busy session's event panel is a tail over a hole, and must say so.
+
+    The tail reads the newest 24 events but surfaced only the events and a
+    cursor: a session at sequence 103 drew a frame that read as the whole
+    stream, and the three events the native ring overwrote before drain could
+    copy them (sequences 1-3 here) vanished without a trace. The durable log's
+    batch already knows the high-water mark and the loss count; the frame now
+    carries total, truncated, and dropped_total.
+    """
+    log = PersistentDebugEventLog()
+    log.append_events(
+        [
+            DebugEvent(
+                sequence=seq,
+                timestamp_unix_ms=seq,
+                source="x64dbg",
+                kind="debug.stepped",
+                data={},
+            )
+            for seq in range(4, 104)  # 1..3 were overwritten before the drain ran
+        ]
+    )
+    service = _FakeService(
+        session=_Result(data={"session": {"target": "pe", "state": "running"}}),
+        _runtime_owner={"sess": _Runtime(log)},
+    )
+
+    payload, error = _event_tail(service, "sess", 24)  # type: ignore[arg-type]
+
+    assert error is None
+    assert payload is not None
+    assert [event["sequence"] for event in payload["events"]] == list(range(80, 104))
+    assert payload["total"] == 103
+    assert payload["truncated"] is True
+    assert payload["dropped_total"] == 3
+
+    snapshot = build_monitor_snapshot(service, "sess")  # type: ignore[arg-type]
+
+    events = snapshot["events"]
+    assert len(events["items"]) == 24
+    assert events["total"] == 103
+    assert events["truncated"] is True
+    assert events["dropped_total"] == 3
+    assert events["error"] is None
 
 
 def test_unpack_section_surfaces_stage_and_recoverability() -> None:
