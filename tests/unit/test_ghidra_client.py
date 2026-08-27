@@ -453,3 +453,47 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def test_ghidra_strings_passes_the_strings_mode_and_returns_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """strings drives the postScript in strings mode and returns its items.
+
+    Guards the plumbing (client -> ExportJson mode arg -> export_strings.json):
+    the Jython extraction itself runs only inside Ghidra, but the mode routing
+    and the export read are what a wrong wiring would break.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        argv = [str(part) for part in cmd]
+        calls.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text(
+                    '{"mode": "strings", "items": [{"address": "00401000",'
+                    ' "value": "hello", "length": 6}], "count": 1, "has_more": false}',
+                    encoding="utf-8",
+                )
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    client = _client(tmp_path)
+
+    listed = client.strings(_binary(tmp_path), tmp_path / "project")
+
+    assert listed["items"] == [{"address": "00401000", "value": "hello", "length": 6}]
+    assert listed["has_more"] is False
+    assert listed["export_path"]
+    assert "strings" in calls[0]
+    assert any(arg.endswith("export_strings.json") for arg in calls[0])
+
+
+def test_ghidra_strings_description_names_its_fields() -> None:
+    doc = _tool_docstring("ghidra.strings")
+    assert "value" in doc
+    assert "length" in doc
+    assert "address" in doc
+    assert "has_more" in doc

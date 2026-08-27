@@ -61,6 +61,23 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.strings")
+    def ghidra_strings(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """Defined strings Ghidra found in the program.
+
+        Answers with items, each carrying address, value (the string, cut at
+        2048 chars) and length (the data's byte length), plus count and
+        has_more so a page that filled the limit is not read as every string.
+        These are strings Ghidra's analysis defined as data, a second reading
+        beside r2.strings from a different engine. A failed export is an error,
+        not a binary with no strings.
+        """
+        return _dump(analysis.ghidra_strings(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.xrefs")
     def ghidra_xrefs(
         session_id: str,

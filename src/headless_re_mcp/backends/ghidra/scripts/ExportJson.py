@@ -60,6 +60,30 @@ elif mode == "symbols":
             }
         )
     payload["items"] = items
+elif mode == "strings":
+    from ghidra.program.util import DefinedDataIterator
+
+    items = []
+    for data in DefinedDataIterator.definedStrings(program):
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        try:
+            raw_value = data.getValue()
+        except Exception:
+            raw_value = None
+        # u"%s" coerces a java String (Jython 2) or any value (PyGhidra 3) to a
+        # unicode string without a bare unicode() name, so a non-ASCII string
+        # survives instead of blowing up str() mid-scan.
+        text = u"" if raw_value is None else (u"%s" % (raw_value,))
+        items.append(
+            {
+                "address": str(data.getAddress()),
+                "value": text[:2048],
+                "length": int(data.getLength()),
+            }
+        )
+    payload["items"] = items
 elif mode == "xrefs":
     items = []
     if address_arg:
