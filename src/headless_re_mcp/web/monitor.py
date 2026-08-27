@@ -76,7 +76,8 @@ def _event_tail(
     try:
         latest = int(log.latest_sequence)
         window_start = max(0, latest - limit)
-        batch = log.read_after(window_start, limit=limit).batch
+        read = log.read_after(window_start, limit=limit)
+        batch = read.batch
     except BaseException as exc:  # noqa: BLE001 - a frame has to render regardless
         return None, {"code": "events_unavailable", "message": str(exc)}
     return {
@@ -93,6 +94,13 @@ def _event_tail(
         # gone, not merely off-window. A panel that hid this drew a clean stream
         # over a hole.
         "dropped_total": batch.dropped_total,
+        # dropped_total counts loss across the whole stream; this says the hole
+        # is *inside* the window being shown -- read_after had to skip missing
+        # sequences to assemble these events, so the frame is not the contiguous
+        # run it looks like. truncated (older events before the window) and
+        # dropped_total (cumulative eviction) can both be false while this is
+        # true, so it is its own signal, not implied by them.
+        "unrecovered_gap": read.unrecovered_gap,
     }, None
 
 
@@ -210,6 +218,7 @@ def build_monitor_snapshot(
             "total": (events_payload or {}).get("total", 0),
             "truncated": bool((events_payload or {}).get("truncated", False)),
             "dropped_total": (events_payload or {}).get("dropped_total", 0),
+            "unrecovered_gap": bool((events_payload or {}).get("unrecovered_gap", False)),
             "error": events_error,
         },
         "artifacts": {
