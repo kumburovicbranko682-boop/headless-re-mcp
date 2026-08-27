@@ -173,7 +173,9 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """What a session did that left a mark: opened, closed, wrote, drove a UI.
 
         Answers with events, plus count, total, offset, limit, has_more and
-        path. There is no timeline field. Not a log of every call: reads are
+        path, and skipped when a torn entry in the page would not parse and was
+        dropped (so count < total on a settled page is explained, not a
+        mystery). There is no timeline field. Not a log of every call: reads are
         absent, so a session that analysed for an hour without changing
         anything shows only its open and close. Each write carries the undo
         record written alongside it. A session that was never created answers

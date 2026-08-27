@@ -196,6 +196,10 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
     than raised: two processes can share an artifact root, and a caller asking
     for a diagnostic log should not get an internal error because the log was
     being trimmed as it asked.
+
+    A line in the requested window that will not parse (a torn append) is
+    dropped, and the count of such drops is reported as ``skipped`` when it is
+    non-zero, so a dropped mark is not mistaken for one that was never made.
     """
     limit = max(1, min(limit, 256))
     offset = max(0, offset)
@@ -231,12 +235,15 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
     # answer, and the decode itself is now outside the lock entirely.
     total, chunk = _page(raw, offset, limit)
     events = []
+    skipped = 0
     for line in chunk:
+        if not line.strip():
+            continue
         try:
             events.append(json.loads(line))
         except json.JSONDecodeError:
-            continue
-    return {
+            skipped += 1
+    result: JsonObject = {
         "events": events,
         "count": len(events),
         "total": total,
@@ -245,3 +252,12 @@ def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> J
         "has_more": offset + len(chunk) < total,
         "path": str(path),
     }
+    # A torn line (a crash mid-append, or a cross-process race the in-process
+    # lock cannot cover) will not parse, and the reader drops it. Without this
+    # count the caller only sees count < total on a page whose has_more is
+    # false and cannot tell "an entry was unreadable" from a paging quirk, so
+    # a dropped mark reads as a mark that was never made. Only surfaced when a
+    # drop happened, so a clean page stays clean.
+    if skipped:
+        result["skipped"] = skipped
+    return result
