@@ -83,3 +83,72 @@ def test_ghidra_headless_functions_and_decompile(tmp_path: Path) -> None:
     # merely that the call returned an envelope.
     assert isinstance(body, str) and len(body) > 0
     assert "return" in body
+
+
+@pytest.mark.integration
+def test_ghidra_symbols_lists_named_symbols(tmp_path: Path) -> None:
+    """The symbols export mode is a separate ExportJson.py branch from functions.
+
+    functions/decompile proved the launcher and argument plumbing, but the symbol
+    table walk (``st.getAllSymbols``) is its own path that nothing exercised. A
+    compiled-with-symbols ELF must surface its named routines here.
+    """
+    home = getattr(Settings.load(), "ghidra_home", None)
+    client = GhidraClient(home=home)
+    if not client.available:
+        pytest.skip(
+            "Ghidra analyzeHeadless / Java not configured — Gate not run (skip != pass)"
+        )
+    fixture = _build_elf_fixture(tmp_path)
+    if fixture is None:
+        pytest.skip("no C compiler to build an ELF fixture — Gate not run (skip != pass)")
+
+    project = tmp_path / "project"
+    symbols = client.symbols(fixture, project, limit=512, timeout=_HEADLESS_TIMEOUT_S)
+    assert symbols.get("mode") == "symbols"
+    assert symbols.get("count", 0) >= 1
+    names = {item["name"] for item in symbols.get("items", [])}
+    # The three routines the fixture defines must all appear in the symbol table.
+    assert {"main", "compute", "helper"} <= names
+    for item in symbols["items"]:
+        assert item.get("name")
+        assert "address" in item
+        assert "type" in item
+
+
+@pytest.mark.integration
+def test_ghidra_xrefs_recovers_a_call_edge(tmp_path: Path) -> None:
+    """The xrefs export mode resolves an address and walks references to it.
+
+    This is the last untested ExportJson.py branch, and the only one that takes a
+    caller-supplied address argument -- exactly the shape that hid the ARGS bug.
+    ``compute`` calls ``helper`` twice, so references to helper's entry must
+    include recovered call edges, proving the reference walk actually ran.
+    """
+    home = getattr(Settings.load(), "ghidra_home", None)
+    client = GhidraClient(home=home)
+    if not client.available:
+        pytest.skip(
+            "Ghidra analyzeHeadless / Java not configured — Gate not run (skip != pass)"
+        )
+    fixture = _build_elf_fixture(tmp_path)
+    if fixture is None:
+        pytest.skip("no C compiler to build an ELF fixture — Gate not run (skip != pass)")
+
+    project = tmp_path / "project"
+    functions = client.functions(fixture, project, limit=128, timeout=_HEADLESS_TIMEOUT_S)
+    helper_entry = next(
+        item["entry"] for item in functions["items"] if item["name"] == "helper"
+    )
+    xrefs = client.xrefs(fixture, project, helper_entry, limit=64, timeout=_HEADLESS_TIMEOUT_S)
+    assert xrefs.get("mode") == "xrefs"
+    assert xrefs.get("count", 0) >= 1
+    for item in xrefs["items"]:
+        assert "from" in item and "to" in item and "type" in item
+    # compute -> helper is a direct call, so at least one reference to helper's
+    # entry must be a recovered call edge, not merely a data/indirection artefact.
+    call_edges = [
+        item for item in xrefs["items"]
+        if "CALL" in str(item.get("type", "")) and item.get("to") == helper_entry
+    ]
+    assert call_edges, f"no call edge to helper among {xrefs['items']}"
