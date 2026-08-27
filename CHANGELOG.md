@@ -248,6 +248,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   doctor 用后端同一个 `_resolve_wabt_tool` 分别解析两个二进制：都缺才 `missing`；缺一个则仍 `detected`
   但点名缺的二进制与随之失效的工具（`wasm2wat`↔`wasm.wat`、`wasm-objdump`↔`wasm.info`）并给出补齐指引；
   两个都在才报「wasm2wat + wasm-objdump」。目录式配置与部分安装从此如实呈现，doctor 与后端不再打架。
+- **`apk.sign` 把 keystore 口令放进子进程 argv**。apksigner 的口令过去以 `--ks-pass pass:<口令>` /
+  `--key-pass pass:<口令>` 直接写在命令行上——而 argv 在多用户机上人人可读（`ps`、`/proc/<pid>/cmdline`），
+  一个自定义 keystore 的口令就这么泄给了同机的其他用户。模块本就承诺「口令绝不进错误详情」（失败时把
+  stderr 里的口令抹成 `***`），可 argv 这条更直接的泄露口一直开着。现在口令改经环境变量交给 apksigner
+  （`--ks-pass env:` / `--key-pass env:`，`run_bounded` 的 `stdin` 是 `DEVNULL` 故不用 `stdin:` 通道），
+  子进程环境在 `os.environ` 基础上只加这一个变量以保留 `PATH`/`JAVA_HOME`；verify 那趟不碰口令。stderr
+  抹除作为第二道防线保留。debug keystore 口令是公开的 `android`，本就无所谓；这修的是自定义 keystore。
 - **`device.install` 读 APK 清单会被解压炸弹 OOM**。为了不引入 androguard，`_apk_package_name`
   用 `ZipFile.read("AndroidManifest.xml")[:65536]` 手搓解析——可 `read()` 会先把整个成员解压进内存
   再切片，一个把清单做成解压后上 GiB 的恶意 APK，能在切片之前就把进程撑爆；而 `install()` 正是拿

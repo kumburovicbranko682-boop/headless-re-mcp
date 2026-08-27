@@ -126,6 +126,55 @@ def test_a_failed_sign_scrubs_the_keystore_password_from_stderr(
     assert "***" in verify_stderr
 
 
+def test_apk_sign_keeps_the_keystore_password_out_of_argv(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """SECURITY: the password must not reach the child's command line.
+
+    ``--ks-pass pass:<pw>`` would put the keystore password in argv, which ps and
+    /proc expose to every other user on a shared host. apksigner reads it from
+    the environment instead; the verify pass neither needs nor receives it.
+    """
+    from headless_re_mcp.backends.apktool.client import _KS_PASS_ENV
+
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    password = "hunter2-release-pw"
+    calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+    def recording_run(
+        cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
+    ) -> tuple[str, str, int]:
+        calls.append((cmd, env))
+        if "verify" not in cmd:
+            out.write_bytes(b"PKSIGN")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", recording_run)
+    client = ApktoolClient(fake_tool, signer)
+    client.sign(
+        apk, out, keystore=keystore, keystore_password=password, key_alias="release"
+    )
+
+    sign_cmd, sign_env = calls[0]
+    assert all(password not in str(arg) for arg in sign_cmd)
+    assert sign_cmd.count(f"env:{_KS_PASS_ENV}") == 2  # --ks-pass and --key-pass
+    assert sign_env is not None and sign_env[_KS_PASS_ENV] == password
+    # The environment we hand the child also carries PATH so the JVM launches.
+    assert "PATH" in sign_env
+
+    verify_cmd, verify_env = calls[1]
+    assert "verify" in verify_cmd
+    assert verify_env is None or _KS_PASS_ENV not in verify_env
+
+
 def test_apk_sign_does_not_claim_signed_when_verify_fails(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

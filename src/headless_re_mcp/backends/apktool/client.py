@@ -2,8 +2,9 @@
 
 Both CLIs need a JRE and are user-provided, so a missing tool degrades to
 ``capability_unavailable`` instead of blocking readiness. Keystore passwords are
-never copied into error details: a failed sign reports the tool's stderr with
-the password argument withheld.
+handed to apksigner through the environment (``--ks-pass env:``), never on the
+command line where ``ps`` and ``/proc`` would expose them to other users, and
+they are also scrubbed from any error detail as a second line of defence.
 """
 
 from __future__ import annotations
@@ -28,6 +29,10 @@ _MAX_TIMEOUT_S = 1800.0
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
+# apksigner reads the keystore/key password from this environment variable
+# (``--ks-pass env:``) so it never lands in the child's argv, which is
+# world-readable through ps and /proc on a shared host.
+_KS_PASS_ENV = "HEADLESS_RE_APKSIGNER_KS_PASS"
 
 
 class ApktoolError(RuntimeError):
@@ -38,11 +43,13 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
-def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+def _run(
+    cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
+) -> tuple[str, str, int]:
     timeout = min(float(timeout), _MAX_TIMEOUT_S)
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
+        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
     except TimedOut as exc:
         # apktool and apksigner are scripts that start a JVM, so the deadline
         # has to bind the JVM too, not just the script that launched it.
@@ -172,6 +179,10 @@ class ApktoolClient:
                 "keystore_password and key_alias are required for a custom keystore",
             )
         out_apk.parent.mkdir(parents=True, exist_ok=True)
+        # Pass the password through the environment, not argv: --ks-pass pass:...
+        # would put it on the command line where ps/proc expose it to other
+        # users. os.environ is copied so the JVM keeps PATH/JAVA_HOME.
+        sign_env = {**os.environ, _KS_PASS_ENV: password}
         _, stderr, code = _run(
             [
                 str(self.apksigner),
@@ -179,16 +190,17 @@ class ApktoolClient:
                 "--ks",
                 str(store),
                 "--ks-pass",
-                f"pass:{password}",
+                f"env:{_KS_PASS_ENV}",
                 "--ks-key-alias",
                 alias,
                 "--key-pass",
-                f"pass:{password}",
+                f"env:{_KS_PASS_ENV}",
                 "--out",
                 str(out_apk),
                 str(apk),
             ],
             timeout=timeout,
+            env=sign_env,
         )
         if code != 0 or not out_apk.is_file():
             # stderr can echo the argument vector, so scrub the password if present.
