@@ -185,8 +185,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with path, entry_count and truncated, plus artifact_id when
         the HAR was registered. truncated is true when the oldest entries were
-        dropped to keep the file under the capture cap. There is no har,
-        entries or artifact field.
+        dropped to keep the file under the capture cap. Each entry's
+        startedDateTime is the request's real start (CDP wallTime), so the HAR
+        preserves ordering and spacing; only requests captured before wallTime
+        was known fall back to the export instant. There is no har, entries or
+        artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 
