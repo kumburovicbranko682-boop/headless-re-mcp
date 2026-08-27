@@ -49,7 +49,19 @@ _SECRET_PATTERNS = (
 
 
 def _redact_text(value: object, *, limit: int = 1000) -> str:
-    text = str(value)
+    try:
+        text = str(value)
+    except BaseException:  # noqa: BLE001 - the last resort cannot have one of its own
+        # This redactor feeds the last-resort boundary, so ``value`` is whatever
+        # a tool raised or whatever the unraisable hook was handed -- an object
+        # whose own ``__str__``/``__repr__`` may raise. record_exception calls
+        # this before its log-writing try/except, so a raise here would escape
+        # and break the "never raises" promise the whole module rests on. Fall
+        # back to the type name without invoking the value's code a second time.
+        try:
+            text = f"<unprintable {type(value).__name__}>"
+        except BaseException:  # noqa: BLE001 - even the type name may be booby-trapped
+            text = "<unprintable>"
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(r"\1[REDACTED]", text)
     return text[:limit]

@@ -202,6 +202,50 @@ def test_the_boundary_still_answers_when_its_own_log_cannot_be_opened(
     assert result["error"]["code"] == "internal_error"  # type: ignore[index]
 
 
+def test_the_boundary_survives_a_value_whose_str_raises(
+    incident_log: Path,
+) -> None:
+    """A broken ``__str__`` must not defeat the recorder that exists to catch it.
+
+    record_exception promises never to raise, but it redacts the exception and
+    the context *before* its log-writing try/except, and the redactor's
+    ``str(value)`` is the raise point. A tool can raise an exception whose
+    ``__str__`` throws, and the unraisable hook hands this recorder any object
+    being finalized -- one whose ``__repr__``/``__str__`` may throw as well.
+    Before the guard that second exception escaped record_exception, and in the
+    scheduler loop it ends the task for good while HTTP carries on answering 200
+    -- the same silent outage the disk-full sibling test guards. The redactor
+    now degrades to the type name instead of re-raising.
+    """
+
+    class Unprintable(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("__str__ blew up")
+
+        def __repr__(self) -> str:
+            raise RuntimeError("__repr__ blew up")
+
+    incident = boundary.record_exception(Unprintable(), context="probe")
+
+    assert incident["incident_id"], "the caller still needs an id to report"
+    assert incident["exception_type"] == "Unprintable"
+    # The message could not be rendered, so it degrades to a type-named
+    # placeholder rather than escaping as a second exception.
+    assert incident["message"] == "<unprintable Unprintable>"
+
+    # The same broken value routed through the tool guard still yields an
+    # envelope rather than tearing down the transport.
+    def boom() -> dict[str, object]:
+        raise Unprintable()
+
+    result = boundary.guard_tool_handler(boom, tool_name="test.unprintable")()
+    assert result["ok"] is False
+    assert result["error"]["code"] == "internal_error"  # type: ignore[index]
+
+    # The redactor itself returns the placeholder directly.
+    assert boundary._redact_text(Unprintable()) == "<unprintable Unprintable>"
+
+
 def test_startup_survives_a_log_file_it_cannot_open(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

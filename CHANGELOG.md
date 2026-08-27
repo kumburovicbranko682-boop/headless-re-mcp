@@ -49,6 +49,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（事故边界：`__str__` 会抛的值不再击穿“绝不抛异常”的最后防线）
+
+- `error_boundary.record_exception` 的文档写明「绝不抛异常」，并点名后果：它的每个调用方
+  都已在处理一次失败（各 `except`、三个 excepthook、asyncio 处理器、调度器循环），第二个
+  异常从中逃出会终结调度任务，而 HTTP 仍照答 200——一次无人盯着的静默停摆。但它在写日志的
+  `try/except` **之前**先对异常与 context 各调一次 `_redact_text`，而 `_redact_text` 用
+  `str(value)` 取文本——一旦 `value` 的 `__str__`/`__repr__` 自身会抛，这个 `str()` 就把第二个
+  异常直接抛出 `record_exception`，正是它承诺永不发生的事。这条路径真实可达：工具可以抛出
+  `__str__` 会炸的异常；`unraisable_hook`（第 241 行）更是把任何正在被回收的对象原样喂进
+  `_redact_text`。把 `_redact_text` 的 `str(value)` 包进 `try/except BaseException`（与本模块
+  写日志处 `# the last resort cannot have one of its own` 同一范式），失败时退化为
+  `<unprintable {类型名}>`，不再二次调用该值自己的代码；类型名本身若也被做过手脚，再退到
+  `<unprintable>`。事故仍带真实 `incident_id` 与可辨识的类型，脱敏对正常字符串照旧生效。
+  新增 `tests/unit/test_error_boundary.py::test_the_boundary_survives_a_value_whose_str_raises`：
+  用 `__str__`/`__repr__` 均抛的异常断言 `record_exception` 不抛、`exception_type` 仍是
+  `Unprintable`、`message` 退化为 `<unprintable Unprintable>`，经 `guard_tool_handler` 仍产出
+  内部错误信封。已负控验证（去掉兜底后该用例以 `RuntimeError: __str__ blew up` 逃出
+  `record_exception` 失败），还原后 26 条用例、`ruff` 与 `mypy` 均通过。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
