@@ -25,6 +25,7 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.har import har_entry, serialize_har
@@ -41,6 +42,9 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# An origin rarely owns more than a few IndexedDB databases; 500 bounds a
+# pathological case without dropping any realistic set of names.
+_MAX_INDEXEDDB_DBS = 500
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -84,6 +88,22 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _page_origin(url: str) -> str:
+    """The web origin (scheme://host[:port]) a page keys its storage on.
+
+    IndexedDB, like localStorage, is partitioned by origin, so the CDP call
+    needs the page's origin. about:blank, data: and srcdoc are opaque origins
+    with no IndexedDB, reported as ""; a malformed URL is treated the same.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    if parts.scheme in {"http", "https"} and parts.netloc:
+        return f"{parts.scheme}://{parts.netloc}"
+    return ""
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -781,6 +801,79 @@ class WebBackend:
             }
 
         return self._runner(handle).call(work)
+
+    def indexeddb(
+        self, session_id: str, *, offset: int = 0, limit: int = 200
+    ) -> JsonObject:
+        """List the IndexedDB database names for the page's origin.
+
+        Modern web apps keep the bulk of their client-side state -- cached API
+        responses, offline records, auth material, crypto keys -- in IndexedDB,
+        not cookies or localStorage, and nothing in the surface revealed even
+        which databases exist. This asks CDP (IndexedDB.requestDatabaseNames)
+        for the current page origin's databases; it lists names only, a cheap
+        triage step before deeper inspection. origin is the page's origin, ""
+        for an opaque about:blank/data: page which owns no IndexedDB (then the
+        list is empty with a note). Names are bounded and sorted so paging is
+        stable; scan_capped marks an origin with more than the cap.
+        """
+        handle = self._get(session_id)
+        origin = _page_origin(handle.page.url)
+        if not origin:
+            return {
+                "origin": "",
+                "databases": [],
+                "count": 0,
+                "total": 0,
+                "offset": max(0, int(offset)),
+                "has_more": False,
+                "scan_capped": False,
+                "note": "page origin is opaque; no IndexedDB",
+            }
+
+        def work() -> list[str]:
+            with contextlib.suppress(Exception):
+                handle.cdp.send("IndexedDB.enable")
+            try:
+                resp = handle.cdp.send(
+                    "IndexedDB.requestDatabaseNames", {"securityOrigin": origin}
+                )
+            except Exception:  # noqa: BLE001 - newer protocol wants storageKey
+                try:
+                    resp = handle.cdp.send(
+                        "IndexedDB.requestDatabaseNames", {"storageKey": origin}
+                    )
+                except Exception as exc:  # noqa: BLE001 - playwright raises many types
+                    raise WebError(
+                        "backend_error", f"cannot list indexeddb: {exc}"
+                    ) from exc
+            finally:
+                with contextlib.suppress(Exception):
+                    handle.cdp.send("IndexedDB.disable")
+            names = resp.get("databaseNames") if isinstance(resp, dict) else None
+            return list(names) if isinstance(names, list) else []
+
+        raw = self._runner(handle).call(work)
+        collected: list[str] = []
+        scan_capped = False
+        for name in raw:
+            if len(collected) >= _MAX_INDEXEDDB_DBS:
+                scan_capped = True
+                break
+            collected.append(_bounded_metadata(name, _MAX_METADATA_BYTES)[0])
+        collected.sort()
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_INDEXEDDB_DBS))
+        window = collected[start : start + cap]
+        return {
+            "origin": origin,
+            "databases": window,
+            "count": len(window),
+            "total": len(collected),
+            "offset": start,
+            "has_more": start + len(window) < len(collected),
+            "scan_capped": scan_capped,
+        }
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)
