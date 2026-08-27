@@ -635,7 +635,11 @@ class AdbBackend:
                 info = None
             else:
                 mode, size = _file_mode_size(info)
-                if mode & stat.S_IFDIR:
+                # stat.S_ISDIR masks the S_IFMT type field; a bare
+                # ``mode & S_IFDIR`` tested bit 14 alone, which is also set in
+                # S_IFSOCK (0o140000) and S_IFBLK (0o060000), so a socket or
+                # block device was refused with a misleading "is a directory".
+                if stat.S_ISDIR(mode):
                     raise AdbError(
                         "invalid_params",
                         "refusing to pull a directory",
