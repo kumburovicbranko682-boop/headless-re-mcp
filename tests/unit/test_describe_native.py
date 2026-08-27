@@ -193,6 +193,40 @@ def _elf64_dynamic_with_needed() -> bytes:
     return ehdr + program + strtab + dyn
 
 
+def _elf64_shared_with_soname_and_build_id() -> bytes:
+    """A shared object that declares a soname and carries a GNU build-id note."""
+    strtab = b"\x00libc.so.6\x00libmylib.so.1\x00"  # needed at 1, soname at 11
+    build_id = bytes([0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04])
+    note = (
+        (4).to_bytes(4, "little")  # namesz "GNU\0"
+        + len(build_id).to_bytes(4, "little")  # descsz
+        + (3).to_bytes(4, "little")  # NT_GNU_BUILD_ID
+        + b"GNU\x00"
+        + build_id
+    )
+    ph_off = 64
+    strtab_off = ph_off + 56 * 3  # three program headers precede the blobs
+    note_off = strtab_off + len(strtab)
+    dyn = b"".join(
+        tag.to_bytes(8, "little") + val.to_bytes(8, "little")
+        for tag, val in (
+            (1, 1),  # DT_NEEDED -> "libc.so.6"
+            (14, 11),  # DT_SONAME -> "libmylib.so.1"
+            (5, strtab_off),  # DT_STRTAB (vaddr == file offset)
+            (10, len(strtab)),  # DT_STRSZ
+            (0, 0),  # DT_NULL
+        )
+    )
+    dyn_off = note_off + len(note)
+    program = (
+        _phdr64(1, p_offset=0, p_filesz=0x10000, p_vaddr=0)  # PT_LOAD, vaddr==offset
+        + _phdr64(2, dyn_off, len(dyn))  # PT_DYNAMIC
+        + _phdr64(4, note_off, len(note))  # PT_NOTE
+    )
+    ehdr = _ehdr64(3, phoff=ph_off, phnum=3, shoff=0, shnum=0)  # ET_DYN
+    return ehdr + program + strtab + note + dyn
+
+
 def _elf64_static_with_symtab() -> bytes:
     ph_off = 64
     sh_off = ph_off + 56  # one program header
@@ -263,6 +297,16 @@ def test_dynamic_needed_libraries_from_the_dynamic_string_table(tmp_path: Path) 
     assert facts["needed"] == ["libc.so.6", "libm.so.6"]
 
 
+def test_soname_and_build_id_from_a_shared_object(tmp_path: Path) -> None:
+    path = _write(tmp_path, "a.bin", _elf64_shared_with_soname_and_build_id())
+    facts = describe_native(path)["native"]
+    # DT_SONAME is the provider-side pair to DT_NEEDED, present only on a library.
+    assert facts["soname"] == "libmylib.so.1"
+    assert facts["needed"] == ["libc.so.6"]
+    # The GNU build-id from the PT_NOTE record, hex-encoded.
+    assert facts["build_id"] == "deadbeef01020304"
+
+
 def test_static_unstripped_facts_from_section_headers(tmp_path: Path) -> None:
     path = _write(tmp_path, "a.bin", _elf64_static_with_symtab())
     facts = describe_native(path)["native"]
@@ -271,8 +315,10 @@ def test_static_unstripped_facts_from_section_headers(tmp_path: Path) -> None:
     assert facts["pie"] is False
     assert "interpreter" not in facts
     assert facts["stripped"] is False  # a SHT_SYMTAB section is present
-    # A static image depends on nothing, so it carries no needed list.
+    # A static image depends on nothing and declares no soname.
     assert "needed" not in facts
+    assert "soname" not in facts
+    assert "build_id" not in facts
 
 
 def test_real_elf_pie_versus_shared_object() -> None:
@@ -301,6 +347,16 @@ def test_real_elf_pie_versus_shared_object() -> None:
     assert any("libc.so" in name for name in ls_facts["needed"])
     assert libc_facts["pie"] is False
     assert libc_facts["linking"] == "dynamic"
+    # libc declares its own soname; a PIE executable like ls does not.
+    assert libc_facts.get("soname") == "libc.so.6"
+    assert "soname" not in ls_facts
+    # A GNU build-id, when the toolchain emitted one, reads back as clean hex.
+    for facts in (ls_facts, libc_facts):
+        build_id = facts.get("build_id")
+        if build_id is not None:
+            assert isinstance(build_id, str)
+            assert len(build_id) >= 8
+            int(build_id, 16)  # raises if not hex
 
 
 def test_macho_thin_facts(tmp_path: Path) -> None:

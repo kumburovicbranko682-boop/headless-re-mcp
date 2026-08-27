@@ -404,15 +404,26 @@ _ELF_MAX_INTERP = 4096
 _PT_LOAD = 1
 _PT_DYNAMIC = 2
 _PT_INTERP = 3
+_PT_NOTE = 4
 _SHT_SYMTAB = 2
 _DT_NULL = 0
 _DT_NEEDED = 1
 _DT_STRTAB = 5
+_DT_SONAME = 14
 _DT_STRSZ = 10
 _DT_FLAGS_1 = 0x6FFFFFFB
 _DF_1_PIE = 0x08000000
 _ELF_MAX_NEEDED = 512
 _ELF_MAX_STRTAB = 4 * 1024 * 1024
+# The GNU build-id (a PT_NOTE record) uniquely identifies a build and is how a
+# stripped binary is matched to its debug symbols, so a native session surfaces
+# it the way it surfaces the interpreter. DT_SONAME is the provider-side pair to
+# DT_NEEDED: the name a shared object declares for itself, present only on a
+# library, so it also separates a real .so from a PIE executable (both ET_DYN).
+_NT_GNU_BUILD_ID = 3
+_ELF_MAX_NOTE_BYTES = 64 * 1024
+_ELF_MAX_NOTES = 256
+_ELF_BUILD_ID_MAX = 64
 _ELF_TYPES = {1: "rel", 2: "exec", 3: "dyn", 4: "core"}
 _ELF_MACHINES = {
     2: "sparc",
@@ -1849,17 +1860,22 @@ def _elf_layout_facts(
         facts["linking"] = "dynamic" if program["has_dynamic"] else "static"
         if program["has_dynamic"]:
             pie = _elf_dynamic_pie(stream, order, bits, program["dyn_off"], program["dyn_sz"])
-            needed = _elf_needed(
+            needed, soname = _elf_dynamic_names(
                 stream, order, bits, program["dyn_off"], program["dyn_sz"], program["loads"]
             )
             if needed is not None:
                 facts["needed"] = needed
+            if soname is not None:
+                facts["soname"] = soname
         else:
             pie = False
         if pie is not None:
             facts["pie"] = pie
         if program["interp"] is not None:
             facts["interpreter"] = program["interp"]
+        build_id = _elf_build_id(stream, order, program["notes"])
+        if build_id is not None:
+            facts["build_id"] = build_id
     stripped = _elf_is_stripped(stream, order, bits, shoff, shentsize, shnum)
     if stripped is not None:
         facts["stripped"] = stripped
@@ -1878,6 +1894,7 @@ def _elf_program_headers(
     interp: str | None = None
     dyn_off = dyn_sz = 0
     loads: list[tuple[int, int, int]] = []
+    notes: list[tuple[int, int]] = []
     for i in range(phnum):
         entry = table[i * entsize : i * entsize + want]
         if len(entry) < want:
@@ -1900,6 +1917,8 @@ def _elf_program_headers(
             has_interp = True
             stream.seek(p_offset)
             interp = stream.read(p_filesz).split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+        elif p_type == _PT_NOTE and 0 < p_filesz <= _ELF_MAX_NOTE_BYTES and p_offset > 0:
+            notes.append((p_offset, p_filesz))
     return {
         "has_interp": has_interp,
         "has_dynamic": has_dynamic,
@@ -1907,6 +1926,7 @@ def _elf_program_headers(
         "dyn_off": dyn_off,
         "dyn_sz": dyn_sz,
         "loads": loads,
+        "notes": notes,
     }
 
 
@@ -1949,33 +1969,35 @@ def _elf_vaddr_to_off(vaddr: int, loads: list[tuple[int, int, int]]) -> int | No
     return None
 
 
-def _elf_needed(
+def _elf_dynamic_names(
     stream: BinaryIO,
     order: str,
     bits: int,
     dyn_off: int,
     dyn_sz: int,
     loads: list[tuple[int, int, int]],
-) -> list[str] | None:
-    """DT_NEEDED shared-library names, or None when the table cannot be read.
+) -> tuple[list[str] | None, str | None]:
+    """``(needed, soname)`` from the dynamic table and its string table.
 
-    Walks the dynamic array for the DT_NEEDED string offsets and the DT_STRTAB
-    address, maps that address to a file offset through the PT_LOAD segments,
-    and reads each name out of the dynamic string table. Bounded at every step:
-    the entry count, the name count and the string-table read are all capped, so
-    a corrupt table yields None (dynamic but undetermined) rather than a large
-    read; a dynamic image that names nothing yields an empty list.
+    Walks the dynamic array for the DT_NEEDED string offsets, the DT_SONAME
+    offset and the DT_STRTAB address, maps that address to a file offset through
+    the PT_LOAD segments, and reads the names out of the dynamic string table.
+    Bounded at every step: the entry count, the name count and the string-table
+    read are all capped, so a corrupt table yields ``(None, None)`` (dynamic but
+    undetermined) rather than a large read; a dynamic image that names nothing
+    yields ``([], None)``. DT_SONAME is present only on a shared object.
     """
     if dyn_off <= 0 or dyn_sz <= 0 or not loads:
-        return None
+        return None, None
     entsize = 16 if bits == 64 else 8
     vsize = entsize // 2
     count = min(dyn_sz // entsize, _ELF_MAX_DYN)
     if count <= 0:
-        return None
+        return None, None
     stream.seek(dyn_off)
     table = stream.read(entsize * count)
     needed_offsets: list[int] = []
+    soname_off: int | None = None
     strtab_va: int | None = None
     strsz: int | None = None
     for i in range(count):
@@ -1989,30 +2011,65 @@ def _elf_needed(
         if tag == _DT_NEEDED:
             if len(needed_offsets) < _ELF_MAX_NEEDED:
                 needed_offsets.append(val)
+        elif tag == _DT_SONAME:
+            soname_off = val
         elif tag == _DT_STRTAB:
             strtab_va = val
         elif tag == _DT_STRSZ:
             strsz = val
     if strtab_va is None:
-        return None
-    if not needed_offsets:
-        return []
+        return None, None
     str_off = _elf_vaddr_to_off(strtab_va, loads)
     if str_off is None:
-        return None
+        return None, None
     cap = strsz if strsz is not None and 0 < strsz <= _ELF_MAX_STRTAB else _ELF_MAX_STRTAB
     stream.seek(str_off)
     blob = stream.read(cap)
-    names: list[str] = []
-    for offset in needed_offsets:
+
+    def read_name(offset: int) -> str | None:
         if 0 <= offset < len(blob):
             end = blob.find(b"\x00", offset)
             if end == -1:
                 end = len(blob)
-            name = blob[offset:end].decode("utf-8", errors="replace")
-            if name:
-                names.append(name)
-    return names
+            return blob[offset:end].decode("utf-8", errors="replace") or None
+        return None
+
+    needed = [name for off in needed_offsets if (name := read_name(off))]
+    soname = read_name(soname_off) if soname_off is not None else None
+    return needed, soname
+
+
+def _elf_build_id(
+    stream: BinaryIO, order: str, notes: list[tuple[int, int]]
+) -> str | None:
+    """The GNU build-id (hex) from a PT_NOTE segment, or None if absent.
+
+    A note record is namesz/descsz/type words then the (4-aligned) name and
+    descriptor; the build-id is the descriptor of the ``GNU`` note of type
+    NT_GNU_BUILD_ID. Bounded by the note count and each segment's already-capped
+    size, and fail-closed: a malformed record stops the scan rather than raising.
+    """
+    for note_off, note_sz in notes:
+        stream.seek(note_off)
+        blob = stream.read(min(note_sz, _ELF_MAX_NOTE_BYTES))
+        pos = 0
+        for _ in range(_ELF_MAX_NOTES):
+            if pos + 12 > len(blob):
+                break
+            namesz = int.from_bytes(blob[pos : pos + 4], order)  # type: ignore[arg-type]
+            descsz = int.from_bytes(blob[pos + 4 : pos + 8], order)  # type: ignore[arg-type]
+            ntype = int.from_bytes(blob[pos + 8 : pos + 12], order)  # type: ignore[arg-type]
+            name_start = pos + 12
+            name_end = name_start + namesz
+            desc_start = name_end + (-namesz % 4)
+            desc_end = desc_start + descsz
+            if desc_end > len(blob):
+                break
+            name = blob[name_start:name_end].split(b"\x00", 1)[0]
+            if ntype == _NT_GNU_BUILD_ID and name == b"GNU" and 0 < descsz <= _ELF_BUILD_ID_MAX:
+                return blob[desc_start:desc_end].hex()
+            pos = desc_end + (-descsz % 4)
+    return None
 
 
 def _elf_is_stripped(
