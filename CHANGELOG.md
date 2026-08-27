@@ -24,6 +24,30 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（新增 apktool 重打包 live gate：真 APK → smali → 改 → 真 APK，并进 CI 真跑；skip != pass）
+
+- **apktool（Android 重打包线）此前只有「假 `_run`／磁盘桩树」的单测，从没有任何测试真正启动过
+  apktool CLI**——于是 `ApktoolClient` 的子进程启动、`-r` 开关、`smali*` 目录发现、重建产物的
+  zip 校验，以及 decode→改→build 这条真实往返，整条链路从未被端到端验证过。新增
+  `tests/integration/test_apktool_live_gate.py`：复用 jadx gate 那枚不依赖任何 Android SDK
+  （aapt2/d8）的最小 APK 夹具（`fixtures/android/build_min_apk.py`，标准库手工汇编一枚真实 DEX，
+  含 `com.example.gate.Secret` 类、静态方法 `decrypt()`/`caller()`、被引用的字符串常量
+  `gate-secret-string`），驱动**真实** `ApktoolClient`：
+  - **往返**：`decode(no_resources=True)` 断言落出 `smali/com/example/gate/Secret.smali`、
+    `smali_dirs==['smali']`、`has_resources==False`，且 smali 里确有两个方法与字符串常量；`build`
+    断言重建出**非空、真 zip、含 `classes.dex`** 的未签名 APK；再 `decode` 一次重建包，断言同一个类
+    重新落出——证明 smali 是被**重新汇编**成合法 DEX 的，而非原样透传。
+  - **改包**：把 smali 里的字符串常量从 `gate-secret-string` 换成 `patched-by-gate`、重建、再
+    decode，断言新常量在、旧常量没——证明改动确实经 smali→dex→smali 存活，这正是重打包线存在的意义。
+  - **快速失败**：给 `build` 一个没有 `AndroidManifest.xml` 的目录，断言在启动 JVM 前就报
+    `invalid_params`（与 decode 对非 zip 输入的 fail-fast 同形）。
+  资源解码需要 aapt2 产出的 `resources.arsc`（托管 runner 造不出），故 gate 用 `no_resources=True`，
+  只跑这条线的核心 DEX↔smali 往返。本机用 apktool 2.10.0 + Temurin JRE 实跑通过（3 passed），无
+  apktool/JRE 时带明确原因干净跳过（3 skipped）。
+- 新增 CI 作业 `linux-apktool-repackage`（Ubuntu，3.11/3.12，装 Temurin 21 + 下载 apktool 2.10.0
+  并生成包装脚本）真跑这条 gate——skip != pass：`HEADLESS_RE_APKTOOL`/PATH 上有 apktool 就真跑，
+  缺了才显式跳过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
