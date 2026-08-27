@@ -366,6 +366,13 @@ _MAGIC_BYTES = 8
 # creation, so the derived set is bounded there too -- kept stdlib-local so this
 # path never depends on the androguard backend.
 _MAX_APK_ABIS = 64
+# Opening a zip materialises one ZipInfo per central-directory entry before any
+# namelist() call, and CPython reads exactly as many directory bytes as the
+# end-of-central-directory record declares. Bounding that field therefore
+# bounds the allocation. Each entry costs at least 46 bytes plus its name, so
+# 16 MiB is roughly 200,000 entries -- several times the largest real packages,
+# while a crafted directory could otherwise cost gigabytes at session creation.
+_MAX_APK_CENTRAL_DIR_BYTES = 16 * 1024 * 1024
 
 
 def is_http_url(reference: str) -> bool:
@@ -403,7 +410,43 @@ def classify_target(reference: str | Path) -> TargetKind:
     return TargetKind.PE
 
 
+def _central_directory_size(path: Path) -> int | None:
+    """Bytes of central directory the archive declares, or None when unknown.
+
+    Read from the end-of-central-directory record through the same stdlib
+    helper ZipFile itself calls, so this sees exactly the value -- ZIP64
+    included -- that the parser will trust. Private, but it has been stable
+    since Python 2.6 and using it is what keeps this check and the parse in
+    agreement; a hand-rolled reader that disagreed would be the evasion.
+    Fails open: an archive this cannot measure is one ZipFile cannot open,
+    and zipfile's own error names the problem better than a guess here.
+    """
+    end_rec_data = getattr(zipfile, "_EndRecData", None)
+    ecd_size = getattr(zipfile, "_ECD_SIZE", None)
+    if end_rec_data is None or ecd_size is None:
+        return None
+    try:
+        with path.open("rb") as stream:
+            endrec = end_rec_data(stream)
+        if not endrec:
+            return None
+        size = endrec[ecd_size]
+    except Exception:  # noqa: BLE001 - a pre-check on hostile input must not raise
+        return None
+    return int(size) if isinstance(size, int) and size >= 0 else None
+
+
+def _central_directory_over_cap(path: Path) -> bool:
+    size = _central_directory_size(path)
+    return size is not None and size > _MAX_APK_CENTRAL_DIR_BYTES
+
+
 def _is_android_package(path: Path) -> bool:
+    # Oversized directories are refused before ZipFile can materialise them.
+    # Answering False routes the file to the PE default, whose "not a PE file"
+    # is the established error for anything unrecognised.
+    if _central_directory_over_cap(path):
+        return False
     try:
         with zipfile.ZipFile(path) as archive:
             return _APK_MANIFEST in archive.namelist()
@@ -419,6 +462,12 @@ def describe_apk(path: Path) -> dict[str, Any]:
     instead of degrading to "opened, but cannot decompile".
     """
 
+    size = _central_directory_size(path)
+    if size is not None and size > _MAX_APK_CENTRAL_DIR_BYTES:
+        raise ValueError(
+            f"refusing {path}: archive declares a {size} byte central directory"
+            f" (cap {_MAX_APK_CENTRAL_DIR_BYTES})"
+        )
     try:
         with zipfile.ZipFile(path) as archive:
             names = archive.namelist()
