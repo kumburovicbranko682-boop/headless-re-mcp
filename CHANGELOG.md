@@ -197,6 +197,31 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分树时各字段齐备并经 export→decompile 透传、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及两个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 测试（jadx `export_sources` 的 `_capped_java_listing` 按真实源码树遍历）
+
+- 既有列表测试把 6 个 `.java` 平铺、只查计数(file_count 6、页 4、has_more True)。真实 jadx 树完全不
+  长这样——每个类都在 `sources/<包路径>/Name.java`——那份扁平夹具让
+
+      for path in root.rglob("*.java"):
+          if not path.is_file(): continue
+          ...
+          names.append(str(path.relative_to(root)))
+          ...
+          if total >= _MAX_COUNTED_FILES:
+              has_more = True; break
+      names.sort()
+
+  里几处判别式全成惰性:从没证明遍历会递归超过一层、从没证明每项保留**包相对路径**(而非 agent 无从
+  定位的裸文件名)、从没证明 `is_dir` 名字以 `.java` 结尾的目录会被 `is_file()` 挡住,也从没触发过那道
+  防止跑飞树的计数上限。agent 正是据 `java_files` 决定下一个打开哪个类,路径塌成裸名或混进幽灵项就是
+  开错文件。新增回归:乱序写入的多层树回来是按 `sources/com/...` 排序的包相对路径(钉住 `rglob` 递归、
+  `relative_to` 内容、`sort`);一个名字像 `.java` 的目录既不计数也不入列(钉住 `is_file()`);把
+  `_MAX_COUNTED_FILES` 压到 5、放 8 个文件时计数停在 5 且 `has_more` 为 True(页上限留高,`has_more` 只
+  能来自计数上限那一支,隔离该分支)。
+- 变异验证:`rglob`→`glob`、`relative_to(root)`→`.name`、去掉 `is_file()` 过滤、去掉 `names.sort()`、
+  去掉计数上限的 `break`、去掉该支的 `has_more=True`,均分别只被对应新测试逮住;源树零改动(仅新增测试
+  与本条目)。
+
 ### 修复（frida 设备解析卡死不再永占 worker）
 
 - **`_resolve_device` 与 `add_remote_device` 里对 frida 的设备查找此前不带可由本侧兜底的截止时间。**
