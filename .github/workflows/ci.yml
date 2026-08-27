@@ -226,11 +226,13 @@ jobs:
           chmod +x /tmp/apktoolbin/apktool
           echo "/tmp/apktoolbin" >> "$GITHUB_PATH"
 
-      - name: Install apksigner for the Android sign gate
-        # The standalone Debian/Ubuntu package is just apksigner.jar plus a
-        # wrapper (a few MB), not the whole Android SDK. The sign gate builds
-        # the debug keystore itself with keytool from the JDK above.
-        run: sudo apt-get update && sudo apt-get install -y apksigner
+      - name: Install apksigner and monodis for the Android sign / .NET cross-check gates
+        # apksigner's standalone package is just apksigner.jar plus a wrapper (a
+        # few MB), not the whole Android SDK; the sign gate builds the debug
+        # keystore itself with keytool from the JDK above. mono-utils supplies
+        # monodis, an independent ECMA-335 parser the .NET gate cross-checks the
+        # pure-Python reader against.
+        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils
 
       - name: Install Ghidra for the headless analysis gate
         run: |
