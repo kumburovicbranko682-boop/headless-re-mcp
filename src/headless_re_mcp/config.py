@@ -94,6 +94,12 @@ class Settings:
     # Byte budget for registered artifacts, collected oldest-first. 0 disables
     # collection entirely and accepts unbounded growth.
     artifact_max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
+    # Keys the config file contained that load() does not read. Every key it
+    # does read shares its field's name, so a typo -- "ghidra_hom" -- was
+    # silently ignored: the operator set the value, nothing complained, and
+    # doctor reported the tool as simply not configured. Carried on the
+    # settings so doctor can name what was ignored instead of it vanishing.
+    unknown_config_keys: tuple[str, ...] = ()
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Settings:
@@ -101,6 +107,12 @@ class Settings:
         path = config_path or default_config_path()
         if path.is_file():
             data = _read_json_object(path)
+        # Derived from the field names rather than hand-listed, so adding a
+        # field + data.get() pair (the pattern every setting follows) never
+        # starts flagging its own key.
+        unknown_config_keys = tuple(
+            sorted(set(data) - (set(cls.__dataclass_fields__) - {"unknown_config_keys"}))
+        )
 
         ida_home = _optional_path(
             os.environ.get("HEADLESS_RE_IDA_HOME")
@@ -318,6 +330,7 @@ class Settings:
                 or "vmp"
             ).strip()
             or "vmp",
+            unknown_config_keys=unknown_config_keys,
         )
 
 
