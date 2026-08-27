@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 新增（apktool 重打包后端首次拿到真机 gate：decode↔build 往返一枚真 APK）
+
+- **apktool 适配器此前完全没有真后端覆盖**。`decode` / `build`、会话制品树的接线(`_repack_dir`、
+  `_require_session_path`)、超大树防护(`_refuse_oversized_tree`)、以及 build 对「退出 0 却产出空/非 zip」的
+  检测,全都只在单元层对着打桩子进程跑过。关键顾虑一直是:apktool 3.x 用 aapt2 编译 manifest,而 aapt2 要靠
+  AOSP framework 才能解析 `android:` 命名空间属性——听起来要拖进整个 Android SDK。实测发现 apktool 自带默认
+  framework 并在首次 build 时自动装到 `~/.local/share/apktool/framework/1.apk`,于是**一个不含任何 `android:`
+  属性的 manifest 只靠 apktool + JRE 就能编译**,不需要外部 SDK。新增 `test_android_repack_gate.py`:先用 apktool
+  自己的 build 把一份极小的文本 manifest(`package=com.gate.repack`,空 `<application/>`)编成真 APK(充当夹具,
+  一如用 gcc 现场编 ELF 夹具),再经 service 跑 `apk.decode`→`apk.repack` 往返,并断言包名穿过二进制 AXML 往返
+  仍在:decode 回出的文本 manifest 含 `com.gate.repack`,repack 产出的 APK 是合法 zip 且标记 unsigned,把它再
+  decode 一次包名依旧完好。build 的 unsigned/非空 zip 契约、decode 的 manifest 存在性检查都在真 apktool 上跑过。
+  apktool 未配置时明确 skip(skip != pass)。CI 侧复用给 jadx 加的 temurin JDK 21,补上带缓存的 apktool 3.0.3
+  jar 下载与包装脚本,并把 `HEADLESS_RE_APKTOOL` 指向它,该 gate 在 CI 上真跑。Android 重打包路径(decode/build)
+  自此有了真后端回归护栏;`sign` 仍走 apksigner(需 Android SDK build-tools 与 keystore),暂留 capability 降级
+  路径。
+
 ### 新增（jadx 反编译后端首次拿到真机 gate：用同一手工 DEX 跑通 export_sources 与 decompile）
 
 - **jadx 适配器此前完全没有真后端覆盖**。`export_sources` / `decompile`、`_class_to_java_path` 的

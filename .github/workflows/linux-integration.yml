@@ -9,7 +9,8 @@
 #                  retrieved, exported to HAR, and replayed through the proxy
 #   * Android   -- androguard APK metadata, a real hand-assembled DEX parsed
 #                  end to end (classes/methods/strings/xrefs), jadx decompiling
-#                  that DEX to Java, and safe degradation with no device
+#                  that DEX to Java, apktool decode/build round-tripping a real
+#                  APK, and safe degradation with no device
 #   * Static    -- radare2 against a locally built ELF (the non-PE mapping path)
 # tests/integration/conftest.py skips the Windows-only gates by name, and -rs
 # prints every remaining skip reason, so a skip here never reads as a pass.
@@ -35,6 +36,10 @@ jobs:
       # Pin the jadx release so the cache key and download URL agree; bump
       # deliberately. The extracted launcher lives at ~/jadx/bin/jadx.
       JADX_VERSION: "1.5.6"
+      # apktool is a single jar; the wrapper script the adapter invokes is
+      # written next to it. It auto-installs its bundled AOSP framework on first
+      # build, so no Android SDK is needed.
+      APKTOOL_VERSION: "3.0.3"
     strategy:
       fail-fast: false
       matrix:
@@ -87,6 +92,25 @@ jobs:
           rm -f /tmp/jadx.zip
           chmod +x "$HOME/jadx/bin/jadx"
 
+      - name: Cache apktool
+        id: apktool-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/apktool.jar
+          key: apktool-${{ env.APKTOOL_VERSION }}
+
+      - name: Install apktool (Android repack)
+        # Just the jar; the wrapper the adapter resolves via HEADLESS_RE_APKTOOL
+        # is written unconditionally so a cache hit still has its launcher.
+        run: |
+          if [ ! -f "$HOME/apktool.jar" ]; then
+            url="https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"
+            curl -fsSL -o "$HOME/apktool.jar" "$url"
+          fi
+          printf '#!/bin/sh\nexec java -jar "%s" "$@"\n' "$HOME/apktool.jar" > "$HOME/apktool"
+          chmod +x "$HOME/apktool"
+          "$HOME/apktool" --version
+
       - name: JS deobfuscation backend (webcrack)
         run: |
           npm install -g webcrack
@@ -115,6 +139,8 @@ jobs:
           # Settings.load() reads this; the APK decompile gate resolves the
           # launcher here instead of skipping for want of jadx.
           HEADLESS_RE_JADX: /home/runner/jadx/bin/jadx
+          # Same for the APK repack gate: the apktool wrapper written above.
+          HEADLESS_RE_APKTOOL: /home/runner/apktool
         run: |
           # The whole directory, never a hardcoded subset: conftest skips the
           # Windows-only and unconfigured (IDA / de4dot) gates, and running
