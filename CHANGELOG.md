@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（Frida Linux 本地线首次有真注入的实测 Gate）
+
+- 唯一的 frida 现场 gate（`test_m11_frida_live_gate.py`）是 Windows-only，于是在 frida 的老家平台 Linux
+  上，没有任何测试证明这条后端真能注进进程、把它读出来。服务层的 frida 操作要从一个在跑的 x64dbg 动态会话
+  里拿 `debuggee_pid` 作 `allowed_pid`，而这在非 Windows 上根本不存在，所以新增
+  `tests/integration/test_frida_linux_local_gate.py` 直接驱动 `FridaClient`，对着一个自己 spawn 且掌控的
+  python 进程断言**被注入后读到的事实**，而不只是“调用返回了”：`attach` 对目标 pid 回一个本地设备探针附着；
+  `modules` 列出目标已加载的库（含 libc），每个都带真实基址与非零大小；`exports` 解析出 zlib 的
+  `inflate/deflate/crc32/adler32/zlibVersion`（挑这个小模块是因为它的导出全在客户端 512 上限之内，libc 的
+  `printf` 反而落在上限之外），每条都带真实地址；`memory_read` 读某模块基址回来正好是 ELF 魔数
+  `7f 45 4c 46`（证明读到的是目标真实地址空间而非桩）；单 pid 护栏对 `pid != allowed_pid` 回
+  `permission_denied`。只在 Linux 跑（断言 ELF/libc 细节；Windows 那半由既有 Windows-only gate 覆盖），
+  缺 frida 模块、或环境禁止注入（容器里 ptrace 被锁）时如实跳过（skip 不等于 pass）。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
