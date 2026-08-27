@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（persona 导入对以下划线开头的标题/文件名回不可解的 persona_id_invalid）
+
+- 导入 persona 的 id 由 `_slug` 从标题（`import_markdown`）或文件名（`import_path` 取 `stem`）
+  自动生成，随后直接交给 `_body_path`——而 `_body_path` 的 `_PERSONA_ID_RE` 要求首字符是字母数字。
+  `_slug` 把非 `[a-zA-Z0-9_-]` 的连续字符折叠成 `-` 再 `strip("-")`，但下划线在允许集合里、不会被
+  折叠也不会被 `strip("-")` 削掉，于是一个经净化后以 `_` 开头的标题——最常见的就是草稿式文件名
+  `_notes.md`（`stem` 为 `_notes`）——会 slug 成 `_notes-<digest>`，被判为 `persona_id_invalid`
+  而导入失败。可 id 是自动生成的、并非调用方给的，这个报错既晦涩又冤枉：用户只是导入了一个文件。
+  现 `_slug` 改用 `strip("_-")`，前后的 `_` 与 `-` 一并削掉，首个存活字符必为字母数字（全被削光则回退
+  `persona`），词内下划线（如 `2024_persona`）作为内容照常保留。新增回归：以 `_notes` / `__agent__` /
+  `_2024_persona` 为题、以 `_draft.md` 为名导入都得到合法 id 且落地成文件，词内下划线不被误删。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

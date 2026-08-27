@@ -44,7 +44,14 @@ SEAGULL_SEED_PATHS = (
 
 
 def _slug(title: str, body: str) -> str:
-    stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", Path(title).stem).strip("-").lower()[:40]
+    # The result is handed straight to _body_path, whose _PERSONA_ID_RE requires
+    # an alphanumeric first character. re.sub keeps underscores (they are in the
+    # allowed class), so a title whose sanitised stem leads with '_' -- e.g. the
+    # common draft filename "_notes.md" -> stem "_notes" -- would otherwise slug
+    # to "_notes-<digest>" and be rejected as persona_id_invalid, even though the
+    # id was auto-generated, not user-supplied. Strip leading/trailing '_' as
+    # well as '-' so the first surviving character is always alphanumeric.
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", Path(title).stem).strip("_-").lower()[:40]
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:8]
     return f"{stem or 'persona'}-{digest}"
 
