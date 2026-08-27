@@ -50,9 +50,7 @@ _SECTION_FOLD_TO_ID: Final[dict[str, str]] = {
     section.casefold(): pid for pid, section in PROFILE_SECTIONS.items()
 }
 STEALTH_HINT_KEY: Final[str] = "stealth_hint"
-_PACKER_CATEGORIES: Final[frozenset[str]] = frozenset(
-    {"packer", "protector", "obfuscator"}
-)
+_PACKER_CATEGORIES: Final[frozenset[str]] = frozenset({"packer", "protector", "obfuscator"})
 # Longer tokens first so "vmprotect" wins over the short "vmp" abbreviation.
 _DETECTION_HINTS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
     ("themida", ("winlicense", "winlic", "themida", "oreans", "tmd")),
@@ -239,27 +237,14 @@ def inspect_layout(layout: StealthLayout | None) -> JsonObject:
         "ini": str(layout.ini),
         "plugin_present": layout.plugin_present,
         "ini_present": layout.ini.is_file(),
-        "current_profile": (
-            profile_id_for_section(current_section) if current_section else None
-        ),
+        "current_profile": (profile_id_for_section(current_section) if current_section else None),
         "current_section": current_section,
     }
 
 
 def read_current_section(ini_path: Path) -> str | None:
-    parser = _parser()
-    try:
-        read = parser.read(ini_path, encoding="utf-8")
-    except OSError:
-        return None
-    if not read:
-        try:
-            read = parser.read(ini_path, encoding="utf-16")
-        except OSError:
-            return None
-        if not read:
-            return None
-    if not parser.has_section("SETTINGS"):
+    parser = _read_ini_file(ini_path)
+    if parser is None or not parser.has_section("SETTINGS"):
         return None
     value = parser.get("SETTINGS", "CurrentProfile", fallback="").strip()
     return value or None
@@ -375,12 +360,31 @@ def _seed_parser() -> configparser.ConfigParser:
     return parser
 
 
+def _read_ini_file(ini_path: Path) -> configparser.ConfigParser | None:
+    """Read an ini as UTF-8, then UTF-16 -- ScyllaHide writes its ini as UTF-16.
+
+    ``configparser.read`` only swallows ``OSError``; the ``UnicodeDecodeError``
+    a UTF-16 file raises when first decoded as UTF-8 propagates straight out, so
+    the UTF-16 retry has to catch ``UnicodeError`` explicitly or it is never
+    reached. Each attempt uses a fresh parser so a partially decoded UTF-8 read
+    cannot bleed into the UTF-16 result. Returns None when nothing could be read
+    (missing/unreadable file or neither encoding decoding it).
+    """
+    for encoding in ("utf-8", "utf-16"):
+        parser = _parser()
+        try:
+            read = parser.read(ini_path, encoding=encoding)
+        except OSError:
+            return None
+        except UnicodeError:
+            continue
+        if read:
+            return parser
+    return None
+
+
 def _load_or_seed(ini_path: Path) -> configparser.ConfigParser:
-    parser = _parser()
-    if ini_path.is_file():
-        loaded = parser.read(ini_path, encoding="utf-8")
-        if not loaded:
-            parser.read(ini_path, encoding="utf-16")
+    parser = _read_ini_file(ini_path) or _parser()
     if not parser.has_section("SETTINGS"):
         seeded = _seed_parser()
         for section in seeded.sections():
@@ -525,8 +529,7 @@ def summarize_settings(
     except StealthError:
         default_id = DEFAULT_PROFILE_ID
     architectures = {
-        architecture.value: inspect_layout(layout)
-        for architecture, layout in layouts.items()
+        architecture.value: inspect_layout(layout) for architecture, layout in layouts.items()
     }
     return {
         "enabled": bool(enabled),
