@@ -36,6 +36,40 @@ def test_agent_store_seq_approval_and_restart(tmp_path: Path) -> None:
     assert [event.seq for event in events] == sorted({event.seq for event in events})
 
 
+def test_list_events_page_cut_by_bytes_is_visible_via_has_events_after(
+    tmp_path: Path,
+) -> None:
+    """A byte-capped event page must not read as the whole history.
+
+    list_events bounds a page by count and by serialized bytes. When the byte
+    cap trims the page, the events beyond it still exist and are retrievable, so
+    has_events_after has to report they are there -- otherwise a client handed a
+    full page cannot tell a complete run from one it only saw the start of.
+    """
+    store = AgentStore(tmp_path / "events.db")
+    store.event_page_max_bytes = 1024
+    thread = store.create_thread()
+    run = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=30
+    )
+    for index in range(50):
+        store.append_event(run.id, "message.delta", {"delta": "x" * 200, "n": index})
+
+    page = store.list_events(run.id)
+    assert page  # the first row is always kept
+    assert len(page) < 50  # the byte cap cut the page short
+    last_seq = page[-1].seq
+    assert store.has_events_after(run.id, last_seq) is True
+
+    # Draining to the end flips has_more off, so a caller knows when to stop.
+    cursor = last_seq
+    while store.has_events_after(run.id, cursor):
+        nxt = store.list_events(run.id, after=cursor)
+        assert nxt
+        cursor = nxt[-1].seq
+    assert store.has_events_after(run.id, cursor) is False
+
+
 def test_canonical_args_hash_is_key_order_independent() -> None:
     """The approval gate compares two independently computed hashes.
 

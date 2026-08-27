@@ -811,6 +811,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   仍保留这段半截文本并照常收尾(不丢答复、mission 因目标未达而自然续跑),但 `run.completed` 带
   `finish_reason="length"` 与 `truncated=True`,让审计与监控台看得出这段答复被掐断。补测:length 截断的
   最终答复保留文本、`run.completed`/`llm.completed` 都带截断信号,自然收尾则无 `truncated` 标志。
+- **`/events/history` 一页字节截断后不说,长 run 只显示开头**。`list_events` 的一页同时受条数与序列化字节
+  上限约束,超限时静默切短;非流式的 `/api/agent/runs/{run_id}/events/history` 直接把这一页当全部返回,
+  既不给 `has_more` 也不给续读游标。晚加入的客户端(或刷新后回看历史的监控台)就只看到 run 的开头,却以为
+  那是全部——SSE 路径靠 `after=cursor` 反复轮询能排空,这条快照路径不能。新增 store 的 `has_events_after`
+  (一次 `LIMIT 1` 探询,不物化其余),端点改为回 `next_after` 游标与 `has_more`。补测:字节截断的一页
+  `has_events_after` 为真、按游标续读能排空到尽头后转假;HTTP 层字节截断首页带 `has_more=True` 与正确
+  `next_after`、按游标翻页最终看到全部 50 条事件。
 - **Cursor 下划线别名解析 + 全表面无碰撞**：Cursor 以 `static_functions` 调用而 catalog 注册的是
   `static.functions`,`install_cursor_underscore_aliases` 在 `get_tool` 处解析且不新增 ListTools 项。
   它用普通 dict 建下划线→点名映射,两个折叠成同一下划线形的点名会互相静默覆盖(OpenAI 桥接对这类

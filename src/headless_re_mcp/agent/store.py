@@ -548,6 +548,21 @@ class AgentStore:
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
+    def has_events_after(self, run_id: str, after: int) -> bool:
+        """Whether any retained event for this run has ``seq`` greater than ``after``.
+
+        ``list_events`` returns a page bounded by count and by serialized bytes,
+        so a caller handed a full page cannot tell a complete history from one
+        the byte cap cut short. This answers that without materializing the rest,
+        which is what lets the history endpoint report ``has_more`` honestly.
+        """
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT 1 FROM run_events WHERE run_id=? AND seq>? LIMIT 1",
+                (run_id, max(0, after)),
+            ).fetchone()
+        return row is not None
+
     def list_thread_events(self, thread_id: str, *, limit: int = 4000) -> list[RunEvent]:
         """Newest-capped event history across every retained run on a thread.
 

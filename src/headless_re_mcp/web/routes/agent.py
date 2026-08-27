@@ -407,8 +407,19 @@ def register_agent_routes(
         authorize(authorization)
         if store.get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="run_not_found")
+        events = store.list_events(run_id, after=after)
+        # list_events caps the page by count and by serialized bytes, so a full
+        # page is not proof the history ends here. Hand back the cursor to
+        # resume from and whether anything remains, or a client catching up on a
+        # long run silently shows only the first page as the whole history.
+        next_after = events[-1].seq if events else after
         return JSONResponse(
-            {"ok": True, "events": [event.dump() for event in store.list_events(run_id, after=after)]}
+            {
+                "ok": True,
+                "events": [event.dump() for event in events],
+                "next_after": next_after,
+                "has_more": store.has_events_after(run_id, next_after),
+            }
         )
 
     @app.post("/api/agent/missions", status_code=201)

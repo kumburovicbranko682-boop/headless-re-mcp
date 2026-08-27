@@ -348,3 +348,57 @@ def test_a_granted_autonomy_survives_a_restart_through_the_config_file(
     # The explicit empty effects list persisted by the grant stays fail-closed
     # on reload, rather than being repopulated by the packed-analysis preset.
     assert reloaded.auto_approve_effects == frozenset()
+
+
+def test_event_history_reports_more_when_the_page_was_cut(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A byte-capped history page must tell the client to keep paging.
+
+    Catching up on a long run through /events/history returns a page bounded by
+    serialized bytes. Without has_more and a cursor, a client shows the first
+    page as the whole run; with them it can drain the rest.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    store = app.state.agent_store
+    store.event_page_max_bytes = 1024
+    thread = store.create_thread()
+    run = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=30
+    )
+    for index in range(50):
+        store.append_event(run.id, "message.delta", {"delta": "y" * 200, "n": index})
+
+    with TestClient(app) as client:
+        first = client.get(
+            f"/api/agent/runs/{run.id}/events/history", headers=headers
+        ).json()
+        assert first["ok"] is True
+        assert first["events"]
+        assert len(first["events"]) < 50  # the byte cap cut the first page short
+        assert first["has_more"] is True
+        assert first["next_after"] == first["events"][-1]["seq"]
+
+        collected = list(first["events"])
+        cursor = first["next_after"]
+        has_more = True
+        while has_more:
+            page = client.get(
+                f"/api/agent/runs/{run.id}/events/history",
+                headers=headers,
+                params={"after": cursor},
+            ).json()
+            collected.extend(page["events"])
+            cursor = page["next_after"]
+            has_more = page["has_more"]
+
+    # Paging drains everything exactly once: strictly increasing seqs, no
+    # overlap, and all 50 deltas recovered.
+    seqs = [event["seq"] for event in collected]
+    assert seqs == sorted(seqs)
+    assert len(seqs) == len(set(seqs))
+    delta_count = sum(1 for event in collected if event["type"] == "message.delta")
+    assert delta_count == 50
