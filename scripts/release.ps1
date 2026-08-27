@@ -65,18 +65,15 @@ function Write-ArtifactHash([string]$Path) {
     Write-Host "SHA256 $hash  $($item.Name)"
 }
 
-function Copy-AppTree([string]$Destination, [switch]$IncludeDocs) {
+function Copy-AppTree([string]$Destination) {
     Copy-Item -Recurse "src\headless_re_mcp" (Join-Path $Destination "src\headless_re_mcp")
-    # THIRD_PARTY_NOTICES.md was folded into README/upstream.lock.json when the
-    # public docs shrank; with $ErrorActionPreference = Stop, keeping it in this
-    # list made every portable build throw on the missing file.
+    # THIRD_PARTY_NOTICES.md and the docs/ tree were folded into README when the
+    # public docs shrank; with $ErrorActionPreference = Stop, copying either
+    # made every portable build throw on the missing path.
     Copy-Item @(
         "pyproject.toml", "setup.py", "start_web.py", "README.md", "LICENSE",
         "upstream.lock.json"
     ) $Destination
-    if ($IncludeDocs) {
-        Copy-Item -Recurse "docs" (Join-Path $Destination "docs")
-    }
     Remove-ReleaseJunk $Destination
     $spa = Join-Path $Destination "src\headless_re_mcp\web\spa\index.html"
     if (-not (Test-Path -LiteralPath $spa)) {
@@ -115,7 +112,7 @@ function Build-Portable {
     $name = "headless-re-mcp-portable"
     $destination = Join-Path $stageRoot $name
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    Copy-AppTree $destination -IncludeDocs
+    Copy-AppTree $destination
 
     foreach ($arch in @("x86", "x64")) {
         $source = Find-XdbgRuntime $arch
