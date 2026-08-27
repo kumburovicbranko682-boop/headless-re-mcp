@@ -595,6 +595,15 @@ async def test_max_rounds_and_oversized_tool_result_are_bounded(tmp_path: Path) 
     )
     assert '"truncated": true' in tool_message.content
     assert len(tool_message.content.encode("utf-8")) < 1000
+    # The result was too big to keep whole, but it was a success: the audit
+    # event has to say so, not file a truncated success as a failed tool call.
+    completed = next(
+        event
+        for event in oversized_store.list_events(oversized_run["id"])
+        if event.type == "tool.completed"
+    )
+    assert completed.data["ok"] is True
+    assert completed.data["truncated"] is True
 
 
 def test_context_compaction_and_nested_redaction() -> None:
