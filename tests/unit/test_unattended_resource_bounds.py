@@ -3059,7 +3059,9 @@ class TestAdbForwardsAreReleased:
             assert pushed == [("emulator-5554", "/data/local/tmp/mitmproxy-ca-cert.pem")]
 
             service._adb_backend.ensure_frida_server = (  # type: ignore[method-assign]
-                lambda serial, server_binary=None, port=27042: ensured.append(serial)
+                lambda serial, server_binary=None, port=27042, bind_host="127.0.0.1": ensured.append(
+                    serial
+                )
                 or {"running": True, "pushed": False, "port": port}
             )
             result = service.frida_server_ensure(session_id, "emulator-5554")
