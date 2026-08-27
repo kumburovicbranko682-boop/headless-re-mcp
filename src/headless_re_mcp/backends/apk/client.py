@@ -22,6 +22,7 @@ _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
+_MAX_FILES_COLLECT = 20_000
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
@@ -34,6 +35,7 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+_MAX_FILES_PAGE = 1000
 
 
 class ApkError(RuntimeError):
@@ -54,6 +56,45 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+def _entry_sizes(apk: Any, wanted: set[str]) -> dict[str, dict[str, int]]:
+    """Sizes for *wanted* entries, read from the zip central directory.
+
+    Read from the parsed directory, never by decompressing: a size map over an
+    APK full of large assets must not pull every entry into memory, so only the
+    page's names are looked up. A size is omitted when the source does not carry
+    it rather than reported as 0, so "unknown" is not read as "empty file", and
+    the whole map degrades to empty if this androguard's zip has a shape we do
+    not recognise (androguard 4.x returns a dict of central-directory entries;
+    an older stdlib ZipFile returns a list of ZipInfo).
+    """
+    out: dict[str, dict[str, int]] = {}
+    if not wanted:
+        return out
+    try:
+        info = apk.zip.infolist()
+    except Exception:  # noqa: BLE001 - zip internal shape varies by androguard
+        return out
+    entries = info.values() if isinstance(info, dict) else info
+    for entry in entries or []:
+        name = getattr(entry, "filename", None)
+        if not isinstance(name, str) or name not in wanted:
+            continue
+        sizes: dict[str, int] = {}
+        uncompressed = getattr(entry, "uncompressed_size", None)
+        if uncompressed is None:
+            uncompressed = getattr(entry, "file_size", None)
+        if isinstance(uncompressed, int) and uncompressed >= 0:
+            sizes["size"] = uncompressed
+        compressed = getattr(entry, "compressed_size", None)
+        if compressed is None:
+            compressed = getattr(entry, "compress_size", None)
+        if isinstance(compressed, int) and compressed >= 0:
+            sizes["compressed"] = compressed
+        if sizes:
+            out[name] = sizes
+    return out
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -324,6 +365,33 @@ class ApkClient:
             "abis": sorted(abis),
             "count": len(libs),
             "has_more": has_more,
+        }
+
+    def files(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        apk = self._apk(path)
+        names: list[str] = []
+        scan_more = False
+        for name in apk.get_files() or []:
+            if len(names) >= _MAX_FILES_COLLECT:
+                scan_more = True
+                break
+            names.append(str(name))
+        names.sort()
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_FILES_PAGE)
+        window = names[start : start + cap]
+        sizes = _entry_sizes(apk, set(window))
+        items: list[JsonObject] = []
+        for name in window:
+            item: JsonObject = {"name": name}
+            item.update(sizes.get(name) or {})
+            items.append(item)
+        return {
+            "files": items,
+            "count": len(items),
+            "total": len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
+            "scan_capped": scan_more,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

@@ -81,6 +81,27 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.files")
+    def apk_files(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """List every entry packaged in the APK zip, not just lib/*.so.
+
+        The whole archive: extra classesN.dex, assets/, res/, resources.arsc,
+        embedded certs or keys, and native libraries outside lib/ that
+        apk.native_libs would miss. Answers with files, each carrying name and,
+        when the zip central directory exposes them, size (uncompressed) and
+        compressed -- omitted per entry when unknown, so a missing size is not
+        read as a zero-byte file. Plus count, total, offset and has_more so a
+        page that filled the limit is not read as the whole archive; total is
+        the number collected (capped at 20000) and scan_capped is true when the
+        archive holds more. has_more only means a larger offset still has
+        collected rows.
+        """
+        return _dump(analysis.apk_files(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
