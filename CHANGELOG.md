@@ -61,6 +61,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（`device.push` 从不核实文件真落到了设备,推进不存在的目录也报成功）
+
+- `device.pull` 早有一道诚实闸:传完后查本地文件在不在,不在就抛 `not_found`(注释写明「adb sync 会
+  报一次干净的 pull 却什么都没写——老版 adbutils 不抛异常」)。`device.push` 却没有对称的一道:它调完
+  `sync.push` 就直接回 `{local, remote, size}`,`size` 还是**本地**文件的大小——推到一个不存在的远端目录
+  (`/sdcard/nodir/x`)时 adb 可能报一次干净的成功却一个字节都没落到设备上,调用方照样看到 `size=N` 当作
+  推成功了。
+- 现在 push 传完后 `stat` 远端路径核实,并按 `install`/`uninstall`/`launch`/`force_stop` 同一套 true/false/null
+  约定回一个 `verified`:远端文件确实存在且字节数与本地一致才为 `true`;`stat` 显示路径不存在(mode 0,
+  多半是远端目录缺失)为 `false`;字节数对不上(部分写入)也为 `false` 并附 `remote_size` 说明差异;
+  连 `stat` 都做不了(远端/adbutils 不支持)则为 `null`,绝不谎称成功。`size`/`local`/`remote` 三个老字段
+  原样保留,纯增量。`device.push` 描述点名 `verified` 三态、`remote_size`,并申明推进缺失目录不再被读成完成。
+- 新增回归:远端 `stat` 回同样大小 → `verified=true` 且无 `remote_size`;回 mode 0(不存在)→ `verified=false`、
+  无 `remote_size`、但传输确曾发起;回更小的字节数 → `verified=false` 且 `remote_size` 说明差异;`stat` 抛异常
+  → `verified=null`。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

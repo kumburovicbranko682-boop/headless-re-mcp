@@ -287,3 +287,59 @@ def test_push_returns_the_size_on_success(tmp_path: Path) -> None:
     assert payload["size"] == 5
     assert payload["remote"] == "/sdcard/small.bin"
     assert sync.pushed == (str(small), "/sdcard/small.bin")
+
+
+def test_push_verified_true_when_the_remote_file_lands(tmp_path: Path) -> None:
+    """A remote file that exists afterward with the sent bytes is verified true."""
+    small = tmp_path / "small.bin"
+    small.write_bytes(b"hello")
+    landed = _StatResult(mode=stat.S_IFREG | 0o644, size=5)
+    dev = _FakeDev(sync=_Sync(stat_result=landed))
+    payload = _backend_with(dev).push("emulator-5554", str(small), "/sdcard/small.bin")
+    assert payload["size"] == 5
+    assert payload["verified"] is True
+    assert "remote_size" not in payload
+
+
+def test_push_verified_false_when_nothing_lands(tmp_path: Path) -> None:
+    """adb can report a clean push into a missing directory; verified catches it.
+
+    stat of a path that does not exist comes back mode 0, so the guard reports
+    verified false instead of a size-N success that never reached the device --
+    the push side of pull's "wrote nothing" guard.
+    """
+    small = tmp_path / "small.bin"
+    small.write_bytes(b"hello")
+    absent = _StatResult(mode=0, size=0)
+    sync = _Sync(stat_result=absent)
+    dev = _FakeDev(sync=sync)
+    payload = _backend_with(dev).push("emulator-5554", str(small), "/sdcard/nodir/small.bin")
+    assert payload["size"] == 5
+    assert payload["verified"] is False
+    assert "remote_size" not in payload
+    # The transfer was attempted; verification is what failed.
+    assert sync.pushed == (str(small), "/sdcard/nodir/small.bin")
+
+
+def test_push_verified_false_on_a_byte_count_mismatch(tmp_path: Path) -> None:
+    """A remote shorter than the local file is a partial push, not a success."""
+    small = tmp_path / "small.bin"
+    small.write_bytes(b"hello")
+    short = _StatResult(mode=stat.S_IFREG | 0o644, size=3)
+    dev = _FakeDev(sync=_Sync(stat_result=short))
+    payload = _backend_with(dev).push("emulator-5554", str(small), "/sdcard/small.bin")
+    assert payload["verified"] is False
+    assert payload["remote_size"] == 3
+
+
+def test_push_verified_null_when_the_remote_cannot_be_stat(tmp_path: Path) -> None:
+    """When the remote cannot be stat'd, verified is null -- not a false claim."""
+    small = tmp_path / "small.bin"
+    small.write_bytes(b"hello")
+    # stat_result=None makes the fake sync.stat raise, standing in for a device
+    # or adbutils build that cannot stat the pushed path.
+    dev = _FakeDev(sync=_Sync(stat_result=None))
+    payload = _backend_with(dev).push("emulator-5554", str(small), "/sdcard/small.bin")
+    assert payload["size"] == 5
+    assert payload["verified"] is None
+    assert "remote_size" not in payload
