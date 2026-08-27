@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（跑到运行时限的 run 被界面当成崩溃，只有步数用尽才有安抚文案）
+
+- `webui` 的 `runFailureHint` 给「工具步数用尽」（`maximum tool rounds exceeded`）配了安抚文案
+  ——「不是崩溃，会话还在，接着发一句即可继续」——但对称的「运行时限到达」
+  （`run deadline exceeded`）没有任何分支，直接落到 `run.failed` 的兜底，把后端英文原文
+  `run deadline exceeded` 原样贴给用户。两者在后端同属 `RUN_BUDGET_ENDINGS`（都是「用掉一个
+  预算，不是坏了」，见调度器 `_run_spent_its_budget`），可界面把一次首开大文件、IDA 分析到
+  3600s 上限的正常收尾显示成一条刺眼的英文报错，让用户以为助手崩了。现补上对称的中文提示：
+  运行到达时限同样解释为「不是崩溃，会话还在，接着发一句即可继续」。
+- 新增一条 reducer 直测：`run.failed` 带 `run deadline exceeded` 时错误横幅含「运行时限」「不是
+  崩溃」、不含英文原文。修复前该用例停在原样英文串。前端 65 条测试与 `tsc --noEmit` 均通过，
+  提交的 SPA 产物已重建。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

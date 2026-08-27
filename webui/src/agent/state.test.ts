@@ -67,4 +67,23 @@ describe("agent reducer", () => {
     expect(state.error).not.toContain("incident");
     expect(state.error).not.toContain("RuntimeError");
   });
+
+  it("does not present a spent run deadline as a crash", () => {
+    let state = reducer(initialState, { type: "run", runId: "r", userMessage: "go" });
+    state = reducer(state, {
+      type: "event",
+      event: {
+        run_id: "r",
+        seq: 1,
+        type: "run.failed",
+        data: { error: "run deadline exceeded" },
+        created_at: "",
+      },
+    });
+    // A long analysis that met the run's own time bound is not broken; it must
+    // read like the rounds-exhausted case, not leak the raw English string.
+    expect(state.error).toContain("\u8fd0\u884c\u65f6\u9650");
+    expect(state.error).not.toContain("run deadline exceeded");
+    expect(state.error).toContain("\u4e0d\u662f\u5d29\u6e83");
+  });
 });
