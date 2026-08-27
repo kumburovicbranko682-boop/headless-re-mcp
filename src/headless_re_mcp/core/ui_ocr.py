@@ -19,6 +19,7 @@ from headless_re_mcp.core.windows import UiPidBoundaryError
 JsonObject = dict[str, Any]
 _MAX_OCR_SECONDS = 30.0
 _MAX_OCR_INPUT_BYTES = 128 * 1024 * 1024
+_OCR_READ_CHUNK_BYTES = 1024 * 1024
 _T = TypeVar("_T")
 
 
@@ -90,18 +91,38 @@ def _run_async(coro: Coroutine[Any, Any, _T]) -> _T:
 
 
 def _read_bounded_bmp(path: Path) -> bytes:
+    """Load the whole screenshot, but never more than the cap -- nor the cap in
+    transient heap.
+
+    The OCR engine needs the entire image, so this reads to EOF, capped at
+    ``_MAX_OCR_INPUT_BYTES + 1`` so an oversized input is refused rather than
+    loaded. Reading it as one ``read(cap + 1)`` would pre-allocate the whole
+    128 MiB cap on every call -- a buffered ``read(n)`` sizes its buffer to ``n``
+    before shrinking -- and OCR runs on every ui.ocr call, which a UI-driving
+    loop makes constantly, so each call spiked 128 MiB whatever the screenshot's
+    real size. Chunking keeps the allocation proportional to the bytes on disk;
+    a short read is EOF on a regular file, so an image under one chunk still
+    costs a single read and the reject/accept bound is unchanged.
+    """
+    budget = _MAX_OCR_INPUT_BYTES + 1
+    buffer = bytearray()
     with path.open("rb") as stream:
-        data = stream.read(_MAX_OCR_INPUT_BYTES + 1)
-    if not data:
+        while len(buffer) < budget:
+            want = min(_OCR_READ_CHUNK_BYTES, budget - len(buffer))
+            chunk = stream.read(want)
+            buffer.extend(chunk)
+            if len(chunk) < want:
+                break
+    if not buffer:
         raise UiPidBoundaryError("invalid_params", "OCR input BMP is empty")
-    if len(data) > _MAX_OCR_INPUT_BYTES:
+    if len(buffer) > _MAX_OCR_INPUT_BYTES:
         raise UiPidBoundaryError(
             "invalid_params",
             "OCR input BMP exceeds the safety limit",
             path=str(path),
             max_bytes=_MAX_OCR_INPUT_BYTES,
         )
-    return data
+    return bytes(buffer)
 
 
 async def _ocr_bmp_windows_async(path: Path, *, language: str = "en-US") -> JsonObject:
