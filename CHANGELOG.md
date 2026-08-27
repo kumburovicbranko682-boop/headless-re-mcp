@@ -928,6 +928,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的普通 zip（androguard 的 `get_package()` 返回 None）会被无人值守的 agent 当成已打开的
   包继续分析。现在空包名记为 `backend_error`（`opened: False`），而不是一个没有身份的
   成功结果。
+- **只有 `apk.open` 拒无清单 zip，其余检查工具照单全收。**androguard 会解析任何 zip，一份
+  没有 Android 清单的（改名的压缩包、截断的下载、指错文件的路径）会得到一个包名为空、权限/组件/
+  证书/DEX 视图统统为空的对象——和一个真的什么都不声明的 APK 无从区分。`apk.open` 早已拒掉它
+  （`get_package()` 为空），但它并不是各检查工具的前置：`certificates` / `components` /
+  `native_libs` / `permissions` / `classes` / `methods` / `strings` / `xrefs` 各自经 `_apk` /
+  `_parsed` 独立重新解析，于是都会对一份非 APK 答成「未签名、无权限、无组件、无类」。现在把校验
+  下沉到解析边界（`_apk` / `_parsed` 解析成功后立即跑 `_require_apk_manifest`，包名为空即抛
+  `backend_error`），每个读取工具都在最前面一次性拒掉；真 APK 必声明包名，故绝不会误拒（含无 DEX
+  的 split APK，它仍带清单）。新增回归：守卫单测拒无清单/放行有包名，装了 androguard 时九个工具对
+  一份普通 zip 全部抛 `backend_error`。
 - **jadx 导出源码列表和 webcrack unpack 文件列表同样切到 2000 条却不说**。旁边虽有
   `java_file_count` / `file_count` 是全量，只看列表的调用方仍会当成完整目录。补上
   `has_more`。

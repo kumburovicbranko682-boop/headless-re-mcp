@@ -161,6 +161,7 @@ class ApkClient:
             apk = APK(str(resolved))
         except Exception as exc:  # noqa: BLE001 - androguard raises many types
             raise ApkError("backend_error", f"failed to parse APK: {exc}") from exc
+        self._require_apk_manifest(apk, resolved)
         with self._cache_lock:
             self._light_cache[key] = apk
             while len(self._light_cache) > _CACHE_LIMIT:
@@ -182,12 +183,41 @@ class ApkClient:
             apk, dex, analysis = AnalyzeAPK(str(resolved))
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to analyze APK: {exc}") from exc
+        self._require_apk_manifest(apk, resolved)
         parsed = _ParsedApk(apk, analysis, dex)
         with self._cache_lock:
             self._full_cache[key] = parsed
             while len(self._full_cache) > _CACHE_LIMIT:
                 self._full_cache.popitem(last=False)
         return parsed
+
+    @staticmethod
+    def _require_apk_manifest(apk: Any, path: Path) -> None:
+        """Refuse a parse of a zip that carries no Android manifest (not an APK).
+
+        androguard parses any zip; a manifest-less one (a renamed archive, a
+        truncated download, a path pointing at the wrong file) yields an object
+        whose package is empty and whose permission / component / certificate /
+        DEX views are all empty -- indistinguishable from a real APK that
+        happens to declare none. ``apk.open`` already rejected exactly this
+        (``get_package()`` falsy), but apk.open is not a prerequisite for the
+        inspection tools, and each of them re-parses through ``_apk`` /
+        ``_parsed`` independently: certificates, components, native_libs,
+        permissions, classes, methods, strings and xrefs all reached a
+        manifest-less zip and answered "unsigned, no permissions, no
+        components, no classes" -- the deceptive empty-success apk.open was
+        fixed to stop reporting. Rejecting at the parse boundary makes every
+        reader refuse it once, up front. A valid APK always declares a package,
+        so this never rejects one (including a dex-less split APK, which still
+        carries a manifest).
+        """
+        if not apk.get_package():
+            raise ApkError(
+                "backend_error",
+                "not an APK: no AndroidManifest package",
+                package=None,
+                path=str(path),
+            )
 
     def open(self, path: Path) -> JsonObject:
         apk = self._apk(path)
