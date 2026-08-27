@@ -4,12 +4,15 @@ The session-filtered ``list_backends(session_id)`` path is exercised by the
 wider suite, but the unfiltered ``list_backends()`` -- the cross-session view a
 diagnostic or reaper uses to see every live backend at once -- was not. Pin its
 ordering contract alongside the upsert-in-place behaviour so a future change to
-either query is caught.
+either query is caught. Also pins the ``gc_artifacts`` budget guard, which must
+refuse a non-positive budget before it ever opens the database.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 from headless_re_mcp.core.store.sqlite_store import SessionStore
 
@@ -53,3 +56,18 @@ def test_upsert_backend_replaces_the_row_for_the_same_session_and_kind(
     assert len(rows) == 1, "the same (session, kind) must update in place, not duplicate"
     assert rows[0]["pid"] == 2
     assert rows[0]["endpoint"] == "second"
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, "100"])
+def test_gc_artifacts_refuses_a_non_positive_integer_budget(
+    tmp_path: Path, bad: object
+) -> None:
+    """A zero, negative, float, or string budget is a caller error, not a sweep.
+
+    The guard runs before the connection opens, so a bad budget can never delete
+    rows on the strength of a value that was never a positive byte count.
+    """
+    store = SessionStore(tmp_path / "store.db")
+
+    with pytest.raises(ValueError, match="max_total_bytes must be a positive integer"):
+        store.gc_artifacts(max_total_bytes=bad)  # type: ignore[arg-type]
