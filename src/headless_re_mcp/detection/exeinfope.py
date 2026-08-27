@@ -472,6 +472,14 @@ def _capture_process(
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
         monitor_thread.join(timeout=1.0)
+        # A clean exit skips the timeout kill, so a helper the scanner spawned
+        # and detached would leak. Reap the launcher's session group before
+        # closing pipes; a survivor holding them then lets the readers finish.
+        from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
+
+        terminate_leftover_process_tree(process, wait_s=1.0)
+        stdout_thread.join(timeout=1.0)
+        stderr_thread.join(timeout=1.0)
         # The readers close their own pipes; only close here when the reader has
         # finished, so a reader still blocked on a survivor's pipe never wedges
         # this thread on close().

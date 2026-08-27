@@ -239,6 +239,46 @@ def terminate_process_group(pgid: int) -> list[int]:
     return killed
 
 
+def collect_process_tree(parent_pid: int) -> list[int]:
+    """Known descendants plus isolated-group members whose launcher exited.
+
+    The ppid walk sees a live parent/child chain; the group scan additionally
+    finds a helper the launcher orphaned to init, which keeps the launcher's
+    session group even after its parent link points at pid 1. Once a launcher
+    has exited neither view alone is complete, so callers that must account for
+    *everything* a tool started union the two (excluding the launcher itself).
+    """
+    found = collect_descendants(parent_pid)
+    found.extend(collect_process_group(parent_pid))
+    return list(dict.fromkeys(pid for pid in found if pid != parent_pid))
+
+
+def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+    """Reap anything a launcher left running after it reported completion.
+
+    A CLI that spawns a helper and exits cleanly never takes the timeout-kill
+    path, so that helper -- reparented to init -- outlives the call: the ppid
+    walk can no longer see it, and once the group leader is reaped a
+    leader-guarded ``killpg`` cannot reach it either. Only a per-member kill
+    keyed on the launcher's session group does. Returns immediately, paying just
+    one bounded scan, when the tool left nothing behind.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    leftover: list[int] = []
+    with suppress(Exception):
+        leftover = collect_process_tree(pid)
+    if not leftover:
+        return []
+    killed = terminate_process_tree(process, wait_s=wait_s)
+    # terminate_process_tree's group kill is guarded to a live leader; a helper
+    # orphaned after the leader was reaped is only reachable by its own group.
+    with suppress(Exception):
+        killed.extend(terminate_process_group(pid))
+    return list(dict.fromkeys(killed))
+
+
 def _kill_own_process_group(pid: int) -> list[int]:
     """POSIX: kill ``pid``'s process group, but only when ``pid`` leads it.
 
