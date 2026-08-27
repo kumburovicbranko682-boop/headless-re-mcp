@@ -195,6 +195,38 @@ def test_frida_memory_read_reports_bytes_returned_not_bytes_requested() -> None:
     assert "complete" in doc
 
 
+class _BoomApi:
+    def modules(self, limit: int = 64) -> Any:
+        raise RuntimeError("script load boom")
+
+    def exports(self, name: str, count: int) -> Any:
+        raise RuntimeError("script load boom")
+
+    def read(self, address: int, size: int) -> Any:
+        raise RuntimeError("script load boom")
+
+
+def test_frida_local_reads_translate_backend_failures_not_internal_error() -> None:
+    """A probe RPC failure must surface as backend_error, not a raw exception.
+
+    ``_failure`` files any exception it does not recognise as internal_error and
+    mints an incident. A frida script that fails to load, or an RPC that raises
+    on a wedged target, is an ordinary backend failure -- the device methods
+    already translate it, so the local modules/exports/memory.read reads must
+    too, or they read as an internal fault the caller cannot act on.
+    """
+    client = _read_client(_BoomApi())
+    calls = (
+        lambda: client.modules(1, allowed_pid=1),
+        lambda: client.exports(1, "libc.so", allowed_pid=1),
+        lambda: client.memory_read(1, 0x1000, 16, allowed_pid=1),
+    )
+    for call in calls:
+        with pytest.raises(FridaError) as caught:
+            call()
+        assert caught.value.code == "backend_error"
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident

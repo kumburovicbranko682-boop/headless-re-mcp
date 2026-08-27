@@ -349,6 +349,16 @@ class FridaClient:
                 "total": total,
                 "has_more": total > len(items),
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a probe failure is not an internal fault
+            # Without this a script-load or RPC failure escapes as a raw frida
+            # exception and _failure files it as internal_error with an
+            # incident, hiding a backend_error the caller could act on. The
+            # device methods already translate; the local reads must match.
+            raise FridaError(
+                "backend_error", f"module enumeration failed: {exc}", pid=pid
+            ) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -392,6 +402,12 @@ class FridaClient:
                 "count": len(items),
                 "has_more": has_more,
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a probe failure is not an internal fault
+            raise FridaError(
+                "backend_error", f"export enumeration failed: {exc}", pid=pid
+            ) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -419,6 +435,12 @@ class FridaClient:
                 "encoding": "hex",
                 "data": data.hex(),
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a probe failure is not an internal fault
+            raise FridaError(
+                "backend_error", f"memory read failed: {exc}", pid=pid
+            ) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
