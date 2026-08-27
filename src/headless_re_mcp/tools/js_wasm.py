@@ -144,4 +144,28 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_strings(path, min_length=min_length, contains=contains))
 
+    @tools.tool(name="wasm.names")
+    def wasm_names(path: str, contains: str | None = None) -> dict[str, Any]:
+        """Module and function names from a .wasm module's name custom section.
+
+        The name section is WebAssembly's debug symbol table: a non-stripped
+        build (or a dev build) records the readable name of each function index,
+        so an internal function that never made the export table -- invisible to
+        wasm.summary, which only lists exports -- still has a name here. This is
+        the WASM parallel of a native symbol table, parsed directly in pure
+        Python (no wabt needed, so it answers even when wasm2wat/wasm-objdump are
+        absent). Answers with has_name_section (false for a stripped module,
+        which is a different answer from a present-but-empty table), module_name
+        (the module's own name, or null), functions (each carrying index and
+        name), count, total, and scan_capped (true when more names exist beyond
+        the 4096 cap). Pass contains to keep only names containing a
+        case-insensitive substring (a getter, a crypto routine); the filter runs
+        during the scan so the 4096 cap bounds matches, and the reply then also
+        carries filtered true and query. An input over 16 MiB is refused as
+        too_large and a non-module as invalid_params. This completes the
+        wasm.summary/wasm.strings/wasm.names trio: the export surface, the string
+        surface, and the internal-name surface.
+        """
+        return _dump(analysis.wasm_names(path, contains=contains))
+
     return tools.bindings

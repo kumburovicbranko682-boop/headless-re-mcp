@@ -388,3 +388,93 @@ def extract_wasm_strings(
     except OSError as exc:
         raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
     return extract_wasm_strings_bytes(data, min_length=min_length, contains=contains)
+
+
+def _find_name_section(data: bytes) -> _Cursor | None:
+    """The body of the ``name`` custom section, positioned past its name string.
+
+    A module carries function names only in the custom section literally named
+    ``"name"``; other custom sections (producers, dylink, source maps) are
+    skipped. Returns None when the module is stripped of names. Each section
+    body is sliced to its own declared bounds, so a bad length cannot read past
+    the module.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module: bad magic")
+    cursor = _Cursor(data)
+    cursor.pos = 8
+    while not cursor.eof:
+        section_id = cursor.byte()
+        section_len = cursor.uleb()
+        body = _Cursor(cursor.take(section_len))
+        if section_id == 0 and not body.eof and body.name() == "name":
+            return body  # now positioned at the first name subsection
+    return None
+
+
+def extract_wasm_names_bytes(data: bytes, *, contains: str | None = None) -> JsonObject:
+    """Recover the module and function names from the ``name`` custom section.
+
+    The name section is WASM's debug symbol table: a compiler that keeps it
+    (or a dev build) maps each function index to a human-readable name, so an
+    internal function that never made the export table still has a name here.
+    This is the WASM parallel of a native symbol table -- pure Python, no wabt.
+    Only the module-name (subsection 0) and function-names (subsection 1)
+    subsections are decoded; local/label/type name subsections are skipped by
+    their declared size. ``has_name_section`` is false for a stripped module,
+    which is a different answer from a present-but-empty table.
+    """
+    name_body = _find_name_section(data)
+    needle = contains.casefold() if contains else None
+    module_name: str | None = None
+    functions: list[JsonObject] = []
+    function_total = 0
+    scan_capped = False
+    if name_body is not None:
+        while not name_body.eof:
+            sub_id = name_body.byte()
+            sub_len = name_body.uleb()
+            sub = _Cursor(name_body.take(sub_len))
+            if sub_id == 0:  # module name (a single name)
+                if not sub.eof:
+                    module_name = sub.name()
+            elif sub_id == 1:  # function names: a namemap of (index, name)
+                # The filter runs during the scan, so _MAX_ITEMS bounds matches
+                # rather than the pre-filter set -- a named function past the cap
+                # is still found, exactly like wasm.strings. The loop is bounded
+                # by the subsection's own bytes: each entry consumes >= 2 bytes,
+                # so a lying count runs out of data and stops.
+                count = sub.uleb()
+                for _ in range(count):
+                    index = sub.uleb()
+                    fname = sub.name()
+                    if needle is not None and needle not in fname.casefold():
+                        continue
+                    function_total += 1
+                    if len(functions) >= _MAX_ITEMS:
+                        scan_capped = True
+                        continue
+                    functions.append({"index": index, "name": fname})
+            # Every other subsection is skipped by its declared size.
+    result: JsonObject = {
+        "has_name_section": name_body is not None,
+        "module_name": module_name,
+        "functions": functions,
+        "count": len(functions),
+        "total": function_total,
+        "scan_capped": scan_capped,
+    }
+    if needle is not None:
+        result["filtered"] = True
+        result["query"] = contains
+    return result
+
+
+def extract_wasm_names(path: Path, *, contains: str | None = None) -> JsonObject:
+    """Recover names from the module at ``path`` (applies the shared 16 MiB cap)."""
+    resolved = _require_existing_file(path, missing="wasm file not found")
+    try:
+        data = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
+    return extract_wasm_names_bytes(data, contains=contains)

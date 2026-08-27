@@ -87,6 +87,20 @@ def _module_with_data(base: int, payload: bytes) -> bytes:
     return b"\x00asm\x01\x00\x00\x00" + _section(11, _vec([_active_data_segment(base, payload)]))
 
 
+def _subsection(sub_id: int, content: bytes) -> bytes:
+    return bytes([sub_id]) + _leb128(len(content)) + content
+
+
+def _function_names_sub(entries: list[tuple[int, str]]) -> bytes:
+    body = _leb128(len(entries)) + b"".join(_leb128(idx) + _name(nm) for idx, nm in entries)
+    return _subsection(1, body)
+
+
+def _module_with_names(module_name: str, entries: list[tuple[int, str]]) -> bytes:
+    name_body = _name("name") + _subsection(0, _name(module_name)) + _function_names_sub(entries)
+    return b"\x00asm\x01\x00\x00\x00" + _section(0, name_body)
+
+
 def _find(items: list[dict], **fields: object) -> dict | None:
     for item in items:
         if all(item.get(key) == value for key, value in fields.items()):
@@ -166,6 +180,97 @@ def test_wasm_strings_drives_the_service_end_to_end(tmp_path: Path) -> None:
         assert failed.ok is False
         assert failed.error is not None
         assert failed.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_names_drives_the_service_end_to_end(tmp_path: Path) -> None:
+    """wasm.names must recover the name-section symbol table through the service.
+
+    Build a module whose name section names the module and three functions (one
+    of them never exported), then drive AnalysisService.wasm_names end to end:
+    the success envelope must carry has_name_section, the module name and every
+    (index, name) pair, a contains filter must narrow to matches, and a
+    non-module must come back as an invalid_params envelope, not an internal
+    error.
+    """
+    module = tmp_path / "names.wasm"
+    module.write_bytes(
+        _module_with_names(
+            "app.wasm",
+            [(0, "_start"), (3, "decryptPayload"), (7, "sendBeacon")],
+        )
+    )
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_names(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        assert data["has_name_section"] is True
+        assert data["module_name"] == "app.wasm"
+        assert _find(data["functions"], index=3, name="decryptPayload") is not None
+        assert _find(data["functions"], index=7, name="sendBeacon") is not None
+        assert data["total"] == 3
+
+        filtered = service.wasm_names(str(module), contains="decrypt")
+        assert filtered.ok, filtered.error
+        assert [item["name"] for item in filtered.data["functions"]] == ["decryptPayload"]
+        assert filtered.data["filtered"] is True
+
+        bogus = tmp_path / "not.wasm"
+        bogus.write_bytes(b"PK\x03\x04 this is a zip, not wasm")
+        failed = service.wasm_names(str(bogus))
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_names_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
+    """Cross-check the name-section parser against a --debug-names build.
+
+    wat2wasm emits the name section from the WAT function names only when asked
+    with --debug-names, so this proves the parser reads a name section a real
+    toolchain produced, not just the hand-framed fixtures.
+    """
+    wat2wasm = shutil.which("wat2wasm")
+    if wat2wasm is None:
+        pytest.skip("wat2wasm (wabt) not installed — toolchain gate not run (skip != pass)")
+    wat = tmp_path / "names.wat"
+    wat.write_text(
+        "(module\n"
+        "  (func $decryptPayload (param i32) (result i32) local.get 0)\n"
+        "  (func $sendBeacon)\n"
+        '  (export "decryptPayload" (func $decryptPayload)))\n',
+        encoding="utf-8",
+    )
+    module = tmp_path / "names.wasm"
+    built = subprocess.run(  # noqa: S603 - fixed argv, tool discovered on PATH
+        [wat2wasm, "--debug-names", str(wat), "-o", str(module)],
+        capture_output=True,
+        timeout=60,
+    )
+    if built.returncode != 0 or not module.is_file():
+        detail = built.stderr.decode("utf-8", "replace")[:200]
+        pytest.skip(f"wat2wasm could not build the fixture ({detail}) — skip != pass")
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_names(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        assert data["has_name_section"] is True
+        names = {item["name"] for item in data["functions"]}
+        # sendBeacon is never exported, so only the name section names it -- the
+        # whole point of decoding this section.
+        assert "decryptPayload" in names
+        assert "sendBeacon" in names
     finally:
         service.close_all()
 

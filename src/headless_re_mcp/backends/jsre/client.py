@@ -268,6 +268,18 @@ class WasmClient:
 
         return extract_wasm_strings(path, min_length=min_length, contains=contains)
 
+    def names(self, path: Path, *, contains: str | None = None) -> JsonObject:
+        """Module and function names from the ``name`` custom section (pure Python).
+
+        Needs no wabt tool: the name section -- WASM's debug symbol table, where
+        a non-stripped build maps each function index to a readable name -- is
+        parsed directly, so internal function names that never reach the export
+        table are recoverable even when wasm2wat/wasm-objdump are not configured.
+        """
+        from headless_re_mcp.backends.jsre.wasm_summary import extract_wasm_names
+
+        return extract_wasm_names(path, contains=contains)
+
     def info(
         self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
     ) -> JsonObject:

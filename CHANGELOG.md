@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **278（158 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **279（159 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -484,6 +484,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   WAT 现编成真模块交叉校验串内容与 `addr==1024`（缺 wabt 时 skip≠pass）。单测手工构造模块字节覆盖串/段/addr 提取、
   `min_length` 抬高地板、`contains` 过滤、无 data 段、4096 截断、坏 magic 与截断 data 段的拒绝。该工具计入读效果，工具面
   因此 275→276。
+- **WASM 线看得到导出，却看不到内部函数的名字**。`wasm.summary` 只列导出（对外可见的那一小片），可一个没被导出的内部
+  函数——常是真正想找的解密/信标/校验例程——在导出表里根本不出现，只能拿函数下标当代号猜。可非 strip 的构建（或 dev 构建）
+  会在名为 `name` 的 custom section 里把每个函数下标映射到可读名字，那正是 WASM 的调试符号表。新增只读的 `wasm.names`，
+  作为 `r2.symbols` 在 WASM 上的对应物：**纯 Python** 直接解析 `name` section（wabt 缺席也能出结果），解出模块名（子段 0）
+  与函数名映射（子段 1），local/label/type 名等其它子段按声明长度跳过。回 `has_name_section`（stripped 模块为 false——这与
+  「有 name section 但没有函数名」是两个不同答案）、`module_name`（模块自身的名字，或 null）、`functions`（每条带 `index`
+  与 `name`）、`count`、`total`、`scan_capped`（超过 4096 上限还有更多时为真）。`contains` 做大小写不敏感子串过滤（找某个
+  getter、某个 crypto 例程），且在扫描当中施加，故 4096 上限约束的是命中数，设了时另回 `filtered`/`query`；函数名循环受
+  子段自身字节数约束（每条至少 2 字节），谎报的 count 会读空数据自然停下，恶意长度读不出模块之外。输入超 16 MiB 按
+  `too_large`、非模块按 `invalid_params` 拒绝。这样 `wasm.summary`/`wasm.strings`/`wasm.names` 三件套凑齐：导出面、字符串面、
+  内部命名面。活体门手工搭一个 name section 命名了模块与三个函数（其一从不导出）的模块，走完整 `AnalysisService.wasm_names`
+  信封断言 `has_name_section`、模块名、每条 `(index, name)` 与 `contains` 收窄、非模块回 `invalid_params`（纯 Python，总会
+  跑）；另一条在装了 wat2wasm 时用 `--debug-names` 把带 `$名字` 的 WAT 现编成真模块，交叉校验连从不导出的函数名也被解出
+  （缺 wabt 时 skip≠pass）。单测手工构造模块字节覆盖模块名/函数名解码、stripped 模块（`has_name_section` false）、非 `name`
+  的 custom section 不误解、无关子段按长度跳过、`contains` 过滤、4096 截断、坏 magic 的拒绝。该工具计入读效果，工具面因此
+  278→279。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

@@ -6,6 +6,8 @@ from headless_re_mcp.backends.jsre.client import (
     WasmClient,
 )
 from headless_re_mcp.backends.jsre.wasm_summary import (
+    extract_wasm_names,
+    extract_wasm_names_bytes,
     extract_wasm_strings,
     extract_wasm_strings_bytes,
     summarize_wasm,
@@ -20,4 +22,6 @@ __all__ = [
     "summarize_wasm_bytes",
     "extract_wasm_strings",
     "extract_wasm_strings_bytes",
+    "extract_wasm_names",
+    "extract_wasm_names_bytes",
 ]
