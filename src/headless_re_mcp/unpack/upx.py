@@ -277,6 +277,7 @@ def _capture_process(
     deadline = monotonic() + timeout
     timed_out = False
     cancelled = False
+    exited = False
     stop = active_bound_cancel()
     while True:
         if stop is not None and stop.is_set():
@@ -292,11 +293,20 @@ def _capture_process(
             _terminate_process(process)
             break
         if process.poll() is not None:
+            exited = True
             break
         sleep(min(0.05, remaining))
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
+    if exited and process.pid:
+        # A wrapper can orphan a helper to init on a clean exit; the parent/child
+        # walk is blind to it, so reap the session group upx led. This mirrors the
+        # de4dot adapter, and restores reaping the _capture_process convergence
+        # dropped from this path.
+        from headless_re_mcp.core.process_tree import reap_detached_group
+
+        reap_detached_group(int(process.pid))
     # The readers close their own pipes; only close here when the reader has
     # finished, so a reader still blocked on a survivor's pipe never wedges this
     # thread on close().

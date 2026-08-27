@@ -463,6 +463,14 @@ def _capture_process(
         if timed_out or limited or cancelled:
             _terminate_process(process)
         else:
+            # A wrapper can orphan a helper to init on a clean exit; the parent/
+            # child walk is blind to it, so reap the session group Exeinfo PE led.
+            # This mirrors the de4dot adapter, and restores reaping the
+            # _capture_process convergence dropped from this path.
+            if process.pid:
+                from headless_re_mcp.core.process_tree import reap_detached_group
+
+                reap_detached_group(int(process.pid))
             try:
                 returncode = process.wait(timeout=1.0)
             except (subprocess.TimeoutExpired, OSError):

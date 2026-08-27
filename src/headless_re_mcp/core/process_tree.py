@@ -9,6 +9,7 @@ import subprocess
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -236,6 +237,57 @@ def terminate_process_group(pgid: int) -> list[int]:
         with suppress(Exception):
             _kill_pid(pid)
             killed.append(pid)
+    return killed
+
+
+def _pid_is_live(pid: int) -> bool:
+    """POSIX: True only while ``pid`` is schedulable; a zombie/gone pid is False.
+
+    ``os.kill(pid, 0)`` reports a killed-but-unreaped zombie as still alive, so a
+    successful SIGKILL in a container whose init does not reap orphans would read
+    like the kill failed. The ``/proc`` state field separates a live process
+    (``R``/``S``/``D``/...) from one already killed and only awaiting reaping
+    (``Z``/``X``). Always False on Windows, which has no such distinction here.
+    """
+    if os.name == "nt":
+        return False
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    close = stat.rfind(")")
+    if close < 0:
+        return False
+    fields = stat[close + 2 :].split()
+    return bool(fields) and fields[0] not in {"Z", "X", "x"}
+
+
+def reap_detached_group(leader_pid: int, *, wait_s: float = 1.0) -> list[int]:
+    """Kill helpers a cleanly-exited launcher orphaned, and wait for them to die.
+
+    A tool started with ``start_new_session`` leads its own process group, so a
+    child it reparented to init on a clean exit still carries that group id even
+    though the parent/child walk can no longer see it. Enumerate the group and
+    kill each member keyed on its own recorded group (never a bare ``killpg`` on a
+    leader pid that may have been recycled). On Windows there is no session group,
+    so fall back to a bounded descendant walk of the leader. The short wait keeps
+    a caller that inspects liveness immediately from racing the asynchronous
+    SIGKILL. Never raises: this runs on cleanup paths with somewhere better to be.
+    """
+    if not isinstance(leader_pid, int) or leader_pid <= 0:
+        return []
+    if os.name == "nt":
+        killed: list[int] = []
+        for child in reversed(collect_descendants(leader_pid)):
+            with suppress(Exception):
+                _kill_pid(child)
+                killed.append(child)
+        return killed
+    killed = terminate_process_group(leader_pid)
+    if killed:
+        deadline = monotonic() + max(0.0, wait_s)
+        while monotonic() < deadline and any(_pid_is_live(pid) for pid in killed):
+            sleep(0.02)
     return killed
 
 
