@@ -230,6 +230,138 @@ def test_scan_normalizes_categories_and_preserves_raw_payload(
     assert result.findings[-1].evidence[0].details["type"] == "new official category"
 
 
+@pytest.mark.parametrize(
+    ("type_name", "expected"),
+    [
+        ("packer", FindingCategory.PACKER),
+        ("Packers", FindingCategory.PACKER),
+        ("compression", FindingCategory.PACKER),
+        ("compressor", FindingCategory.PACKER),
+        ("Compiler", FindingCategory.COMPILER),
+        ("compilers", FindingCategory.COMPILER),
+        ("Linker", FindingCategory.LINKER),
+        ("linkers", FindingCategory.LINKER),
+        ("Installer", FindingCategory.INSTALLER),
+        ("setup", FindingCategory.INSTALLER),
+        ("Obfuscator", FindingCategory.OBFUSCATOR),
+        ("obfuscation", FindingCategory.OBFUSCATOR),
+        ("Protector", FindingCategory.PROTECTOR),
+        ("protection", FindingCategory.PROTECTOR),
+        ("Runtime", FindingCategory.RUNTIME),
+        ("Library", FindingCategory.RUNTIME),
+        ("Interpreter", FindingCategory.RUNTIME),
+        ("Virtual Machine", FindingCategory.RUNTIME),
+        ("VM", FindingCategory.RUNTIME),
+        ("Format", FindingCategory.FILE_FORMAT),
+        ("file format", FindingCategory.FILE_FORMAT),
+        ("binary format", FindingCategory.FILE_FORMAT),
+        ("source", FindingCategory.FILE_FORMAT),
+        ("Some new official label", FindingCategory.ANOMALY),
+        ("", FindingCategory.ANOMALY),
+    ],
+)
+def test_die_category_for_maps_type_vocabulary(
+    type_name: str, expected: FindingCategory
+) -> None:
+    """Every classifier arm has to route its DIE type to the right bucket.
+
+    Only packer/compiler/anomaly/file-format arrived through the scan test, so a
+    regression in the linker, installer, obfuscator, protector, or runtime
+    branch -- or in the punctuation/case folding that normalizes the raw type --
+    would have gone unnoticed. Anything unrecognized must fall through to the
+    anomaly bucket with the raw type preserved rather than being silently
+    dropped or miscategorized.
+    """
+    assert die_adapter._category_for(type_name) is expected
+
+
+def test_normalize_rejects_non_object_root() -> None:
+    with pytest.raises(DieProtocolError) as caught:
+        die_adapter._normalize_json([])
+    assert caught.value.details["where"] == "root"
+
+
+def test_normalize_rejects_non_list_detects() -> None:
+    with pytest.raises(DieProtocolError) as caught:
+        die_adapter._normalize_json({"detects": {}})
+    assert caught.value.details["where"] == "root.detects"
+
+
+def test_normalize_rejects_too_many_detects() -> None:
+    payload = {"detects": [0] * (die_adapter._MAX_DETECTS + 1)}
+    with pytest.raises(DieProtocolError) as caught:
+        die_adapter._normalize_json(payload)
+    assert caught.value.details["max"] == die_adapter._MAX_DETECTS
+
+
+def test_normalize_rejects_blank_filetype() -> None:
+    payload = {"detects": [{"filetype": "   ", "values": []}]}
+    with pytest.raises(DieProtocolError, match="filetype must not be blank"):
+        die_adapter._normalize_json(payload)
+
+
+def test_normalize_rejects_too_many_values_in_one_detect() -> None:
+    payload = {
+        "detects": [
+            {"filetype": "PE64", "values": [0] * (die_adapter._MAX_VALUES_PER_DETECT + 1)}
+        ]
+    }
+    with pytest.raises(DieProtocolError) as caught:
+        die_adapter._normalize_json(payload)
+    assert caught.value.details["max"] == die_adapter._MAX_VALUES_PER_DETECT
+
+
+def test_normalize_rejects_value_missing_required_field() -> None:
+    payload = {
+        "detects": [
+            {
+                "filetype": "PE64",
+                "values": [{"type": "packer", "name": "x", "string": "s", "info": "i"}],
+            }
+        ]
+    }
+    with pytest.raises(DieProtocolError) as caught:
+        die_adapter._normalize_json(payload)
+    assert caught.value.details["field"] == "version"
+
+
+def test_normalize_rejects_non_string_value_field() -> None:
+    payload = {
+        "detects": [
+            {
+                "filetype": "PE64",
+                "values": [
+                    {"type": 123, "name": "x", "string": "s", "info": "i", "version": "1"}
+                ],
+            }
+        ]
+    }
+    with pytest.raises(DieProtocolError, match="must be a string"):
+        die_adapter._normalize_json(payload)
+
+
+def test_normalize_rejects_overlong_value_field() -> None:
+    payload = {
+        "detects": [
+            {
+                "filetype": "PE64",
+                "values": [
+                    {
+                        "type": "x" * (die_adapter._MAX_TEXT + 1),
+                        "name": "x",
+                        "string": "s",
+                        "info": "i",
+                        "version": "1",
+                    }
+                ],
+            }
+        ]
+    }
+    with pytest.raises(DieProtocolError) as caught:
+        die_adapter._normalize_json(payload)
+    assert caught.value.details["max_length"] == die_adapter._MAX_TEXT
+
+
 def test_scan_rejects_non_json_protocol_and_keeps_bounded_diagnostics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
