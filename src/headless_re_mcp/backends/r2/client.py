@@ -38,6 +38,10 @@ _ALLOWED = frozenset(
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 _AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# axtj @ addr is "references *to* addr" -- the callers of a function/address --
+# which is what r2.xrefs asks. Bare axj (the whole-binary xref dump) stays
+# whitelisted for raw run() callers, but xrefs() no longer uses it.
+_AXTJ_COMMAND = re.compile(r"axtj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -55,6 +59,8 @@ def _require_allowed_command(command: str) -> None:
     if pdj is not None and int(pdj.group(1)) <= 512:
         return
     if _AXJ_COMMAND.fullmatch(command) is not None:
+        return
+    if _AXTJ_COMMAND.fullmatch(command) is not None:
         return
     raise R2Error("invalid_params", "r2 command not whitelisted", command=command)
 
@@ -107,7 +113,11 @@ class R2Client:
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
-        cmd = f"axj @ {address}"
+        # axtj (references *to* the address), not axj: bare axj prints the whole
+        # binary's cross-reference table and ignores the @ seek, so the old
+        # command answered "who references this address?" with every xref in the
+        # file. axtj is seek-relative and returns only the callers of address.
+        cmd = f"axtj @ {address}"
         data = self.run(binary, ["aa", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address

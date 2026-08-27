@@ -174,14 +174,21 @@ def enrich_r2_payload(
             mapped = address_dict(va, module=module, image_base=image_base, architecture=arch)
             if mapped is not None:
                 item["address"] = mapped
-            # Named endpoints for xrefs
-            for edge_key in ("from", "to"):
+            # Named endpoints for xrefs. ``from``/``to`` are the reference edge;
+            # ``fcn_addr`` is the address of the function the reference lives in,
+            # which axtj reports (``fcn_name`` beside it) and a caller wants as a
+            # jump target -- surface it as an Address like every other one here.
+            for edge_key, addr_key in (
+                ("from", "from_address"),
+                ("to", "to_address"),
+                ("fcn_addr", "fcn_address"),
+            ):
                 edge_va = _item_va(entry, (edge_key,))
                 edge_mapped = address_dict(
                     edge_va, module=module, image_base=image_base, architecture=arch
                 )
                 if edge_mapped is not None:
-                    item[f"{edge_key}_address"] = edge_mapped
+                    item[addr_key] = edge_mapped
             items.append(item)
         out["items"] = items
         out["count"] = len(items)

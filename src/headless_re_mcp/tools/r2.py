@@ -121,13 +121,19 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address: Annotated[int, Field(ge=0)],
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
-        """References to and from address, as radare2 resolved them.
+        """References TO address -- the call sites and data refs pointing at it.
 
-        Answers with items, each carrying from, to, type, from_address and
-        to_address, plus address (va/rva/module) and address_va (the integer
-        that was asked). Read items_truncated, items_total and items_limit
-        when the list filled the cap (4096). There is no integer address,
-        xrefs, truncated or has_more field.
+        Runs radare2's axtj (references to the seek), the "who references
+        this?" question, not the whole-binary xref dump that ignores the
+        address. Answers with items, each carrying from (the referencing
+        instruction), type (CALL, CODE, DATA, ...), opcode and the containing
+        fcn_name when radare2 knows them, from_address (va/rva/module) for the
+        call site and fcn_address for that function, plus address
+        (va/rva/module) and address_va (the integer that was asked).
+        References FROM the address are visible in r2.disasm. Read
+        items_truncated, items_total and items_limit when the list filled the
+        cap (4096). There is no integer address, to, to_address, xrefs,
+        truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
     return tools.bindings

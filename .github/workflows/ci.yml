@@ -152,6 +152,39 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-r2-xrefs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install radare2 and the package
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq radare2
+          r2 -v | head -1
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+      - name: r2.xrefs references-to gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_r2_xrefs_to_address_live_gate.py \
+            -rs --tb=short --junitxml=r2-xrefs-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("r2-xrefs-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          if not cases:
+              sys.exit("no r2-xrefs gate was collected")
+          if skipped:
+              sys.exit(f"r2-xrefs gate skipped despite an installed radare2: {skipped}")
+          print(f"r2-xrefs gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

@@ -130,6 +130,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   仍用严格的 `[:=]` 边界(不加尾随 `\w*`),避免把 `tokenized=false` 这类诊断文本误抹。回归矩阵
   相应增加 `private_key`/`private-key`/`access_key`/`passwd`/`credential` 五种形态。
 
+### 修复（r2.xrefs 改用 axtj 回「指向该地址的引用」，不再倒出全二进制 xref 表）
+
+- **`r2.xrefs` 一直跑 `axj @ 地址`，可 radare2 的 `axj` 打印的是整个二进制的交叉引用表、
+  且无视 `@` seek**——于是问「谁引用了这个地址?」，回的是文件里**每一条** xref:目标函数的调用方
+  淹没在 init/plt/tm_clones 等一堆无关引用里,逆向的人拿到一坨与所问地址无关的噪声,连该函数的调用
+  方都要自己从中捞。seek 相关、真正回「指向当前地址的引用」的命令是 `axtj`;后端现改跑
+  `axtj @ 地址`。两者条目形状也不同:`axj` 条目带 `addr`(该引用的目标)、无 `opcode`;`axtj` 条目带
+  `from`(引用点)、`opcode`、`fcn_addr`/`fcn_name`(所在函数),没有正向 `to` 边。`enrich_r2_payload`
+  额外把 `fcn_addr` 映射成 `fcn_address`(与其余地址一样给出 va/rva/module),让调用方能跳到调用所在
+  函数。`r2.xrefs` 文档串改为「指向 address 的引用(调用方)」,点明跑 `axtj`、字段含 `opcode`/`fcn_name`/
+  `from_address`/`fcn_address`、不再有 `to`/`to_address`,并提示「从该地址出发的引用看 `r2.disasm`」。
+  单测新增「`xrefs` 真的跑 `axtj @ 4198400` 而非 `axj`」(mock `run_bounded` 抓命令)、「`axtj` 条目被
+  富化成调用方记录:`from`→主地址+`from_address`、`fcn_addr`→`fcn_address`、保留 `opcode`/`fcn_name`、
+  无 `to_address`」与文档串三条。新增 live gate(`test_r2_xrefs_to_address_live_gate.py`)配套夹具
+  `fixtures/elf/xref_sample`(freestanding ELF,`helper` 被 `entry0` 调两次,`xref_sample.c` 附重建说明):
+  先读 radare2 自己给 `axtj @ helper` 的两个调用点、并确认 `axj` 回的是不同且更大的集合(守卫这条守卫:
+  若二者相等则命令切换无从证明),再钉死 `r2.xrefs` 回的正是这两个调用方、且落成 `axtj` 形状
+  (带 `opcode`/`fcn_name`、无 `addr`/`to_address`)。CI 新增 `linux-r2-xrefs` job 装 radare2 跑该 gate,
+  skip≠pass 守卫在 radare2 已装却仍 skip 时判失败。
+
 ### 修复（CLI 适配器超时在后端边界夹取越界输入）
 
 - **apk（jadx/apktool）、web（webcrack/wabt）与 r2（radare2）几条 CLI 适配器把调用方的 `timeout`
