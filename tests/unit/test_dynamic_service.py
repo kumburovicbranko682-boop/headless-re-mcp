@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -1719,6 +1720,42 @@ def test_breakpoints_hardware_set_rejects_a_non_power_of_two_size(tmp_path: Path
 
     before = len(worker.requests)
     bad = service.breakpoints_hardware_set(session_id, 0x140001000, bp_type="x", size=3)
+    assert not bad.ok and bad.error is not None
+    assert bad.error.code == "invalid_params"
+    assert len(worker.requests) == before
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda svc, sid: svc.breakpoints_hardware_remove(sid, -1),
+        lambda svc, sid: svc.breakpoints_memory_set(sid, -1, bp_type="a"),
+        lambda svc, sid: svc.breakpoints_memory_remove(sid, -1),
+    ],
+)
+def test_breakpoint_set_remove_reject_a_negative_address_before_dispatch(
+    tmp_path: Path,
+    call: Callable[[AnalysisService, str], Result[JsonObject]],
+) -> None:
+    """Every breakpoint address path fails fast like breakpoints.hardware.set.
+
+    The schema declares address ge=0, but the agent transport skips the schema,
+    so the service is the real guard. breakpoints.hardware.set already refused a
+    negative address; its hardware.remove/memory.set/memory.remove siblings
+    forwarded it to the worker, which reads address as unsigned and rejects it
+    only after a round-trip. The service now rejects it with invalid_params
+    before dispatching, so no request reaches the worker.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    before = len(worker.requests)
+    bad = call(service, session_id)
     assert not bad.ok and bad.error is not None
     assert bad.error.code == "invalid_params"
     assert len(worker.requests) == before
