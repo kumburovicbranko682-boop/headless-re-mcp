@@ -4,8 +4,12 @@
 one-to-five digit run, so ``tcp:70000`` reached adb as a bind request it could
 only reject with an opaque backend error. These tests hold ``forward`` to the
 same boundary check ``connect`` makes, while keeping every spec adb genuinely
-accepts -- including ``tcp:0`` (allocate a free port) and ``jdwp:`` on the
-remote side.
+supports through this client -- ``jdwp:`` on the remote side included.
+``tcp:0`` is deliberately not among them: adb would allocate a free local port,
+but adbutils discards the reply naming it, so the caller gets ``tcp:0`` back
+with nowhere to connect, and release-by-spec can never match the listener adb
+registered under the real port -- a leaked listener plus a tracked slot pinned
+until the forward cap locks the process out.
 """
 
 from __future__ import annotations
@@ -48,12 +52,32 @@ def test_remote_tcp_port_above_the_range_is_refused(port: str) -> None:
     assert caught.value.details.get("remote") == f"tcp:{port}"
 
 
-@pytest.mark.parametrize("local", ["tcp:0", "tcp:1", "tcp:27042", "tcp:65535"])
+@pytest.mark.parametrize("local", ["tcp:1", "tcp:27042", "tcp:65535"])
 def test_in_range_tcp_ports_are_accepted(local: str) -> None:
     backend = _backend()
     result = backend.forward("emulator-5554", local, "tcp:27042")
     assert result["local"] == local
     assert backend._forwards == [("emulator-5554", local)]
+
+
+@pytest.mark.parametrize("side", ["local", "remote"])
+def test_tcp_zero_is_refused_on_both_sides(side: str) -> None:
+    """Auto-allocation is a trap through this client, so it fails at the door.
+
+    Measured with ``tcp:0`` as the local spec: adb allocated a port, the call
+    returned ``{"local": "tcp:0"}`` -- no way to learn where to connect -- and
+    ``release_forwards`` asked adb to remove ``tcp:0``, which matched nothing,
+    so the server listener leaked and the failed removal re-pinned the tracked
+    slot on every retry. Thirty-two such calls exhaust the forward cap for the
+    life of the process. A remote 0 is not connectable at all.
+    """
+    backend = _backend()
+    local, remote = ("tcp:0", "tcp:27042") if side == "local" else ("tcp:27042", "tcp:0")
+    with pytest.raises(AdbError) as caught:
+        backend.forward("emulator-5554", local, remote)
+    assert caught.value.code == "invalid_params"
+    assert caught.value.details.get(side) == "tcp:0"
+    assert backend._forwards == []
 
 
 def test_localabstract_and_jdwp_specs_still_work() -> None:

@@ -120,10 +120,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 - `device.forward` 的 local/remote 端点校验用 `tcp:\d{1,5}` 匹配，会放过 `tcp:70000` 这类五位数
   “端口”——而 `connect` 早已拒绝 1..65535 之外的端口。这类越界值原样交给 adb，只能换回一条含糊的
-  `backend_error`。现抽出 `_check_forward_spec` 统一校验：tcp 端口须在 0..65535（保留 `0`=由 adb
-  自动分配空闲端口），越界即报 `invalid_params` 并把越界值放进 details；`localabstract:` 与仅限
-  remote 侧的 `jdwp:` 原样保留。校验在解析设备之前完成,坏参数不占用任何 forward 槽。新增回归测试覆盖
-  越界端口(local/remote)、边界 `0`/`65535`、`localabstract`/`jdwp`、jdwp 只在 remote 有效、以及
+  `backend_error`。现抽出 `_check_forward_spec` 统一校验：tcp 端口须在 1..65535，越界即报
+  `invalid_params` 并把越界值放进 details；`localabstract:` 与仅限 remote 侧的 `jdwp:` 原样保留。
+  `tcp:0` 在两侧都被拒绝：local 侧 adb 会自动分配空闲端口，但 adbutils 丢弃了应答里带回的端口号，
+  调用方只能拿到 `{"local": "tcp:0"}`、无从得知该连哪里；而 `release_forwards` 按请求时的 spec 删除，
+  永远匹配不上 adb 实际以真实端口注册的监听——每次 `tcp:0` 都泄漏一个 adb server 监听，且删除失败
+  会把追踪槽重新钉回，32 次后 forward 上限在进程生命期内永久锁死。remote 侧的 0 则根本不可连接。
+  校验在解析设备之前完成,坏参数不占用任何 forward 槽。新增回归测试覆盖
+  越界端口(local/remote)、`tcp:0` 两侧拒绝、边界 `1`/`65535`、`localabstract`/`jdwp`、jdwp 只在 remote 有效、以及
   畸形规格一律拒绝。
 
 ### 修复（托管质量门）
