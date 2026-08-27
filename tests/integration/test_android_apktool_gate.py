@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -28,6 +29,51 @@ from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "android" / "minimal.apk"
+
+_ANDROID_NS = "http://schemas.android.com/apk/res/android"
+_ACTION_MAIN = "android.intent.action.MAIN"
+_CATEGORY_LAUNCHER = "android.intent.category.LAUNCHER"
+
+
+def _apktool_manifest_text(apktool: Path, apk: Path, tmp_path: Path) -> str:
+    """Decode only the manifest to text with apktool, independent of the backend.
+
+    --only-manifest renders AndroidManifest.xml to text without decoding the
+    resource table, so it works on the fixture's stub resources.arsc where a
+    full decode fails and a --no-res decode leaves the manifest binary. This is
+    the independent ground truth the reader is cross-checked against, obtained
+    the way the monodis/pedump/r2 gates invoke their tool directly.
+    """
+    out = tmp_path / "manifest_decode"
+    result = subprocess.run(
+        [str(apktool), "d", "-f", "--only-manifest", "-o", str(out), str(apk)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    manifest = out / "AndroidManifest.xml"
+    assert result.returncode == 0 and manifest.is_file(), result.stderr or result.stdout
+    return manifest.read_text(encoding="utf-8", errors="replace")
+
+
+def _apktool_launcher_activity(manifest_xml: str) -> str | None:
+    """The <activity>/<activity-alias> whose intent-filter has MAIN + LAUNCHER.
+
+    Parsed from apktool's text manifest with a real XML parser (not a regex) so
+    it is a genuinely independent decode of the same entry-point rule the
+    tool-free reader applies.
+    """
+    root = ET.fromstring(manifest_xml)
+    name_attr = f"{{{_ANDROID_NS}}}name"
+    for activity in root.iter():
+        if activity.tag not in ("activity", "activity-alias"):
+            continue
+        for filt in activity.findall("intent-filter"):
+            actions = {a.get(name_attr) for a in filt.findall("action")}
+            categories = {c.get(name_attr) for c in filt.findall("category")}
+            if _ACTION_MAIN in actions and _CATEGORY_LAUNCHER in categories:
+                return activity.get(name_attr)
+    return None
 
 # The standard Android debug keystore: exact alias/password/DN that Android
 # tooling itself creates, so apk.sign's zero-config default is what gets
@@ -63,7 +109,7 @@ def _ensure_debug_keystore() -> Path | None:
 
 
 @pytest.mark.integration
-def test_android_apktool_decode_and_repack() -> None:
+def test_android_apktool_decode_and_repack(tmp_path: Path) -> None:
     if not _FIXTURE.is_file():
         pytest.skip(f"fixture missing: {_FIXTURE}")
     settings = Settings.load()
@@ -82,19 +128,26 @@ def test_android_apktool_decode_and_repack() -> None:
         decoded_dir = Path(decoded.data["decoded_dir"])
         assert (decoded_dir / "AndroidManifest.xml").is_file()
 
-        # The tool-free AXML reader surfaced android:debuggable at session
-        # creation; apktool's own decode of the same manifest must agree. This
-        # cross-checks the security-posture reader against an independent AXML
-        # decoder -- the Android analogue of the native gate cross-checking
-        # nx/relro against radare2 and the .NET gate against monodis.
+        # The tool-free AXML reader surfaced android:debuggable and the launcher
+        # (entry-point) activity at session creation; apktool's own decode of
+        # the same manifest must agree. This cross-checks the reader against an
+        # independent AXML decoder -- the Android analogue of the native gate
+        # cross-checking nx/relro against radare2 and the .NET gate against
+        # monodis. The workflow decode above runs with --no-res (the fixture's
+        # resources.arsc is a stub), which leaves AndroidManifest.xml binary, so
+        # the ground truth comes from a separate --only-manifest decode that
+        # renders it to text without touching the stub table.
         reader_flags = created.data["session"]["metadata"]["apk"]["manifest"]
         assert reader_flags["debuggable"] is True
-        manifest_xml = (decoded_dir / "AndroidManifest.xml").read_text(
-            encoding="utf-8", errors="replace"
-        )
+        assert reader_flags["launcher_activity"] == "com.example.headless.MainActivity"
+        manifest_xml = _apktool_manifest_text(settings.apktool, _FIXTURE, tmp_path)
         apktool_debuggable = re.search(r'android:debuggable="(true|false)"', manifest_xml)
         assert apktool_debuggable, manifest_xml
         assert (apktool_debuggable.group(1) == "true") is reader_flags["debuggable"]
+        # The launcher activity apktool reports -- the <activity> whose
+        # intent-filter carries MAIN + LAUNCHER -- must be the same component
+        # the tool-free reader named.
+        assert _apktool_launcher_activity(manifest_xml) == reader_flags["launcher_activity"]
 
         # apktool's own baksmali must have disassembled the fixture's class: the
         # method and the string it returns have to survive DEX -> smali.
