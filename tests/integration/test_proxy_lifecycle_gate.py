@@ -254,6 +254,35 @@ def test_proxy_replay_on_an_unknown_id_is_a_clean_not_found() -> None:
 
 
 @pytest.mark.integration
+def test_proxy_start_provisions_a_trustable_ca_certificate() -> None:
+    """Starting the proxy must yield a real CA cert callers can install to trust it.
+
+    Intercepting HTTPS depends on the client trusting mitmproxy's CA, which the
+    backend surfaces via ca_cert_path(). Prove that what comes back is a parseable
+    X.509 CA certificate (basicConstraints CA:TRUE) -- not merely that some file
+    exists -- so the "install this to intercept TLS" story is real. The CA is a
+    machine-global mitmproxy artifact, so this asserts its validity rather than
+    deleting a developer's real ~/.mitmproxy. skip != pass without mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy CA Gate not run (skip != pass)")
+    from cryptography import x509
+
+    backend = ProxyBackend()
+    port = _free_port()
+    backend.start("ca-gate", host="127.0.0.1", port=port)
+    try:
+        ca = _poll(lambda: backend.ca_cert_path(), lambda p: p is not None)
+        assert ca is not None, "proxy start did not provision a CA certificate"
+        assert ca.is_file(), ca
+        cert = x509.load_pem_x509_certificate(ca.read_bytes())
+        basic = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        assert basic.ca is True, "mitmproxy CA cert is not marked as a CA"
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
 def test_proxy_start_means_listening_and_stop_releases_the_port() -> None:
     if not _mitmproxy_available():
         pytest.skip("mitmproxy not installed — proxy lifecycle Gate not run (skip != pass)")
