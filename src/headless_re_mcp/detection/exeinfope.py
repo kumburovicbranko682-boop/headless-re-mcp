@@ -468,6 +468,15 @@ def _capture_process(
             except (subprocess.TimeoutExpired, OSError):
                 _terminate_process(process)
                 returncode = process.poll()
+            else:
+                # A clean exit does not prove Exeinfo PE left nothing behind: a
+                # wrapper can orphan a worker to init that the parent/child walk
+                # cannot see. The session group the analyzer led still holds it.
+                from headless_re_mcp.core.process_tree import (
+                    reap_orphaned_process_group,
+                )
+
+                reap_orphaned_process_group(process)
         stop_monitor.set()
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)

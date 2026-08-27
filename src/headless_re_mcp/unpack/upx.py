@@ -307,6 +307,16 @@ def _capture_process(
         with suppress(OSError):
             stderr_pipe.close()
 
+    if not (cancelled or timed_out):
+        # A clean exit does not prove upx left nothing behind: a wrapper can
+        # orphan a worker to init that the parent/child walk cannot see. The
+        # session group upx led still holds it. On the abort paths above
+        # _terminate_process already signalled that group, so only the
+        # clean-exit path needs this sweep.
+        from headless_re_mcp.core.process_tree import reap_orphaned_process_group
+
+        reap_orphaned_process_group(process)
+
     returncode = process.poll()
     if returncode is None:
         _terminate_process(process)

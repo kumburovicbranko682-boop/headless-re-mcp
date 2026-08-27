@@ -6,6 +6,7 @@ import ctypes
 import os
 import signal
 import subprocess
+import time
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
@@ -335,6 +336,66 @@ def terminate_pid_tree(pid: int) -> list[int]:
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    return killed
+
+
+def _pid_is_live(pid: int) -> bool:
+    """POSIX: True only while ``pid`` is a running (non-zombie) process.
+
+    A process killed with SIGKILL lingers as a zombie until its parent reaps
+    it, and ``os.kill(pid, 0)`` reports that zombie as alive. Read the process
+    state from ``/proc`` instead so a reaped-but-not-yet-collected worker counts
+    as gone. Windows uses the descendant walk elsewhere and never calls this.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    close = stat.rfind(")")
+    if close < 0:
+        return False
+    fields = stat[close + 2 :].split()
+    return bool(fields) and fields[0] not in {"Z", "X", "x"}
+
+
+def reap_orphaned_process_group(process: Any, *, wait_s: float = 2.0) -> list[int]:
+    """After a spawned tool exits on its own, kill any worker it orphaned.
+
+    A clean exit is not proof the tool left nothing running. A wrapper (a batch
+    file, a shell script, or a launcher that forks a worker and returns) can
+    leave a helper behind, and the kernel reparents that orphan to init so the
+    parent/child walk no longer sees it. On POSIX the orphan still carries the
+    session group the tool led (adapters spawn with ``start_new_session``), so
+    enumerate by that group -- the tool's own pid; on Windows the descendant
+    walk still reaches it. Returns the PIDs killed. Never raises: this runs on a
+    cleanup path that must not turn a successful run into an error.
+
+    SIGKILL is asynchronous, so the kill is followed by a bounded wait for the
+    group to actually stop running. Without it a caller inspecting process
+    state immediately after this returns can still catch a worker mid-death and
+    read the reap as a leak.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    if os.name == "nt":
+        with suppress(Exception):
+            if collect_descendants(pid):
+                return terminate_process_tree(process)
+        return []
+    killed: list[int] = []
+    with suppress(Exception):
+        if not collect_process_group(pid):
+            return []
+        killed = terminate_process_group(pid)
+        deadline = time.monotonic() + max(0.0, wait_s)
+        while time.monotonic() < deadline:
+            if not any(_pid_is_live(member) for member in collect_process_group(pid)):
+                break
+            # A worker that respawns siblings keeps the group populated, so
+            # re-signal what is still there rather than only waiting it out.
+            terminate_process_group(pid)
+            time.sleep(0.02)
     return killed
 
 

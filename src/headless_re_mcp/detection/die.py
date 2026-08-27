@@ -355,6 +355,15 @@ def _capture_process(
             except (subprocess.TimeoutExpired, OSError):
                 _terminate_process(process)
                 returncode = process.poll()
+            else:
+                # A clean exit does not prove diec left nothing behind: a
+                # wrapper can orphan a worker to init that the parent/child
+                # walk cannot see. The session group diec led still holds it.
+                from headless_re_mcp.core.process_tree import (
+                    reap_orphaned_process_group,
+                )
+
+                reap_orphaned_process_group(process)
         # Once the child has exited, let both readers consume the remaining
         # kernel pipe buffers before closing our handles.  Closing first can
         # truncate a short-lived process's final JSON bytes.
