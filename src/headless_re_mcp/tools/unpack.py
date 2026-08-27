@@ -239,7 +239,11 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with candidates, candidate_count, authoritative false,
         claims_universal_unpack false, and unpack. There is no confirmed_oep_rva
         field. When observations are empty, it may auto-collect from the
-        dynamic backend; it never auto-confirms OEP.
+        dynamic backend; it never auto-confirms OEP. Auto-collection reads one
+        page of memory.regions, so when the process has more regions than that
+        page it adds regions_truncated (with region_limit and region_total),
+        meaning the observations -- including an empty candidate set -- came off
+        a partial region map.
         """
         return _dump(
             analysis.unpack_score_oep(
