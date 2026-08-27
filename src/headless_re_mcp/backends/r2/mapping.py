@@ -112,9 +112,43 @@ def parse_r2_json(raw: str) -> Any | None:
         try:
             value, _end = decoder.raw_decode(text, index)
         except json.JSONDecodeError:
+            # A root array cut mid-element -- r2's output hit the byte cap
+            # before the list closed -- fails to decode whole. Salvage the
+            # elements that arrived intact. Scanning on instead would decode the
+            # array's first object as if it were the root, which enrich then
+            # filed as a lone `info` dict and dropped the whole list.
+            if char == "[":
+                salvaged = _salvage_array_prefix(text, index)
+                if salvaged:
+                    return salvaged
             continue
         return value
     return None
+
+
+def _salvage_array_prefix(text: str, open_index: int) -> list[Any]:
+    """Decode the complete elements at the front of a truncated JSON array.
+
+    Only reached when the whole array failed to decode, so a clean, complete
+    array never lands here. Stops at the first element that does not decode
+    (the one the byte cap severed) and returns everything before it.
+    """
+    decoder = json.JSONDecoder()
+    items: list[Any] = []
+    index = open_index + 1
+    length = len(text)
+    while index < length:
+        while index < length and text[index] in " \t\r\n,":
+            index += 1
+        if index >= length or text[index] == "]":
+            break
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            break
+        items.append(value)
+        index = end
+    return items
 
 
 def parse_r2_json_values(raw: str) -> list[Any]:
@@ -228,6 +262,12 @@ def enrich_r2_payload(
             out["items_truncated"] = True
             out["items_total"] = available
             out["items_limit"] = _MAX_ITEMS
+        elif data.get("truncated"):
+            # The raw output was cut at the byte cap before the array closed, so
+            # these items are the prefix that survived, not the whole listing.
+            # The true total is unknown (the rest never arrived), so only the
+            # incompleteness is reported, without items_total/items_limit.
+            out["items_truncated"] = True
         out["parsed"] = True
     elif isinstance(parsed, dict):
         out["info"] = parsed

@@ -123,6 +123,59 @@ def test_parse_r2_json_keeps_the_whole_list_when_opcodes_contain_brackets() -> N
     assert parsed[1]["opcode"] == "ret"
 
 
+def test_parse_r2_json_salvages_the_prefix_of_a_truncated_array() -> None:
+    """A byte cut mid-array must not fall through to a lone inner object.
+
+    parse used to fail decoding the whole (severed) array, then decode the
+    array's first element and return it as the root. enrich filed that single
+    object as `info` and reported no items, so a large functions listing read as
+    "parse ok, zero functions" with one function mislabelled as binary info. It
+    now recovers the complete leading elements as the list they are.
+    """
+    full = json.dumps(
+        [{"name": f"fcn{i}", "offset": 0x401000 + i, "size": 8} for i in range(5)]
+    )
+    cut = full[: full.index("fcn3") + 2]
+    parsed = parse_r2_json(cut)
+    assert isinstance(parsed, list)
+    assert [item["name"] for item in parsed] == ["fcn0", "fcn1", "fcn2"]
+
+
+def test_enrich_reports_survivors_and_items_truncated_for_a_byte_cut_list(
+    tmp_path: Path,
+) -> None:
+    """A truncated listing yields the items that arrived, flagged incomplete."""
+    binary = _minimal_pe(tmp_path)
+    full = json.dumps(
+        [{"name": f"fcn{i}", "offset": 0x140001000 + i, "size": 8} for i in range(5)]
+    )
+    cut = full[: full.index("fcn3") + 2]
+    payload = enrich_r2_payload(
+        {"raw": cut, "commands": ["aa", "aflj"], "truncated": True},
+        binary=binary,
+    )
+    assert payload["parsed"] is True
+    assert payload["count"] == 3
+    assert len(payload["items"]) == 3
+    assert payload["items_truncated"] is True
+    # The old fallback filed the array's first element here as binary info.
+    assert "info" not in payload
+
+
+def test_enrich_does_not_flag_a_complete_list_that_was_not_cut(
+    tmp_path: Path,
+) -> None:
+    """items_truncated stays off when the raw output was never truncated."""
+    binary = _minimal_pe(tmp_path)
+    full = json.dumps(
+        [{"name": f"fcn{i}", "offset": 0x140001000 + i, "size": 8} for i in range(3)]
+    )
+    payload = enrich_r2_payload({"raw": full, "commands": ["aa", "aflj"]}, binary=binary)
+    assert payload["count"] == 3
+    assert "items_truncated" not in payload
+    assert "truncated" not in payload
+
+
 def test_address_dict_with_rva() -> None:
     mapped = address_dict(
         0x140001000,

@@ -157,6 +157,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_count` 及其含义。补测:坏地址回 `invalid_count==count`、真实指令回 0、描述点名
   `invalid_count` 与 `invalid_count == count`。
 
+### 修复（r2 列表在输出超 1MB 被截断时丢掉整份结果、还把首个元素冒充成 info）
+
+- `r2.functions` / `r2.strings` / `r2.imports` / `r2.exports` 的原始输出在 `run()` 里以 1MB 封顶
+  （大二进制的 `aflj`/`izj` 很容易超）。一旦从数组中间截断,`parse_r2_json` 解不动整段被截的数组,
+  于是退而求其次去解**数组里的第一个元素**并当成根返回;`enrich_r2_payload` 见其为 dict,便把这单个元素
+  塞进 `info` 字段、报 `parsed: True` 且**不给 items/count**——一份很大的函数表就这样读成“解析成功、
+  零函数”,还有一个函数被误标成二进制 info。现 `parse_r2_json` 在被截数组上改为抢救开头已完整到达的
+  元素（新增 `_salvage_array_prefix`）,按列表返回而非跌落到单个内部对象;`enrich_r2_payload` 在原始输出
+  确被字节封顶截断（`data["truncated"]`）时,即使幸存条数未达 4096 也置 `items_truncated: True`（此时真实
+  总数已不可知,故不给 items_total/items_limit）。已用真实 radare2 5.5.0 的 `aflj` 输出验证:11 个函数、
+  从 60% 处截断后抢救出 6 个完整函数,`items_truncated=True`、无 `info` 字段。四个列表工具描述改为说明
+  `items_truncated` 表示“列表不完整”:填满 4096 上限时随附 items_total/items_limit,或在原始输出于数组
+  收尾前被截时单独出现。补测:`parse_r2_json` 对被截数组回开头完整元素的列表、`enrich_r2_payload` 对字节
+  截断的列表报幸存条数+`items_truncated` 且无 `info`、未截断的完整列表不置 `items_truncated`/`truncated`。
+
 ### 修复（jadx 部分反编译不再冒充完整源码树）
 
 - `apk.export_sources` / `apk.decompile`（jadx）过去丢弃 `_run` 的返回值；jadx 在部分反编译失败时

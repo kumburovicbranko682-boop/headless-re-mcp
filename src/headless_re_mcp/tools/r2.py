@@ -54,7 +54,8 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items, each carrying name, offset, size and address
         (va/rva/module), plus count. There is no functions field. Read
-        items_truncated when the list filled the cap.
+        items_truncated when the list is incomplete -- the 4096 cap, or
+        radare2's raw output cut before the array closed on a large binary.
         """
         return _dump(analysis.r2_functions(session_id, timeout=timeout))
 
@@ -66,9 +67,10 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items, each carrying string, section, type, vaddr and
         address (va/rva/module), plus count. There is no integer address
-        field. Read items_truncated, items_total and items_limit when the
-        list filled the cap (4096). There is no strings, truncated or
-        has_more field.
+        field. Read items_truncated when the list is incomplete: it comes with
+        items_total and items_limit when the list filled the cap (4096), or on
+        its own when radare2's raw output was cut before the array closed on a
+        very large binary. There is no strings or has_more field.
         """
         return _dump(analysis.r2_strings(session_id, timeout=timeout))
 
@@ -80,9 +82,10 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items, each carrying name, lib, plt and address
         (va/rva/module), plus count. There is no integer address field.
-        Read items_truncated, items_total and items_limit when the
-        list filled the cap (4096). There is no imports, truncated or
-        has_more field.
+        Read items_truncated when the list is incomplete: it comes with
+        items_total and items_limit when the list filled the cap (4096), or on
+        its own when radare2's raw output was cut before the array closed on a
+        very large binary. There is no imports or has_more field.
         """
         return _dump(analysis.r2_imports(session_id, timeout=timeout))
 
@@ -94,9 +97,10 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items, each carrying name, vaddr and address
         (va/rva/module), plus count. There is no integer address field.
-        Read items_truncated, items_total and items_limit when the
-        list filled the cap (4096). There is no exports, truncated or
-        has_more field.
+        Read items_truncated when the list is incomplete: it comes with
+        items_total and items_limit when the list filled the cap (4096), or on
+        its own when radare2's raw output was cut before the array closed on a
+        very large binary. There is no exports or has_more field.
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
