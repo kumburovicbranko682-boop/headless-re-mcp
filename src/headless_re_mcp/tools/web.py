@@ -78,7 +78,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
         visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        A redirected request carries redirects: the ordered 30x hops
+        (status and url) it passed through before the final url shown, so a
+        chain is not collapsed to its last URL; redirects_truncated marks a
+        chain capped at the hop limit. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 

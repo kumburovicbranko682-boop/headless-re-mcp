@@ -37,6 +37,9 @@ T = TypeVar("T")
 _MAX_REQUESTS = 3000
 _MAX_CONSOLE = 2000
 _MAX_SCRIPTS = 2000
+# A browser aborts a redirect chain around 20 hops, so this is generous
+# headroom; the cap only guards against a loop the browser has not yet cut.
+_MAX_REDIRECTS = 50
 _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
@@ -475,8 +478,36 @@ class WebBackend:
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            # A redirect reuses the same requestId: CDP fires requestWillBeSent
+            # again with redirectResponse holding the hop that just 3xx'd and
+            # request.url pointing at the new target. Overwriting the entry would
+            # collapse the chain to the final URL and lose every intermediate
+            # 30x -- exactly the hops an auth/OAuth flow is made of. Carry the
+            # accumulated chain forward and append this hop so the final entry
+            # still shows where it came from.
+            redirect = params.get("redirectResponse")
+            hop: JsonObject | None = None
+            if isinstance(redirect, dict):
+                hop_url, hop_url_cut = _bounded_metadata(redirect.get("url"), _MAX_URL_BYTES)
+                hop = {"status": redirect.get("status"), "url": hop_url}
+                if hop_url_cut:
+                    entry["metadata_truncated"] = True
+            request_id = str(params.get("requestId"))
             with handle.lock:
-                handle.requests[str(params.get("requestId"))] = entry
+                if hop is not None:
+                    prior = handle.requests.get(request_id)
+                    chain = (
+                        list(prior.get("redirects") or []) if isinstance(prior, dict) else []
+                    )
+                    chain.append(hop)
+                    if len(chain) > _MAX_REDIRECTS:
+                        # A loop the browser has not yet aborted; keep the
+                        # earliest hops (where the chain began) and say the
+                        # later ones were dropped rather than grow unbounded.
+                        chain = chain[:_MAX_REDIRECTS]
+                        entry["redirects_truncated"] = True
+                    entry["redirects"] = chain
+                handle.requests[request_id] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
                     handle.requests.popitem(last=False)
                     handle.requests_dropped += 1
