@@ -806,7 +806,32 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
-        return {"local": str(path), "remote": remote_path, "size": size}
+        # adb sync can report a clean push yet land nothing -- a nonexistent
+        # remote directory, or an adbutils that does not raise -- so size alone
+        # (the local file's) would read as a success that never reached the
+        # device. Stat the remote and compare bytes, mirroring pull's "wrote
+        # nothing" guard and the true/false/null verified convention that
+        # install/uninstall/launch/force_stop already use.
+        result: JsonObject = {"local": str(path), "remote": remote_path, "size": size}
+        verified: bool | None = None
+        sync = getattr(dev, "sync", None)
+        if sync is not None:
+            try:
+                info = _call(sync.stat, remote_path, timeout=_ADB_PROBE_TIMEOUT_S)
+            except Exception:  # noqa: BLE001
+                info = None
+            if info is not None:
+                mode, landed = _file_mode_size(info)
+                if not mode:
+                    # stat of a path that does not exist is mode 0: the push
+                    # landed nothing, most often a missing remote directory.
+                    verified = False
+                else:
+                    verified = landed == size
+                    if not verified:
+                        result["remote_size"] = landed
+        result["verified"] = verified
+        return result
 
     def ensure_frida_server(
         self,
