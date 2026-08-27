@@ -12,8 +12,16 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
+from xml.etree import ElementTree as ET
 
 JsonObject = dict[str, Any]
+
+# The manifest namespace every android:* attribute lives under; ElementTree
+# reports those attributes as {uri}name once the doc's xmlns:android is parsed.
+_ANDROID_NS = "http://schemas.android.com/apk/res/android"
+# The manifest tags that declare an app entry point / attack surface.
+_COMPONENT_TAGS = ("activity", "activity-alias", "service", "receiver", "provider")
+_MAX_ACTIONS = 64
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -302,6 +310,64 @@ class ApkClient:
             "has_more": a_more or s_more or r_more or p_more,
         }
 
+    def exported_components(
+        self, path: Path, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        """List the components reachable by other apps (the attack surface).
+
+        apk.components lists every declared component by name; this narrows to
+        the ones another app can reach and adds why. A component counts as
+        exported when android:exported="true", or -- following Android's default
+        -- when the attribute is absent but the component declares an
+        intent-filter (explicit false is always honoured and excluded). Each row
+        carries type (activity/activity-alias/service/receiver/provider), name
+        (the raw android:name), class (name resolved against the package so a
+        leading '.' or bare class becomes fully qualified), explicit (true when
+        android:exported="true" was set, false when it is exported only by
+        default via an intent-filter), has_intent_filter, and actions (the
+        intent-filter action names, de-duplicated and sorted, capped per
+        component with actions_truncated). Parsed from the same manifest XML that
+        apk.manifest returns, so it does not need DEX analysis. Rows are sorted
+        by (type, class); total is the exported count, capped at 256 with
+        scan_capped when more may exist.
+        """
+        apk = self._apk(path)
+        package = apk.get_package() or ""
+        try:
+            xml = apk.get_android_manifest_axml().get_xml()
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as exc:
+            raise ApkError("backend_error", f"failed to parse manifest: {exc}") from exc
+        application = root.find("application")
+        rows: list[JsonObject] = []
+        scan_more = False
+        if application is not None:
+            for elem in application:
+                if elem.tag not in _COMPONENT_TAGS:
+                    continue
+                row = _exported_row(elem, package)
+                if row is None:
+                    continue
+                if len(rows) >= _MAX_COMPONENT_NAMES:
+                    scan_more = True
+                    break
+                rows.append(row)
+        rows.sort(key=lambda r: (r["type"], r["class"], r["name"]))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_COMPONENT_NAMES)
+        window = rows[start : start + cap]
+        return {
+            "package": package,
+            "components": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         libs: list[str] = []
@@ -457,3 +523,57 @@ def _dotted_to_smali(name: str) -> str:
     if name.startswith("L") and name.endswith(";"):
         return name
     return "L" + name.replace(".", "/") + ";"
+
+
+def _android_attr(elem: ET.Element, name: str) -> str | None:
+    return elem.get(f"{{{_ANDROID_NS}}}{name}")
+
+
+def _resolve_component(name: str, package: str) -> str:
+    """Resolve a manifest android:name to a fully qualified class.
+
+    Manifest names are relative to the package: a leading '.' or a bare name
+    with no dot both mean "under the package", while an already-dotted name is
+    absolute. Resolving here means callers can feed the result straight to
+    apk.methods / apk.xrefs without re-implementing the rule.
+    """
+    if not name:
+        return name
+    if name.startswith("."):
+        return package + name
+    if "." not in name:
+        return f"{package}.{name}" if package else name
+    return name
+
+
+def _exported_row(elem: ET.Element, package: str) -> JsonObject | None:
+    """Build one exported-component row, or None when the component is not exported."""
+    name = _android_attr(elem, "name") or ""
+    declared = _android_attr(elem, "exported")
+    actions: set[str] = set()
+    has_intent_filter = False
+    for child in elem:
+        if child.tag != "intent-filter":
+            continue
+        has_intent_filter = True
+        for action in child.findall("action"):
+            action_name = _android_attr(action, "name")
+            if action_name:
+                actions.add(action_name)
+    lowered = declared.strip().lower() if isinstance(declared, str) else None
+    if lowered == "false":
+        return None
+    explicit = lowered == "true"
+    if not explicit and not has_intent_filter:
+        # Absent attribute and no intent-filter: not reachable by other apps.
+        return None
+    sorted_actions = sorted(actions)
+    return {
+        "type": elem.tag,
+        "name": name,
+        "class": _resolve_component(name, package),
+        "explicit": explicit,
+        "has_intent_filter": has_intent_filter,
+        "actions": sorted_actions[:_MAX_ACTIONS],
+        "actions_truncated": len(sorted_actions) > _MAX_ACTIONS,
+    }

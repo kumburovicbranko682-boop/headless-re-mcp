@@ -71,6 +71,31 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_components(session_id))
 
+    @tools.tool(name="apk.exported_components")
+    def apk_exported_components(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 100,
+    ) -> dict[str, Any]:
+        """List the components other apps can reach (the attack surface).
+
+        Where apk.components lists every declared component by name, this narrows
+        to the exported ones and says why. Exported means android:exported="true"
+        or -- per Android's default -- the attribute is absent but the component
+        declares an intent-filter; explicit exported="false" is excluded. Each
+        row carries type (activity/activity-alias/service/receiver/provider),
+        name (raw android:name), class (resolved against the package), explicit
+        (true when exported="true" was set, false when exported only by default
+        via an intent-filter), has_intent_filter, actions (intent-filter action
+        names, deduped and sorted, capped with actions_truncated). Parsed from
+        the manifest, so no DEX analysis is needed. Answers with components,
+        package, count, total, offset, and has_more; total is the exported count
+        capped at 256 with scan_capped when more may exist.
+        """
+        return _dump(
+            analysis.apk_exported_components(session_id, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.native_libs")
     def apk_native_libs(session_id: str) -> dict[str, Any]:
         """List bundled native libraries and their ABIs.
