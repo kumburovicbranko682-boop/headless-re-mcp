@@ -199,7 +199,12 @@ class JsClient:
         limit: int = 100,
     ) -> JsonObject:
         resolved = self._require_input(path)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack refuses an output directory that already exists ("output
+        # directory already exists", non-zero, nothing written), so it must
+        # create the leaf itself. Pre-creating it here -- as this once did --
+        # made every real unpack fail. Ensure only the parent exists and hand
+        # webcrack a path it can create.
+        out_dir.parent.mkdir(parents=True, exist_ok=True)
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)],
             timeout=timeout,

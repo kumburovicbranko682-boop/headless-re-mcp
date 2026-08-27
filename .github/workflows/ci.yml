@@ -199,3 +199,48 @@ jobs:
             throw "committed SPA is stale - run 'npm run build' in webui and commit src/headless_re_mcp/web/spa"
           }
           Write-Host "committed SPA matches webui/src"
+
+  linux-js-webcrack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install the package and webcrack
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+          npm install -g webcrack
+          node -e "console.log('node', process.version)"
+          python -c "import shutil, sys; sys.exit(0 if shutil.which('webcrack') else 'webcrack not on PATH')"
+
+      - name: js webcrack gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_js_webcrack_live_gate.py \
+            -rs --tb=short --junitxml=js-webcrack-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("js-webcrack-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # webcrack was just installed on PATH, so a skip here means the real
+          # CLI could not be exercised -- the false-green "skip != pass" warns
+          # about. This is the only test that runs js.deobfuscate / unpack_bundle
+          # against real webcrack rather than a mocked run_bounded, and the one
+          # that would have caught the pre-created -o directory regression.
+          if not cases:
+              sys.exit("no js-webcrack gate was collected")
+          if skipped:
+              sys.exit(f"js-webcrack gate skipped despite an installed webcrack: {skipped}")
+          print(f"js-webcrack gate ran for real: {[c.get('name') for c in cases]}")
+          PY

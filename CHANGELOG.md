@@ -83,6 +83,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
+### 修复（js.unpack_bundle 不再自建 -o 目录把 webcrack 逼失败）
+
+- `js.unpack_bundle` 过去在调 webcrack 前先 `out_dir.mkdir(parents=True, exist_ok=True)` 建好输出目录，
+  再跑 `webcrack <file> -o <out_dir>`。但 webcrack（2.x）拒绝写入已存在的目录：直接非零退出、打印
+  `output directory already exists`、一个文件都不写。于是后端亲手建的目录反而让**每一次**真实解包都栽在
+  `code != 0 and not files` 分支上报 `backend_error`「webcrack unpack failed」——该工具对真 webcrack 全程不可用。
+  所有 js.* 单测都 mock 掉 `run_bounded` 且自己往目录里塞文件，故一直没暴露这个只在真机上才犯的错。现只建
+  父目录、把叶子目录留给 webcrack 自己创建；受影响的 `fake_run` 单测改为像真 webcrack 一样自建 `-o` 叶子目录。
+  新增 live gate（`test_js_webcrack_live_gate.py`）在临时目录里造最小化 JS 与一个 CommonJS bundle，跑**发现到的**
+  真 webcrack：`js.deobfuscate` 断言从 stdout 拿到非空、被重排成多行（单行输入无换行）、字面量内容留存、且不带
+  假 `tool_failed`；`js.unpack_bundle` 断言 `-o` 真写出并列出了模块文件（`file_count >= 2`）。CI 新增
+  `linux-js-webcrack` job 装 Node 22 + 全局 webcrack 跑该 gate，skip≠pass 守卫在 webcrack 已在 PATH 却仍 skip
+  时判失败。
+
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
 
 - `apk.sign`（apksigner）与 `apk.decode`（apktool `d`）此前只检查输入路径存在（`is_file`）就把它
