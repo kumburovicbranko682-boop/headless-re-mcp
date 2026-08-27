@@ -301,6 +301,79 @@ def test_frida_device_tools_refuse_a_closed_session(
         service.close_all()
 
 
+def test_frida_hook_template_on_a_closed_device_session_does_not_inject(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A retained CLOSED device session must not have a hook injected.
+
+    frida.hook.template routes a device-connected session to
+    hook_template_device using the last authorized pid. close_session does not
+    clear frida_authorized, so without an open-session check the device branch
+    would inject a probe on a device a dead session no longer owns -- the same
+    fail-closed violation the connect/server.ensure guards prevent.
+    """
+    factory = _stub_client_factory("emulator-5554", spawn_pid=4242)
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_frida.FridaClient", factory
+    )
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.FridaClient", factory
+    )
+    service = _service(tmp_path)
+    try:
+        session_id = _web_session(service)
+        assert service.frida_device_connect(session_id, device_id="usb").ok
+        assert service.frida_spawn(session_id, "com.example.app").ok
+        assert service.close_session(session_id).ok
+
+        result = service.frida_hook_template(session_id, "noop")
+        assert result.ok is False, result.data
+        assert result.error is not None
+        assert result.error.code == "invalid_request", result.error
+        assert "closed" in result.error.message
+    finally:
+        service.close_all()
+
+
+def test_frida_hook_template_targets_the_device_pid_and_refuses_unknown_names(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """On a device session, hook.template routes to the device's authorized pid.
+
+    The dispatch picks hook_template_device with the last spawned pid (not a
+    local debuggee) and returns the probe disclosure, so the reply says nothing
+    stays hooked. An unknown template is refused with the allowed list, the same
+    contract the client enforces.
+    """
+    factory = _stub_client_factory("emulator-5554", spawn_pid=4242)
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_frida.FridaClient", factory
+    )
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.FridaClient", factory
+    )
+    service = _service(tmp_path)
+    try:
+        session_id = _web_session(service)
+        assert service.frida_device_connect(session_id, device_id="usb").ok
+        assert service.frida_spawn(session_id, "com.example.app").ok
+
+        hooked = service.frida_hook_template(session_id, "noop")
+        assert hooked.ok and hooked.data is not None, hooked.error
+        assert hooked.data["loaded"] is True
+        assert hooked.data["pid"] == 4242
+        assert hooked.data["device"] == "emulator-5554"
+        assert hooked.data["persisted"] is False
+
+        unknown = service.frida_hook_template(session_id, "totally-made-up")
+        assert unknown.ok is False
+        assert unknown.error is not None
+        assert unknown.error.code == "invalid_params", unknown.error
+        assert "android_ssl_unpin" in unknown.error.details["allowed"]
+    finally:
+        service.close_all()
+
+
 def test_frida_remote_endpoint_connect_binds_that_device_and_still_gates_pids(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
