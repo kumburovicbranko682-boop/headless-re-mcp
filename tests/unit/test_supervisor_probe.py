@@ -73,6 +73,77 @@ def test_probe_ready_returns_within_timeout_when_headers_trickle() -> None:
     thread.join(timeout=2.0)
 
 
+def test_an_abandoned_probe_releases_its_thread_and_socket() -> None:
+    """Giving up on a probe must reclaim the worker, not just stop waiting.
+
+    The join is the overall deadline, but the worker used to stay blocked in
+    recv for as long as the wedged child kept dribbling header bytes, holding
+    one thread and one file descriptor per probe. Probes repeat every
+    check_interval_s (10s by default), so an unattended weekend against
+    exactly the child a readiness check exists to catch leaked thousands of
+    both: the supervisor hits the descriptor limit, spawn fails, and the
+    crash-loop bound stops the one process whose job was keeping the service
+    alive. Closing the connection when the deadline passes makes the blocked
+    read raise, so the worker exits and takes its socket with it.
+    """
+    port_box: list[int] = []
+    hold_s = 8.0
+
+    def dribble() -> None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        port_box.append(int(sock.getsockname()[1]))
+        conn = None
+        try:
+            sock.settimeout(hold_s + 1.0)
+            conn, _ = sock.accept()
+            conn.settimeout(1.0)
+            with suppress(OSError):
+                conn.recv(4096)
+            deadline = time.monotonic() + hold_s
+            while time.monotonic() < deadline:
+                # sendall raises as soon as the probe closes its end, which
+                # is what lets this thread finish long before hold_s.
+                conn.sendall(b"H")
+                time.sleep(0.25)
+        except OSError:
+            pass
+        finally:
+            if conn is not None:
+                with suppress(OSError):
+                    conn.close()
+            with suppress(OSError):
+                sock.close()
+
+    server = threading.Thread(target=dribble, daemon=True)
+    server.start()
+    for _ in range(50):
+        if port_box:
+            break
+        time.sleep(0.02)
+    ok, detail = probe_ready(f"http://127.0.0.1:{port_box[0]}/readyz", timeout=0.5)
+    assert ok is False
+    assert detail.startswith("unreachable:")
+    # The dribbler keeps sending for hold_s, so on the old code the worker is
+    # provably still blocked in recv when this window closes.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and any(
+        worker.name == "ready-probe" and worker.is_alive()
+        for worker in threading.enumerate()
+    ):
+        time.sleep(0.05)
+    leaked = [
+        worker
+        for worker in threading.enumerate()
+        if worker.name == "ready-probe" and worker.is_alive()
+    ]
+    assert not leaked, "the probe worker outlived the deadline it missed"
+    server.join(timeout=3.0)
+    assert not server.is_alive(), "closing the probe socket should unblock the server"
+
+
 def test_probe_ready_still_reports_a_live_child() -> None:
     class Ready(BaseHTTPRequestHandler):
         def log_message(self, *args: object) -> None:

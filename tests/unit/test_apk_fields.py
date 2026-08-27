@@ -6,7 +6,9 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient
+import pytest
+
+from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient, ApkError
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -293,3 +295,28 @@ def test_apk_export_sources_says_when_the_java_list_was_cut(
     doc = _tool_docstring("apk.export_sources")
     assert "java_files" in doc
     assert "has_more" in doc
+
+
+class _PackagelessApk:
+    def get_package(self) -> None:
+        return None
+
+
+def test_apk_open_rejects_a_zip_with_no_package_name(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The catalog said opened; a zip that is not an APK answered opened True.
+
+    Measured: get_package() returning None still answered
+    {opened: True, package: None}, so an unattended agent treated a plain
+    zip as an opened package. An empty package is now a backend error.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _PackagelessApk())
+    with pytest.raises(ApkError) as caught:
+        client.open(tmp_path / "not-an.apk")
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "failed to read package name"
+    assert caught.value.details["opened"] is False
+    doc = _tool_docstring("apk.open")
+    assert "backend error" in doc
