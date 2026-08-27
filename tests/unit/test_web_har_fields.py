@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections import deque
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -41,6 +42,9 @@ class _Handle:
             "resourceType": "XHR",
         }
     }
+    # Real sessions always carry this; the HAR export reads it to attach a
+    # socket's frames. This fixture has no WebSocket rows, so it is empty.
+    ws_frames: deque[tuple[str, dict[str, Any]]] = deque()
 
 
 def test_web_har_export_puts_the_file_in_path_not_har(
