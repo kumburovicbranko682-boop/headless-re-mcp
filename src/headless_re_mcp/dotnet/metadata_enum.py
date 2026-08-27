@@ -82,6 +82,131 @@ _SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
     {"br.s", "brfalse.s", "brtrue.s", "br", "brfalse", "brtrue", "ldc.i4"}
 )
 
+# One-byte opcode 0x45. Its operand is variable length (a uint32 count followed
+# by that many int32 targets), so it is decoded specially rather than via a
+# fixed size.
+_SWITCH_OP: Final[int] = 0x45
+
+# ECMA-335 III operand widths for the single-byte opcodes that carry one but are
+# not named in ``_OPCODES``. ``_disassemble_il`` names only a curated subset, but
+# it must still skip the *right* number of operand bytes for every opcode or the
+# stream derails: an ``ldc.i8`` left as a one-byte step lets its eight constant
+# bytes be read as instructions, and a 0x28 or 0x6f byte inside that constant is
+# then reported as a real ``call``/``callvirt`` metadata token -- a fabricated
+# call in call_tokens, with partial=False claiming the disassembly was complete.
+# Anything absent here genuinely has no operand (arithmetic, conversions, ...).
+_UNNAMED_OPERAND_SIZE: Final[dict[int, int]] = {
+    # ShortInlineVar / ShortInlineI / ShortInlineBrTarget (1 byte)
+    0x0E: 1,  # ldarg.s
+    0x0F: 1,  # ldarga.s
+    0x10: 1,  # starg.s
+    0x11: 1,  # ldloc.s
+    0x12: 1,  # ldloca.s
+    0x13: 1,  # stloc.s
+    0x1F: 1,  # ldc.i4.s
+    0x2E: 1,  # beq.s
+    0x2F: 1,  # bge.s
+    0x30: 1,  # bgt.s
+    0x31: 1,  # ble.s
+    0x32: 1,  # blt.s
+    0x33: 1,  # bne.un.s
+    0x34: 1,  # bge.un.s
+    0x35: 1,  # bgt.un.s
+    0x36: 1,  # ble.un.s
+    0x37: 1,  # blt.un.s
+    0xDE: 1,  # leave.s
+    # InlineI / ShortInlineR / InlineBrTarget / InlineField|Method|Type|Tok|Sig (4 bytes)
+    0x22: 4,  # ldc.r4
+    0x27: 4,  # jmp
+    0x29: 4,  # calli
+    0x3B: 4,  # beq
+    0x3C: 4,  # bge
+    0x3D: 4,  # bgt
+    0x3E: 4,  # ble
+    0x3F: 4,  # blt
+    0x40: 4,  # bne.un
+    0x41: 4,  # bge.un
+    0x42: 4,  # bgt.un
+    0x43: 4,  # ble.un
+    0x44: 4,  # blt.un
+    0x70: 4,  # cpobj
+    0x71: 4,  # ldobj
+    0x74: 4,  # castclass
+    0x75: 4,  # isinst
+    0x79: 4,  # unbox
+    0x7C: 4,  # ldflda
+    0x7E: 4,  # ldsfld
+    0x7F: 4,  # ldsflda
+    0x80: 4,  # stsfld
+    0x81: 4,  # stobj
+    0x8D: 4,  # newarr
+    0x8F: 4,  # ldelema
+    0xA3: 4,  # ldelem
+    0xA4: 4,  # stelem
+    0xA5: 4,  # unbox.any
+    0xC2: 4,  # refanyval
+    0xC6: 4,  # mkrefany
+    0xD0: 4,  # ldtoken
+    0xDD: 4,  # leave
+    # InlineI8 / InlineR (8 bytes)
+    0x21: 8,  # ldc.i8
+    0x23: 8,  # ldc.r8
+}
+
+# Names for the common 0xFE-prefixed two-byte opcodes; the rest fall back to a
+# stable ``fe.NN`` label. Correctness only needs the operand widths below, but
+# naming the frequent ones keeps the disassembly readable.
+_FE_OPCODES: Final[dict[int, str]] = {
+    0x00: "arglist",
+    0x01: "ceq",
+    0x02: "cgt",
+    0x03: "cgt.un",
+    0x04: "clt",
+    0x05: "clt.un",
+    0x06: "ldftn",
+    0x07: "ldvirtftn",
+    0x09: "ldarg",
+    0x0A: "ldarga",
+    0x0B: "starg",
+    0x0C: "ldloc",
+    0x0D: "ldloca",
+    0x0E: "stloc",
+    0x0F: "localloc",
+    0x11: "endfilter",
+    0x12: "unaligned.",
+    0x13: "volatile.",
+    0x14: "tail.",
+    0x15: "initobj",
+    0x16: "constrained.",
+    0x17: "cpblk",
+    0x18: "initblk",
+    0x19: "no.",
+    0x1A: "rethrow",
+    0x1C: "sizeof",
+    0x1D: "refanytype",
+    0x1E: "readonly.",
+}
+
+# Operand widths for 0xFE-prefixed opcodes (all unsigned). The old decoder
+# stepped a single byte past the 0xFE and flagged partial, letting the real
+# second byte and its operand be read as further instructions; skipping the
+# right width keeps the stream aligned instead.
+_FE_OPERAND_SIZE: Final[dict[int, int]] = {
+    0x06: 4,  # ldftn      (token)
+    0x07: 4,  # ldvirtftn  (token)
+    0x09: 2,  # ldarg      (uint16)
+    0x0A: 2,  # ldarga     (uint16)
+    0x0B: 2,  # starg      (uint16)
+    0x0C: 2,  # ldloc      (uint16)
+    0x0D: 2,  # ldloca     (uint16)
+    0x0E: 2,  # stloc      (uint16)
+    0x12: 1,  # unaligned. (uint8)
+    0x15: 4,  # initobj    (token)
+    0x16: 4,  # constrained. (token)
+    0x19: 1,  # no.        (uint8)
+    0x1C: 4,  # sizeof     (token)
+}
+
 
 @dataclass(frozen=True, slots=True)
 class Page:
@@ -688,30 +813,52 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
     rebuilt: list[JsonObject] = []
     i = 0
     partial = False
-    while i < len(il) and len(rebuilt) < max_insns:
+    n = len(il)
+    while i < n and len(rebuilt) < max_insns:
         start = i
         op = il[i]
-        if op == 0xFE:
-            rebuilt.append({"ip": start, "mnemonic": "prefix.fe", "operand": None})
-            i += 1
-            partial = True
-            continue
-        info = _OPCODES.get(op)
-        if info is None:
-            rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})
-            i += 1
-            continue
-        name, imm = info
-        i += 1
         operand: int | None = None
+        if op == 0xFE:
+            # Two-byte opcode: 0xFE <op2> [operand]. Decode the second byte and
+            # skip its operand so the stream stays aligned.
+            if i + 1 >= n:
+                partial = True
+                break
+            op2 = il[i + 1]
+            name = _FE_OPCODES.get(op2, f"fe.{op2:02x}")
+            imm = _FE_OPERAND_SIZE.get(op2, 0)
+            i += 2
+        elif op == _SWITCH_OP:
+            # switch: uint32 count, then count * int32 relative targets. A crafted
+            # count must neither misalign the stream nor let table bytes read as
+            # further instructions; report the count and step over the whole table.
+            if i + 5 > n:
+                partial = True
+                break
+            count = int.from_bytes(il[i + 1 : i + 5], "little")
+            table_bytes = 4 + count * 4
+            if i + 1 + table_bytes > n:
+                partial = True
+                break
+            i += 1 + table_bytes
+            rebuilt.append({"ip": start, "mnemonic": "switch", "operand": count})
+            continue
+        else:
+            info = _OPCODES.get(op)
+            if info is not None:
+                name, imm = info
+            else:
+                name = f"op_{op:02x}"
+                imm = _UNNAMED_OPERAND_SIZE.get(op, 0)
+            i += 1
         if imm:
-            if i + imm > len(il):
+            if i + imm > n:
                 partial = True
                 break
             signed = name in _SIGNED_OPERANDS
             operand = int.from_bytes(il[i : i + imm], "little", signed=signed)
             i += imm
         rebuilt.append({"ip": start, "mnemonic": name, "operand": operand})
-    if len(rebuilt) >= max_insns and i < len(il):
+    if len(rebuilt) >= max_insns and i < n:
         partial = True
     return rebuilt, partial
