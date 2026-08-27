@@ -81,6 +81,52 @@ def test_frida_device_connect_on_a_closed_session_does_not_bind(
         service.close_all()
 
 
+def test_frida_device_connect_does_not_report_success_if_the_session_closes_during_run(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A close mid-resolve must not bind a device on a dead session.
+
+    frida.device.connect re-checks state after the device resolves, before it
+    writes frida_authorized. Without that second check a close arriving while
+    the device was being resolved would still persist the binding, and the
+    closed-session test alone cannot see it: the first check already covers
+    the close-before case.
+    """
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+    session_id = ""
+
+    class _CloseThenResolve:
+        def _resolve_device(self, device_id: str) -> Any:
+            service.close_session(session_id)
+
+            class _Device:
+                id = device_id
+                name = "usb"
+                type = "usb"
+
+            return _Device()
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_frida.FridaClient",
+        lambda *args, **kwargs: _CloseThenResolve(),
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        result = service.frida_device_connect(session_id, device_id="usb")
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+        assert "frida_authorized" not in service.registry.get(session_id).metadata
+    finally:
+        service.close_all()
+
+
 def test_frida_server_ensure_on_a_closed_session_does_not_start_server(
     tmp_path: Path,
 ) -> None:
