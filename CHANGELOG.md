@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+Web 线的两个输出面首次有了真机覆盖：`web.screenshot`（浏览器经 CDP 渲染出的真实 PNG）与 `web.har_export`（浏览器
+自己从捕获的 CDP 网络事件拼出的 HAR，区别于 proxy 线基于 mitmproxy 的 HAR）。此前抓取类工具（network/scripts/
+console/DOM）已有 gate，但截图的编码/落盘路径与 HAR 的从真实请求装配都只对 mock 跑过。新增
+`tests/integration/test_web_capture_output_live_gate.py`：起一个本地站点（页面加载一个脚本、脚本再 fetch 一个 JSON
+资源），用真实 headless Chromium 打开后——分别截视口图与整页图，断言各是真正的 PNG（magic 字节）且返回的 size 与磁盘
+文件一致；再导出 HAR，解析回来断言是符合 HAR 1.2 形状、带具名 creator 的 log，条目里同时含文档与被 fetch 的资源，且
+每条都是 GET + 200，证明浏览器确实记录了这些请求。新增 `linux-web-capture-output` CI job：装 `.[browser]` + Chromium、
+跑该 gate 并解析 junitxml，浏览器已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
