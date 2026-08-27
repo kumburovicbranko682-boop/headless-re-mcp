@@ -343,6 +343,74 @@ def test_inmemory_trim_forgets_the_dropped_session_timeline(tmp_path: Path) -> N
     assert repository.list_timeline("closed-4")["total"] >= 1
 
 
+def test_sqlite_trim_skips_a_traversing_session_id_instead_of_failing_the_close(
+    tmp_path: Path,
+) -> None:
+    """A poisoned ``..`` row must not break the trim, and must delete nothing.
+
+    A stored id is normally a uuid, but the trim guarded its file cleanup with
+    ``Path(id).name != id`` alone, which ``..`` passes -- and
+    ``<root>/debug-events/..`` is the artifact root itself, so the cleanup
+    rmtree pointed at everything the service owns, this database included.
+    ``session_timeline_path`` refused the id first, so what actually shipped
+    was the other failure: the ValueError raised out of ``upsert_session`` and
+    rolled back the close, so one poisoned row failed every later clean close
+    for the life of the database. Hostile ids must be skipped: trimmed from
+    the table, no exception, nothing outside their own directories touched.
+    """
+    root = tmp_path / "poisoned-sqlite"
+    repository = SqliteAnalysisRepository(root)
+    store = repository.store
+    store.retained_closed_sessions = 1
+    sentinel = root / "debug-events" / "innocent" / "events.jsonl"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("keep me", encoding="utf-8")
+    for sid in ("..", "closed-a", "closed-b"):
+        store.upsert_session(
+            session_id=sid,
+            binary="t.exe",
+            sha256="dd" * 32,
+            architecture="x86_64",
+            state="closed",
+            closed_cleanly=True,
+        )
+    assert store.get_session("..") is None, "the poisoned row must still be trimmed"
+    assert sentinel.read_text(encoding="utf-8") == "keep me"
+    assert store.db_path.is_file(), "an escaping rmtree would have taken the database"
+
+
+def test_inmemory_trim_skips_a_traversing_session_id_instead_of_failing_the_close(
+    tmp_path: Path,
+) -> None:
+    """The in-memory trim had the same hole: closing past the retention limit
+    with a ``..`` row stored raised ValueError out of note_session_closed."""
+    root = tmp_path / "poisoned-memory"
+    repository = InMemoryAnalysisRepository(root)
+    repository.retained_closed_sessions = 1
+    sentinel = root / "debug-events" / "innocent" / "events.jsonl"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("keep me", encoding="utf-8")
+    for sid in ("..", "closed-a", "closed-b"):
+        repository.note_session_created(
+            "t.exe",
+            Result(
+                ok=True,
+                data={
+                    "session": {
+                        "id": sid,
+                        "binary": "t.exe",
+                        "sha256": "",
+                        "architecture": "x86_64",
+                        "state": "created",
+                    }
+                },
+            ),
+        )
+        repository.note_session_closed(sid, None, Result(ok=True, data={"closed": True}))
+    assert sentinel.read_text(encoding="utf-8") == "keep me"
+    assert repository.list_timeline("closed-b")["total"] >= 1
+
+
 def test_inmemory_gc_does_not_delete_the_newest_artifact(tmp_path: Path) -> None:
     """SQLite skips the newest file; InMemory used to collect it immediately."""
     repository = InMemoryAnalysisRepository(tmp_path)
