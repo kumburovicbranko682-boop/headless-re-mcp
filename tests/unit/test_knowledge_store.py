@@ -163,6 +163,30 @@ def test_a_session_does_not_keep_every_finding_it_ever_recorded(repository: Any)
     assert other["entries"][0]["key"] == "keep"
 
 
+def test_inmemory_timeline_does_not_keep_every_entry_ever_appended(tmp_path: Path) -> None:
+    """The in-memory repository trimmed audit and knowledge but not the timeline.
+
+    Every lifecycle event and tool note appends one entry per session, so a
+    long-lived composition on this port grew one Python list per session for
+    the life of the process. The file-backed timeline caps itself at 10,000
+    lines; the in-memory port now keeps the newest entries the same way.
+    """
+    repo = InMemoryAnalysisRepository(tmp_path / "artifacts")
+    repo.retained_timeline_per_session = 3
+
+    repo.append_timeline("other", "event.keep", "unrelated session is untouched")
+    for index in range(6):
+        repo.append_timeline("s1", f"event.{index}", f"message {index}")
+
+    page = repo.list_timeline("s1")
+    assert page["total"] == 3
+    assert [event["event"] for event in page["events"]] == ["event.3", "event.4", "event.5"]
+
+    other = repo.list_timeline("other")
+    assert other["total"] == 1
+    assert other["events"][0]["event"] == "event.keep"
+
+
 def test_audit_json_cap_stays_valid_json() -> None:
     from headless_re_mcp.core.store.sqlite_store import encode_audit_json
 

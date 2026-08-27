@@ -191,9 +191,20 @@ class ApkClient:
 
     def open(self, path: Path) -> JsonObject:
         apk = self._apk(path)
+        package = apk.get_package()
+        # Measured: get_package() returning None still answered
+        # {opened: True, package: None}, so an unattended agent treated a zip
+        # that is not an APK as an opened package.
+        if not package:
+            raise ApkError(
+                "backend_error",
+                "failed to read package name",
+                opened=False,
+                package=None,
+            )
         return {
             "opened": True,
-            "package": apk.get_package(),
+            "package": package,
             "version_name": apk.get_androidversion_name(),
             "version_code": apk.get_androidversion_code(),
             "min_sdk": apk.get_min_sdk_version(),
