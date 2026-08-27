@@ -148,6 +148,13 @@ class FridaDeviceMixin:
         try:
             auth = self._frida_auth(session_id)
             data = FridaClient().spawn(auth.get("device_id"), package)
+            # A close arriving mid-spawn would otherwise report ok=True and
+            # write the freshly spawned pid onto a session that no longer
+            # exists -- the same "mutate a closed session" defect that
+            # frida.device.connect and frida.server.ensure re-check for. The
+            # spawned process is on the device either way; refusing here at
+            # least keeps a dead session from being recorded as owning it.
+            self._require_open_session(session_id, "frida.spawn")
             pid = int(data["pid"])
             auth = dict(auth)
             auth["pids"] = _append_recent(auth.get("pids"), pid)
