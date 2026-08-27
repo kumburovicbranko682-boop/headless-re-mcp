@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from headless_re_mcp.backends.common.json_budget import fit_json_list
+from headless_re_mcp.backends.common.json_budget import fit_json_list, fit_json_text
 
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
@@ -38,11 +38,16 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
-# Longest inline body string flow_get returns before spilling to a file. Kept
-# under the 256 KiB tool result cap: a base64 body is 4/3 the raw size, so this
-# ceiling on the *encoded* string (not the raw bytes) is what keeps a binary
-# body from inflating the envelope past the cap.
+# Longest inline body string flow_get returns before spilling to a file. This
+# is a raw-length gate: it bounds a base64 body (4/3 the raw size, no JSON-
+# special chars) fine, but a UTF-8 *text* body of this length full of quotes/
+# backslashes inflates when JSON-encoded and can still overrun the result
+# budget, so flow_get also spills on an encoded-size overflow (see fit_json_text
+# there), not only on this char count.
 _MAX_INLINE_BODY = 200_000
+# Headroom for flow_get's other fields (bounded url, request/response headers,
+# status, size) when deciding whether the inline body's encoded form fits.
+_BODY_FIELD_RESERVE = 64 * 1024
 _OMITTED_BODY = object()
 
 # mitmproxy keeps its addon context in process-global module attributes:
@@ -600,7 +605,10 @@ class ProxyBackend:
             "id": flow_id,
             "request": {
                 "method": req.method,
-                "url": req.pretty_url,
+                # Bound the url like flows() does: it is attacker-influenced and
+                # otherwise unbounded here, so a multi-KiB url would eat into the
+                # room the body's encoded-size check reserves for other fields.
+                "url": _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)[0],
                 "headers": dict(req.headers),
             },
             "response": {
@@ -623,9 +631,15 @@ class ProxyBackend:
         except UnicodeDecodeError:
             inline = base64.b64encode(body).decode("ascii")
             base64_encoded = True
-        if len(inline) > _MAX_INLINE_BODY:
-            # Too large to inline -- spill the raw bytes so the caller reads the
-            # exact body from disk rather than a truncated or re-encoded one.
+        # Spill when the body is too large to inline -- either by raw length or
+        # because its JSON-encoded form would overrun the result budget. The raw
+        # gate alone misses a text body of quotes/backslashes/control chars that
+        # is under _MAX_INLINE_BODY chars yet encodes past the budget, which
+        # would get the whole flow_get reply discarded for a ~16 KiB summary.
+        _, _encoded_bytes, encoded_cut = fit_json_text(inline, reserve=_BODY_FIELD_RESERVE)
+        if len(inline) > _MAX_INLINE_BODY or encoded_cut:
+            # Spill the raw bytes so the caller reads the exact body from disk
+            # rather than a truncated or re-encoded one.
             artifact_dir.mkdir(parents=True, exist_ok=True)
             out = artifact_dir / f"flow-{uuid4().hex}.bin"
             out.write_bytes(body)
