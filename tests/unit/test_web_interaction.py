@@ -33,9 +33,9 @@ from headless_re_mcp.backends.web.client import (
     _MAX_NAV_TIMEOUT_S,
     _MAX_SELECTOR_BYTES,
     _MAX_TYPE_TEXT_BYTES,
-    _Runner,
     _require_selector,
     _require_type_text,
+    _Runner,
 )
 from headless_re_mcp.tools.catalog import COMMAND_CATALOG, ToolEffect
 

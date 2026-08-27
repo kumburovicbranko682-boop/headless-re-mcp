@@ -301,6 +301,8 @@ async def test_minimal_mcp_tool_surface() -> None:
         # Web dynamic (web.*)
         "web.open",
         "web.navigate",
+        "web.click",
+        "web.type",
         "web.close",
         "web.network.list",
         "web.network.get",
