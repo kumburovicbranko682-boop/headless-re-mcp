@@ -96,3 +96,48 @@ def test_stealth_set_is_a_file_write() -> None:
     assert spec.write is True
     assert spec.agent_auto_execute is False
     assert spec.effects == frozenset({ToolEffect.STATE_CHANGE, ToolEffect.FILE_WRITE})
+
+
+def test_agent_effect_shapes_are_a_closed_three_way_taxonomy() -> None:
+    """Every agent tool is exactly one of three effect shapes; the set is closed.
+
+    The autonomy model reads a tool's effects three ways, each guarded by its own
+    pin: ``{read_only}`` is decide()'s unconditional baseline, auto-approved even
+    under a fully fail-closed policy (see AutonomyPolicy.decide, ``== {READ_ONLY}``);
+    ``{state_change}`` is the class the packed preset grants wholesale (pinned in
+    test_agent_autonomy); ``{file_write, state_change}`` is gated by the file-write
+    denylist under that preset (pinned there too). Those pins each police one shape.
+    Nothing asserts the taxonomy is *closed*, so a fourth shape -- an empty set
+    (silently denied forever), a bare ``{file_write}`` with no state_change, a tool
+    that mixes read_only with a mutation, or a novel triple -- would slip between
+    the three shape-specific pins and reach the policy unreviewed. Pin the closure:
+    a new shape lands here for a human before it reaches decide().
+    """
+    canonical = {
+        frozenset({ToolEffect.READ_ONLY}),
+        frozenset({ToolEffect.STATE_CHANGE}),
+        frozenset({ToolEffect.STATE_CHANGE, ToolEffect.FILE_WRITE}),
+    }
+    agent_specs = list(COMMAND_CATALOG.for_transport(CommandTransport.AGENT))
+
+    off_taxonomy = {
+        spec.name: sorted(effect.value for effect in spec.effects)
+        for spec in agent_specs
+        if spec.effects not in canonical
+    }
+    assert off_taxonomy == {}, f"agent tools off the closed effect taxonomy: {off_taxonomy}"
+
+    # Non-vacuous: all three shapes are actually present, so an emptied or
+    # collapsed catalog cannot let the closure assertion pass by having nothing
+    # to check.
+    observed = {spec.effects for spec in agent_specs}
+    assert observed == canonical
+
+    # File writes never travel alone: each carries state_change, so a preset that
+    # opens only the state_change class (the packed default) still cannot sweep a
+    # file write in on a bare {file_write} shape.
+    assert all(
+        ToolEffect.STATE_CHANGE in spec.effects
+        for spec in agent_specs
+        if ToolEffect.FILE_WRITE in spec.effects
+    )
