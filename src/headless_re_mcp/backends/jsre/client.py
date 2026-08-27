@@ -147,8 +147,15 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # ``-f``/``--force`` is mandatory here, not a nicety: webcrack refuses a
+        # pre-existing output directory ("output directory already exists", exit
+        # 1) even when it is empty, and this method creates ``out_dir`` one line
+        # above (the service hands it a fresh ``unpack-<uuid>`` and downstream
+        # listing/pruning expect it to exist). Without --force every unpack
+        # failed with backend_error; with it webcrack overwrites the directory
+        # it was pointed at.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
+            [str(self.executable), str(resolved), "-o", str(out_dir), "-f"], timeout=timeout
         )
         files, file_count, listed_more = _capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)
         if code != 0 and not files:

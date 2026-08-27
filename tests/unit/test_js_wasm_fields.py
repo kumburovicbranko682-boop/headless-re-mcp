@@ -216,6 +216,46 @@ def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
     assert "has_more" in _tool_docstring("js.unpack_bundle")
 
 
+def test_unpack_bundle_forces_over_the_directory_it_just_created(tmp_path: Path) -> None:
+    """webcrack refuses a pre-existing output directory; this method makes one.
+
+    ``unpack_bundle`` creates ``out_dir`` (the service hands it a fresh
+    ``unpack-<uuid>`` and the listing/pruning that follow expect it to exist),
+    but webcrack exits 1 with "output directory already exists" for any dir that
+    is already there -- even an empty one -- unless ``-f``/``--force`` is passed.
+    Without the flag every real unpack failed with backend_error; a fake_run
+    that always succeeds (like the sibling tests use) never saw it, which is why
+    this pins the argv rather than the reply. The live web gate proves the same
+    against the real CLI.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "unpack-abc"
+    launched: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        launched.append(list(cmd))
+        # webcrack would have written here; mimic that so listing finds a file.
+        Path(cmd[cmd.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
+        (out / "deobfuscated.js").write_text("1", encoding="utf-8")
+        return Completed(0, b"", b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = mod.JsClient(tool).unpack_bundle(src, out)
+
+    assert launched, "webcrack was never launched"
+    argv = launched[0]
+    assert "-f" in argv or "--force" in argv, argv
+    # The directory the client created must be the one webcrack was pointed at.
+    assert argv[argv.index("-o") + 1] == str(out)
+    assert out.is_dir()
+    assert payload["file_count"] == 1
+
+
 def test_js_deobfuscate_refuses_an_oversized_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

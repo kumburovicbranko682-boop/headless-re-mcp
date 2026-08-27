@@ -62,6 +62,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「无 addon/无 master/循环已关是 no-op」「teardown 里先停 server 再拆循环」,真机 `test_proxy_lifecycle_gate`
   对真实进程复核起停与端口回收。
 
+### 修复（`js.unpack_bundle` 因预建输出目录对当前 webcrack 必然失败）
+
+- **`js.unpack_bundle` 每次都回 `backend_error`,整条工具形同虚设**。`JsClient.unpack_bundle` 先
+  `out_dir.mkdir(...)` 建好输出目录(service 交进来的是全新的 `unpack-<uuid>`,后续列目录/裁剪也依赖它
+  存在),再执行 `webcrack <in> -o <dir>`;但当前 webcrack(实测 2.16.0)遇到已存在的输出目录——哪怕是空
+  目录——就以 `output directory already exists` 退出码 1 拒绝,于是每次解包都失败。现在传 `-f`/`--force`
+  让 webcrack 覆盖它被指向的目录,真正产出文件树。以 fake 冒充后端的老单测因为「假后端从不拒绝」看不到这个
+  回归,故新增单测钉住传给 webcrack 的 argv 必含 `--force` 且指向本方法刚建的目录;`test_web_re_gate` 另加
+  `test_js_unpack_bundle_when_webcrack_present`,用真实 webcrack 对 fixture 跑一遍解包并断言产出非空。
+
+### 新增（Web 静态 Gate 覆盖 `wasm.info` 与 `js.unpack_bundle`）
+
+- Web 静态 Gate 过去只实测 `js.deobfuscate`(webcrack stdout)与 `wasm.wat`(wasm2wat),
+  `wasm.info`(另一支 wabt 二进制 `wasm-objdump -h -x`)与 `js.unpack_bundle`(webcrack `-o` 目录+分页)
+  这两条独立代码路径无任何真机覆盖——正是上面那个必然失败的 bug 能长期潜伏的原因。新增
+  `test_wasm_info_when_wabt_present`(手搓一个带 Type 段的最小 wasm,断言 objdump 列出 `Sections`/`Type`,
+  不依赖 wat2wasm)与 `test_js_unpack_bundle_when_webcrack_present`;两者各自独立 skip 且带「skip 不等于
+  pass」说明。
+
 ### 修复（Web 工作台 smoke Gate 与实际 UI 脱节）
 
 - **`test_browser_agent_workbench_smoke` 长期红/挂,已无法守护 Web 工作台**:它把浏览器硬编码成

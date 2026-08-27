@@ -7,12 +7,14 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from headless_re_mcp.backends.jsre import JsClient, WasmClient
 from headless_re_mcp.backends.web import WebBackend
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -84,6 +86,31 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present(tmp_path: Path) -> None:
+    """The unpack path is a different webcrack invocation from deobfuscate.
+
+    ``js.unpack_bundle`` runs ``webcrack <in> -o <dir>`` and reads the tree
+    back, where ``js.deobfuscate`` only reads stdout. webcrack refuses a
+    pre-existing output directory, and the service creates one, so this whole
+    path failed with backend_error until ``-f`` was added -- a fake-backed unit
+    test could not see it because the fake never refused. Real CLI, real dir.
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    try:
+        result = service.js_unpack_bundle(str(_JS_FIXTURE))
+        assert result.ok, result.error
+        assert result.data["file_count"] >= 1
+        assert result.data["count"] == len(result.data["files"])
+        assert result.data["files"], "webcrack wrote no files to the output tree"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
@@ -95,5 +122,31 @@ def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
         result = service.wasm_wat(str(module))
         assert result.ok, result.error
         assert "module" in result.data["wat"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
+    """wasm.info drives wasm-objdump, a different wabt binary from wasm2wat.
+
+    A module with one Type section makes ``-h -x`` list a real section, so the
+    reply proves the objdump path parsed something rather than merely running.
+    Hand-built bytes keep the gate free of a wat2wasm dependency.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM info Gate not run (skip != pass)")
+    # magic + version + a Type section declaring one () -> () function type.
+    module = tmp_path / "typed.wasm"
+    module.write_bytes(
+        bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00])
+    )
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(module))
+        assert result.ok, result.error
+        objdump = result.data["objdump"]
+        assert "Sections" in objdump
+        assert "Type" in objdump
     finally:
         service.close_all()
