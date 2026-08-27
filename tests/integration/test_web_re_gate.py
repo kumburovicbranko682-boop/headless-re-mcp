@@ -7,7 +7,12 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import http.server
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -33,6 +38,53 @@ def _browser_available() -> bool:
     except Exception:
         return False
     return True
+
+
+def _wait_until(predicate: Callable[[], bool], *, tries: int = 50, delay: float = 0.1) -> bool:
+    """CDP events arrive asynchronously; give the wiring a bounded chance to land."""
+    for _ in range(tries):
+        if predicate():
+            return True
+        time.sleep(delay)
+    return False
+
+
+def _wait_for_value(
+    getter: Callable[[], Any], *, tries: int = 50, delay: float = 0.1
+) -> Any:
+    for _ in range(tries):
+        value = getter()
+        if value:
+            return value
+        time.sleep(delay)
+    return getter()
+
+
+class _FixtureHandler(http.server.BaseHTTPRequestHandler):
+    """Serves an HTML page that pulls one sub-resource carrying a known marker."""
+
+    _INDEX = (
+        b"<html><head><title>net-gate</title></head>"
+        b'<body><script src="/app.js"></script></body></html>'
+    )
+    _APP = b"/* NETWORK_GATE_MARKER */ globalThis.__loaded = true;"
+
+    def do_GET(self) -> None:  # noqa: N802 - http.server API name
+        if self.path in ("/", "/index.html"):
+            body, ctype = self._INDEX, "text/html; charset=utf-8"
+        elif self.path == "/app.js":
+            body, ctype = self._APP, "application/javascript"
+        else:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args: Any) -> None:  # silence the default stderr access log
+        return
 
 
 @pytest.mark.integration
@@ -62,10 +114,83 @@ def test_web_cdp_open_and_inspect() -> None:
             dom = service.web_dom_snapshot(session_id)
             assert dom.ok, dom.error
             assert "gate" in dom.data["title"]
+
+            # The fixture runs console.log('gate-ready') at parse time. Asserting
+            # only web_console(...).ok passes on an empty buffer, so the CDP console
+            # wiring (Runtime.consoleAPICalled -> _clip_console_text -> ring) was
+            # never actually proven to capture anything. Pin it to the real message.
+            def _console_has_marker() -> bool:
+                service.web_dom_snapshot(session_id)  # a runner call pumps CDP events
+                res = service.web_console(session_id)
+                assert res.ok, res.error
+                return any(
+                    "gate-ready" in (entry.get("text") or "")
+                    for entry in res.data["console"]
+                )
+
+            assert _wait_until(_console_has_marker), "console.log was not captured over CDP"
         finally:
             service.web_close(session_id)
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_web_cdp_captures_network_and_reads_a_body() -> None:
+    """Network capture is the drift-prone CDP path the data: URL gate never touched.
+
+    A data: URL fires no Network.* events, so requestWillBeSent/responseReceived and
+    network_get's Network.getResponseBody were entirely unverified against a real
+    browser. Serve a page that pulls a sub-resource with a known marker, then assert
+    the request was captured with the status the responseReceived handler filled in
+    and that its body reads back through CDP -- something an empty buffer or a broken
+    getResponseBody cannot fake.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FixtureHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    service = AnalysisService()
+    try:
+        url = f"http://127.0.0.1:{port}/index.html"
+        created = service.create_session(url, target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                f"chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+
+            def _app_entry() -> dict[str, Any] | None:
+                service.web_dom_snapshot(session_id)  # a runner call pumps CDP events
+                listed = service.web_network_list(session_id, limit=100)
+                assert listed.ok, listed.error
+                for entry in listed.data["requests"]:
+                    url_seen = str(entry.get("url", ""))
+                    if url_seen.endswith("/app.js") and entry.get("status"):
+                        return entry
+                return None
+
+            entry = _wait_for_value(_app_entry)
+            assert entry is not None, "sub-resource request was never captured over CDP"
+            assert entry["status"] == 200, entry
+            assert "javascript" in str(entry.get("mimeType", "")).lower(), entry
+
+            got = service.web_network_get(session_id, entry["requestId"])
+            assert got.ok, got.error
+            assert "NETWORK_GATE_MARKER" in got.data["body"], got.data
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+        server.shutdown()
+        thread.join(timeout=5.0)
 
 
 @pytest.mark.integration

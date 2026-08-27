@@ -924,6 +924,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   自己也点明 addon/flow API 各版本有别)。新增抓包 gate:起一个一次性的本地 HTTP 源站,经代理 GET 它(纯
   HTTP,不需要 TLS/CA 信任),断言这条 flow 以正确的 method/url/status/host 被记录、`flow_get` 取回真实的
   请求/响应体、`export_har` 至少产出一条。已在 mitmproxy 12.2.3 实测通过。
+- **Web CDP gate 只证明浏览器起得来、DOM 读得到,却没验证抓包与 console 采集这两条最会漂的 CDP 主链路**。
+  原 gate 用一个 `data:` URL 开浏览器,断言 `web.scripts` 回了个 list、`web.console` 调用 ok、DOM 快照标题含
+  `gate`——但 `web.console` 在**空缓冲**上一样 ok,而 `data:` URL 不发任何网络请求,于是 `_wire_events` 里那几个
+  `cdp.on(...)`(`Runtime.consoleAPICalled` 采 console、`Network.requestWillBeSent`/`responseReceived` 采请求)以及
+  `network_get` 走的 `Network.getResponseBody` 在真实 Chromium 上从没被断言过采到过东西,而这正是 Playwright/CDP
+  版本漂移最容易断的地方。现把 gate 补实:①原 `data:` 夹具本就 `console.log('gate-ready')`,改为轮询 `web.console`
+  直到真出现该行(空缓冲会失败,不再放行);②新增一条抓包 gate,起一次性本地 HTTP 源站发一个拉子资源(带
+  `NETWORK_GATE_MARKER`)的页面,断言 `network_list` 采到该子资源、状态被 `responseReceived` 填成 200、MIME 是
+  javascript,再用 `network_get` 经 `Network.getResponseBody` 把响应体读回、body 里含该 marker——空缓冲或坏掉的
+  getResponseBody 都伪造不出。已在 Playwright 1.62 + Chromium(headless)实测通过,缺 Playwright/浏览器时干净
+  skip(skip≠pass)。
 - **jsre 的 WASM 路径(wabt)补上真实 live 覆盖**。`wasm.wat`/`wasm.info` 的单测都 mock 掉
   `wasm2wat`/`wasm-objdump` 的输出,结构上抓不到「装着的 wabt 吐出客户端处理不了的东西」这类
   漂移——而 wabt 是本工程里唯一在 Linux 上能真跑、却从没被 live gate 碰过的具名后端。新增 WASM
