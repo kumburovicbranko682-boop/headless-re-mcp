@@ -271,10 +271,25 @@ class ApkClient:
                     )
                 except Exception:  # noqa: BLE001 - certificate objects vary by version
                     continue
+            # Which APK Signature Schemes actually signed the APK. v1 is the old
+            # JAR signature (per-entry, so a repacked APK can keep valid-looking
+            # v1 certs while its DEX changed); v2/v3 hash the whole archive and
+            # are what make a build tamper-evident. An analyst deciding whether an
+            # APK is safely modifiable, or which cert chain to trust, needs the
+            # scheme -- not just that *some* certificate exists. Reported via
+            # androguard's authoritative predicates rather than inferred from the
+            # presence of META-INF signature files (v2/v3 leave none).
+            v1 = _signing_predicate(apk, "is_signed_v1", fallback=bool(names))
+            v2 = _signing_predicate(apk, "is_signed_v2")
+            v3 = _signing_predicate(apk, "is_signed_v3")
+            schemes = [tag for tag, present in (("v1", v1), ("v2", v2), ("v3", v3)) if present]
             return {
                 "signature_files": sig_files,
                 "certificates": items,
-                "v1_signed": bool(names),
+                "v1_signed": v1,
+                "v2_signed": v2,
+                "v3_signed": v3,
+                "signing_schemes": schemes,
                 "has_more": certs_more or files_more,
             }
 
@@ -444,6 +459,23 @@ class ApkClient:
             # the enumeration ended or merely stopped.
             "has_more": has_more,
         }
+
+
+def _signing_predicate(apk: Any, method: str, *, fallback: bool = False) -> bool:
+    """Call an androguard is_signed_vN predicate, degrading to ``fallback``.
+
+    Older androguard builds may not expose every scheme predicate, and a
+    malformed signing block can make one raise; neither should fail the whole
+    certificates read, so an absent or throwing predicate reports ``fallback``
+    (for v1, the presence of META-INF signature files; otherwise False).
+    """
+    probe = getattr(apk, method, None)
+    if not callable(probe):
+        return fallback
+    try:
+        return bool(probe())
+    except Exception:  # noqa: BLE001 - androguard raises many types on bad sig blocks
+        return fallback
 
 
 def _dotted_to_smali(name: str) -> str:

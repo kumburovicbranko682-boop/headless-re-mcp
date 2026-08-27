@@ -268,6 +268,104 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class _FakeCert:
+    def __init__(self, tag: str) -> None:
+        self.subject = f"CN={tag}"
+        self.issuer = f"CN={tag}"
+        self.serial_number = 1
+        self.sha256_fingerprint = tag * 2
+
+
+class _FakeSignedApk:
+    """An androguard APK stub with configurable signing-scheme predicates."""
+
+    def __init__(
+        self,
+        *,
+        v1: bool,
+        v2: bool,
+        v3: bool,
+        names: list[str] | None = None,
+        certs: list[_FakeCert] | None = None,
+        drop: set[str] | None = None,
+    ) -> None:
+        self._v = {"is_signed_v1": v1, "is_signed_v2": v2, "is_signed_v3": v3}
+        self._names = names or []
+        self._certs = certs or []
+        # Predicate names an older androguard would not expose at all.
+        for missing in drop or set():
+            delattr_marker = f"is_signed_v{missing}"
+            self._v.pop(delattr_marker, None)
+
+    def get_signature_names(self) -> list[str]:
+        return self._names
+
+    def get_certificates(self) -> list[_FakeCert]:
+        return self._certs
+
+    def __getattr__(self, name: str) -> Any:
+        # Only the scheme predicates are dynamic; anything else is a real miss.
+        if name in {"is_signed_v1", "is_signed_v2", "is_signed_v3"}:
+            values = self.__dict__.get("_v", {})
+            if name not in values:
+                raise AttributeError(name)
+            return lambda: values[name]
+        raise AttributeError(name)
+
+
+class TestApkCertificatesReportSigningSchemes:
+    """apk.certificates must say which of v1/v2/v3 signed the APK, not just that
+    a certificate exists -- v1 is tamperable, v2/v3 are not, and modern APKs
+    leave no META-INF signature files at all."""
+
+    def _run(self, monkeypatch: pytest.MonkeyPatch, apk: _FakeSignedApk) -> dict[str, Any]:
+        from headless_re_mcp.backends.apk.client import ApkClient
+
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: apk)
+        return ApkClient().certificates(Path("/tmp/app.apk"))
+
+    def test_unsigned_apk_reports_no_schemes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = self._run(monkeypatch, _FakeSignedApk(v1=False, v2=False, v3=False))
+        assert data["v1_signed"] is False
+        assert data["v2_signed"] is False
+        assert data["v3_signed"] is False
+        assert data["signing_schemes"] == []
+
+    def test_v2_v3_only_apk_reports_both_without_meta_inf_files(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A v2/v3-signed APK has no CERT.RSA files, so bool(names) would miss it."""
+        apk = _FakeSignedApk(
+            v1=False, v2=True, v3=True, names=[], certs=[_FakeCert("aa")]
+        )
+        data = self._run(monkeypatch, apk)
+        assert data["v1_signed"] is False
+        assert data["v2_signed"] is True
+        assert data["v3_signed"] is True
+        assert data["signing_schemes"] == ["v2", "v3"]
+        assert data["certificates"], "v2/v3 certs must still be listed"
+
+    def test_v1_signed_apk_reports_v1(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        apk = _FakeSignedApk(v1=True, v2=False, v3=False, names=["META-INF/CERT.RSA"])
+        data = self._run(monkeypatch, apk)
+        assert data["v1_signed"] is True
+        assert data["signing_schemes"] == ["v1"]
+        assert data["signature_files"] == ["META-INF/CERT.RSA"]
+
+    def test_missing_v2_predicate_falls_back_to_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An older androguard without is_signed_v2 must not fail the read."""
+        apk = _FakeSignedApk(
+            v1=True, v2=False, v3=False, names=["META-INF/CERT.RSA"], drop={"2", "3"}
+        )
+        data = self._run(monkeypatch, apk)
+        assert data["v1_signed"] is True
+        assert data["v2_signed"] is False
+        assert data["v3_signed"] is False
+        assert data["signing_schemes"] == ["v1"]
+
+
 class _HostileApk:
     """Stands in for an androguard APK whose every accessor raises.
 

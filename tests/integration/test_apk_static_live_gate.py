@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
+import subprocess
 import zipfile
 import zlib
 from pathlib import Path
@@ -30,7 +31,11 @@ import pytest
 
 from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.backends.apktool import ApktoolClient
-from headless_re_mcp.backends.apktool.client import _DEBUG_KEYSTORE
+from headless_re_mcp.backends.apktool.client import (
+    _DEBUG_ALIAS,
+    _DEBUG_KEYSTORE,
+    _DEBUG_PASSWORD,
+)
 from headless_re_mcp.backends.jadx import JadxClient
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
@@ -654,7 +659,11 @@ def test_apk_manifest_readers_decode_real_values(tmp_path: Path) -> None:
 
         certs = service.apk_certificates(session_id)
         assert certs.ok and certs.data is not None, certs.error
-        assert certs.data["v1_signed"] is False  # unsigned fixture
+        # Unsigned fixture: no scheme signed it, and the schemes list is empty.
+        assert certs.data["v1_signed"] is False
+        assert certs.data["v2_signed"] is False
+        assert certs.data["v3_signed"] is False
+        assert certs.data["signing_schemes"] == []
     finally:
         service.close_all()
 
@@ -1105,6 +1114,98 @@ def test_apk_decode_repack_sign_round_trip_with_apksigner(tmp_path: Path) -> Non
         assert out.is_file() and out.stat().st_size > 0, signed.data
     finally:
         service.close_all()
+
+
+def _apksigner_sign_scheme(
+    apksigner: Path,
+    src: Path,
+    out: Path,
+    *,
+    v1: bool,
+    v2: bool,
+    v3: bool,
+) -> None:
+    """Sign ``src`` into ``out`` with exactly the requested schemes enabled."""
+    subprocess.run(
+        [
+            str(apksigner),
+            "sign",
+            "--ks",
+            str(_DEBUG_KEYSTORE),
+            "--ks-pass",
+            f"pass:{_DEBUG_PASSWORD}",
+            "--ks-key-alias",
+            _DEBUG_ALIAS,
+            "--key-pass",
+            f"pass:{_DEBUG_PASSWORD}",
+            "--v1-signing-enabled",
+            "true" if v1 else "false",
+            "--v2-signing-enabled",
+            "true" if v2 else "false",
+            "--v3-signing-enabled",
+            "true" if v3 else "false",
+            "--out",
+            str(out),
+            str(src),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=180.0,
+    )
+
+
+@pytest.mark.integration
+def test_apk_certificates_report_the_actual_signing_scheme(tmp_path: Path) -> None:
+    """apk.certificates must name which signature scheme really signed the APK.
+
+    v1_signed alone (inferred from META-INF signature files) cannot tell a
+    tamperable v1 JAR signature from the whole-file v2/v3 APK Signature Schemes
+    a modern build carries -- and a v2/v3-only APK leaves no META-INF files at
+    all, so the old bool(names) inference would call a properly signed app
+    "unsigned". This signs the same fixture two ways with the real apksigner --
+    v2-only, then v1+v3 -- and asserts the reader reports exactly the enabled
+    schemes each time, discriminating them rather than collapsing to a single
+    "has a certificate" bit. skip != pass when apksigner or the debug keystore
+    is absent.
+    """
+    settings = Settings.load()
+    client = ApktoolClient(settings.apktool, settings.apksigner)
+    if not client.signer_available or settings.apksigner is None:
+        pytest.skip(
+            "apksigner not configured (HEADLESS_RE_APKSIGNER / PATH) — Gate not run (skip != pass)"
+        )
+    if not _DEBUG_KEYSTORE.is_file():
+        pytest.skip(f"debug keystore missing at {_DEBUG_KEYSTORE} — Gate not run (skip != pass)")
+
+    unsigned = _build_apk(tmp_path / "scheme.apk", dex=_build_populated_dex())
+    cases = {
+        "v2-only": (False, True, False, ["v2"]),
+        "v1+v3": (True, False, True, ["v1", "v3"]),
+    }
+    for label, (v1, v2, v3, expected) in cases.items():
+        out = tmp_path / f"signed-{label}.apk"
+        try:
+            _apksigner_sign_scheme(settings.apksigner, unsigned, out, v1=v1, v2=v2, v3=v3)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            stderr = getattr(exc, "stderr", b"") or b""
+            pytest.skip(f"apksigner could not sign the {label} fixture ({stderr[:160]!r})")
+
+        service = AnalysisService(settings)
+        try:
+            created = service.create_session(str(out))
+            assert created.ok and created.data is not None, (label, created.error)
+            session_id = created.data["session"]["id"]
+
+            certs = service.apk_certificates(session_id)
+            assert certs.ok and certs.data is not None, (label, certs.error)
+            assert certs.data["v1_signed"] is v1, (label, certs.data)
+            assert certs.data["v2_signed"] is v2, (label, certs.data)
+            assert certs.data["v3_signed"] is v3, (label, certs.data)
+            assert certs.data["signing_schemes"] == expected, (label, certs.data)
+            # A real signature also yields at least one certificate to inspect.
+            assert certs.data["certificates"], (label, certs.data)
+        finally:
+            service.close_all()
 
 
 @pytest.mark.integration
