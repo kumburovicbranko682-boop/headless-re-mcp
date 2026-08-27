@@ -27,6 +27,9 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# Upper bound on one page, matching web.network_list / proxy.flows so every
+# paginated reader in the project caps a page the same way.
+_MAX_PAGE = 1000
 
 
 class ApkError(RuntimeError):
@@ -47,6 +50,20 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+def _page_bounds(offset: Any, limit: Any) -> tuple[int, int]:
+    """Clamp caller paging to a safe window, like web.network_list.
+
+    A negative offset must not index from the tail, and a negative limit must
+    not slice ``names[0:-1]`` into a near-complete page (the opposite of the
+    small page the caller asked for); an absent or huge limit must not return
+    the whole scan. Bounds the page at ``_MAX_PAGE`` so every reader caps the
+    same way.
+    """
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_PAGE))
+    return start, cap
 
 
 class _ParsedApk:
@@ -303,13 +320,14 @@ class ApkClient:
                 break
             names.append(klass.name)
         names.sort()
-        window = names[offset : offset + limit]
+        start, cap = _page_bounds(offset, limit)
+        window = names[start : start + cap]
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
-            "offset": offset,
-            "has_more": offset + len(window) < len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
             "scan_capped": scan_more,
         }
 
@@ -348,14 +366,15 @@ class ApkClient:
                 )
             if scan_more:
                 break
-        window = methods[offset : offset + limit]
+        start, cap = _page_bounds(offset, limit)
+        window = methods[start : start + cap]
         return {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
             "total": len(methods),
-            "offset": offset,
-            "has_more": offset + len(window) < len(methods),
+            "offset": start,
+            "has_more": start + len(window) < len(methods),
             "scan_capped": scan_more,
         }
 
@@ -369,13 +388,14 @@ class ApkClient:
                 break
             seen.add(str(item.get_value())[:_MAX_STRING_LEN])
         values = sorted(seen)
-        window = values[offset : offset + limit]
+        start, cap = _page_bounds(offset, limit)
+        window = values[start : start + cap]
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
-            "offset": offset,
-            "has_more": offset + len(window) < len(values),
+            "offset": start,
+            "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
         }
 
@@ -384,7 +404,7 @@ class ApkClient:
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
-        cap = max(1, int(limit))
+        cap = max(1, min(int(limit), _MAX_PAGE))
         callers: list[JsonObject] = []
         has_more = False
         for method in parsed.analysis.get_methods():

@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient
+from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, _MAX_PAGE, ApkClient
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -293,3 +293,73 @@ def test_apk_export_sources_says_when_the_java_list_was_cut(
     doc = _tool_docstring("apk.export_sources")
     assert "java_files" in doc
     assert "has_more" in doc
+
+
+class _FakeStringItem:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def get_value(self) -> str:
+        return self._value
+
+
+class _FakeStringsParsed:
+    def __init__(self, count: int) -> None:
+        self.analysis = self
+        self._values = [_FakeStringItem(f"s{index:05d}") for index in range(count)]
+
+    def get_strings(self) -> list[_FakeStringItem]:
+        return self._values
+
+
+def test_apk_classes_clamps_a_hostile_page_the_way_the_web_readers_do(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A negative or huge page must not defeat the cap the collect limit sets.
+
+    apk.classes sliced names[offset:offset+limit] straight from the caller,
+    while the sibling web.network_list / proxy.flows clamp both. The gap bit
+    hardest on a negative limit: names[0:-1] returns nearly the whole scan --
+    the opposite of the small page asked for. A negative offset also indexed
+    from the tail and misreported has_more. Pin all three: a negative limit
+    yields one row (not the whole list), a negative offset starts at zero, and
+    a huge limit is capped at _MAX_PAGE with the echoed offset reflecting what
+    was actually used.
+    """
+    classes = [_FakeClass(f"L{index:05d};") for index in range(1500)]
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeClassParsed(classes))
+    client = ApkClient()
+    apk = tmp_path / "app.apk"
+
+    negative_limit = client.classes(apk, offset=0, limit=-1)
+    assert negative_limit["count"] == 1  # not 1499
+    assert negative_limit["offset"] == 0
+    assert negative_limit["has_more"] is True
+
+    negative_offset = client.classes(apk, offset=-5, limit=10)
+    assert negative_offset["offset"] == 0
+    assert negative_offset["count"] == 10
+
+    huge_limit = client.classes(apk, offset=0, limit=100_000)
+    assert huge_limit["count"] == _MAX_PAGE
+    assert huge_limit["has_more"] is True
+
+
+def test_apk_methods_and_strings_clamp_a_negative_limit_too(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The other two paginated readers share the clamp, so guard them too.
+
+    They are separate call sites; a revert of either would re-open the same
+    near-full-page hole a negative limit used to punch through classes.
+    """
+    client = ApkClient()
+    apk = tmp_path / "app.apk"
+
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeMethodParsed(25))
+    methods = client.methods(apk, "com.example.Foo", offset=0, limit=-1)
+    assert methods["count"] == 1  # not 24
+
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeStringsParsed(25))
+    strings = client.strings(apk, offset=0, limit=-1)
+    assert strings["count"] == 1  # not 24
