@@ -104,6 +104,38 @@ def test_tool_arguments_with_an_unpaired_surrogate_are_refused_in_the_stores_voi
         store.propose_tool_call(run.id, "call-1", "dynamic.resume", {"note": "\ud800"}, ["state_change"])
 
 
+def test_a_mission_objective_with_a_surrogate_is_stored_not_fatal(
+    tmp_path: Path,
+) -> None:
+    """The mission INSERT's text binds raised on an unpaired surrogate.
+
+    validate_mission counted characters but never encoded, so a lone \\ud800
+    escape from the HTTP body passed validation and blew up the SQLite bind
+    as a raw codec error. Same replace policy as message content, so the
+    stored objective matches the thread message the scheduler later writes.
+    """
+    store = AgentStore(tmp_path / "agent.db")
+    thread = store.create_thread(session_id="s")
+
+    mission = store.create_mission(thread.id, "goal \ud800 text", model="m \ud800")
+
+    assert "\ud800" not in mission.objective
+    assert mission.objective.startswith("goal ") and mission.objective.endswith(" text")
+    listed = store.list_missions()
+    assert listed and listed[0].id == mission.id
+
+
+def test_a_run_model_with_a_surrogate_is_stored_not_fatal(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "agent.db")
+    thread = store.create_thread(session_id="s")
+
+    run = store.create_run(
+        thread.id, provider_profile="default", model="m \ud800 x", deadline_seconds=30
+    )
+
+    assert run.model is not None and "\ud800" not in run.model
+
+
 def test_canonical_args_hash_is_key_order_independent() -> None:
     """The approval gate compares two independently computed hashes.
 

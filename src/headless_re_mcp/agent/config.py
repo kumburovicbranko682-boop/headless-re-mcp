@@ -156,7 +156,18 @@ class ProviderConfigStore:
 
     def _write(self, data: dict[str, Any]) -> None:
         payload = json.dumps(data, ensure_ascii=False, indent=2)
-        if len(payload.encode("utf-8")) > _MAX_PROVIDER_CONFIG_BYTES:
+        try:
+            payload_bytes = len(payload.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            # json.loads lets a lone \ud800 escape into a profile field as an
+            # unpaired surrogate; this size check raised the raw codec error
+            # as the save route's "validation" message. Refusing (not
+            # repairing) because these fields include the API key, where a
+            # silent '?' would surface later as an inexplicable auth failure.
+            raise ValueError(
+                "provider profile contains text that cannot be encoded as UTF-8"
+            ) from exc
+        if payload_bytes > _MAX_PROVIDER_CONFIG_BYTES:
             raise ValueError(
                 f"provider config exceeds {_MAX_PROVIDER_CONFIG_BYTES} bytes"
             )

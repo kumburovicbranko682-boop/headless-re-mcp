@@ -64,6 +64,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   返回），store 的 `propose_tool_call` 独立可达处也以自己的口径拒绝而非裸抛编码错误。
   五条新回归测试在未修复代码上全部复现原崩溃。
 
+### 修复（任务/运行/provider 配置的代理项收尾:晦涩 codec 报错换成设计化行为）
+
+- 同类清扫的收尾三处。`validate_mission` 只数字符不编码,孤立代理项通过校验后炸在任务
+  INSERT 的文本绑定上,路由把裸 `UnicodeEncodeError` 当校验错回给用户;现按消息内容同款
+  replace 策略消毒 objective/profile/model,存储的目标文本与调度器随后经 `add_message`
+  写入线程的消息保持一致。`create_run` 的 model 串同理消毒——修复后的 `?` 名只会在后续
+  provider 查找处以那条路径自己的口径失败。`ProviderConfigStore._write` 的体积检查遇代理
+  项裸抛 codec 错误;此处选择**拒绝而非修复**(字段含 API key,静默 `?` 会在日后变成无法
+  解释的鉴权失败),换成设计化 ValueError,磁盘文件保持原样。三条新测试均通过"未修复必
+  挂"仲裁。
+
 ### 修复（web 出口:一个坏值把整个面板炸成 500;persona 导入留孤儿文件）
 
 - Starlette 的 `JSONResponse.render` 用 `ensure_ascii=False, allow_nan=False` 序列化再

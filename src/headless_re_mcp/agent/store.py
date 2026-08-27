@@ -448,6 +448,11 @@ class AgentStore:
                 f"over the {profile_limit} character limit"
             )
         if model is not None:
+            # The run-start route passes the caller's model string through;
+            # an unpaired surrogate in it raised out of the INSERT's text
+            # bind. A '?'-repaired name simply fails the provider lookup
+            # later, in that path's own designed voice.
+            model = model.encode("utf-8", "replace").decode("utf-8")
             model_limit = max(8, int(self.run_model_max_chars))
             if len(model) > model_limit:
                 raise ValueError(
@@ -789,7 +794,16 @@ class AgentStore:
         oversize objectives left twelve empty threads that finished-thread
         trim never reclaims.
         """
-        text = objective.strip()
+        # The HTTP route feeds these from a JSON request body, and json.loads
+        # accepts a lone \ud800 escape; the mission INSERT's text binds raise
+        # on the unpaired surrogate. Same replace policy as message content,
+        # which also keeps the stored objective identical to the thread
+        # message the scheduler later writes through add_message.
+        text = objective.encode("utf-8", "replace").decode("utf-8").strip()
+        if provider_profile is not None:
+            provider_profile = provider_profile.encode("utf-8", "replace").decode("utf-8")
+        if model is not None:
+            model = model.encode("utf-8", "replace").decode("utf-8")
         if not text:
             raise ValueError("mission objective must not be empty")
         objective_limit = max(1, int(self.mission_objective_max_chars))
