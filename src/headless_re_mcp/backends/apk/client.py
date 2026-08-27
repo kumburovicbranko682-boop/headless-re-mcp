@@ -234,18 +234,27 @@ class ApkClient:
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
+        # get_permissions() is the <uses-permission> set: the permissions the
+        # app requests. androguard has no get_requested_permissions(), so the
+        # old alias of that name always fell into its except branch and simply
+        # echoed this list -- a duplicate that also hid the genuinely distinct
+        # signal below.
+        requested, requested_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
+        # get_declared_permissions() is the app's own <permission> definitions:
+        # custom permissions it exposes for other apps to request. Different tag,
+        # different meaning, and worth surfacing on its own.
         try:
-            requested, requested_more = _cap_names(
-                apk.get_requested_permissions(), _MAX_PERMISSIONS
+            declared, declared_more = _cap_names(
+                apk.get_declared_permissions(), _MAX_PERMISSIONS
             )
-        except Exception:  # noqa: BLE001 - older androguard lacks this
-            requested, requested_more = declared, declared_more
+        except Exception:  # noqa: BLE001 - older androguard may lack this
+            declared, declared_more = [], False
         return {
-            "permissions": declared,
-            "requested_permissions": requested,
-            "count": len(declared),
-            "has_more": declared_more or requested_more,
+            "permissions": requested,
+            "declared_permissions": declared,
+            "count": len(requested),
+            "declared_count": len(declared),
+            "has_more": requested_more or declared_more,
         }
 
     def certificates(self, path: Path) -> JsonObject:

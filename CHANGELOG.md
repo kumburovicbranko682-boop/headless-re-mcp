@@ -83,6 +83,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
+### 修复（apk.permissions 补齐「应用自声明权限」并删掉重复字段）
+
+- `apk.permissions` 过去回 `permissions` 与 `requested_permissions` 两个字段，看似「已声明」与
+  「已请求」两组。实则 androguard 的 `APK` 根本没有 `get_requested_permissions()`：后端调用它、
+  `except` 吞掉 `AttributeError`、再把 `get_permissions()` 的结果原样回填给 `requested_permissions`——
+  于是这个字段永远只是 `permissions` 的复制品。真正另有语义、却一直没露面的是
+  `get_declared_permissions()`：应用在 manifest 里用 `<permission>` **自己声明**、供其它应用申请的
+  自定义权限（与 `<uses-permission>` 的「请求」是两种标签、两种含义）。旧单测用一个实现了那个
+  不存在方法的假 APK 打掩护，让重复字段看起来是有效数据。现改为 `permissions`=`<uses-permission>`
+  请求集、`declared_permissions`=`<permission>` 自声明集，另给 `count` / `declared_count` / `has_more`；
+  删去只会复制 `permissions` 的 `requested_permissions`。单测的假 APK 改为对齐真实 androguard（没有
+  `get_requested_permissions`、有 `get_declared_permissions`，且缺该方法的旧版本回空而非报错），并新增
+  live gate：以 aapt2 一次性构建、随仓库提交的真实二进制 AXML 夹具
+  `fixtures/android/permission_sample.apk`（包 `com.example.permgate`，请求 `android.permission.INTERNET`、
+  自声明 `com.example.permgate.CUSTOM_ACCESS`）过真 androguard，断言两者分别落进两个字段、互不串味。
+  CI 新增 `linux-apk-permissions` job 装上 androguard 跑该 gate，skip≠pass 守卫在 androguard 已装却仍
+  skip 时判失败。
+
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
 
 - `apk.sign`（apksigner）与 `apk.decode`（apktool `d`）此前只检查输入路径存在（`is_file`）就把它
