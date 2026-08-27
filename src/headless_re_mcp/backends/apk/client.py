@@ -8,6 +8,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -35,6 +36,33 @@ class ApkError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+_LOGGING_QUIETED = False
+
+
+def _quiet_androguard_logging() -> None:
+    """Drop androguard's loguru output so apk.* calls do not flood the server.
+
+    androguard logs through loguru at DEBUG by default -- ~150 lines for even a
+    one-class APK, one per basic block, on every AnalyzeAPK. In an unattended
+    MCP server that buries the server's own logs on every
+    apk.classes/methods/strings/xrefs call. Analysis problems already surface as
+    structured results, so silence androguard's stream specifically.
+    ``loguru.disable(name)`` is the embedder-safe way: it filters out records
+    from the androguard package without removing handlers or touching the host
+    app's own logging, unlike ``androguard.util.set_log`` which removes loguru's
+    default handler and adds a global stderr one (reconfiguring the whole logger,
+    not just androguard). Runs once; the flag makes repeat construction cheap.
+    """
+    global _LOGGING_QUIETED
+    if _LOGGING_QUIETED:
+        return
+    _LOGGING_QUIETED = True
+    with contextlib.suppress(Exception):
+        from loguru import logger
+
+        logger.disable("androguard")
 
 
 def _safe_attr(getter: Any) -> Any:
@@ -101,6 +129,7 @@ class ApkClient:
 
             self._androguard = androguard
             self._available = True
+            _quiet_androguard_logging()
         except Exception:
             self._androguard = None
             self._available = False

@@ -300,6 +300,31 @@ class TestFridaEnumerationsSayWhenTheyStopped:
         assert _page([], 10) == ([], False)
 
 
+class TestApkClientSilencesAndroguardLogs:
+    """androguard floods loguru at DEBUG (~150 records per AnalyzeAPK).
+
+    In an unattended MCP server that buries the server's own logs on every
+    apk.* call, so the client disables androguard's loguru records on
+    construction. Pin the call with only loguru present (no real APK needed) so
+    CI catches a regression that would re-open the flood.
+    """
+
+    def test_quiet_androguard_logging_disables_the_androguard_records(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pytest.importorskip("loguru")
+        import loguru
+
+        from headless_re_mcp.backends.apk import client as apk_client
+
+        calls: list[str] = []
+        monkeypatch.setattr(loguru.logger, "disable", lambda name: calls.append(name))
+        # Reset the once-guard so the call runs under the patch.
+        monkeypatch.setattr(apk_client, "_LOGGING_QUIETED", False)
+        apk_client._quiet_androguard_logging()
+        assert calls == ["androguard"]
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

@@ -21,7 +21,6 @@ readable sources are committed beside it as ``fixtures/android/sample.smali`` an
 
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
 
 import pytest
@@ -35,27 +34,30 @@ _APK = _PROJECT_ROOT / "fixtures" / "android" / "sample.apk"
 _CLASS = "com.example.gate.Sample"
 
 
-def _quiet_androguard() -> None:
-    """androguard logs DEBUG per basic block; keep gate failures readable."""
-    with contextlib.suppress(Exception):
-        from androguard import util
-
-        util.set_log("ERROR")
-
-
 @pytest.mark.integration
 def test_m11_androguard_apk_surface() -> None:
-    client = ApkClient()
+    client = ApkClient()  # construction silences androguard's loguru flood
     if not client.available:
         pytest.skip("androguard not installed — APK Gate not run (skip != pass)")
     assert _APK.is_file(), f"fixture missing: {_APK}"
-    _quiet_androguard()
 
     opened = client.open(_APK)
     assert opened["opened"] is True
     assert opened["package"] == "com.example.gate"
 
-    classes = client.classes(_APK)
+    # ApkClient silences androguard's DEBUG loguru flood on construction (~150
+    # records per AnalyzeAPK, one per basic block). Prove a real analysis emits
+    # no androguard records, so an unattended server's own logs are not buried.
+    from loguru import logger
+
+    origins: list[str] = []
+    sink = logger.add(lambda message: origins.append(message.record["name"]), level="TRACE")
+    try:
+        classes = client.classes(_APK)
+    finally:
+        logger.remove(sink)
+    assert not [name for name in origins if name.startswith("androguard")], origins
+
     assert any("Sample" in name for name in classes["classes"]), classes["classes"]
 
     methods = client.methods(_APK, _CLASS)
