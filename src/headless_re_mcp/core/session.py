@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from headless_re_mcp.core.models import (
     Architecture,
@@ -120,6 +120,8 @@ class SessionRegistry:
             metadata: dict[str, Any] = {}
             if kind is TargetKind.PE:
                 architecture = detect_pe_architecture(path)
+            elif kind is TargetKind.ELF:
+                architecture = detect_elf_architecture(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             session = Session(
@@ -391,6 +393,8 @@ def classify_target(reference: str | Path) -> TargetKind:
         return TargetKind.PE
     if magic.startswith(b"MZ"):
         return TargetKind.PE
+    if magic.startswith(b"\x7fELF"):
+        return TargetKind.ELF
     if magic.startswith(b"\x00asm"):
         return TargetKind.WEB
     if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
@@ -457,3 +461,32 @@ def detect_pe_architecture(path: Path) -> Architecture:
     if machine == 0x8664:
         return Architecture.X64
     raise ValueError(f"unsupported PE machine 0x{machine:04x}: {path}")
+
+
+# ELF e_machine values the Architecture enum can name. ARM (0x28) and AArch64
+# (0xB7) are analyzable by the static backends but have no enum member, so they
+# stay architecture=None -- the r2 mapping derives the real arch per call from
+# the binary anyway, so a missing session label costs nothing there.
+_ELF_MACHINE_TO_ARCH = {0x03: Architecture.X86, 0x3E: Architecture.X64}
+
+
+def detect_elf_architecture(path: Path) -> Architecture | None:
+    """Name an ELF's architecture from its header, or None when unrepresentable.
+
+    Unlike ``detect_pe_architecture`` this never raises: ``classify_target``
+    only routes real ``\\x7fELF`` files here, and a header too short or a machine
+    the enum cannot name (ARM, AArch64, MIPS, ...) must still open as a working
+    ELF session -- radare2 and Ghidra read the true architecture themselves.
+    e_machine is read with the endianness EI_DATA declares, so a big-endian ELF
+    is decoded correctly rather than byte-swapped into a bogus value.
+    """
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(20)
+    except OSError:
+        return None
+    if len(header) < 20 or header[:4] != b"\x7fELF":
+        return None
+    endian: Literal["big", "little"] = "big" if header[5] == 2 else "little"
+    machine = int.from_bytes(header[18:20], endian)
+    return _ELF_MACHINE_TO_ARCH.get(machine)

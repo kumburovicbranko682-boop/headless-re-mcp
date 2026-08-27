@@ -42,12 +42,16 @@ class TargetKind(StrEnum):
     """What kind of artifact a session is bound to.
 
     The debugger-oriented tools assume a local PE with a known machine type.
-    Android and browser targets share the session lifecycle, artifacts and
-    knowledge store but cannot answer PE questions, so every tool that needs a
-    PE says so explicitly rather than failing deep inside a backend.
+    ELF targets are the other local-binary kind: the cross-platform static
+    backends (radare2, Ghidra) analyze them the same way, but they carry no PE
+    ImageBase or machine word, so PE-only tools refuse them explicitly. Android
+    and browser targets share the session lifecycle, artifacts and knowledge
+    store but cannot answer binary questions at all, so every tool that needs a
+    local binary says so explicitly rather than failing deep inside a backend.
     """
 
     PE = "pe"
+    ELF = "elf"
     APK = "apk"
     WEB = "web"
 
@@ -181,7 +185,7 @@ class Session(BaseModel):
         if self.binary is None:
             raise TargetMismatch(
                 f"session target {self.target.value} is not backed by a local file",
-                expected=(TargetKind.PE, TargetKind.APK),
+                expected=(TargetKind.PE, TargetKind.ELF, TargetKind.APK),
                 actual=self.target,
             )
         return self.binary
