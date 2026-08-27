@@ -130,7 +130,17 @@ def count_stub_vs_api_calls(
     is_64bit: bool = False,
     max_scan_bytes: int = 8 * 1024 * 1024,
 ) -> JsonObject:
-    """Scan code bytes for E8 (rel32) vs FF15/FF25 indirect calls."""
+    """Scan code bytes for E8 (rel32) vs FF15/FF25 indirect calls.
+
+    Scanning stops at ``max_scan_bytes``. When in-image code beyond that budget
+    went unscanned the counts cover only a prefix, so ``scan_capped`` is True
+    and ``code_bytes_available`` (total in-image code across the ranges) exceeds
+    ``scanned_bytes``. Because ``still_vm_stub_count`` / ``stub_vs_api_ratio``
+    are a fail-closed VM-coupling signal, a capped scan makes them a *lower*
+    bound on stub coupling -- an unscanned tail full of E8→stub calls would not
+    be counted -- so the flag has to travel with the numbers. Clamping a range
+    to the image end is data ending, not a cap, and does not set the flag.
+    """
     stub_norm = [(int(r[0]), int(r[1])) for r in stub_ranges]
     code_norm = [(int(r[0]), int(r[1])) for r in code_ranges]
     e8_total = 0
@@ -195,10 +205,23 @@ def count_stub_vs_api_calls(
                 continue
             i += 1
 
+    # In-image code across all ranges, budget aside: what a full scan would
+    # have covered. Compared with scanned, it says whether the byte budget cut
+    # the scan short (scan_capped) or the ranges simply ran out first.
+    available = 0
+    for rva0, size0 in code_norm:
+        if size0 <= 0 or rva0 < 0 or rva0 >= len(image):
+            continue
+        available += min(size0, len(image) - rva0)
+    scan_capped = scanned < available
+
     api_ish = ff15 + ff25
     still_vm_stub_count = e8_to_stub
     return {
         "scanned_bytes": scanned,
+        "code_bytes_available": available,
+        "scan_limit_bytes": max_scan_bytes,
+        "scan_capped": scan_capped,
         "e8_total": e8_total,
         "e8_to_stub": e8_to_stub,
         "e8_to_code": e8_to_code,
@@ -225,7 +248,14 @@ def analyze_dump_stub_coupling(
     image_base: int | None = None,
     max_scan_bytes: int = 8 * 1024 * 1024,
 ) -> JsonObject:
-    """Parse a runtime dump and count stub-coupled E8 calls vs API-ish FF15/25."""
+    """Parse a runtime dump and count stub-coupled E8 calls vs API-ish FF15/25.
+
+    Carries the scanner's ``scan_capped`` / ``code_bytes_available`` /
+    ``scan_limit_bytes`` through, so a caller that reads ``still_vm_stub_count``
+    off a dump larger than ``max_scan_bytes`` sees that the count is a prefix,
+    not the whole image. An unparseable dump fails closed (``ok`` False,
+    ``still_vm_stub_count`` None) and carries no scan fields.
+    """
     if type(max_scan_bytes) is not int or max_scan_bytes < 1:
         raise ValueError("max_scan_bytes must be a positive integer")
     path = Path(dump_path)
