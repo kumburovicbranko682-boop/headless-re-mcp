@@ -236,6 +236,46 @@ def test_cancel_mission_marks_active_runs_and_claim_skips_them(tmp_path: Path) -
     assert nxt is not None and nxt.id == other.id
 
 
+def test_cancel_mission_leaves_unrelated_runs_on_the_same_thread_alone(
+    tmp_path: Path,
+) -> None:
+    """A thread is not owned by one mission; cancelling one must not stop others.
+
+    The HTTP route accepts an explicit thread_id, so two missions can share a
+    thread, and an interactive run can be started directly on the same thread
+    as a mission. The old thread-wide cancel_requested sweep flipped every
+    non-terminal run on the thread, so cancelling one mission cancelled a
+    second mission's in-flight run -- or a user's live chat turn -- that had
+    nothing to do with the objective being abandoned.
+    """
+    store = AgentStore(tmp_path / "shared-thread.db")
+    thread = store.create_thread()
+
+    mission = store.create_mission(thread.id, "mission A")
+    store.claim_next_mission()
+    run_a = store.create_run(thread.id, provider_profile="default", model=None, deadline_seconds=60)
+    store.note_mission_run(mission.id, run_a.id)
+    store.transition(run_a.id, RunStatus.STREAMING)
+
+    # An interactive run on the same thread, started directly and belonging to
+    # no mission -- a user's live chat turn while the mission runs in the
+    # background.
+    interactive = store.create_run(
+        thread.id, provider_profile="default", model=None, deadline_seconds=60
+    )
+    store.transition(interactive.id, RunStatus.STREAMING)
+
+    store.cancel_mission(mission.id)
+
+    cancelled = store.get_run(run_a.id)
+    assert cancelled is not None and cancelled.cancel_requested is True
+    untouched = store.get_run(interactive.id)
+    assert untouched is not None and untouched.cancel_requested is False, (
+        "cancelling the mission must not cancel an unrelated run on the same thread"
+    )
+    assert untouched.status is RunStatus.STREAMING
+
+
 def test_consume_approval_refuses_a_cancelled_run(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "approval-cancel.db")
     thread = store.create_thread()

@@ -127,6 +127,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（取消一个 mission 会误取消同线程上不相关的 run）
+
+- **`cancel_mission` 按整条线程把非终态 run 标记取消,连不属于该 mission 的 run 一起取消**。
+  线程并不为某个 mission 独占:创建 mission 的 HTTP 路由接受显式 `thread_id`(两个 mission 可
+  共用一条线程),交互式 run 也能直接在同一条线程上发起。旧实现在取消 mission 时对该线程的
+  **每一条**在飞 run 都置 `cancel_requested`——于是取消 mission A 会顺带取消同线程上 mission B
+  正在跑的 run,或用户此刻正在进行的对话轮次,而这些与被放弃的目标毫无关系。调度器对一个
+  mission 的多个 run 严格串行、并把当前活跃 run 记在 `last_run_id`,所以那唯一一条才是本次取消
+  合法能触及的 run;真正在「已 `start_run`、尚未 `note_mission_run`」这个微秒级窗口里启动的 run,
+  由调度器紧随其后的 `_mission_cancelled` 检查负责停掉。现改为只标记该 mission 自己的
+  `last_run_id`。新增回归:同线程上一个 mission run + 一条交互式 run,取消 mission 只停自己的
+  run、交互式 run 原样 STREAMING。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
