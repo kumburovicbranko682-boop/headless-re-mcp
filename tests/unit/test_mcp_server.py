@@ -254,6 +254,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "workflow.navigate_to_breakpoint",
         # Android static (apk.*)
         "apk.open",
+        "apk.packages",
         "apk.manifest",
         "apk.permissions",
         "apk.certificates",

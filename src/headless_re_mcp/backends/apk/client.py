@@ -349,6 +349,50 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def packages(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """Group internal classes by Java package and count each.
+
+        A package-level census of the DEX -- the bird's-eye "what is in this app"
+        that apk.classes (a flat name list) does not give: it separates
+        first-party code from bundled SDKs, ad and analytics libraries and
+        framework shims at a glance, because each shows up as its own package
+        with a class_count. The package is the class's dotted name without the
+        final segment (Lcom/example/Foo; -> com.example; a nested Foo$Bar keeps
+        its outer package); classes in the unnamed default package report "".
+        External classes are skipped. Rows are sorted by class_count descending
+        then package, so the heaviest packages lead; total is the number of
+        distinct packages, total_classes the classes counted (capped at 10000
+        with scan_capped), and offset/has_more page it.
+        """
+        parsed = self._parsed(path)
+        counts: dict[str, int] = {}
+        scanned = 0
+        scan_more = False
+        for klass in parsed.analysis.get_classes():
+            if klass.is_external():
+                continue
+            if scanned >= _MAX_CLASSES_COLLECT:
+                scan_more = True
+                break
+            scanned += 1
+            package = _smali_package(str(klass.name))
+            counts[package] = counts.get(package, 0) + 1
+        ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        rows: list[JsonObject] = [
+            {"package": package, "class_count": count} for package, count in ordered
+        ]
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_CLASSES_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "packages": window,
+            "count": len(window),
+            "total": len(rows),
+            "total_classes": scanned,
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
     def methods(
         self,
         path: Path,
@@ -457,3 +501,15 @@ def _dotted_to_smali(name: str) -> str:
     if name.startswith("L") and name.endswith(";"):
         return name
     return "L" + name.replace(".", "/") + ";"
+
+
+def _smali_package(name: str) -> str:
+    """Lcom/example/Foo; -> com.example; the default package is "" (empty)."""
+    text = name
+    if text.startswith("L"):
+        text = text[1:]
+    if text.endswith(";"):
+        text = text[:-1]
+    if "/" not in text:
+        return ""
+    return text.rsplit("/", 1)[0].replace("/", ".")

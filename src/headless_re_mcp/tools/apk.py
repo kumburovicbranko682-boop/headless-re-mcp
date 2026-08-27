@@ -97,6 +97,27 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.packages")
+    def apk_packages(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Group internal classes by Java package and count each (paginated).
+
+        A package-level census of the DEX -- the bird's-eye "what is in this
+        app" that apk.classes (a flat name list) does not give: first-party code
+        stands apart from bundled SDKs, ad/analytics libraries and framework
+        shims because each is its own package with a class_count. The package is
+        the class's dotted name without its final segment (Lcom/example/Foo; ->
+        com.example); classes in the unnamed default package report "". External
+        classes are skipped. Answers with packages (package, class_count), count,
+        total (distinct packages), total_classes (classes counted, capped at
+        10000 with scan_capped), offset and has_more. Rows are sorted by
+        class_count descending then package, so the heaviest packages lead.
+        """
+        return _dump(analysis.apk_packages(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,
