@@ -84,6 +84,32 @@ def _close_proxy_servers(master: Any, loop: asyncio.AbstractEventLoop) -> None:
     loop.run_until_complete(update([]))
 
 
+def _strip_cli_only_addons(master: Any) -> None:
+    """Drop CLI-only addons whose ``running`` hooks read the shared ctx global.
+
+    mitmproxy keeps ``mitmproxy.ctx.options`` as a process-global that points at
+    whichever master was constructed last. We run one capture per session, so
+    several masters are alive at once; constructing a new one repoints that
+    global at a half-built options manager, and then an *already running*
+    master's ``keepserving``/``readfile`` ``running`` hook reads
+    ``ctx.options.rfile`` off it and dies with "No such option: rfile" -- taking
+    an unrelated, healthy capture down at startup. It reproduces about once in
+    three when two proxies start back to back. These addons exist only to keep
+    the mitmdump CLI alive after replaying flows read from a file; an in-process
+    master that we start and shut down by hand never touches that option, so
+    removing them before ``run()`` closes the race without losing capture or
+    replay. Runs on the constructing thread before any hook has fired.
+    """
+    addons = getattr(master, "addons", None)
+    if addons is None:
+        return
+    for name in ("keepserving", "readfile", "readfilestdin"):
+        with contextlib.suppress(Exception):
+            existing = addons.get(name)
+            if existing is not None:
+                addons.remove(existing)
+
+
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     """True when something is listening and accepting on host:port."""
     with contextlib.suppress(OSError), socket.socket() as probe:
@@ -362,6 +388,7 @@ class _ProxyInstance:
             except TypeError:
                 master = DumpMaster(opts)
             master.addons.add(self.recorder)
+            _strip_cli_only_addons(master)
             self._master = master
             self._started.set()
             loop.run_until_complete(master.run())
