@@ -634,6 +634,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   关闭会话，仍会把刚 spawn 出来的 pid 写进（已关闭的）会话元数据并返回 ok=True，让一个已死
   会话被记成持有一个活着的设备进程。现在 spawn/resume 之后也复查状态，关闭时改报 invalid_state
   且不落 `frida_authorized`（设备侧进程无论如何已经起来，这里只保证不把它记到死会话名下）。
+- **`frida.hook.template` 在设备会话关闭后仍会注入钩子**。close 只翻状态、不清
+  `frida_authorized` 元数据，已关闭会话仍可解析；其它设备 frida 操作都经 `_frida_auth`
+  的开放态检查把关，唯独 hook.template 直接从元数据取 pid，于是一次迟到的调用会把脚本注入
+  一个已消失会话的设备进程。现在设备分支也拒绝 CLOSING/CLOSED/FAILED 状态（本地 PE 分支本就
+  被 `_require_debuggee_pid` 挡住）。
 
 同一轮审计在核心侧（与本次新后端无关，早已存在）查出三处同类问题：
 
