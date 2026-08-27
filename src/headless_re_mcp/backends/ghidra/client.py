@@ -271,8 +271,14 @@ class GhidraClient:
         assert self.analyze is not None
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         env = os.environ.copy()
-        # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free.
-        env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"
+        # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free. Prepend, do
+        # not overwrite: operators set JAVA_TOOL_OPTIONS for a proxy, an encoding,
+        # or the --add-opens a JDK 17+ Ghidra needs, and clobbering it here would
+        # silently break analyzeHeadless on their machine. Ours goes first so the
+        # heap bound is the default while an explicit operator -Xmx, which the JVM
+        # parses last, still wins.
+        existing = env.get("JAVA_TOOL_OPTIONS", "").strip()
+        env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap} {existing}".strip()
         cmd = [
             str(self.analyze),
             str(project_dir),
