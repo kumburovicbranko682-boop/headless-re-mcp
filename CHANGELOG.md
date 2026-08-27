@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（apk.open 遇畸形 manifest 泄漏原始 KeyError，被记成 internal_error 事故）
+
+- **`apk.open` 对一个 zip 合法、`AndroidManifest.xml` 却是垃圾的 APK 会崩**。实测 androguard 4.1.4 对解析不了的
+  manifest 是**容忍**的——它照样构造出 APK 对象、只在日志里报错而不抛;但它的版本 getter 在这种情况下自相矛盾:
+  `get_min_sdk_version` / `get_main_activity` 返回 `None`,而 `get_androidversion_name` / `get_androidversion_code`
+  抛 `KeyError('Name' / 'Code')`。`apk.open` 把这些 getter 直接展开进返回 dict、毫无包裹,于是一个畸形但可解压的
+  APK(完全是合理的敌意输入)会让 open 泄漏一个原始 `KeyError`,而 service 层的 `_failure` 对非 `ApkError` 的裸异常
+  一路落到 `internal_error` 并**记一条 incident**——把「manifest 坏了」误判成「工具有 bug」,正是这套代码在别处反复
+  避免的错判。旁边的 `permissions` / `components` / `certificates` 对同一输入早就优雅退化成空;现在 `open` 也照此办理:
+  用一个 `_safe(getter, default)` 包裹各 manifest getter,能读到的照报、读不到的给默认值(版本给 `None`、package 给 `""`),
+  而 zip 派生的 `native_abis` 原样保留——于是 open 始终是一份结构化概览,绝不再崩。补回归:单元层用真 androguard
+  (importorskip,桩无法复现该 KeyError)对畸形 manifest 断言 open 不抛且 `native_abis` 完整、版本为 `None`;并把
+  `test_android_re_gate` 里那条本就跑在这枚合成 APK 上的 `apk.open` 断言从「ok 或有 error」收紧为——装了 androguard
+  时必须 ok 且 `native_abis=={arm64-v8a,x86_64}`、版本为 `None`,没装时是干净的 `capability_unavailable`。
+
 ### 修复（浏览器 smoke 测试破坏整套集成收集且选择器漂移）
 
 - `tests/integration/test_agent_browser_smoke.py` 在模块顶层 `from playwright.sync_api import ...`，
