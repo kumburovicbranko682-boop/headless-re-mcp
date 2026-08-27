@@ -317,6 +317,7 @@ jobs:
             tests/integration/test_android_re_gate.py \
             tests/integration/test_android_tools_gate.py \
             tests/integration/test_android_dex_gate.py \
+            tests/integration/test_android_manifest_gate.py \
             tests/integration/test_android_jadx_apk_gate.py \
             tests/integration/test_android_sign_gate.py \
             tests/integration/test_android_apktool_resources_gate.py \
