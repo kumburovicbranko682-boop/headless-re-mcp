@@ -12,6 +12,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class Architecture(StrEnum):
     X86 = "x86"
     X64 = "x64"
+    # ARM/ARM64 exist so a static Address can *name* the architecture radare2
+    # disassembled -- an Android arm64-v8a .so, a Linux AArch64 ELF, an
+    # Apple-Silicon Mach-O. They never drive the x64dbg backend, whose target is
+    # always x86/x64: that selection is a separate x86/x64 literal (cli.py,
+    # config.py), and PE parsing derives its architecture from the PE machine,
+    # which is only ever x86/x64, so the arm members never reach that code.
+    ARM = "arm"
+    ARM64 = "arm64"
 
 
 class SessionState(StrEnum):

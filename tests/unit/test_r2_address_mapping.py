@@ -100,8 +100,19 @@ def test_elf_architecture_honours_big_endian_e_machine(tmp_path: Path) -> None:
     assert elf_architecture(binary) is Architecture.X64
 
 
+def test_elf_architecture_reads_arm(tmp_path: Path) -> None:
+    binary = _minimal_elf(tmp_path, machine=40, ei_class=1)  # EM_ARM, 32-bit
+    assert elf_architecture(binary) is Architecture.ARM
+
+
+def test_elf_architecture_reads_aarch64(tmp_path: Path) -> None:
+    # EM_AARCH64: the shape of an Android arm64-v8a native library.
+    binary = _minimal_elf(tmp_path, machine=183)
+    assert elf_architecture(binary) is Architecture.ARM64
+
+
 def test_elf_architecture_unrepresentable_machine_is_none(tmp_path: Path) -> None:
-    binary = _minimal_elf(tmp_path, machine=183)  # EM_AARCH64: the model can't name it
+    binary = _minimal_elf(tmp_path, machine=243)  # EM_RISCV: the model can't name it
     assert elf_architecture(binary) is None
 
 
@@ -137,6 +148,16 @@ def test_enrich_fills_architecture_for_an_elf_target(tmp_path: Path) -> None:
     assert first["va"] == 0x1149
     # ELF image base is not read, so there is no rva -- only va, plus the arch.
     assert "rva" not in first
+
+
+def test_enrich_names_arm64_for_an_aarch64_elf(tmp_path: Path) -> None:
+    """An Android arm64-v8a .so disassembled by r2 must come back named arm64,
+    not with the field dropped -- a caller reading it as x64 reads it wrong."""
+    binary = _minimal_elf(tmp_path, machine=183, name="libnative.so")  # EM_AARCH64
+    raw = json.dumps([{"offset": 0x2000, "name": "JNI_OnLoad", "size": 40}])
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["aa", "aflj"]}, binary=binary)
+    assert enriched["architecture"] == "arm64"
+    assert enriched["items"][0]["address"]["architecture"] == "arm64"
 
 
 def test_enrich_explicit_architecture_still_wins_over_elf(tmp_path: Path) -> None:
@@ -190,8 +211,18 @@ def test_macho_architecture_honours_big_endian_header(tmp_path: Path) -> None:
     assert macho_architecture(binary) is Architecture.X64
 
 
-def test_macho_architecture_arm64_is_none(tmp_path: Path) -> None:
+def test_macho_architecture_reads_arm64(tmp_path: Path) -> None:
     binary = _minimal_macho(tmp_path, cputype=0x0100000C)  # CPU_TYPE_ARM64
+    assert macho_architecture(binary) is Architecture.ARM64
+
+
+def test_macho_architecture_reads_arm(tmp_path: Path) -> None:
+    binary = _minimal_macho(tmp_path, cputype=0x0000000C, magic=b"\xce\xfa\xed\xfe")
+    assert macho_architecture(binary) is Architecture.ARM
+
+
+def test_macho_architecture_unrepresentable_cpu_is_none(tmp_path: Path) -> None:
+    binary = _minimal_macho(tmp_path, cputype=0x00000012)  # CPU_TYPE_POWERPC
     assert macho_architecture(binary) is None
 
 

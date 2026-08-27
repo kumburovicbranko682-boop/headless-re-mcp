@@ -68,11 +68,12 @@ def elf_architecture(binary: Path) -> Architecture | None:
     for every non-PE target.
 
     A prefix read, not the file, exactly like ``pe_preferred_base``: the ELF
-    header's ``e_machine`` lives at offset 18. Only the two machines the
+    header's ``e_machine`` lives at offset 18. The machines the
     :class:`Architecture` model can name are mapped (``EM_386`` -> x86,
-    ``EM_X86_64`` -> x64); any other machine (ARM, AArch64, MIPS, RISC-V) or a
-    non-ELF file yields ``None`` so the caller omits the field as it does today
-    rather than guessing.
+    ``EM_X86_64`` -> x64, ``EM_ARM`` -> arm, ``EM_AARCH64`` -> arm64 -- the last
+    the common shape of an Android ``arm64-v8a`` native library); any other
+    machine (MIPS, RISC-V, PPC, ...) or a non-ELF file yields ``None`` so the
+    caller omits the field rather than guessing.
     """
     try:
         with binary.open("rb") as stream:
@@ -94,6 +95,10 @@ def elf_architecture(binary: Path) -> Architecture | None:
         return Architecture.X86
     if e_machine == 62:  # EM_X86_64
         return Architecture.X64
+    if e_machine == 40:  # EM_ARM
+        return Architecture.ARM
+    if e_machine == 183:  # EM_AARCH64
+        return Architecture.ARM64
     return None
 
 
@@ -107,12 +112,12 @@ def macho_architecture(binary: Path) -> Architecture | None:
     Mach-O magic in the first four bytes fixes the file's word size and byte
     order, and ``cputype`` is the four bytes right after it.
 
-    Only the two CPUs the :class:`Architecture` model can name are mapped
-    (``CPU_TYPE_X86`` -> x86, ``CPU_TYPE_X86_64`` -> x64). ARM/ARM64, any other
-    CPU, a fat/universal archive (whose slices share no single architecture,
-    so r2 picks one and naming it here would be a guess), and a non-Mach-O file
-    all yield ``None`` so the field is omitted rather than invented -- the same
-    behaviour those inputs get today.
+    The CPUs the :class:`Architecture` model can name are mapped
+    (``CPU_TYPE_X86`` -> x86, ``CPU_TYPE_X86_64`` -> x64, ``CPU_TYPE_ARM`` ->
+    arm, ``CPU_TYPE_ARM64`` -> arm64 -- an Apple-Silicon binary). Any other CPU,
+    a fat/universal archive (whose slices share no single architecture, so r2
+    picks one and naming it here would be a guess), and a non-Mach-O file all
+    yield ``None`` so the field is omitted rather than invented.
     """
     try:
         with binary.open("rb") as stream:
@@ -137,6 +142,10 @@ def macho_architecture(binary: Path) -> Architecture | None:
         return Architecture.X86
     if cputype == 0x01000007:  # CPU_TYPE_X86_64 (CPU_TYPE_X86 | CPU_ARCH_ABI64)
         return Architecture.X64
+    if cputype == 0x0000000C:  # CPU_TYPE_ARM
+        return Architecture.ARM
+    if cputype == 0x0100000C:  # CPU_TYPE_ARM64 (CPU_TYPE_ARM | CPU_ARCH_ABI64)
+        return Architecture.ARM64
     return None
 
 

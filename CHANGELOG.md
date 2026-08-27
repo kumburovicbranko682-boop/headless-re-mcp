@@ -57,8 +57,8 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `r2.functions` / `r2.disasm` / `r2.xrefs` 回来的每个 `Address` 都不带 `architecture` 字段，
   一个把 x64 反汇编读成 x86 的调用方无从分辨。现新增 `elf_architecture()`：像
   `pe_preferred_base` 一样只读文件前 20 字节（`e_machine` 在偏移 18，按 `EI_DATA` 的字节序解），
-  把 `EM_386` 映射为 x86、`EM_X86_64` 为 x64；其余机器（ARM/AArch64/MIPS/RISC-V）与非 ELF
-  返回 `None`，与今天一样省略该字段而不臆测。`enrich_r2_payload` 的架构解析改为
+  把 `EM_386` 映射为 x86、`EM_X86_64` 为 x64（ARM/AArch64 由后续一条补上）；其余机器
+  （MIPS/RISC-V/PPC 等）与非 ELF 返回 `None`，与今天一样省略该字段而不臆测。`enrich_r2_payload` 的架构解析改为
   `显式参数 → PE 头 → ELF 头`，PE 路径（含 image_base 供 RVA）不变。`r2.info` 文档同步：
   image_base 出自 PE 头、architecture 出自 PE 或 ELF 头。新增单测覆盖 x86/x64/大端 e_machine/
   不可表示机器/非 ELF/截断头，并直测 ELF 目标现在带上 x64（只 va、无 rva）；在真 radare2
@@ -70,13 +70,28 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   Mach-O，可这类目标（分析者手里的 Intel-Mac 样本）回来的地址还是没有 `architecture`。**
   新增 `macho_architecture()`：与 `pe_preferred_base` / `elf_architecture` 一样只读文件前 8 字节，
   按 Mach-O magic（`MH_MAGIC`/`MH_MAGIC_64` 及其字节序翻转形式）确定字长与字节序，再按该字节序
-  解紧随其后的 `cputype`，把 `CPU_TYPE_X86` 映射为 x86、`CPU_TYPE_X86_64` 为 x64；ARM/ARM64、
-  其余 CPU、fat/universal 归档（多切片无单一架构）与非 Mach-O 一律返回 `None`，与既有行为一致，
-  省略而不臆测。`enrich_r2_payload` 的解析链扩为 `显式参数 → PE 头 → ELF 头 → Mach-O 头`，各读取器
+  解紧随其后的 `cputype`，把 `CPU_TYPE_X86` 映射为 x86、`CPU_TYPE_X86_64` 为 x64
+  （ARM/ARM64 由后续一条补上）；其余 CPU、fat/universal 归档（多切片无单一架构）与非 Mach-O
+  一律返回 `None`，省略而不臆测。`enrich_r2_payload` 的解析链扩为 `显式参数 → PE 头 → ELF 头 → Mach-O 头`，各读取器
   magic 不匹配即返回 `None`，先后顺序只决定谁回答、绝不会误读。`r2.info` 文档同步为
   「architecture 出自 PE、ELF 或 Mach-O 头」。新增单测覆盖 x86_64/i386/大端头/ARM64/fat/非 Mach-O/
   截断头，并直测 Mach-O 目标现在带上 x64；在真 radare2 5.9.8 上对手工构造的 x86-64 Mach-O 现场
   验证 `disasm` 顶层与逐项 `Address` 均带 `architecture: x64`。
+
+### 新增（Architecture 增加 arm/arm64，r2 终于能给 ELF/Mach-O 的 ARM 目标命名架构）
+
+- **接着上两条：ELF/Mach-O 的架构读取器已经就位，可 `Architecture` 只有 x86/x64，于是最常见的
+  非 PE 原生目标——Android 的 `arm64-v8a` 原生库、Linux 的 AArch64 ELF、Apple Silicon 的
+  Mach-O——被 radare2 正常反汇编，架构却仍被丢掉（枚举无法表示，只能省略）。** 一个把 arm64
+  反汇编当 x64 读的调用方无从分辨。现给 `Architecture` 增加 `ARM`/`ARM64` 两个成员，
+  `elf_architecture` 把 `EM_ARM`→arm、`EM_AARCH64`→arm64，`macho_architecture` 把
+  `CPU_TYPE_ARM`→arm、`CPU_TYPE_ARM64`→arm64；MIPS/RISC-V/PPC 等仍返回 `None`。这两个新成员
+  只用来给静态 `Address` **命名**架构：x64dbg 后端的目标恒为 x86/x64（其选择是 cli.py / config.py
+  里另一处 x86/x64 字面量），PE 解析的架构出自 PE machine 字段也只会是 x86/x64，因此 arm 值
+  永远到不了那些 `x86 else x64` 的代码路径——全量单测（2592 passed）确认 PE/x64dbg 线无回归。
+  新增单测覆盖 ELF/Mach-O 的 arm 与 arm64、不可命名机器仍为 None，并直测一个 AArch64 ELF 现在
+  带上 arm64；在真 radare2 5.9.8 上对手工构造的 AArch64 ELF 现场验证 `disasm` 顶层与逐项
+  `Address` 均为 `architecture: arm64`（反汇编出 `mov x0, 0` / `ret`）。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
