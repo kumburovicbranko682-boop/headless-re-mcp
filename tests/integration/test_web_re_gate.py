@@ -7,6 +7,7 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import base64
 import http.server
 import socketserver
 import threading
@@ -30,6 +31,30 @@ _PAGE_HTML = (
 )
 _APP_JS = b"globalThis.__loaded = 42; console.log('app-js-ran');\n"
 
+# A hand-assembled, valid WebAssembly module exporting add(i32, i32) -> i32.
+# Kept as raw bytes so the gate needs no wat2wasm at run time; the Ubuntu wabt
+# package ships wasm2wat/wasm-objdump but not the assembler. Bytes: magic +
+# version, a (i32,i32)->i32 type, one function of that type, an "add" export,
+# and a body of local.get 0 / local.get 1 / i32.add / end.
+_WASM_ADD = bytes(
+    [
+        0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
+        0x03, 0x02, 0x01, 0x00,
+        0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00,
+        0x0A, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B,
+    ]
+)
+_WASM_B64 = base64.b64encode(_WASM_ADD).decode("ascii")
+_WASM_PAGE_HTML = (
+    "<html><head><title>gate-wasm</title><script>"
+    f"const b=Uint8Array.from(atob('{_WASM_B64}'),c=>c.charCodeAt(0));"
+    "WebAssembly.instantiate(b).then(m=>{"
+    "window.__sum=m.instance.exports.add(2,3);console.log('wasm-ready',window.__sum);"
+    "}).catch(e=>console.log('wasm-error',''+e));"
+    "</script></head><body>wasm</body></html>"
+).encode()
+
 
 class _PageHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_args: object) -> None:  # keep the test output clean
@@ -45,6 +70,18 @@ class _PageHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+class _WasmPageHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *_args: object) -> None:
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(_WASM_PAGE_HTML)))
+        self.end_headers()
+        self.wfile.write(_WASM_PAGE_HTML)
 
 _DATA_URL = (
     "data:text/html,"
@@ -200,6 +237,69 @@ def test_web_network_capture_and_har_over_http() -> None:
             shot = service.web_screenshot(session_id)
             assert shot.ok, shot.error
             assert int(shot.data.get("size", 0)) > 0, "screenshot produced no bytes"
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+        origin.shutdown()
+        origin.server_close()
+
+
+@pytest.mark.integration
+def test_web_captures_an_instantiated_wasm_module() -> None:
+    """web.wasm_list must see a real WebAssembly module, not just JS scripts.
+
+    wasm_list filters scriptParsed events for scriptLanguage == "WebAssembly".
+    Nothing else drives that path live, so if a Chromium bump renamed the field
+    or changed the value, wasm_list would quietly return an empty list and every
+    other test would still pass. Instantiate a module in the page and assert it
+    is captured, tagged WebAssembly, and addressed under wasm://.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web WASM Gate not run (skip != pass)")
+
+    origin = socketserver.TCPServer(("127.0.0.1", 0), _WasmPageHandler)
+    port = int(origin.server_address[1])
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{port}/"
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(url, target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                f"chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            # instantiate() resolves after load, and the module's scriptParsed
+            # trails it, so poll rather than assume it is already recorded.
+            wasm: dict[str, object] | None = None
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                listing = service.web_wasm_list(session_id)
+                assert listing.ok, listing.error
+                if listing.data["count"] >= 1:
+                    wasm = listing.data["scripts"][0]
+                    break
+                time.sleep(0.15)
+            assert wasm is not None, "no WebAssembly module was captured"
+            assert str(wasm.get("language", "")).lower() == "webassembly"
+            assert str(wasm.get("url", "")).startswith("wasm://")
+
+            # The filter must be a filter: the page also parses JS, so the full
+            # script list has to be at least as long as the wasm-only view.
+            everything = service.web_scripts(session_id)
+            assert everything.ok, everything.error
+            assert everything.data["count"] >= listing.data["count"]
+            assert any(
+                str(s.get("language", "")).lower() == "javascript"
+                for s in everything.data["scripts"]
+            ), "expected the page's JavaScript to be captured alongside the module"
         finally:
             service.web_close(session_id)
     finally:
