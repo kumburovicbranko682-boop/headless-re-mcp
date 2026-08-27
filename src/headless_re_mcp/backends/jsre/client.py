@@ -210,9 +210,20 @@ class WasmClient:
         stdout, stderr, code = _run(
             [str(self._objdump), "-h", "-x", str(resolved)], timeout=timeout
         )
-        if code != 0 and not stdout:
+        # wasm-objdump reports a malformed module by exiting non-zero and writing
+        # the diagnostic to STDOUT (e.g. "0000004: error: bad magic value"), not
+        # stderr the way wasm2wat does. The "and not stdout" guard its sibling
+        # tools use therefore never fired here, so a failed inspection returned
+        # ok with the error text handed back as the objdump payload -- an agent
+        # would read "bad magic value" as section analysis. A non-zero exit is
+        # the failure; surface whichever stream actually carried the diagnostic.
+        if code != 0:
+            diagnostic = (stderr or stdout).strip()
             raise JsReError(
-                "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
+                "backend_error",
+                "wasm-objdump failed",
+                exit_code=code,
+                stderr=diagnostic[:_MAX_STDERR],
             )
         return _bounded_output(stdout, "objdump", include_bytes=False)
 

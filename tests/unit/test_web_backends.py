@@ -225,6 +225,66 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestWasmInfoFailureChannel:
+    """wasm-objdump prints its errors to stdout, so a non-zero exit is the truth.
+
+    Unlike wasm2wat (errors -> stderr, empty stdout), wasm-objdump writes its
+    diagnostic to STDOUT and exits non-zero on a malformed module. The old
+    ``code != 0 and not stdout`` guard never fired -- stdout held the error text
+    -- so WasmClient.info returned that error string as a *successful* objdump
+    payload. These pin the corrected contract: a non-zero exit faults, and the
+    diagnostic (from whichever stream carried it) is surfaced, not passed off as
+    analysis.
+    """
+
+    def _client(self, tmp_path: Path) -> tuple[WasmClient, Path]:
+        module = tmp_path / "m.wasm"
+        module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        client = WasmClient(None)
+        # Force "available" independent of whether wabt is installed here; _run
+        # is stubbed per-test so the fake path is never actually launched.
+        client._objdump = Path("/does/not/matter/wasm-objdump")
+        return client, module
+
+    def test_stdout_error_with_nonzero_exit_faults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre_client
+
+        client, module = self._client(tmp_path)
+        diagnostic = "0000004: error: bad magic value\n"
+        monkeypatch.setattr(jsre_client, "_run", lambda *a, **k: (diagnostic, "", 1))
+        with pytest.raises(JsReError) as raised:
+            client.info(module)
+        assert raised.value.code == "backend_error"
+        # The real reason must reach the caller even though it came on stdout.
+        assert "bad magic value" in str(raised.value.details.get("stderr"))
+
+    def test_stderr_error_with_nonzero_exit_also_faults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre_client
+
+        client, module = self._client(tmp_path)
+        monkeypatch.setattr(jsre_client, "_run", lambda *a, **k: ("", "some stderr diag", 1))
+        with pytest.raises(JsReError) as raised:
+            client.info(module)
+        assert raised.value.code == "backend_error"
+        assert "some stderr diag" in str(raised.value.details.get("stderr"))
+
+    def test_zero_exit_returns_the_objdump_payload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as jsre_client
+
+        client, module = self._client(tmp_path)
+        listing = "m.wasm:\tfile format wasm 0x1\n\nSections:\n"
+        monkeypatch.setattr(jsre_client, "_run", lambda *a, **k: (listing, "", 0))
+        payload = client.info(module)
+        assert payload["objdump"] == listing
+        assert payload["truncated"] is False
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()

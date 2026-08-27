@@ -154,3 +154,40 @@ def test_wasm_wat_accepts_minimal_module(tmp_path: Path) -> None:
         assert "module" in result.data["wat"]
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_readers_fault_soft_on_a_malformed_module(tmp_path: Path) -> None:
+    """A bad .wasm must fault with a structured error, not smuggle it as output.
+
+    wasm2wat writes its error to stderr and empties stdout, but wasm-objdump
+    writes the diagnostic to STDOUT and exits non-zero -- so wasm_info used to
+    return ok with "error: bad magic value" as the objdump payload, dressing a
+    failed inspection up as analysis. Both readers must now come back
+    backend_error (never internal_error, never a false success), and the actual
+    diagnostic must be reachable so an agent learns why the module was rejected.
+    """
+    if not WasmClient().available:
+        pytest.skip("wabt not installed — WASM Gate not run (skip != pass)")
+    bad = tmp_path / "bad.wasm"
+    bad.write_bytes(b"NOPE\x01\x00\x00\x00garbage-past-the-magic")
+    service = AnalysisService()
+    try:
+        info = service.wasm_info(str(bad))
+        assert not info.ok and info.error is not None
+        assert info.error.code == "backend_error", info.error
+        assert "magic" in str(info.error.details.get("stderr", "")).lower()
+
+        wat = service.wasm_wat(str(bad))
+        assert not wat.ok and wat.error is not None
+        assert wat.error.code == "backend_error", wat.error
+
+        # And a valid module through the same reader still succeeds, so the fix
+        # rejects only genuine failures rather than every non-zero-looking run.
+        good = tmp_path / "min.wasm"
+        good.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        ok = service.wasm_info(str(good))
+        assert ok.ok and ok.data is not None, ok.error
+        assert "wasm" in ok.data["objdump"].lower()
+    finally:
+        service.close_all()
