@@ -37,6 +37,8 @@ T = TypeVar("T")
 _MAX_REQUESTS = 3000
 _MAX_CONSOLE = 2000
 _MAX_SCRIPTS = 2000
+_MAX_COOKIES = 1000
+_MAX_COOKIE_VALUE = 8192
 _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
@@ -691,6 +693,72 @@ class WebBackend:
             "total": len(held),
             "has_more": len(held) > capped,
             "dropped": dropped,
+        }
+
+    def cookies(self, session_id: str, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        """List the browser context's cookies (session/auth analysis).
+
+        Cookies carry the session ids, auth tokens and CSRF values a web target
+        keeps client-side, and nothing in the surface exposed them. Values are
+        returned in full up to 8192 bytes (value_truncated marks a longer one),
+        since seeing the token is the point; the list is sorted by domain, path
+        then name so paging is stable. expires is epoch seconds, null for a
+        session cookie (session true).
+        """
+        handle = self._get(session_id)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_COOKIES))
+
+        def work() -> list[Any]:
+            raw = handle.context.cookies()
+            return list(raw) if raw else []
+
+        try:
+            harvested = self._runner(handle).call(work)
+        except WebError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - playwright raises many types
+            raise WebError("backend_error", f"cannot read cookies: {exc}") from exc
+        items: list[JsonObject] = []
+        for cookie in harvested:
+            if not isinstance(cookie, dict):
+                continue
+            raw_value = cookie.get("value", "")
+            text = raw_value if isinstance(raw_value, str) else str(raw_value)
+            payload = text.encode("utf-8", errors="replace")
+            cut = len(payload) > _MAX_COOKIE_VALUE
+            if cut:
+                text = payload[:_MAX_COOKIE_VALUE].decode("utf-8", errors="ignore")
+            expires_raw = cookie.get("expires")
+            if isinstance(expires_raw, (int, float)) and float(expires_raw) >= 0:
+                expires_value: float | None = float(expires_raw)
+                session = False
+            else:
+                expires_value = None
+                session = True
+            entry: JsonObject = {
+                "name": str(cookie.get("name", "")),
+                "value": text,
+                "domain": str(cookie.get("domain", "")),
+                "path": str(cookie.get("path", "")),
+                "expires": expires_value,
+                "http_only": bool(cookie.get("httpOnly", False)),
+                "secure": bool(cookie.get("secure", False)),
+                "same_site": str(cookie.get("sameSite", "")),
+                "session": bool(session),
+            }
+            if cut:
+                entry["value_truncated"] = True
+            items.append(entry)
+        items.sort(key=lambda c: (c["domain"], c["path"], c["name"]))
+        total = len(items)
+        window = items[start : start + cap]
+        return {
+            "cookies": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
         }
 
     def scripts(

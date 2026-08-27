@@ -113,6 +113,23 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
+    @tools.tool(name="web.cookies")
+    def web_cookies(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """List the browser context's cookies (session and auth analysis).
+
+        Answers with cookies (name, value, domain, path, expires, http_only,
+        secure, same_site, session), count, total, offset, and has_more so a
+        page that filled the limit is not read as every cookie. value is the
+        full cookie up to 8192 bytes, with value_truncated when a longer one is
+        cut; expires is epoch seconds and null for a session cookie (session
+        true). There is no jar or store field.
+        """
+        return _dump(analysis.web_cookies(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,
