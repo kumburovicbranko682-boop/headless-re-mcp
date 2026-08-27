@@ -104,7 +104,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         many messages are buffered, and ring eviction is visible via dropped.
         console holds the newest messages; the max limit covers the whole ring,
         so there is no offset. A line longer than the per-message cap is cut
-        and marked text_truncated.
+        and marked text_truncated. Uncaught JavaScript exceptions are included
+        as rows with type error and uncaught true, since they show in the
+        console but never arrive as a console.* call.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
