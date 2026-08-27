@@ -80,6 +80,20 @@ def _bounded_nav_timeout(timeout: float) -> float:
     return min(value, _MAX_NAV_TIMEOUT_S)
 
 
+def _looks_like_missing_browser(exc: BaseException) -> bool:
+    """Whether a launch failure is really "no browser installed", not a crash.
+
+    ``pip install playwright`` never downloads Chromium: the module imports and
+    ``_check_available`` passes, and only ``chromium.launch()`` fails, with a
+    message that tells the caller to run ``playwright install``. That is a
+    missing optional capability -- the same as an absent androguard or jadx --
+    so it deserves the ``capability_unavailable`` contract the rest of the
+    surface uses, not a ``backend_error`` that reads as a runtime fault.
+    """
+    text = str(exc).casefold()
+    return "executable doesn't exist" in text or "playwright install" in text
+
+
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     """Join console args, stopping at ``_MAX_CONSOLE_TEXT``.
 
@@ -371,6 +385,12 @@ class WebBackend:
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     pw.stop()
+                if _looks_like_missing_browser(exc):
+                    raise WebError(
+                        "capability_unavailable",
+                        "playwright is installed but its browser is not; "
+                        "run 'playwright install chromium'",
+                    ) from exc
                 raise WebError("backend_error", f"failed to open browser: {exc}", url=url) from exc
             return handle, summary
 

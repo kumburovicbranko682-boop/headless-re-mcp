@@ -223,6 +223,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不在 PATH 时拒绝把 analyzeHeadless 报成可用，这四条却报纯 `detected`，操作者要自己把顶层
   `java` 探针和它们联系起来。现在同样如实：状态仍是 `detected`（可选项从不阻塞就绪），但 summary
   点名缺席的运行时、details 带 `missing_runtime`、remediation 说明装什么。
+- **`web.open` 把「浏览器没装」报成 `backend_error`**。`pip install playwright` 从不下载 Chromium，
+  模块能导入、`_check_available` 通过，只有 `chromium.launch()` 失败，报文里写着让人去跑
+  `playwright install`。可这跟 androguard/jadx/mitmproxy 缺席是同一类——一个没配好的可选能力，
+  别处一律用 `capability_unavailable` 表达；web 这条却抛 `backend_error`，无人值守的编排会把「没装
+  好」当成「跑坏了」。现在按报文识别这种启动失败，改抛 `capability_unavailable` 并给出
+  `playwright install chromium` 的指引，与其余可选后端一致。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时

@@ -225,6 +225,66 @@ class TestJsReDegradation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestWebMissingBrowserDegrades:
+    """`pip install playwright` never downloads Chromium.
+
+    The module imports and _check_available passes, so the failure only shows
+    up at chromium.launch(). The rest of the surface reports an absent optional
+    dependency as capability_unavailable (androguard, jadx, mitmproxy); a
+    missing browser is the same kind of gap and must not read as a backend
+    fault an unattended run would treat as broken rather than unconfigured.
+    """
+
+    def test_the_classifier_recognises_playwrights_install_message(self) -> None:
+        from headless_re_mcp.backends.web.client import _looks_like_missing_browser
+
+        install = RuntimeError(
+            "Executable doesn't exist at ms-playwright/chromium-1/chrome-linux/chrome\n"
+            "Looks like Playwright was just installed or updated.\n"
+            "Please run the following command to download new browsers:\n"
+            "    playwright install"
+        )
+        assert _looks_like_missing_browser(install) is True
+        # A real crash is left as a backend fault, not mislabelled as unconfigured.
+        assert _looks_like_missing_browser(RuntimeError("target crashed")) is False
+
+    def test_open_maps_a_missing_browser_to_capability_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import playwright.sync_api as pw_api
+
+        class _FakePw:
+            class _Chromium:
+                def launch(self, *, headless: bool) -> object:
+                    del headless
+                    raise RuntimeError(
+                        "Executable doesn't exist at chrome-linux/chrome\n"
+                        "Please run 'playwright install'"
+                    )
+
+            @property
+            def chromium(self) -> object:
+                return self._Chromium()
+
+            def stop(self) -> None:
+                return None
+
+        class _FakeFactory:
+            def start(self) -> _FakePw:
+                return _FakePw()
+
+        monkeypatch.setattr(pw_api, "sync_playwright", lambda: _FakeFactory())
+
+        backend = WebBackend()
+        backend._available = True
+        with pytest.raises(WebError) as info:
+            backend.open("browserless", "https://example.com/", headless=True, timeout=5.0)
+        assert info.value.code == "capability_unavailable"
+        assert "playwright install" in info.value.message
+        # The failed open leaves no session reservation behind to wedge the next call.
+        assert backend.status("browserless") == {"open": False}
+
+
 class TestProxyScoping:
     def test_reads_require_a_running_proxy(self) -> None:
         backend = ProxyBackend()
