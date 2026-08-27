@@ -197,7 +197,7 @@ def test_native_macho_opens_and_r2_reads_it() -> None:
         assert native["interpreter"] == "/usr/lib/dyld"
         assert native["dylibs"] == ["/usr/lib/libSystem.B.dylib"]
         # LC_MAIN's offset mapped through __TEXT: the fixture's known entry.
-        assert native["entry"] == 0x100000280
+        assert native["entry"] == 0x100000358
         session_id = str(session["id"])
 
         # Build posture, cross-checked against r2's own decode of the same

@@ -20,6 +20,10 @@ indirect-symbol table) -- an ``LC_RPATH`` so the @rpath search-path fact
 and an ``LC_BUILD_VERSION`` naming the target platform and minimum OS / SDK
 versions the way every modern linker does, so the platform facts have a
 positive case both llvm-objdump and radare2 (its ``os`` line) confirm.
+The symbol machinery lives in a final ``__LINKEDIT`` segment exactly like a
+linker lays it out -- which is also what lets a real code signer (rcodesign)
+sign this fixture, since a signature is appended to ``__LINKEDIT`` and
+signers refuse an image without one.
 Variable-length load commands are 8-byte aligned: the 64-bit Mach-O spec
 requires it and llvm-objdump rejects the image otherwise (radare2 merely
 tolerates 4-byte alignment, which is how the earlier misalignment went
@@ -70,6 +74,10 @@ _LC_BUILD_VERSION = 0x32
 _S_CSTRING_LITERALS = 0x00000002
 _S_ATTR_PURE_INSTRUCTIONS_SOME = 0x80000400
 _VM_BASE = 0x100000000
+# Slack between the last load command and the first byte of content, exactly
+# like a real linker leaves: a code signer inserts its LC_CODE_SIGNATURE (16
+# bytes) here and refuses an image with no room for it.
+_HEADER_PAD = 144
 
 
 def _align8(value: int) -> int:
@@ -158,6 +166,7 @@ def build() -> bytes:
     buildver = _lc_build_version()
     seg_pagezero = 72
     seg_text = 72 + 80 * 2  # two sections: __text and __cstring
+    seg_linkedit = 72
     lc_main = 24
     lc_uuid = 24
     lc_symtab = 24
@@ -165,6 +174,7 @@ def build() -> bytes:
     sizeofcmds = (
         seg_pagezero
         + seg_text
+        + seg_linkedit
         + len(dylinker)
         + len(dylib)
         + len(rpath)
@@ -174,8 +184,8 @@ def build() -> bytes:
         + lc_symtab
         + lc_dysymtab
     )
-    ncmds = 10
-    code_off = 32 + sizeofcmds
+    ncmds = 11
+    code_off = 32 + sizeofcmds + _HEADER_PAD
     cstr_off = code_off + len(CODE)
     total = cstr_off + len(MARKER)
     # radare2 reads dylib names with a fixed 256-byte buffer and rejects the
@@ -185,9 +195,11 @@ def build() -> bytes:
     padding = max(0, dylib_name_off + 256 - total)
     total += padding
 
-    # The symbol machinery rides after the padding tail: nlist rows, the string
-    # table, then the indirect-symbol table radare2 requires before it walks
-    # the dysymtab's undefined range as imports.
+    # The symbol machinery rides after the padding tail in its own __LINKEDIT
+    # segment (the final one, as every linker lays it out and as a code signer
+    # requires): nlist rows, the string table, then the indirect-symbol table
+    # radare2 requires before it walks the dysymtab's undefined range as
+    # imports.
     nlists, strtab = _symtab_blob(_VM_BASE + code_off)
     nundef = len(SYMBOLS) - 1
     symoff = total
@@ -195,6 +207,7 @@ def build() -> bytes:
     indirectoff = stroff + len(strtab)
     indirect = struct.pack(f"<{nundef}I", *range(1, 1 + nundef))
     total = indirectoff + len(indirect)
+    linkedit_size = total - symoff
     symtab = struct.pack("<IIIIII", _LC_SYMTAB, 24, symoff, len(SYMBOLS), stroff, len(strtab))
     # dysymtab_command: one defined external (_main), then the undefined
     # imports, plus the indirect table; every other range is empty.
@@ -219,12 +232,16 @@ def build() -> bytes:
     cstr_sect = _sect64(
         "__cstring", "__TEXT", _VM_BASE + cstr_off, len(MARKER), cstr_off, _S_CSTRING_LITERALS
     )
-    text = _seg64("__TEXT", _VM_BASE, 0x1000, 0, total, 5, 5, 2, 0) + text_sect + cstr_sect
+    # __TEXT maps the header, commands, code and marker; __LINKEDIT (the final
+    # segment) maps the symbol data on the next page, mirroring a real layout.
+    text = _seg64("__TEXT", _VM_BASE, 0x1000, 0, symoff, 5, 5, 2, 0) + text_sect + cstr_sect
+    linkedit = _seg64("__LINKEDIT", _VM_BASE + 0x1000, 0x1000, symoff, linkedit_size, 1, 1, 0, 0)
     main = struct.pack("<IIQQ", _LC_MAIN, 24, code_off, 0)  # entryoff, stacksize
     uuid = struct.pack("<II", _LC_UUID, 24) + bytes(range(16))
     blob = (
-        header + pagezero + text + dylinker + dylib + rpath + buildver + main + uuid
+        header + pagezero + text + linkedit + dylinker + dylib + rpath + buildver + main + uuid
     ) + symtab + dysymtab
+    blob += b"\x00" * _HEADER_PAD
     blob += CODE + MARKER
     blob += b"\x00" * padding
     blob += nlists + strtab + indirect

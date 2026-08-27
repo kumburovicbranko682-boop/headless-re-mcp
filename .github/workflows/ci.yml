@@ -168,6 +168,7 @@ jobs:
       R2_VERSION: "6.2.0"
       JADX_VERSION: "1.5.6"
       APKTOOL_VERSION: "3.0.3"
+      RCODESIGN_VERSION: "0.29.0"
       GHIDRA_VERSION: "12.1.3"
       GHIDRA_RELEASE: "Ghidra_12.1.3_build"
       GHIDRA_ASSET: "ghidra_12.1.3_PUBLIC_20260817.zip"
@@ -236,6 +237,17 @@ jobs:
         # llvm supplies llvm-objdump, the independent (and strict) Mach-O
         # decoder the toolchain gate cross-checks the LC_RPATH fact against.
         run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils llvm
+
+      - name: Install rcodesign for the Mach-O code-signature gate
+        # apple-codesign is an independent, production Apple code-signing
+        # implementation that runs on Linux (Apple's codesign does not); the
+        # codesign gate ad-hoc signs the Mach-O fixture with it and
+        # cross-checks the tool-free signature facts against its own decode.
+        run: |
+          curl -fsSL -o /tmp/rcodesign.tar.gz \
+            "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RCODESIGN_VERSION}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/rcodesign.tar.gz -C /tmp
+          echo "/tmp/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
 
       - name: Install Ghidra for the headless analysis gate
         run: |

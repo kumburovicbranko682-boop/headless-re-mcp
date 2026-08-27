@@ -544,6 +544,22 @@ _MACHO_PLATFORMS = {
 }
 _LC_SEGMENT = 0x01
 _LC_SEGMENT_64 = 0x19
+# The embedded code signature (a linkedit_data_command naming where the
+# SuperBlob lives). Whether an image is signed at all -- and by whom -- is the
+# macOS analogue of the APK signer facts: the CodeDirectory inside carries the
+# signing identifier, the team id and the ad-hoc flag, and its digest is what
+# Apple's tooling pins (the cdhash). All CS structures are big-endian.
+_LC_CODE_SIGNATURE = 0x1D
+_CS_SUPERBLOB_MAGIC = 0xFADE0CC0
+_CS_CODEDIRECTORY_MAGIC = 0xFADE0C02
+_CS_SLOT_CODEDIRECTORY = 0
+_CS_FLAG_ADHOC = 0x2
+_CS_MAX_BLOBS = 64
+_CS_MAX_NAME = 256
+# An embedded signature is a few KB (ad-hoc) to a few tens of KB (a real CMS
+# chain plus entitlements); this only refuses a pathological datasize.
+_CS_MAX_SIG_BYTES = 4 * 1024 * 1024
+_CS_HASH_TYPES = {1: "sha1", 2: "sha256", 3: "sha256_truncated", 4: "sha384"}
 _MACHO_MAX_LOAD_CMDS = 4096
 _MACHO_MAX_DYLIBS = 64
 # The header window read for identity facts is small, but a real image's load
@@ -2865,10 +2881,90 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         # FairPlay: an LC_ENCRYPTION_INFO with cryptid != 0 means the code is
         # ciphertext on disk; no command at all means not encrypted.
         facts["encrypted"] = bool(lc["cryptid"])
+        # Signed at all -- and by whom. macOS (and iOS unconditionally) refuse
+        # unsigned code, so the macOS analogue of the APK signer facts starts
+        # with whether an LC_CODE_SIGNATURE exists, then names the signing
+        # identity out of the CodeDirectory it points at.
+        sig = lc["code_signature"]
+        facts["signed"] = sig is not None and sig[1] > 0
+        if facts["signed"]:
+            signature = _macho_code_signature(stream, sig[0], sig[1])
+            if signature is not None:
+                facts["signature"] = signature
         canary = _macho_canary(stream, lc["symtab"])
         if canary is not None:
             facts["canary"] = canary
     return facts
+
+
+def _macho_code_signature(stream: BinaryIO, dataoff: int, datasize: int) -> dict[str, Any] | None:
+    """The signing identity out of the embedded code-signature SuperBlob.
+
+    LC_CODE_SIGNATURE points at a SuperBlob whose CodeDirectory slot carries
+    everything triage asks of a signature without verifying it: the signing
+    identifier (the bundle-id-like name the signer chose), the team id (the
+    developer's Apple identity; absent for ad-hoc), whether the signature is
+    ad-hoc (the CS_ADHOC flag: no certificate at all, so the binary only runs
+    where it was blessed), and the digest algorithm. ``cd_sha256`` is the
+    SHA-256 over the CodeDirectory blob itself -- the digest Apple's tooling
+    derives the cdhash from and what rcodesign prints, so a gate can compare
+    the two hex for hex.
+
+    Fail-closed and bounded: an unreadable, truncated or foreign blob yields
+    None (the image still reports ``signed``), never an exception.
+    """
+    if dataoff <= 0 or datasize < 20:
+        return None
+    try:
+        stream.seek(dataoff)
+        blob = stream.read(min(datasize, _CS_MAX_SIG_BYTES))
+    except OSError:
+        return None
+    if len(blob) < 12 or int.from_bytes(blob[0:4], "big") != _CS_SUPERBLOB_MAGIC:
+        return None
+    count = int.from_bytes(blob[8:12], "big")
+    cd_at: int | None = None
+    for index in range(min(count, _CS_MAX_BLOBS)):
+        entry = 12 + 8 * index
+        if entry + 8 > len(blob):
+            break
+        if int.from_bytes(blob[entry : entry + 4], "big") == _CS_SLOT_CODEDIRECTORY:
+            cd_at = int.from_bytes(blob[entry + 4 : entry + 8], "big")
+            break
+    if cd_at is None or cd_at + 40 > len(blob):
+        return None
+    if int.from_bytes(blob[cd_at : cd_at + 4], "big") != _CS_CODEDIRECTORY_MAGIC:
+        return None
+    cd_len = int.from_bytes(blob[cd_at + 4 : cd_at + 8], "big")
+    if cd_len < 40 or cd_at + cd_len > len(blob):
+        return None
+    cd = blob[cd_at : cd_at + cd_len]
+    version = int.from_bytes(cd[8:12], "big")
+    flags = int.from_bytes(cd[12:16], "big")
+    ident_off = int.from_bytes(cd[20:24], "big")
+    hash_type = cd[37]
+    signature: dict[str, Any] = {
+        "ad_hoc": bool(flags & _CS_FLAG_ADHOC),
+        "identifier": _macho_cs_string(cd, ident_off),
+        "team_id": None,
+        "hash_type": _CS_HASH_TYPES.get(hash_type, f"hash_{hash_type}"),
+        "cd_sha256": hashlib.sha256(cd).hexdigest(),
+    }
+    # The team-id field only exists from CodeDirectory version 0x20200 on; a
+    # zero offset means the signer recorded none (every ad-hoc signature).
+    if version >= 0x20200 and len(cd) >= 52:
+        team_off = int.from_bytes(cd[48:52], "big")
+        if team_off:
+            signature["team_id"] = _macho_cs_string(cd, team_off)
+    return signature
+
+
+def _macho_cs_string(cd: bytes, offset: int) -> str | None:
+    """A NUL-terminated CodeDirectory string (identifier / team id), bounded."""
+    if not 0 < offset < len(cd):
+        return None
+    raw = cd[offset : offset + _CS_MAX_NAME].split(b"\x00", 1)[0]
+    return raw.decode("utf-8", errors="replace") or None
 
 
 def _macho_canary(stream: BinaryIO, symtab: tuple[int, int] | None) -> bool | None:
@@ -2954,6 +3050,8 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     / LC_SEGMENT_64, for mapping that offset to an address), ``symtab``
     (LC_SYMTAB's (stroff, strsize), for the canary scan), ``cryptid``
     (LC_ENCRYPTION_INFO's crypt id, or None when the image carries none),
+    ``code_signature`` (LC_CODE_SIGNATURE's (dataoff, datasize) locating the
+    embedded signature SuperBlob, or None when unsigned),
     ``rpaths`` (the LC_RPATH search paths, the DT_RPATH/DT_RUNPATH analogue)
     and ``platform``/``min_os``/``sdk`` (LC_BUILD_VERSION, or the older
     LC_VERSION_MIN_* whose command kind names the platform). Bounded by the
@@ -2969,6 +3067,7 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         "segments": [],
         "symtab": None,
         "cryptid": None,
+        "code_signature": None,
         "rpaths": [],
         "platform": None,
         "min_os": None,
@@ -3044,6 +3143,12 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             # cryptoff/cryptsize then cryptid, in both the 32- and 64-bit
             # layouts (the 64-bit one only appends padding).
             result["cryptid"] = int.from_bytes(cmds[pos + 16 : pos + 20], order)  # type: ignore[arg-type]
+        elif cmd == _LC_CODE_SIGNATURE and result["code_signature"] is None and cmdsize >= 16:
+            # linkedit_data_command: dataoff/datasize locate the SuperBlob.
+            result["code_signature"] = (
+                int.from_bytes(cmds[pos + 8 : pos + 12], order),  # type: ignore[arg-type]
+                int.from_bytes(cmds[pos + 12 : pos + 16], order),  # type: ignore[arg-type]
+            )
         elif cmd == _LC_SEGMENT_64 and cmdsize >= 56:
             # segname(16) then vmaddr/vmsize/fileoff/filesize as u64s.
             segments.append(

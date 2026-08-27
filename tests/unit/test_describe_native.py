@@ -11,6 +11,7 @@ refused by the PE-only tools through require_pe.
 from __future__ import annotations
 
 import glob
+import hashlib
 import struct
 from pathlib import Path
 
@@ -1125,6 +1126,131 @@ def test_macho_without_a_symtab_has_no_canary_fact(tmp_path: Path) -> None:
     assert "canary" not in describe_native(_write(tmp_path, "a.bin", data))["native"]
 
 
+def _lc_code_signature(dataoff: int, datasize: int) -> bytes:
+    # linkedit_data_command: dataoff/datasize locate the signature SuperBlob.
+    return (
+        (0x1D).to_bytes(4, "little")
+        + (16).to_bytes(4, "little")
+        + dataoff.to_bytes(4, "little")
+        + datasize.to_bytes(4, "little")
+    )
+
+
+def _code_directory(
+    identifier: bytes = b"com.example.app\x00",
+    team: bytes | None = None,
+    flags: int = 0x2,
+    version: int = 0x20400,
+    hash_type: int = 2,
+) -> bytes:
+    """A CodeDirectory blob through the teamOffset field (52-byte header).
+
+    All fields big-endian per the CS spec: magic, length, version, flags,
+    hashOffset, identOffset, nSpecialSlots, nCodeSlots, codeLimit, then the
+    hashSize/hashType/platform/pageSize bytes, spare2, scatterOffset and
+    teamOffset. The identifier (and team, when given) trail the header.
+    """
+    ident_off = 52
+    team_off = ident_off + len(identifier) if team else 0
+    body = identifier + (team or b"")
+    length = 52 + len(body)
+    return (
+        struct.pack(">IIIIIIIII", 0xFADE0C02, length, version, flags, 0, ident_off, 0, 0, 0)
+        + bytes([32, hash_type, 0, 12])  # hashSize, hashType, platform, pageSize
+        + struct.pack(">III", 0, 0, team_off)  # spare2, scatterOffset, teamOffset
+        + body
+    )
+
+
+def _superblob(cd: bytes, slot: int = 0) -> bytes:
+    # SuperBlob header (magic, length, count) plus one index entry pointing at
+    # the CodeDirectory right after it.
+    length = 20 + len(cd)
+    return struct.pack(">III", 0xFADE0CC0, length, 1) + struct.pack(">II", slot, 20) + cd
+
+
+def _signed_macho(superblob: bytes) -> bytes:
+    # The signature blob rides at a fixed offset past the header + command.
+    dataoff = 256
+    lc = _lc_code_signature(dataoff, len(superblob))
+    image = _macho64_full(filetype=2, flags=0x4, load_cmds=lc, ncmds=1)
+    return image.ljust(dataoff, b"\x00") + superblob
+
+
+def test_macho_signature_reports_identifier_adhoc_and_cdhash(tmp_path: Path) -> None:
+    """The macOS "who signed it": identifier, ad-hoc flag and the CD digest.
+
+    cd_sha256 is the SHA-256 over the CodeDirectory blob itself -- what
+    Apple's tooling derives the cdhash from and what rcodesign prints, so the
+    codesign gate compares the reader's hex against the real signer's.
+    """
+    cd = _code_directory()
+    facts = describe_native(_write(tmp_path, "a.bin", _signed_macho(_superblob(cd))))["native"]
+    assert facts["signed"] is True
+    assert facts["signature"] == {
+        "ad_hoc": True,
+        "identifier": "com.example.app",
+        "team_id": None,
+        "hash_type": "sha256",
+        "cd_sha256": hashlib.sha256(cd).hexdigest(),
+    }
+
+
+def test_macho_signature_with_a_team_id(tmp_path: Path) -> None:
+    # A certificate-backed signature records the developer's team id; flags
+    # without CS_ADHOC read as a real (non-ad-hoc) signature.
+    cd = _code_directory(team=b"ABCDE12345\x00", flags=0x0)
+    facts = describe_native(_write(tmp_path, "t.bin", _signed_macho(_superblob(cd))))["native"]
+    assert facts["signature"]["ad_hoc"] is False
+    assert facts["signature"]["team_id"] == "ABCDE12345"
+
+
+def test_macho_without_lc_code_signature_is_unsigned(tmp_path: Path) -> None:
+    data = _macho64_full(filetype=2, flags=0x4, load_cmds=_lc_uuid(), ncmds=1)
+    facts = describe_native(_write(tmp_path, "u.bin", data))["native"]
+    assert facts["signed"] is False
+    assert "signature" not in facts
+
+
+def test_macho_signature_pointing_at_garbage_reports_signed_only(tmp_path: Path) -> None:
+    # The command exists but its blob is not a SuperBlob: the image is still
+    # "signed" (the command is there) but no identity is invented from noise.
+    facts = describe_native(_write(tmp_path, "g.bin", _signed_macho(b"\xde\xad" * 40)))["native"]
+    assert facts["signed"] is True
+    assert "signature" not in facts
+
+
+def test_macho_signature_with_a_lying_cd_length_is_dropped(tmp_path: Path) -> None:
+    # The CodeDirectory claims more bytes than the blob holds: nothing is
+    # hashed or decoded from out-of-bounds memory.
+    cd = _code_directory()
+    lying = cd[:4] + (0x7FFFFFFF).to_bytes(4, "big") + cd[8:]
+    facts = describe_native(_write(tmp_path, "l.bin", _signed_macho(_superblob(lying))))["native"]
+    assert facts["signed"] is True
+    assert "signature" not in facts
+
+
+def test_macho_signature_old_cd_version_reads_no_team_field(tmp_path: Path) -> None:
+    # A pre-0x20200 CodeDirectory has no teamOffset field; whatever bytes sit
+    # at that position are scatterOffset-era data and must not be decoded as a
+    # team string, even when nonzero.
+    cd = _code_directory(team=b"NOTATEAM12\x00", version=0x20100)
+    facts = describe_native(_write(tmp_path, "o.bin", _signed_macho(_superblob(cd))))["native"]
+    assert facts["signature"]["team_id"] is None
+    assert facts["signature"]["identifier"] == "com.example.app"
+
+
+def test_macho_superblob_without_a_codedirectory_slot(tmp_path: Path) -> None:
+    # A SuperBlob whose only entry is some other slot (the CMS signature):
+    # signed, but no CodeDirectory means no identity facts.
+    cd = _code_directory()
+    facts = describe_native(
+        _write(tmp_path, "s.bin", _signed_macho(_superblob(cd, slot=0x10000)))
+    )["native"]
+    assert facts["signed"] is True
+    assert "signature" not in facts
+
+
 def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     # The committed fixture's LC_MAIN points at its code blob inside __TEXT
     # (vmaddr 0x100000000, fileoff 0), so the mapped entry is a known constant
@@ -1133,12 +1259,16 @@ def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     if not fixture.is_file():
         pytest.skip(f"fixture missing: {fixture}")
     facts = describe_native(fixture)["native"]
-    assert facts["entry"] == 0x100000280
+    assert facts["entry"] == 0x100000358
     # Its build posture, cross-checked against radare2 by the r2 gate: NX on,
     # stack-protector imports present, no FairPlay encryption.
     assert facts["nx"] is True
     assert facts["canary"] is True
     assert facts["encrypted"] is False
+    # The committed fixture ships unsigned (the codesign gate signs a copy
+    # with rcodesign and cross-checks the signature facts on that).
+    assert facts["signed"] is False
+    assert "signature" not in facts
     # The @rpath search path baked in by LC_RPATH, which llvm-objdump
     # independently confirms in the toolchain gate.
     assert facts["rpath"] == ["@loader_path/../Frameworks"]
