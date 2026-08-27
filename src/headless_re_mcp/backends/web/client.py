@@ -824,9 +824,25 @@ class WebBackend:
     def close_all(self) -> None:
         with self._lock:
             session_ids = list(self._sessions)
+        first_error: BaseException | None = None
         for session_id in session_ids:
-            with contextlib.suppress(WebError):
-                self.close(session_id)
+            # Every session is still attempted even when an earlier one fails or
+            # reports an incomplete close: bulk shutdown must not skip the
+            # browsers behind the first casualty. The first fault is surfaced so
+            # a wedged or failed cleanup is not silently swallowed here.
+            try:
+                cleanup = self.close(session_id)
+                if cleanup.get("clean") is False and first_error is None:
+                    first_error = WebError(
+                        "web_cleanup_incomplete",
+                        "browser driver stopped but its runner thread remains wedged",
+                        session_id=session_id,
+                    )
+            except BaseException as exc:  # noqa: BLE001 - re-raised after the sweep
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
 
 
 def _safe_title(page: Any) -> str:

@@ -1238,7 +1238,20 @@ class AnalysisService(
         self._health.stop()
         web_backend = getattr(self, "_web_backend", None)
         if web_backend is not None:
-            web_backend.close_all()
+            try:
+                web_backend.close_all()
+            except BaseException as exc:  # noqa: BLE001 - reported, not propagated
+                # close_all is an API boundary too. A wedged or failed browser
+                # cleanup used to throw past the proxy and adb cleanup still to
+                # run and discard every count and error already collected.
+                failure = _failure(exc, backend="web")
+                if failure.error is not None:
+                    errors.append(
+                        {
+                            "backend": "web",
+                            "error": failure.error.model_dump(mode="json"),
+                        }
+                    )
         proxy_backend = getattr(self, "_proxy_backend", None)
         if proxy_backend is not None:
             proxy_backend.close_all()
