@@ -49,6 +49,32 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（Linux 单测回归与 POSIX 进程回收）
+
+- **补齐 Linux-support 落地时漏改的单测**：那次改动新增了必需的 `platform` doctor 探针、
+  给 `ui.win32` 能力接上真实的 `win32_ui` 探针、把监控台取文件路由改为按 `is_windows_host()`
+  判定（不再 `import os` 看 `os.name`）、并重写了 README 工具计数句，但对应的守卫单测没有跟着
+  更新，导致 `windows` 与 `linux-quality` 两个 CI job 都红：
+  - `test_capabilities_catalog` 仍假设 `ui.win32` 没有探针（永远 ready），现让桩 doctor 报告带上
+    `win32_ui`；
+  - `test_readme_catalog_consistency` 的工具计数守卫钉的是 README 已不再使用的「收成 」前缀；
+  - `test_web_console` 打桩的是路由已不再引入的模块级 `os`，改为打桩 `is_windows_host()`；
+  - `test_config_generate` 的「就绪」桩缺了现已必需的 `platform` 探针，`DoctorReport.ready`
+    为假、bundle 回 not-ok。均为纯测试改动，让守卫重新对齐已发布的行为。
+- **UI 截图/OCR 的会话 id 校验前移到平台判定之前**：`ui_screenshot` / `ui_ocr` 用会话 id 拼
+  产物路径（`artifact_root/ui/<session_id>`），非单路径段的 id 即为越权尝试。该校验原本排在
+  `os.name != "nt"` 之后，于是在 Linux 上恶意 id 被答成 `unsupported_on_platform` 而非承诺的
+  `invalid_request`，路径安全契约只在 Windows 成立。现把单段校验挪到平台判定之前，任何宿主都
+  一致地拒绝畸形输入；Windows 行为不变。
+- **die / exeinfope / upx 在正常退出后回收遗留的会话进程组（POSIX）**：这三个 CLI 适配器在
+  POSIX 上以 `start_new_session` 启动（工具自成进程组组长），却只在超时/超限/取消时向该组发信号。
+  正常退出时它们只 `wait()` 工具本身，于是工具派生并甩给 init 的 helper（仍在同一会话组、但
+  ppid 遍历看不到）会活过本次调用——de4dot 早已回收，这三个没有，正是无人值守跑久了会攒下
+  游离 JVM/helper 的来路。新增 `core.process_tree.reap_orphaned_session_group(leader_pid)`：
+  按组枚举幸存者并逐个按各自 `pgrp` 击杀（绝不对可能被复用的组长 pid 用裸 `killpg`），再轮询
+  被杀 pid 直到都不再可调度，使回收对调用方是同步完成而不是与刚发信号的 helper 抢跑。三条正常
+  退出路径均接入；Windows 上是空操作（Job 对象/Toolhelp 遍历已覆盖）。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
