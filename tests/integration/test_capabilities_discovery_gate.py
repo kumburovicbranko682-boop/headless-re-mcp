@@ -16,9 +16,13 @@ checks every entry's shape and that status is one of the doctor's own status
 values, proves the backend filter narrows to exactly one backend's capabilities
 and the status filter is self-consistent (both strict subsets of the whole),
 and proves ``describe`` returns one capability by id while an unknown id fails
-with ``not_found``. It asserts the *contract*, not which backends happen to be
-installed, so it is always green regardless of toolchain. Requires only the
-checkout and the installed package, so it never skips.
+with ``not_found``. It also pins platform honesty -- the Windows-only backends
+(x64dbg, Win32 UI, WinDbg) must report ``unsupported_on_platform`` on a
+non-Windows host, never a misleading ``missing`` and never ``ready`` -- and
+that ``meta.metrics`` accounts for the discovery calls this session just made.
+It asserts the *contract*, not which backends happen to be installed, so it is
+always green regardless of toolchain. Requires only the checkout and the
+installed package, so it never skips.
 """
 
 from __future__ import annotations
@@ -55,6 +59,11 @@ _EXPECTED_IDS = {
     "proxy.mitmproxy",
 }
 _REQUIRED_KEYS = {"id", "backend", "status", "status_probe", "summary", "tools"}
+
+# Catalog entries carrying "platform": "windows"; on any other OS the doctor
+# maps their probes to unsupported_on_platform, and the capability map must
+# say so instead of pretending they are merely not installed.
+_WINDOWS_ONLY_IDS = {"x64dbg.headless", "ui.win32", "windbg.cdb"}
 
 
 def _parameters(tmp_path: Path) -> StdioServerParameters:
@@ -181,3 +190,47 @@ async def test_capabilities_describe_by_id_and_unknown(tmp_path: Path) -> None:
         )
         assert missing["ok"] is False
         assert missing["error"]["code"] == "not_found"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_windows_only_backends_report_platform_honestly(tmp_path: Path) -> None:
+    async with (
+        stdio_client(_parameters(tmp_path)) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as client,
+    ):
+        await client.initialize()
+
+        data = _ok(_structured(await client.call_tool("capabilities.search", {})))
+        by_id = {entry["id"]: entry for entry in data["capabilities"]}
+
+        for windows_id in sorted(_WINDOWS_ONLY_IDS):
+            assert windows_id in by_id, windows_id
+            status = by_id[windows_id]["status"]
+            if sys.platform.startswith("win"):
+                assert status != "unsupported_on_platform", by_id[windows_id]
+            else:
+                assert status == "unsupported_on_platform", by_id[windows_id]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_meta_metrics_accounts_for_this_sessions_calls(tmp_path: Path) -> None:
+    async with (
+        stdio_client(_parameters(tmp_path)) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as client,
+    ):
+        await client.initialize()
+
+        for _ in range(3):
+            _ok(_structured(await client.call_tool("capabilities.search", {})))
+
+        data = _ok(_structured(await client.call_tool("meta.metrics", {})))
+        assert isinstance(data["tools"], list)
+        assert data["distinct_tools"] >= 1
+        assert data["calls_total"] >= 3
+        assert data["capacity"] >= 1
+
+        search_row = next(row for row in data["tools"] if row["tool"] == "capabilities.search")
+        assert search_row["calls_total"] >= 3
+        assert search_row["failures_total"] == 0
