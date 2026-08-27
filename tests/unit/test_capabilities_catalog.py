@@ -16,6 +16,7 @@ import pytest
 from headless_re_mcp.core import capabilities_catalog
 from headless_re_mcp.core.capabilities_catalog import (
     _CORE_CAPABILITIES,
+    _probe_status,
     describe_capability,
     list_capabilities,
 )
@@ -65,8 +66,18 @@ def _stub_report() -> DoctorReport:
         probes=(
             Probe("ida_idalib", ProbeStatus.READY, "stub ready"),
             Probe("diec", ProbeStatus.MISSING, "stub missing"),
+            # ui.win32 gained a real doctor probe (win32_ui) in the Linux-support
+            # change; a ready probe here keeps the "ready" filter assertions honest.
+            Probe("win32_ui", ProbeStatus.READY, "stub ready"),
         )
     )
+
+
+def test_a_capability_without_a_probe_is_always_ready() -> None:
+    # Every shipped capability now names a real probe, but the None fallback in
+    # _probe_status is still live code: a future probe-less capability must read
+    # as ready rather than silently missing.
+    assert _probe_status(_stub_report(), None) == "ready"
 
 
 def test_list_capabilities_maps_probe_status_and_honors_filters(
@@ -79,7 +90,7 @@ def test_list_capabilities_maps_probe_status_and_honors_filters(
     # A ready probe surfaces as ready; a missing probe as missing.
     assert by_id["ida.idalib"]["status"] == "ready"
     assert by_id["detect.die"]["status"] == "missing"
-    # status_probe=None is always ready (ui.win32 has no probe).
+    # ui.win32's win32_ui probe is ready in the stub, so it surfaces as ready.
     assert by_id["ui.win32"]["status"] == "ready"
     # A probe absent from the report falls back to missing rather than raising.
     assert by_id["unpack.upx"]["status"] == "missing"
