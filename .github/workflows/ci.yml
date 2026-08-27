@@ -260,6 +260,7 @@ jobs:
         run: >-
           python -m pytest -m integration -rs --tb=short --timeout=300 --no-cov
           tests/integration/test_android_re_gate.py
+          tests/integration/test_adb_device_gate.py
           tests/integration/test_m11_frida_live_gate.py
           tests/integration/test_m11_r2_live_gate.py
           tests/integration/test_m11_ghidra_live_gate.py
@@ -268,6 +269,7 @@ jobs:
           tests/integration/test_proxy_lifecycle_gate.py
           tests/integration/test_web_lifecycle_gate.py
           tests/integration/test_web_re_gate.py
+          tests/integration/test_web_capture_gate.py
           tests/integration/test_agent_browser_smoke.py
 
   webui:
