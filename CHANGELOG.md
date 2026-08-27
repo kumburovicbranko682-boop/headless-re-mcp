@@ -62,6 +62,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（web.open/navigate 只放行 http(s)/data:，堵住 file:// 本地读与 javascript: 执行）
+
+- `web.open` / `web.navigate` 把 URL 原样交给 `page.goto`，不校验 scheme。`file:///etc/passwd` 会让
+  `web.dom_snapshot` / `web.network.get` 变成任意本地文件读取（一种越目录读），`javascript:` 则是让
+  浏览器执行任意脚本——正是工具面刻意不提供 `web.evaluate` 要避免的能力（见 SECURITY.md）。现在在
+  `open`（能力门之前）与 `navigate`（会话门之前）都用 scheme 白名单把关：只放行 `http`、`https` 与
+  沙箱化、无法读本地磁盘的 `data:`（Web 真机 Gate 正是用 `data:text/html` 加载受控内容），其余一律
+  `invalid_params` 拒收，且拒收发生在能力/会话检查之前，报错在任何机器上一致。回归覆盖 `file:`（含
+  `view-source:file:`）、`javascript:`、`chrome:`、`ftp:`、`blob:` 与空串被拒，`http/https/data:` 放行。
+
 ### 修复（Ghidra max_heap 校验，堵住 JAVA_TOOL_OPTIONS 注入面）
 
 - Ghidra 适配器把 `max_heap` 直接拼进子进程的 `JAVA_TOOL_OPTIONS`（`-Xmx{max_heap}`）。JVM 把该变量

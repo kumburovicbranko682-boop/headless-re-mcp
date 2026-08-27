@@ -23,6 +23,7 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
@@ -38,6 +39,27 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# What page.goto is allowed to navigate to. http(s) are the real targets;
+# ``data:`` loads controlled inline content (the web gates use it) in an opaque,
+# sandboxed origin that cannot touch the local disk. Everything else is refused:
+# ``file:`` would turn dom_snapshot / network_get into an arbitrary local-file
+# read, and ``javascript:`` is script execution -- the very thing the surface
+# withholds by omitting web.evaluate. goto takes whatever scheme it is handed,
+# so the gate has to be here.
+_NAVIGABLE_SCHEMES = frozenset({"http", "https", "data"})
+
+
+def _require_navigable_url(url: str) -> None:
+    """Refuse a navigation scheme that reads local files or runs script."""
+    scheme = urlparse(url.strip()).scheme.lower()
+    if scheme not in _NAVIGABLE_SCHEMES:
+        raise WebError(
+            "invalid_params",
+            "url scheme not allowed; navigate to http(s) (or a data: URL)",
+            url=url[:200],
+            scheme=scheme,
+            allowed=sorted(_NAVIGABLE_SCHEMES),
+        )
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -306,6 +328,11 @@ class WebBackend:
     def open(
         self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
     ) -> JsonObject:
+        # Validate the scheme before the capability gate so a file:// or
+        # javascript: URL is rejected the same way on every machine, rather than
+        # being masked by "playwright not installed" where it never navigates.
+        if url:
+            _require_navigable_url(url)
         self._check_available()
 
         with self._lock:
@@ -465,6 +492,9 @@ class WebBackend:
         cdp.on("Runtime.consoleAPICalled", on_console)
 
     def navigate(self, session_id: str, url: str, *, timeout: float = 30.0) -> JsonObject:
+        # Same gate as open(), and before the session lookup so the scheme is
+        # rejected consistently whether or not a browser is running.
+        _require_navigable_url(url)
         handle = self._get(session_id)
 
         def work() -> JsonObject:

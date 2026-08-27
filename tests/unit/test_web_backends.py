@@ -28,6 +28,68 @@ class TestNoArbitraryExecution:
         assert not {"evaluate", "eval", "run_code"} & public
 
 
+class TestWebNavigationSchemeGate:
+    """page.goto is fenced to http(s)/data: so a URL cannot read files or run JS.
+
+    file:// would make dom_snapshot / network_get an arbitrary local-file read,
+    and javascript: is script execution -- the capability the surface withholds
+    by omitting web.evaluate. The gate must fire before the capability check (in
+    open) and before the session lookup (in navigate), so the refusal is the
+    same invalid_params on every machine rather than being masked by
+    "playwright not installed" or "no session open".
+    """
+
+    _HOSTILE = [
+        "file:///etc/passwd",
+        "file://C:/Windows/win.ini",
+        "javascript:fetch('/x')",
+        "chrome://version",
+        "view-source:file:///etc/passwd",
+        "ftp://host/x",
+        "blob:https://x/uuid",
+    ]
+
+    @pytest.mark.parametrize("url", _HOSTILE)
+    def test_open_rejects_a_dangerous_scheme_before_the_capability_gate(
+        self, url: str
+    ) -> None:
+        backend = WebBackend()
+        with pytest.raises(WebError) as info:
+            backend.open("s", url)
+        # Without the gate, an unavailable playwright would answer
+        # capability_unavailable instead -- so invalid_params proves the scheme
+        # was judged first. (open with an empty url is the legitimate "blank
+        # browser" path and is deliberately not fenced here.)
+        assert info.value.code == "invalid_params"
+
+    @pytest.mark.parametrize("url", [*_HOSTILE, ""])
+    def test_navigate_rejects_a_dangerous_or_empty_scheme_before_the_session_gate(
+        self, url: str
+    ) -> None:
+        backend = WebBackend()
+        with pytest.raises(WebError) as info:
+            backend.navigate("never-opened", url)
+        assert info.value.code == "invalid_params"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://example.com/app",
+            "https://example.com/app",
+            "HTTPS://EXAMPLE.COM",
+            "data:text/html,<html><body>x</body></html>",
+        ],
+    )
+    def test_navigate_lets_supported_schemes_through_to_the_session_gate(
+        self, url: str
+    ) -> None:
+        backend = WebBackend()
+        with pytest.raises(WebError) as info:
+            backend.navigate("never-opened", url)
+        # Past the scheme gate; the next gate (no open session) is what refuses.
+        assert info.value.code == "invalid_state"
+
+
 class TestWebSessionScoping:
     def test_operations_require_an_open_session(self) -> None:
         backend = WebBackend()

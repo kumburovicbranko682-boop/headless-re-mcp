@@ -34,7 +34,9 @@
 Frida 脚本——每个能力都是具名、参数经校验的工具。任何绕开这条原则的路径都是漏洞,包括但不限于:
 
 - **任意命令/代码执行逃逸**:通过某个工具的参数注入,让 adb / jadx / apktool / apksigner /
-  UPX / DIE 等外部 CLI 执行了非预期命令,或让调试器/浏览器执行了任意脚本;
+  UPX / DIE 等外部 CLI 执行了非预期命令,或让调试器/浏览器执行了任意脚本
+  (`web.open` / `web.navigate` 只放行 `http(s)` 与沙箱化的 `data:`,拒收 `file:`——它会让
+  `web.dom_snapshot` / `web.network.get` 变成任意本地文件读取——以及 `javascript:` 等其余 scheme);
 - **控制台认证绕过**:未持有本地 token 即可调用 Web 监控台 API,或服务在默认配置下
   监听了回环以外的地址;
 - **写策略绕过**:`local_full_access: false` 时仍能执行状态变更或文件写入;
