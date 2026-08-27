@@ -49,6 +49,27 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（js.unpack_bundle 一装上 webcrack 就必然失败：预建 -o 目录被 webcrack 拒绝）
+
+- `js.unpack_bundle` 只要机器上装了 webcrack 就 **100% 失败**：`JsClient.unpack_bundle`
+  在启动 webcrack 前用 `out_dir.mkdir(parents=True, exist_ok=True)` 预先建好 `-o` 目录，
+  而 webcrack 会自己创建 `-o` 目录、且发现目录已存在（哪怕是空目录）就拒绝运行，打印
+  `output directory already exists` 并以非零码退出。于是每次拆包都拿到
+  `backend_error: webcrack unpack failed`，这个能力从未真正成功过。服务层
+  `_jsre_out_dir` 每次都用全新 uuid 目录，故预建目录是唯一的祸首——生产路径无一例外。
+  现改为只确保父目录存在，把仍不存在的目标目录交给 webcrack 自己创建；上一次失败留下的
+  空目录会被清掉以便重试，非空目录则原样留给 webcrack 拒绝，绝不覆盖分析师放进去的文件。
+  实测 webcrack 2.16.0（Node 22）确认此行为，修复前后经服务端到端验证。
+- 新增 `tests/unit/test_jsre_unpack_output_dir.py`，用模仿 webcrack “目录已存在就拒绝”
+  语义的桩把契约钉死：webcrack 运行时目标目录必须尚不存在；空的遗留目录被清除；非空目录
+  保留且不被覆盖；只有当拒绝后磁盘上确无产物时才上抛 `backend_error`。`test_jsre_unpack_dirs.py`
+  里两个 `fake_run` 桩改为像真 webcrack 一样自建 `-o` 目录（客户端不再代建）。
+- 补齐真跑 webcrack 的活体门：`test_web_re_gate.py` 新增
+  `test_js_unpack_bundle_when_webcrack_present`，让真实 webcrack 把 bundle 拆到磁盘并断言至少
+  产出一个文件、无 `tool_failed`——正是当初漏掉、才让此 bug 一路上线的那条端到端路径。新增
+  `linux-web-jsre` CI job（装 Node + webcrack + wabt）在每次 push 上真跑 JS/WASM 门，令该能力
+  不再可能悄悄回归（skip != pass）。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
