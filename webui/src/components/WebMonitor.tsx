@@ -7,6 +7,8 @@ type Envelope<T> = { ok?: boolean; data?: T; error?: { code?: string; message?: 
 type WebStatus = {
   open?: boolean;
   opening?: boolean;
+  responsive?: boolean;
+  exited?: boolean;
   url?: string | null;
   title?: string | null;
   locator?: string | null;
@@ -104,6 +106,25 @@ export function WebMonitor({ sessionId, locator, live, onSessionMissing, onSessi
     }
   };
 
+  const reopen = async () => {
+    if (!sessionId) return;
+    setBusy("重开浏览器"); setError(null);
+    try {
+      await api<Envelope<unknown>>(`/api/sessions/${encodeURIComponent(sessionId)}/web/close`, { method: "POST", body: "{}" });
+      const result = await api<Envelope<unknown>>(`/api/sessions/${encodeURIComponent(sessionId)}/web/open`, {
+        method: "POST",
+        body: JSON.stringify({ url: nav || locator || "" }),
+      });
+      if (result.ok === false) throw new Error(result.error?.message ?? "重开浏览器失败");
+      await load();
+      await capture();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   useEffect(() => {
     openedRef.current = false;
     setStatus(null);
@@ -140,11 +161,11 @@ export function WebMonitor({ sessionId, locator, live, onSessionMissing, onSessi
   }, [capture, live, load, locator, sessionId]);
 
   useEffect(() => {
-    if (!status?.open || !sessionId) return undefined;
+    if (!status?.open || status?.exited || status?.responsive === false || !sessionId) return undefined;
     void capture();
     const timer = window.setInterval(() => void capture(), 4000);
     return () => window.clearInterval(timer);
-  }, [capture, sessionId, status?.open]);
+  }, [capture, sessionId, status?.open, status?.exited, status?.responsive]);
 
   useEffect(() => () => {
     if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
@@ -153,12 +174,16 @@ export function WebMonitor({ sessionId, locator, live, onSessionMissing, onSessi
   if (!sessionId) return <div className="findings-empty">打开 URL 会话后监视页面、请求和脚本。</div>;
 
   const open = Boolean(status?.open);
+  const exited = Boolean(status?.exited);
+  const alive = open && !exited && status?.responsive !== false;
+  const openLabel = exited ? "浏览器已退出" : alive ? "浏览器已开" : "浏览器无响应";
   const pageUrl = asChildText(status?.url ?? locator, "—");
   return <section className="findings">
     <div className="findings-toolbar">
-      <span className="findings-count">{open ? "浏览器已开" : live ? "浏览器未开" : asChildText(status?.state, "closed")}</span>
+      <span className="findings-count">{open ? openLabel : live ? "浏览器未开" : asChildText(status?.state, "closed")}</span>
       <button disabled={Boolean(busy)} onClick={() => void load()}>刷新</button>
       {live && !open && <button className="primary" disabled={Boolean(busy)} onClick={() => void call("打开浏览器", `/api/sessions/${encodeURIComponent(sessionId)}/web/open`, { url: nav || locator || "" })}>{busy === "打开浏览器" ? "打开中…" : "打开浏览器"}</button>}
+      {live && open && !alive && <button className="primary" disabled={Boolean(busy)} onClick={() => void reopen()}>{busy === "重开浏览器" ? "重开中…" : "重开浏览器"}</button>}
       {open && <button disabled={Boolean(busy)} onClick={() => void call("关闭浏览器", `/api/sessions/${encodeURIComponent(sessionId)}/web/close`)}>{busy === "关闭浏览器" ? "关闭中…" : "关闭浏览器"}</button>}
       {live && <button disabled={Boolean(busy)} onClick={() => void call("关闭会话", `/api/sessions/${encodeURIComponent(sessionId)}/close`)}>关闭会话</button>}
     </div>
@@ -170,10 +195,10 @@ export function WebMonitor({ sessionId, locator, live, onSessionMissing, onSessi
     <div className="hint">{pageUrl}</div>
     {live && <div className="session-open-path">
       <input aria-label="导航 URL" value={nav} onChange={(event) => setNav(event.target.value)} placeholder="https://example.com" />
-      <button type="button" disabled={!open || !nav.trim() || Boolean(busy)} onClick={() => void call("导航", `/api/sessions/${encodeURIComponent(sessionId)}/web/navigate`, { url: nav.trim() })}>{busy === "导航" ? "跳转中…" : "导航"}</button>
+      <button type="button" disabled={!alive || !nav.trim() || Boolean(busy)} onClick={() => void call("导航", `/api/sessions/${encodeURIComponent(sessionId)}/web/navigate`, { url: nav.trim() })}>{busy === "导航" ? "跳转中…" : "导航"}</button>
     </div>}
     <div className="desktop-preview">
-      {frameUrl ? <img src={frameUrl} alt="页面预览" /> : <div><b>{open ? "正在截取页面" : "等待浏览器"}</b><span>{open ? "打开页面后会出现截图。" : "点打开浏览器，或让 Agent 调用 web.open。"}</span></div>}
+      {frameUrl ? <img src={frameUrl} alt="页面预览" /> : <div><b>{alive ? "正在截取页面" : open ? "浏览器已退出" : "等待浏览器"}</b><span>{alive ? "打开页面后会出现截图。" : open ? "浏览器进程已不在，重开后继续；已抓到的请求与脚本仍在。" : "点打开浏览器，或让 Agent 调用 web.open。"}</span></div>}
     </div>
     <div className="timeline-list">
       {requests.slice(0, 8).map((row, index) => <div key={`${row.url ?? "req"}-${index}`}>

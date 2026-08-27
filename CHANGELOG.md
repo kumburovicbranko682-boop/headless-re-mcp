@@ -245,6 +245,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   None）与 `exited` 一并带出，`open` 仍为真（会话句柄在 close 前一直在）。`proxy.status` 工具文档
   （AI 读到的契约）也补上崩溃分支：`running:false, exited:true`，含 host/port/flow_count 与 error 原因，
   重启即恢复、已抓 flow 在此之前仍可读。
+- **监控台页面本身是这条诚实链的最后一个说谎者**。`WebMonitor` 面板只读 `open`：浏览器已崩溃时
+  工具栏仍写「浏览器已开」、导航按钮可点（点了必失败）、截图轮询每 4 秒对着尸体空转。现在面板
+  按 `exited`/`responsive` 区分「浏览器已退出」与「浏览器无响应」，停掉对死浏览器的截图轮询、
+  禁用导航，并给出一键「重开浏览器」（close 再 open，沿用当前地址栏/locator）；已抓到的请求与
+  脚本列表在重开前保持可见。SPA 产物已重新构建提交。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
