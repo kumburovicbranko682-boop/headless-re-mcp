@@ -29,25 +29,36 @@ _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
 
 
-def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
-    names: list[str] = []
-    total = 0
-    has_more = False
+def _paged_java_listing(
+    root: Path, *, offset: int, limit: int
+) -> tuple[list[str], int, bool]:
+    """Return one sorted, offset/limit page of the decompiled ``.java`` paths.
+
+    The whole set is collected (bounded by ``_MAX_COUNTED_FILES``) and sorted
+    before slicing so page N holds the same names on every call and pages do
+    not overlap. The earlier "keep the first ``cap`` in walk order, then sort
+    those" gave a sorted view of an arbitrary subset: ``has_more`` was raised
+    but there was no ``offset``, so every name past the first page was
+    unreachable, and the sorted first page was not the alphabetically first
+    ``cap`` names either.
+    """
     if not root.is_dir():
         return [], 0, False
+    names: list[str] = []
+    count_capped = False
     for path in root.rglob("*.java"):
         if not path.is_file():
             continue
-        total += 1
-        if len(names) < cap:
-            names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
-        if total >= _MAX_COUNTED_FILES:
-            has_more = True
+        names.append(str(path.relative_to(root)))
+        if len(names) >= _MAX_COUNTED_FILES:
+            count_capped = True
             break
     names.sort()
-    return names, total, has_more
+    total = len(names)
+    start = max(0, offset)
+    window = names[start : start + max(1, limit)]
+    has_more = count_capped or start + len(window) < total
+    return window, total, has_more
 
 
 class JadxError(RuntimeError):
@@ -92,8 +103,19 @@ class JadxClient:
         *,
         timeout: float = 300.0,
         no_imports: bool = False,
+        offset: int = 0,
+        limit: int | None = None,
     ) -> JsonObject:
-        """Decompile the whole APK into ``out_dir`` and summarise the tree."""
+        """Decompile the whole APK into ``out_dir`` and page the source tree.
+
+        ``java_files`` is one sorted ``offset``/``limit`` page of the decompiled
+        ``.java`` paths, and ``java_file_count`` is the full count (bounded by
+        ``_MAX_COUNTED_FILES``). ``limit`` is clamped to ``_MAX_LISTED_FILES``;
+        ``None`` uses that ceiling. Each call re-runs jadx, so paging re-exports
+        the tree -- it is deterministic, so the pages stay stable. A run that
+        exited non-zero but still wrote a tree carries exit_code, tool_failed
+        and stderr so a partial decompile is not read as complete.
+        """
         _, stderr, code = self._run(
             apk,
             ["--output-dir", str(out_dir), *(["--no-imports"] if no_imports else [])],
@@ -101,14 +123,18 @@ class JadxClient:
             timeout=timeout,
         )
         sources_root = out_dir / "sources"
-        java_files, java_file_count, has_more = _capped_java_listing(
-            out_dir, cap=_MAX_LISTED_FILES
+        cap = _MAX_LISTED_FILES if limit is None else max(1, min(int(limit), _MAX_LISTED_FILES))
+        start = max(0, int(offset))
+        java_files, java_file_count, has_more = _paged_java_listing(
+            out_dir, offset=start, limit=cap
         )
         result: JsonObject = {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
             "java_file_count": java_file_count,
             "java_files": java_files,
+            "count": len(java_files),
+            "offset": start,
             "has_more": has_more,
         }
         return _note_partial_decompile(result, code=code, stderr=stderr)

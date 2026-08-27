@@ -29,6 +29,8 @@ class _TrackingJadx:
         *,
         timeout: float = 300.0,
         no_imports: bool = False,
+        offset: int = 0,
+        limit: int | None = None,
     ) -> dict[str, Any]:
         out_dir.mkdir(parents=True, exist_ok=True)
         marker = out_dir / "jadx-export-started"
@@ -39,6 +41,8 @@ class _TrackingJadx:
             "sources_dir": str(out_dir / "sources"),
             "java_file_count": 1,
             "java_files": ["A.java"],
+            "count": 1,
+            "offset": offset,
         }
 
 
@@ -89,17 +93,19 @@ def test_apk_export_sources_does_not_report_success_if_the_session_closes_during
     apk = _write_minimal_apk(tmp_path / "app.apk")
 
     class _CloseThenExport(_TrackingJadx):
-        def export_sources(  # type: ignore[override]
+        def export_sources(
             self,
             apk: Path,
             out_dir: Path,
             *,
             timeout: float = 300.0,
             no_imports: bool = False,
+            offset: int = 0,
+            limit: int | None = None,
         ) -> dict[str, Any]:
             service.close_session(session_id)
             return super().export_sources(
-                apk, out_dir, timeout=timeout, no_imports=no_imports
+                apk, out_dir, timeout=timeout, no_imports=no_imports, offset=offset, limit=limit
             )
 
     tracker = _CloseThenExport()
