@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **267（150 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -564,6 +564,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   也就是给各导入分配索引的顺序。返回 `imports/count/total/offset/has_more`，`total` 上限 5000、越限
   置 `scan_capped`；`truncated` 在模块畸形或被截断、解析提前停止时为 true（已读到的条目照常返回）。
   非 WebAssembly 文件按 `invalid_params` 拒绝，超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.exports`：`wasm.imports` 的镜像，同样纯 Python 解析 .wasm 的 export 段，**不需要 wabt**。
+  导出就是模块交还给宿主的东西——JS 胶水能调用的函数、能触达的内存/表/全局量——即模块的公开 API，
+  是判断一个 blob 到底提供什么能力的第一手信息（导出 `_malloc`/`_free` 加一张表像 Emscripten 运行时，
+  只导出一个哈希函数则像垫片）。每行是 `name`、`kind`（func/table/memory/global）与 `index`——该类索引
+  空间里的位置，索引先数同类导入项、符合 WASM 规范，因此不是行号。返回
+  `exports/count/total/offset/has_more`，`total` 上限 5000、越限置 `scan_capped`；`truncated` 在模块
+  畸形或被截断时为 true（已读到的条目照常返回）。非 WebAssembly 文件按 `invalid_params` 拒绝，超过
+  16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

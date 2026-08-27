@@ -46,9 +46,15 @@ _WASM_MAGIC = b"\x00asm"
 _MAX_WASM_IMPORTS_COLLECT = 5000
 _MAX_WASM_IMPORTS_PAGE = 1000
 _MAX_WASM_NAME_LEN = 512
-# import descriptor kind byte -> external-kind name (WASM core spec).
+# external-kind byte -> name (WASM core spec). Imports and exports share this
+# same one-byte tag, so wasm.imports and wasm.exports both read from it.
 _WASM_IMPORT_KINDS = {0: "func", 1: "table", 2: "memory", 3: "global"}
 _WASM_IMPORT_SECTION_ID = 2
+# wasm.exports parses the export section the same wabt-free way, bounded by its
+# own collect/page caps (the per-name clamp above is shared).
+_MAX_WASM_EXPORTS_COLLECT = 5000
+_MAX_WASM_EXPORTS_PAGE = 1000
+_WASM_EXPORT_SECTION_ID = 7
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -262,6 +268,103 @@ def parse_wasm_imports(path: Path, *, offset: int = 0, limit: int = 100) -> Json
     window = rows[start : start + cap]
     return {
         "imports": window,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _parse_export_section(data: bytes) -> tuple[list[JsonObject], bool, bool]:
+    """Parse an export section body into rows; return (rows, scan_more, truncated)."""
+    rows: list[JsonObject] = []
+    scan_more = False
+    try:
+        count, pos = _read_uleb(data, 0)
+        for _ in range(count):
+            if len(rows) >= _MAX_WASM_EXPORTS_COLLECT:
+                scan_more = True
+                break
+            name, pos = _read_wasm_name(data, pos)
+            if pos >= len(data):
+                raise _WasmParseError("export kind truncated")
+            kind = data[pos]
+            pos += 1
+            index, pos = _read_uleb(data, pos)
+            rows.append(
+                {
+                    "name": name,
+                    "kind": _WASM_IMPORT_KINDS.get(kind, "unknown"),
+                    "index": index,
+                }
+            )
+    except _WasmParseError:
+        return rows, scan_more, True
+    return rows, scan_more, False
+
+
+def parse_wasm_exports(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a WebAssembly module's exports (its public surface), wabt-free.
+
+    The mirror of wasm.imports: it reads the .wasm binary directly in pure
+    Python, so unlike wasm.info / wasm.wat it needs no wabt installed. Exports
+    are what the module hands back to its host -- the functions the JS glue can
+    call and the memories, tables and globals it can reach -- so they are the
+    module's public API and the first thing to read when deciding what a blob
+    actually offers (an exported _malloc/_free and a table says an Emscripten
+    runtime; a single exported hash function says a shim). Each row is name,
+    kind (func, table, memory or global) and index, the position in that kind's
+    index space; note the index counts imported entries of the same kind first,
+    matching the WASM spec, so it is not a row number. Rows keep binary order.
+    Returns exports, count, total, offset and has_more so a filled page is not
+    read as every export; total is capped at 5000 with scan_capped when more may
+    exist, and truncated is true when a malformed or short module cut the parse
+    (the entries read so far are still returned). A file that is not a
+    WebAssembly module is refused as invalid_params, and one over 16 MiB as
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    rows: list[JsonObject] = []
+    scan_more = False
+    truncated = False
+    section_body: bytes | None = None
+    try:
+        pos = 8  # 4-byte magic + 4-byte version
+        total = len(raw)
+        while pos < total:
+            sec_id = raw[pos]
+            pos += 1
+            size, pos = _read_uleb(raw, pos)
+            end = pos + size
+            if end > total:
+                truncated = True
+                break
+            if sec_id == _WASM_EXPORT_SECTION_ID:
+                section_body = raw[pos:end]
+                break
+            pos = end
+    except _WasmParseError:
+        truncated = True
+    if section_body is not None:
+        rows, scan_more, body_truncated = _parse_export_section(section_body)
+        truncated = truncated or body_truncated
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_EXPORTS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "exports": window,
         "count": len(window),
         "total": len(rows),
         "offset": start,

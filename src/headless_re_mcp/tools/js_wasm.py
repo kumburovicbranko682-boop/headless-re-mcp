@@ -69,6 +69,33 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="wasm.exports")
+    def wasm_exports(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List a WebAssembly module's exports (its public surface), wabt-free.
+
+        The mirror of wasm.imports: it reads the .wasm binary directly in pure
+        Python, so unlike wasm.info / wasm.wat it needs no wabt installed.
+        Exports are what the module hands back to its host -- the functions the
+        JS glue can call and the memories, tables and globals it can reach -- so
+        they are the module's public API and the first thing to read when
+        deciding what a blob offers (an exported _malloc/_free and a table says
+        an Emscripten runtime; a single exported hash function says a shim).
+        Each row is name, kind (func, table, memory or global) and index, the
+        position in that kind's index space; the index counts imported entries
+        of the same kind first, per the WASM spec, so it is not a row number.
+        Answers with exports, count, total, offset and has_more so a filled page
+        is not read as every export; total is capped at 5000 with scan_capped
+        when more may exist, and truncated is true when a malformed or short
+        module cut the parse (entries read so far are still returned). A file
+        that is not a WebAssembly module is refused as invalid_params, one over
+        16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_exports(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.imports")
     def wasm_imports(
         path: str,
