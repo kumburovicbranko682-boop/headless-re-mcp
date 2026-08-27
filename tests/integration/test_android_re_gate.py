@@ -41,28 +41,31 @@ def _string_data(text: str) -> bytes:
 def _build_minimal_dex() -> bytes:
     """Assemble the smallest structurally valid classes.dex, byte by byte.
 
-    One class Lcom/gate/Sample; extending Object, with a single public-static
-    method secret()V whose body is [const-string v0, "gate-secret"; return-void].
-    That is exactly enough for androguard's AnalyzeAPK to build its real object
-    graph: a defined (non-external) ClassAnalysis, an EncodedMethod with a
-    descriptor and access flags, a referenced StringAnalysis, and an xref table.
-    Same in-process-fixture approach as the hand-assembled WASM module and the
-    compiled ELF fixture: no binary blob checked in, every byte explained here.
-    DEX rules honored: string_ids sorted by content, type_ids by string index,
-    adler32 checksum over bytes[12:] and SHA-1 signature over bytes[32:].
+    One class Lcom/gate/Sample; extending Object, with two public-static
+    methods: secret()V is [const-string v0, "gate-secret"; return-void] and
+    caller()V is [invoke-static {} secret; return-void]. That is exactly enough
+    for androguard's AnalyzeAPK to build its real object graph: a defined
+    (non-external) ClassAnalysis, EncodedMethods with descriptors and access
+    flags, a referenced StringAnalysis, and -- through the invoke-static -- a
+    non-empty xref table, so xrefs can prove the caller-rendering loop and not
+    just the found-but-uncalled answer. Same in-process-fixture approach as the
+    hand-assembled WASM module and the compiled ELF fixture: no binary blob
+    checked in, every byte explained here. DEX rules honored: string_ids sorted
+    by content, type_ids by string index, method_ids by (class, name), adler32
+    checksum over bytes[12:] and SHA-1 signature over bytes[32:].
     """
-    strings = ["Lcom/gate/Sample;", "Ljava/lang/Object;", "V", "gate-secret", "secret"]
-    s_gate, s_secret = 3, 4  # indices into the sorted pool used below
+    strings = ["Lcom/gate/Sample;", "Ljava/lang/Object;", "V", "caller", "gate-secret", "secret"]
+    s_caller, s_gate, s_secret = 3, 4, 5  # indices into the sorted pool used below
 
     header_size = 112
-    string_ids_off = header_size  # 5 * 4 bytes
-    type_ids_off = string_ids_off + 20  # 3 * 4 bytes
+    string_ids_off = header_size  # 6 * 4 bytes
+    type_ids_off = string_ids_off + 24  # 3 * 4 bytes
     proto_ids_off = type_ids_off + 12  # 1 * 12 bytes
-    method_ids_off = proto_ids_off + 12  # 1 * 8 bytes
-    class_defs_off = method_ids_off + 8  # 1 * 32 bytes
+    method_ids_off = proto_ids_off + 12  # 2 * 8 bytes
+    class_defs_off = method_ids_off + 16  # 1 * 32 bytes
     data_off = class_defs_off + 32
 
-    # --- data section: string_data, code_item, class_data, map_list ---
+    # --- data section: string_data, code_items, class_data, map_list ---
     data = bytearray()
     offset = data_off
     string_offsets = []
@@ -74,15 +77,27 @@ def _build_minimal_dex() -> bytes:
     while offset % 4:  # code_item is 4-byte aligned
         data += b"\x00"
         offset += 1
-    code_off = offset
+    caller_code_off = offset
+    # invoke-static {} method#1 (secret, format 35c with zero args); return-void.
+    insns = bytes([0x71, 0x00]) + struct.pack("<H", 1) + b"\x00\x00" + bytes([0x0E, 0x00])
+    code_item = struct.pack("<HHHHII", 0, 0, 0, 0, 0, len(insns) // 2) + insns
+    data += code_item
+    offset += len(code_item)
+    while offset % 4:
+        data += b"\x00"
+        offset += 1
+    secret_code_off = offset
+    # const-string v0, "gate-secret" (format 21c); return-void.
     insns = bytes([0x1A, 0x00]) + struct.pack("<H", s_gate) + bytes([0x0E, 0x00])
     code_item = struct.pack("<HHHHII", 1, 0, 0, 0, 0, len(insns) // 2) + insns
     data += code_item
     offset += len(code_item)
     class_data_off = offset
-    # 0 static fields, 0 instance fields, 1 direct method, 0 virtual methods;
-    # then method_idx_diff=0, access=public|static (0x9), code_off.
-    class_data = bytes([0, 0, 1, 0]) + _uleb128(0) + _uleb128(0x9) + _uleb128(code_off)
+    # 0 static fields, 0 instance fields, 2 direct methods, 0 virtual methods;
+    # per method: uleb method_idx_diff, access=public|static (0x9), code_off.
+    class_data = bytes([0, 0, 2, 0])
+    class_data += _uleb128(0) + _uleb128(0x9) + _uleb128(caller_code_off)  # method 0: caller
+    class_data += _uleb128(1) + _uleb128(0x9) + _uleb128(secret_code_off)  # method 1: secret
     data += class_data
     offset += len(class_data)
     while offset % 4:  # map_list is 4-byte aligned
@@ -91,13 +106,13 @@ def _build_minimal_dex() -> bytes:
     map_off = offset
     map_items = [  # (TYPE_*_ITEM code, item count, section offset), ordered by offset
         (0x0000, 1, 0),
-        (0x0001, 5, string_ids_off),
+        (0x0001, 6, string_ids_off),
         (0x0002, 3, type_ids_off),
         (0x0003, 1, proto_ids_off),
-        (0x0005, 1, method_ids_off),
+        (0x0005, 2, method_ids_off),
         (0x0006, 1, class_defs_off),
-        (0x2002, 5, data_off),
-        (0x2001, 1, code_off),
+        (0x2002, 6, data_off),
+        (0x2001, 2, caller_code_off),
         (0x2000, 1, class_data_off),
         (0x1000, 1, map_off),
     ]
@@ -112,7 +127,7 @@ def _build_minimal_dex() -> bytes:
     string_ids = b"".join(struct.pack("<I", o) for o in string_offsets)
     type_ids = b"".join(struct.pack("<I", i) for i in (0, 1, 2))  # Sample, Object, V
     proto_ids = struct.pack("<III", 2, 2, 0)  # shorty "V", return type V, no params
-    method_ids = struct.pack("<HHI", 0, 0, s_secret)  # Sample.secret with proto 0
+    method_ids = struct.pack("<HHI", 0, 0, s_caller) + struct.pack("<HHI", 0, 0, s_secret)
     class_defs = struct.pack(
         "<IIIIIIII", 0, 0x1, 1, 0, 0xFFFFFFFF, 0, class_data_off, 0
     )  # public Sample extends Object, no source file / annotations / static values
@@ -123,10 +138,10 @@ def _build_minimal_dex() -> bytes:
     struct.pack_into("<I", header, 36, header_size)
     struct.pack_into("<I", header, 40, 0x12345678)  # endian_tag
     struct.pack_into("<I", header, 52, map_off)
-    struct.pack_into("<II", header, 56, 5, string_ids_off)
+    struct.pack_into("<II", header, 56, 6, string_ids_off)
     struct.pack_into("<II", header, 64, 3, type_ids_off)
     struct.pack_into("<II", header, 72, 1, proto_ids_off)
-    struct.pack_into("<II", header, 88, 1, method_ids_off)
+    struct.pack_into("<II", header, 88, 2, method_ids_off)
     struct.pack_into("<II", header, 96, 1, class_defs_off)
     struct.pack_into("<II", header, 104, file_size - data_off, data_off)
 
@@ -217,10 +232,10 @@ def test_android_dex_operations_parse_a_real_dex(tmp_path: Path) -> None:
     can only exercise the backend_error path -- AnalyzeAPK rejects the file
     before any analysis object exists. The successful path (get_classes with
     is_external filtering, get_methods with descriptor/access rendering,
-    get_strings, and the xref scan by method name) therefore ran only against
-    fake objects in unit tests. androguard needs no external tool, just a
-    structurally valid .dex, so this hand-assembles the smallest real one and
-    drives all four operations through the service on it (skip != pass when
+    get_strings, and the xref scan with its caller-rendering loop) therefore ran
+    only against fake objects in unit tests. androguard needs no external tool,
+    just a structurally valid .dex, so this hand-assembles the smallest real one
+    and drives all four operations through the service on it (skip != pass when
     androguard is absent).
     """
     if not ApkClient().available:
@@ -241,7 +256,8 @@ def test_android_dex_operations_parse_a_real_dex(tmp_path: Path) -> None:
         methods = service.apk_methods(session_id, "Lcom/gate/Sample;")
         assert methods.ok, methods.error
         assert methods.data["methods"] == [
-            {"name": "secret", "descriptor": "()V", "access": "public static"}
+            {"name": "caller", "descriptor": "()V", "access": "public static"},
+            {"name": "secret", "descriptor": "()V", "access": "public static"},
         ]
 
         strings = service.apk_strings(session_id)
@@ -249,13 +265,21 @@ def test_android_dex_operations_parse_a_real_dex(tmp_path: Path) -> None:
         # The const-string operand must surface among the pool entries.
         assert "gate-secret" in strings.data["strings"]
 
+        # The invoke-static in caller() must land in androguard's xref table, so
+        # the caller-rendering loop -- not just the found-but-uncalled branch --
+        # runs against a real analysis.
         xrefs = service.apk_xrefs(session_id, "secret")
         assert xrefs.ok, xrefs.error
-        # Nothing calls secret(), so the scan finds the method and reports no
-        # callers -- a real (empty) answer, not an error envelope.
         assert xrefs.data["method_name"] == "secret"
-        assert xrefs.data["callers"] == []
-        assert xrefs.data["count"] == 0
+        assert xrefs.data["callers"] == [{"class": "Lcom/gate/Sample;", "method": "caller"}]
+        assert xrefs.data["count"] == 1
+
+        # And the uncalled method still gets the honest empty answer, not an
+        # error envelope.
+        uncalled = service.apk_xrefs(session_id, "caller")
+        assert uncalled.ok, uncalled.error
+        assert uncalled.data["callers"] == []
+        assert uncalled.data["count"] == 0
     finally:
         service.close_all()
 

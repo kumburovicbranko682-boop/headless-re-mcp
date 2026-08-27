@@ -56,15 +56,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   在集成层只走过 `backend_error` 分支，成功路径（`get_classes` 的 external 过滤、`get_methods` 的
   descriptor/access 渲染、`get_strings`、按方法名扫 xref）只在单元层对着假对象跑。androguard 不需要
   外部工具，只要一个结构合法的 `.dex`,所以照 WASM 模块手工组装、ELF 夹具现场编译的同一思路,在测试里
-  逐字节组装出最小的真 DEX:一个类 `Lcom/gate/Sample;`(继承 Object)带一个 `public static secret()V`,
-  方法体是 `const-string v0, "gate-secret"; return-void`——刚好够 androguard 建出真实对象图
-  (非 external 的 ClassAnalysis、带 descriptor 与 access 的 EncodedMethod、被引用的 StringAnalysis、
-  xref 表)。遵守 DEX 规则:string_ids 按内容排序、type_ids 按 string 索引排序、adler32 校验和
-  (bytes[12:])与 SHA-1 签名(bytes[32:])。新 gate `test_android_dex_operations_parse_a_real_dex`
-  经 service 层驱动全部四个操作并断言:classes 恰为该类、methods 恰为 `secret ()V public static`、
-  strings 含 `gate-secret`、`xrefs("secret")` 找到方法且 callers 为空(真实的空答案,不是错误信封)。
-  androguard 缺席时明确 skip(skip != pass);linux-integration CI 装了 `[android]`,该 gate 在 CI
-  上真跑。Android 线自此四条 DEX 内容操作全部有真后端回归护栏。
+  逐字节组装出最小的真 DEX:一个类 `Lcom/gate/Sample;`(继承 Object)带两个 `public static` 方法——
+  `secret()V` 的方法体是 `const-string v0, "gate-secret"; return-void`,`caller()V` 的方法体是
+  `invoke-static {} secret; return-void`——刚好够 androguard 建出真实对象图(非 external 的
+  ClassAnalysis、带 descriptor 与 access 的 EncodedMethod、被引用的 StringAnalysis,以及经由那条
+  invoke-static 得到的**非空 xref 表**,让 xrefs 的 caller 渲染循环也吃到真数据,而不只是「找到但没人调用」
+  的空答案分支)。遵守 DEX 规则:string_ids 按内容排序、type_ids 按 string 索引排序、method_ids 按
+  (class, name) 排序、adler32 校验和(bytes[12:])与 SHA-1 签名(bytes[32:])。新 gate
+  `test_android_dex_operations_parse_a_real_dex` 经 service 层驱动全部四个操作并断言:classes 恰为该类、
+  methods 恰为 `caller` 与 `secret`(均 `()V public static`)、strings 含 `gate-secret`、
+  `xrefs("secret")` 回真实调用者 `{class: Lcom/gate/Sample;, method: caller}`,而 `xrefs("caller")`
+  回诚实的空 callers(真实的空答案,不是错误信封)。androguard 缺席时明确 skip(skip != pass);
+  linux-integration CI 装了 `[android]`,该 gate 在 CI 上真跑。Android 线自此四条 DEX 内容操作
+  (含 xref 渲染路径)全部有真后端回归护栏。
 
 ### 修复（浏览器 smoke 的 eager import 让整个 tests/integration 收集直接崩，绕过了自己写的 skip != pass 护栏）
 
