@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock
@@ -453,3 +454,68 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def test_find_analyze_headless_prefers_the_launcher_for_this_os(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Ghidra install ships both launchers; the wrong one cannot be spawned.
+
+    Every install has analyzeHeadless.bat (Windows) beside the extensionless
+    POSIX shell script. Picking .bat everywhere meant a Linux/macOS host chose
+    the batch file -- is_file() is true for it -- then failed to launch it, so
+    Ghidra never ran off Windows. Each OS must pick its own launcher.
+    """
+    home = tmp_path / "ghidra"
+    support = home / "support"
+    support.mkdir(parents=True)
+    posix = support / "analyzeHeadless"
+    windows = support / "analyzeHeadless.bat"
+    posix.write_text("#!/bin/sh\n", encoding="utf-8")
+    windows.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(home) == posix
+
+    monkeypatch.setattr(ghidra_client.os, "name", "nt")
+    assert ghidra_client._find_analyze_headless(home) == windows
+
+
+def test_find_analyze_headless_falls_back_to_the_other_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trimmed install with only the .bat must still resolve off Windows."""
+    home = tmp_path / "ghidra"
+    support = home / "support"
+    support.mkdir(parents=True)
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(home) == support / "analyzeHeadless.bat"
+
+
+def test_safe_project_dir_relocates_a_dotted_path_off_the_dot_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ghidra rejects any project path element starting with a dot.
+
+    The default artifact root is ~/.local/share/..., so a project there aborts
+    headless before analysis ("Path element starting with '.' is not
+    permitted"). The relocated project must live somewhere with no dot element.
+    """
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/tmp")
+    dotted = Path("/home/ubuntu/.local/share/headless-re-mcp/artifacts/ghidra/sess-1")
+
+    relocated = ghidra_client._ghidra_safe_project_dir(dotted)
+
+    assert not any(part.startswith(".") for part in relocated.parts)
+    # Keyed by the requested directory's own name so two sessions stay apart.
+    assert relocated.name == "sess-1"
+    assert relocated == Path("/tmp/headless-re-ghidra/sess-1")
+
+
+def test_safe_project_dir_leaves_a_clean_path_untouched() -> None:
+    """A dot-free location is already valid and must be used as-is."""
+    clean = Path("/srv/work/ghidra/sess-2").resolve()
+
+    assert ghidra_client._ghidra_safe_project_dir(clean) == clean

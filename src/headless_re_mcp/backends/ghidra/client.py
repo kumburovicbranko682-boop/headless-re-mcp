@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -12,7 +13,7 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
-_EXPORT_SCRIPT = "ExportJson.py"
+_EXPORT_SCRIPT = "ExportJson.java"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
@@ -192,7 +193,7 @@ class GhidraClient:
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         if not (_SCRIPT_DIR / _EXPORT_SCRIPT).is_file():
-            raise GhidraError("backend_error", "ExportJson.py missing from package")
+            raise GhidraError("backend_error", "ExportJson.java missing from package")
         project_dir.mkdir(parents=True, exist_ok=True)
         out_path = project_dir / f"export_{mode}.json"
         if out_path.exists():
@@ -300,9 +301,11 @@ class GhidraClient:
         # parses last, still wins.
         existing = env.get("JAVA_TOOL_OPTIONS", "").strip()
         env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap} {existing}".strip()
+        ghidra_project = _ghidra_safe_project_dir(project_dir)
+        ghidra_project.mkdir(parents=True, exist_ok=True)
         cmd = [
             str(self.analyze),
-            str(project_dir),
+            str(ghidra_project),
             "HeadlessRE",
             "-import",
             str(binary),
@@ -340,6 +343,28 @@ class GhidraClient:
         return stdout, stderr, int(completed.returncode)
 
 
+def _ghidra_safe_project_dir(requested: Path) -> Path:
+    """A Ghidra-safe location for the throwaway analysis project.
+
+    analyzeHeadless validates every element of the project directory path
+    through NamingUtilities.checkName, which forbids any element that starts
+    with a dot. The default artifact root lives under ``~/.local/share`` on
+    Linux, so a project placed there aborts headless before analysis with
+    "Path element starting with '.' is not permitted" -- Ghidra never ran at
+    all under the shipped defaults. The project is always imported fresh and
+    deleted (-deleteProject), never reused, so when the requested path has a
+    dot element we relocate just the project under the system temp dir (whose
+    elements are dot-free), keyed by the requested directory's name so distinct
+    sessions do not collide. The export JSON the caller reads back is written
+    from a separate path argument and is unaffected.
+    """
+    resolved = requested.expanduser().resolve()
+    if not any(part.startswith(".") for part in resolved.parts):
+        return resolved
+    safe_root = Path(tempfile.gettempdir()) / "headless-re-ghidra"
+    return safe_root / resolved.name
+
+
 def _export_has_content(payload: JsonObject, mode: str) -> bool:
     if mode == "decompile":
         text = payload.get("decompiled")
@@ -356,13 +381,20 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
-        candidate = home / rel
-        if candidate.is_file():
-            return candidate
+    # A Ghidra install ships both launchers side by side: analyzeHeadless.bat
+    # for Windows and the extensionless POSIX shell script. Picking .bat first
+    # everywhere meant a Linux/macOS host selected the batch file -- is_file()
+    # is true for it -- and then failed to spawn it ("Permission denied", it is
+    # not +x, or an exec-format error), so Ghidra never ran off Windows even
+    # when correctly installed. Prefer the launcher that matches this OS.
+    names = (
+        ("analyzeHeadless.bat", "analyzeHeadless")
+        if os.name == "nt"
+        else ("analyzeHeadless", "analyzeHeadless.bat")
+    )
+    for parent in ("support", ""):
+        for name in names:
+            candidate = home / parent / name if parent else home / name
+            if candidate.is_file():
+                return candidate
     return None
