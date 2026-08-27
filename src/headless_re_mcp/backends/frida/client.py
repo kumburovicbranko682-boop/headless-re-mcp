@@ -103,18 +103,21 @@ rpc.exports = {
     }
     return {modules: items, total: all.length};
   },
-  exports: function (moduleName, limit) {
+  exports: function (moduleName, offset, limit) {
+    var start = Math.max(0, offset);
     var mod = Process.findModuleByName(moduleName);
     if (mod === null) {
-      return {found: false, exports: []};
+      return {found: false, exports: [], total: 0, offset: start};
     }
     var all = mod.enumerateExports();
     var items = [];
-    for (var i = 0; i < all.length && items.length < limit; i++) {
+    var cap = Math.max(0, limit);
+    for (var i = start; i < all.length && items.length < cap; i++) {
       var e = all[i];
       items.push({name: e.name, address: e.address.toString(), type: e.type});
     }
-    return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
+    return {found: true, module: mod.name, base: mod.base.toString(),
+            exports: items, total: all.length, offset: start};
   },
   read: function (address, size) {
     return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
@@ -355,22 +358,32 @@ class FridaClient:
         module_name: str,
         *,
         allowed_pid: int,
+        offset: int = 0,
         limit: int = 64,
     ) -> JsonObject:
         self._require(pid, allowed_pid)
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
+        # Floored here as well as at the tool schema: a negative offset would
+        # slice from the tail of the export table and mislabel the window.
+        if type(offset) is not int or offset < 0:
+            raise FridaError("invalid_params", "offset must be a non-negative integer")
         capped = max(1, min(int(limit), 512))
+        start = max(0, int(offset))
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
-            raw = script.exports_sync.exports(module_name.strip(), capped + 1)
+            raw = script.exports_sync.exports(module_name.strip(), start, capped)
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
-            page, has_more = _page(list(raw.get("exports") or []), capped)
+            # enumerateExports() materialises the whole table on-device, so the
+            # script slices [start, start+capped) and counts total there; unlike
+            # the java/applications probes there is no early-stop to preserve.
+            held = list(raw.get("exports") or [])
+            total = int(raw.get("total") or (start + len(held)))
             items = []
-            for item in page:
+            for item in held[:capped]:
                 if not isinstance(item, dict):
                     continue
                 items.append(
@@ -386,7 +399,11 @@ class FridaClient:
                 "base": str(raw.get("base") or ""),
                 "exports": items,
                 "count": len(items),
-                "has_more": has_more,
+                "total": total,
+                "offset": start,
+                # A page past the collected total means the earlier pages, not a
+                # short read, so key off position rather than count alone.
+                "has_more": start + len(items) < total,
             }
         finally:
             with contextlib.suppress(Exception):

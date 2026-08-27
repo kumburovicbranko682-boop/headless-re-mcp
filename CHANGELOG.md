@@ -808,6 +808,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
+- **`frida.exports` 报了 `has_more` 却没有 `offset`，第一页之后的导出够不着**。和 `frida.modules`
+  同源：`enumerateExports()` 本就把整张导出表在设备上物化出来，只回前 `limit` 条（上限 512）；
+  libc 这类模块的导出动辄上千，超过一页的部分只能看见「还有」却翻不过去。因为整表已物化、
+  不像 java/applications 那样需要用 `limit+1` 早停来省去数大集合，脚本改为切
+  `[offset, offset+limit)` 窗口并回 `total`/`offset`，后端按位置算 `has_more`；`offset` 在工具
+  schema 与后端都钉在非负（负值会从尾部切窗）。至此 modules 与 exports 这两个同步全量读取器
+  都成了带 `offset`/`total` 的标准分页读取器。
 
 ### 新增（项目文档）
 

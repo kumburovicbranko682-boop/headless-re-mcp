@@ -80,15 +80,21 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     assert "has_more" in doc
 
 class _ExportApi:
-    def exports(self, name: str, count: int) -> dict[str, Any]:
+    def exports(self, name: str, offset: int, limit: int) -> dict[str, Any]:
+        rows = [
+            {"name": f"e{index}", "address": "0x2", "type": "function"}
+            for index in range(25)
+        ]
+        start = max(0, offset)
+        # Mirror the on-device script: window at offset plus the full table
+        # count so page position, not just count, drives has_more.
         return {
             "found": True,
             "module": name,
             "base": "0x1",
-            "exports": [
-                {"name": f"e{index}", "address": "0x2", "type": "function"}
-                for index in range(int(count))
-            ],
+            "exports": rows[start : start + max(0, limit)],
+            "total": len(rows),
+            "offset": start,
         }
 
 
@@ -124,10 +130,42 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     client._frida = _ExportFrida()
     payload = client.exports(1, "ntdll.dll", allowed_pid=1, limit=10)
     assert payload["count"] == 10
+    assert payload["total"] == 25
+    assert payload["offset"] == 0
     assert len(payload["exports"]) == 10
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.exports")
     assert "has_more" in doc
+    assert "offset" in doc
+
+
+def test_frida_exports_offset_reaches_past_the_first_page() -> None:
+    """exports named has_more but had no offset to reach the rest of the table.
+
+    A module with more exports than a page could hold (libc-scale tables run to
+    thousands, the cap is 512) left everything past the cap unreachable. Offset
+    makes the tail addressable, and the last page reports has_more False without
+    overrunning the collected total.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _ExportFrida()
+    page = client.exports(1, "ntdll.dll", allowed_pid=1, offset=20, limit=10)
+    assert page["offset"] == 20
+    assert page["total"] == 25
+    assert page["count"] == 5
+    assert [row["name"] for row in page["exports"]] == [f"e{i}" for i in range(20, 25)]
+    assert page["has_more"] is False
+
+
+def test_frida_exports_refuses_a_negative_offset() -> None:
+    """A negative offset would slice from the tail and mislabel the window."""
+    client = FridaClient()
+    client._available = True
+    client._frida = _ExportFrida()
+    with pytest.raises(FridaError) as caught:
+        client.exports(1, "ntdll.dll", allowed_pid=1, offset=-1, limit=10)
+    assert caught.value.code == "invalid_params"
 
 
 class _Dev:
