@@ -1255,6 +1255,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
 
+### 修复（Playwright 运行线程无界增长）
+
+- `web.*` 每个浏览器会话都由一个 `_Runner` 守护线程串行执行 Playwright 调用。一旦某次调用
+  在驱动里卡死(wedged),该线程会永久阻塞在 driver 上、无法中断,只能随进程退出而结束;
+  但 `close` 会照常返回、`open` 又能新建下一个会话,于是反复的 open/close(每次都卡)会让
+  卡死线程无上限地堆积,最终吃满线程与内存。现以 `BoundedSemaphore(_MAX_RUNNER_THREADS=16)`
+  给存活的 runner 线程封顶:槽位只在 `_loop` 真正退出(收到关闭哨兵)时释放,卡死线程会一直
+  占着槽位——这正是目的所在,一个卡在 driver 里的线程不该腾出容量给只会再卡一次的替补;
+  槽位耗尽时新建会话直接以 `resource_exhausted` 拒绝,而不是继续无界起线程。
+
 ### 变更（Android 后端清理）
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
