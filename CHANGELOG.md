@@ -60,9 +60,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   私有/隔离进程命名成 `包名:子进程`)的行;`com.example.appstore` / `com.example.app2` 不再命中。PID
   仍从行首的数字列取(兼容 `USER PID …` 的 toybox 与 `PID USER …` 的 busybox 两种排布),残留数照旧封顶 16
   条防止进程表爆表。`pidof` 主路径本就精确匹配,不受影响。
+- 同一函数还有一条诚实性漏洞:adbutils 有时把 adb 主机端自己的 `adb:`/`error:` 行当 stdout 回而不抛异常
+  (offline 设备答文本命令即如此),而 `adb: device 'x' not found` 这种形态含 "not found"——正是缺失-pidof
+  分支所认的词,于是它被当成"pidof 缺失"落进 ps 回退,ps 那边同样的主机错误又被读成空进程表,`force_stop`
+  遂对一个从没真正核对过的包回 `stopped=true`。现在 pidof 输出与 ps 回退输出都先过 `_is_host_error_output`:
+  是主机错误就回 None,让 `force_stop` 保持它在探针抛错时本就给出的诚实 null(而非假的已停)。
 - 新增回归:前缀相邻的邻居在跑时 `force_stop` 仍回 `stopped=true`/`remaining_pids=[]`、目标包及其
   `包名:子进程` 行被如实计入、`_pids_from_ps` 精确匹配名字(拒 `app2`/`appstore`)、空行与表头不崩、
-  海量进程表封顶 16 条。
+  海量进程表封顶 16 条;pidof 回主机错误串时保持 null 且不触发 ps 回退、ps 回退回主机错误串时也保持 null。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
