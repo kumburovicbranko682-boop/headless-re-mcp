@@ -66,6 +66,7 @@ from headless_re_mcp.unpack.session import (
     create_unpack_session,
     ensure_unpack_active,
     fail_unpack_session,
+    is_terminal_unpack_phase,
     persist_state_snapshot,
     transition,
     write_timeline_jsonl,
@@ -90,6 +91,11 @@ JsonObject = dict[str, Any]
 
 # How many memory regions one OEP scoring pass will look at.
 _OEP_REGION_SNAPSHOT_LIMIT = 512
+
+
+def _unpack_state_is_terminal(state: UnpackSessionState) -> bool:
+    """Terminal predicate for the state owner's monotonic write guard."""
+    return is_terminal_unpack_phase(state.phase)
 
 
 def _refuse_rebuild_that_will_not_fit(
@@ -2125,17 +2131,26 @@ class UnpackMixin:
         return (
             self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id / "session"
         )
-    def _store_unpack_session(self, state: UnpackSessionState) -> None:
-        self._unpack_owner.put(state.session_id, state)
+    def _store_unpack_session(self, state: UnpackSessionState) -> UnpackSessionState:
+        # Compare-and-set under the owner lock: a terminal session must never be
+        # revived by a slower, abandoned worker storing an active phase on top of
+        # a cancel/fail. ``put_monotonic`` returns the retained terminal state when
+        # it rejects such a write, so we persist and return what is authoritative.
+        effective = self._unpack_owner.put_monotonic(
+            state.session_id,
+            state,
+            is_terminal=_unpack_state_is_terminal,
+        )
 
         def write(directory: Path) -> None:
-            write_timeline_jsonl(state, directory / "timeline.jsonl")
-            persist_state_snapshot(state, directory / "state.json")
+            write_timeline_jsonl(effective, directory / "timeline.jsonl")
+            persist_state_snapshot(effective, directory / "state.json")
 
         self.repository.persist_unpack_state(
-            state.session_id,
+            effective.session_id,
             write=write,
         )
+        return effective
     def _guard_unpack_active(
         self,
         session_id: str,
