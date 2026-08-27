@@ -8,8 +8,13 @@ reported as a running capture.
 
 from __future__ import annotations
 
+import http.server
+import json
 import socket
+import threading
 import time
+import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +26,21 @@ def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
+
+
+class _HelloHandler(http.server.BaseHTTPRequestHandler):
+    """A one-route upstream so the proxy has a real flow to record."""
+
+    def do_GET(self) -> None:
+        body = b"hello-through-proxy"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args: object) -> None:  # keep the test output clean
+        return
 
 
 def _mitmproxy_available() -> bool:
@@ -119,3 +139,68 @@ def test_close_all_releases_every_running_capture() -> None:
             time.sleep(0.1)
         else:
             pytest.fail(f"port {port} still accepting after close_all")
+
+
+@pytest.mark.integration
+def test_proxy_records_a_real_request_and_exports_it_to_har(tmp_path: Path) -> None:
+    """Route a real request through the proxy; it must be captured and exported.
+
+    The other gates prove the lifecycle (start/stop/port); this proves the
+    capability they exist for -- that traffic through the proxy is recorded and
+    reaches a spec-valid HAR entry. A loopback HTTP server is the upstream (plain
+    HTTP, so no CA/TLS setup), and a urllib client is pointed at the proxy via an
+    explicit opener so no ambient http_proxy env leaks in. Without this, a break
+    that left the recorder wired to nothing -- start still "running", stop still
+    freeing the port -- would pass every lifecycle assertion while capturing
+    zero flows. skip != pass: skips only when mitmproxy is unavailable.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy capture Gate not run (skip != pass)")
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _HelloHandler)
+    upstream_port = server.server_address[1]
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("capture", host="127.0.0.1", port=proxy_port)
+    try:
+        target = f"http://127.0.0.1:{upstream_port}/probe"
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+        )
+        with opener.open(target, timeout=10.0) as response:
+            assert response.status == 200
+            assert response.read() == b"hello-through-proxy"
+
+        # The flow is recorded on mitmproxy's response hook, which fires slightly
+        # after the client's own read returns; poll rather than assume ordering.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if backend.status("capture")["flow_count"] >= 1:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("proxy captured no flow for a request routed through it")
+
+        flows = backend.flows("capture")
+        assert flows["total"] >= 1
+        recorded = [f for f in flows["flows"] if f.get("url") == target]
+        assert recorded, f"the captured flow list does not contain {target}: {flows['flows']}"
+        assert recorded[0]["method"] == "GET"
+        assert recorded[0]["status"] == 200
+
+        exported = backend.export_har("capture", tmp_path / "capture.har")
+        assert exported["entry_count"] >= 1
+        assert exported["size"] == (tmp_path / "capture.har").stat().st_size
+
+        document = json.loads((tmp_path / "capture.har").read_text(encoding="utf-8"))
+        entries = document["log"]["entries"]
+        assert any(entry["request"]["url"] == target for entry in entries)
+        matched = next(entry for entry in entries if entry["request"]["url"] == target)
+        assert matched["response"]["status"] == 200
+    finally:
+        backend.close_all()
+        server.shutdown()
+        server_thread.join(timeout=5.0)
