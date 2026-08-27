@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（web：补上「抓一条真响应体并解码 + 落 HAR」——CDP gate 只到 DOM 快照）
+
+- **现场 Web CDP gate（`test_web_cdp_open_and_inspect`）开一个 `data:` URL，跑到 `dom_snapshot`
+  就停了——`web.network_get`（CDP `Network.getResponseBody`，从活页里取响应体的唯一手段）与
+  `web.har_export` 整条抽取路径从没真跑过。** 这两个都是版本敏感的 CDP/Playwright 面：协议或
+  驱动一旦漂移（frida 17 那类只在运行期炸的破坏），基于 fake 的测试照样过，只在对真浏览器跑
+  时才炸。新增 `test_web_network_capture_gate.py`：起一个一次性同源本地 HTTP 服务，其页面
+  `fetch()` 一个 JSON 端点，用真 CDP 浏览器打开它，再钉住该子资源请求被抓到、`network_get`
+  解出端点的**真实响应体**（`base64_encoded=False`、无 `body_error`，JSON 可 `json.loads` 回读、
+  `marker` 命中），并验证 `export_har` 落出含该端点 URL 的条目。缺 Playwright/Chromium 时明确
+  skip（skip≠pass）。Chromium 实测通过。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
