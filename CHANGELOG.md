@@ -268,6 +268,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   运行时"的问题),然后按 `-k wasm` 跑那两条 gate——对提交的 `sample_module.wasm` 夹具做 wasm2wat
   反汇编与 wasm-objdump 段枚举。同样先 `wasm2wat --version`:装失败就变红,不让"跳过=看着绿"混过去。
   本机用 wabt 1.0.34 对齐 CI(Ubuntu noble universe 里就是这个版本)验证两条 gate 均通过。
+- **代理生命周期 gate 也进 CI 真跑**。mitmproxy 是纯 pip 依赖、gate 全程 localhost,`linux-quality`
+  再加一步:`pip install -e ".[proxy]"` 后整跑 `test_proxy_lifecycle_gate.py`(起停/端口释放/占用拒绝/
+  多会话/抓包-读取-重放-导出)。这条尤其值得进 CI:上面那个 `No such option: rfile` 竞态只有在同一进程
+  里起多个代理时才现形,单测替代不了;把整条 gate 钉进每次 PR,正好守住这次修复不回归。
 - **同一条"探针别谎报就绪"的规矩接着补到启动器类工具:jadx / apktool / apksigner / webcrack**。
   这四个都不是自带运行时的原生二进制——jadx、apktool、apksigner 是启动 JVM 的脚本,webcrack 跑在
   node 上。可 `probe_optional_tool` 之前只看启动器本身在不在 PATH(或配置路径)上,于是一台装了 jadx
