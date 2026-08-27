@@ -7,7 +7,13 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import contextlib
+import threading
+import time
+from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -34,6 +40,63 @@ def _browser_available() -> bool:
     except Exception:
         return False
     return True
+
+
+_SITE_HTML = (
+    "<!doctype html><html><head><title>net-gate</title>"
+    '<script src="/app.js"></script></head>'
+    "<body>hello-net</body></html>"
+)
+_SITE_JS_MARKER = "net-gate-marker-9449"
+_SITE_JS = f"console.log('net-gate-ready'); window.__netgate = '{_SITE_JS_MARKER}';\n"
+
+
+class _GateHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:  # silence per-request logging
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path == "/app.js":
+            body, ctype = _SITE_JS.encode("utf-8"), "application/javascript"
+        else:
+            body, ctype = _SITE_HTML.encode("utf-8"), "text/html"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextlib.contextmanager
+def _local_site() -> Iterator[str]:
+    """Serve a two-resource page from localhost so CDP capture has real traffic.
+
+    A ``data:`` URL never crosses the network stack, so it cannot prove the
+    ``Network.*`` capture path. A tiny loopback server (document + a JS
+    subresource that logs to the console) gives the browser genuine requests to
+    record without reaching the internet.
+    """
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _GateHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        server.server_close()
+
+
+def _poll(fn: Callable[[], Any], predicate: Callable[[Any], bool], *, tries: int = 40) -> Any:
+    """Re-run ``fn`` until ``predicate`` holds; CDP telemetry arrives async."""
+    result = fn()
+    for _ in range(tries):
+        if predicate(result):
+            return result
+        time.sleep(0.25)
+        result = fn()
+    return result
 
 
 @pytest.mark.integration
@@ -67,6 +130,99 @@ def test_web_cdp_open_and_inspect() -> None:
             service.web_close(session_id)
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None:
+    """Prove the CDP capture surface beyond DOM: network, bodies, console,
+    script source, screenshot, HAR.
+
+    ``test_web_cdp_open_and_inspect`` only reaches scripts/console/DOM on a
+    ``data:`` URL, which never touches the network stack -- so ``network_list``,
+    ``network_get``, ``script_source``, ``screenshot`` and ``har_export`` (the
+    reasons the CDP line exists) had no end-to-end coverage. A loopback page
+    that pulls a JS subresource and logs to the console gives the browser real
+    traffic to record; every reader below is then asserted against that traffic.
+    CDP telemetry is delivered asynchronously, so the request/console/script
+    reads poll briefly. skip != pass when playwright or chromium is unavailable.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    with _local_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                # Network: the /app.js subresource must have been captured, 200.
+                listing = _poll(
+                    lambda: service.web_network_list(session_id, limit=200),
+                    lambda r: r.ok
+                    and any(str(x.get("url", "")).endswith("/app.js") for x in r.data["requests"]),
+                )
+                assert listing.ok, listing.error
+                app = [
+                    x
+                    for x in listing.data["requests"]
+                    if str(x.get("url", "")).endswith("/app.js")
+                ]
+                assert app, listing.data["requests"]
+                assert app[0]["status"] == 200, app[0]
+
+                # network_get returns the real response body for that request.
+                body = service.web_network_get(session_id, str(app[0]["requestId"]))
+                assert body.ok, body.error
+                assert _SITE_JS_MARKER in body.data.get("body", ""), body.data
+
+                # Console: the subresource logged a line while the page loaded.
+                console = _poll(
+                    lambda: service.web_console(session_id),
+                    lambda r: r.ok
+                    and any("net-gate-ready" in str(e.get("text", "")) for e in r.data["console"]),
+                )
+                assert console.ok, console.error
+                assert any(
+                    "net-gate-ready" in str(e.get("text", "")) for e in console.data["console"]
+                ), console.data["console"]
+
+                # Scripts + script_source: recover the subresource's JS text.
+                scripts = _poll(
+                    lambda: service.web_scripts(session_id, limit=200),
+                    lambda r: r.ok
+                    and any(str(s.get("url", "")).endswith("/app.js") for s in r.data["scripts"]),
+                )
+                assert scripts.ok, scripts.error
+                app_scripts = [
+                    s for s in scripts.data["scripts"] if str(s.get("url", "")).endswith("/app.js")
+                ]
+                assert app_scripts, scripts.data["scripts"]
+                source = service.web_script_source(session_id, str(app_scripts[0]["scriptId"]))
+                assert source.ok, source.error
+                assert _SITE_JS_MARKER in source.data.get("source", ""), source.data
+
+                # Screenshot: a real PNG lands in the session artifact tree.
+                shot = service.web_screenshot(session_id)
+                assert shot.ok, shot.error
+                assert shot.data["size"] > 0, shot.data
+                assert Path(shot.data["path"]).is_file(), shot.data
+
+                # HAR: the capture exports with at least the two requests in it.
+                har = service.web_har_export(session_id)
+                assert har.ok, har.error
+                assert har.data["entry_count"] >= 1, har.data
+                assert Path(har.data["path"]).is_file(), har.data
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
 
 
 @pytest.mark.integration
