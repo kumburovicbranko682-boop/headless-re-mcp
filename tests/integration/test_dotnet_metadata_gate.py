@@ -1,12 +1,13 @@
 """M6.4 Gate: the pure-Python .NET metadata line, end to end, no de4dot.
 
-The other .NET gate (``test_dotnet_m6_gate``) covers deobfuscate/verify, which
-shell out to de4dot and therefore skip unless a GPL de4dot is configured. But
-``dotnet.inspect`` / ``dotnet.enumerate`` / ``dotnet.il`` / ``dotnet.xrefs`` are
-a self-contained ECMA-335 reader that needs no external tool. That half used to
-skip too -- it was only ever reached through the de4dot-gated tests -- so it
-never actually ran in CI. This gate closes that: it drives the capability
-through ``AnalysisService`` against a real, committed managed assembly
+The other .NET gate (``test_dotnet_m6_gate``) drives deobfuscation, which shells
+out to de4dot and therefore skips unless a GPL de4dot is configured. But
+``dotnet.inspect`` / ``dotnet.enumerate`` / ``dotnet.il`` / ``dotnet.xrefs`` --
+and the checker plus ownership guard behind ``dotnet.verify`` -- are
+self-contained ECMA-335 code that needs no external tool. That surface used to
+skip too, reached only through the de4dot-gated tests, so it never actually ran
+in CI. This gate closes that: it drives the capability through
+``AnalysisService`` against a real, committed managed assembly
 (``fixtures/dotnet/minimal_assembly.exe``, produced by
 ``fixtures/dotnet/build_minimal_dotnet.py``) and asserts real content. It needs
 nothing but Python, so it runs on every platform. Skip is not a pass; this one
@@ -15,6 +16,7 @@ does not skip.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -22,7 +24,9 @@ import pytest
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
-_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet" / "minimal_assembly.exe"
+_FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "dotnet"
+_FIXTURE = _FIXTURE_DIR / "minimal_assembly.exe"
+_HINT_FIXTURE = _FIXTURE_DIR / "minimal_clr_hint.exe"
 
 
 def _service(tmp_path: Path) -> AnalysisService:
@@ -132,5 +136,54 @@ def test_dotnet_il_rejects_non_methoddef_token(tmp_path: Path) -> None:
         assert not bad.ok
         assert bad.error is not None
         assert bad.error.code == "invalid_argument"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_dotnet_verify_guards_ownership_and_confirms_clr(tmp_path: Path) -> None:
+    """dotnet.verify re-inspects an artifact, but only inside the session tree.
+
+    In real use it verifies a de4dot output under ``dotnet/<session>/``; that
+    path is de4dot-gated, but the checker and its fail-closed ownership guard
+    are not, so we exercise both without de4dot: reject a path outside the
+    session tree, accept a verified assembly planted inside it, and still refuse
+    an unverified CLR hint even when it is owned.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip("minimal .NET fixture missing (skip != pass)")
+    artifact_root = (tmp_path / "artifacts").resolve()
+    service = _service(tmp_path)
+    try:
+        session_id = _data(service.create_session(str(_FIXTURE)))["session"]["id"]
+
+        # The fixture lives outside the artifact tree: verify must refuse it and
+        # report the roots it would have accepted.
+        outside = service.dotnet_verify(session_id, str(_FIXTURE))
+        assert not outside.ok
+        assert outside.error is not None
+        assert outside.error.code == "invalid_params"
+        roots = outside.error.details["allowed_roots"]
+        assert any(str(artifact_root) in r and r.endswith(session_id) for r in roots)
+
+        # Plant a copy inside the owned dotnet/<session> root and verify it.
+        owned_dir = artifact_root / "dotnet" / session_id
+        owned_dir.mkdir(parents=True, exist_ok=True)
+        owned_copy = owned_dir / "candidate.exe"
+        shutil.copyfile(_FIXTURE, owned_copy)
+        verified = _data(service.dotnet_verify(session_id, str(owned_copy)))
+        assert verified["ok"] is True
+        assert verified["verify"]["verified_clr"] is True
+        assert verified["verify"]["assembly_name"] == "MyAssembly"
+        assert verified["claims_universal_unpack"] is False
+
+        # An owned but unverifiable CLR hint is still refused under require_verified.
+        if _HINT_FIXTURE.is_file():
+            owned_hint = owned_dir / "hint.exe"
+            shutil.copyfile(_HINT_FIXTURE, owned_hint)
+            refused = service.dotnet_verify(session_id, str(owned_hint))
+            assert not refused.ok
+            assert refused.error is not None
+            assert refused.error.code == "clr_unverified"
     finally:
         service.close_all()
