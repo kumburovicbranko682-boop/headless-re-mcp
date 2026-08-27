@@ -1047,7 +1047,14 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=256)] = 64,
         require_verified: bool = True,
     ) -> dict[str, Any]:
-        """Paginated CLR metadata enumeration (dotnet_metadata, not IDA)."""
+        """Paginated CLR metadata enumeration (dotnet_metadata, not IDA).
+
+        Answers with items, total, offset, limit, truncated and rows_truncated.
+        rows_truncated is true when the table's #~ header declared more rows than
+        the stream physically held, so total came back short of the assembly's
+        own count; declared_total then carries that header count. A false
+        rows_truncated means total is the whole table.
+        """
         return _dump(
             analysis.dotnet_enumerate(
                 session_id,
@@ -1078,7 +1085,13 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit: Annotated[int, Field(ge=1, le=256)] = 64,
         require_verified: bool = True,
     ) -> dict[str, Any]:
-        """Weak MemberRef xref listing (not a full callgraph / not IDA)."""
+        """Weak MemberRef xref listing (not a full callgraph / not IDA).
+
+        Answers with items, total, offset, limit, truncated and rows_truncated.
+        rows_truncated is true when the MemberRef table declared more rows than
+        the #~ stream held, so total is short of the header count carried in
+        declared_total.
+        """
         return _dump(
             analysis.dotnet_xrefs(
                 session_id,

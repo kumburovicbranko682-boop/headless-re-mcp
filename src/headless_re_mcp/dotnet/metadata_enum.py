@@ -95,21 +95,32 @@ class Page:
     backend: str = "dotnet_metadata"
     claims_universal_unpack: bool = False
     note: str = ""
+    # rows_truncated is True when the table's #~ header declared more rows than
+    # the stream physically held, so total counted fewer than the assembly
+    # claims; declared_total is that header count (present only when it differs
+    # from total). truncated stays about paging -- these two are about the table
+    # being short of what it declared before paging even applied.
+    rows_truncated: bool = False
+    declared_total: int | None = None
 
     def to_dict(self) -> JsonObject:
-        return {
+        payload: JsonObject = {
             "kind": self.kind,
             "items": list(self.items),
             "offset": self.offset,
             "limit": self.limit,
             "total": self.total,
             "truncated": self.truncated,
+            "rows_truncated": self.rows_truncated,
             "capability": self.capability,
             "backend": self.backend,
             "not_ida_idalib": True,
             "claims_universal_unpack": self.claims_universal_unpack,
             "note": self.note,
         }
+        if self.declared_total is not None:
+            payload["declared_total"] = self.declared_total
+        return payload
 
 
 def _clamp_page(offset: int, limit: int) -> tuple[int, int]:
@@ -157,6 +168,17 @@ def enumerate_metadata(
         note = "ManifestResource Name (+ flags/offset)"
     total = len(items)
     window = items[offset : offset + limit]
+    rows_truncated = False
+    declared_total: int | None = None
+    table = _KIND_TABLE.get(kind_norm)
+    if table is not None:
+        declared, present = _table_row_span(meta, table)
+        # present is what the iterator yielded, so it equals total; a declared
+        # count above it means the #~ stream held fewer rows than the header
+        # promised and total is short of the real table.
+        if declared > present:
+            rows_truncated = True
+            declared_total = declared
     return Page(
         kind=kind_norm,
         items=tuple(window),
@@ -165,6 +187,8 @@ def enumerate_metadata(
         total=total,
         truncated=offset + len(window) < total,
         note=note,
+        rows_truncated=rows_truncated,
+        declared_total=declared_total,
     )
 
 
@@ -246,6 +270,8 @@ def list_memberref_xrefs(
     items = list(_iter_memberrefs(meta))
     total = len(items)
     window = items[offset : offset + limit]
+    declared, present = _table_row_span(meta, _TBL_MEMBERREF)
+    rows_truncated = declared > present
     return Page(
         kind="xrefs",
         items=tuple(window),
@@ -254,6 +280,8 @@ def list_memberref_xrefs(
         total=total,
         truncated=offset + len(window) < total,
         note="MemberRef name/class hints only; not complete callgraph",
+        rows_truncated=rows_truncated,
+        declared_total=declared if rows_truncated else None,
     )
 
 
@@ -561,6 +589,36 @@ def _rows_the_stream_can_hold(meta: _MetaCtx, offset: int, row_size: int) -> int
     if row_size <= 0 or offset >= len(meta.tables):
         return 0
     return (len(meta.tables) - offset) // row_size
+
+
+def _table_row_span(meta: _MetaCtx, table: int) -> tuple[int, int]:
+    """Rows the #~ header declares for a table, and rows the stream can hold.
+
+    _iter_table_rows caps enumeration at what the stream physically contains, so
+    a header that over-declares a table -- a truncated or hand-crafted #~ stream
+    -- yields fewer rows than declared and total reports the capped count as the
+    whole table. Returning both counts lets the enumeration say the listing came
+    back short of what the assembly claims rather than passing the cap off as the
+    real size.
+    """
+    declared = int(meta.row_counts.get(table, 0))
+    if declared <= 0:
+        return 0, 0
+    present = min(
+        declared,
+        _rows_the_stream_can_hold(meta, _table_start(meta, table), _table_row_size(meta, table)),
+    )
+    return declared, present
+
+
+# Table backing each enumerable kind; strings comes from the #Strings heap and
+# has no row-count table, so it never carries a rows_truncated verdict.
+_KIND_TABLE: Final[dict[str, int]] = {
+    "types": _TBL_TYPEDEF,
+    "methods": _TBL_METHODDEF,
+    "fields": _TBL_FIELD,
+    "resources": _TBL_MANIFESTRESOURCE,
+}
 
 
 def _iter_typedefs(meta: _MetaCtx) -> Iterable[JsonObject]:
