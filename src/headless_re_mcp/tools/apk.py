@@ -27,7 +27,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with package, version_name, version_code, min_sdk, target_sdk,
         native_abis, main_activity, permission_count and opened. There is no
-        version, sdk or abis field.
+        version, sdk or abis field. A zip with no readable package name is a
+        backend error, not an opened package.
         """
         return _dump(analysis.apk_open(session_id))
 
