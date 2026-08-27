@@ -221,6 +221,28 @@ def test_web_cdp_open_and_inspect() -> None:
             dom = service.web_dom_snapshot(session_id)
             assert dom.ok, dom.error
             assert "gate" in dom.data["title"]
+
+            # A CSS-selector query must hit the live DOM through the whole stack
+            # (querySelectorAll in-page, bounded, back through the service), not
+            # just parse a captured snapshot. The gate page has one <script> and
+            # a body reading "hello".
+            body = service.web_dom_query(session_id, "body")
+            assert body.ok, body.error
+            assert body.data["count"] == 1
+            assert body.data["elements"][0]["tag"] == "body"
+            assert "hello" in body.data["elements"][0]["text"]
+
+            script_q = service.web_dom_query(session_id, "script")
+            assert script_q.ok, script_q.error
+            assert script_q.data["total"] >= 1
+            assert all(el["tag"] == "script" for el in script_q.data["elements"])
+
+            # A malformed selector is the caller's error, surfaced as
+            # invalid_params rather than a backend fault.
+            bad = service.web_dom_query(session_id, "a[[[")
+            assert bad.ok is False
+            assert bad.error is not None
+            assert bad.error.code == "invalid_params"
         finally:
             service.web_close(session_id)
     finally:

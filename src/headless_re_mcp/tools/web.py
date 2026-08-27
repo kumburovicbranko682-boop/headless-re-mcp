@@ -295,6 +295,28 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_wasm_list(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="web.dom.query")
+    def web_dom_query(
+        session_id: str,
+        selector: str,
+        limit: Annotated[int, Field(ge=1, le=200)] = 50,
+    ) -> dict[str, Any]:
+        """Return elements matching a CSS selector, with their attributes and text.
+
+        web.dom.snapshot dumps the whole document; this targets it. Answers with
+        elements, each carrying tag (lowercased), attributes (a bounded name->
+        value map -- href/src/name/value/data-*, the RE-relevant signals),
+        attrs_truncated (true when the element had more attributes than the cap),
+        and text (the trimmed textContent, bounded). Also selector, count, total
+        (all matches in the page) and has_more, so pulling every ``<a href>``, an
+        ``<input>`` CSRF token, or the ``<script src>`` list is one call rather
+        than a snapshot plus a re-parse. The list is capped at 200 elements and
+        each value is bounded. A malformed selector is invalid_params; an empty
+        one is invalid_params too. There is no html or outerHTML field -- use
+        web.dom.snapshot for the raw markup.
+        """
+        return _dump(analysis.web_dom_query(session_id, selector, limit=limit))
+
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
         """Return the current page HTML, URL, and title.

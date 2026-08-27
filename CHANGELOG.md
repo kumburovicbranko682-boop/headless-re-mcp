@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **283（163 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **284（164 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -543,6 +543,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   DEX 分析管线（class-def 读超类与访问标志、分析图数方法），断言超类、接口、访问、method_count 与未知类的 not_found——这正是
   androguard 版本升级最易破的 API 面。单测 mock 已解析分析，钉住完整形状（super/接口/access/字段）、点号类名解析、not_found、
   invalid_params、字段 1000 截断、docstring。该工具计入读效果，工具面因此 282→283。
+- **Web 线只能整页 dump DOM（`web.dom.snapshot`），要找特定元素得把整份 HTML 拉回来再自己解析**。缺一个按 CSS 选择器
+  定向查询实时 DOM 的能力。新增只读的 `web.dom.query`：给一个 CSS 选择器，回匹配元素的 `tag`（小写）、`attributes`（有界的
+  名→值映射，专挑 href/src/name/value/data-* 这些逆向关心的信号）、`attrs_truncated`（元素属性数超过上限时置真）与 `text`
+  （去空白且有界的 textContent）。另回 `selector`、`count`、`total`（页面里全部匹配数）与 `has_more`——于是「把每个 `<a href>`
+  拉出来」「取某个 `<input>` 的 CSRF token」「列出所有 `<script src>`」都是一次调用，而不是 snapshot 加二次解析。查询在页内经
+  `querySelectorAll` 执行；畸形选择器由页面抛出 SyntaxError，映射成 invalid_params，空选择器同样 invalid_params。元素列表硬上限
+  200，每元素属性数上限 48，每个属性/文本值先在页内粗切再在 Python 按字节收紧（href 里的 data URL、内联 `<script>` 体可达数 MB）。
+  没有 html/outerHTML 字段——要原始标记去 `web.dom.snapshot`。活体门在真浏览器上驱动整条栈（页内 querySelectorAll→有界→回服务）：
+  `body` 选择器命中 1 个、tag 为 body、文本含 hello；`script` 选择器全部 tag 为 script；畸形选择器回 invalid_params。单测用桩
+  page.evaluate 尊重后端传入的 maxItems/maxAttrs/maxValueChars，钉住 tag/属性/文本形状、元素 200 截断与 total、单元素属性 48
+  截断、超大属性值按字节收紧、坏选择器与空选择器的 invalid_params、docstring。该工具计入读效果，工具面因此 283→284。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

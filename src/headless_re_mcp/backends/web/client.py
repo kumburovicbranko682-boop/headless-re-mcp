@@ -60,6 +60,16 @@ _MAX_STORAGE_VALUE_BYTES = 4 * 1024
 # multi-megabyte value across the bridge only for Python to clip it. Set well
 # above the byte cap so the byte cap stays the effective one for normal values.
 _MAX_STORAGE_VALUE_CHARS = 16 * 1024
+# A CSS-selector query against the live DOM. A broad selector ("div", "*") can
+# match thousands of nodes, so the element list is capped; per element the
+# attribute count and each attribute/text value are bounded too (a data URL in
+# an href or an inlined <script> body runs to megabytes). The in-page slices are
+# coarse transfer guards; the byte caps below decide what the reply carries.
+_MAX_DOM_ELEMENTS = 200
+_MAX_DOM_ATTRS = 48
+_MAX_DOM_VALUE_CHARS = 16 * 1024
+_MAX_DOM_VALUE_BYTES = 4 * 1024
+_MAX_DOM_TEXT_BYTES = 8 * 1024
 # Kept in the per-request entry but stripped from network.list rows so a page of
 # the list stays cheap; network.get returns them in full.
 _HEADER_KEYS = ("request_headers", "response_headers")
@@ -1323,6 +1333,106 @@ class WebBackend:
                 result["html"] = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
                 result["truncated"] = len(payload) > _MAX_INLINE_BODY
             return result
+
+        return self._runner(handle).call(work)
+
+    def dom_query(self, session_id: str, selector: str, *, limit: int = 50) -> JsonObject:
+        """Return elements matching a CSS selector, with attributes and text.
+
+        web.dom.snapshot dumps the whole document; this targets it. Given a CSS
+        selector it returns the matching elements' tag, attributes (href/src/
+        name/value/data-*, the RE-relevant signals) and text -- so pulling every
+        ``<a href>``, an ``<input>`` CSRF token, or the ``<script src>`` list is
+        one call, not a snapshot plus a re-parse. The query runs in-page via
+        querySelectorAll; a malformed selector comes back as invalid_params.
+        """
+        needle = selector.strip()
+        if not needle:
+            raise WebError("invalid_params", "selector is required")
+        handle = self._get(session_id)
+        cap = max(1, min(int(limit), _MAX_DOM_ELEMENTS))
+        script = """
+        (cfg) => {
+          let nodes;
+          try { nodes = document.querySelectorAll(cfg.selector); }
+          catch (e) { return { error: String(e && e.message || e) }; }
+          const total = nodes.length;
+          const n = Math.min(total, cfg.maxItems);
+          const out = [];
+          for (let i = 0; i < n; i++) {
+            const el = nodes[i];
+            const attrs = {};
+            let attrCount = 0;
+            const names = el.getAttributeNames ? el.getAttributeNames() : [];
+            for (const name of names) {
+              if (attrCount >= cfg.maxAttrs) break;
+              let v = "";
+              try { v = el.getAttribute(name); } catch (e) { v = ""; }
+              attrs[String(name)] = String(v == null ? "" : v).slice(0, cfg.maxValueChars);
+              attrCount++;
+            }
+            let text = "";
+            try { text = (el.textContent || "").trim().slice(0, cfg.maxValueChars); }
+            catch (e) { text = ""; }
+            out.push({
+              tag: String(el.tagName || "").toLowerCase(),
+              attributes: attrs,
+              attrs_truncated: names.length > attrCount,
+              text: text,
+            });
+          }
+          return { elements: out, total: total };
+        }
+        """
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.page.evaluate(
+                    script,
+                    {
+                        "selector": needle,
+                        "maxItems": cap,
+                        "maxAttrs": _MAX_DOM_ATTRS,
+                        "maxValueChars": _MAX_DOM_VALUE_CHARS,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"dom query failed: {exc}") from exc
+            if not isinstance(raw, dict):
+                raw = {}
+            error = raw.get("error")
+            if error is not None:
+                # A bad selector is the caller's mistake, not a backend fault;
+                # querySelectorAll throws a SyntaxError the page returns to us.
+                raise WebError("invalid_params", f"invalid selector: {error}", selector=needle)
+            raw_elements = raw.get("elements")
+            elements_in = raw_elements if isinstance(raw_elements, list) else []
+            total = int(raw.get("total") or 0)
+            elements: list[JsonObject] = []
+            for node in elements_in:
+                if not isinstance(node, dict):
+                    continue
+                attrs_in = node.get("attributes")
+                attrs: JsonObject = {}
+                if isinstance(attrs_in, dict):
+                    for name, value in attrs_in.items():
+                        attrs[str(name)] = _bounded_metadata(value, _MAX_DOM_VALUE_BYTES)[0]
+                text, _ = _bounded_metadata(node.get("text"), _MAX_DOM_TEXT_BYTES)
+                elements.append(
+                    {
+                        "tag": _bounded_metadata(node.get("tag"), _MAX_METADATA_BYTES)[0],
+                        "attributes": attrs,
+                        "attrs_truncated": bool(node.get("attrs_truncated")),
+                        "text": text,
+                    }
+                )
+            return {
+                "selector": needle,
+                "elements": elements,
+                "count": len(elements),
+                "total": total,
+                "has_more": total > len(elements),
+            }
 
         return self._runner(handle).call(work)
 
