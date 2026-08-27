@@ -257,6 +257,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的 `_parse_json`、r2 的 `parse_r2_json`、provider 流式解析同属一类。现把
   `RecursionError` 纳入捕获集，畸形帧照旧收敛成 `rpc_protocol_error`。新增回归：
   两万个 `[` 的合法长度帧断言抛 `XdbgRpcError`（旧代码下以 `RecursionError` 逃逸失败）。
+- `XdbgClient._request`（每个 RPC 调用的收发主路径）里另有一处**不走** `parse_rpc_frame`
+  的内联 `json.loads(response_raw)`，带同样的窄 except。`response_size` 只封顶在
+  `_MAX_FRAME_BYTES`（8 MiB），一个远在其内却深嵌套的响应体照样让解码器抛
+  `RecursionError` 从 `_request` 逃出，而非本段其他畸形响应给出的 `rpc_protocol_error`。
+  一并把它补成同一口径。新增回归：以只回深嵌套 body 的 transport 驱动 `_request`，
+  断言得到 `rpc_protocol_error`（旧代码下以 `RecursionError` 失败）。
 
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
