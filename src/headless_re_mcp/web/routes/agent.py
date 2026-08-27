@@ -149,12 +149,17 @@ def register_agent_routes(
         item = store.get_thread(thread_id)
         if item is None:
             raise HTTPException(status_code=404, detail="thread_not_found")
+        # The console reconnects to a run it already holds the id of; selecting a
+        # thread has none. Hand back the thread's still-running run so a reopened
+        # conversation can resume a pending approval instead of stranding it.
+        active_run = store.active_run_for_thread(thread_id)
         return JSONResponse(
             {
                 "ok": True,
                 "thread": item.dump(),
                 "messages": [message.dump() for message in store.list_messages(thread_id)],
                 "events": [event.dump() for event in store.list_thread_events(thread_id)],
+                "active_run": active_run.dump() if active_run is not None else None,
             }
         )
 

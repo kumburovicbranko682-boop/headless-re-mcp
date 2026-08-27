@@ -465,6 +465,29 @@ class AgentStore:
             row = con.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         return self._run_from_row(row) if row else None
 
+    def active_run_for_thread(self, thread_id: str) -> AgentRun | None:
+        """The thread's still-running run, if any -- the one a reopened console
+        must reconnect to.
+
+        A run paused at an approval (or mid-stream) is durable server-side, but
+        the console only reconnects to a run whose id it already holds. Selecting
+        a thread carries no run id, so without this a reopened thread with a run
+        waiting on an approval showed the transcript yet no way to answer it. A
+        cancel-requested run is on its way out, so exclude it rather than invite
+        a reconnect to a run about to die. At most one run per thread is live in
+        practice; return the most recent to stay well-defined regardless.
+        """
+        active = tuple(status.value for status in RunStatus if status not in TERMINAL_RUN_STATUSES)
+        placeholders = ",".join("?" for _ in active)
+        with self._reading() as con:
+            row = con.execute(
+                f"SELECT * FROM runs WHERE thread_id=? AND cancel_requested=0"
+                f" AND status IN ({placeholders})"
+                " ORDER BY created_at DESC, id DESC LIMIT 1",
+                (thread_id, *active),
+            ).fetchone()
+        return self._run_from_row(row) if row else None
+
     def transition(self, run_id: str, target: RunStatus, *, error: str | None = None) -> AgentRun:
         with self.transaction() as con:
             row = con.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()

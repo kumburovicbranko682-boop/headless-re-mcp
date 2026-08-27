@@ -10,7 +10,7 @@ import { boundSessionId } from "../lib/threadBadge";
 
 type Session = ListedSession;
 type ThreadsResponse = { threads: Thread[] };
-type ThreadResponse = { thread: Thread; messages: Message[]; events?: RunEvent[] };
+type ThreadResponse = { thread: Thread; messages: Message[]; events?: RunEvent[]; active_run?: { id: string } | null };
 type SessionsResponse = { data?: { sessions?: Session[] } };
 type SessionCreateResponse = { ok?: boolean; data?: { session?: Session }; error?: { message?: string } };
 type PickFileResponse = {
@@ -111,6 +111,21 @@ export function useWorkbench() {
     }
   }, []);
 
+  // Reattach to a run that is still going: replay its events so a pending
+  // approval comes back, then reconnect the stream from where the replay left
+  // off. Shared by boot (resuming the run in history.state) and selectThread
+  // (resuming whichever run the thread the user opened is still running).
+  const resumeActiveRun = useCallback(async (runId: string, after = 0) => {
+    const history = await api<{ events: RunEvent[] }>(
+      `/api/agent/runs/${encodeURIComponent(runId)}/events/history?after=0`,
+    ).catch(() => null);
+    if (!history) return;
+    dispatch({ type: "run", runId });
+    history.events.forEach((event) => dispatch({ type: "event", event }));
+    const lastSeq = history.events.reduce((max, event) => Math.max(max, event.seq), after);
+    void consume(runId, lastSeq);
+  }, [consume]);
+
   useEffect(() => {
     bootstrapToken();
     let cancelled = false;
@@ -134,8 +149,6 @@ export function useWorkbench() {
         const resumeAfter = Number(window.history.state?.runSeq ?? 0);
         if (typeof resumeRun === "string") {
           try {
-            const history = await api<{ events: RunEvent[] }>(`/api/agent/runs/${encodeURIComponent(resumeRun)}/events/history?after=0`);
-            if (cancelled) return;
             // Reselect the run's own thread before replaying its events. A
             // reload restored the run and its pending approval but left
             // selectedThread null, so the transcript showed blank and, once the
@@ -144,19 +157,20 @@ export function useWorkbench() {
             // sessions survive a restart. The run row carries its thread id.
             const runInfo = await api<{ run?: { thread_id?: string } }>(
               `/api/agent/runs/${encodeURIComponent(resumeRun)}`,
-            ).catch(() => null);
+            );
             if (cancelled) return;
             const resumeThread = runInfo?.run?.thread_id;
             if (typeof resumeThread === "string" && resumeThread) {
               // Best-effort: a since-deleted thread must not sink the restore of
-              // the run and its approval.
-              await selectThread(resumeThread).catch(() => undefined);
+              // the run and its approval. resume:false because boot resumes the
+              // exact run from history.state itself, with its saved cursor.
+              await selectThread(resumeThread, { resume: false }).catch(() => undefined);
               if (cancelled) return;
             }
-            dispatch({ type: "run", runId: resumeRun });
-            history.events.forEach((event) => dispatch({ type: "event", event }));
-            void consume(resumeRun, resumeAfter);
+            await resumeActiveRun(resumeRun, resumeAfter);
           } catch {
+            // The run in history.state is gone (deleted, or never existed):
+            // drop the stale reference rather than retry it on every reload.
             window.history.replaceState({ ...(window.history.state ?? {}), activeRun: null }, "");
           }
         }
@@ -169,7 +183,7 @@ export function useWorkbench() {
       cancelled = true;
       abortRef.current?.abort();
     };
-  }, [consume, loadSessions]);
+  }, [consume, loadSessions, resumeActiveRun]);
 
   const markLost = useCallback(async (id: string, threadId: string | null) => {
     if (!id || lostRef.current?.sessionId === id) return;
@@ -198,7 +212,10 @@ export function useWorkbench() {
     if (path) rememberSample({ threadId, sessionId: id, path });
   }, []);
 
-  const selectThread = async (id: string) => {
+  const selectThread = async (id: string, { resume = true }: { resume?: boolean } = {}) => {
+    // Switching threads drops the previous thread's live stream so its events
+    // cannot bleed into the conversation being opened.
+    abortRef.current?.abort();
     const result = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(id)}`);
     dispatch({ type: "select", threadId: id, messages: result.messages, events: result.events ?? [] });
     const bound = result.thread.session_id ?? "";
@@ -214,6 +231,14 @@ export function useWorkbench() {
     setLost(null);
     lostRef.current = null;
     setSessionId(bound);
+    // Reattach to a run this thread is still running so a pending approval is
+    // answerable. Selecting a thread carries no run id, so a run paused at an
+    // approval used to be stranded -- its transcript visible, but no card to
+    // act on and no live stream. boot passes resume:false because it resumes
+    // the exact run from history.state, with its own saved cursor.
+    if (resume && result.active_run) {
+      await resumeActiveRun(result.active_run.id);
+    }
   };
 
   const createThread = async () => {
