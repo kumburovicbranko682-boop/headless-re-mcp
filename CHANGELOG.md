@@ -111,7 +111,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
-### 修复（Web 导航超时在后端边界夹取越界输入）
+### 修复（r2 的 *j 列表被 1MB 输出上限截断后不再误报成单个对象）
+
+- `r2.functions`（`aflj`）/`r2.strings`（`izj`）等命令产出 JSON 数组，大样本上很容易超过
+  `R2Client.run` 的 1_000_000 字节输出上限被拦腰截断。此时 `run` 会诚实置 `truncated=True`，但
+  `enrich_r2_payload` 仍拿这段被截断的文本走 `parse_r2_json`：整段数组解不动，左到右的扫描便跳过
+  解不出的根 `[`，把**第一个元素**当成整个文档返回，于是响应成了 `parsed: True` + 一个 `info` 对象、
+  既无 `items` 也无 `count`——与工具文档「answers with items … count」正相反，读 `items` 的调用方
+  一无所获。新增 `salvage_r2_json_array`：逐个 `raw_decode` 顶层数组元素，保留截断点之前完整到达的行
+  （要求元素为对象，故 `[0x0]>` 之类横幅括号不会被误当数组）。`enrich_r2_payload` 在 `truncated` 时改走
+  这条打捞路径，把完好的行照常放进 `items` 并置 `items_truncated=True`；无对象可捞（如被截断的 `i`
+  文本）则老实报 `parsed: False`，不再有误导性的单对象。
 
 - **`web.open` / `web.navigate` 把调用方的 `timeout` 直接算进 `Future.result(timeout=…)`**，
   而 frida 早已用 `_bound_timeout` 在后端边界拒非正、封上限。MCP schema 虽声明

@@ -117,6 +117,52 @@ def parse_r2_json(raw: str) -> Any | None:
     return None
 
 
+def salvage_r2_json_array(raw: str) -> list[Any] | None:
+    """Recover the complete leading elements of a truncated top-level array.
+
+    The 1MB output cap in ``R2Client.run`` can fall inside an ``aflj`` / ``izj``
+    array, leaving ``[{...},{...},{...`` that ``json.loads`` rejects whole.
+    ``parse_r2_json`` is worse here: its left-to-right scan skips the unparsable
+    root ``[`` and returns the first *element* as if it were the document, so a
+    truncated function list reports ``parsed: True`` with a single object and no
+    items. Decode element by element instead, keeping the rows that arrived
+    intact and stopping at the byte where the cut landed.
+
+    Elements are required to be objects (every r2 ``*j`` array holds them) so a
+    banner line such as ``[0x00000000]>`` cannot be mistaken for the array.
+    Returns the salvaged list, or ``None`` when nothing object-shaped decodes.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    decoder = json.JSONDecoder()
+    length = len(text)
+    for opener in range(length):
+        if text[opener] != "[":
+            continue
+        idx = opener + 1
+        while idx < length and text[idx] in " \t\r\n,":
+            idx += 1
+        # Require the first element to be an object; a prompt/banner bracket
+        # ("[0x0]>") would otherwise let a stray number decode as a bogus row.
+        if idx >= length or text[idx] != "{":
+            continue
+        items: list[Any] = []
+        while idx < length:
+            while idx < length and text[idx] in " \t\r\n,":
+                idx += 1
+            if idx >= length or text[idx] == "]":
+                break
+            try:
+                value, idx = decoder.raw_decode(text, idx)
+            except json.JSONDecodeError:
+                break
+            items.append(value)
+        if items:
+            return items
+    return None
+
+
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
@@ -142,7 +188,13 @@ def enrich_r2_payload(
     arch = architecture or pe_arch
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
-    parsed = parse_r2_json(raw)
+    output_truncated = bool(data.get("truncated"))
+    # A truncated payload cannot be parsed whole, and parse_r2_json would return
+    # the first array element as if it were the document. Salvage the intact
+    # leading rows instead so the cut is reported, not hidden behind one object.
+    parsed: Any | None = (
+        salvage_r2_json_array(raw) if output_truncated else parse_r2_json(raw)
+    )
     out = dict(data)
     out["module"] = module
     if image_base is not None:
@@ -192,6 +244,10 @@ def enrich_r2_payload(
             out["items_truncated"] = True
             out["items_total"] = available
             out["items_limit"] = _MAX_ITEMS
+        elif output_truncated:
+            # The array itself was cut by the 1MB output buffer: these are the
+            # rows that decoded before the cut, not the whole list.
+            out["items_truncated"] = True
         out["parsed"] = True
     elif isinstance(parsed, dict):
         out["info"] = parsed
