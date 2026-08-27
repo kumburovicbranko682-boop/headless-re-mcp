@@ -14,7 +14,7 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web / Android 静态分类 / **Android 反编译（jadx 处理真实 DEX）** / 抓包（含真实拦截）/ radare2 / Ghidra 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、apktool、apksigner、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web / Android 静态分类 / **Android 反编译（jadx 处理真实 DEX）** / **Android 反编译回编签名（apktool + apksigner 的补丁往返）** / 抓包（含真实拦截）/ radare2 / Ghidra 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
@@ -54,6 +54,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   驱动 `apk.export_sources` / `apk.decompile`，断言反编译出的 Java 真的带回编入的方法体
   （`addOne`、`greet`），而非只回一个空文件或错类。这是 jadx 线在 Windows 之外的首个端到端证据。
   jadx 未配置、或没有 `javac`/dexer 可造夹具时才 skip。
+- **Android 反编译回编签名此前也没有端到端覆盖**：`apk.decode/repack/sign` 只有 mock 子进程的单元
+  测试，apktool/apksigner 从没在测试里真跑过。新增 gate 用 apktool 先搭一份真 APK 作夹具，再经
+  `AnalysisService` 走完补丁往返：`apk.decode` 解出可编辑树、就地把清单里的 `android:label`
+  从 `Gate` 改成 `PatchedByGate`、`apk.repack` 用 apktool 重新打包、`apk.sign` 用一份放在会话制品树内的
+  临时 keystore（keytool 现造）签名——`sign()` 只有在 `apksigner verify` 通过后才返回，随后再把已签名
+  APK 解一次，断言那处清单改动确实穿过了重打包与签名（`PatchedByGate` 仍在），而不只是命令退出 0。
+  apktool/apksigner/keytool 缺失时才 skip。
 
 ### 新增（监控台工作台）
 

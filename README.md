@@ -384,7 +384,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 已有较完整的静态查询、动态调试闭环、事件流、地址同步、workflow，以及 dump / IAT / UPX 等脱壳相关路径的代码与真机 Gate。连接级自愈已实测，但公开提交仍少，可选后端成熟度不一。
 
-**Android 与 Web 两个目标域是新加的，成熟度仍低于 PE 那条链路**，但差距在收窄：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制；可移植 Gate（Web CDP、webcrack/wabt、抓包起停与端口释放及真实拦截/replay、多路并发抓包互不打挂、Android APK 静态分类、Android 反编译（jadx 经 `AnalysisService` 处理真实 DEX 并取回带方法体的 Java）、radare2 ELF 分析、Ghidra headless 的 functions/decompile、Agent 工作台浏览器 E2E）现在由 `linux-integration` CI job 在托管 Ubuntu 上**每次提交真实执行**，不再只在恰好装了工具的机器上才跑。仍需真机或额外 CLI 的部分（真实设备的 adb/Frida、apktool 反编译回编与签名）在缺失时如实跳过，**skip 不等于 pass**。
+**Android 与 Web 两个目标域是新加的，成熟度仍低于 PE 那条链路**，但差距在收窄：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制；可移植 Gate（Web CDP、webcrack/wabt、抓包起停与端口释放及真实拦截/replay、多路并发抓包互不打挂、Android APK 静态分类、Android 反编译（jadx 经 `AnalysisService` 处理真实 DEX 并取回带方法体的 Java）、Android 反编译回编签名（apktool + apksigner 的补丁往返，改动穿过重打包与签名后仍在）、radare2 ELF 分析、Ghidra headless 的 functions/decompile、Agent 工作台浏览器 E2E）现在由 `linux-integration` CI job 在托管 Ubuntu 上**每次提交真实执行**，不再只在恰好装了工具的机器上才跑。仍需真机的部分（真实设备的 adb/Frida）在缺失时如实跳过，**skip 不等于 pass**。
 
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
