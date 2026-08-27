@@ -122,6 +122,62 @@ def test_completed_response_path_carries_no_error_field() -> None:
     assert row["status"] == 200
 
 
+def _completed_then_errored(flow_id: str) -> Any:
+    """One flow that carries both a response and an error.
+
+    mitmproxy delivers this shape when a response completes and the connection
+    then resets while the body is still streaming: the flow object gains an
+    ``error`` after ``response`` already ran.
+    """
+    request = SimpleNamespace(method="GET", pretty_url=f"http://x/{flow_id}", host="x")
+    response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+    error = SimpleNamespace(msg="net::ERR_INCOMPLETE_CHUNKED_ENCODING")
+    return SimpleNamespace(id=flow_id, request=request, response=response, error=error)
+
+
+def test_a_flow_recorded_twice_is_listed_once() -> None:
+    # Since the error hook was wired, mitmproxy can call response() and then
+    # error() for the same flow. The raw store is keyed by id and dedups, but
+    # the summary ring is an append-only deque: without dropping the stale row
+    # the flow would list twice -- one row with a status, one flagged errored --
+    # while flow.get returns the single retained flow, the exact two-views
+    # disagreement the lockstep eviction exists to prevent.
+    recorder = _FlowRecorder(capacity=8)
+    flow = _completed_then_errored("dup")
+
+    recorder.response(flow)
+    recorder.error(flow)
+
+    rows = recorder.snapshot()
+    assert [row["id"] for row in rows] == ["dup"]
+    assert recorder.count() == 1
+    # The later record wins, so the one surviving row reflects the error.
+    assert rows[0]["error"] is True
+    assert recorder.raw("dup") is flow
+
+
+def test_re_recording_a_flow_does_not_inflate_the_dropped_count() -> None:
+    # dropped counts flows evicted because the ring filled, not the number of
+    # times a flow was touched. A single flow recorded twice must still report
+    # zero drops and a total of one, not the seq-minus-length heuristic's stale
+    # answer once a re-record could bump the sequence without adding a row.
+    from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+    recorder = _FlowRecorder(capacity=8)
+    flow = _completed_then_errored("dup")
+    recorder.response(flow)
+    recorder.error(flow)
+
+    inst = _ProxyInstance("127.0.0.1", 1)
+    inst.recorder = recorder
+    backend = ProxyBackend()
+    backend._instances["s"] = inst
+    result = backend.flows("s", offset=0, limit=100)
+    assert result["total"] == 1
+    assert result["count"] == 1
+    assert result["dropped"] == 0
+
+
 def test_docstring_names_the_error_fields() -> None:
     doc = _tool_docstring("proxy.flows")
     assert "error" in doc

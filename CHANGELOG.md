@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（proxy.flows 把同一条流列两遍、dropped 随之虚高）
+
+- 自从补上 errored-flow 钩子，mitmproxy 会对同一条流先后调用 `response()` 与 `error()`（响应已
+  完成、随后连接在流式收包中途重置就是这种形状）。`_raw` 按 flow id 建键、pop 后重插即已去重，
+  但摘要环 `self.flows` 是只追加的 deque：同一条流因此在列表里冒出两行——一行带 `status`、一行标
+  `error=true`——而 `flow.get` 按 id 只返回那一个保留的流对象，于是「列表说有几条、哪条可取」两个
+  视图自相矛盾，正是环的 lockstep 淘汰本要杜绝的那种不一致。与此同时 `dropped` 用「末条 seq - 当前
+  条数」反推淘汰量，而一次重记只涨 seq、不增净行数，这个启发式随之虚报。
+- 现在重记时先按 flow id 把摘要环里的旧行去掉、再追加新行（最新一次记录胜出），流始终只列一条；
+  `dropped` 改由一个显式的淘汰计数器给出（只在环满、真正弹出最旧流时自增），不再被重记污染。
+  `export_har` 走同一份 snapshot，顺带不再把同一条流导出两份。新增回归：同一条流 response→error
+  后只列一条且 error 版胜出、`raw` 仍按 id 唯一、重记不抬高 `dropped`；既有的「20 条进容量 5、
+  `dropped=15`」等断言在显式计数器下不变。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

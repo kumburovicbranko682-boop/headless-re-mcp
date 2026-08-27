@@ -317,7 +317,25 @@ class _FlowRecorder:
         self._raw: OrderedDict[str, Any] = OrderedDict()
         self._raw_sizes: dict[str, int] = {}
         self._retained_bytes = 0
+        # Flows evicted from the ring because it was full. Counted here rather
+        # than inferred from the sequence number, which double-counts a flow
+        # recorded twice (see _record).
+        self._evicted = 0
         self._lock = threading.RLock()
+
+    def _drop_summary(self, flow_id: str) -> None:
+        """Remove any summary row already listed for this flow id.
+
+        The summary ring is an append-only deque, so re-recording a flow (see
+        ``_record``) would otherwise leave two rows for one id. Rebuilding
+        without it keeps the deque's ``maxlen`` and preserves order; called
+        only on a re-record, which is rare, so the O(n) pass does not touch the
+        common path.
+        """
+        kept = [row for row in self.flows if row.get("id") != flow_id]
+        if len(kept) != len(self.flows):
+            self.flows.clear()
+            self.flows.extend(kept)
 
     def _omit_retained(self, flow_id: str) -> None:
         retained = self._raw.get(flow_id)
@@ -373,7 +391,14 @@ class _FlowRecorder:
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
-            self._raw.pop(flow_id, None)
+            # mitmproxy can hand the same flow back twice -- a completed
+            # ``response`` and then an ``error`` when the connection resets
+            # while the body is still streaming. ``_raw`` is keyed by id so
+            # popping here dedups it; the append-only summary ring is dedup'd
+            # against the same id just before the append below, so the flow
+            # never lists twice (one row with a status, one flagged errored)
+            # while flow.get returns the single retained flow.
+            seen_before = self._raw.pop(flow_id, None) is not None
             self._retained_bytes -= self._raw_sizes.pop(flow_id, 0)
             if not omitted:
                 for retained_id, retained in list(self._raw.items()):
@@ -391,6 +416,7 @@ class _FlowRecorder:
             while len(self._raw) > self._capacity:
                 evicted_id, _ = self._raw.popitem(last=False)
                 self._retained_bytes -= self._raw_sizes.pop(evicted_id, 0)
+                self._evicted += 1
             entry: JsonObject = {
                 "id": flow_id,
                 "seq": self._seq,
@@ -414,6 +440,8 @@ class _FlowRecorder:
                 or error_truncated
             ):
                 entry["metadata_truncated"] = True
+            if seen_before:
+                self._drop_summary(flow_id)
             self.flows.append(entry)
 
     def snapshot(self) -> list[JsonObject]:
@@ -427,6 +455,10 @@ class _FlowRecorder:
     def count(self) -> int:
         with self._lock:
             return len(self.flows)
+
+    def dropped(self) -> int:
+        with self._lock:
+            return self._evicted
 
     def retained_bytes(self) -> int:
         with self._lock:
@@ -632,16 +664,17 @@ class ProxyBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
-        dropped = 0
-        if items:
-            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
         return {
             "flows": window,
             "count": len(window),
             "total": len(items),
             "offset": start,
             "has_more": start + len(window) < len(items),
-            "dropped": dropped,
+            # An exact eviction count, not sequence-minus-length: a flow
+            # recorded twice (response then error) bumps the sequence without
+            # adding a distinct row, so that heuristic would over-report drops
+            # the moment the errored-flow hook re-touched a summarised flow.
+            "dropped": inst.recorder.dropped(),
         }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:

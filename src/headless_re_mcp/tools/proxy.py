@@ -66,11 +66,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         not complete (TLS refused, upstream unreachable, connection reset) is
         captured too, carrying error=true and error_msg with a null status;
         such flows were previously dropped entirely. A completed flow always
-        carries a numeric status and no error field. The list field is flows,
-        not items or requests, and the type column is content_type. dropped is
-        how many the capture ring already evicted; a page that filled the limit
-        is not the whole log. metadata_truncated marks bounded oversized summary
-        fields.
+        carries a numeric status and no error field. A flow mitmproxy reports
+        more than once (a response and then a late error when the connection
+        resets mid-body) still lists once, with the most recent record winning.
+        The list field is flows, not items or requests, and the type column is
+        content_type. dropped is how many the capture ring already evicted; a
+        page that filled the limit is not the whole log. metadata_truncated
+        marks bounded oversized summary fields.
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
