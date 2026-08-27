@@ -315,6 +315,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (64 KiB)三重设界(重复名沿用旧的 `dict` 语义折叠为最后一个),被裁时在对应 `request` /
   `response` 上打 `metadata_truncated`;`url`、`method` 也一并按既有上限设界。文档串同步说明,
   并新增单值/条数/总量三种裁剪与正常放行的回归测试。
+### 修复（`proxy.flow.get` 头部改回有序列表，重复头不再塌成最后一个）
+
+- 上一条给 `proxy.flow.get` 的头部设了界,但仍沿用 `dict` 形状——HTTP 头部本就有序且允许重名,
+  一个响应常带**多条 `Set-Cookie`**(每 cookie 一行),还有 `Via`/`Cache-Control`/`Warning` 链也会
+  重复;mitmproxy 用有序多值映射保留它们,`items(multi=True)` 读出来是完整的。可 `dict(headers)`
+  把重名折叠成**最后一个值**:服务端下发几条 `Set-Cookie`,逆向的人只看到最后一条,会话/鉴权分析
+  最想读的那几条就此静默消失,连它们存在过都不知道。`_bounded_headers` 现改回 mitmproxy 与 HAR 导出
+  同款的 `{name, value}` **有序列表**,按线序保留每一次出现,仍按条数(100)、单值(4 KiB)、总量(64 KiB)
+  三重设界。`proxy.flow.get` 文档串说明 headers 是有序 `{name, value}` 列表、重复头(如多条 `Set-Cookie`)
+  按线序保留、不是名到值的映射。单测从「dict 断言」改成列表断言,新增「两条 `Set-Cookie` 按序全保留、
+  第三条 `Content-Type` 不受影响」与「端到端走 `flow_get` 两条 cookie 都在」两条钉死;新增 live gate
+  (`test_proxy_repeated_headers_live_gate.py`)起一个本机 origin 下发两条不同 `Set-Cookie`,经真 mitmproxy
+  转发后断言 `flow.get` 的响应头列表把两条按序全带回。CI 新增 `linux-proxy-repeated-headers` job 装
+  mitmproxy 跑该 gate,skip≠pass 守卫在 mitmproxy 已装却仍 skip 时判失败。
 ### 修复（`web.network.get` 取不到响应体时仍保持形状）
 
 - `web.network.get` 的文档串承诺回 `body`、`base64_encoded`、`body_truncated`,但当 CDP

@@ -39,10 +39,12 @@ _MAX_METADATA_BYTES = 1024
 # that is not valid UTF-8, spills to a file so the caller never receives a
 # lossy decode masquerading as the real bytes.
 _MAX_INLINE_BODY = 200_000
-# flow.get returns headers inline. The body is already spilled/capped, but the
-# header map was dumped whole, so a chatty or hostile server (thousands of
-# headers, a multi-kilobyte Set-Cookie) could return an unbounded blob into the
-# tool response. Bound it in count, per-value and total size like the rest.
+# flow.get returns headers inline as an ordered [{name, value}] list -- the same
+# shape the HAR export uses -- so repeated headers (several Set-Cookie lines, a
+# Via chain) are preserved in wire order rather than collapsed. The list is
+# bounded in pair count, per-value and total size, so a chatty or hostile server
+# (thousands of headers, a multi-kilobyte Set-Cookie) cannot return an unbounded
+# blob into the tool response.
 _MAX_FLOW_HEADERS = 100
 _MAX_HEADER_VALUE_BYTES = 4 * 1024
 _MAX_FLOW_HEADERS_TOTAL_BYTES = 64 * 1024
@@ -260,33 +262,40 @@ def _emit_body(raw: bytes, artifact_dir: Path) -> JsonObject:
     return out
 
 
-def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
-    """Header map for flow.get, bounded in count, per-value and total size.
+def _bounded_headers(part: Any) -> tuple[list[dict[str, str]], bool]:
+    """Ordered ``[{name, value}]`` header list for flow.get, preserving repeats.
 
-    mitmproxy keeps whole headers on the retained flow, so a hostile or chatty
-    server could otherwise put megabytes of them inline in the tool response.
-    Duplicate names collapse to the last value, matching the previous
-    ``dict(headers)``; the returned flag says when anything was dropped so a
-    reader does not mistake a bounded map for the whole header set.
+    HTTP headers are ordered and a name may legitimately appear more than once:
+    a response commonly carries several ``Set-Cookie`` lines, one per cookie,
+    and ``Via``/``Cache-Control``/``Warning`` chains repeat too. mitmproxy keeps
+    them as an ordered multimap, which ``items(multi=True)`` reads faithfully.
+    The old ``dict(headers)`` form then collapsed repeats to the *last* value,
+    silently dropping every ``Set-Cookie`` but the last -- the very headers a
+    session/auth analysis exists to read. Emit instead the ``{name, value}``
+    pair shape the HAR export already uses, in wire order, keeping every
+    occurrence. Still bounded in pair count, per-value and total size, so a
+    hostile or chatty server cannot inline megabytes; the flag says when
+    anything was dropped so a reader does not mistake a bounded list for the
+    whole header set.
     """
     headers = getattr(part, "headers", None)
     if headers is None:
-        return {}, False
+        return [], False
     try:
         try:
             items = list(headers.items(multi=True))
         except TypeError:
             items = list(headers.items())
     except Exception:  # noqa: BLE001
-        return {}, True
-    out: dict[str, str] = {}
+        return [], True
+    out: list[dict[str, str]] = []
     truncated = False
     total = 0
     for key, value in items:
-        name = str(key)
-        if name not in out and len(out) >= _MAX_FLOW_HEADERS:
+        if len(out) >= _MAX_FLOW_HEADERS:
             truncated = True
             break
+        name = str(key)
         text, cut = _bounded_metadata(value, _MAX_HEADER_VALUE_BYTES)
         truncated = truncated or cut
         entry_bytes = len(name.encode("utf-8", errors="replace")) + len(
@@ -296,7 +305,7 @@ def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
             truncated = True
             break
         total += entry_bytes
-        out[name] = text
+        out.append({"name": name, "value": text})
     return out, truncated
 
 
@@ -664,7 +673,7 @@ class ProxyBackend:
         method, method_cut = _bounded_metadata(req.method, _MAX_METADATA_BYTES)
         url, url_cut = _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)
         req_headers, req_headers_cut = _bounded_headers(req)
-        resp_headers, resp_headers_cut = _bounded_headers(resp) if resp else ({}, False)
+        resp_headers, resp_headers_cut = _bounded_headers(resp) if resp else ([], False)
         request: JsonObject = {"method": method, "url": url, "headers": req_headers}
         if method_cut or url_cut or req_headers_cut:
             request["metadata_truncated"] = True

@@ -79,14 +79,17 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Fetch one flow's headers and bodies (large or binary bodies spill).
 
         Answers with id, request (method, url, headers) and response (status,
-        headers). Both request and response carry the body: size, and either
-        body (UTF-8 text at most 200000 bytes) or body_path plus spill_reason
-        (too_large or binary) when the body was spilled to an artifact rather
-        than decoded lossily. A spilled body also carries artifact_id. Headers
-        are bounded in count and size; metadata_truncated on request or
-        response marks a clipped header map or field. There is no top-level
-        headers or body field, and a binary body is never returned as a
-        mojibake body string.
+        headers). headers is an ordered list of {name, value} pairs in wire
+        order, so a repeated header (several Set-Cookie lines, a Via chain) is
+        preserved rather than collapsed to its last value -- it is not a
+        name-to-value map. Both request and response carry the body: size, and
+        either body (UTF-8 text at most 200000 bytes) or body_path plus
+        spill_reason (too_large or binary) when the body was spilled to an
+        artifact rather than decoded lossily. A spilled body also carries
+        artifact_id. Headers are bounded in pair count and size;
+        metadata_truncated on request or response marks a clipped header list or
+        field. There is no top-level headers or body field, and a binary body is
+        never returned as a mojibake body string.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
