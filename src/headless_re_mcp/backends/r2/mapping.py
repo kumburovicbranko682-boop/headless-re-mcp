@@ -57,6 +57,46 @@ def pe_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
     return architecture, image_base
 
 
+def elf_architecture(binary: Path) -> Architecture | None:
+    """Read the CPU architecture from an ELF header, without spawning r2.
+
+    The sibling :func:`pe_preferred_base` only knows PE, so an ELF -- the whole
+    point of the portable Linux backend -- came back through ``enrich_r2_payload``
+    with no ``architecture`` at all, even though r2 disassembled it fine and the
+    machine is a fixed field in the first 20 bytes of the file. A caller reading
+    x86 from x64 disassembly is reading it wrong, and the field was simply absent
+    for every non-PE target.
+
+    A prefix read, not the file, exactly like ``pe_preferred_base``: the ELF
+    header's ``e_machine`` lives at offset 18. Only the two machines the
+    :class:`Architecture` model can name are mapped (``EM_386`` -> x86,
+    ``EM_X86_64`` -> x64); any other machine (ARM, AArch64, MIPS, RISC-V) or a
+    non-ELF file yields ``None`` so the caller omits the field as it does today
+    rather than guessing.
+    """
+    try:
+        with binary.open("rb") as stream:
+            head = stream.read(20)
+    except OSError:
+        return None
+    if len(head) < 20 or head[:4] != b"\x7fELF":
+        return None
+    # e_ident[EI_DATA] at offset 5: 1 = little-endian, 2 = big-endian. e_machine
+    # is a 2-byte field, so it has to be read in the file's own byte order.
+    ei_data = head[5]
+    if ei_data == 1:
+        e_machine = int.from_bytes(head[18:20], "little")
+    elif ei_data == 2:
+        e_machine = int.from_bytes(head[18:20], "big")
+    else:
+        return None
+    if e_machine == 3:  # EM_386
+        return Architecture.X86
+    if e_machine == 62:  # EM_X86_64
+        return Architecture.X64
+    return None
+
+
 def _needed_header_bytes(head: bytes) -> int | None:
     """How far into the file the optional header runs, if this looks like a PE."""
     if len(head) < 0x40 or head[:2] != b"MZ":
@@ -139,7 +179,9 @@ def enrich_r2_payload(
     """Parse *j payloads into items with unified Address fields."""
     module = binary.name
     pe_arch, image_base = pe_preferred_base(binary)
-    arch = architecture or pe_arch
+    # PE first (it also yields the image base for RVA), then the ELF header so a
+    # non-PE target still names its architecture instead of dropping the field.
+    arch = architecture or pe_arch or elf_architecture(binary)
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
     parsed = parse_r2_json(raw)

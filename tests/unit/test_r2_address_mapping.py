@@ -15,6 +15,7 @@ import headless_re_mcp.backends.r2.client as r2_client
 from headless_re_mcp.backends.common.bounded_run import Completed
 from headless_re_mcp.backends.r2.mapping import (
     address_dict,
+    elf_architecture,
     enrich_r2_payload,
     parse_r2_json,
     pe_preferred_base,
@@ -53,6 +54,99 @@ def _stub_executable(tmp_path: Path) -> Path:
     path = tmp_path / "r2"
     path.write_bytes(b"")
     return path
+
+
+def _minimal_elf(
+    tmp_path: Path,
+    *,
+    machine: int,
+    name: str = "demo.elf",
+    ei_class: int = 2,
+    ei_data: int = 1,
+) -> Path:
+    """A 64-byte ELF header carrying only the fields the arch reader inspects.
+
+    ``ei_data`` selects the byte order e_machine is written in (1=LE, 2=BE), so
+    a test can prove the reader honours EI_DATA rather than assuming little.
+    """
+    order: str = "little" if ei_data == 1 else "big"
+    data = bytearray(64)
+    data[0:4] = b"\x7fELF"
+    data[4] = ei_class  # EI_CLASS: 1=32-bit, 2=64-bit
+    data[5] = ei_data  # EI_DATA: 1=little, 2=big
+    data[6] = 1  # EI_VERSION
+    data[16:18] = (2).to_bytes(2, order)  # e_type = ET_EXEC
+    data[18:20] = int(machine).to_bytes(2, order)  # e_machine
+    path = tmp_path / name
+    path.write_bytes(bytes(data))
+    return path
+
+
+def test_elf_architecture_reads_x86_64(tmp_path: Path) -> None:
+    binary = _minimal_elf(tmp_path, machine=62)  # EM_X86_64
+    assert elf_architecture(binary) is Architecture.X64
+
+
+def test_elf_architecture_reads_i386(tmp_path: Path) -> None:
+    binary = _minimal_elf(tmp_path, machine=3, ei_class=1)  # EM_386, 32-bit
+    assert elf_architecture(binary) is Architecture.X86
+
+
+def test_elf_architecture_honours_big_endian_e_machine(tmp_path: Path) -> None:
+    """e_machine is a 2-byte field; reading it little-endian on a BE ELF would
+    turn EM_X86_64 (0x003E) into 0x3E00 and silently drop the architecture."""
+    binary = _minimal_elf(tmp_path, machine=62, ei_data=2)
+    assert elf_architecture(binary) is Architecture.X64
+
+
+def test_elf_architecture_unrepresentable_machine_is_none(tmp_path: Path) -> None:
+    binary = _minimal_elf(tmp_path, machine=183)  # EM_AARCH64: the model can't name it
+    assert elf_architecture(binary) is None
+
+
+def test_elf_architecture_non_elf_is_none(tmp_path: Path) -> None:
+    binary = tmp_path / "not.elf"
+    binary.write_bytes(b"MZ" + b"\x00" * 62)
+    assert elf_architecture(binary) is None
+
+
+def test_elf_architecture_truncated_header_is_none(tmp_path: Path) -> None:
+    binary = tmp_path / "short.elf"
+    binary.write_bytes(b"\x7fELF\x02\x01")  # magic + class/data, then nothing
+    assert elf_architecture(binary) is None
+
+
+def test_enrich_fills_architecture_for_an_elf_target(tmp_path: Path) -> None:
+    """The whole point of the portable Linux backend: an ELF's disassembly must
+    name its architecture, which used to be dropped because only PE was read."""
+    binary = _minimal_elf(tmp_path, machine=62)  # EM_X86_64
+    # pe_preferred_base finds no PE, so before the fix arch was None here.
+    assert pe_preferred_base(binary) == (None, None)
+    raw = json.dumps(
+        [
+            {"offset": 0x1149, "name": "main", "size": 32},
+            {"offset": 0x1120, "name": "helper", "size": 16},
+        ]
+    )
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["aa", "aflj"]}, binary=binary)
+    assert enriched["architecture"] == "x64"
+    assert enriched["count"] == 2
+    first = enriched["items"][0]["address"]
+    assert first["architecture"] == "x64"
+    assert first["va"] == 0x1149
+    # ELF image base is not read, so there is no rva -- only va, plus the arch.
+    assert "rva" not in first
+
+
+def test_enrich_explicit_architecture_still_wins_over_elf(tmp_path: Path) -> None:
+    """An explicit architecture argument must override the header sniff."""
+    binary = _minimal_elf(tmp_path, machine=62)  # EM_X86_64 on disk
+    enriched = enrich_r2_payload(
+        {"raw": json.dumps([{"offset": 0x1000}]), "commands": ["aa", "aflj"]},
+        binary=binary,
+        architecture=Architecture.X86,
+    )
+    assert enriched["architecture"] == "x86"
 
 
 def test_output_cut_at_the_buffer_says_it_was_cut(

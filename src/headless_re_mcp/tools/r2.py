@@ -27,8 +27,8 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Runs ``i`` (not JSON). Answers with raw holding that text, plus
         truncated, output_bytes and returned_bytes when the text was cut at
         the 1_000_000-byte buffer. There are no format, arch, bits,
-        endianness or entry fields; architecture and image_base come from
-        the PE header, not from this listing.
+        endianness or entry fields; image_base comes from the PE header and
+        architecture from the PE or ELF header, not from this listing.
         """
         return _dump(analysis.r2_info(session_id, timeout=timeout))
 

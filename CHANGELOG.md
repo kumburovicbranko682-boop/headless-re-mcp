@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（r2 对 ELF/非 PE 目标不再丢掉 architecture）
+
+- **`enrich_r2_payload` 只从 PE 头取架构，于是每个 ELF/非 PE 目标的地址都没有
+  `architecture`。** 便携 Linux 后端存在的意义正是 ELF，radare2 也照常把它反汇编出来，可
+  `enrich_r2_payload` 只调 `pe_preferred_base`——对 ELF 返回 `(None, None)`——因此
+  `r2.functions` / `r2.disasm` / `r2.xrefs` 回来的每个 `Address` 都不带 `architecture` 字段，
+  一个把 x64 反汇编读成 x86 的调用方无从分辨。现新增 `elf_architecture()`：像
+  `pe_preferred_base` 一样只读文件前 20 字节（`e_machine` 在偏移 18，按 `EI_DATA` 的字节序解），
+  把 `EM_386` 映射为 x86、`EM_X86_64` 为 x64；其余机器（ARM/AArch64/MIPS/RISC-V）与非 ELF
+  返回 `None`，与今天一样省略该字段而不臆测。`enrich_r2_payload` 的架构解析改为
+  `显式参数 → PE 头 → ELF 头`，PE 路径（含 image_base 供 RVA）不变。`r2.info` 文档同步：
+  image_base 出自 PE 头、architecture 出自 PE 或 ELF 头。新增单测覆盖 x86/x64/大端 e_machine/
+  不可表示机器/非 ELF/截断头，并直测 ELF 目标现在带上 x64（只 va、无 rva）；在真 radare2
+  5.5.0 上对 gcc 编的 x86-64 ELF 现场验证 `functions`/`disasm` 均带 `architecture: x64`。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
