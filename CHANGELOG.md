@@ -24,6 +24,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 清理（删除 adb/client 里的死常量 _MANIFEST_PROBE_BYTES：与 _MAX_MANIFEST_BYTES 完全重复且无人引用）
+
+- adb 客户端里有两个值相同(`64 * 1024`)、注释都在讲\"只读 AndroidManifest.xml 前缀、挡住解压炸弹撑爆内存\"的\
+  常量:`_MAX_MANIFEST_BYTES` 是真正在用的(`_package_from_manifest` 里 `manifest.read(_MAX_MANIFEST_BYTES)`),\
+  而 `_MANIFEST_PROBE_BYTES` 全代码库(含测试)除定义外无任何引用,是换实现时留下的重复死常量。删掉它及其冗余\
+  注释,消除\"到底该用哪个清单字节上限\"的歧义。无行为变更。
+
 ### 清理（删除 service_device 里已成死代码的 prune_device_artifacts：真正的清扫早已换成 prune_capped_dir）
 
 - `device.screenshot` / `device.pull` 的目录清扫早已改用 `prune_capped_dir(max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES=32,\

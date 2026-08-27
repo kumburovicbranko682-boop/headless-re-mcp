@@ -44,9 +44,6 @@ _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
-# The manifest probe only needs the front of AndroidManifest.xml. Reading past
-# a bounded prefix would let a decompression-bomb entry inflate into RAM.
-_MANIFEST_PROBE_BYTES = 64 * 1024
 # adbutils shell/sync calls otherwise wait forever when the device stalls.
 _ADB_SHELL_TIMEOUT_S = 30.0
 _ADB_PROBE_TIMEOUT_S = 8.0
