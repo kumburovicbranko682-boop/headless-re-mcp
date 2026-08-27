@@ -71,6 +71,30 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.ls")
+    def device_ls(
+        serial: str,
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List a directory on the device, one bounded page at a time.
+
+        Runs a fixed ``ls`` on an absolute device path (e.g. /data/local/tmp,
+        an app's /data/data/<pkg>, or /sdcard) so an analyst can find on-device
+        artifacts -- databases, shared_prefs, dropped files, native libs. This
+        is not a shell: only the path varies and it is refused unless it is
+        absolute with no shell metacharacters (a path with spaces is refused,
+        not quoted). Answers with path and entries (each name and is_dir), plus
+        count, total, offset, has_more and scan_capped so a page that filled the
+        limit is not read as the whole directory; the collected total is capped
+        at 5000. An empty entries list with total 0 is a real empty (or
+        dot-only) directory; a missing path, a permission denial, or a
+        non-directory is an envelope failure, not an empty listing. Sizes are
+        not reported -- pull a file to learn its bytes.
+        """
+        return _dump(analysis.device_ls(serial, path, offset=offset, limit=limit))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

@@ -31,6 +31,16 @@ _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 # strict set keeps a value that reaches the su -c command line from carrying
 # shell metacharacters, quotes, or the colon that separates host from port.
 _BIND_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,64}$")
+# device.ls path. An absolute device path whose every character is safe to hand
+# to the device shell: the ``ls`` argument reaches ``adb shell`` (a real shell
+# on the device), so the strict set keeps it from carrying a space, quote, or
+# any of ; & | $ ` ( ) < > * ? that would let a crafted path run a second
+# command or glob. Paths with spaces are refused rather than quoted -- the same
+# fail-closed choice the serial and package validators make. ``~`` is allowed
+# because the path always begins with ``/``, so a tilde mid-path is literal (the
+# shell only expands a tilde at the start of a word) -- and modern app dirs
+# (/data/app/~~base64==/pkg/base.apk) need it.
+_LS_PATH_RE = re.compile(r"^/[A-Za-z0-9._/+@%,=~\-]{0,1024}$")
 _MAX_LOGCAT_LINES = 5000
 _MAX_LOGCAT_CHARS = 200_000
 # Only the package attribute near the top of the manifest is needed. Reading
@@ -40,6 +50,8 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_DIR_ENTRIES = 5000
+_MAX_DIR_ENTRIES_PAGE = 2000
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -76,6 +88,17 @@ def _check_serial(serial: str) -> str:
     value = (serial or "").strip()
     if not _SERIAL_RE.match(value):
         raise AdbError("invalid_params", "invalid device serial", serial=serial)
+    return value
+
+
+def _check_ls_path(path: str) -> str:
+    value = path if isinstance(path, str) else ""
+    if not _LS_PATH_RE.match(value):
+        raise AdbError(
+            "invalid_params",
+            "path must be an absolute device path with no shell metacharacters",
+            path=value[:200],
+        )
     return value
 
 
@@ -495,6 +518,67 @@ class AdbBackend:
                 break
             props[match.group(1)] = match.group(2)
         return {"properties": props, "count": len(props), "has_more": has_more}
+
+    def list_dir(self, serial: str, path: str, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        target = _check_ls_path(path)
+        dev = self._device(serial)
+        # -1 one per line, -a include dotfiles, -p append / to directories. The
+        # trailing slash is the only type signal parsed, which keeps this robust
+        # across toybox/coreutils ls: no locale-dependent columns, no fragile
+        # date/size splitting. Sizes are intentionally not read here -- a caller
+        # that needs one pulls the file, which reports its bytes.
+        raw = _device_shell(dev, f"ls -1ap {target}")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "ls failed", output=text[:800])
+        entries: list[JsonObject] = []
+        scan_more = False
+        error_line: str | None = None
+        for line in text.splitlines():
+            name = line.rstrip("\r")
+            if not name.strip():
+                continue
+            if name.startswith("ls: "):
+                # ls prints its own diagnostics ("ls: /x: No such file or
+                # directory") to the merged stream; hold the last one so an
+                # empty listing can be reported as the real cause below.
+                error_line = name.strip()
+                continue
+            is_dir = name.endswith("/")
+            clean = name[:-1] if is_dir else name
+            if clean in ("", ".", ".."):
+                continue
+            if len(entries) >= _MAX_DIR_ENTRIES:
+                scan_more = True
+                break
+            entries.append({"name": clean, "is_dir": is_dir})
+        if not entries and error_line is not None:
+            low = error_line.lower()
+            detail = error_line[:200]
+            if "no such file" in low:
+                raise AdbError("not_found", "path not found", path=target, detail=detail)
+            if "permission denied" in low:
+                raise AdbError(
+                    "permission_denied", "permission denied", path=target, detail=detail
+                )
+            if "not a directory" in low:
+                raise AdbError(
+                    "invalid_params", "path is not a directory", path=target, detail=detail
+                )
+            raise AdbError("backend_error", "ls failed", path=target, detail=detail)
+        entries.sort(key=lambda item: item["name"])
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_DIR_ENTRIES_PAGE))
+        window = entries[start : start + cap]
+        return {
+            "path": target,
+            "entries": window,
+            "count": len(window),
+            "total": len(entries),
+            "offset": start,
+            "has_more": start + len(window) < len(entries),
+            "scan_capped": scan_more,
+        }
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500
