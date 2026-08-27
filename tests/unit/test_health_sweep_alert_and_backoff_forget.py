@@ -66,6 +66,22 @@ def test_a_crashing_check_records_an_alert_and_the_sweep_survives(
     ]
 
 
+def test_start_is_idempotent_while_a_sweep_is_already_running() -> None:
+    # start() is called from session setup, which can run more than once for the
+    # same service. A second call while a thread is live must be a no-op: two
+    # sweepers on one runtime source would double every reconnect attempt and
+    # race on the entries map. The guard returns before touching the stop flag.
+    monitor = BackendHealthMonitor(runtimes=_IdleSource(), interval_s=30.0)
+    monitor.start()
+    try:
+        first = monitor._thread
+        assert first is not None
+        monitor.start()
+        assert monitor._thread is first
+    finally:
+        monitor.stop(timeout=5.0)
+
+
 def test_forget_clears_reconnect_backoff_for_that_session_only() -> None:
     monitor = BackendHealthMonitor(runtimes=_IdleSource())
     monitor._entries[("gone", "x64dbg")] = BackendHealth(
