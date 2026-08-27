@@ -60,14 +60,6 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   测试同步更正，并新增一条直测：`proxy.start/flows/ca.install_android` 在 `android`/`web` 可见、
   在 `pe` 不可见。
 
-### 修复（`proxy.start` 绑定非回环接口时不作声）
-
-- `host` 默认 `127.0.0.1`，但从不校验也从不提示：一旦调用方（例如让局域网里的真机按 IP 连过来）
-  传 `0.0.0.0` 或某个外网地址，就等于在所有接口上开了一个会解 TLS 的开放 MITM 代理，而回包和
-  绑定回环时长得一模一样，无人值守的调用方根本不会注意到自己开着一个开放代理。仍允许这种显式
-  远程绑定（与 `frida.server.ensure` 的 `bind_host` 一致），但绑定判定为非回环时在成功信封里
-  附带 `warning`，并建议改用 127.0.0.1 + `adb reverse` / 模拟器 `10.0.2.2`。
-
 ### 修复（`web.console` 补齐 total 与其余读取器对齐）
 
 - `web.console` 是唯一不回 `total` 的分页读取器——`network.list`、`scripts`、`wasm.list`、
@@ -178,6 +170,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `env:` 口令源：口令放进仅子进程可见的复制环境，argv 里只剩变量名；stderr 抹除照旧保留作
   纵深防御。回归测试断言 sign 与 verify 两次调用的每个参数都不含口令、口令只出现在注入的
   环境里。
+### 修复（`proxy.start` 绑定非回环接口时不作声）
+
+- `host` 默认 `127.0.0.1`，但从不校验也从不提示：一旦调用方（例如让局域网里的真机按 IP 连过来）
+  传 `0.0.0.0` 或某个外网地址，就等于在所有接口上开了一个会解 TLS 的开放 MITM 代理，而回包和
+  绑定回环时长得一模一样，无人值守的调用方根本不会注意到自己开着一个开放代理。仍允许这种显式
+  远程绑定（与 `frida.server.ensure` 的 `bind_host` 一致），但绑定判定为非回环时在成功信封里
+  附带 `warning`，并建议改用 127.0.0.1 + `adb reverse` / 模拟器 `10.0.2.2`。
+
 ### 修复（mitmproxy 12 停止代理后监听端口不再泄漏）
 
 - **`proxy.stop` 只发 `master.shutdown()`，在 mitmproxy 12 上端口停不下来。**
