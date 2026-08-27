@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（会话关闭时浏览器清理失败被静默吞掉,泄漏的 runner 无人知晓）
+
+- `close_session` 过去用 `with suppress(BaseException): web_backend.close(session_id)` 关浏览器:
+  一次卡死或失败的清理被整段吞掉,调用方拿到的是「干净关闭」的回包,可 driver 虽停了、wedged 的 runner
+  线程还在——一个泄漏的会话被当成关干净了。现在改为接住 `close` 的结果与异常:`close` 回 `clean=false`
+  (driver 停了但 runner 仍卡)记为 `web_cleanup_incomplete`,抛 `WebError` 原样记录,抛其它异常记为
+  `web_cleanup_failed`;这些经 `close_errors` 排到最前(浏览器先拆、web 调用方等的就是它)如实上报,而调试器
+  worker 的关闭循环照旧执行、不被跳过。
+- `close_all`(服务级 API 边界)同理:过去 `web_backend.close_all()` 直接抛,会越过其后的 proxy/adb 清理,
+  把已收集的每一条计数与错误一并丢弃。现在包进 try/except,把浏览器清理失败作为结构化错误追加进汇总,
+  proxy/adb 清理仍照跑。新增回归覆盖会话级 incomplete/failed/clean 三态与 bulk 清理失败仍继续。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
