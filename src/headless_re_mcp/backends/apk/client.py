@@ -44,16 +44,25 @@ class ApkError(RuntimeError):
         self.details = details
 
 
-def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
+def _cap_names(values: Any, limit: int) -> tuple[list[str], bool, int]:
+    """Cap a name list, saying whether it overflowed and how long it truly is.
+
+    total counts every name the parser held, not just the page kept: the list
+    is already in memory, so the true size is free, and stopping at the cap left
+    a caller with only "there is more" -- unable to tell a 257-activity app from
+    a 5 000-activity one, or to size the next look.
+    """
     items: list[str] = []
     has_more = False
+    total = 0
     for item in values or []:
-        if len(items) >= limit:
+        total += 1
+        if len(items) < limit:
+            items.append(str(item))
+        else:
             has_more = True
-            break
-        items.append(str(item))
     items.sort()
-    return items, has_more
+    return items, has_more, total
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -234,17 +243,21 @@ class ApkClient:
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
+        declared, declared_more, declared_total = _cap_names(
+            apk.get_permissions(), _MAX_PERMISSIONS
+        )
         try:
-            requested, requested_more = _cap_names(
+            requested, requested_more, requested_total = _cap_names(
                 apk.get_requested_permissions(), _MAX_PERMISSIONS
             )
         except Exception:  # noqa: BLE001 - older androguard lacks this
-            requested, requested_more = declared, declared_more
+            requested, requested_more, requested_total = declared, declared_more, declared_total
         return {
             "permissions": declared,
             "requested_permissions": requested,
             "count": len(declared),
+            "total": declared_total,
+            "requested_total": requested_total,
             "has_more": declared_more or requested_more,
         }
 
@@ -289,16 +302,26 @@ class ApkClient:
 
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        activities, a_more = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
-        services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
-        receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
-        providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
+        activities, a_more, a_total = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
+        services, s_more, s_total = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
+        receivers, r_more, r_total = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
+        providers, p_more, p_total = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
         return {
             "activities": activities,
             "services": services,
             "receivers": receivers,
             "providers": providers,
             "main_activity": apk.get_main_activity(),
+            # Per-type totals, not one aggregate has_more: a caller after a
+            # specific exported provider needs to know that the providers list
+            # in particular was cut (total > len), and by how much, not merely
+            # that one of the four lists was.
+            "totals": {
+                "activities": a_total,
+                "services": s_total,
+                "receivers": r_total,
+                "providers": p_total,
+            },
             "has_more": a_more or s_more or r_more or p_more,
         }
 
@@ -306,6 +329,7 @@ class ApkClient:
         apk = self._apk(path)
         libs: list[str] = []
         abis: set[str] = set()
+        total = 0
         has_more = False
         for name in apk.get_files() or []:
             text = str(name)
@@ -314,6 +338,10 @@ class ApkClient:
             parts = text.split("/")
             if len(parts) >= 3:
                 abis.add(parts[1])
+            # total counts every lib/ entry; the file list is walked anyway, so
+            # the true count is free and a caller capped at _MAX_NATIVE_LIBS can
+            # tell how many were withheld.
+            total += 1
             if len(libs) >= _MAX_NATIVE_LIBS:
                 has_more = True
                 continue
@@ -323,6 +351,7 @@ class ApkClient:
             "native_libs": libs,
             "abis": sorted(abis),
             "count": len(libs),
+            "total": total,
             "has_more": has_more,
         }
 

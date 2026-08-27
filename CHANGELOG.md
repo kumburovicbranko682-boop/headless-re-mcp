@@ -82,6 +82,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（apk.permissions/components/native_libs 补齐 total)
+
+- 这三个读取器把一份**已在内存里**的清单按上限(权限/组件 256、so 256)截断后,只回 `count` 与
+  `has_more`,不回 `total`。上限对大型 App(超级 App、系统 App)其实够得着——活动/服务/接收器动辄
+  数百。尤其 `components` 只有一个聚合 `has_more`,调用方(比如在找某个导出的 provider)根本不知道
+  是四个清单里的哪一个被截、截了多少。现在:`_cap_names` 顺带数出真实总数;`components` 返回
+  `totals`(按 activities/services/receivers/providers 分类的总数),`permissions` 返回 `total` 与
+  `requested_total`,`native_libs` 返回 `total`(只数 `lib/` 条目,`classes.dex` 之类不计入)。分页
+  语义不变。回归测试覆盖各自的截断(total 为全量、大于 count;components 精确到是 activities 溢出)
+  与放得下(total 等于 count)两种情形。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

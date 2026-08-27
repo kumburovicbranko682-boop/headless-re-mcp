@@ -45,9 +45,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_permissions(session_id: str) -> dict[str, Any]:
         """List declared and requested permissions.
 
-        Answers with permissions, requested_permissions, count, and has_more
-        so a list that filled the cap is not read as every permission. There
-        is no declared or requested field.
+        Answers with permissions, requested_permissions, count, total,
+        requested_total, and has_more so a list that filled the cap is not read
+        as every permission: total and requested_total are how many the parser
+        held, so a caller can tell how many were withheld. There is no declared
+        or requested field.
         """
         return _dump(analysis.apk_permissions(session_id))
 
@@ -66,8 +68,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List activities, services, receivers, and providers.
 
         Answers with activities, services, receivers, providers,
-        main_activity, and has_more so a list that filled the cap is not
-        read as every component. There is no components field.
+        main_activity, totals, and has_more so a list that filled the cap is
+        not read as every component. totals is a per-type map (activities,
+        services, receivers, providers) of how many the parser held, so a
+        caller can tell which of the four lists was cut and by how much rather
+        than only that one of them was. There is no components field.
         """
         return _dump(analysis.apk_components(session_id))
 
@@ -75,9 +80,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_native_libs(session_id: str) -> dict[str, Any]:
         """List bundled native libraries and their ABIs.
 
-        Answers with native_libs, abis, count, and has_more so a list that
-        filled the cap is not read as every .so. There is no libs or
-        libraries field.
+        Answers with native_libs, abis, count, total, and has_more so a list
+        that filled the cap is not read as every .so: total is how many lib/
+        entries the APK holds, so a caller can tell how many were withheld.
+        There is no libs or libraries field.
         """
         return _dump(analysis.apk_native_libs(session_id))
 

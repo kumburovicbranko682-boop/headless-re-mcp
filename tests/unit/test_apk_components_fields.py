@@ -61,7 +61,47 @@ def test_apk_components_names_the_four_lists_not_components() -> None:
     assert payload["has_more"] is True
     assert payload["main_activity"] == "A0"
     assert payload["services"] == ["S"]
+    # Per-type totals: activities was the list that overflowed (300 > 256),
+    # and totals says so and by how much -- the aggregate has_more alone could
+    # not tell which of the four was cut.
+    assert payload["totals"] == {
+        "activities": 300,
+        "services": 1,
+        "receivers": 1,
+        "providers": 1,
+    }
     doc = _tool_docstring("apk.components")
     assert "Answers with activities" in doc
     assert "has_more" in doc
     assert "main_activity" in doc
+    assert "totals" in doc
+
+
+class _SmallApk:
+    def get_activities(self) -> list[str]:
+        return ["A0", "A1"]
+
+    def get_services(self) -> list[str]:
+        return []
+
+    def get_receivers(self) -> list[str]:
+        return ["R"]
+
+    def get_providers(self) -> list[str]:
+        return []
+
+    def get_main_activity(self) -> str:
+        return "A0"
+
+
+def test_apk_components_totals_match_counts_when_nothing_overflows() -> None:
+    client = ApkClient()
+    client._apk = lambda _path: _SmallApk()  # type: ignore[method-assign]
+    payload = client.components(Path("dummy.apk"))
+    assert payload["has_more"] is False
+    assert payload["totals"] == {
+        "activities": 2,
+        "services": 0,
+        "receivers": 1,
+        "providers": 0,
+    }
