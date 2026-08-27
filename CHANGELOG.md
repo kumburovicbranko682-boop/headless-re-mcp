@@ -24,6 +24,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（supervisor 就绪探针：畸形 URL 报 unreachable 而非抛异常）
+
+- `supervisor.probe_ready` 的契约是「任何让请求无法完成的情况都报为 unreachable」——它对坏 scheme 或缺
+  hostname 都返回 `(False, "unreachable: ValueError")`，字面就写着这个 detail，可见意图是「用不了的 URL
+  是一次失败探针，绝不抛异常」。但 `urllib.parse.urlsplit` 会在那道 scheme/hostname 守卫**之前**、对畸形
+  authority（未闭合的 IPv6 字面量 `http://[::1`）抛 `ValueError`；而就绪 URL 恰恰是拿运维的 `--host` 直接
+  拼出来的（`http://{host}:{port}/readyz`），所以一个半个中括号的 IPv6 host 就能触达它。修复前该解析错误会
+  逃出 `probe_ready`：监督器自己的 `_probe_once` 兜底恰好把它抓住并改标为 `probe raised: ValueError`，但这个
+  公开 helper 的任何其它调用方拿到的是异常，而文档承诺的是一个判定。把 `urlsplit` 包进 `try/except ValueError`，
+  与紧随其后的守卫返回同一串 `unreachable: ValueError`——既守住文档契约、又让 detail 串与 `work()` 线程的
+  `unreachable: {name}` 约定保持一致。新增 `tests/unit/test_supervisor_probe_malformed_url.py`：参数化两种
+  运维能敲出来的畸形 host（未闭合中括号、括号后带垃圾）断言返回 `(False, "unreachable: ValueError")` 而非抛，
+  外加一条无括号 IPv6（`http://::1:.../readyz`，hostname 为空、走既有守卫）确认两种畸形形态判定一致。已负控
+  验证（去掉兜底后两条断言以 `Invalid IPv6 URL` 失败），还原后恢复通过；26 条 supervisor 用例、`ruff` 与
+  `mypy` 均通过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
