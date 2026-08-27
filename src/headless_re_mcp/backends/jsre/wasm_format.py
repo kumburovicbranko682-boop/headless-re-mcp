@@ -114,27 +114,63 @@ class _Truncated(Exception):
     """Internal: a read hit the end of the buffer; stop and flag incomplete."""
 
 
+def _module_reader(data: bytes) -> _Reader:
+    """A reader positioned just past the 8-byte header, or reject a non-module."""
+    if len(data) < 8 or data[:4] != _MAGIC:
+        raise WasmParseError("not a WebAssembly module")
+    return _Reader(data, pos=8)  # 4-byte magic + 4-byte version
+
+
 def _walk_sections(data: bytes) -> dict[int, bytes]:
-    """Map each top-level section id to its body (last occurrence wins).
+    """Map each non-custom section id to its body (last occurrence wins).
 
     The generic walk consumes each section by its declared size, so custom
     sections (id 0) and any section we do not decode are skipped for free. A
     section whose declared size runs past the buffer ends the walk -- we return
-    what we gathered rather than failing the whole read.
+    what we gathered rather than failing the whole read. Custom sections (id 0)
+    all share one id and would clobber each other here, so a caller after a
+    specific one (e.g. "name") uses :func:`_find_custom_section` instead.
     """
-    if len(data) < 8 or data[:4] != _MAGIC:
-        raise WasmParseError("not a WebAssembly module")
-    reader = _Reader(data, pos=8)  # 4-byte magic + 4-byte version
+    reader = _module_reader(data)
     sections: dict[int, bytes] = {}
     try:
         while not reader.at_end():
             section_id = reader.byte()
             size = reader.uleb()
             body = reader.take(size)
-            sections[section_id] = body
+            if section_id != 0:
+                sections[section_id] = body
     except _Truncated:
         pass
     return sections
+
+
+def _find_custom_section(data: bytes, target: str) -> bytes | None:
+    """Payload (after its name) of the first custom section named ``target``.
+
+    Custom sections all carry id 0 and lead with their own name, so this walks
+    every section, and for each id-0 one reads that leading name and returns the
+    remaining bytes when it matches. Returns ``None`` when no such section is
+    present -- the common "stripped module" case for the name section.
+    """
+    reader = _module_reader(data)
+    try:
+        while not reader.at_end():
+            section_id = reader.byte()
+            size = reader.uleb()
+            body = reader.take(size)
+            if section_id != 0:
+                continue
+            sub = _Reader(body)
+            try:
+                name = sub.name()
+            except _Truncated:
+                continue
+            if name == target:
+                return body[sub.pos :]
+    except _Truncated:
+        pass
+    return None
 
 
 def _read_valtypes(reader: _Reader) -> list[str]:
@@ -272,3 +308,54 @@ def parse_exports(data: bytes) -> tuple[list[JsonObject], int, bool]:
     except _Truncated:
         incomplete = True
     return entries, declared, incomplete
+
+
+def parse_names(data: bytes) -> tuple[bool, str | None, list[JsonObject], bool]:
+    """``(present, module_name, function_names, incomplete)`` from the name section.
+
+    The custom "name" section is what makes a stripped-but-named module readable:
+    it maps function indices to debug names (and optionally names the module).
+    Absent it, internal functions are only indices, so this is the single biggest
+    symbolication win a WASM read can offer. ``present`` is whether the section
+    exists at all (false for the common stripped module, distinct from a section
+    that is present but carries no function names). ``function_names`` is the
+    name-map subsection 1, each row ``{index, name}`` sorted by index. Bounded and
+    ``incomplete``-flagged like the sibling parsers; unknown subsections (locals,
+    types, ...) are skipped by their declared size.
+    """
+    payload = _find_custom_section(data, "name")
+    if payload is None:
+        return False, None, [], False
+    reader = _Reader(payload)
+    module_name: str | None = None
+    function_names: list[JsonObject] = []
+    incomplete = False
+    try:
+        while not reader.at_end():
+            sub_id = reader.byte()
+            sub_body = reader.take(reader.uleb())
+            if sub_id == 0:  # module name
+                try:
+                    module_name = _Reader(sub_body).name()
+                except _Truncated:
+                    incomplete = True
+            elif sub_id == 1:  # function name map: vec of (funcidx, name)
+                sub = _Reader(sub_body)
+                try:
+                    count = sub.uleb()
+                    if count > _MAX_VEC:
+                        raise _Truncated
+                    limit = min(count, _MAX_ENTRIES)
+                    if count > limit:
+                        incomplete = True
+                    for _ in range(limit):
+                        index = sub.uleb()
+                        function_names.append({"index": index, "name": sub.name()})
+                except _Truncated:
+                    incomplete = True
+            # Other subsections (2=locals, 4=type, 7=global, ...) are consumed by
+            # size above and intentionally not decoded here.
+    except _Truncated:
+        incomplete = True
+    function_names.sort(key=lambda row: row["index"])
+    return True, module_name, function_names, incomplete

@@ -134,4 +134,28 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_exports(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.names")
+    def wasm_names(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Read a .wasm module's debug names (function-index to name symbol map).
+
+        Reads the custom "name" section of the module's binary directly, so it
+        needs no wabt and cannot drift with a wabt version; an input over 16 MiB
+        is refused as too_large. This is what symbolises a stripped-but-named
+        module -- without it internal functions are only indices. Answers with
+        present, module_name, function_names, count, total, offset, has_more and
+        incomplete. present is whether the module carries a name section at all
+        (false for a stripped module), which is distinct from a section that is
+        present but names no functions (present true, function_names empty).
+        module_name is the module's own name or null. function_names lists rows
+        of index and name sorted by index; count may be below limit when the
+        result-size budget trimmed the page, so read count, not limit, and page
+        on has_more. incomplete is true when the name section was truncated or
+        hit the entry cap. The list field is function_names, not names or items.
+        """
+        return _dump(analysis.wasm_names(path, offset=offset, limit=limit))
+
     return tools.bindings

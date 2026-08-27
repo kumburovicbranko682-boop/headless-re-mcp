@@ -19,6 +19,7 @@ from headless_re_mcp.backends.jsre.wasm_format import (
     WasmParseError,
     parse_exports,
     parse_imports,
+    parse_names,
 )
 
 JsonObject = dict[str, Any]
@@ -291,6 +292,36 @@ class WasmClient:
         except WasmParseError as exc:
             raise JsReError("backend_error", str(exc), path=str(path)) from exc
         return _paged_entries(entries, "exports", declared, incomplete, offset=offset, limit=limit)
+
+    def names(
+        self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT
+    ) -> JsonObject:
+        """Function-index -> name map from the custom "name" section (no wabt).
+
+        Symbolises a stripped-but-named module: without this section internal
+        functions are only indices. present reports whether the module carries a
+        name section at all, distinct from one that is present but names no
+        functions. function_names is paged and bounded like imports/exports.
+        """
+        data = self._read_module(path)
+        try:
+            present, module_name, function_names, incomplete = parse_names(data)
+        except WasmParseError as exc:
+            raise JsReError("backend_error", str(exc), path=str(path)) from exc
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _WASM_ENTRY_CAP))
+        window = function_names[start : start + cap]
+        window, _dropped, _budget_cut = fit_json_list(window)
+        return {
+            "present": present,
+            "module_name": module_name,
+            "function_names": window,
+            "count": len(window),
+            "total": len(function_names),
+            "offset": start,
+            "has_more": start + len(window) < len(function_names),
+            "incomplete": incomplete,
+        }
 
     def _read_module(self, path: Path) -> bytes:
         # Existence and the 16 MiB input cap apply exactly as for the wabt tools,

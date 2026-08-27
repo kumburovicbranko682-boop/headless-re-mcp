@@ -40,6 +40,14 @@ _WASM_WITH_IMPORTS = bytes.fromhex(
     "0707010372756e0000"
 )
 
+# A module carrying a custom "name" section: module name "gate" and function
+# names {0: add, 1: run}. Used to prove wasm.names decodes the debug-name symbol
+# map that symbolises an otherwise index-only module.
+_WASM_WITH_NAMES = bytes.fromhex(
+    "0061736d0100000001070160027f7f017f"
+    "0019046e616d6500050467617465010b020003616464010372756e"
+)
+
 
 def _wasm_client() -> WasmClient:
     return WasmClient(getattr(Settings.load(), "wabt", None))
@@ -116,3 +124,20 @@ def test_m11_wasm_imports_exports_read_from_bytes(tmp_path: Path) -> None:
     assert by_name["g"]["mutable"] is True
     # This module's export is run (func); prove the export path too.
     assert {row["name"] for row in client.exports(with_imports)["exports"]} == {"run"}
+
+    # wasm.names: a module with a custom "name" section symbolises to the debug
+    # names it carries; a stripped module (no name section) reports present False
+    # rather than fabricating names.
+    named = tmp_path / "named.wasm"
+    named.write_bytes(_WASM_WITH_NAMES)
+    names = client.names(named)
+    assert names["present"] is True
+    assert names["module_name"] == "gate"
+    assert names["total"] == 2
+    assert {(row["index"], row["name"]) for row in names["function_names"]} == {
+        (0, "add"),
+        (1, "run"),
+    }
+    stripped = client.names(export_only)  # the wat2wasm module carries no names
+    assert stripped["present"] is False
+    assert stripped["function_names"] == []

@@ -70,6 +70,26 @@ def _export_section(*entries: bytes) -> bytes:
     return _section(7, _vec(list(entries)))
 
 
+def _custom_section(section_name: str, payload: bytes) -> bytes:
+    return _section(0, _name(section_name) + payload)
+
+
+def _subsection(sub_id: int, payload: bytes) -> bytes:
+    return bytes([sub_id, len(payload)]) + payload
+
+
+def _name_section(module_name: str | None, func_names: list[tuple[int, str]]) -> bytes:
+    payload = b""
+    if module_name is not None:
+        payload += _subsection(0, _name(module_name))
+    if func_names:
+        name_map = bytes([len(func_names)]) + b"".join(
+            bytes([index]) + _name(text) for index, text in func_names
+        )
+        payload += _subsection(1, name_map)
+    return _custom_section("name", payload)
+
+
 def test_parse_imports_resolves_func_signature_and_each_kind() -> None:
     """Every import kind decodes, and a func import gets its resolved signature.
 
@@ -227,6 +247,92 @@ def test_wasm_client_imports_missing_file_is_not_found(tmp_path: Path) -> None:
     with pytest.raises(JsReError) as info:
         WasmClient(None).imports(tmp_path / "nope.wasm")
     assert info.value.code == "not_found"
+
+
+def test_parse_names_reads_module_and_function_names() -> None:
+    """The name section decodes the module name and the funcidx->name map.
+
+    Measured: module name "mymod" plus func names {0: add, 3: main} ->
+    present True, module_name mymod, two rows sorted by index, not incomplete.
+    """
+    module = _module(_name_section("mymod", [(3, "main"), (0, "add")]))
+    present, module_name, functions, incomplete = wf.parse_names(module)
+    assert present is True
+    assert module_name == "mymod"
+    assert incomplete is False
+    assert functions == [
+        {"index": 0, "name": "add"},
+        {"index": 3, "name": "main"},
+    ]
+
+
+def test_parse_names_absent_section_reports_not_present() -> None:
+    """A module with other custom sections but no "name" reports present False.
+
+    A "producers" custom section must not be mistaken for the name section: the
+    finder matches on the section's own name, so this returns present False --
+    the stripped-module signal -- rather than misreading producers' bytes.
+    """
+    module = _module(_TYPE_SECTION, _custom_section("producers", b"\x00\x01"))
+    present, module_name, functions, incomplete = wf.parse_names(module)
+    assert present is False
+    assert module_name is None
+    assert functions == []
+    assert incomplete is False
+
+
+def test_parse_names_truncated_map_is_incomplete() -> None:
+    """A func-name map claiming more rows than its bytes hold is flagged incomplete."""
+    # name-map subsection says 5 entries but carries only one.
+    bad_map = bytes([5]) + bytes([0]) + _name("add")
+    module = _module(_custom_section("name", _subsection(1, bad_map)))
+    present, _module_name, functions, incomplete = wf.parse_names(module)
+    assert present is True
+    assert functions == [{"index": 0, "name": "add"}]
+    assert incomplete is True
+
+
+def test_wasm_client_names_pages_and_flags_present(tmp_path: Path) -> None:
+    """WasmClient.names reads a file, pages the map, and needs no wabt.
+
+    Measured: a name section with 3 function names through WasmClient(None) ->
+    present True, total 3; limit 2 -> count 2, has_more True; offset 2 -> the
+    last row, has_more False.
+    """
+    module = _module(
+        _TYPE_SECTION,
+        _name_section("m", [(0, "a"), (1, "b"), (2, "c")]),
+    )
+    path = tmp_path / "m.wasm"
+    path.write_bytes(module)
+    client = WasmClient(None)
+    first = client.names(path, limit=2)
+    assert first["present"] is True
+    assert first["module_name"] == "m"
+    assert first["total"] == 3
+    assert first["count"] == 2
+    assert first["has_more"] is True
+    assert "names" not in first  # the list field is function_names
+    second = client.names(path, offset=2, limit=2)
+    assert second["count"] == 1
+    assert second["function_names"][0] == {"index": 2, "name": "c"}
+    assert second["has_more"] is False
+
+
+def test_wasm_client_names_stripped_module_is_present_false(tmp_path: Path) -> None:
+    """A module with no name section answers present False, not an error."""
+    path = tmp_path / "stripped.wasm"
+    path.write_bytes(_module(_TYPE_SECTION))
+    payload = WasmClient(None).names(path)
+    assert payload["present"] is False
+    assert payload["function_names"] == []
+    assert payload["total"] == 0
+
+
+def test_wasm_names_docstring_names_its_fields() -> None:
+    doc = _tool_docstring("wasm.names")
+    for token in ("present", "module_name", "function_names", "incomplete", "index"):
+        assert token in doc
 
 
 def test_wasm_import_export_docstrings_name_their_fields() -> None:
