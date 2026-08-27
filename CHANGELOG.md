@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（Android 静态线首次有真解码的实测 Gate）
+
+- Android 静态的现场 gate 此前只在**合成的**（AXML 非法的）APK 上跑，因此只能证明 androguard 在
+  坏输入上优雅降级（`apk.open` 回信封而不崩），却从未证明它真能解析一个编译过的
+  AndroidManifest——而“读出包名/权限/组件”正是这条线存在的意义。新增
+  `tests/integration/test_android_static_gate.py`，无需 Android SDK：在测试内手工编码一份合法的
+  二进制 `AndroidManifest.xml`（AOSP `ResXMLTree` 结构——XML 头、UTF-16 字符串池、把框架属性名绑到
+  其 resource id 的 resource map、以及命名空间/元素/属性块），打进带两种原生 ABI 的 APK，再驱动真实
+  工具面（`apk.open` / `apk.manifest` / `apk.permissions` / `apk.components` / `apk.native_libs`）并
+  断言**解出来的值**：包名 `com.gate.sample`、versionName/Code、min/target SDK、`INTERNET` 权限、
+  启动 Activity（intent-filter MAIN/LAUNCHER 解析出的 `main_activity`）与两个 ABI，而不只是“调用返回了”。
+  依赖 DEX 分析的 `classes`/`methods`/`strings` 需要真实 `classes.dex`，不在本 gate 范围内。缺
+  androguard 时如实跳过（skip 不等于 pass）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
