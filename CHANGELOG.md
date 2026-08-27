@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（切换对话时上一轮的事件流会串进新打开的对话）
+
+- `webui` 的 `useWorkbench` 在某轮 run 正跑（SSE 流开着）时切到另一个对话，从不中断这条流：
+  `consume()` 继续把该 run 的事件 `dispatch({type:"event"})` 出来，而 reducer 的 `select` 刚把
+  `state.events` 指向新打开的对话——于是旧 run 的事件、以及更糟的它的 `run.failed` 终止横幅与
+  清空 approvals 的副作用，全落进一个从没发起过它的对话里（`RunProgress` 按数组顺序走的指标也被
+  这些外来事件带偏）。现在 `selectThread` 在**确实换了对话**时（`id !== 当前选中`，同一对话再点不算，
+  避免误杀在跑的 run）先 `abortRef.current?.abort()`；`consume` 的 catch 见 `signal.aborted` 即
+  静默返回，不再有事件或 `stream_ended` 泄漏。
+- `removeThread` 删掉的正是当前对话且删完没有别的对话可选时，走的是裸 `dispatch({type:"select",
+  threadId:null})` 而非 `selectThread`，同样会把流悬在半空——这一支现也先 `abort` 再清选择。
+- 新增 `useWorkbench.streamswitch.test.ts` 三条 hook 直测：换对话后旧流的 `AbortSignal` 已中止、
+  同一对话再点流仍存活、删掉最后一个在跑的对话也会中止流。前两条对应修复点，各自在修复前失败
+  （信号仍为未中止）。前端 66 条测试与 `tsc --noEmit` 均通过，提交的 SPA 产物已重建。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

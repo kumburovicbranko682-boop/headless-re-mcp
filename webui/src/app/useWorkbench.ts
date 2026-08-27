@@ -182,6 +182,13 @@ export function useWorkbench() {
   }, []);
 
   const selectThread = async (id: string) => {
+    // Leaving the current thread orphans its run's SSE stream. consume() keeps
+    // pushing that run's events, but the reducer's select just repointed
+    // state.events at the thread being opened -- so the old run's events, and
+    // worse its terminal run.failed banner and approval clearing, would land in
+    // a thread that never started it. Stop the stream on a real switch. (Same
+    // thread stays live: re-selecting must not kill an in-flight run.)
+    if (id !== selectedThreadRef.current) abortRef.current?.abort();
     const result = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(id)}`);
     dispatch({ type: "select", threadId: id, messages: result.messages, events: result.events ?? [] });
     const bound = result.thread.session_id ?? "";
@@ -219,6 +226,10 @@ export function useWorkbench() {
       await selectThread(next.id);
       return;
     }
+    // Deleting the last thread while its run streams leaves no thread for
+    // selectThread to abort through, so tear the stream down here before the
+    // reducer clears the selection and its events out from under it.
+    abortRef.current?.abort();
     dispatch({ type: "select", threadId: null, messages: [] });
     setLost(null);
     lostRef.current = null;
