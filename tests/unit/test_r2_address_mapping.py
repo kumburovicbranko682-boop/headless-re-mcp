@@ -6,6 +6,7 @@ import ast
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +122,50 @@ def test_parse_r2_json_keeps_the_whole_list_when_opcodes_contain_brackets() -> N
     assert len(parsed) == 2
     assert parsed[0]["opcode"].endswith("[rbp+0x10]")
     assert parsed[1]["opcode"] == "ret"
+
+
+def test_parse_r2_json_bounds_a_bracket_heavy_reply() -> None:
+    """The scan runs after capture, outside the subprocess timeout.
+
+    parse_r2_json tries to decode a value at every '[' or '{'. Each failed
+    ``raw_decode(text, index)`` pays for the line/column count JSONDecodeError
+    builds from the buffer start, so trying every bracket is O(n^2) -- and it
+    runs on r2 stdout that is only bounded (1 MiB), not small, and influenced
+    by the sample. A pdj/izj reply truncated mid-value can leave a long leading
+    run of brackets that never decodes. Capping the attempts makes the flood
+    linear; the 10s bound separates milliseconds from the old minutes without
+    being flaky.
+    """
+    raw = "{" * 1_000_000
+    started = time.perf_counter()
+    assert parse_r2_json(raw) is None
+    elapsed = time.perf_counter() - started
+    assert elapsed < 10.0, f"bracket-heavy JSON scan took {elapsed:.1f}s"
+
+
+def test_parse_r2_json_does_not_escape_on_a_deeply_nested_candidate() -> None:
+    """A deeply nested '[' run raises RecursionError out of the C decoder.
+
+    The old scan caught only JSONDecodeError, so such a candidate propagated
+    out of parse_r2_json and reached the service as an internal_error incident
+    rather than reading as "no JSON here". It must be swallowed like any other
+    undecodable candidate. (~20k nested '[' overruns the C decoder's limit;
+    2k does not.)
+    """
+    assert parse_r2_json("[" * 20_000) is None
+
+
+def test_parse_r2_json_still_finds_the_root_after_a_banner_with_a_stray_bracket() -> None:
+    """The attempt cap must not break the reason the scan walks past brackets.
+
+    An r2 banner line can carry its own '[' or '{' before the real value; the
+    cap sits far above any real banner, so the root array is still found.
+    """
+    banner = "WARN: partial map [see log]; config {mode}\n"
+    raw = banner + json.dumps([{"offset": 0x140001000, "name": "entry0"}])
+    parsed = parse_r2_json(raw)
+    assert isinstance(parsed, list)
+    assert parsed[0]["name"] == "entry0"
 
 
 def test_address_dict_with_rva() -> None:

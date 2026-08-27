@@ -8,6 +8,11 @@ from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# How many candidate ``[``/``{`` positions parse_r2_json will try to decode
+# before giving up. r2 -q0 prints the JSON root right after a short banner, so
+# the real value is among the first handful; this only bounds the cost of a
+# reply whose leading run of brackets never decodes. Matches the DIE scan cap.
+_MAX_JSON_OBJECT_SCANS = 256
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -106,12 +111,27 @@ def parse_r2_json(raw: str) -> Any | None:
     if not text:
         return None
     decoder = json.JSONDecoder()
+    attempts = 0
     for index, char in enumerate(text):
         if char not in "[{":
             continue
+        # Each failed candidate is O(len): raw_decode(text, index) pays for the
+        # line/column count JSONDecodeError builds from the buffer start, so
+        # trying every bracket is O(n^2). This runs after capture, outside the
+        # subprocess timeout, on r2 stdout that is only bounded (1 MiB) and
+        # sample-influenced -- a pdj/izj reply truncated mid-value can leave a
+        # long leading run of brackets that never decodes. r2 -q0 puts the JSON
+        # root among the first handful, so cap the scan far above any banner and
+        # the flood becomes linear. Mirrors the DIE JSON scan bound.
+        if attempts >= _MAX_JSON_OBJECT_SCANS:
+            break
+        attempts += 1
         try:
             value, _end = decoder.raw_decode(text, index)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, TypeError, RecursionError):
+            # RecursionError joins the set because a deeply nested candidate
+            # raises it out of the C decoder, and it would otherwise escape
+            # parse_r2_json as an internal_error rather than "no JSON here".
             continue
         return value
     return None
