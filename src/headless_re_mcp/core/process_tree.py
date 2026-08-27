@@ -319,10 +319,17 @@ def _reap_terminated(pids: list[int], wait_s: float) -> None:
         for pid in tuple(pending):
             try:
                 waited, _ = os.waitpid(pid, os.WNOHANG)
-            except (ChildProcessError, OSError):
-                # The root may not have finished exiting yet, so its killed
-                # child has not been reparented to this subreaper. Retry until
-                # the deadline rather than leaving that imminent zombie behind.
+            except ChildProcessError:
+                # Not currently our child. Either someone already retired it
+                # (Popen.wait on a launcher, init before the reparent) and the
+                # pid is gone, or it has not yet been reparented to this
+                # subreaper and will become waitable in a moment. /proc tells
+                # the two apart, so a fully retired pid does not make the
+                # sweep spin until the deadline.
+                if not Path(f"/proc/{pid}").exists():
+                    pending.discard(pid)
+                continue
+            except OSError:
                 continue
             if waited == pid:
                 pending.discard(pid)
