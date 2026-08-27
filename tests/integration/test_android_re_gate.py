@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
@@ -246,6 +247,41 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
         # Frida device enumeration returns an envelope (frida may be present).
         devices = service.frida_devices()
         assert isinstance(devices.ok, bool)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_jadx_decompiles_the_valid_apk(tmp_path: Path) -> None:
+    """Drive the real jadx CLI over the built APK: export tree + one class.
+
+    jadx is the flagship Android decompiler behind apk.export_sources and
+    apk.decompile, yet it had no live coverage -- only stubbed unit tests. The
+    built DEX defines one class, so jadx has real work: it must emit a Java tree
+    and decompile ``com.example.Gate`` to a class declaration. skip != pass: it
+    skips only when jadx is not installed (resolved the way the service does,
+    via settings/PATH), never masking a jadx failure.
+    """
+    if Settings.load().jadx is None:
+        pytest.skip("jadx is not installed — live Gate not run (skip != pass)")
+    apk = _build_valid_apk(tmp_path / "sample.apk")
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        exported = service.apk_export_sources(session_id)
+        assert exported.ok, exported.error
+        assert exported.data["java_file_count"] >= 1
+        assert any(str(path).endswith("Gate.java") for path in exported.data["java_files"])
+
+        decompiled = service.apk_decompile(session_id, "com.example.Gate")
+        assert decompiled.ok, decompiled.error
+        assert decompiled.data["class_name"] == "com.example.Gate"
+        source = decompiled.data["source"]
+        assert "class Gate" in source
+        assert "package com.example" in source
     finally:
         service.close_all()
 
