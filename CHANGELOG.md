@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`frida.memory.read` 的 size 反映实读字节，短读如实上报）
+
+- `frida.memory.read` 过去把回包里的 `size` 直接填成**请求的**字节数。可 frida 的
+  `ptr(addr).readByteArray(size)` 只返回它真能读到的部分:范围末端撞上未映射页就短读回来,
+  而起始地址整段不可读时返回的是空 buffer(`new Uint8Array(null)` 长度为 0,并不抛异常)。
+  于是 `data` 里的十六进制其实比 `size` 声称的短——调用方按 `size` 解码就会越过真实数据、
+  把后面的字节(或根本不存在的字节)当成读到的内容。现 `size` 改为**实际返回**的字节数
+  (与 `data` 严格一致);当实读少于请求时补 `short_read: true` 与未满足的 `requested`,
+  空 buffer 因此如实报成 `size: 0` 而非一段真实的零长区间。文档串同步说明,并新增三条直测:
+  足量读 → `size` 等于字节数且无 `short_read`;短读 → `size` 为实读数、`short_read` 真、
+  `requested` 为所请求;不可读起始 → `size` 0、`data` 空、`short_read` 真。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
