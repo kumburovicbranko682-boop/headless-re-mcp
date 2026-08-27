@@ -493,6 +493,40 @@ def test_r2_service_analyzes_a_native_macho_end_to_end(tmp_path: Path) -> None:
             assert row.get("direction") in {"to", "from"}, row
             _assert_mapped(row.get("from_address"))
             _assert_mapped(row.get("to_address"))
+
+        # The rest of the static read surface must resolve on Mach-O too, at
+        # parity with the ELF gate. Mach-O names sections __TEXT.__text (not
+        # .text) and prefixes symbols with an underscore, so match by shape and
+        # substring rather than the ELF spellings.
+        sections = service.r2_sections(session_id, timeout=60.0)
+        assert sections.ok and sections.data is not None, sections.error
+        assert sections.data.get("parsed") is True
+        assert sections.data.get("architecture") == expect_arch
+        sect_rows = sections.data.get("items") or []
+        exec_sect = next((row for row in sect_rows if "x" in (row.get("perm") or "")), None)
+        assert exec_sect is not None, [row.get("name") for row in sect_rows]
+        _assert_mapped(exec_sect.get("address"))
+
+        symbols = service.r2_symbols(session_id, timeout=60.0)
+        assert symbols.ok and symbols.data is not None, symbols.error
+        assert symbols.data.get("parsed") is True
+        assert symbols.data.get("architecture") == expect_arch
+        sym_rows = symbols.data.get("items") or []
+        sym_triple = next(
+            (row for row in sym_rows if "re_mcp_triple" in (row.get("name") or "")), None
+        )
+        assert sym_triple is not None, sorted(r.get("name") for r in sym_rows if r.get("name"))
+        _assert_mapped(sym_triple.get("address"))
+
+        entries = service.r2_entrypoints(session_id, timeout=60.0)
+        assert entries.ok and entries.data is not None, entries.error
+        assert entries.data.get("parsed") is True
+        assert entries.data.get("architecture") == expect_arch
+        entry_rows = entries.data.get("items") or []
+        program = next((row for row in entry_rows if row.get("type") == "program"), None)
+        assert program is not None, [row.get("type") for row in entry_rows]
+        _assert_mapped(program.get("address"))
+        assert program["address"].get("architecture") == expect_arch, program
     finally:
         service.close_session(session_id)
 
