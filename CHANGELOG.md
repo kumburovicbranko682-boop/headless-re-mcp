@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`packer.classify` 把“扫不了”误报成明确的“没壳”）
+
+- `packer.classify`（服务层 `packer_classify`）过去把 `conclusion` 只分两态：有候选是
+  `candidates`，否则一律 `none_detected`。可“候选为空”其实有两种截然不同的含义——要么
+  签名型加壳/保护器检测器（diec/exeinfope）确实跑完且什么都没查到，要么本该发现壳的检测器
+  根本没跑完：diec 没配置（unavailable）、被调用方关掉（disabled）、或崩了（failed），且没有
+  取到第二意见。`detect_scan` 逐个 source 如实记录了这些状态，但这份精简视图把它们一并塌缩成
+  `none_detected`，在检测其实是退化的情况下报出一张“干净体检单”。内建 PE 扫描虽总会跑，却只带
+  少量结构线索（如 UPX 节名），单凭它不足以把空结果升格为对整个加壳/保护器空间的确信“无壳”。
+  现只有签名扫描确实完成才给 `none_detected`，否则如实报 `inconclusive`；新增 `scanners`
+  （各 source 的 name/status/summary）与 `signature_scan_completed` 布尔，使结论可核验，空结果
+  不再在检测退化时被读成“确认无壳”。新增四条直测覆盖 diec 未配置→inconclusive、崩溃→
+  inconclusive（而非 none_detected）、完成且无壳→none_detected、以及有候选时仍带扫描器披露。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
