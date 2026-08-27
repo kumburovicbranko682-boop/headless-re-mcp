@@ -2065,6 +2065,44 @@ def test_trace_api_arguments_stops_when_break_is_not_ours(tmp_path: Path) -> Non
     assert traced.ok and traced.data is not None
     assert traced.data["hit_count"] == 0
     assert traced.data["stopped_elsewhere"] is True
+    assert traced.data["resume_interrupted"] is False
+    assert traced.data["resume_error"] is None
+    commands = [command for command, _ in worker.requests]
+    assert commands.count("breakpoints.remove") == 1
+
+
+def test_trace_api_arguments_surfaces_a_resume_that_never_repaused(
+    tmp_path: Path,
+) -> None:
+    """A resume that fails mid-capture must not read as "no more hits".
+
+    The capture loop stops for one of three reasons. Hitting max_hits
+    (``truncated``) and landing on a foreign break (``stopped_elsewhere``) were
+    both reported, but a resume that never re-paused -- a backend error or a
+    debuggee that died -- simply broke the loop and returned the hits so far
+    with ``truncated`` false and no reason, indistinguishable from the API
+    genuinely not being called again. ``resume_interrupted`` now flags the
+    cut-short capture and ``resume_error`` carries the failing resume's code so
+    a partial capture is never mistaken for a complete one.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _ResumeFailWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    traced = service.trace_api_arguments(session_id, address=0x140002000, max_hits=3)
+
+    assert traced.ok and traced.data is not None
+    data = traced.data
+    assert data["hit_count"] == 0
+    assert data["truncated"] is False
+    assert data["stopped_elsewhere"] is False
+    assert data["resume_interrupted"] is True
+    assert data["resume_error"] is not None
+    assert data["resume_error"]["code"] == "debugger_command_failed"
+    # The breakpoint is still removed even though the capture was cut short.
     commands = [command for command, _ in worker.requests]
     assert commands.count("breakpoints.remove") == 1
 

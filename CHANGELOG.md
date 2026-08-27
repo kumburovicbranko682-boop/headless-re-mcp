@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dynamic.trace_api_arguments` 把「resume 中断的半截捕获」当成「就调用了这么多次」）
+
+- `trace_api_arguments` 在断点上循环捕获 API 参数，循环停下有三种原因：撞满 `max_hits`（以
+  `truncated` 上报）、停在别人的断点上（以 `stopped_elsewhere` 上报），以及**第三种**——某次
+  `dynamic_resume` 没能重新停下（后端报错、被调试进程已退出、等 pause 超时）。前两种都被如实
+  上报，第三种却只是 `break` 掉循环、返回目前已捕获的 hits，且 `truncated=False`、不带任何原因，
+  与「这个 API 确实只被调用了 hit_count 次」无从区分——把一次被打断的半截捕获，读成了一次完整
+  捕获，那个失败 resume 的错误也被整个丢掉。现新增两处纯增补上报：`resume_interrupted`（因某次
+  resume 未成功而提前收尾时为真）与 `resume_error`（携带该 resume 的 `code`/`message`）；`ok`
+  与既有字段语义不变，只是让被截断的捕获不再冒充完整。工具 docstring 同步列出这两个字段。新增
+  回归：让 resume 直接失败，断言 `resume_interrupted=True`、`resume_error.code` 为
+  `debugger_command_failed`、`truncated`/`stopped_elsewhere` 皆假且断点仍被移除；正常停在别处的
+  用例补断言 `resume_interrupted=False`、`resume_error=None`。以修复前的源码跑这些用例会因
+  `resume_interrupted` 键缺失而失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

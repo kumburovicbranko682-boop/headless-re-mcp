@@ -47,6 +47,8 @@ def test_trace_api_arguments_puts_captures_under_hits_not_arguments() -> None:
     assert '"hit_count": len(hits)' in returned
     assert '"truncated":' in returned
     assert '"stopped_elsewhere": stopped_elsewhere' in returned
+    assert '"resume_interrupted": resume_interrupted' in returned
+    assert '"resume_error": resume_error' in returned
     assert '"convention":' in returned
     assert '"arguments": arguments' not in returned
     assert '"rip"' not in returned

@@ -311,9 +311,12 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Give either expression (for example kernel32.CreateFileW) or a runtime
         address. Answers with hits (instruction_pointer and arguments), hit_count,
-        truncated, stopped_elsewhere, convention, architecture, target and
-        max_hits. There is no top-level arguments, rip or ok field. The
-        breakpoint is removed when the trace ends.
+        truncated, stopped_elsewhere, resume_interrupted, resume_error,
+        convention, architecture, target and max_hits. resume_interrupted is true
+        (with resume_error naming the code/message) when a resume did not re-pause
+        before max_hits, so an incomplete capture is not read as complete. There
+        is no top-level arguments, rip or ok field. The breakpoint is removed when
+        the trace ends.
         """
         return _dump(
             analysis.trace_api_arguments(

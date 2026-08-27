@@ -731,6 +731,8 @@ class TraceMixin:
 
             hits: list[JsonObject] = []
             stopped_elsewhere = False
+            resume_interrupted = False
+            resume_error: JsonObject | None = None
             try:
                 for sequence in range(int(max_hits)):
                     resumed = self.dynamic_resume(
@@ -739,6 +741,18 @@ class TraceMixin:
                         timeout=float(timeout),
                     )
                     if not resumed.ok:
+                        # The capture was cut short before max_hits: a resume that
+                        # never re-paused (timeout) or a backend error. Reporting
+                        # only the hits so far, with truncated=False and no reason,
+                        # would read as "the API was called exactly hit_count times"
+                        # -- carry the failing resume's error out so an incomplete
+                        # capture is never mistaken for a complete one.
+                        resume_interrupted = True
+                        if resumed.error is not None:
+                            resume_error = {
+                                "code": resumed.error.code,
+                                "message": resumed.error.message,
+                            }
                         break
                     register_result = self.dynamic_registers_read(session_id)
                     registers = register_result.data if register_result.ok else None
@@ -786,6 +800,8 @@ class TraceMixin:
                     "max_hits": int(max_hits),
                     "truncated": len(hits) >= int(max_hits),
                     "stopped_elsewhere": stopped_elsewhere,
+                    "resume_interrupted": resume_interrupted,
+                    "resume_error": resume_error,
                 },
                 session_id=session_id,
                 backend=BackendKind.X64DBG.value,
