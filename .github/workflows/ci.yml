@@ -71,7 +71,11 @@ jobs:
         # The step timeout exists because the job timeout has been observed to
         # cancel the whole job with its logs unrecoverable; failing the step
         # instead keeps the transcript and still uploads coverage.
-        timeout-minutes: 25
+        # It must also fire well before the job deadline: with ~8 minutes of
+        # install/lint steps plus the fixture build ahead of it, a 25-minute
+        # step budget outlived the 30-minute job budget and a wedged run was
+        # cancelled loglessly anyway. Tests take ~10 minutes when healthy.
+        timeout-minutes: 15
         run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --cov --cov-report=term --cov-report=xml
 
       - name: Upload coverage
