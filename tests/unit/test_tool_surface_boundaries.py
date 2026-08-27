@@ -10,11 +10,69 @@ command/eval surface, or ships without the metadata clients route on, fails.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from headless_re_mcp.tools.catalog import (
     CommandCatalog,
     CommandTransport,
     ToolEffect,
 )
+
+# The non-PE lines (Android device, Frida, proxy, web, APK static, JS) reach out
+# to real devices, browsers, networks and the local disk, so every state change
+# or file write on them must leave a trace an operator can review after an
+# unattended run. Two mechanisms carry that: a durable "audit" row that survives
+# session-timeline trimming (used for session-less or high-stakes device
+# mutations) and a session "timeline" entry (used for session-scoped changes).
+# The value is (mechanism, emitted event/action name) -- the name equals the
+# tool name everywhere except frida.hook.template, which records a "frida.hook"
+# probe entry. This map is pinned against the live catalog below, so a new non-PE
+# write tool cannot ship without a deliberate decision about how it is observed,
+# and dropping an existing tool's instrumentation trips the wiring check.
+_NON_PE_WRITE_TRACES: dict[str, tuple[str, str]] = {
+    # APK static line -- session timeline.
+    "apk.decode": ("timeline", "apk.decode"),
+    "apk.decompile": ("timeline", "apk.decompile"),
+    "apk.export_sources": ("timeline", "apk.export_sources"),
+    "apk.repack": ("timeline", "apk.repack"),
+    "apk.sign": ("timeline", "apk.sign"),
+    # Android device line -- durable audit (keyed by serial, no session).
+    "device.connect": ("audit", "device.connect"),
+    "device.force_stop": ("audit", "device.force_stop"),
+    "device.forward": ("audit", "device.forward"),
+    "device.install": ("audit", "device.install"),
+    "device.launch": ("audit", "device.launch"),
+    "device.pull": ("audit", "device.pull"),
+    "device.push": ("audit", "device.push"),
+    "device.screenshot": ("audit", "device.screenshot"),
+    "device.uninstall": ("audit", "device.uninstall"),
+    # Frida line -- timeline for probes, durable audit for device mutations.
+    "frida.attach": ("timeline", "frida.attach"),
+    "frida.device.connect": ("timeline", "frida.device.connect"),
+    "frida.hook.template": ("timeline", "frida.hook"),
+    "frida.server.ensure": ("audit", "frida.server.ensure"),
+    "frida.spawn": ("audit", "frida.spawn"),
+    # JS line -- durable audit (keyed by file path, no session).
+    "js.unpack_bundle": ("audit", "js.unpack_bundle"),
+    # Proxy line -- session timeline.
+    "proxy.ca.install_android": ("timeline", "proxy.ca.install_android"),
+    "proxy.export_har": ("timeline", "proxy.export_har"),
+    "proxy.replay": ("timeline", "proxy.replay"),
+    "proxy.start": ("timeline", "proxy.start"),
+    "proxy.stop": ("timeline", "proxy.stop"),
+    # Web line -- session timeline.
+    "web.click": ("timeline", "web.click"),
+    "web.close": ("timeline", "web.close"),
+    "web.har.export": ("timeline", "web.har.export"),
+    "web.navigate": ("timeline", "web.navigate"),
+    "web.open": ("timeline", "web.open"),
+    "web.screenshot": ("timeline", "web.screenshot"),
+    "web.type": ("timeline", "web.type"),
+    # Workspace line -- durable audit (session-less global config change).
+    "workspace.mode.set": ("audit", "workspace.mode.set"),
+}
+
+_NON_PE_LINES = ("apk.", "device.", "frida.", "js.", "proxy.", "web.", "workspace.")
 
 # Names that would each amount to an arbitrary command/eval passthrough. The
 # project calls these out by name as things it intentionally does not offer, so
@@ -124,3 +182,61 @@ def test_every_bound_tool_carries_a_description_and_object_schema() -> None:
         assert bad_schema == [], bad_schema
     finally:
         analysis.close_all()
+
+
+def _non_pe_write_tool_names(catalog: CommandCatalog) -> set[str]:
+    return {
+        spec.name
+        for spec in _all_specs(catalog)
+        if spec.write and spec.name.startswith(_NON_PE_LINES)
+    }
+
+
+def test_every_non_pe_write_tool_declares_an_observability_trace() -> None:
+    """Every non-PE state change or file write must be pinned to a trace.
+
+    Unlike a PE unpack, these tools touch a real device, browser, network or the
+    local disk, and an operator reviewing an unattended run needs a record that
+    they ran and what they did. The trace map is pinned to equal the live non-PE
+    write surface, so a newly added tool on any of these lines fails here until
+    it is given an audit row or a timeline entry -- the same forcing function the
+    file-write autonomy denylist uses -- rather than silently shipping with no
+    observability. A renamed or reclassified tool trips it too.
+    """
+    catalog = CommandCatalog()
+    declared = set(_NON_PE_WRITE_TRACES)
+    actual = _non_pe_write_tool_names(catalog)
+
+    missing = actual - declared
+    dead = declared - actual
+    assert missing == set(), f"non-PE write tools with no declared trace: {sorted(missing)}"
+    assert dead == set(), f"trace map names a tool that is not a non-PE write: {sorted(dead)}"
+
+    for name, (mechanism, _event) in _NON_PE_WRITE_TRACES.items():
+        assert mechanism in {"audit", "timeline"}, (name, mechanism)
+
+
+def test_declared_observability_traces_are_actually_wired() -> None:
+    """The declared trace is real: its event/action literal exists in the service.
+
+    The map above is only bookkeeping unless the promised call site exists, so
+    this reads the service layer's source and asserts each declared event/action
+    string appears as a literal. It catches the two ways the wiring rots: a tool
+    added to the map but never instrumented, and instrumentation removed from a
+    tool during a refactor while the map still claims it. Both leave an operator
+    with a silent state change, which is exactly what the map is meant to prevent.
+    """
+    import headless_re_mcp.core as core_pkg
+
+    core_dir = Path(core_pkg.__file__).parent
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(core_dir.glob("service*.py"))
+    )
+    assert source, "no service source found to check trace wiring against"
+
+    missing = [
+        name
+        for name, (_mechanism, event) in _NON_PE_WRITE_TRACES.items()
+        if f'"{event}"' not in source
+    ]
+    assert missing == [], f"declared traces with no call site in the service layer: {missing}"

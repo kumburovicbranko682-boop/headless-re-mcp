@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把非 PE 写操作的"必留痕"钉成整面不变量）
+
+- 这一整轮为非 PE 各线逐个补齐了可观测性（device.* 变更与抓取、frida.spawn/server.ensure、
+  proxy.replay、workspace.mode.set、js.unpack_bundle,以及 web.* 交互),但这些都是逐工具的契约测试:
+  新加一个非 PE 写工具却忘了记痕,没有任何测试会发现。现在把它钉成一条整面不变量:非 PE 各线
+  (apk./device./frida./js./proxy./web./workspace.)的每个写工具都必须落一条痕——要么是能挺过会话时间线
+  裁剪的持久 audit 行(会话无关或高风险设备变更),要么是随会话走的 timeline 条目。
+- `tests/unit/test_tool_surface_boundaries.py` 新增两项:一是把 33 个非 PE 写工具与其记痕机制的映射
+  钉死等于目录里的实际非 PE 写面(少一个、多一个、改名都失败),逼出"这工具怎么被观测"的自觉决定,与
+  autonomy 文件写 denylist 用的是同一种强制手段;二是把映射从"账面"变成"有牙":读服务层源码、断言每个
+  声明的事件/动作字符串字面量确有落地调用点,从而同时抓住"加进映射却没接线"和"重构里把记痕删了、映射
+  却还留着"两种腐化。经审计确认当前 33 个非 PE 写工具全部已记痕,不变量成立。
+
 ### 加固（钉住无人值守预设里搭车的非 PE 状态变更工具）
 
 - 无人值守的 packed-PE 预设按 effect 授予整个 `state_change` 类(而非像文件写那样按具名工具白名单),
