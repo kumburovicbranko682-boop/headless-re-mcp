@@ -161,6 +161,9 @@ class JadxClient:
         try:
             with candidate.open("rb") as handle:
                 raw = handle.read(_MAX_SOURCE_BYTES + 1)
+                # fstat the open handle, not the path: the full size is read
+                # atomically with the bytes, no second lookup that could race.
+                total_bytes = os.fstat(handle.fileno()).st_size
         except OSError as exc:
             raise JadxError("backend_error", f"failed to read source: {exc}") from exc
         truncated = len(raw) > _MAX_SOURCE_BYTES
@@ -170,6 +173,11 @@ class JadxClient:
             "path": str(candidate),
             "source": source,
             "truncated": truncated,
+            # bytes is the .java file's full size, so a class cut at the buffer
+            # is not read as the whole source: source is the prefix, bytes the
+            # total, and their difference is what was dropped. Same signal
+            # apk.manifest and wasm.info already carry.
+            "bytes": int(total_bytes),
         }
         # The named class may have decompiled cleanly even when jadx choked on
         # others; carry the whole-run verdict so a partial tree is not read as
