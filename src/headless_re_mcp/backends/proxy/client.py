@@ -494,10 +494,19 @@ class ProxyBackend:
         req = flow.request
         resp = flow.response
         body = b""
-        try:
-            body = resp.raw_content or b"" if resp else b""
-        except Exception:  # noqa: BLE001
-            body = b""
+        if resp is not None:
+            try:
+                body = resp.raw_content or b""
+            except Exception as exc:  # noqa: BLE001
+                # Measured: raw_content raising still answered status=200,
+                # size=0, body="", so an agent treated a failed decode as an
+                # empty response. A body that cannot be read is a failure, not
+                # evidence the server sent nothing.
+                raise ProxyError(
+                    "backend_error",
+                    f"failed to read response body: {exc}",
+                    flow_id=flow_id,
+                ) from exc
         result: JsonObject = {
             "id": flow_id,
             "request": {

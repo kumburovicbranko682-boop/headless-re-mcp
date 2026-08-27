@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -247,6 +248,73 @@ class TestProxyScoping:
         with pytest.raises(ProxyError) as info:
             backend.start("s", port=99999)
         assert info.value.code == "invalid_params"
+
+
+class TestProxyFlowGetDoesNotInventAnEmptyBody:
+    """A body read that raised used to look like a response that sent nothing.
+
+    Measured: proxy.flow.get swallowed a raw_content exception and still
+    answered status=200, size=0, body empty. An unattended agent then treats a
+    failed decode as evidence the server sent nothing. A read that raises is a
+    failure; a genuinely empty body is unchanged.
+    """
+
+    class _Req:
+        method = "GET"
+        pretty_url = "https://example.com/x"
+        headers: dict[str, str] = {}
+
+    class _Flow:
+        def __init__(self, response: object) -> None:
+            self.request = TestProxyFlowGetDoesNotInventAnEmptyBody._Req()
+            self.response = response
+
+    def _backend(self, response: object) -> tuple[Any, str]:
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+        backend = ProxyBackend()
+        inst = _ProxyInstance("127.0.0.1", 8080)
+        inst.recorder._raw["f1"] = self._Flow(response)
+        backend._instances["s"] = inst
+        return backend, "f1"
+
+    def test_a_body_read_that_raises_is_a_failure(self, tmp_path: Path) -> None:
+        class _Resp:
+            status_code = 200
+            headers: dict[str, str] = {}
+
+            @property
+            def raw_content(self) -> bytes:
+                raise ValueError("decode boom")
+
+        backend, flow_id = self._backend(_Resp())
+        with pytest.raises(ProxyError) as info:
+            backend.flow_get("s", flow_id, tmp_path)
+        assert info.value.code == "backend_error"
+        assert "failed to read response body" in info.value.message
+
+    def test_a_genuinely_empty_body_is_still_a_response(self, tmp_path: Path) -> None:
+        class _Resp:
+            status_code = 204
+            headers: dict[str, str] = {}
+            raw_content = b""
+
+        backend, flow_id = self._backend(_Resp())
+        result = backend.flow_get("s", flow_id, tmp_path)
+        assert result["response"]["status"] == 204
+        assert result["response"]["size"] == 0
+        assert result["response"]["body"] == ""
+
+    def test_a_nonempty_body_is_returned(self, tmp_path: Path) -> None:
+        class _Resp:
+            status_code = 200
+            headers: dict[str, str] = {}
+            raw_content = b"hello"
+
+        backend, flow_id = self._backend(_Resp())
+        result = backend.flow_get("s", flow_id, tmp_path)
+        assert result["response"]["size"] == 5
+        assert result["response"]["body"] == "hello"
 
 
 class _TrackingWebBackend:
