@@ -849,6 +849,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   ImageBase 就没有 module 相对的 RVA,地址保留绝对 VA——正是断言所验证的;PE 仍走 RVA/module 分支。
   r2 缺失或没有 C 编译器时 skip(skip≠pass)。该 gate 本就未被 conftest 的 `_WINDOWS_ONLY_MODULES`
   拦截,只是缺夹具而空跑,现补上 Linux 侧的真实覆盖。
+- **`r2.xrefs` 在现代 radare2 上根本取不到交叉引用**。它跑的是 `axj @ addr`,而现代 r2 的 `axj` 是
+  写命令(「add jmp reference」)、不是列举——`ax?` 明确写着 `axj = add jmp reference`,列举用的是
+  `axlj`(全量)或按地址的 `axtj`/`axfj`。于是 `axj @ addr` 什么也不吐,`parse_r2_json` 拿到空串、
+  `enrich` 报 `parsed: False`、`items` 为空,无论目标地址有没有引用都一样——这个工具对任何近代 r2
+  都是废的。现改为按地址分别取「引用到」(`axtj`)与「引用自」(`axfj`)两个方向、合并成统一的
+  `{from,to,type}`(`axtj` 只给源,目标即所查地址,故补上 `to`),再走原有 `enrich` 映射出
+  `from_address`/`to_address`。命令白名单相应从 `axj @ addr` 收敛为 `ax[tf]j @ addr`;裸 `axj` 不再
+  接受(实测已验证 `main→helper` 的 CALL 边能被正确解析)。`run()` 拆出 `_exec()` 以便一次 xrefs 里
+  跑两趟分析而各自独立解析(空的一侧保持空列表,不被另一侧输出吞掉)。
+  `tests/integration/test_m11_r2_live_gate.py` 新增对真实 CALL 边的断言钉住。
 
 ### 变更（Android 后端清理）
 
