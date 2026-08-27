@@ -1034,6 +1034,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   字节**落盘到 `response.body_path`(读回精确 body,不是截断或再编码的)。文本体行为完全不变(200001 全 `x` 仍走落盘,
   proxy live gate 里 `mitm-capture-ok` 仍原样回文本)。新增单测钉住二进制体 base64 可解回原字节、文本体 `base64_encoded`
   为 false(不需 mitmproxy);proxy live gate 的真实抓包读回照常通过(mitmproxy 12.2.3)。
+- **jsre 与 jadx 的大输出会被传输层整条丢弃、换回一份 16KiB 摘要**。工具结果在过 MCP/agent 边界前会被 JSON 序列化,两条
+  传输(`agent.context.bounded_tool_result`、`mcp.adapter.apply_result_budget`)一旦编码后的信封超过
+  `ResourcePolicy.max_result_bytes`(262144),就把**整个**结果替换成一份约 16KiB 的摘要——每个有用字段一并丢掉,只剩
+  `summary`。可 `js.deobfuscate`/`js.beautify`、`wasm.wat`/`wasm.info` 的 `_bounded_output` 与 `apk.decompile` 的取源都按
+  **原始字节数** 截断到 `400_000`,而这个上限**高于**传输预算:一个 400KB 的 `code`/`source` 字段 JSON 编码后有 500+KB
+  (实测 526378),必然顶破 262144、必然被换成摘要,于是 agent 拿到的不是干净截断的源码、而是一段 JSON 转义了一半的 16KiB
+  片段。根因是「客户端按原始字节截、传输层按编码字节算」这对错配——JSON 转义(`\"`、`\\`、`\n`、控制字符→`\uXXXX`)会把编码
+  体积撑大,故任何原始字节上限都保证不了编码后能过。兄弟 `web.network.get`/`_spill_text` 早已用 200000 的较低上限来「压在
+  预算之下」,jsre/jadx 的 400000 是与之相悖的那个、且必然触网。新增共享助手
+  `backends/common/json_budget.fit_json_text`:按**编码后**体积把文本裁到「预算−字段余量」以内(余量 64KiB 兜住其余字段——
+  含最坏情况 8000 字符全 `\uXXXX` 的 stderr——与 JSON 结构),二分找出编码后能过的最长前缀、绝不切断多字节字符,并把裁前的
+  真实字节数照常报在 `bytes`。`_bounded_output` 与 `apk.decompile` 改用它;jadx 取源也只读「编码预算+1」字节(编码体永不小于
+  原始体,读更多也留不住),据此判 `truncated`。这样一份大输出回来的是干净截断的 ~192KB 有用文本(带 `truncated: true`),而不是
+  16KiB 摘要;小输出原样不变。`RESULT_BUDGET_BYTES` 以常量镜像 `ResourcePolicy.max_result_bytes` 并由单测钉死防漂移;另加
+  单测喂 1MiB 输出、断言过 `bounded_tool_result` 后仍带 `code`、不带 `summary`(修前 400KB 必被摘要),原「按原始字节截」的
+  单测改成按编码体积断言。已在 wabt 1.0.36 上跑通 WASM live gate(干净小输出照旧原样回)。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
