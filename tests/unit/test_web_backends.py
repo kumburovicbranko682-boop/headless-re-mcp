@@ -10,6 +10,7 @@ import pytest
 
 from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
+from headless_re_mcp.backends.proxy.client import _BIND_HOST_RE
 from headless_re_mcp.backends.web import WebBackend, WebError
 from headless_re_mcp.backends.web.client import (
     _MAX_NAV_TIMEOUT_S,
@@ -361,6 +362,29 @@ class TestProxyScoping:
         with pytest.raises(ProxyError) as info:
             backend.start("s", port=bad_port)  # type: ignore[arg-type]
         assert info.value.code == "invalid_params"
+
+    @pytest.mark.parametrize(
+        "bad_host",
+        ["", " ", "127.0.0.1\n", "0.0.0.0 ", "a b", "host;rm", "he\tllo", None, 127],
+    )
+    def test_start_rejects_a_malformed_bind_host(self, bad_host: object) -> None:
+        # Like the port check, host validation runs before the mitmproxy probe,
+        # so a bad host is invalid_params even without the backend installed --
+        # not the misleading "port already in use" it used to produce when the
+        # unresolvable host made _port_bindable fail for a reason it could not
+        # report. A trailing newline must not slip past the \Z-anchored guard.
+        backend = ProxyBackend()
+        with pytest.raises(ProxyError) as info:
+            backend.start("s", host=bad_host, port=8080)  # type: ignore[arg-type]
+        assert info.value.code == "invalid_params"
+
+    @pytest.mark.parametrize(
+        "host", ["127.0.0.1", "0.0.0.0", "::1", "localhost", "my-host.local"]
+    )
+    def test_bind_host_pattern_accepts_real_addresses(self, host: str) -> None:
+        # The forms a caller legitimately binds -- loopback, all-interfaces, an
+        # IPv6 literal, and hostnames for device interception -- must pass.
+        assert _BIND_HOST_RE.match(host) is not None
 
 
 class _FakeNavPage:

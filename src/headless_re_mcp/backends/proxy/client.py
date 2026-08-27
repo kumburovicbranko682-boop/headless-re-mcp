@@ -13,6 +13,7 @@ import concurrent.futures
 import contextlib
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -47,6 +48,16 @@ _MAX_FLOW_HEADERS = 100
 _MAX_HEADER_VALUE_BYTES = 4 * 1024
 _MAX_FLOW_HEADERS_TOTAL_BYTES = 64 * 1024
 _OMITTED_BODY = object()
+# A listen host is an IPv4/IPv6 literal or a hostname (``127.0.0.1``, ``::1``,
+# ``0.0.0.0``, ``localhost``, a LAN address for device interception). Anything
+# with whitespace, a newline, or other stray characters cannot name a real
+# interface: handed one, ``_port_bindable`` fails for a reason it cannot report,
+# and ``_ProxyInstance.start`` blames the *port* -- the misleading "port already
+# in use" for what is really a bad host. Validate it up front like ``port``, and
+# anchor the tail with ``\Z`` (not ``$``, which also matches before a trailing
+# newline) so ``"127.0.0.1\n"`` cannot slip through -- the same tail-anchoring
+# the adb and r2 guards use.
+_BIND_HOST_RE = re.compile(r"^[A-Za-z0-9.:\-]{1,255}\Z")
 
 
 class ProxyError(RuntimeError):
@@ -570,6 +581,13 @@ class ProxyBackend:
         # testable) on a machine without mitmproxy.
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
+        # Validate the bind host for the same reason and in the same place as the
+        # port: a malformed host is wrong regardless of whether mitmproxy is
+        # installed, and left unchecked it reaches _port_bindable as an
+        # unresolvable address, whose suppressed failure is then misreported as
+        # "port already in use". Fail fast with the real cause instead.
+        if not isinstance(host, str) or _BIND_HOST_RE.match(host) is None:
+            raise ProxyError("invalid_params", "host is not a valid bind address", host=host)
         self._check_available()
         with self._lock:
             if session_id in self._instances:
