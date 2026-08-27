@@ -26,13 +26,22 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         host: str = "127.0.0.1",
         port: Annotated[int, Field(ge=1, le=65535)] = 8080,
+        ssl_insecure: bool = False,
     ) -> dict[str, Any]:
         """Start an HTTP(S) interception proxy bound to this session.
 
         Answers with running, host, port and endpoint. There is no ok,
-        started or url field.
+        started or url field. Set ssl_insecure to intercept HTTPS origins that
+        serve an untrusted certificate (self-signed, pinned, or expired):
+        otherwise mitmproxy verifies the upstream and returns 502 instead of
+        the decrypted flow. It is off by default and only relaxes the proxy's
+        own verification of the upstream server, never the client's.
         """
-        return _dump(analysis.proxy_start(session_id, host=host, port=port))
+        return _dump(
+            analysis.proxy_start(
+                session_id, host=host, port=port, ssl_insecure=ssl_insecure
+            )
+        )
 
     @tools.tool(name="proxy.stop")
     def proxy_stop(session_id: str) -> dict[str, Any]:

@@ -49,7 +49,12 @@ class ProxyAnalysisMixin:
         return root
 
     def proxy_start(
-        self, session_id: str, host: str = "127.0.0.1", port: int = 8080
+        self,
+        session_id: str,
+        host: str = "127.0.0.1",
+        port: int = 8080,
+        *,
+        ssl_insecure: bool = False,
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -61,7 +66,7 @@ class ProxyAnalysisMixin:
                 raise InvalidStateTransition(
                     f"proxy.start cannot run in {session.state.value} state"
                 )
-            data = self._proxy.start(session_id, host=host, port=port)
+            data = self._proxy.start(session_id, host=host, port=port, ssl_insecure=ssl_insecure)
             try:
                 session = self.registry.get(session_id)
                 if session.state in {

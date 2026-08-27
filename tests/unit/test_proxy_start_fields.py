@@ -36,7 +36,9 @@ def test_proxy_start_puts_the_result_in_running_host_port_endpoint() -> None:
     after a successful start reads as a proxy that never bound a port.
     """
     source = Path(ProxyBackend.start.__code__.co_filename).read_text(encoding="utf-8")
-    start = source.index("def start(self, session_id")
+    # Anchor past _ProxyInstance.start (a different def start()) so this finds
+    # ProxyBackend.start even though its signature now spans several lines.
+    start = source.index("def start(", source.index("class ProxyBackend"))
     chunk = source[start : source.index("def stop(self, session_id", start)]
     marker = chunk.rindex('return {')
     returned = chunk[marker : marker + 180]

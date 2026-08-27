@@ -326,9 +326,10 @@ class _ProxyInstance:
     # first ``running()`` hook so only one master owns the global ctx at a time.
     _ctx_lock: ClassVar[threading.Lock] = threading.Lock()
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, *, ssl_insecure: bool = False) -> None:
         self.host = host
         self.port = port
+        self.ssl_insecure = bool(ssl_insecure)
         self.recorder = _FlowRecorder()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -395,6 +396,15 @@ class _ProxyInstance:
             asyncio.set_event_loop(loop)
             self._loop = loop
             opts = options.Options(listen_host=self.host, listen_port=self.port)
+            if self.ssl_insecure:
+                # Intercepting an origin that serves an untrusted certificate --
+                # a self-signed local server, a pinned staging host, an expired
+                # cert -- fails mitmproxy's upstream verification, so it returns
+                # its own 502 and the decrypted flow is never recorded. Opt in
+                # per session to skip that verification. Off by default: it is
+                # the client's TLS safety net, dropped only when the caller
+                # deliberately points the proxy at an origin it cannot verify.
+                opts.ssl_insecure = True
             _ProxyInstance._ctx_lock.acquire()
             holding[0] = True
             # Only the constructor may disagree about kwargs across mitmproxy
@@ -473,7 +483,14 @@ class ProxyBackend:
             raise ProxyError("invalid_state", "no proxy running for this session; call proxy.start")
         return inst
 
-    def start(self, session_id: str, host: str = "127.0.0.1", port: int = 8080) -> JsonObject:
+    def start(
+        self,
+        session_id: str,
+        host: str = "127.0.0.1",
+        port: int = 8080,
+        *,
+        ssl_insecure: bool = False,
+    ) -> JsonObject:
         self._check_available()
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
@@ -491,7 +508,7 @@ class ProxyBackend:
                     )
             # Reserve before listen: two workers racing start() used to each
             # bind a port, and only the last write to this dict was tracked.
-            inst = _ProxyInstance(host, port)
+            inst = _ProxyInstance(host, port, ssl_insecure=ssl_insecure)
             self._instances[session_id] = inst
         try:
             inst.start()
