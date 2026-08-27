@@ -94,6 +94,13 @@ _DATA_URL = (
     "</head><body>hello</body></html>"
 )
 
+# A distinct page so a navigation is observable in both the navigate result and
+# the following DOM snapshot.
+_SECOND_URL = (
+    "data:text/html,"
+    "<html><head><title>second-page</title></head><body>bye</body></html>"
+)
+
 
 def _browser_available() -> bool:
     backend = WebBackend()
@@ -131,6 +138,78 @@ def test_web_cdp_open_and_inspect() -> None:
             dom = service.web_dom_snapshot(session_id)
             assert dom.ok, dom.error
             assert "gate" in dom.data["title"]
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_web_cdp_screenshot_navigate_source_and_har(tmp_path: Path) -> None:
+    """The read tools past inspect: screenshot, script.source, navigate, HAR.
+
+    test_web_cdp_open_and_inspect covers scripts/console/dom; the artifact- and
+    navigation-producing paths had no live coverage. A tmp artifact root keeps
+    the PNG/HAR the tools write inside the test's own directory.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    service = _service_with_artifacts(tmp_path)
+    try:
+        created = service.create_session(_DATA_URL, target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                f"chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            # status is a live, web-targeted page identity, no browser relaunch.
+            status = service.web_status(session_id)
+            assert status.ok, status.error
+            assert status.data["open"] is True
+            assert status.data["target"] == "web"
+
+            # screenshot writes a real PNG artifact under the session's dir.
+            shot = service.web_screenshot(session_id)
+            assert shot.ok, shot.error
+            png = Path(shot.data["path"])
+            assert png.is_file()
+            assert png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+            # at least one parsed script has a source retrievable over CDP.
+            scripts = service.web_scripts(session_id)
+            assert scripts.ok, scripts.error
+            listed = scripts.data["scripts"]
+            assert listed, "Debugger.scriptParsed produced no scripts for the page"
+            fetched = None
+            for entry in listed[:5]:
+                script_id = entry.get("scriptId")
+                if script_id is None:
+                    continue
+                candidate = service.web_script_source(session_id, str(script_id))
+                if candidate.ok:
+                    fetched = candidate
+                    break
+            assert fetched is not None, "no parsed script had a retrievable source"
+            assert isinstance(fetched.data["source"], str)
+            assert fetched.data["bytes"] >= 0
+
+            # navigation changes the page both the result and the DOM snapshot see.
+            nav = service.web_navigate(session_id, _SECOND_URL, timeout=30.0)
+            assert nav.ok, nav.error
+            assert "second" in nav.data["title"]
+            dom = service.web_dom_snapshot(session_id)
+            assert dom.ok, dom.error
+            assert "second" in dom.data["title"]
+
+            # HAR export writes a file with a coherent envelope.
+            har = service.web_har_export(session_id)
+            assert har.ok, har.error
+            assert Path(har.data["path"]).is_file()
         finally:
             service.web_close(session_id)
     finally:
