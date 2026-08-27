@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -21,6 +22,25 @@ def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
+
+
+def _free_ports(count: int) -> list[int]:
+    """Reserve several distinct ephemeral ports at once.
+
+    Binding one socket at a time and closing it between calls can hand back the
+    same port twice; holding all the sockets open until every port is chosen
+    guarantees the caller gets ``count`` distinct ports.
+    """
+    holders = [socket.socket() for _ in range(count)]
+    try:
+        ports = []
+        for holder in holders:
+            holder.bind(("127.0.0.1", 0))
+            ports.append(int(holder.getsockname()[1]))
+        return ports
+    finally:
+        for holder in holders:
+            holder.close()
 
 
 def _mitmproxy_available() -> bool:
@@ -99,6 +119,53 @@ def test_two_sessions_cannot_silently_share_one_port() -> None:
         assert backend.status("second") == {"running": False}
     finally:
         backend.close_all()
+
+
+@pytest.mark.integration
+def test_concurrent_starts_survive_the_shared_mitmproxy_globals() -> None:
+    """Many sessions can start proxies at once without corrupting each other.
+
+    mitmproxy keeps the current master and its options in process-wide globals,
+    so one master per session (each on its own thread) means a master that is
+    still registering its addons briefly exposes half-populated options to the
+    whole process. A sibling master's startup hooks read those globals, and if
+    one lands in another master's construction window it reads an option that is
+    not registered yet, mitmproxy escalates the logged error to a fatal exit, and
+    the master dies with its port already bound. Starting several proxies
+    concurrently is what forces those construction windows to overlap: without
+    serialization this fails a meaningful fraction of the time with
+    ``mitmproxy failed to start`` or a leaked, still-listening port.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy lifecycle Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    ports = _free_ports(8)
+    try:
+        with ThreadPoolExecutor(max_workers=len(ports)) as pool:
+            results = list(
+                pool.map(
+                    lambda item: backend.start(
+                        f"race-{item[0]}", host="127.0.0.1", port=item[1]
+                    ),
+                    enumerate(ports),
+                )
+            )
+        # Every start must have produced a live listener, not a half-dead master.
+        assert all(r["running"] is True for r in results)
+        for index, port in enumerate(ports):
+            assert backend.status(f"race-{index}")["running"] is True
+            assert _port_accepts("127.0.0.1", port, timeout=1.0) is True
+    finally:
+        backend.close_all()
+    for index, port in enumerate(ports):
+        assert backend.status(f"race-{index}") == {"running": False}
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if not _port_accepts("127.0.0.1", port, timeout=0.25):
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail(f"port {port} still accepting after close_all")
 
 
 @pytest.mark.integration
