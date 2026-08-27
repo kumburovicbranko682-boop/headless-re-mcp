@@ -95,12 +95,28 @@ def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
     return stdout, stderr, int(completed.returncode)
 
 
-def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
+def _bounded_output(
+    text: str,
+    key: str,
+    *,
+    include_bytes: bool,
+    exit_code: int,
+    stderr: str,
+) -> JsonObject:
     payload = text.encode("utf-8", errors="replace")
     result: JsonObject = {
         key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
         "truncated": len(payload) > _MAX_INLINE,
+        "exit_code": exit_code,
+        "clean_exit": exit_code == 0,
     }
+    # A CLI that exits non-zero but still printed something has produced a
+    # partial or salvageable result, not a clean one: hand back what it wrote
+    # (webcrack/wasm2wat routinely do this on a recoverable parse error) but
+    # keep the failing exit code and its diagnostics visible so a caller does
+    # not read the fragment as the whole file.
+    if exit_code != 0 and stderr:
+        result["stderr"] = stderr[:_MAX_STDERR]
     if include_bytes:
         result["bytes"] = len(payload)
     return result
@@ -130,7 +146,7 @@ class JsClient:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "code", include_bytes=True)
+        return _bounded_output(stdout, "code", include_bytes=True, exit_code=code, stderr=stderr)
 
     def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         # webcrack always unminifies; expose it under a formatting-focused name.
@@ -161,7 +177,7 @@ class JsClient:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), _MAX_LISTED_FILES))
         window = files[start : start + cap]
-        return {
+        result: JsonObject = {
             "output_dir": str(out_dir),
             "file_count": file_count,
             "files": window,
@@ -170,7 +186,15 @@ class JsClient:
             "offset": start,
             "has_more": start + len(window) < file_count,
             "listing_truncated": listed_more,
+            "exit_code": code,
+            "clean_exit": code == 0,
         }
+        # webcrack can exit non-zero after writing part of a bundle; surface the
+        # failing code and stderr next to the files it did emit rather than
+        # letting a partial unpack read as a clean one.
+        if code != 0 and stderr:
+            result["stderr"] = stderr[:_MAX_STDERR]
+        return result
 
 
 class WasmClient:
@@ -197,7 +221,7 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "wat", include_bytes=True)
+        return _bounded_output(stdout, "wat", include_bytes=True, exit_code=code, stderr=stderr)
 
     def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
@@ -209,7 +233,9 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "objdump", include_bytes=False)
+        return _bounded_output(
+            stdout, "objdump", include_bytes=False, exit_code=code, stderr=stderr
+        )
 
 
 def _discover_webcrack() -> Path | None:

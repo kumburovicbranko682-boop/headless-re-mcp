@@ -60,6 +60,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_terminate_process` 也补上和 de4dot 一致的 `kill_group`，让超时/取消路径同样能够到被过继的
   子进程。
 
+### 修复（js/wasm 非零退出不再冒充干净结果）
+
+- `js.deobfuscate` / `js.beautify` / `js.unpack_bundle`（webcrack）与 `wasm.wat` / `wasm.info`
+  （wabt）过去只在“退出码非零**且**没有任何输出”时才报 `backend_error`；webcrack、wasm2wat 遇到
+  可恢复的解析错误时常常先打印一段残缺输出再以非零码退出，于是这类**部分**结果会带着 `code` /
+  `wat` / `objdump` / `truncated` 原样返回，和一次干净运行毫无区别——无人值守的一遍会把碎片当成
+  整份文件。现按 WinDbg 适配器的既有范式，把 `exit_code` 与 `clean_exit` 一并放进成功载荷，非零
+  退出再附一段有界 `stderr` 摘录；只在“非零退出且无任何输出”时才继续 fail-closed 抛 `backend_error`。
+  退出码为零的常见路径行为不变（`clean_exit` 为真、不带 `stderr`）。
+
 ### 修复（UI 捕获会话 id 先于平台判定校验）
 
 - `ui.screenshot` / `ui.ocr` 过去先判 `os.name != "nt"` 再校验会话 id，于是 Linux 上一个

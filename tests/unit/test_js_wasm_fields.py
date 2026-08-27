@@ -179,6 +179,142 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "too_large" in _tool_docstring("js.deobfuscate")
     assert "too_large" in _tool_docstring("js.unpack_bundle")
     assert "too_large" in _tool_docstring("wasm.info")
+    for name in ("js.deobfuscate", "js.beautify", "js.unpack_bundle", "wasm.wat", "wasm.info"):
+        doc = _tool_docstring(name)
+        assert "clean_exit" in doc, name
+        assert "exit_code" in doc, name
+
+
+def test_js_deobfuscate_reports_a_clean_run_as_clean(tmp_path: Path) -> None:
+    """A zero-exit run is clean_exit True with exit_code 0 and no stderr key.
+
+    This pins the common path so the honesty fields cannot silently invert:
+    without a positive assertion, a later change could set clean_exit False on
+    every run and no test would notice.
+    """
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, b"clean", b"just a warning\n")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src)
+
+    assert payload["code"] == "clean"
+    assert payload["exit_code"] == 0
+    assert payload["clean_exit"] is True
+    # A clean run keeps stderr out of the payload; warnings do not muddy it.
+    assert "stderr" not in payload
+
+
+def test_js_deobfuscate_flags_a_nonzero_exit_that_still_printed_output(tmp_path: Path) -> None:
+    """webcrack can exit non-zero yet still emit partial code.
+
+    Before this, code != 0 with stdout returned code/bytes/truncated exactly
+    like a clean run, so an unattended pass would read the fragment as the whole
+    deobfuscated file. Now the failing exit_code, clean_exit False, and a stderr
+    excerpt travel with the salvaged text.
+    """
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(3, b"partial code", b"SyntaxError: unexpected token\n")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src)
+
+    assert payload["code"] == "partial code"
+    assert payload["exit_code"] == 3
+    assert payload["clean_exit"] is False
+    assert "SyntaxError" in payload["stderr"]
+
+
+def test_js_deobfuscate_still_raises_when_a_nonzero_exit_printed_nothing(tmp_path: Path) -> None:
+    """No output and a bad exit is a failure, not an empty clean result."""
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(1, b"", b"boom\n")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        JsClient(tool).deobfuscate(src)
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.details.get("exit_code") == 1
+
+
+def test_wasm_wat_flags_a_nonzero_exit_that_still_printed_output(tmp_path: Path) -> None:
+    """wasm2wat can print partial WAT then exit non-zero on a malformed module."""
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(1, b"(module", b"error: unexpected end\n")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).wat(module)
+
+    assert payload["wat"] == "(module"
+    assert payload["exit_code"] == 1
+    assert payload["clean_exit"] is False
+    assert "unexpected end" in payload["stderr"]
+
+
+def test_wasm_info_flags_a_nonzero_exit_that_still_printed_output(tmp_path: Path) -> None:
+    """wasm-objdump likewise: a non-zero exit with a partial dump is not clean."""
+    tool = tmp_path / "wasm-objdump.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(2, b"Sections:\n", b"error: bad section id\n")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).info(module)
+
+    assert payload["objdump"] == "Sections:\n"
+    assert payload["exit_code"] == 2
+    assert payload["clean_exit"] is False
+    assert "bad section id" in payload["stderr"]
+
+
+def test_unpack_bundle_flags_a_nonzero_exit_that_still_wrote_files(tmp_path: Path) -> None:
+    """A partial unpack (non-zero exit, some modules on disk) is not a clean run."""
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "a.js").write_text("1", encoding="utf-8")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(4, b"", b"error: unbalanced module\n")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = mod.JsClient(tool).unpack_bundle(src, out, offset=0, limit=10)
+
+    assert payload["file_count"] == 1
+    assert payload["exit_code"] == 4
+    assert payload["clean_exit"] is False
+    assert "unbalanced module" in payload["stderr"]
 
 
 def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
