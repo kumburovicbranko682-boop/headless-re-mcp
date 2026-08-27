@@ -162,6 +162,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   把脚本注入一个已消失会话的设备进程。现在设备分支也拒绝 CLOSING/CLOSED/FAILED 状态（本地 PE
   分支本就被 `_require_debuggee_pid` 挡住）。
 
+### 新增回归（`frida.hook.template` 设备分支的授权集必须钉在本会话自己的 pid 上）
+
+- frida 的活进程边界分两层:客户端半边(`test_frida_authorization_boundary.py` 钉住)拒绝不在
+  `allowed_pids` 里的 pid,但该拒绝只与*服务层*所传的集合一样强。`java.classes`/`java.methods`
+  的服务层作用域由 `test_frida_service_pid_scoping.py` 钉住,而 `frida.hook.template` 是另一处接线:
+  另一个方法(`AnalysisService.frida_hook_template`)、另一个文件(`core/service_ext.py`),且它是把脚本
+  *注入*目标而非只枚举,并自行推导目标(`pid = auth["pids"][-1]`,本会话最近一次 spawn),再把该 pid 与
+  `allowed_pids=auth.get("pids", [])`(本会话自己的授权集)一并交给 `hook_template_device`。
+- 此前无人钉住这层作用域:`test_frida_hook_template_closed_session.py` 钉的是相邻契约(关闭态被拒、
+  开放态路由到设备方法一次),但它的假客户端 `del device_id, allowed_pids` 且从不检查 `pid`,于是一次把
+  空集、进程级列表或 `[pid]`(「授权正在钩的那个」式笔误)交给客户端的重构,会在服务层这半边边界失守的情况下
+  仍注入设备进程,而那条测试照绿。新增 `test_frida_hook_template_device_pid_scoping.py` 捕获服务实际交给
+  客户端的内容,断言授权集就是本会话的 pid(既非常量也非被回显的目标)、目标就是最近一次 spawn 的 pid,并以
+  一个镜像真实客户端 gate 的桩证明所交集合确实授权所交 pid——把授权集丢空即让调用从 ok 翻成 `permission_denied`。
+
 ### 修复（jadx 部分反编译失败不再伪装成完整源码树）
 
 - `apk.export_sources` / `apk.decompile` 走 jadx，而 jadx 常在某几个类反编译失败时以非零退出收场，
