@@ -98,6 +98,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   发过去,断言录到的 flow 摘要(method/url/status/content_type)、完整明细(经 `flow_get` 拿到
   请求行与响应体原文)与 HAR 导出都如实反映过线内容;纯 HTTP 免 CA 信任。另钉死在活体会话上读
   未知 flow id 得到结构化 `not_found` 而非崩。仅当 mitmproxy 缺失时 skip。
+- Android 静态线新增**活体** androguard Gate:此前所有 Android 断言都跑在合成包上,而它的 manifest
+  不是合法 AXML,androguard 只可能被走到失败路径。新增手工编码的最小**合法**二进制 AndroidManifest
+  (纯 stdlib `struct`+`zipfile`,不需要 Android SDK/aapt),现造一个 androguard 真能解析的 APK,断言
+  `apk.open`/`manifest`/`permissions`/`components` 读回真实编码进去的包名、INTERNET 权限与启动
+  Activity。合成包的敌意输入 Gate 保留,两者互补(真解析 vs 结构化失败)。仅当 androguard 缺失时 skip。
 - Web CDP Gate 扩到产物/导航类读工具:`test_web_cdp_open_and_inspect` 只驱动 scripts/console/dom,
   而 `web.screenshot`(真 PNG 落盘)、`web.script.source`(经 `Debugger.getScriptSource` 取到至少
   一个已解析脚本的源码)、`web.navigate`(结果标题与随后 DOM 快照同步变到目标页)、`web.har.export`

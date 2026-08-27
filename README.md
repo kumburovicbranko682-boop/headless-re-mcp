@@ -384,7 +384,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 已有较完整的静态查询、动态调试闭环、事件流、地址同步、workflow，以及 dump / IAT / UPX 等脱壳相关路径的代码与真机 Gate。连接级自愈已实测，但公开提交仍少，可选后端成熟度不一。
 
-**Android 与 Web 两个目标域是新加的，成熟度仍低于 PE 那条链路，但差距在收窄**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，且真机 Gate 现在也由 GitHub 托管的 `linux-integration` CI 作业在每次 push/PR 上跑——该作业装好 radare2、wabt、webcrack、Playwright Chromium、androguard/adbutils/frida、mitmproxy，实测浏览器 CDP 驱动、抓包起停与端口释放、androguard 进程内解析 APK、radare2 活体分析 ELF（`tests/integration/test_r2_portable_elf_gate.py`）等活路径，而不再只在开发者本机手动跑过。仍未进 CI 的是 Java 工具链（jadx/apktool/apksigner）与真机设备，缺它们时相关 Gate 会如实跳过，**skip 不等于 pass**。
+**Android 与 Web 两个目标域是新加的，成熟度仍低于 PE 那条链路，但差距在收窄**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，且真机 Gate 现在也由 GitHub 托管的 `linux-integration` CI 作业在每次 push/PR 上跑——该作业装好 radare2、wabt、webcrack、Playwright Chromium、androguard/adbutils/frida、mitmproxy，实测的活路径包括：浏览器 CDP 驱动（打开/巡检/截图/脚本源码/导航/HAR 导出）、抓包代理真机起停与端口释放并**真的录下一条经代理的 HTTP 请求再读回请求行与响应体**、androguard 进程内解析一个**真实**（手工编码二进制 AndroidManifest 生成、无需 Android SDK）APK 的包名/权限/启动 Activity（而不再只跑失败路径）、webcrack 拆真实 webpack bundle 与 `wasm-objdump` 段信息、radare2 活体分析 ELF（`tests/integration/test_r2_portable_elf_gate.py`）——而不再只在开发者本机手动跑过。仍未进 CI 的是 Java 工具链（jadx/apktool/apksigner）与真机设备，缺它们时相关 Gate 会如实跳过，**skip 不等于 pass**。
 
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
