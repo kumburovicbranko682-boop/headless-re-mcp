@@ -823,14 +823,17 @@ class UiAutomationMixin:
         include_same_image_children: bool = False
     ) -> Result[JsonObject]:
         """Capture a PID-bounded hwnd to a BMP under artifact_root/ui/<session>."""
-        if os.name != "nt":
-            return _unsupported_ui(session_id, "ui.screenshot")
+        # Validate the session id before the platform gate so a path-traversal
+        # attempt is rejected the same way on every OS, rather than being masked
+        # by "unsupported on this platform" where the capture never runs.
         if not session_id or Path(session_id).name != session_id:
             return _failure(
                 ValueError("invalid session id for UI capture path"),
                 session_id=session_id,
                 backend=BackendKind.X64DBG.value,
             )
+        if os.name != "nt":
+            return _unsupported_ui(session_id, "ui.screenshot")
         directory = self.settings.artifact_root.expanduser().resolve() / "ui" / session_id
         artifact_path = directory / f"screenshot-{uuid4().hex}.bmp"
 
@@ -875,14 +878,17 @@ class UiAutomationMixin:
         include_same_image_children: bool = False
     ) -> Result[JsonObject]:
         """OCR a PID-bounded hwnd via screenshot + Windows OCR / tesseract."""
-        if os.name != "nt":
-            return _unsupported_ui(session_id, "ui.ocr")
+        # Validate the session id before the platform gate so a path-traversal
+        # attempt is rejected the same way on every OS, rather than being masked
+        # by "unsupported on this platform" where the capture never runs.
         if not session_id or Path(session_id).name != session_id:
             return _failure(
                 ValueError("invalid session id for UI capture path"),
                 session_id=session_id,
                 backend=BackendKind.X64DBG.value,
             )
+        if os.name != "nt":
+            return _unsupported_ui(session_id, "ui.ocr")
         directory = self.settings.artifact_root.expanduser().resolve() / "ui" / session_id
         artifact_path = directory / f"ocr-{uuid4().hex}.bmp"
 

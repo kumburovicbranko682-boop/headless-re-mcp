@@ -62,6 +62,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（UI 截图/OCR 的会话 id 校验顺序）
+
+- `ui.screenshot` / `ui.ocr` 现在**先**校验会话 id 再判平台。此前平台门在前，Linux 上一个带
+  `..` 的路径穿越会话 id 会被 `unsupported_on_platform` 掩盖，而不是拿到精确的
+  `invalid_request`。安全性质（不在 artifact 根外建目录）在两个平台都成立；这次让「非法输入」
+  在所有平台得到一致的拒绝码。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
