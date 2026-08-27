@@ -232,6 +232,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   node driver + Chromium 树——这正是收割逻辑要防的泄漏，而既有测试 monkeypatch 了一个
   Windows 路径把它盖住了。现补 POSIX 分支读 `/proc/<pid>/exe`，读不到仍返回 None，
   身份把关的击杀保持失败关闭。
+- **抓包线程崩了 `proxy.status` 仍报 running**。实例只有在 `start()` 确认端口可接受后才进入表；
+  之后线程若因 mitmproxy 内部错误或事件循环被抽走而退出，run() 的 finally 已关闭循环并释放端口，
+  但实例仍挂在表里——单凭这层成员身份，`status` 就一直报 `running:True`，`start` 又以“已在运行”
+  拒绝重启，`replay` 则派发到已关闭的循环、报成看着像 bug 的“Event loop is closed”。现在
+  `status` 报 `running:false, exited:true` 并带上线程存下的原因与已抓到的 flow 数（证据仍可查），
+  `start` 会顶替已崩溃的实例让会话重开，`replay` 对死代理失败关闭。用 `_ever_started` 门区分“起来过又
+  死了”和“正在启动中”，从而不破坏并发 start 的互斥保证。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
