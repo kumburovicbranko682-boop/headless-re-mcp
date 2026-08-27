@@ -68,3 +68,5 @@ def test_web_script_source_names_source_and_says_when_it_was_cut(
     assert "source" in doc
     assert "truncated" in doc
     assert "source_path" in doc
+    assert "artifact_id" in doc
+    assert "artifact_error" in doc

@@ -59,6 +59,8 @@ def test_web_screenshot_puts_the_file_in_path_not_screenshot(
     assert payload["path"].endswith("shot.png")
     doc = _tool_docstring("web.screenshot")
     assert "Answers with path" in doc
+    assert "artifact_id" in doc
+    assert "artifact_error" in doc
 
 
 def test_web_screenshot_over_the_cap_is_deleted(tmp_path: Path, monkeypatch: Any) -> None:

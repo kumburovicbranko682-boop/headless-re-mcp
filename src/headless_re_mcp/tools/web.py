@@ -85,9 +85,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with the request's captured metadata (url, method, status,
         resourceType, mimeType) alongside body, base64_encoded, and
-        body_truncated with body_path when the text was cut at the buffer. The
-        cut flag is body_truncated, not truncated. A body over the capture cap
-        is refused rather than written to disk. When the browser cannot return
+        body_truncated with body_path when the text was cut at the buffer. A
+        spilled body_path is registered as artifact_id -- artifact_error if
+        that fails -- so artifacts.read can fetch it. The cut flag is
+        body_truncated, not truncated. A body over the capture cap is refused
+        rather than written to disk. When the browser cannot return
         the body -- a redirect, a 204, or a response already evicted from the
         CDP buffer -- the reply carries body_error and no body key; a missing
         body is that, not an empty one.
@@ -133,9 +135,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Fetch one script's source (large sources spill to an artifact).
 
         Answers with scriptId, bytes and source, plus truncated and
-        source_path when the text was cut at the buffer. There is no code
-        or text field. A source over the capture cap is refused rather
-        than written to disk.
+        source_path when the text was cut at the buffer. A spilled source_path
+        is registered as artifact_id -- artifact_error if that fails -- so
+        artifacts.read can fetch it. There is no code or text field. A source
+        over the capture cap is refused rather than written to disk.
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 
@@ -167,9 +170,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.
 
-        Answers with path and size, plus artifact_id when the PNG was
-        registered. There is no screenshot or png field. A full-page capture
-        over the cap is refused rather than left on disk.
+        Answers with path and size, plus artifact_id once the PNG is
+        registered (artifacts.read fetches it) or artifact_error if that
+        registration fails -- the file is written either way. There is no
+        screenshot or png field. A full-page capture over the cap is refused
+        rather than left on disk.
         """
         return _dump(analysis.web_screenshot(session_id, full_page=full_page))
 
@@ -177,11 +182,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_har_export(session_id: str) -> dict[str, Any]:
         """Export captured network activity to a HAR artifact.
 
-        Answers with path, entry_count and size, plus artifact_id when the
-        HAR was registered. entry_count counts the entries actually written;
-        when the file would exceed the capture cap the oldest are dropped to
-        fit and truncated is set, so entry_count is then fewer than the
-        requests captured. There is no har, entries or artifact field.
+        Answers with path, entry_count and size, plus artifact_id once the
+        HAR is registered (artifacts.read fetches it) or artifact_error if
+        that registration fails. entry_count counts the entries actually
+        written; when the file would exceed the capture cap the oldest are
+        dropped to fit and truncated is set, so entry_count is then fewer than
+        the requests captured. There is no har, entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

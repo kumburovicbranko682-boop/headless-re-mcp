@@ -90,6 +90,8 @@ def test_web_network_get_names_body_truncated_not_truncated(
     doc = _tool_docstring("web.network.get")
     assert "body_truncated" in doc
     assert "body_path" in doc
+    assert "artifact_id" in doc
+    assert "artifact_error" in doc
 
 
 def test_web_network_get_reports_body_error_and_no_body_when_the_browser_has_none(

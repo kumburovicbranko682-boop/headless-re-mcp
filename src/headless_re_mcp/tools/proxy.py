@@ -74,8 +74,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with id, request (method, url, headers) and response (status,
         headers, size). A body at most 200000 bytes is response.body; anything
-        larger is response.body_path and there is no body key. There are no
-        top-level headers or body fields.
+        larger is response.body_path and there is no body key. A spilled body
+        is registered as a top-level artifact_id -- artifact_error if that
+        fails -- so artifacts.read can fetch it. There are no top-level
+        headers or body fields.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
@@ -92,9 +94,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def proxy_export_har(session_id: str) -> dict[str, Any]:
         """Export captured flows to a HAR artifact.
 
-        Answers with path and entry_count. There is no har, output or
-        artifact field. path is the file; looking for har after a successful
-        export reads as a missing capture.
+        Answers with path and entry_count, plus artifact_id once the HAR is
+        registered (artifacts.read fetches it) or artifact_error if that
+        registration fails. There is no har or output field, and the
+        registration id is artifact_id, not artifact. path is the file;
+        looking for har after a successful export reads as a missing capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 

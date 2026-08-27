@@ -159,6 +159,8 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     doc = _tool_docstring("proxy.flow.get")
     assert "body_path" in doc
     assert "response" in doc
+    assert "artifact_id" in doc
+    assert "artifact_error" in doc
 
 
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
@@ -230,3 +232,5 @@ def test_proxy_export_har_names_path_and_entry_count(
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+    assert "artifact_id" in doc
+    assert "artifact_error" in doc

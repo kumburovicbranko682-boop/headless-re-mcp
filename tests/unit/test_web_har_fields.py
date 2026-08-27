@@ -69,6 +69,8 @@ def test_web_har_export_puts_the_file_in_path_not_har(
     assert "entry_count" in doc
     assert "truncated" in doc
     assert "size" in doc
+    assert "artifact_id" in doc
+    assert "artifact_error" in doc
 
 
 class _ManyHandle:
