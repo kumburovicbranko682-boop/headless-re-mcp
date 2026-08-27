@@ -110,6 +110,46 @@ def test_dotnet_deobfuscate_mocked(tmp_path: Path) -> None:
     assert verified.data["ok"] is True
 
 
+def test_dotnet_deobfuscate_timeout_stays_retryable(tmp_path: Path) -> None:
+    """A de4dot timeout must reach the caller with retryable=True.
+
+    De4dotError marks a timeout retryable exactly as the upx/die/exeinfope
+    adapters do, but the dotnet handler translated it to an RpcError without
+    forwarding the flag, so an unattended caller that retries on retryable saw
+    a permanent failure for what a second run often clears.
+    """
+    from headless_re_mcp.dotnet.de4dot import De4dotError, De4dotErrorCode
+
+    binary = tmp_path / "managed.exe"
+    _write_verified_clr_pe(binary)
+    de4dot = tmp_path / "de4dot.exe"
+    de4dot.write_bytes(b"placeholder")
+
+    def timing_out_runner(*args: object, **kwargs: object) -> object:
+        raise De4dotError(De4dotErrorCode.TIMEOUT, "de4dot timed out", retryable=True)
+
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+            de4dot=de4dot,
+        ),
+        de4dot_runner=timing_out_runner,
+    )
+    try:
+        session_id = service.create_session(str(binary)).data["session"]["id"]
+        result = service.dotnet_deobfuscate(session_id)
+        assert not result.ok
+        assert result.error is not None
+        assert result.error.code == "timeout"
+        assert result.error.retryable is True
+    finally:
+        service.close_all()
+
+
 def test_dotnet_verify_rejects_other_session_artifact(tmp_path: Path) -> None:
     binary_a = tmp_path / "managed-a.exe"
     binary_b = tmp_path / "managed-b.exe"

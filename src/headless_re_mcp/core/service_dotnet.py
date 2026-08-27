@@ -193,9 +193,18 @@ class DotnetAnalysisMixin:
         except (DotnetInspectError, De4dotError) as exc:
             code = getattr(exc, "code", "dotnet_failed")
             details = getattr(exc, "details", {}) or {}
+            # De4dotError marks a timeout retryable, exactly as UpxScanError does;
+            # dropping the flag here (unlike _failure, which forwards it for the
+            # upx/die/exeinfope siblings) tells an unattended caller a transient
+            # de4dot timeout is permanent, so it never retries what a retry fixes.
             return Result[JsonObject](
                 ok=False,
-                error=RpcError(code=str(code), message=str(exc), details=dict(details)),
+                error=RpcError(
+                    code=str(code),
+                    message=str(exc),
+                    details=dict(details),
+                    retryable=bool(getattr(exc, "retryable", False)),
+                ),
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="dotnet")
@@ -305,9 +314,17 @@ class DotnetAnalysisMixin:
         except (DotnetInspectError, NetReactorSlayerError) as exc:
             code = getattr(exc, "code", "dotnet_failed")
             details = getattr(exc, "details", {}) or {}
+            # NetReactorSlayerError marks a timeout retryable like its siblings;
+            # forward it so an unattended caller retries a transient unpack
+            # timeout instead of treating it as a permanent failure.
             return Result[JsonObject](
                 ok=False,
-                error=RpcError(code=str(code), message=str(exc), details=dict(details)),
+                error=RpcError(
+                    code=str(code),
+                    message=str(exc),
+                    details=dict(details),
+                    retryable=bool(getattr(exc, "retryable", False)),
+                ),
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="dotnet")
