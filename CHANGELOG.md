@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（README 把审计/时间线写进可观测面）
+
+- README「可观测」条此前只列 `meta.metrics`(聚合遥测),完全没提这一轮大量补齐的审计轨:`audit.list`
+  (跨会话留存的高危/特权操作记录)与 `timeline.list`(单会话按序动作流水)。运维想知道"无人值守跑完后
+  哪些高危操作真的发生过",光看计数器是答不上来的,而承载这答案的两个工具在前台文档里不存在。
+- 现在「可观测」条如实交代 `timeline.list` 与 `audit.list` 的分工,并点出 `audit.list` 覆盖的高危面
+  (会话生命周期、UI 驱动、设备变更与抓取、frida 设备变更、`proxy.ca.install_android`、
+  `workspace.mode.set`、`js.unpack_bundle` 等),以及"口令/token 写入前统一脱敏、写审计失败绝不连累
+  工具本身"两条性质。纯文档、不改行为,只把已有的可观测能力讲全。
+
 ### 加固（SECURITY.md 如实交代默认预设自动放行的非 PE 状态变更半径）
 
 - 默认 *packed-analysis 预设*按*效应类*放开 `state_change`,因此它不仅自动跑补壳 PE 分析的写,还

@@ -126,7 +126,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - 地址：`sync.*`、`modules.list/resolve`；`sync.resolve_runtime_address` 把 static VA / 模块 RVA / runtime VA 一次解析成运行时地址，`dynamic.breakpoint.set` 可用 `address_space=static|rva` 直接下断（内部重定位，调用方不做地址运算）
 - 复合工作流：`dynamic.analyze_function`（反编译 + 重定位下断 + 运行 + 寄存器，一次调用）、`dynamic.trace_api_arguments`（按符号或地址断 API 并捕获整型参数：x64 取 RCX/RDX/R8/R9，x86 从返回地址之上的栈读取；结束必清断点）
 - 分析记录与报告：`knowledge.record/query`（按 `kind`+`key` 幂等累积函数/断点/结构体/API 等发现）、`report.generate`（渲染 Markdown 报告并落盘为产物）
-- 可观测：`meta.metrics`（每工具调用数、失败数、p50/p95/max 延迟；同时以 JSON 行写入 `headless_re_mcp.telemetry` 日志）
+- 可观测：`meta.metrics`（每工具调用数、失败数、p50/p95/max 延迟；同时以 JSON 行写入 `headless_re_mcp.telemetry` 日志）；`timeline.list` 是单会话内按序的动作流水，`audit.list` 是跨会话留存的高危/特权操作审计（会话生命周期、UI 驱动、设备变更与抓取、frida 设备变更、`proxy.ca.install_android`、`workspace.mode.set`、`js.unpack_bundle` 等；口令/token 等写入前统一脱敏，写审计尽力而为、失败绝不连累工具本身）
 - 自愈：`session.health`（按需检查各后端存活与连接状态，并就地重建掉线的连接）、`session.recover`（重开死掉的后端）
 - Workflow：`workflow.*`
 - 检测/脱壳（可选外部 CLI）：`detect.*`、`unpack.*`（非通杀承诺；`claims_universal_unpack=false`）
