@@ -115,6 +115,45 @@ def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:
     assert "dropped" in doc
 
 
+def test_proxy_flows_response_size_is_the_wire_length_not_the_decoded_one(
+    monkeypatch: Any,
+) -> None:
+    """response_size measures raw_content (wire), not the decoded body.
+
+    mitmproxy's raw_content is the still content-encoded body; content is the
+    decoded one. The recorder reads raw_content on purpose -- decoding a hostile
+    body just to measure it is a decompression-bomb risk -- so a gzip'd response
+    reports its compressed length here. The docstring long called this the
+    "decoded response body length", which for any content-encoded body is wrong.
+    Pin the wire semantics and the corrected wording, and guard against a naive
+    switch to .content.
+    """
+    recorder = _FlowRecorder(capacity=8)
+    request = SimpleNamespace(method="GET", pretty_url="http://x/1", host="x")
+    # 20 bytes on the wire that would decode to 20000; the recorder must report
+    # 20 and never touch .content.
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "application/json", "content-encoding": "gzip"},
+        raw_content=b"x" * 20,
+        content=b"y" * 20_000,
+    )
+    recorder.response(SimpleNamespace(id="1", request=request, response=response))
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder)
+    )
+    payload = backend.flows("s", offset=0, limit=10)
+    assert payload["flows"][0]["response_size"] == 20
+
+    doc = _tool_docstring("proxy.flows")
+    assert "on the wire" in doc
+    assert "content-encoded" in doc
+    # The old wording promised a decoded length; that promise is gone.
+    assert "decoded response body length" not in doc
+
+
 def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypatch: Any) -> None:
     """The catalog said headers and body, never where a spill actually lands.
 

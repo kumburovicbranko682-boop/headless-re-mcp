@@ -96,10 +96,14 @@ def har_entry(
     -- empty cookie/header arrays, -1 sizes, unknown timings -- because omitting
     them makes a strict consumer reject the entire log rather than the one
     absent field. ``queryString`` is parsed from the URL, and when the capture
-    knows the decoded response body length (``response_body_size``) it fills
-    ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
-    ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
-    browser capture keeps that hint.
+    knows the on-the-wire response body length (``response_body_size`` -- the
+    raw, still content-encoded body, since the capture does not decode it) it
+    fills ``response.bodySize`` (the spec's wire size) and ``content.size``
+    instead of the -1 sentinel. ``content.size`` is spec'd as the decoded
+    length, so for a content-encoded body it is reported as the wire length
+    here (its exact value only when the body was not compressed) rather than a
+    fabricated larger number. ``resource_type`` rides along as Chrome's
+    ``_resourceType`` extension so the browser capture keeps that hint.
     """
     status_code = int(status) if isinstance(status, int) else 0
     url_text = str(url or "")

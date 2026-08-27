@@ -61,6 +61,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（`proxy.flows` 的 `response_size` 号称「解码后」实为「线上原始」长度）
+
+- `proxy.flows` 描述白纸黑字说 `response_size` 是「解码后的响应体字节数」,可 `_content_len` 读的是
+  mitmproxy 的 `resp.raw_content`——那是**线上原始、仍带 content-encoding 的**响应体(gzip/br 还压着),
+  与 `resp.content`(解码后)是两码事。一条 gzip 过的 JSON 响应,线上 1 KB、解码后 8 KB,`response_size`
+  回的是 1 KB,而描述许诺的是 8 KB。逆向者据此估体量、算流量,系统性地读小(压缩比越高偏得越多)。
+  代码用 `raw_content` 是**有意为之**:为量个大小就把敌意响应体解压(解压炸弹)是明摆着的 DoS 风险,
+  故这里不能改成读 `.content`——错的是描述,不是行为。
+- 现在把三处措辞都改诚实:`proxy.flows` 描述点明 `response_size` 是「线上(raw、仍 content-encoded)长度、
+  并非解码后」,并说明为何不解码(解压炸弹风险)、gzip 响应因此读着比其解码内容小;共用的 `har_entry`
+  文档同样把「解码后长度」改为「线上长度」,并交代 HAR 的 `response.bodySize`(规范即线上大小)取此值天然正确,
+  而 `content.size`(规范为解码后大小)在此按线上长度填(仅未压缩时恰好相等),不凭空编个更大的数;
+  `_record` 里那句同样误标「解码后」的注释一并更正。
+- 新增回归:构造一条 `raw_content` 20 字节、`content` 2 万字节(模拟压缩体)的响应,`proxy.flows` 的
+  `response_size` 必须回 20(线上),证明读的是 `raw_content` 而非 `.content`——顺带钉死「别改去读 `.content`」;
+  并断言描述里出现「on the wire」「content-encoded」、旧的「decoded response body length」措辞已消失。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

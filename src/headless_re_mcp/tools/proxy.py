@@ -60,8 +60,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with flows (id, seq, method, url, host, status, content_type,
         response_size), count, total, offset, has_more, and dropped.
-        response_size is the decoded response body length in bytes (0 when the
-        response had no body). body_omitted is set on a row whose
+        response_size is the response body's length on the wire in bytes -- the
+        raw, still content-encoded body (gzip/br stays compressed), not the
+        decoded length, because decoding a hostile body to measure it is a
+        decompression-bomb risk; it is 0 when the response had no body, so a
+        gzip'd response reads smaller here than its decoded content.
+        body_omitted is set on a row whose
         request/response body was over the retain cap. A flow mitmproxy could
         not complete (TLS refused, upstream unreachable, connection reset) is
         captured too, carrying error=true and error_msg with a null status;

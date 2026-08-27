@@ -364,7 +364,9 @@ class _FlowRecorder:
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
-        # The decoded response body length is known here, before the flow may be
+        # The on-the-wire response body length (raw_content, still
+        # content-encoded -- decoding a hostile body to measure it is a
+        # decompression-bomb risk) is known here, before the flow may be
         # dropped from the retain ring, so the summary keeps it even for a flow
         # whose body was not retained -- and the HAR export can report a real
         # content size instead of the -1 "unknown" sentinel.
