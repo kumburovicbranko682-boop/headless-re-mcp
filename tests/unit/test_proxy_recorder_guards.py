@@ -342,14 +342,30 @@ def test_start_without_mitmproxy_is_capability_unavailable() -> None:
     assert caught.value.code == "capability_unavailable"
 
 
-def test_check_available_caches_a_successful_probe() -> None:
-    """mitmproxy is installed in this environment, so the probe resolves to
-    available and does not raise; the result is cached for later calls."""
+def test_check_available_caches_a_successful_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful ``import mitmproxy`` resolves the probe to available without
+    raising and caches the result. mitmproxy is an optional extra the quality CI
+    does not install, so the import is faked to keep the branch deterministic."""
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "mitmproxy", types.ModuleType("mitmproxy"))
     backend = ProxyBackend()
     assert backend._available is None
     backend._check_available()
     assert backend._available is True
+    # A second call is served from the cache and must not raise.
     backend._check_available()
+
+
+def test_check_available_reports_and_caches_when_absent() -> None:
+    """A cached-unavailable probe raises ``capability_unavailable`` rather than a
+    bare ImportError, and does not re-probe."""
+    backend = ProxyBackend()
+    backend._available = False
+    with pytest.raises(ProxyError) as caught:
+        backend._check_available()
+    assert caught.value.code == "capability_unavailable"
 
 
 def test_stop_without_a_running_proxy_is_not_an_error() -> None:
