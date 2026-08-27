@@ -162,6 +162,31 @@ class FridaDeviceMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def frida_device_attach(self, session_id: str, pid: int) -> Result[JsonObject]:
+        try:
+            auth = self._frida_auth(session_id)
+            # The backend probe-attaches first; only a pid it actually reached is
+            # written into the allow-set, so a bogus or dead pid raises here and
+            # never becomes authorized. This mirrors spawn, which authorizes the
+            # pid it truly launched.
+            data = FridaClient().attach_device(auth.get("device_id"), int(pid))
+            attached_pid = int(data["pid"])
+            auth = dict(auth)
+            auth["pids"] = _append_recent(auth.get("pids"), attached_pid)
+            self._save_auth(session_id, auth)
+            _timeline_append(
+                self,
+                session_id,
+                "frida.device.attach",
+                "frida attached to running pid",
+                pid=attached_pid,
+            )
+            return _success(data, session_id=session_id, backend="frida")
+        except (FridaError, AdbError) as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def frida_java_classes(
         self, session_id: str, name_filter: str = "", limit: int = 200, pid: int = 0
     ) -> Result[JsonObject]:

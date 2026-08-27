@@ -147,6 +147,23 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.frida_spawn(session_id, package))
 
+    @tools.tool(name="frida.device.attach")
+    def frida_device_attach(
+        session_id: str, pid: Annotated[int, Field(ge=1)]
+    ) -> dict[str, Any]:
+        """Probe-attach to a running device pid, authorizing it for this session.
+
+        This is how you target an app you did not spawn: take a pid from
+        frida.applications and attach to it. The attach confirms the pid is
+        attachable and adds it to this session's authorized set, so
+        frida.java.classes/methods and frida.hook.template can then use it. Not
+        a lasting session: attached is true only for the probe and note says it
+        detached immediately. A pid that cannot be attached is not authorized.
+        Answers with pid, attached, device and note. There is no session,
+        handle or session_id field.
+        """
+        return _dump(analysis.frida_device_attach(session_id, pid))
+
     @tools.tool(name="frida.java.classes")
     def frida_java_classes(
         session_id: str,

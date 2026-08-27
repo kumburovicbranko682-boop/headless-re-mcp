@@ -199,6 +199,68 @@ class TestHookTemplateSaysWhatItActuallyLeavesBehind:
         assert fake.session.script.destroyed is True
 
 
+class TestFridaDeviceAttachIsAProbe:
+    """frida.device.attach confirms a running pid is attachable, then lets go.
+
+    It is the attach door into the per-session allow-set: an app the caller did
+    not spawn (found via applications) can only be enumerated or hooked after
+    the session is authorized for its pid, and spawn was the only door. The
+    attach itself must be a probe that detaches at once, like every other frida
+    op here, and it must refuse a pid it cannot reach so a dead pid is never
+    admitted.
+    """
+
+    def _client(self) -> tuple[FridaClient, _FakeFrida]:
+        client = FridaClient()
+        fake = _FakeFrida()
+        client._frida = fake
+        client._available = True
+        return client, fake
+
+    def test_attach_probe_attaches_then_detaches(self) -> None:
+        client, fake = self._client()
+        payload = client.attach_device("usb", 4242)
+
+        assert payload["attached"] is True
+        assert payload["pid"] == 4242
+        assert payload["device"] == "usb"
+        assert "detached immediately" in payload["note"]
+        # A probe, not a lasting session: the door it opened is the allow-set,
+        # not a resident agent, so the session must be gone before returning.
+        assert fake.session.detached is True
+
+    def test_attach_is_not_gated_on_prior_authorization(self) -> None:
+        """It grants entry to the allow-set, so it cannot demand membership first.
+
+        Unlike java_enumerate/hook_template_device, attach_device takes no
+        allowed_pids: requiring the pid to already be authorized would make the
+        one operation that authorizes it impossible to call.
+        """
+        from inspect import signature
+
+        params = signature(FridaClient.attach_device).parameters
+        assert "allowed_pids" not in params
+        assert "allowed_pid" not in params
+
+    @pytest.mark.parametrize("bad_pid", [0, -1])
+    def test_attach_rejects_a_non_positive_pid(self, bad_pid: int) -> None:
+        client, _fake = self._client()
+        with pytest.raises(FridaError) as info:
+            client.attach_device("usb", bad_pid)
+        assert info.value.code == "invalid_params"
+
+    def test_attach_that_cannot_reach_the_pid_is_a_backend_error(self) -> None:
+        client, fake = self._client()
+
+        def _refuse(pid: int) -> object:
+            raise RuntimeError("no such process")
+
+        fake.attach = _refuse  # type: ignore[assignment]
+        with pytest.raises(FridaError) as info:
+            client.attach_device("usb", 4242)
+        assert info.value.code == "backend_error"
+
+
 class _FakeCall:
     def __init__(self, index: int) -> None:
         self.class_name = f"Lcom/example/Caller{index};"

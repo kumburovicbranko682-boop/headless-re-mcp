@@ -602,6 +602,65 @@ class FridaClient:
             "has_more": len(apps) > capped,
         }
 
+    def attach_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        *,
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        """Probe-attach to an already-running device pid, then detach.
+
+        This is the attach counterpart to ``spawn`` in the authorization model the
+        module docstring describes: a session may touch a pid it "produced by a
+        spawn or attach it performed", and spawn was the only door. Without this
+        an app the caller did not launch -- one found via ``applications`` -- could
+        never be enumerated or hooked, because ``java_enumerate`` and
+        ``hook_template_device`` both demand the pid be in the allow-set.
+
+        The attach is a probe: it confirms the pid is real and attachable and
+        detaches at once, exactly like the local ``attach``. It deliberately does
+        not consult the allow-set -- it is the operation that grants entry to it --
+        so authorizing happens in the service layer only after this returns, which
+        keeps a bogus or dead pid from being admitted on a failed attach.
+        """
+        if type(pid) is not int or pid <= 0:
+            raise FridaError("invalid_params", "pid must be a positive integer")
+        device = self._resolve_device(device_id)
+        deadline = _bound_timeout(timeout)
+        sessions: list[Any] = []
+
+        def work() -> JsonObject:
+            try:
+                session = _invoke(device.attach, pid, timeout=deadline)
+            except Exception as exc:  # noqa: BLE001
+                if _is_timeout(exc):
+                    raise _timeout_error(deadline) from exc
+                raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+            sessions.append(session)
+            try:
+                return {
+                    "pid": pid,
+                    "attached": True,
+                    "device": str(device_id or "local"),
+                    "note": "probe attach; detached immediately",
+                }
+            finally:
+                with contextlib.suppress(Exception):
+                    session.detach()
+
+        try:
+            return _run_deadline(
+                work, timeout=deadline, on_timeout=lambda: _detach_all(sessions)
+            )
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _detach_all(sessions)
+            if _is_timeout(exc):
+                raise _timeout_error(deadline) from exc
+            raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+
     def spawn(
         self,
         device_id: str | None,
