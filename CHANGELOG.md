@@ -249,6 +249,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   事件循环上，这条一直只有「命令是否排进去」的单测、没验证过真发出去。新增 `test_proxy_replay_reissues_a_captured_request_to_the_origin`：
   用会计数的本地 origin 抓一条 GET、重放它，断言 origin 计数从 1 涨到 2、且重放出的请求本身也被记进抓包
   （缺 mitmproxy 时 skip≠pass）。
+- **`proxy.export_har` 也没有活体门**。抓包导 HAR 是把实时捕获交给 HAR 查看器/下游重放工具的标准出口。新增
+  `test_proxy_export_har_serialises_the_capture`：抓一条 GET 后导出，断言落盘的是合法 HAR 1.2 日志、且其中一条
+  entry 带上该请求的 `GET` 方法与 URL（缺 mitmproxy 时 skip≠pass）。
 - **`web.screenshot` / `web.har.export` 两个取证工具没有活体门**。二者都以 mock 挡不住的方式跨 Playwright 边界：
   截图走 `page.screenshot()`、必须真落一个 PNG 文件并登记为可下载产物；HAR 要把会话记录的请求序列化成合法的
   HAR 1.2 日志、含首文档与子资源。Playwright API 漂移会静默弄坏其一。新增
