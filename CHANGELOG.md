@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（proxy.flow.get 必须能取出「出错（无响应）」的流，而不是被它噎住）
+
+- 录制器的 `error` 钩子会捕获 mitmproxy 无法完成的流（TLS 握手被拒、上游不可达、请求中途被
+  reset）——对逆向会话而言「这个主机拒绝了握手」往往正是结论。这类流有 request、但 `response is
+  None`、status 为空，且照常留在 raw 存储里以便 `proxy.flows` 列出它。`test_proxy_error_flows.py`
+  钉住了它被**保留**（`recorder.raw()` 返回该流而非 `_OMITTED_BODY`），注释也写明用意是「让 flow_get
+  不会 404 掉列表里宣称存在的行」——但没有任何测试真正对出错流调用 `ProxyBackend.flow_get`。该路径读
+  响应是防御式的（`getattr(resp, "status_code", None)`、`_bounded_headers(resp) if resp else ...`、
+  `_raw_body(None) -> b""`），而读**请求**却是直取（`req.method`、`req.pretty_url`）。没有任何东西
+  拦得住后来一次「把两边写法统一」的改动把响应侧也改成直取——对出错流 `resp.status_code` 就是对
+  `None` 取属性的 `AttributeError`（实测），会让 flow_get 恰恰在这个后端特意去捕获的流上抛
+  `internal_error`。新增两条回归堵住这个缺口：对出错流调用 flow_get 返回结构完好的记录（status 为空、
+  响应体为空、不因读 None 成员而抛错），且请求侧照常带回（method/url/headers/body——失败流里「究竟往被
+  拒的主机发了什么」正是 agent 最想看的）。改一处 `getattr` 为直取即让两条同时以 `AttributeError` 失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
