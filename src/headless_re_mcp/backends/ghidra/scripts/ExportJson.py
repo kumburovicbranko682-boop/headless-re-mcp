@@ -79,10 +79,12 @@ elif mode == "xrefs":
     payload["items"] = items
 elif mode == "decompile":
     text = ""
+    found = False
     if address_arg:
         addr = _addr(address_arg)
         fn = fm.getFunctionContaining(addr) if addr is not None else None
         if fn is not None:
+            found = True
             decomp = DecompInterface()
             decomp.openProgram(program)
             try:
@@ -93,6 +95,9 @@ elif mode == "decompile":
                 decomp.dispose()
             payload["function"] = fn.getName()
             payload["entry"] = str(fn.getEntryPoint())
+    # found False means no function contained the address, so decompiled is
+    # empty for that reason rather than because the body was empty.
+    payload["found"] = found
     payload["decompiled"] = text[:200000]
     payload["truncated"] = len(text) > 200000
 else:
