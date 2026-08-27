@@ -187,7 +187,24 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with local and remote. Forwards stay on the adb server until
         close_all; this process will refuse a new one once the table is full.
+        Reclaim the table without closing sessions via device.release_forwards.
         """
         return _dump(analysis.device_forward(serial, local, remote))
+
+    @tools.tool(name="device.release_forwards")
+    def device_release_forwards() -> dict[str, Any]:
+        """Drop every adb forward this process created, across all devices.
+
+        The escape hatch for the forward cap: device.forward refuses a new
+        forward once the table is full, and forwards live on the adb server
+        until close_all, so a long-lived agent would otherwise have to tear
+        down its sessions to reclaim a slot. This is all-or-nothing and takes
+        no serial; a forward still in use (e.g. a frida-server port) is removed
+        too and must be re-created. Answers with removed (serial/local pairs),
+        failed, and count. A removal that errors, or a device offering no
+        remove API, keeps its slot for the next call rather than being
+        forgotten, so count is what was actually torn down, not what was asked.
+        """
+        return _dump(analysis.device_release_forwards())
 
     return tools.bindings

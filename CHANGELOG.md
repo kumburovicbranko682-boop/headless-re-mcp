@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（148 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -522,14 +522,32 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   字符串/xrefs，jadx CLI 负责 `apk.decompile` 与 `apk.export_sources`。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
-- **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、
-  logcat、截图、push/pull、端口转发。**刻意不提供 `device.shell`**——与既有「无
-  `dynamic.command`」同一条原则；序列号与包名按严格正则校验，杜绝参数注入。
+- **设备**：`device.*` 16 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、
+  logcat、截图、push/pull、端口转发与转发回收（`device.release_forwards`）。**刻意不提供
+  `device.shell`**——与既有「无 `dynamic.command`」同一条原则；序列号与包名按严格正则校验，
+  杜绝参数注入。
 - **动态**：Frida 后端从「只能本机、只能一个 pid」推广到设备维度（USB/模拟器/远程），
   新增 `frida.devices/device.connect/server.ensure/applications/spawn/java.classes/java.methods`。
   原来的单 pid 校验是**替换而不是移除**：设备操作改用按会话的「设备 + 已授权 pid 集合」，
   会话必须先连设备、pid 必须由本会话 spawn 得到；PE 会话的本机单 pid 行为逐字未变。
   Android hook 模板并入现有 `frida.hook.template`，仍不接受调用方自带脚本。
+
+### 新增（device.release_forwards：把只在 close_all 才回收的转发,做成不拆会话的回收口）
+
+- adb forward 活在 adb 服务器上、不随分析会话消亡:后端早有 `release_forwards()`(带 `_MAX_FORWARDS=32`
+  上限、越界即 `invalid_state` 拒新)与内部自动回收(`close_all`、以及没有 APK 会话存活时的
+  `_release_adb_forwards_if_idle`),但**没有对外工具**。于是一个持有活 APK 会话、反复为 frida-server /
+  调试端口下转发的长跑 agent,一旦撞上 32 条上限就卡死:自动回收因会话还活着不触发,唯一出路是
+  `close_all`——把所有分析会话/浏览器一并拆掉,代价过高。
+- 新增 `device.release_forwards`(state_change、无参):直接暴露既有 `release_forwards()`,丢弃本进程建过的
+  **全部**转发(跨所有设备),把上限腾空而**不拆任何会话**。诚实语义原样透传:`count` 是**真正拆掉**的条数
+  而非请求数——某条移除报错、或设备无 remove API 时,该槽位**保留**待下次重试(计入 `failed`),绝不当作
+  已回收而遗忘;返回 `removed`(serial/local 对)、`failed`、`count`。是全有或全无、不接受 serial:仍在用的
+  转发(如 frida-server 端口)也会被一并撤下、需要时自行重建——工具描述对此明说。
+- 工具计数 265 → **266**(写 117 → 118,只读不变);`catalog.py` 计数守卫、MCP 工具面全集、
+  `test_tool_catalog_agent` / `test_workspace_profiles` 及 README 三处读写/敌意输入计数同步更新。后端
+  `release_forwards()` 的既有回归(逐条报告、移除失败保槽、无 remove API 保槽)不变;新增工具级回归钉住
+  `device.release_forwards` 经服务映射到后端并如实回传 `removed`/`count`。
 
 ### 新增（Web）
 

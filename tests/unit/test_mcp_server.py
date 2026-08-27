@@ -284,6 +284,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "device.pull",
         "device.push",
         "device.forward",
+        "device.release_forwards",
         # Frida device dimension
         "frida.devices",
         "frida.device.connect",
