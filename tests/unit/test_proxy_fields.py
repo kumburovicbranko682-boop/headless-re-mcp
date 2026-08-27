@@ -7,9 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
+from headless_re_mcp.backends.proxy import client as proxy_client
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOWS,
     ProxyBackend,
+    ProxyError,
     _FlowRecorder,
 )
 from headless_re_mcp.tools.proxy import build_proxy_tools
@@ -230,3 +234,77 @@ def test_proxy_export_har_names_path_and_entry_count(
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+    # A bounded export names both fields it now returns so the doc does not
+    # under-report the payload the way the field tests exist to catch.
+    assert "truncated" in doc
+    assert "size" in doc
+    # The unbounded happy path reports no truncation and the real on-disk size.
+    assert payload["truncated"] is False
+    assert payload["size"] == (tmp_path / "capture.har").stat().st_size
+
+
+def _flood_recorder(count: int, url_pad: int) -> _FlowRecorder:
+    recorder = _FlowRecorder()
+    long_path = "/" + "a" * url_pad
+    for index in range(count):
+        request = SimpleNamespace(
+            method="GET", pretty_url=f"http://x{index}{long_path}", host="x"
+        )
+        response = SimpleNamespace(
+            status_code=200, headers={"content-type": "text/plain"}
+        )
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    return recorder
+
+
+def test_proxy_export_har_bounds_the_artifact_to_the_capture_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An unbounded HAR dump is the fail-open the capture caps exist to stop.
+
+    The ring holds up to _MAX_FLOWS summaries, each able to carry a 16 KB URL,
+    so a full capture serialises to tens of MB written straight into the
+    artifact dir. Export must obey the same cap as the sibling web.har.export:
+    drop the newest flows until the artifact fits, flag truncated, and report
+    the on-disk size. Shrink the cap so the test proves the bound without
+    building 64 MB.
+    """
+    monkeypatch.setattr(proxy_client, "UNREGISTERED_CAPTURE_MAX_BYTES", 4096)
+    recorder = _flood_recorder(count=50, url_pad=2000)
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+    out = tmp_path / "capture.har"
+
+    payload = backend.export_har("s", out)
+
+    assert payload["truncated"] is True
+    # Some flows were dropped to fit; the whole capture did not land.
+    assert 0 < payload["entry_count"] < 50
+    # The promise is on disk, not merely in the payload.
+    assert payload["size"] <= 4096
+    assert out.stat().st_size <= 4096
+    assert payload["size"] == out.stat().st_size
+
+
+def test_proxy_export_har_refuses_when_even_a_trimmed_export_will_not_fit(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Trimming to nothing still over cap must fail closed, not write a stub.
+
+    With a cap below even the empty-log envelope there is no artifact that
+    honours it, so the export raises too_large rather than leaving a file that
+    lies about having captured the flows. No partial artifact is left behind.
+    """
+    monkeypatch.setattr(proxy_client, "UNREGISTERED_CAPTURE_MAX_BYTES", 40)
+    recorder = _flood_recorder(count=8, url_pad=500)
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+    out = tmp_path / "capture.har"
+
+    with pytest.raises(ProxyError) as excinfo:
+        backend.export_har("s", out)
+
+    assert excinfo.value.code == "too_large"
+    assert not out.exists()
