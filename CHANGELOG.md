@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`apk.permissions` / `apk.certificates` 的 has_more 说不清是哪个列表被截断）
+
+- 继 `apk.components` 之后,`apk.permissions` 与 `apk.certificates` 也是"多个独立封顶的列表共用
+  一个合并 `has_more`"的同类问题。`apk.permissions` 的 declared(`permissions`)与
+  requested(`requested_permissions`)各按 `_MAX_PERMISSIONS`(256)独立封顶;`apk.certificates`
+  的 `signature_files` 与 `certificates` 各按 `_MAX_CERTIFICATES`(32)独立封顶。两者都只回一个
+  `has_more`,于是审计"申请了哪些权限"或"有哪些签名证书"时,即便自己关心的那份列表其实完整,
+  也会被另一份列表触顶而为真的同一个 `has_more` 误导为不完整(反之亦然)。对权限面与签名面这类
+  安全相关枚举,含糊尤其要不得。现各自补上分项标志:`permissions` 加 `permissions_truncated` /
+  `requested_permissions_truncated`,`certificates` 加 `signature_files_truncated` /
+  `certificates_truncated`;合并的 `has_more` 保留为各分项之或。两个工具说明同步列出分项标志。
+  扩既有 fields 测试:`permissions`(300 declared、1 requested)断言只有
+  `permissions_truncated` 为真;`certificates` 既覆盖两份都触顶的情形,又新增"40 签名文件、1
+  证书"的非对称夹具证明两个标志各自独立(`signature_files_truncated` 真、
+  `certificates_truncated` 假)。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
