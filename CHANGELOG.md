@@ -80,6 +80,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `backend_error`（附 `size` 与 stderr 摘录）。
 
 
+### 修复（device.force_stop 的 ps 回退把前缀同名包误判为存活进程）
+
+- `device.force_stop` 先跑 `am force-stop <pkg>`,再用 `_pids_for_package` 读残留进程来给出
+  三态 `stopped` 与 `remaining_pids`。当设备没有 `pidof`(较老/精简的 ROM,恰是回退路径生效
+  的场景)时,回退去解析 `ps -A`,却用 `if package not in line` 拿整行做子串匹配。于是问
+  `com.foo` 时,另一款仍在运行的 `com.foobar`(行里含 `com.foo` 子串)会被算成幸存进程——
+  一个其实已被停掉的包被报成 `stopped=False`,`remaining_pids` 里还带着别家应用的 pid,无人值守
+  的一遍会据此反复重试或断定该应用停不掉。改为只匹配进程名所在的最后一列:名字等于该包,或是
+  Android 的 `pkg:suffix` 子进程,才算幸存;前缀同名的其它包不再误匹配,而该包自身的 `:` 子进程
+  仍被正确计入。补回归测试钉住:前缀同名包 → `stopped=True`/空 `remaining_pids`,而 `pkg` 与
+  `pkg:push` 两个进程 → `stopped=False`/两个 pid。
+
 ### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
 
 - `ghidra.decompile` 过去在给定地址不落在任何函数内时返回 `decompiled: ""`，与“确实反编译出空

@@ -184,6 +184,51 @@ def test_force_stop_falls_back_to_ps_when_pidof_is_missing() -> None:
     assert payload["remaining_pids"] == [4321]
 
 
+def test_force_stop_ps_fallback_ignores_a_prefix_sharing_package() -> None:
+    """A different app whose name merely starts with the package is not a survivor.
+
+    The fallback used to test the whole ps line for the package as a substring,
+    so com.example.app.other still running read as com.example.app surviving --
+    force_stop then reported a package it had stopped as stopped=False with the
+    other app's pid. Only the process whose name column is the package itself
+    (or a pkg:suffix subprocess) counts.
+    """
+    ps_table = (
+        "USER   PID  PPID VSZ RSS WCHAN ADDR S NAME\n"
+        "u0_a99 9999 1234 0   0   ffff  0    S com.example.app.other\n"
+    )
+    dev = _ScriptedDev(
+        {
+            ("am", "force-stop"): "",
+            ("pidof",): "/system/bin/sh: pidof: not found",
+            ("ps", "-A"): ps_table,
+        }
+    )
+    payload = _backend_with(dev).force_stop("emulator-5554", "com.example.app")
+    assert payload["stopped"] is True
+    assert payload["remaining_pids"] == []
+
+
+def test_force_stop_ps_fallback_counts_a_package_subprocess() -> None:
+    """An Android ``pkg:suffix`` subprocess of the package is a real survivor."""
+    ps_table = (
+        "USER   PID  PPID VSZ RSS WCHAN ADDR S NAME\n"
+        "u0_a12 4321 1234 0   0   ffff  0    S com.example.app\n"
+        "u0_a12 4322 1234 0   0   ffff  0    S com.example.app:push\n"
+        "u0_a99 9999 1234 0   0   ffff  0    S com.example.app.other\n"
+    )
+    dev = _ScriptedDev(
+        {
+            ("am", "force-stop"): "",
+            ("pidof",): "/system/bin/sh: pidof: not found",
+            ("ps", "-A"): ps_table,
+        }
+    )
+    payload = _backend_with(dev).force_stop("emulator-5554", "com.example.app")
+    assert payload["stopped"] is False
+    assert payload["remaining_pids"] == [4321, 4322]
+
+
 def test_force_stop_is_honest_when_the_process_list_is_unreadable() -> None:
     """A pidof that fails outright leaves stopped null, not a false success.
 

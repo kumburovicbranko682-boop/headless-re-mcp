@@ -293,9 +293,20 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
             return None
         pids: list[int] = []
         for line in str(ps).splitlines():
-            if package not in line:
+            tokens = line.split()
+            if not tokens:
                 continue
-            for token in line.split()[:3]:
+            # ps -A carries the process name in the last column. Match it
+            # exactly, or as an Android "pkg:suffix" subprocess of it, instead
+            # of testing the whole line for the package as a substring: that let
+            # a prefix-sharing package (com.foobar still running when com.foo
+            # was asked about) count as a surviving process, so force_stop
+            # reported a package it had actually stopped as stopped=False with a
+            # foreign pid in remaining_pids.
+            name = tokens[-1]
+            if name != package and not name.startswith(package + ":"):
+                continue
+            for token in tokens[:3]:
                 if token.isdigit():
                     pids.append(int(token))
                     break
