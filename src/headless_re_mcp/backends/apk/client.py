@@ -529,12 +529,27 @@ class ApkClient:
         }
 
     def xrefs(
-        self, path: Path, method_name: str, *, offset: int = 0, limit: int = 100
+        self,
+        path: Path,
+        method_name: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        class_name: str = "",
     ) -> JsonObject:
         parsed = self._parsed(path)
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
+        # Optional declaring-class scope. Matching by method name alone conflates
+        # unrelated methods that share it: in an obfuscated app (everything named
+        # a/b/c) or with a common name (decrypt, run, <init>) the callers of many
+        # different methods pile into one list and blow the collect cap, so the
+        # answer is neither precise nor complete for any single method. Scoping to
+        # the declaring class (dotted or Lsmali/ form, like apk.methods) makes it
+        # the callers of exactly one method.
+        scope = class_name.strip() if isinstance(class_name, str) else ""
+        scope_smali = _dotted_to_smali(scope) if scope else ""
         # Same shape as classes/methods/strings: collect into a bounded list,
         # then page it. The old version had only a limit and no offset, so the
         # callers of a hot method past the first page were unreachable -- and it
@@ -547,6 +562,10 @@ class ApkClient:
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
                 continue
+            if scope:
+                owner = str(getattr(method, "class_name", ""))
+                if owner != scope and owner != scope_smali:
+                    continue
             for _, call, _ in method.get_xref_from():
                 if len(callers) >= _MAX_XREFS_COLLECT:
                     scan_more = True
@@ -563,6 +582,7 @@ class ApkClient:
         window = callers[start : start + capped]
         return {
             "method_name": target,
+            "class_name": scope or None,
             "callers": window,
             "count": len(window),
             "total": len(callers),

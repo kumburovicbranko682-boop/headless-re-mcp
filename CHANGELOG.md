@@ -435,6 +435,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   那句「has_more 只表示还有已收集的行」正是这个坑。三者各加 `name_filter`：在**收集阶段、上限之前**按子串过滤
   （大小写敏感，与 frida 系列同一范式），于是非匹配项不占收集预算，目标即便排在原来的收集边界之后也能被扫进来、
   连同 `total`/`scan_capped` 一并如实反映过滤后的视图。既有无过滤行为不变（`name_filter` 默认空）。
+- **`apk.xrefs` 只按方法名匹配、不认声明类，交叉引用因此既不精确也不完整**。它遍历所有方法、命中
+  `method.name == 目标名` 就收集其调用点——文档原话「列出叫 method_name 的**每一个**方法的调用者」。可在混淆
+  App 里方法全叫 `a`/`b`/`c`、或遇到 `decrypt`/`run`/`<init>` 这类常见名时，无数个毫不相干的同名方法的调用点被
+  揉进一个列表、直接撑爆收集上限，于是对任何单个方法而言这份 xref 既不准也不全。现在 `apk.xrefs` 加可选
+  `class_name`（点号或 `Lsmali/` 形式，与 `apk.methods` 同一套解析）把搜索限定到某个声明类，得到的就是「恰好这一个
+  方法」的调用者；不传时行为不变（跨类按名聚合）。返回体加 `class_name` 回显本次范围（未限定为 null）。
+  androguard 的 `MethodAnalysis.class_name` 提供声明类（smali 形式），据此比对。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`
   按数量、`UNREGISTERED_CAPTURE_MAX_BYTES` 按总量，比只裁数量更全），那个函数与常量遂再无调用方，只剩

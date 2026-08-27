@@ -36,8 +36,9 @@ class _FakeCall:
 
 
 class _FakeMethod:
-    def __init__(self, name: str, callers: int) -> None:
+    def __init__(self, name: str, callers: int, class_name: str = "") -> None:
         self.name = name
+        self.class_name = class_name
         self._callers = callers
 
     def is_external(self) -> bool:
@@ -101,6 +102,36 @@ def test_apk_xrefs_names_method_name_on_the_payload(
     assert "method" not in payload
     doc = " ".join(_tool_docstring("apk.xrefs").split())
     assert "callers (class and method), method_name" in doc
+    assert "class_name" in doc
+
+
+def test_apk_xrefs_class_name_scopes_to_one_declaring_class(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Two classes declare decrypt; name-only matching conflates their callers.
+
+    Measured: Crypto.decrypt has 2 callers, Util.decrypt has 3 -> unscoped total
+    5 (conflated, class_name null), scoped to com.target.Crypto total 2, and the
+    dotted and Lsmali/ forms both resolve.
+    """
+    methods = [
+        _FakeMethod("decrypt", 2, class_name="Lcom/target/Crypto;"),
+        _FakeMethod("decrypt", 3, class_name="Lcom/other/Util;"),
+    ]
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeParsed(methods))
+    client = ApkClient()
+    unscoped = client.xrefs(tmp_path / "app.apk", "decrypt", limit=100)
+    assert unscoped["total"] == 5
+    assert unscoped["class_name"] is None
+    scoped = client.xrefs(
+        tmp_path / "app.apk", "decrypt", limit=100, class_name="com.target.Crypto"
+    )
+    assert scoped["total"] == 2
+    assert scoped["class_name"] == "com.target.Crypto"
+    scoped_smali = client.xrefs(
+        tmp_path / "app.apk", "decrypt", limit=100, class_name="Lcom/target/Crypto;"
+    )
+    assert scoped_smali["total"] == 2
 
 
 class _ManifestBody:

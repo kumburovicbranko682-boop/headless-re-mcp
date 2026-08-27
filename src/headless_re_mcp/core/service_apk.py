@@ -171,11 +171,18 @@ class ApkAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def apk_xrefs(
-        self, session_id: str, method_name: str, offset: int = 0, limit: int = 100
+        self,
+        session_id: str,
+        method_name: str,
+        offset: int = 0,
+        limit: int = 100,
+        class_name: str = "",
     ) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)
-            data = ApkClient().xrefs(binary, method_name, offset=offset, limit=limit)
+            data = ApkClient().xrefs(
+                binary, method_name, offset=offset, limit=limit, class_name=class_name
+            )
             return _success(data, session_id=session_id, backend="apk")
         except ApkError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)

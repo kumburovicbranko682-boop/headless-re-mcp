@@ -155,16 +155,24 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         method_name: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        class_name: str = "",
     ) -> dict[str, Any]:
-        """List callers of every method named method_name.
+        """List callers of a method named method_name.
 
-        Answers with callers (class and method), method_name, count, total,
-        offset, and has_more so a page that filled the limit is not read as the
-        whole list, plus scan_capped when the caller collection hit its ceiling
+        Answers with callers (class and method), method_name, class_name, count,
+        total, offset, and has_more so a page that filled the limit is not read as
+        the whole list, plus scan_capped when the caller collection hit its ceiling
         (total is then the capped count, not every call site on the device).
+        class_name (dotted or Lsmali/ form) scopes the search to one declaring
+        class; without it every method sharing the name is unioned, which in an
+        obfuscated app (a/b/c) or for a common name (run, decrypt) conflates
+        unrelated callers and can blow the collect cap. class_name in the answer
+        echoes the scope (null when unscoped).
         """
         return _dump(
-            analysis.apk_xrefs(session_id, method_name, offset=offset, limit=limit)
+            analysis.apk_xrefs(
+                session_id, method_name, offset=offset, limit=limit, class_name=class_name
+            )
         )
 
     @tools.tool(name="apk.decompile")
