@@ -188,6 +188,68 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
     assert repository.list_unclean_sessions() == ([], 0)
 
 
+def _created(session_id: str) -> Result[dict[str, object]]:
+    return Result[dict[str, object]](
+        ok=True,
+        data={
+            "session": {
+                "id": session_id,
+                "binary": "fixture.exe",
+                "sha256": "a" * 64,
+                "architecture": "x64",
+                "state": "created",
+            }
+        },
+    )
+
+
+def test_list_timeline_flags_a_missing_session_the_same_way_on_both_ports(
+    repository: AnalysisRepository,
+) -> None:
+    """A never-created id is ``exists: False`` on either port, not an empty page.
+
+    ``ArtifactApplicationService.list_timeline`` turns ``exists: False`` into
+    ``session_not_found`` -- the answer every other session-scoped call gives a
+    stale id. The in-memory port used to omit the flag and answer ok with an
+    empty list, so under that port a stale id read as a real session that had
+    simply done nothing, and the documented ``session_not_found`` never fired.
+    A created session (whose creation records its first entry) must not carry
+    the flag, in either direction.
+    """
+    missing = repository.list_timeline("never-created-session")
+    assert missing["exists"] is False
+    assert missing["events"] == []
+    assert missing["total"] == 0
+
+    repository.note_session_created("fixture.exe", _created("real-session"))
+    present = repository.list_timeline("real-session")
+    assert "exists" not in present, "a real session must not look missing"
+    assert present["total"] >= 1
+
+
+def test_artifact_service_timeline_is_session_not_found_on_both_ports(
+    repository: AnalysisRepository,
+) -> None:
+    """The ``exists: False`` flag has to reach ``session_not_found`` either way.
+
+    This is the behaviour ``timeline.list`` documents. It only holds if every
+    repository port sets the flag, so pin it against both rather than the file
+    -backed one alone.
+    """
+    from typing import Any, cast
+
+    from headless_re_mcp.core.application_services import ArtifactApplicationService
+    from headless_re_mcp.core.session import SessionNotFound
+
+    service = ArtifactApplicationService(facade=cast(Any, None), repository=repository)
+    with pytest.raises(SessionNotFound):
+        service.list_timeline("never-created-session")
+
+    repository.note_session_created("fixture.exe", _created("real-session"))
+    present = service.list_timeline("real-session")
+    assert present["total"] >= 1
+
+
 def test_the_audit_log_is_trimmed_to_the_newest_entries(tmp_path: Path) -> None:
     """The audit table is the one store with no natural end.
 

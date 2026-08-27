@@ -688,10 +688,32 @@ class InMemoryAnalysisRepository:
         offset: int = 0,
         limit: int = 100,
     ) -> JsonObject:
-        limit = max(1, min(int(limit), 1000))
+        # 256, not 1000: the file-backed timeline this stands in for caps here,
+        # and the two must page the same way to keep the "same observable
+        # contract as SQLite" this class promises.
+        limit = max(1, min(int(limit), 256))
         offset = max(0, int(offset))
         with self._lock:
-            events = [dict(item) for item in self._timeline.get(session_id, [])]
+            stored = self._timeline.get(session_id)
+            events = [dict(item) for item in stored] if stored is not None else []
+        if stored is None:
+            # A created session always has its first entry recorded (session
+            # creation appends one), and trim pops the key outright, so an
+            # absent key means "no such session" -- never "a session that did
+            # nothing". Report the same exists:False the file-backed timeline
+            # returns for a missing file; ArtifactApplicationService turns it
+            # into session_not_found. Without it the in-memory port answered ok
+            # with an empty list, so a stale id read as a real but idle session
+            # and the documented session_not_found never fired under this port.
+            return {
+                "events": [],
+                "count": 0,
+                "total": 0,
+                "offset": offset,
+                "limit": limit,
+                "has_more": False,
+                "exists": False,
+            }
         total = len(events)
         page = events[offset : offset + limit]
         return {

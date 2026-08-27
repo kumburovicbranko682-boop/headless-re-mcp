@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（内存版仓库的 `timeline.list` 对不存在会话不报 `session_not_found`）
+
+- `timeline.list` 文档承诺：从未创建过的会话回 `session_not_found`，而不是 ok + 空事件列表——
+  好让持有重启前旧 ID 的 agent 能把“没这个会话”和“会话在但什么都没干”区分开。这条契约由
+  `ArtifactApplicationService.list_timeline` 实现：仓库返回 `exists: False` 时抛 `SessionNotFound`。
+  文件后端（SQLite）的 `list_session_timeline` 对缺失的 `timeline.jsonl` 会给 `exists: False`（创建
+  会话时就会写第一条时间线，所以“没有文件”即“没有会话”）；关闭会话被裁剪时该文件也会被删，因此
+  被逐出的会话同样是 `exists: False`。但 `InMemoryAnalysisRepository.list_timeline`——它是给自定义组合
+  用的生产模块，自称与 SQLite “observable contract” 一致——从不设这个标志：会话缺失时它照样回 ok +
+  空列表，于是在该端口下 `session_not_found` 从不触发，旧 ID 被当成一个真实但空转的会话。现在只要
+  `self._timeline` 里没有该会话键（从未创建，或已被 `_trim_closed_sessions` 逐出，二者都会 `pop` 掉键，
+  且已创建的会话至少留一条），就返回同款 `exists: False`；`limit` 上限也从 1000 收到 256，与文件后端
+  分页一致。新增参数化直测覆盖内存/SQLite 两端：缺失会话为 `exists: False`、真实会话不带该标志，且经
+  `ArtifactApplicationService` 两端都抛 `SessionNotFound`。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
