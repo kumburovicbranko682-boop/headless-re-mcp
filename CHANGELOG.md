@@ -91,6 +91,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（超时收尾的进程组终扫在 pid 已被回收后仍裸发 killpg）
+
+- `terminate_process_tree(kill_group=True)`（POSIX 上 `run_bounded` 与 de4dot 的超时/取消
+  收尾都走这条）在杀掉父进程和 ppid 可见的后代之后，会补一发 `os.killpg(pid, 9)` 作为终扫，
+  想扫掉那些在枚举后代与回收之间被 init 收养、从而 ppid 链上已看不到的组成员。问题在于：走到
+  这一步时上面的 `process.wait()` 早已回收了 `pid`，其编号可被内核重新分配，此时对 `pid` 裸发
+  组信号可能击中一个恰好复用了该编号的**无关进程组**——这正是本模块 `collect_process_group` /
+  `terminate_process_group` 与 `_kill_own_process_group`（前者按各成员自报的 `pgrp` 逐个击杀、
+  后者仅在 `pid` 确为组长时才 killpg）刻意规避、而 `terminate_leftover_process_tree` 早已改用安全
+  方式的同一隐患；`terminate_process_tree` 的这条终扫是唯一的漏网者。改为同样调用
+  `terminate_process_group(pid)`：按 `/proc` 里 `pgrp==pid` 的存活成员逐个击杀，覆盖面与裸
+  killpg 相同（真正在世的组成员都在 `/proc` 里），却不会因编号复用误伤无关组；命中的成员并入返回
+  的 killed 列表并一并回收，最后对 killed 去重（一个既被 ppid walk、又被组扫描命中的幸存者只报
+  一次），与 `terminate_leftover_process_tree` 的做法一致。注意组的整体原子击杀并未丢失：`pid`
+  仍在世且确为组长时，收尾早期的 `_kill_own_process_group(pid)` 已经安全地 killpg 过整组，终扫只
+  负责补漏。\
+  新增一条 POSIX 直测：以已被回收的组长 pid 触发 `kill_group` 终扫，断言组成员经逐个击杀被扫掉、
+  并入 killed 且不重复，而 `os.killpg` 一次都没被裸发（记录而非抛出，因为旧代码把这发 killpg 裹在
+  `suppress(Exception)` 里，抛出会被吞掉证明不了问题）。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

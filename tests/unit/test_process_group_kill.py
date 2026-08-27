@@ -169,6 +169,69 @@ def test_kill_own_process_group_kills_the_whole_group_it_leads(
         _kill(grandchild, leader_pid)
 
 
+def test_terminate_process_tree_group_sweep_is_per_member_not_a_bare_killpg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The kill_group final sweep must not killpg a pid process.wait() reaped.
+
+    By the time terminate_process_tree reaches its kill_group branch, the
+    process.wait() above has reaped the launcher, so its pid is free for the
+    kernel to reuse. A bare ``os.killpg(pid)`` there could signal an unrelated
+    group that recycled the number -- the exact hazard collect_process_group /
+    terminate_process_group are written around, and which
+    terminate_leftover_process_tree already sweeps the safe way. The sweep must
+    enumerate live members by their recorded pgrp and kill each by pid instead.
+
+    A recording (not raising) killpg stub is deliberate: the old code called
+    ``os.killpg`` inside ``with suppress(Exception)``, so a raising stub would be
+    swallowed and prove nothing. Recording catches the bare call, and the empty
+    ``swept`` it would leave (terminate_process_group never ran) catches it twice.
+    """
+    reaped_leader = 424242
+    orphans = [515151, 525252]
+
+    class _ReapedLeader:
+        pid = reaped_leader
+
+        def poll(self) -> int:
+            return 0  # already exited, so kill() below is never reached
+
+        def kill(self) -> None:
+            raise AssertionError("kill() must not run for an already-exited process")
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    # The orphan kept the leader's group but lost the parent link, so only the
+    # group scan can see it -- the ppid walk returns nothing.
+    monkeypatch.setattr(process_tree, "collect_descendants", lambda pid: [])
+    monkeypatch.setattr(
+        process_tree, "collect_process_group", lambda pgid: list(orphans)
+    )
+    swept: list[int] = []
+    monkeypatch.setattr(process_tree, "_kill_pid", lambda pid: swept.append(int(pid)))
+    monkeypatch.setattr(process_tree, "_reap_terminated", lambda pids, wait_s: None)
+
+    # process_tree uses the plain os module, so patching os here patches what it
+    # (and its getattr lookups) see.
+    killpg_calls: list[int] = []
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: killpg_calls.append(int(pgid)))
+    # _kill_own_process_group runs first; report the reaped pid as not a group
+    # leader so its own guarded killpg is correctly skipped, isolating the final
+    # sweep as the only thing that could signal a group.
+    monkeypatch.setattr(os, "getpgid", lambda pid: int(pid) + 1)
+
+    killed = process_tree.terminate_process_tree(
+        _ReapedLeader(), wait_s=0.0, kill_group=True
+    )
+
+    assert killpg_calls == [], "the sweep bare-killpg'd a reaped pid"
+    assert swept == orphans, "the group orphans were not swept per-member"
+    for orphan in orphans:
+        assert orphan in killed
+    assert len(killed) == len(set(killed)), "a survivor was reported more than once"
+
+
 def test_kill_own_process_group_still_reaches_survivors_of_a_reaped_leader(
     tmp_path: Path,
 ) -> None:
