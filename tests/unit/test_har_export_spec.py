@@ -138,6 +138,68 @@ def test_har_entry_reports_a_known_response_body_size() -> None:
     assert unknown["response"]["bodySize"] == -1
 
 
+def test_har_entry_carries_measured_phase_timings_and_sums_time() -> None:
+    """Measured send/wait/receive fill timings and time is their sum.
+
+    HAR's time is defined as the sum of the non-negative timing phases, so a
+    consumer draws a waterfall of the right total width from a real capture
+    instead of the flat 0 the export used to emit.
+    """
+    entry = har_entry(
+        method="GET",
+        url="https://x/1",
+        status=200,
+        mime_type="application/json",
+        started_date_time="2020-01-02T03:04:05+00:00",
+        timings={"send": 12.5, "wait": 40.0, "receive": 7.5},
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["timings"] == {"send": 12.5, "wait": 40.0, "receive": 7.5}
+    assert entry["time"] == pytest.approx(60.0)
+    # The caller supplied the instant, so it is used verbatim, not export time.
+    assert entry["startedDateTime"] == "2020-01-02T03:04:05+00:00"
+    # The comment no longer claims phase timings were absent.
+    assert "phase timings" not in entry["comment"]
+    assert "headers and bodies were not captured" in entry["comment"]
+
+
+def test_har_entry_time_excludes_unmeasured_phases() -> None:
+    """An errored flow has no response phases; time counts only what was measured.
+
+    A phase the capture could not measure is the spec's -1 sentinel, and time is
+    the sum of the non-negative phases only -- here just send. A -1 is never
+    added into time (which would understate or corrupt the total), and the entry
+    stays spec-valid.
+    """
+    entry = har_entry(
+        method="GET",
+        url="https://x/err",
+        status=None,
+        mime_type="",
+        timings={"send": 8.0, "wait": None, "receive": -1},
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["timings"] == {"send": 8.0, "wait": -1, "receive": -1}
+    assert entry["time"] == pytest.approx(8.0)
+
+
+def test_har_entry_without_timings_stays_all_unknown() -> None:
+    """No measured timings: every phase is -1, time is 0, comment says so.
+
+    This is the web capture's shape (it records which flows happened, not phase
+    durations) and any flow whose timestamps were missing. It must not fabricate
+    a zero-length phase, which a consumer reads as a real measurement of 0.
+    """
+    entry = har_entry(method="GET", url="https://x/1", status=200, mime_type="")
+    assert entry["timings"] == {"send": -1, "wait": -1, "receive": -1}
+    assert entry["time"] == 0
+    assert "phase timings were not captured" in entry["comment"]
+    # An empty dict is treated the same as no measurement at all.
+    empty = har_entry(method="GET", url="https://x/1", status=200, mime_type="", timings={})
+    assert empty["timings"] == {"send": -1, "wait": -1, "receive": -1}
+    assert empty["time"] == 0
+
+
 def test_serialize_har_keeps_the_newest_entries_that_fit_the_cap() -> None:
     """Eviction drops the oldest end, so the surviving entries are the newest.
 
@@ -282,6 +344,153 @@ def test_proxy_export_har_carries_the_captured_response_body_size(tmp_path: Path
     for entry in doc["log"]["entries"]:
         assert entry["response"]["content"]["size"] == 512
         assert entry["response"]["bodySize"] == 512
+
+
+def _record_timed_flow(
+    recorder: _FlowRecorder,
+    flow_id: str,
+    *,
+    req_start: float | None,
+    req_end: float | None,
+    resp_start: float | None,
+    resp_end: float | None,
+    with_response: bool = True,
+) -> None:
+    """Feed the recorder one flow carrying mitmproxy-style per-end timestamps."""
+    request = SimpleNamespace(
+        method="GET",
+        pretty_url=f"http://x/{flow_id}",
+        host="x",
+        timestamp_start=req_start,
+        timestamp_end=req_end,
+    )
+    response = (
+        SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "text/plain"},
+            raw_content=None,
+            timestamp_start=resp_start,
+            timestamp_end=resp_end,
+        )
+        if with_response
+        else None
+    )
+    recorder.response(SimpleNamespace(id=flow_id, request=request, response=response))
+
+
+def test_proxy_records_real_timing_and_export_stamps_the_request_instant(
+    tmp_path: Path,
+) -> None:
+    """The proxy keeps mitmproxy's timestamps; the HAR carries them, not now().
+
+    mitmproxy stamps each end of the exchange, so the recorder can derive the
+    flow's real start and its send/wait/receive phases. proxy.flows surfaces
+    started_at and timings, and the HAR entry stamps startedDateTime at the
+    request instant with time the sum of the phases -- instead of the old
+    behaviour, which stamped every entry at export time with a flat-zero
+    waterfall.
+    """
+    from datetime import UTC, datetime
+
+    recorder = _FlowRecorder()
+    # send = 20 ms, wait = 50 ms, receive = 15 ms -> time = 85 ms.
+    _record_timed_flow(
+        recorder,
+        "f0",
+        req_start=1000.0,
+        req_end=1000.02,
+        resp_start=1000.07,
+        resp_end=1000.085,
+    )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    expected_started = datetime.fromtimestamp(1000.0, UTC).isoformat()
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["started_at"] == expected_started
+    assert row["timings"]["send"] == pytest.approx(20.0, abs=0.001)
+    assert row["timings"]["wait"] == pytest.approx(50.0, abs=0.001)
+    assert row["timings"]["receive"] == pytest.approx(15.0, abs=0.001)
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    entry = doc["log"]["entries"][0]
+    assert entry["startedDateTime"] == expected_started
+    assert entry["timings"]["send"] == pytest.approx(20.0, abs=0.001)
+    assert entry["timings"]["wait"] == pytest.approx(50.0, abs=0.001)
+    assert entry["timings"]["receive"] == pytest.approx(15.0, abs=0.001)
+    assert entry["time"] == pytest.approx(85.0, abs=0.01)
+
+
+def test_proxy_errored_flow_keeps_the_start_and_leaves_response_phases_unknown(
+    tmp_path: Path,
+) -> None:
+    """A flow with no response: start and send are known, wait/receive are -1.
+
+    An errored flow (upstream unreachable, reset mid-request) never produced a
+    response, so only the request timestamps exist. The export must still stamp
+    the real start and the measurable send phase, and report wait/receive as the
+    -1 "not measured" sentinel rather than a fabricated zero -- with time the
+    sum of just the measured phase.
+    """
+    from datetime import UTC, datetime
+
+    recorder = _FlowRecorder()
+    _record_timed_flow(
+        recorder,
+        "err",
+        req_start=2000.0,
+        req_end=2000.03,
+        resp_start=None,
+        resp_end=None,
+        with_response=False,
+    )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["started_at"] == datetime.fromtimestamp(2000.0, UTC).isoformat()
+    assert row["timings"] == {"send": pytest.approx(30.0, abs=0.001), "wait": -1, "receive": -1}
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["timings"]["send"] == pytest.approx(30.0, abs=0.001)
+    assert entry["timings"]["wait"] == -1
+    assert entry["timings"]["receive"] == -1
+    assert entry["time"] == pytest.approx(30.0, abs=0.001)
+
+
+def test_proxy_flow_without_timestamps_omits_timing_and_export_falls_back(
+    tmp_path: Path,
+) -> None:
+    """A flow mitmproxy left untimed carries no started_at/timings on the row.
+
+    Not every flow gets timestamps (some replayed or synthetic flows do not), so
+    the summary must not invent them: the row omits started_at and timings, and
+    the HAR export falls back to unknown timings and an export-time stamp rather
+    than crashing or fabricating a phase.
+    """
+    recorder = _FlowRecorder()
+    _record_timed_flow(
+        recorder,
+        "bare",
+        req_start=None,
+        req_end=None,
+        resp_start=None,
+        resp_end=None,
+    )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert "started_at" not in row
+    assert "timings" not in row
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["timings"] == {"send": -1, "wait": -1, "receive": -1}
+    assert entry["time"] == 0
 
 
 def test_proxy_export_har_is_now_bounded_by_the_capture_cap(

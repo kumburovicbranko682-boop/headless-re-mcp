@@ -61,16 +61,19 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with flows (id, seq, method, url, host, status, content_type,
         response_size), count, total, offset, has_more, and dropped.
         response_size is the decoded response body length in bytes (0 when the
-        response had no body). body_omitted is set on a row whose
-        request/response body was over the retain cap. A flow mitmproxy could
-        not complete (TLS refused, upstream unreachable, connection reset) is
-        captured too, carrying error=true and error_msg with a null status;
-        such flows were previously dropped entirely. A completed flow always
-        carries a numeric status and no error field. The list field is flows,
-        not items or requests, and the type column is content_type. dropped is
-        how many the capture ring already evicted; a page that filled the limit
-        is not the whole log. metadata_truncated marks bounded oversized summary
-        fields.
+        response had no body). started_at is the flow's real start instant in
+        ISO 8601 (from mitmproxy's timestamps) and timings is its measured
+        send/wait/receive milliseconds (each -1 when that phase was not
+        measurable); both are present only for a flow whose timestamps were
+        recorded. body_omitted is set on a row whose request/response body was
+        over the retain cap. A flow mitmproxy could not complete (TLS refused,
+        upstream unreachable, connection reset) is captured too, carrying
+        error=true and error_msg with a null status; such flows were previously
+        dropped entirely. A completed flow always carries a numeric status and
+        no error field. The list field is flows, not items or requests, and the
+        type column is content_type. dropped is how many the capture ring
+        already evicted; a page that filled the limit is not the whole log.
+        metadata_truncated marks bounded oversized summary fields.
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
@@ -105,9 +108,14 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with path, entry_count and truncated, plus artifact_id when
         the HAR was registered. truncated is true when the oldest entries were
-        dropped to keep the file under the capture cap. There is no har,
-        output or artifact field. path is the file; looking for har after a
-        successful export reads as a missing capture.
+        dropped to keep the file under the capture cap. Each entry's
+        startedDateTime is the flow's real request time (from mitmproxy's
+        timestamps), not the export moment, and its timings carry the measured
+        send/wait/receive milliseconds with time their non-negative sum, so a
+        consumer can draw a real waterfall; a flow whose timestamps were not
+        recorded still falls back to unknown timings rather than a fabricated
+        zero. There is no har, output or artifact field. path is the file;
+        looking for har after a successful export reads as a missing capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 

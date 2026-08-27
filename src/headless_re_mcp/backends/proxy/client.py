@@ -17,6 +17,7 @@ import socket
 import threading
 import time
 from collections import OrderedDict, deque
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -166,6 +167,81 @@ def _content_len(part: Any) -> int:
         return len(content)
     except TypeError:
         return 0
+
+
+def _as_timestamp(value: Any) -> float | None:
+    """A positive epoch-second float, or None when the field is absent/unset.
+
+    mitmproxy leaves ``timestamp_start`` / ``timestamp_end`` as None until it has
+    actually read that end of the exchange, and a bool would sneak through an
+    ``isinstance(int)`` check, so both are rejected here.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and value > 0:
+        return float(value)
+    return None
+
+
+def _epoch_to_iso(value: Any) -> str | None:
+    """ISO 8601 (with offset) for a mitmproxy epoch timestamp, or None."""
+    ts = _as_timestamp(value)
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, UTC).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _phase_ms(start: float | None, end: float | None) -> float | None:
+    """Milliseconds between two mitmproxy timestamps, or None when unmeasurable.
+
+    A pair that ran backwards -- a reused connection, a coarse timer -- would
+    yield a negative duration a HAR consumer rejects, so it reads as unmeasured
+    (None) rather than a bogus phase length.
+    """
+    if start is None or end is None:
+        return None
+    delta = (end - start) * 1000.0
+    if delta < 0:
+        return None
+    return round(delta, 3)
+
+
+def _flow_timing(req: Any, resp: Any) -> tuple[str | None, JsonObject | None]:
+    """The flow's real start instant and per-phase timings from mitmproxy.
+
+    mitmproxy stamps ``timestamp_start`` / ``timestamp_end`` on the request and
+    response as it reads each end, so the HAR export can carry the flow's actual
+    start and phase durations instead of export-time ``now()`` and all-unknown
+    timings. The phases match mitmproxy's own HAR addon: ``send`` is how long the
+    client's request took to arrive, ``wait`` the gap until the response began,
+    ``receive`` how long the response took to read. A phase whose endpoints are
+    not both known -- an errored flow never produced a response -- stays the -1
+    "not measured" sentinel; the whole timings map is dropped (None) only when no
+    phase could be measured at all, so the entry then honestly reports unknown.
+    """
+    started = _epoch_to_iso(getattr(req, "timestamp_start", None))
+    send = _phase_ms(
+        _as_timestamp(getattr(req, "timestamp_start", None)),
+        _as_timestamp(getattr(req, "timestamp_end", None)),
+    )
+    wait = _phase_ms(
+        _as_timestamp(getattr(req, "timestamp_end", None)),
+        _as_timestamp(getattr(resp, "timestamp_start", None)),
+    )
+    receive = _phase_ms(
+        _as_timestamp(getattr(resp, "timestamp_start", None)),
+        _as_timestamp(getattr(resp, "timestamp_end", None)),
+    )
+    if send is None and wait is None and receive is None:
+        return started, None
+    return started, {
+        "send": send if send is not None else -1,
+        "wait": wait if wait is not None else -1,
+        "receive": receive if receive is not None else -1,
+    }
 
 
 def _encoded_len(value: object) -> int:
@@ -369,6 +445,11 @@ class _FlowRecorder:
         # whose body was not retained -- and the HAR export can report a real
         # content size instead of the -1 "unknown" sentinel.
         response_size = _content_len(resp)
+        # mitmproxy's per-end timestamps are on the live flow now; keep the real
+        # start instant and phase timings so the HAR export stamps each entry at
+        # its actual request time (not export time) with a measured waterfall,
+        # and so proxy.flows can order and time the capture it lists.
+        started_at, timings = _flow_timing(req, resp)
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
@@ -401,6 +482,10 @@ class _FlowRecorder:
                 "content_type": content_type,
                 "response_size": response_size,
             }
+            if started_at is not None:
+                entry["started_at"] = started_at
+            if timings is not None:
+                entry["timings"] = timings
             if omitted:
                 entry["body_omitted"] = True
             if error_msg is not None:
@@ -730,6 +815,11 @@ class ProxyBackend:
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
+                # The flow's real start and measured phases, recorded at capture
+                # time from mitmproxy's timestamps; without them every entry
+                # would stamp at export time with an empty waterfall.
+                started_date_time=f.get("started_at"),
+                timings=f.get("timings"),
             )
             for f in inst.recorder.snapshot()
         ]
