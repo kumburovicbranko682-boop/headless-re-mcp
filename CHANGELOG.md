@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（js/wasm 工具非零退出不再伪装成干净结果）
+
+- `js.deobfuscate` / `js.beautify` / `js.unpack_bundle` / `wasm.wat` / `wasm.info` 走的是「工具死了也把
+  已产出的东西交回去」这一路径——webcrack 对半途去混淆常以非零退出收场却仍吐出可用代码,wasm-objdump
+  也可能先打印若干段再在后面某段翻车。但此前只要有任何输出,非零退出码与 stderr 就被**整段吞掉**:回包
+  与一次干净成功长得一模一样,无人值守的 agent 会把「因为工具中途挂了而被截断」的结果读成成品。
+- 现在只要子进程非零退出且仍有输出,回包附带 `exit_code`、`tool_failed=true` 与截断到 8000 字节的
+  `stderr`。`tool_failed` 与既有的 `truncated` 语义分明:`truncated` 只表示「我们在内联上限处截了文本」,
+  `tool_failed` 表示「子进程自己报了失败,输出可能因某个我们看不到的原因不完整」。退出码为 0 时这些字段
+  一概不出现,干净路径不添噪声;「非零退出且毫无输出」仍照旧抛 `backend_error`(带 `exit_code`)。
+- 新增回归:非零退出带部分代码/文件/文本时各字段齐备、干净退出无失败字段、非零且无输出仍抛错、
+  surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及五个工具的描述都点名 `exit_code` / `tool_failed`。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
