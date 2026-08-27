@@ -34,7 +34,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Launch a Chrome browser for the session and open a URL via CDP.
 
-        Answers with opened, url, title and headless. There is no session,
+        Answers with opened, url, title and headless, plus status when a URL
+        was given and produced an HTTP response. A 4xx/5xx page still opens, so
+        read status to tell an error page from a hit. There is no session,
         browser, ok or page field.
         """
         return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
@@ -47,7 +49,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Navigate the session's browser to a new URL.
 
-        Answers with url and title. There is no navigated, ok or page field.
+        Answers with url and title, plus status when the navigation produced an
+        HTTP response. A 4xx/5xx page still counts as navigated, so read status
+        to tell an error page from a hit. There is no navigated, ok or page
+        field.
         """
         return _dump(analysis.web_navigate(session_id, url, timeout=timeout))
 
@@ -79,12 +84,17 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
-        """Fetch one request's response body (large bodies spill to an artifact).
+        """Fetch one request's response body (large or binary bodies spill).
 
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
-        not truncated. A body over the capture cap is refused rather than
-        written to disk.
+        not truncated. A binary body (base64_encoded true) is never inlined or
+        base64-written to disk: it is decoded and body_path holds the raw
+        bytes, body is empty, body_truncated is false, and body_bytes is the
+        decoded size. When CDP has no body for the request (a redirect, or a
+        body already evicted from its cache) body is empty and body_error says
+        why, while body, base64_encoded and body_truncated stay present. A
+        body over the capture cap is refused rather than written to disk.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
@@ -94,10 +104,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return recent browser console messages.
 
-        Answers with console, count, has_more, and dropped so a page that
-        filled the limit is not read as the whole buffer, and ring
-        eviction is visible. A line longer than the per-message cap is
-        cut and marked text_truncated.
+        Answers with console, count, total, has_more, and dropped so a page
+        that filled the limit is not read as the whole buffer: total is how
+        many messages are buffered, and ring eviction is visible via dropped.
+        console holds the newest messages; the max limit covers the whole ring,
+        so there is no offset. A line longer than the per-message cap is cut
+        and marked text_truncated.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
@@ -171,10 +183,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.har.export")
     def web_har_export(session_id: str) -> dict[str, Any]:
-        """Export captured network activity to a HAR artifact.
+        """Export captured network activity to a spec-valid HAR 1.2 artifact.
 
-        Answers with path and entry_count, plus artifact_id when the HAR
-        was registered. There is no har, entries or artifact field.
+        Answers with path, entry_count and truncated, plus artifact_id when
+        the HAR was registered. truncated is true when the oldest entries were
+        dropped to keep the file under the capture cap. There is no har,
+        entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

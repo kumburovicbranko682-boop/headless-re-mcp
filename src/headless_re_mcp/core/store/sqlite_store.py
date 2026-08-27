@@ -87,6 +87,14 @@ KNOWLEDGE_RETAINED_PER_SESSION = 10_000
 # climbing, plus every knowledge fact those sessions recorded.
 CLOSED_SESSION_RETAINED = 64
 
+# The in-memory repository keeps each session's timeline as a Python list and,
+# unlike its audit log and knowledge table, never trimmed it: every lifecycle
+# event and tool note appended for the life of the process. The file-backed
+# timeline caps itself at 10,000 lines; the in-memory port bounds the same way
+# so a long-lived composition using it does not grow one list per session
+# without end.
+TIMELINE_RETAINED_PER_SESSION = 10_000
+
 # A knowledge value is stored as JSON text. The bound used to be applied by
 # slicing the serialised form, which stops it being JSON: the write answered
 # successfully and the next read returned a string fragment. Refuse instead.
@@ -308,12 +316,20 @@ class SessionStore:
         """
         if self.db_path.parent.name != "meta":
             return
-        # A stored id is always a uuid, but cleanup must never be the thing that
-        # follows a traversing id out of the root; skip anything that is not a
-        # single path component, matching the debug-events guard below.
-        if Path(session_id).name != session_id:
+        # A stored id is always a uuid, but cleanup must never be the thing
+        # that follows a traversing id out of the root, and the inline check
+        # this replaces (``Path(id).name != id``) was not that guard: ".."
+        # passes it, and <root>/debug-events/.. below is the artifact root
+        # itself, so the rmtree would have taken every artifact and this
+        # database with it. session_timeline_path already refuses everything
+        # that is not one ordinary path component (and a symlinked session
+        # dir); skip what it refuses rather than raise, because this runs
+        # inside the trim on session close and one poisoned row must not fail
+        # every later clean close.
+        try:
+            path = session_timeline_path(self.db_path.parent.parent, session_id)
+        except ValueError:
             return
-        path = session_timeline_path(self.db_path.parent.parent, session_id)
         with suppress(OSError):
             if path.is_file():
                 path.unlink()
