@@ -210,6 +210,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   构造时统一持有。
 - **APK 解析缓存在会话关闭后不释放**。上限 4 份，但每份完整 DEX 分析可达数百 MB，空闲进程会
   一直占着。会话关闭时按路径显式回收。
+- **喂进一个畸形 APK 会被记成内部事故，而不是后端错误**。androguard 对解析不了的清单是宽容的：
+  `APK()` 照常返回，但版本号 getter 随后抛 `KeyError('Name')`（androguard 4.1.4 上用纯文本
+  `AndroidManifest.xml` 复现，Android gate 自带的合成 APK 也命中）。`apk.open()` 无防护地读这些
+  getter，裸 `KeyError` 于是逃出后端、被 `_failure` 归成 `internal_error` 并写一条事故——正是
+  DIE / Exeinfo / 取消路径修过的错判，在无人值守下则是一条假告警。现按 `manifest()` 的做法包住
+  元数据读取，清单不可读即报 `backend_error`。新增免 androguard 的桩测试（CI 可跑）钉住这次收敛，
+  并收紧 Android RE gate：合成 APK 上 `apk_open` 可以失败，但绝不能是 `internal_error`。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
 - **Watchdog 字段名对不上，每次巡检都会崩**。代码读 `_reported_disconnected`（set），
   字段却声明成 `_disconnected_streak`。未捕获时整次巡检变成 `watchdog_failed`。
