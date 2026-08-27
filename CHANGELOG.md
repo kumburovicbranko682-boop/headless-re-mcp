@@ -351,6 +351,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   artifact id 落在自己的 `request_artifact_id`、不覆盖响应的 `artifact_id`），两个文件都被 retention 认领，
   谁也不会变成没人回收的孤儿。`_register_capture` 为此加了个可选的 `key` 形参（默认 `artifact_id`，其余
   调用方行为不变），让一个会外溢多个文件的工具能把每个 id 放进各自的字段。
+- **`proxy.export_har` / `web.har.export` 导出的 HAR 缺了一半必填字段，标准查看器根本打不开**。
+  两个导出各自内联拼一个 `{request:{method,url}, response:{status,content:{mimeType}}}` 就当 HAR 交差——
+  可 HAR 1.2 的 entry 远不止这些：`startedDateTime`、`time`、`request`/`response` 各自要带
+  `httpVersion`/`cookies`/`headers`（请求还要 `queryString`、响应还要 `content`）与 `headersSize`/`bodySize`，
+  外加 `cache` 和 `timings`。少了这些，Chrome DevTools、Firefox、各类 HAR 分析器都判为格式非法、拒绝载入——
+  一个哪儿都打不开的文件不叫导出。现在两边共用 `backends/common/har.py` 的 `har_entry` / `har_document`：
+  每条 entry 都补齐全部必填成员，抓包留下的（method/url/status/mimeType 与起始时间）照实填，没留的
+  （各类 header、body 大小）以合法的空数组 / `-1`「未知」哨兵占位而非省略——文件能开，又不谎报没有的数据。
+  `startedDateTime` 用真实起始时刻：proxy 取 mitmproxy 的 `flow.request.timestamp_start`、web 取 CDP 的
+  `wallTime`（各自记进 flow / network 摘要，`proxy.flows`、`web.network.list` 因此多出一个 `started_at` 纪元时间
+  字段），拿不到才退化到当下；缺失时 `iso8601` 退到纪元 `1970-01-01T00:00:00+00:00`，绝不省掉这个必填字段
+  让整份 log 被判废。既有的按容量裁剪（`UNREGISTERED_CAPTURE_MAX_BYTES` 内丢 entry）与 `too_large` 上抛照旧。
 - **`_MAX_DEVICE_ARTIFACTS` / `prune_device_artifacts` 是没接线的死代码，改它等于什么都没改**。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`

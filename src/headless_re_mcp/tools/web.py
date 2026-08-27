@@ -69,11 +69,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List captured network requests.
 
-        Answers with requests (url, method, status, resourceType), count,
-        total, offset, has_more, and dropped so a page that filled the
-        limit is not read as the whole capture, and ring eviction is
-        visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        Answers with requests (url, method, status, resourceType, started_at as
+        an epoch time), count, total, offset, has_more, and dropped so a page
+        that filled the limit is not read as the whole capture, and ring
+        eviction is visible. metadata_truncated marks bounded oversized request
+        fields. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -171,8 +171,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_har_export(session_id: str) -> dict[str, Any]:
         """Export captured network activity to a HAR artifact.
 
-        Answers with path and entry_count, plus artifact_id when the HAR
-        was registered. There is no har, entries or artifact field.
+        The file is a spec-valid HAR 1.2 log that standard viewers (Chrome
+        DevTools, HAR analyzers) can open; each entry carries the required
+        request/response, timings and startedDateTime members, with unknown
+        fields left as empty/`-1` rather than omitted. Answers with path and
+        entry_count, plus artifact_id when the HAR was registered. There is no
+        har, entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

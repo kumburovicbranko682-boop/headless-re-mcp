@@ -313,6 +313,10 @@ class _FlowRecorder:
                 "host": host,
                 "status": getattr(resp, "status_code", None),
                 "content_type": content_type,
+                # The wire start time, so a HAR export can place the request in
+                # real time rather than all at the export instant. Falls back to
+                # now if mitmproxy did not stamp it.
+                "started_at": float(getattr(req, "timestamp_start", None) or time.time()),
             }
             if omitted:
                 entry["body_omitted"] = True
@@ -654,19 +658,19 @@ class ProxyBackend:
         inst = self._get(session_id)
         import json
 
+        from headless_re_mcp.backends.common.har import har_document, har_entry
+
         entries = [
-            {
-                "request": {"method": f.get("method"), "url": f.get("url")},
-                "response": {
-                    "status": f.get("status") or 0,
-                    "content": {"mimeType": f.get("content_type") or ""},
-                },
-            }
+            har_entry(
+                started_at=f.get("started_at"),
+                method=f.get("method"),
+                url=f.get("url"),
+                status=f.get("status"),
+                mime_type=f.get("content_type"),
+            )
             for f in inst.recorder.snapshot()
         ]
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
+        har = har_document(entries)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(har, ensure_ascii=False)
         encoded = text.encode("utf-8")

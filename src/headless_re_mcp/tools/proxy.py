@@ -58,8 +58,9 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List captured HTTP flows (method, url, status, content type).
 
-        Answers with flows (id, seq, method, url, host, status, content_type),
-        count, total, offset, has_more, and dropped. body_omitted is set on a
+        Answers with flows (id, seq, method, url, host, status, content_type,
+        started_at as an epoch time), count, total, offset, has_more, and
+        dropped. body_omitted is set on a
         row whose request/response body was over the retain cap. The list
         field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;
@@ -98,9 +99,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def proxy_export_har(session_id: str) -> dict[str, Any]:
         """Export captured flows to a HAR artifact.
 
-        Answers with path and entry_count. There is no har, output or
-        artifact field. path is the file; looking for har after a successful
-        export reads as a missing capture.
+        The file is a spec-valid HAR 1.2 log standard viewers (Chrome DevTools,
+        HAR analyzers) can open; each entry carries the required request,
+        response, timings and startedDateTime members, with fields the capture
+        did not retain left empty/`-1` rather than omitted. Answers with path
+        and entry_count. There is no har, output or artifact field. path is the
+        file; looking for har after a successful export reads as a missing
+        capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 

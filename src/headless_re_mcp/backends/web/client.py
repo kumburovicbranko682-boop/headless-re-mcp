@@ -456,6 +456,7 @@ class WebBackend:
             resource_type, type_truncated = _bounded_metadata(
                 params.get("type"), _MAX_METADATA_BYTES
             )
+            wall_time = params.get("wallTime")
             entry: JsonObject = {
                 "requestId": params.get("requestId"),
                 "url": url,
@@ -463,6 +464,9 @@ class WebBackend:
                 "resourceType": resource_type,
                 "status": None,
                 "mimeType": None,
+                # CDP wallTime is an epoch time; keep it so a HAR export can place
+                # the request in real time instead of all at the export instant.
+                "started_at": float(wall_time) if isinstance(wall_time, (int, float)) else None,
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
@@ -766,24 +770,24 @@ class WebBackend:
         return self._runner(handle).call(work)
 
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
+        from headless_re_mcp.backends.common.har import har_document, har_entry
+
         handle = self._get(session_id)
         with handle.lock:
             entries = [
-                {
-                    "request": {"method": e.get("method"), "url": e.get("url")},
-                    "response": {
-                        "status": e.get("status") or 0,
-                        "content": {"mimeType": e.get("mimeType") or ""},
-                    },
-                    "_resourceType": e.get("resourceType"),
-                }
+                har_entry(
+                    started_at=e.get("started_at"),
+                    method=e.get("method"),
+                    url=e.get("url"),
+                    status=e.get("status"),
+                    mime_type=e.get("mimeType"),
+                    extra={"_resourceType": e.get("resourceType")},
+                )
                 for e in handle.requests.values()
             ]
         import json
 
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
+        har = har_document(entries)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(har, ensure_ascii=False)
         truncated = False
