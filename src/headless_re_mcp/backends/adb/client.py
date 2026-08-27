@@ -86,6 +86,26 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _require_apk_zip(path: Path) -> None:
+    """Refuse a non-APK before pushing it to the device.
+
+    ``adb install`` transfers the file to the device and runs ``pm install``;
+    an APK is a zip, so a non-zip -- a truncated download, a path pointing at
+    the wrong file, a decoded resource mistaken for the rebuilt apk -- can only
+    fail after the whole transfer, and ``pm`` reports it as an opaque device
+    error rather than the parameter mistake it is. ``zipfile.is_zipfile`` reads
+    only the archive's tail (it does not decompress, so the check itself has no
+    zip-bomb exposure) and refuses it up front, the same fail-fast shape apktool
+    and apksigner use before launching their JVM.
+    """
+    if not zipfile.is_zipfile(path):
+        raise AdbError(
+            "invalid_params",
+            "input is not a valid APK (not a zip archive)",
+            path=str(path),
+        )
+
+
 def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> None:
     """Validate an adb forward endpoint, port range included.
 
@@ -270,7 +290,18 @@ def _apk_package_name(path: Path) -> str | None:
 
 def _pm_path(dev: Any, package: str) -> str | None:
     raw = _device_shell(dev, ["pm", "path", package], timeout=_ADB_PROBE_TIMEOUT_S)
-    for line in str(raw).splitlines():
+    text = str(raw)
+    # adbutils can hand back the adb host's own "error:" / "adb:" line as stdout
+    # rather than raising -- an offline device answers pm path with a host error,
+    # the same way it does getprop / pm list. Read as "no package: line" that
+    # would report a real install as installed=False and an uninstall as
+    # uninstalled=True: the verify never ran. Raise so install/uninstall report
+    # None ("could not verify"), the honest answer their handlers already emit
+    # when the probe cannot run. A genuinely absent package answers with empty
+    # output (exit 1, no text), which is not a host error and stays None.
+    if _is_host_error_output(text):
+        raise AdbError("backend_error", "pm path failed", output=text[:800])
+    for line in text.splitlines():
         line = line.strip()
         if line.startswith("package:"):
             return line.split(":", 1)[1].strip() or line
@@ -518,10 +549,16 @@ class AdbBackend:
         }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
-        dev = self._device(serial)
+        # Check the local APK before resolving the device: a missing file is a
+        # cheap local fact and the most common caller mistake, while _device
+        # reaches the adb server. Ordering it first means a bad path fails fast
+        # as not_found instead of being masked by a device error when the server
+        # or device is also unreachable.
         path = Path(apk_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
+        _require_apk_zip(path)
+        dev = self._device(serial)
         try:
             extra = _accepted_kwargs(
                 dev.install,
@@ -762,7 +799,10 @@ class AdbBackend:
         return {"remote": remote_path, "local": str(local_path), "size": pulled}
 
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:
-        dev = self._device(serial)
+        # Validate the local file (exists, stat, size cap) before resolving the
+        # device: all cheap local facts, and a bad path or oversized file should
+        # fail fast rather than after a device round-trip -- or be masked by a
+        # device error when the adb server is unreachable.
         path = Path(local_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "local file not found", path=str(path))
@@ -781,6 +821,7 @@ class AdbBackend:
                 size=size,
                 cap=cap,
             )
+        dev = self._device(serial)
         try:
             _call(dev.sync.push, str(path), remote_path, timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
