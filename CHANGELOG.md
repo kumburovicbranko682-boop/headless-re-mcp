@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（会话线程列表披露只返回了一页,并给出可翻页的 limit）
+
+- `GET /api/agent/threads` 把 `list_threads()`(按 `updated_at` 倒序,默认 100、最多 500)当裸列表
+  返回,既无 `count` 也无总数,而且端点根本没有 `limit` 参数——一个长期运行的服务保留上千个线程
+  (完成线程按 2000 条保留,活动线程从不裁剪),侧栏却只显示最新 100 个,读起来就是全部,而且无从
+  取回其余。`AgentStore` 新增 `count_threads()`;端点补上 `limit`(ge=1/le=500,与 missions 一
+  致)并新增 `count`、`total`、`truncated`(＝`total > 本页条数`),`total>本页`时调用方可提高 limit
+  取回更多。`threads` 列表本身不变。新增测试:存储层建 6 个线程 `count_threads()==6`,`limit=2` 分
+  页不改变计数;路由层 3 个线程默认 `total==3`、`truncated==False`,`limit=1` 时 `count==1`、
+  `total==3`、`truncated==True`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

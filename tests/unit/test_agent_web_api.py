@@ -139,6 +139,33 @@ def test_agent_message_limits_are_client_errors_not_incidents(
         assert "run model" in invalid_model.json()["detail"]
 
 
+def test_thread_list_says_when_it_shows_only_a_page(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The thread sidebar is a newest-first page; a partial one must say so.
+
+    A long-lived server retains thousands of threads but the list returns a
+    capped page. Without a total and a truncated flag the page reads as every
+    thread there is, and there was no limit to fetch the rest.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        for index in range(3):
+            client.post("/api/agent/threads", headers=headers, json={"title": f"t{index}"})
+
+        whole = client.get("/api/agent/threads", headers=headers).json()
+        assert whole["count"] == 3
+        assert whole["total"] == 3
+        assert whole["truncated"] is False
+
+        capped = client.get("/api/agent/threads?limit=1", headers=headers).json()
+        assert capped["count"] == 1
+        assert capped["total"] == 3
+        assert capped["truncated"] is True
+
+
 def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The unattended entry point, over the wire.
 
