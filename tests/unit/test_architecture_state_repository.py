@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -504,3 +505,158 @@ def test_analysis_service_accepts_repository_without_legacy_store(tmp_path: Path
     assert created.ok is True
     assert not hasattr(service, "_store")
     assert repository.list_unclean_sessions()[1] == 1
+
+
+def _freeze_repository_clocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stamp every new row with one instant so listings are decided by ties.
+
+    The two backends stamp timestamps in different modules -- the SQLite store
+    and the in-memory repository each call their own ``datetime.now`` -- so both
+    are frozen and the parametrized fixture is covered whichever it picked.
+    """
+    from datetime import UTC, datetime
+
+    from headless_re_mcp.core import repository as repo_module
+    from headless_re_mcp.core.store import sqlite_store as store_module
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+
+    monkeypatch.setattr(repo_module, "datetime", _Frozen)
+    monkeypatch.setattr(store_module, "datetime", _Frozen)
+
+
+def _page_ids(fetch: Any, *, id_key: str, total: int, page: int = 2) -> list[str]:
+    """Walk a paginated reader offset by offset and collect the ids it returns.
+
+    ``fetch(offset, limit)`` returns ``(rows, total)``. A reader without a
+    stable tie order returns overlapping or gap-ridden windows here, so the
+    concatenation stops matching a single unpaged read.
+    """
+    collected: list[str] = []
+    offset = 0
+    while offset < total:
+        rows, _ = fetch(offset, page)
+        if not rows:
+            break
+        collected.extend(str(row[id_key]) for row in rows)
+        offset += len(rows)
+    return collected
+
+
+def test_paged_artifacts_are_stable_when_created_at_ties(
+    repository: AnalysisRepository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tie on created_at must not let a page skip or repeat an artifact.
+
+    Artifacts registered in the same instant -- a coarse clock, or a burst of
+    captures from one tool call -- share created_at, and paging them by that
+    column alone left the order among them undefined across the LIMIT/OFFSET
+    windows. id breaks the tie, matching the SQLite and in-memory backends to
+    each other and to a single unpaged read.
+    """
+    _freeze_repository_clocks(monkeypatch)
+    session_id = "artifact-ties"
+    repository.note_session_created(
+        "fixture.exe",
+        Result(ok=True, data={"session": {"id": session_id, "state": "created"}}),
+    )
+    blob = tmp_path / "artifact.bin"
+    blob.write_bytes(b"tie")
+    ids = [
+        str(
+            repository.register_artifact(
+                session_id=session_id,
+                kind=f"dump-{index}",
+                path=blob,
+                sha256="b" * 64,
+                source=f"src-{index}",
+            )["id"]
+        )
+        for index in range(7)
+    ]
+
+    full = repository.list_artifacts(session_id, offset=0, limit=50)
+    full_ids = [str(item["id"]) for item in full["artifacts"]]
+    paged_ids = _page_ids(
+        lambda off, lim: (
+            repository.list_artifacts(session_id, offset=off, limit=lim)["artifacts"],
+            full["total"],
+        ),
+        id_key="id",
+        total=full["total"],
+    )
+
+    assert full["total"] == len(ids)
+    assert full_ids == sorted(ids, reverse=True), "ties resolve to a defined id order"
+    assert paged_ids == full_ids, "paging must not skip or repeat a tied artifact"
+
+
+def test_paged_audit_is_stable_when_at_ties(
+    repository: AnalysisRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tie on `at` must page the audit log without skipping or repeating.
+
+    The audit trim already deletes by ``at DESC, id DESC``; the reader now reads
+    the same way, so what a paged reader sees is exactly what the trim keeps.
+    """
+    _freeze_repository_clocks(monkeypatch)
+    session_id = "audit-ties"
+    repository.note_session_created(
+        "fixture.exe",
+        Result(ok=True, data={"session": {"id": session_id, "state": "created"}}),
+    )
+    for index in range(7):
+        repository.append_audit(
+            session_id=session_id,
+            action=f"tie.{index}",
+            params_summary={"n": index},
+            ok=True,
+            result_summary={"n": index},
+        )
+
+    full = repository.list_audit(session_id, offset=0, limit=50)
+    full_ids = [str(item["id"]) for item in full["entries"]]
+    paged_ids = _page_ids(
+        lambda off, lim: (
+            repository.list_audit(session_id, offset=off, limit=lim)["entries"],
+            full["total"],
+        ),
+        id_key="id",
+        total=full["total"],
+    )
+
+    assert full_ids == sorted(full_ids, reverse=True), "ties resolve to a defined id order"
+    assert paged_ids == full_ids, "paging must not skip or repeat a tied audit entry"
+
+
+def test_paged_unclean_sessions_are_stable_when_updated_at_ties(
+    repository: AnalysisRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The crash-recovery listing is exactly when every row shares a timestamp.
+
+    ``mark_unclean_open_sessions`` stamps a whole batch with one updated_at on
+    restart, so the tool a caller reaches for right after a crash paged a set of
+    fully-tied rows. id breaks the tie so the pages neither skip nor repeat.
+    """
+    _freeze_repository_clocks(monkeypatch)
+    ids = [f"s{index}" for index in range(7)]
+    for session_id in ids:
+        repository.note_session_created(
+            "fixture.exe",
+            Result(ok=True, data={"session": {"id": session_id, "state": "created"}}),
+        )
+
+    full_rows, total = repository.list_unclean_sessions(offset=0, limit=50)
+    full_ids = [str(row["id"]) for row in full_rows]
+    paged_ids = _page_ids(
+        lambda off, lim: repository.list_unclean_sessions(offset=off, limit=lim),
+        id_key="id",
+        total=total,
+    )
+
+    assert total == len(ids)
+    assert full_ids == sorted(ids, reverse=True), "ties resolve to a defined id order"
+    assert paged_ids == full_ids, "paging must not skip or repeat a tied session"

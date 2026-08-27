@@ -367,6 +367,10 @@ class SessionStore:
         of them, an unpaged reply was 993 KiB -- returned by the very tool a
         caller reaches for right after a crash.
         """
+        # id breaks ties on updated_at. mark_unclean_open_sessions stamps every
+        # session it flips with one timestamp, so a crash leaves a whole batch
+        # tied -- exactly the rows this lists -- and paging them by updated_at
+        # alone skipped and repeated sessions across the windows.
         window = max(1, min(int(limit), 1000))
         start = max(0, int(offset))
         with self._lock, self._connect() as conn:
@@ -375,7 +379,7 @@ class SessionStore:
             )
             rows = conn.execute(
                 "SELECT * FROM sessions WHERE closed_cleanly=0"
-                " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 (window, start),
             ).fetchall()
             return [dict(row) for row in rows], total
@@ -448,6 +452,11 @@ class SessionStore:
         }
 
     def list_artifacts(self, session_id: str | None = None, *, offset: int = 0, limit: int = 50) -> JsonObject:
+        # id breaks ties on created_at. Without it the order among artifacts
+        # registered in the same instant is undefined across the LIMIT/OFFSET
+        # windows this pages in, so a tie straddling a page boundary dropped a
+        # row from one page and repeated another on the next -- and a coarse
+        # clock or a burst of captures makes those ties ordinary.
         limit = max(1, min(int(limit), 256))
         offset = max(0, int(offset))
         with self._lock, self._connect() as conn:
@@ -456,13 +465,13 @@ class SessionStore:
                     "SELECT COUNT(*) AS c FROM artifacts WHERE session_id=?", (session_id,)
                 ).fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM artifacts WHERE session_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM artifacts WHERE session_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
             else:
                 total = conn.execute("SELECT COUNT(*) AS c FROM artifacts").fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM artifacts ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM artifacts ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         items = [dict(row) for row in rows]
@@ -525,6 +534,11 @@ class SessionStore:
         offset: int = 0,
         limit: int = 50,
     ) -> JsonObject:
+        # id breaks ties on `at`, so the page window is stable and -- the point
+        # the trim above already assumes -- reads in the same order the trim
+        # deletes by (`at DESC, id DESC`). Without it the reader and the trim
+        # disagreed on which rows sit at the retention boundary, so a paged
+        # audit could skip or repeat an entry the moment two shared a timestamp.
         limit = max(1, min(int(limit), 256))
         offset = max(0, int(offset))
         with self._lock, self._connect() as conn:
@@ -533,13 +547,13 @@ class SessionStore:
                     "SELECT COUNT(*) AS c FROM audit WHERE session_id=?", (session_id,)
                 ).fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM audit WHERE session_id=? ORDER BY at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM audit WHERE session_id=? ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
             else:
                 total = conn.execute("SELECT COUNT(*) AS c FROM audit").fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM audit ORDER BY at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM audit ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         items = []

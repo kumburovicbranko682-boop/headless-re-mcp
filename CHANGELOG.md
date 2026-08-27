@@ -49,7 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
-### 修复（device.install/uninstall 把无法核实误报成明确成败）
+### 修复（制品/审计/未清理会话分页在时间戳并列时不再跳行重行）
+
+- 会话存储的三个分页读取器——`list_artifacts`、`list_audit`、`list_unclean_sessions`——此前只按
+  `created_at` / `at` / `updated_at` 降序排序，没有第二排序键：同一瞬间产生的多行（粗粒度时钟、
+  一次工具调用登记多个制品，尤其是 `mark_unclean_open_sessions` 在重启时给**整批**未清理会话盖
+  同一个 `updated_at`——崩溃恢复后调用方第一个查的就是这张全并列的表）在 LIMIT/OFFSET 翻页之间
+  顺序未定义，页边界正好落在并列组里时就会跳过一行、重复另一行。同文件里的审计裁剪本来就按
+  `at DESC, id DESC` 删除（注释还写着「与 list_audit 读取顺序一致」），读取器却没带 `id`，裁剪与
+  读取在保留边界上并不一致。现三个读取器都补上 `id DESC` 第二键，与各自的裁剪查询对齐；内存版
+  仓库同步加同一 tiebreaker，不再依赖插入顺序，两个后端返回同一顺序。新增三条对 memory/sqlite
+  双后端参数化的回归测试：冻结时钟制造全并列后，全量读取必须等于按 id 降序的确定顺序，且逐页
+  拼接必须与单次全量读取完全一致（修复前六个用例全部失败）。
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
   三态——null 表示复核跑不起来。但 `_pm_path` 只找 `package:` 行，没做其余 adb 读取（getprop /

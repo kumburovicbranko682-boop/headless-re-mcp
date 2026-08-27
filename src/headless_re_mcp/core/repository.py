@@ -612,7 +612,10 @@ class InMemoryAnalysisRepository:
             items = [dict(item) for item in self._artifacts.values()]
         if session_id is not None:
             items = [item for item in items if item["session_id"] == session_id]
-        items.sort(key=lambda item: str(item["created_at"]), reverse=True)
+        # id breaks ties on created_at so a paged listing cannot skip or repeat
+        # an artifact when several share the instant, and so this matches the
+        # SQLite backend's order rather than falling back to insertion order.
+        items.sort(key=lambda item: (str(item["created_at"]), str(item["id"])), reverse=True)
         total = len(items)
         page = items[offset : offset + limit]
         return {
@@ -708,7 +711,12 @@ class InMemoryAnalysisRepository:
     ) -> tuple[list[JsonObject], int]:
         with self._lock:
             items = [dict(item) for item in self._sessions.values() if not item["closed_cleanly"]]
-        ordered = sorted(items, key=lambda item: str(item["updated_at"]), reverse=True)
+        # id breaks ties on updated_at, matching the SQLite backend: a crash
+        # marks a whole batch of sessions unclean with one timestamp, and paging
+        # that batch by updated_at alone would skip and repeat rows.
+        ordered = sorted(
+            items, key=lambda item: (str(item["updated_at"]), str(item["id"])), reverse=True
+        )
         window = max(1, min(int(limit), 1000))
         start = max(0, int(offset))
         return ordered[start : start + window], len(ordered)
@@ -758,7 +766,9 @@ class InMemoryAnalysisRepository:
             entries = [dict(item) for item in self._audit]
         if session_id is not None:
             entries = [item for item in entries if item["session_id"] == session_id]
-        entries.sort(key=lambda item: str(item["at"]), reverse=True)
+        # id breaks ties on `at` so a paged audit is stable and matches the
+        # SQLite backend rather than depending on append order.
+        entries.sort(key=lambda item: (str(item["at"]), str(item["id"])), reverse=True)
         total = len(entries)
         page = entries[offset : offset + limit]
         return {
