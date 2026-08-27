@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 新增（JS/WASM 静态面用真实 webcrack + wabt 端到端 Gate）
+
+- webcrack（JS 去混淆/反打包）与 wabt（WASM 反汇编）此前只有浅覆盖且在无 CLI 的机器上整条跳过：
+  原 `test_web_re_gate.py` 里 `js.deobfuscate` 只断言"回来的是非空字符串"、`wasm.wat` 拿一枚空模块
+  跑、`wasm.info`（wasm-objdump）根本没测，谁也没证明工具真的变换了什么。新增
+  `tests/integration/test_jsre_static_gate.py`，用已提交夹具驱动真实工具并断言可核对的还原内容：
+  `js.deobfuscate` 把 obfuscator.io 风格的 `obfuscated_sample.js` 还原成可读代码——`\x48\x33..`
+  转义解回字面量 `"H3adl3ss"`、`["push"]` 方括号成员访问变点号、十六进制 `0x1a4` 转十进制 `420`——
+  且 `js.beautify` 走同一条 unminify、`js.unpack_bundle` 对非 bundle 输入如实报 `backend_error` 而
+  不是把空产物树当成功；`wasm.wat` 经 `wasm2wat` 还原出模块文本（导出的 `add`/`checksum`、内存与
+  全局），`wasm.info` 经 `wasm-objdump -h -x` 列出段表（Type/Function/Memory/Global/Export/Code/Data）、
+  导出符号与内嵌数据串 `H3adl3ss-wasm`（新增 158 字节的 `gate_module.wasm` 夹具及其 `.wat` 源）。
+  守卫一并钉死：非 `\0asm` 输入回 `invalid_params`、超过 16 MiB 输入回 `too_large`、既无配置路径也
+  不在 PATH 上时降级为 `capability_unavailable` 而非把输入当成问题。每种能力在缺对应 CLI 时各自如实
+  跳过，skip 不等于 pass。在一台装了 webcrack 2.16（Node 22）与 wabt 1.0.41 的 Linux 上跑通 8/8，
+  原 web gate 里那两条 webcrack/wabt 断言也随之从 skip 转为真跑。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

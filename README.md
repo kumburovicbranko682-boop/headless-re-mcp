@@ -386,15 +386,20 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 **Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。
 
-当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
+当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard + webcrack/wabt 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 88 passed / 7 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
-- 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
-  wabt（1）、以及 2 个有文档说明的故意跳过
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、
+  JS/WASM 静态面用真实 webcrack 与 wabt 端到端：`js.deobfuscate` 把 obfuscator.io 风格样本还原成
+  可读代码（`\x48\x33..` 转义解回字面量 `"H3adl3ss"`、方括号成员访问变点号、十六进制字面量转十进制），
+  `js.beautify` 同源、`js.unpack_bundle` 对非 bundle 如实报错不伪造空产物；`wasm.wat` 用 `wasm2wat`
+  还原出导出的 `add`/`checksum` 与内存/全局，`wasm.info` 用 `wasm-objdump` 列出段表、导出符号与内嵌
+  数据串；缺工具时降级为 `capability_unavailable` 而非当成扫过）
+- 7 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、以及 2 个有文档说明的故意跳过
+  （webcrack 与 wabt 这两条已由 `test_jsre_static_gate.py` 用真实工具端到端覆盖，不再计入 skip）
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
   结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
   校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。
