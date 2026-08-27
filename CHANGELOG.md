@@ -221,6 +221,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`web.scripts` 无法只看运行时生成脚本，也不能按 URL 定位**。给它加上 `dynamic_only` 与 `url_filter`：前者只留
   `dynamic=True` 的脚本（`eval`/`new Function`/注入 `<script>`，其 url 通常为空，正是加壳器解包后 payload 的落点，url 过滤够不着），
   后者对 url 做大小写不敏感子串匹配；二者都在分页前应用，于是 `total` 即匹配数——在解析了成百上千脚本的页面上直接锁定目标。
+- **`proxy.start` 同样不限并发实例，跨会话可无界累积线程与抓包缓冲**。每个活的代理都占一个事件循环线程、一个绑定端口，并可
+  保留至多 `_MAX_RETAINED_BYTES`（64 MiB）的抓包体；单会话有「一会话一代理」和端口占用检查约束，但总数无界——一个在多会话
+  间反复 `proxy.start` 的调用方能攒下 N 个线程和 N×64 MiB。仿照刚给 web 加的并发上限，加上 `_MAX_PROXIES`（8）：持锁、在
+  绑定端口/启动线程之前校验，超限返回 `invalid_state`（附 `cap`/`held`），提示先 `proxy.stop`。被拒的 start 绝不绑定端口或泄漏预留。
 - **`web.open` 不限并发，浏览器会话可无界堆叠拖垮宿主**。每个 `web.open` 都持有一个活的 Chromium（独立进程树、数百 MB
   内存），但后端从不限制同时打开的会话数——一个忘记 `web.close` 的调用方或跑飞的 agent 循环能一直 fork 浏览器直到宿主被
   耗尽。仿照 adb 后端限制并发端口转发的做法，加上 `_MAX_WEB_SESSIONS`（8）：在持锁、且在 import playwright、启动浏览器

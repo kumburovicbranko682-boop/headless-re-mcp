@@ -29,7 +29,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Start an HTTP(S) interception proxy bound to this session.
 
-        Answers with running, host, port and endpoint. There is no ok,
+        Each proxy holds a thread, a bound port, and captured-body buffers; at
+        most 8 may run at once, so a start past that ceiling is invalid_state
+        (stop one with proxy.stop first) rather than an accumulating background
+        thread. Answers with running, host, port and endpoint. There is no ok,
         started or url field.
         """
         return _dump(analysis.proxy_start(session_id, host=host, port=port))

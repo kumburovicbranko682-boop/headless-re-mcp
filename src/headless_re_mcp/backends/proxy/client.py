@@ -28,6 +28,13 @@ from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
 _REPLAY_WAIT_S = 15.0
+# Each live proxy runs its own event-loop thread, binds a port, and may retain
+# up to _MAX_RETAINED_BYTES of captured bodies. One-per-session and the port
+# check bound a single session, but nothing bounded the total, so an agent that
+# opened proxies across many sessions could hold N * 64 MiB and N threads. Cap
+# the concurrent count the way the web backend caps live browsers; a start past
+# the ceiling is invalid_state, not a silently accumulating background thread.
+_MAX_PROXIES = 8
 # The ring is count-capped, but each slot can still hold a multi-megabyte
 # request or response. Two thousand of those is the overnight OOM the count
 # cap was supposed to prevent.
@@ -564,6 +571,15 @@ class ProxyBackend:
                         port=port,
                         owner_session_id=owner,
                     )
+            # Bound the live proxy count before reserving, so a refused start
+            # never binds a port or spins a thread. Mirrors the web session cap.
+            if len(self._instances) >= _MAX_PROXIES:
+                raise ProxyError(
+                    "invalid_state",
+                    "too many running proxies; stop one before starting another",
+                    cap=_MAX_PROXIES,
+                    held=len(self._instances),
+                )
             # Reserve before listen: two workers racing start() used to each
             # bind a port, and only the last write to this dict was tracked.
             inst = _ProxyInstance(host, port)

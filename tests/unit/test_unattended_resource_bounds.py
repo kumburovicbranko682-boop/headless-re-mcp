@@ -490,6 +490,39 @@ class TestConcurrentStartDoesNotLeakABackend:
             backend.start("s", port=18080)
         assert backend._instances == {}
 
+    def test_start_past_the_ceiling_is_refused_before_binding(
+        self, monkeypatch: Any
+    ) -> None:
+        """The Nth+1 proxy must fail closed, not bind a port and spin a thread.
+
+        Each live proxy costs a thread, a port, and up to _MAX_RETAINED_BYTES of
+        buffers; one-per-session bounds a session but not the total. Stubbing the
+        listen keeps the cap the only thing under test.
+        """
+        from headless_re_mcp.backends.proxy.client import (
+            _MAX_PROXIES,
+            ProxyBackend,
+            ProxyError,
+            _ProxyInstance,
+        )
+
+        monkeypatch.setattr(_ProxyInstance, "start", lambda self, timeout=15.0: None)
+        monkeypatch.setattr(_ProxyInstance, "stop", lambda self: None)
+        backend = ProxyBackend()
+        backend._check_available = lambda: None  # type: ignore[method-assign]
+        for index in range(_MAX_PROXIES):
+            backend.start(f"s{index}", port=18080 + index)
+        assert len(backend._instances) == _MAX_PROXIES
+        with pytest.raises(ProxyError) as caught:
+            backend.start("overflow", port=19000)
+        assert caught.value.code == "invalid_state"
+        assert caught.value.details["cap"] == _MAX_PROXIES
+        assert caught.value.details["held"] == _MAX_PROXIES
+        # A refused start must not bind a port or leak a reservation.
+        assert "overflow" not in backend._instances
+        assert len(backend._instances) == _MAX_PROXIES
+        backend.close_all()
+
     def test_a_second_web_open_is_refused_while_the_first_is_reserved(self) -> None:
         from headless_re_mcp.backends.web.client import _OPENING, WebBackend, WebError
 
