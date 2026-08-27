@@ -11,6 +11,7 @@ silently turn a bound into either an outage or an unbounded directory.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 from pathlib import Path
@@ -63,6 +64,41 @@ def test_available_memory_returns_none_on_a_negative_reading(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(os, "sysconf", lambda name: -1, raising=False)
+    assert limits.available_memory_bytes() is None
+
+
+def _fake_windll(probe: object) -> object:
+    class _Kernel32:
+        def __init__(self) -> None:
+            # An instance attribute, not a class attribute, so accessing it does
+            # not bind ``self`` the way a plain function on the class would.
+            self.GlobalMemoryStatusEx = probe
+
+    class _WinDll:
+        kernel32 = _Kernel32()
+
+    return _WinDll()
+
+
+def test_available_memory_reads_avail_phys_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def probe(ref: object) -> int:
+        # byref keeps a reference to the original structure on ._obj; the real
+        # GlobalMemoryStatusEx fills it in the same way before returning success.
+        ref._obj.ullAvailPhys = 4096  # type: ignore[attr-defined]
+        return 1
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "windll", _fake_windll(probe), raising=False)
+    assert limits.available_memory_bytes() == 4096
+
+
+def test_available_memory_returns_none_when_the_windows_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "windll", _fake_windll(lambda ref: 0), raising=False)
     assert limits.available_memory_bytes() is None
 
 
@@ -131,6 +167,19 @@ def test_prune_is_a_noop_on_a_path_that_is_not_a_directory(tmp_path: Path) -> No
     plain = tmp_path / "file"
     plain.write_bytes(b"x")
     assert limits.prune_capped_dir(plain, max_entries=1, max_bytes=1) == 0
+
+
+def test_prune_returns_zero_when_listing_the_directory_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "captures"
+    root.mkdir()
+
+    def boom(self: Path) -> list[Path]:
+        raise OSError("listing denied")
+
+    monkeypatch.setattr(Path, "iterdir", boom)
+    assert limits.prune_capped_dir(root, max_entries=1, max_bytes=1) == 0
 
 
 def test_prune_evicts_the_oldest_until_the_entry_cap_holds(tmp_path: Path) -> None:
@@ -240,6 +289,35 @@ def test_dir_size_sums_files_and_skips_nested_directories(tmp_path: Path) -> Non
     # Below the file cap, so the walk visits every entry: the two top-level
     # files and the nested one sum to 60, while the directory entries add zero.
     assert limits._dir_size(sub) == 60
+
+
+def test_dir_size_skips_a_child_that_raises_while_being_measured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sub = tmp_path / "tree"
+    sub.mkdir()
+    (sub / "a.bin").write_bytes(b"x" * 10)
+
+    def boom(self: Path) -> bool:
+        raise OSError("stat denied")
+
+    monkeypatch.setattr(Path, "is_file", boom)
+    # is_file() raises for the only child, so the per-child guard skips it and
+    # the walk reports zero rather than propagating the error.
+    assert limits._dir_size(sub) == 0
+
+
+def test_dir_size_returns_the_partial_total_when_the_walk_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sub = tmp_path / "tree"
+    sub.mkdir()
+
+    def boom(self: Path, pattern: str) -> list[Path]:
+        raise OSError("walk denied")
+
+    monkeypatch.setattr(Path, "rglob", boom)
+    assert limits._dir_size(sub) == 0
 
 
 def test_remove_entry_deletes_a_file(tmp_path: Path) -> None:
