@@ -57,6 +57,36 @@ class _HandleNoBody:
     cdp = _CdpNoBody()
 
 
+class _CdpWithRequestBody:
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "Network.getRequestPostData":
+            return {"postData": '{"user":"admin","pw":"hunter2"}'}
+        return {"body": "response-text", "base64Encoded": False}
+
+
+class _CdpRequestBodyGone:
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "Network.getRequestPostData":
+            raise RuntimeError("No post data available for the request")
+        return {"body": "response-text", "base64Encoded": False}
+
+
+class _HandleWithPost:
+    lock = Lock()
+    requests = {
+        "r1": {"requestId": "r1", "url": "https://x", "method": "POST", "has_post_data": True}
+    }
+    cdp = _CdpWithRequestBody()
+
+
+class _HandlePostGone:
+    lock = Lock()
+    requests = {
+        "r1": {"requestId": "r1", "url": "https://x", "method": "POST", "has_post_data": True}
+    }
+    cdp = _CdpRequestBodyGone()
+
+
 def test_web_network_get_names_body_truncated_not_truncated(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -110,3 +140,57 @@ def test_web_network_get_keeps_the_documented_shape_when_the_body_is_missing(
     assert list(tmp_path.iterdir()) == []
     doc = _tool_docstring("web.network.get")
     assert "body_error" in doc
+
+
+def test_web_network_get_returns_the_request_body_when_one_was_posted(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The request payload -- what was POSTed -- must ride along with the reply.
+
+    Measured: has_post_data set -> request_body holds the posted JSON,
+    request_body_truncated False, alongside the response body. The response
+    body alone hides the substance of an API call.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _HandleWithPost())
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.network_get("s", "r1", tmp_path)
+    assert payload["request_body"] == '{"user":"admin","pw":"hunter2"}'
+    assert payload["request_body_truncated"] is False
+    assert payload["body"] == "response-text"
+    doc = _tool_docstring("web.network.get")
+    assert "request_body" in doc
+
+
+def test_web_network_get_discloses_when_the_request_body_was_already_dropped(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A body CDP has evicted must be disclosed, not silently omitted.
+
+    Measured: has_post_data set but getRequestPostData errors ->
+    request_body_error explains why, while the response body still comes back.
+    We told the caller a body existed, so its disappearance must be accounted for.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _HandlePostGone())
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.network_get("s", "r1", tmp_path)
+    assert "No post data" in payload["request_body_error"]
+    assert "request_body" not in payload
+    assert payload["body"] == "response-text"
+
+
+def test_web_network_get_adds_no_request_body_fields_for_a_bodyless_request(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A GET with no body must not sprout request_body keys.
+
+    Measured: entry without has_post_data -> no request_body, no
+    request_body_error, so their absence cleanly means "no request body".
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _Handle())
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.network_get("s", "r1", tmp_path)
+    assert "request_body" not in payload
+    assert "request_body_error" not in payload

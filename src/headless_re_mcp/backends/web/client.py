@@ -473,6 +473,13 @@ class WebBackend:
                 "status": None,
                 "mimeType": None,
             }
+            # Flag that the request carried a body (a POST/PUT payload). The list
+            # otherwise shows method and url but nothing that a body was sent, so
+            # "what was actually POSTed" -- the substance of API RE -- is invisible
+            # and network.get can then fetch it on demand rather than erroring on
+            # every bodyless GET.
+            if req.get("hasPostData"):
+                entry["has_post_data"] = True
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
             with handle.lock:
@@ -607,12 +614,52 @@ class WebBackend:
             "dropped": dropped,
         }
 
+    def _request_body(
+        self, handle: _WebSession, request_id: str, entry: JsonObject, artifact_dir: Path
+    ) -> JsonObject:
+        """Fetch and spill the request body, when the request carried one.
+
+        The response body is only half of an HTTP exchange; for API RE the
+        request payload -- what the app actually sent -- matters just as much,
+        and the proxy backend already surfaces it. Gated on has_post_data so a
+        bodyless GET is not sent to a CDP call that would only error. CDP returns
+        request post data as a plain string (no base64 flag, unlike the response
+        body), so a binary payload is spilled as CDP hands it over.
+        """
+        if not entry.get("has_post_data"):
+            return {}
+        try:
+            resp = self._runner(handle).call(
+                lambda: handle.cdp.send("Network.getRequestPostData", {"requestId": request_id})
+            )
+            data = resp.get("postData", "")
+        except Exception as exc:  # noqa: BLE001
+            # hasPostData was set at capture time, but CDP retains request bodies
+            # only briefly; once evicted getRequestPostData errors. Disclose why
+            # rather than silently omit a body we already told the caller exists.
+            return {"request_body_error": str(exc)}
+        if not isinstance(data, str):
+            data = str(data)
+        inline, spill, cut = _spill_text(
+            data,
+            artifact_dir=artifact_dir,
+            filename=f"reqbody-{uuid4().hex}.bin",
+            kind="request body",
+        )
+        extra: JsonObject = {"request_body": inline, "request_body_truncated": cut}
+        if spill is not None:
+            extra["request_body_path"] = str(spill)
+        return extra
+
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
             entry = handle.requests.get(request_id)
         if entry is None:
             raise WebError("not_found", "unknown request id", request_id=request_id)
+        # Fetch the request payload once, up front, so every return path below --
+        # text body, binary body, or no body -- carries it uniformly.
+        req_extra = self._request_body(handle, request_id, entry, artifact_dir)
         body = ""
         base64_encoded = False
         try:
@@ -628,6 +675,7 @@ class WebBackend:
             # reading result["body"] does not hit a missing key on this path.
             return {
                 **entry,
+                **req_extra,
                 "body": "",
                 "base64_encoded": False,
                 "body_truncated": False,
@@ -645,7 +693,11 @@ class WebBackend:
             try:
                 raw = base64.b64decode(body, validate=False)
             except (ValueError, binascii.Error) as exc:
-                return {**entry, "body_error": f"response body was not valid base64: {exc}"}
+                return {
+                    **entry,
+                    **req_extra,
+                    "body_error": f"response body was not valid base64: {exc}",
+                }
             spill_path = _spill_bytes(
                 raw,
                 artifact_dir=artifact_dir,
@@ -653,6 +705,7 @@ class WebBackend:
                 kind="response body",
             )
             result = dict(entry)
+            result.update(req_extra)
             result["body"] = ""
             result["body_truncated"] = False
             result["body_path"] = str(spill_path)
@@ -666,6 +719,7 @@ class WebBackend:
             kind="response body",
         )
         result = dict(entry)
+        result.update(req_extra)
         result["body"] = inline
         result["body_truncated"] = cut
         if spill is not None:
