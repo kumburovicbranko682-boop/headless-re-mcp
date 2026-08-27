@@ -134,6 +134,23 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_symbols(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.entrypoints")
+    def r2_entrypoints(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Where execution can begin, as radare2 resolved it.
+
+        Runs ``iej``. Answers with items, each carrying vaddr, paddr, baddr (the
+        image base), type (``program`` for the real entry, plus ``init``/``fini``
+        constructors where the format has them) and address (va/rva/module),
+        plus count. The ``program`` entry is the first instruction that runs and
+        the natural seed for r2.disasm on a stripped target with no named
+        functions. Read items_truncated, items_total and items_limit when the
+        list filled the cap (4096). There is no entrypoints, truncated or
+        has_more field.
+        """
+        return _dump(analysis.r2_entrypoints(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,

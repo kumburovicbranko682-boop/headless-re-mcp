@@ -256,6 +256,35 @@ def test_r2_service_lists_the_symbol_table() -> None:
 
 
 @pytest.mark.integration
+def test_r2_service_lists_the_program_entrypoint() -> None:
+    """r2.entrypoints must name where execution begins and map it.
+
+    On a stripped target the program entry is the only address an agent can
+    seed r2.disasm from, so the reader must decode at least the ``program``
+    entry and hand it back address-mapped. The committed PE has exactly such an
+    entry. skip != pass when r2 is absent; the in-tree PE keeps it runnable.
+    """
+    if not R2Client().available:
+        pytest.skip("radare2/rizin not installed — live Gate not run (skip≠pass)")
+    fixture = _gate_fixture()
+    service = AnalysisService(Settings.load())
+    created = service.create_session(str(fixture))
+    assert created.ok and created.data is not None
+    session_id = str(created.data["session"]["id"])
+    try:
+        entries = service.r2_entrypoints(session_id, timeout=60.0)
+        assert entries.ok and entries.data is not None, entries.error
+        assert entries.data.get("parsed") is True
+        rows = entries.data.get("items") or []
+        assert rows, "no entrypoints decoded"
+        program = next((row for row in rows if row.get("type") == "program"), None)
+        assert program is not None, [row.get("type") for row in rows]
+        _assert_mapped(program.get("address"))
+    finally:
+        service.close_session(session_id)
+
+
+@pytest.mark.integration
 def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
     """A native ELF must open as a session and analyse through r2 -- the portable
     backend's whole point on non-Windows targets.
@@ -364,6 +393,18 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         # The symbol table names functions the export table does not: that
         # superset is the whole reason r2.symbols exists beside r2.exports.
         assert func_names - exported_names, (sorted(func_names), sorted(exported_names))
+
+        # The program entrypoint resolves on the native target too, carrying the
+        # architecture: an ELF always has a program entry (_start), mapped.
+        entries = service.r2_entrypoints(session_id, timeout=60.0)
+        assert entries.ok and entries.data is not None, entries.error
+        assert entries.data.get("parsed") is True
+        assert entries.data.get("architecture") == expect_arch
+        entry_rows = entries.data.get("items") or []
+        program = next((row for row in entry_rows if row.get("type") == "program"), None)
+        assert program is not None, [row.get("type") for row in entry_rows]
+        _assert_mapped(program.get("address"))
+        assert program["address"].get("architecture") == expect_arch, program
 
         # xrefs must resolve on the native target too: main calls re_mcp_triple,
         # so a "to" edge into the function has to come back with mapped endpoints.
