@@ -406,6 +406,83 @@ def _is_android_package(path: Path) -> bool:
         return False
 
 
+_ZIP_EOCD_MAGIC = b"PK\x05\x06"
+_APK_SIG_BLOCK_MAGIC = b"APK Sig Block 42"
+_APK_SIG_SCHEME_V2_ID = 0x7109871A
+_APK_SIG_SCHEME_V3_ID = 0xF05368C0
+# v3.1 (key-rotation) rides the same v3 verifier, so it counts as v3-signed.
+_APK_SIG_SCHEME_V31_ID = 0x1B93AD61
+_MAX_APK_SIG_BLOCK_BYTES = 32 * 1024 * 1024
+
+
+def _apk_signing_schemes(path: Path) -> tuple[bool, bool]:
+    """Best-effort ``(signed_v2, signed_v3)`` from the APK Signing Block.
+
+    v2/v3 signatures live in the APK Signing Block between the ZIP entries and
+    the central directory, not as ``META-INF/*.RSA`` files -- so an APK signed
+    only with the modern schemes has ``signed_v1`` False yet is signed.
+    Reporting just the v1 marker reads a valid modern package as unsigned,
+    which a caller deciding whether an APK was tampered with reads exactly
+    wrong. stdlib-only to match the rest of this probe, and never raises: a
+    truncated or hostile block reads as "no v2/v3 detected" rather than failing
+    to open the package. ZIP64 archives are skipped (reported as no v2/v3).
+    """
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            if size < 22:
+                return False, False
+            tail_len = min(size, 22 + 0xFFFF)
+            stream.seek(size - tail_len)
+            tail = stream.read(tail_len)
+            eocd = tail.rfind(_ZIP_EOCD_MAGIC)
+            if eocd < 0 or eocd + 20 > len(tail):
+                return False, False
+            cd_offset = int.from_bytes(tail[eocd + 16 : eocd + 20], "little")
+            # 0xFFFFFFFF is the ZIP64 sentinel; not worth parsing for a probe.
+            if cd_offset == 0xFFFFFFFF or not 32 <= cd_offset <= size:
+                return False, False
+            stream.seek(cd_offset - 24)
+            trailer = stream.read(24)
+            if len(trailer) != 24 or trailer[8:24] != _APK_SIG_BLOCK_MAGIC:
+                return False, False
+            block_size = int.from_bytes(trailer[:8], "little")
+            if not 24 <= block_size <= _MAX_APK_SIG_BLOCK_BYTES:
+                return False, False
+            block_start = cd_offset - 8 - block_size
+            if block_start < 0:
+                return False, False
+            stream.seek(block_start)
+            # The size is written twice (before the pairs and again before the
+            # magic); a mismatch means this is not a real signing block.
+            if int.from_bytes(stream.read(8), "little") != block_size:
+                return False, False
+            pairs = stream.read(block_size - 24)
+    except OSError:
+        return False, False
+    return _scan_apk_sig_ids(pairs)
+
+
+def _scan_apk_sig_ids(pairs: bytes) -> tuple[bool, bool]:
+    """Walk the signing block's id-value pairs, flagging the v2 and v3 ids."""
+    v2 = v3 = False
+    off = 0
+    total = len(pairs)
+    while off + 12 <= total:
+        length = int.from_bytes(pairs[off : off + 8], "little")
+        off += 8
+        if length < 4 or length > total - off:
+            break
+        pair_id = int.from_bytes(pairs[off : off + 4], "little")
+        if pair_id == _APK_SIG_SCHEME_V2_ID:
+            v2 = True
+        elif pair_id in (_APK_SIG_SCHEME_V3_ID, _APK_SIG_SCHEME_V31_ID):
+            v3 = True
+        off += length
+    return v2, v3
+
+
 def describe_apk(path: Path) -> dict[str, Any]:
     """Read cheap identity facts from the package without a decompiler.
 
@@ -428,6 +505,7 @@ def describe_apk(path: Path) -> dict[str, Any]:
             if name.startswith("lib/") and len(parts := name.split("/")) >= 3 and parts[1]
         }
     )
+    signed_v2, signed_v3 = _apk_signing_schemes(path)
     return {
         "apk": {
             "native_abis": abis,
@@ -437,6 +515,10 @@ def describe_apk(path: Path) -> dict[str, Any]:
                 name.startswith("META-INF/") and name.endswith((".RSA", ".DSA", ".EC"))
                 for name in names
             ),
+            # v2/v3 live in the APK Signing Block, not META-INF, so a modern
+            # package signed only with those is not misread as unsigned.
+            "signed_v2": signed_v2,
+            "signed_v3": signed_v3,
         }
     }
 

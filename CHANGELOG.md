@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（建会话时 `describe_apk` 把只有 v2/v3 签名的 APK 误当成未签名）
+
+- 会话创建时对 APK 读的那份「廉价身份信息」只探 `signed_v1`——靠 `META-INF/*.RSA|DSA|EC` 是否存在判断。
+  可 APK Signature Scheme v2/v3 的签名根本不在 `META-INF` 里,而在介于 ZIP 条目与中央目录之间的
+  **APK Signing Block** 中;一个只用现代方案签名的包(现在的常态,尤其关掉 v1 时)于是 `signed_v1=false`、
+  没有任何签名迹象。想判断包有没有被改过签名的调用方,据此把一个签得好好的现代 APK 读成「未签名/被篡改」,
+  正好读反。
+- 现在 `describe_apk` 额外回 `signed_v2` / `signed_v3`:仍是纯标准库(这份探针刻意不依赖 androguard,否则
+  androguard 缺席会让整个 Android 面不可用),自己定位中央目录、核对 `APK Sig Block 42` 魔数与两处长度字段,
+  再扫块内的 id-value 对认出 v2(`0x7109871a`)、v3(`0x7109871a` 之外的 `0xf05368c0`,连同 v3.1 轮换
+  `0x1b93ad61`)。整条路径永不抛:块被截断/构造恶意/是 ZIP64 时一律读作「未探到 v2/v3」,绝不让建会话失败。
+- 新增回归:v2+v3 块回二者皆真、仅 v3 的块回 v3 真 v2 假、v3.1 轮换 id 计为 v3、无签名块的包 v2/v3 皆假,
+  以及一个魔数在场但长度字段自相矛盾的畸形块不崩且回二者皆假、其余身份信息照常。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

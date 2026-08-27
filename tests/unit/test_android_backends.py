@@ -30,6 +30,47 @@ def _apk(path: Path) -> Path:
     return path
 
 
+_APK_SIG_BLOCK_MAGIC = b"APK Sig Block 42"
+
+
+def _signing_block(pair_ids: list[int], *, value: bytes = b"\x00" * 8) -> bytes:
+    """Assemble a minimal APK Signing Block carrying the given scheme ids."""
+    pairs = b""
+    for pair_id in pair_ids:
+        body = pair_id.to_bytes(4, "little") + value
+        pairs += len(body).to_bytes(8, "little") + body
+    block_size = len(pairs) + 8 + 16  # trailing size field (8) + magic (16)
+    return (
+        block_size.to_bytes(8, "little")
+        + pairs
+        + block_size.to_bytes(8, "little")
+        + _APK_SIG_BLOCK_MAGIC
+    )
+
+
+def _apk_with_signing_block(
+    path: Path, pair_ids: list[int], *, block: bytes | None = None
+) -> Path:
+    """A real APK with a signing block spliced in ahead of the central dir.
+
+    Inserting bytes before the central directory shifts only the directory, so
+    the EOCD's offset is patched while the entries' local-header offsets (which
+    sit before the block) stay valid and zipfile still opens the file.
+    """
+    _apk(path)
+    data = bytearray(path.read_bytes())
+    eocd = data.rfind(b"PK\x05\x06")
+    cd_offset = int.from_bytes(data[eocd + 16 : eocd + 20], "little")
+    payload = block if block is not None else _signing_block(pair_ids)
+    patched = data[:cd_offset] + payload + data[cd_offset:]
+    new_eocd = eocd + len(payload)
+    patched[new_eocd + 16 : new_eocd + 20] = (cd_offset + len(payload)).to_bytes(
+        4, "little"
+    )
+    path.write_bytes(patched)
+    return path
+
+
 class TestNoShellPassthrough:
     def test_catalog_exposes_no_generic_device_shell(self) -> None:
         """The debugger surface has no dynamic.command; devices get the same rule."""
@@ -356,6 +397,50 @@ class TestApkClassification:
         assert info["native_abis"] == ["arm64-v8a"]
         assert info["dex_count"] == 1
         assert info["signed_v1"] is True
+        # No APK Signing Block in this fixture, so the modern schemes are absent.
+        assert info["signed_v2"] is False
+        assert info["signed_v3"] is False
+
+    def test_describe_apk_detects_v2_and_v3_signing_block(self, tmp_path: Path) -> None:
+        """A modern package's signature lives in the block, not META-INF.
+
+        Reading only signed_v1 would report a v2/v3-signed APK as unsigned; the
+        block's scheme ids are what says otherwise.
+        """
+        apk = _apk_with_signing_block(
+            tmp_path / "modern.apk", [0x7109871A, 0xF05368C0]
+        )
+        info = describe_apk(apk)["apk"]
+        assert info["signed_v2"] is True
+        assert info["signed_v3"] is True
+
+    def test_describe_apk_detects_a_v3_only_block(self, tmp_path: Path) -> None:
+        apk = _apk_with_signing_block(tmp_path / "v3.apk", [0xF05368C0])
+        info = describe_apk(apk)["apk"]
+        assert info["signed_v2"] is False
+        assert info["signed_v3"] is True
+
+    def test_describe_apk_counts_v3_1_rotation_id_as_v3(self, tmp_path: Path) -> None:
+        apk = _apk_with_signing_block(tmp_path / "v31.apk", [0x1B93AD61])
+        info = describe_apk(apk)["apk"]
+        assert info["signed_v3"] is True
+
+    def test_describe_apk_survives_a_malformed_signing_block(self, tmp_path: Path) -> None:
+        """The block magic is present but the size fields disagree.
+
+        A hostile or truncated block must read as "no v2/v3 detected" without
+        crashing session creation, and the rest of the identity facts stand.
+        """
+        block = _signing_block([0x7109871A])
+        # Corrupt the leading size field so it disagrees with the trailer copy.
+        corrupt = (b"\xff" * 8) + block[8:]
+        apk = _apk_with_signing_block(
+            tmp_path / "bad.apk", [], block=corrupt
+        )
+        info = describe_apk(apk)["apk"]
+        assert info["signed_v1"] is True
+        assert info["signed_v2"] is False
+        assert info["signed_v3"] is False
 
     def test_describe_apk_rejects_archive_without_manifest(self, tmp_path: Path) -> None:
         plain = tmp_path / "archive.zip"
