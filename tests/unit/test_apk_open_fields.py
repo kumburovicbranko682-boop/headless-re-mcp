@@ -5,7 +5,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from headless_re_mcp.backends.apk.client import ApkClient
+import pytest
+
+from headless_re_mcp.backends.apk.client import ApkClient, ApkError
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -52,6 +54,31 @@ class _FakeApk:
 
     def get_files(self) -> list[str]:
         return ["lib/arm64-v8a/libx.so"]
+
+
+class _BrokenApk:
+    """androguard returns one of these for a malformed manifest: constructed
+    fine, but the getters raise when actually read."""
+
+    def get_package(self) -> str:
+        raise ValueError("this does not look like an AXML file")
+
+
+def test_apk_open_wraps_a_throwing_getter_as_backend_error() -> None:
+    """A malformed APK must read as backend_error, never internal_error.
+
+    androguard's APK() does not raise on a broken manifest, so _apk succeeds and
+    the failure only appears when open() reads a getter. Without wrapping, that
+    androguard exception escapes to the service's BaseException handler and
+    becomes internal_error with a logged incident -- bad input misreported as a
+    server defect. This pins the wrapping without needing androguard installed.
+    """
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _BrokenApk()  # type: ignore[method-assign,return-value]
+    with pytest.raises(ApkError) as info:
+        client.open(Path("dummy.apk"))
+    assert info.value.code == "backend_error"
 
 
 def test_apk_open_names_version_name_and_native_abis_not_version() -> None:

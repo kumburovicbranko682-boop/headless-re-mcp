@@ -50,11 +50,16 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
         session_id = session["id"]
 
-        # androguard opens a real APK; on the synthetic archive it must still
-        # answer with a structured envelope rather than raising.
+        # androguard opens a real APK; on the synthetic archive its manifest is
+        # not valid AXML, so apk.open must fail with a *structured* backend_error
+        # -- androguard's constructor does not raise but leaves getters that do,
+        # which used to fall through to the service's BaseException handler as an
+        # internal_error with a logged incident (a bad APK misreported as a
+        # server defect).
         opened = service.apk_open(session_id)
-        assert isinstance(opened.ok, bool)
-        assert opened.ok or opened.error is not None
+        assert opened.ok is False
+        assert opened.error is not None
+        assert opened.error.code == "backend_error"
 
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()
@@ -64,6 +69,44 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
         # Frida device enumeration returns an envelope (frida may be present).
         devices = service.frida_devices()
         assert isinstance(devices.ok, bool)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_malformed_apk_yields_structured_errors_not_incidents(tmp_path: Path) -> None:
+    """A malformed APK is bad input, never a server defect.
+
+    androguard is lenient: APK() does not raise on a broken manifest, so every
+    apk.* method has to defend its own getters. Any that lets an androguard
+    exception escape surfaces as internal_error with a logged incident, telling
+    an unattended caller the server is broken when the sample is. Pin that none
+    of them do that on the synthetic (invalid-AXML) archive.
+    """
+    from headless_re_mcp.backends.apk import ApkClient
+
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK static gate not run (skip != pass)")
+    apk = _build_synthetic_apk(tmp_path / "sample.apk")
+    service = AnalysisService()
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+        calls = {
+            "apk_open": lambda: service.apk_open(session_id),
+            "apk_manifest": lambda: service.apk_manifest(session_id),
+            "apk_permissions": lambda: service.apk_permissions(session_id),
+            "apk_components": lambda: service.apk_components(session_id),
+            "apk_native_libs": lambda: service.apk_native_libs(session_id),
+            "apk_certificates": lambda: service.apk_certificates(session_id),
+        }
+        for name, call in calls.items():
+            result = call()
+            assert isinstance(result.ok, bool), name
+            if not result.ok:
+                assert result.error is not None, name
+                assert result.error.code != "internal_error", (
+                    f"{name} reported a malformed APK as a server incident"
+                )
     finally:
         service.close_all()
 
