@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（IDA worker RPC 客户端合同测试）
+
+- `IdaWorkerClient` 的传输层此前只有窗口历史上限一项合同有测试（行覆盖 32%）。新增
+  `tests/unit/test_ida_worker_client_rpc.py`：通过 `PYTHONPATH` 遮蔽真实
+  `backends.ida.worker` 模块、以脚本化假 worker 子进程走完整协议，不需要 idalib、
+  Windows 与 Linux 均可运行。覆盖 ready/fatal 握手（含 capabilities 非列表、data 非
+  对象、启动前崩溃携带 stderr 诊断）、请求按 id 关联与错误载荷映射、超时/未读消息
+  溢出后 worker 被强制退休（不复用卡死进程）、close 的三种收尾（应答后不退出则杀树、
+  worker 已死静默收尾、不应答则上抛超时且二次 close 幂等）、分析器窗口在启动与请求
+  两个时点的拒答及重复目击不膨胀历史，另有 `next_receive_deadline` /
+  `startup_receive_remaining` / `IdaWorkerError.from_payload` 纯函数合同。该模块行
+  覆盖 32% → 98%。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
