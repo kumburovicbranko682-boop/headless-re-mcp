@@ -117,6 +117,95 @@ def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:
     assert "dropped" in doc
 
 
+def test_proxy_flows_filters_the_capture_before_paginating(monkeypatch: Any) -> None:
+    """A large capture had to be paged by hand to find one request.
+
+    Drive the method/host/url_contains/status filters and assert each narrows
+    the set before pagination, that they combine, that total describes the match
+    while unfiltered_total keeps the whole capture's size visible, and that an
+    unfiltered call still omits the filtered/unfiltered_total keys.
+    """
+    recorder = _FlowRecorder(capacity=50)
+
+    def add(fid: str, method: str, url: str, host: str, status: int) -> None:
+        request = SimpleNamespace(method=method, pretty_url=url, host=host)
+        response = SimpleNamespace(status_code=status, headers={"content-type": "text/plain"})
+        recorder.response(SimpleNamespace(id=fid, request=request, response=response))
+
+    add("1", "GET", "http://api.example.com/users", "api.example.com", 200)
+    add("2", "POST", "http://api.example.com/login", "api.example.com", 401)
+    add("3", "GET", "http://cdn.other.com/app.js", "cdn.other.com", 200)
+    add("4", "POST", "http://api.example.com/users", "api.example.com", 500)
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder)
+    )
+
+    posts = backend.flows("s", method="post")  # exact, case-insensitive
+    assert {row["id"] for row in posts["flows"]} == {"2", "4"}
+    assert posts["filtered"] is True
+    assert posts["total"] == 2
+    assert posts["unfiltered_total"] == 4
+
+    host_hits = backend.flows("s", host="EXAMPLE.com")  # substring, case-insensitive
+    assert {row["id"] for row in host_hits["flows"]} == {"1", "2", "4"}
+
+    users = backend.flows("s", url_contains="/users")
+    assert {row["id"] for row in users["flows"]} == {"1", "4"}
+
+    err = backend.flows("s", status=500)
+    assert {row["id"] for row in err["flows"]} == {"4"}
+
+    combined = backend.flows("s", method="GET", host="example.com")
+    assert {row["id"] for row in combined["flows"]} == {"1"}
+
+    plain = backend.flows("s")
+    assert "filtered" not in plain
+    assert "unfiltered_total" not in plain
+    assert plain["total"] == 4
+
+    doc = _tool_docstring("proxy.flows")
+    assert "url_contains" in doc
+    assert "unfiltered_total" in doc
+
+
+def test_proxy_flows_status_filter_skips_a_failed_flow(monkeypatch: Any) -> None:
+    """A status filter must not match a flow that has no status yet.
+
+    A failed or in-flight request carries a null status; treating null as "any"
+    would surface it under every status query. Assert a status filter excludes
+    the failed flow while a method filter still finds it.
+    """
+    recorder = _FlowRecorder(capacity=10)
+    ok_req = SimpleNamespace(method="GET", pretty_url="http://x/ok", host="x")
+    recorder.response(
+        SimpleNamespace(
+            id="ok",
+            request=ok_req,
+            response=SimpleNamespace(status_code=200, headers={"content-type": "text/plain"}),
+        )
+    )
+    dead_req = SimpleNamespace(method="GET", pretty_url="http://x/dead", host="x", headers={})
+    recorder.error(
+        SimpleNamespace(
+            id="dead", request=dead_req, response=None,
+            error=SimpleNamespace(msg="connection refused"),
+        )
+    )
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder)
+    )
+
+    by_status = backend.flows("s", status=200)
+    assert {row["id"] for row in by_status["flows"]} == {"ok"}
+
+    by_method = backend.flows("s", method="GET")
+    assert {row["id"] for row in by_method["flows"]} == {"ok", "dead"}
+
+
 def test_proxy_flows_flags_a_request_that_carried_a_body(monkeypatch: Any) -> None:
     """A scan of the list should reveal which flows have a request payload.
 

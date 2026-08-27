@@ -54,6 +54,36 @@ class ProxyError(RuntimeError):
         self.details = details
 
 
+def _flow_matches(
+    summary: JsonObject,
+    method: str | None,
+    host: str | None,
+    url_contains: str | None,
+    status: int | None,
+) -> bool:
+    """Whether a flow summary passes the (already-non-None) filters.
+
+    method is an exact, case-insensitive match (GET is not POST); host and
+    url_contains are case-insensitive substrings (so ``api.example.com`` matches
+    ``example.com`` and a path fragment matches its URL); status is an exact
+    integer, and a flow with no status yet (a failed or in-flight request) never
+    matches a status filter rather than matching everything.
+    """
+    if method is not None and str(summary.get("method", "")).upper() != method.upper():
+        return False
+    if host is not None and host.casefold() not in str(summary.get("host", "")).casefold():
+        return False
+    if url_contains is not None:
+        url = str(summary.get("url", "")).casefold()
+        if url_contains.casefold() not in url:
+            return False
+    if status is not None:
+        flow_status = summary.get("status")
+        if not isinstance(flow_status, int) or flow_status != status:
+            return False
+    return True
+
+
 def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Cancel and await every remaining task, then close the loop.
 
@@ -810,16 +840,41 @@ class ProxyBackend:
             "retained_bytes_max": _MAX_RETAINED_BYTES,
         }
 
-    def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    def flows(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        method: str | None = None,
+        host: str | None = None,
+        url_contains: str | None = None,
+        status: int | None = None,
+    ) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
-        start = max(0, int(offset))
-        cap = max(1, min(int(limit), 1000))
-        window = items[start : start + cap]
+        # ``dropped`` is the ring-eviction count for the whole capture, so it is
+        # measured against every recorded flow -- before any filter narrows the
+        # view -- otherwise a filtered page would misreport how much history the
+        # ring has already lost.
         dropped = 0
         if items:
             dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
-        return {
+        unfiltered_total = len(items)
+        filtered = any(v is not None for v in (method, host, url_contains, status))
+        if filtered:
+            # Narrow before paginating so the pagination fields describe the
+            # result set the caller is actually walking. Finding one request
+            # among thousands otherwise meant paging the whole log by hand.
+            items = [
+                summary
+                for summary in items
+                if _flow_matches(summary, method, host, url_contains, status)
+            ]
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = items[start : start + cap]
+        result: JsonObject = {
             "flows": window,
             "count": len(window),
             "total": len(items),
@@ -827,6 +882,13 @@ class ProxyBackend:
             "has_more": start + len(window) < len(items),
             "dropped": dropped,
         }
+        if filtered:
+            # total already reports the matched count; unfiltered_total keeps the
+            # size of the whole capture visible so a small match is not read as a
+            # small capture.
+            result["filtered"] = True
+            result["unfiltered_total"] = unfiltered_total
+        return result
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
         inst = self._get(session_id)

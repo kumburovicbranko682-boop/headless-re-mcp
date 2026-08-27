@@ -325,6 +325,61 @@ def test_proxy_actually_intercepts_and_records_a_request() -> None:
 
 
 @pytest.mark.integration
+def test_proxy_flows_filter_narrows_a_capture() -> None:
+    """On a real capture, filtering must find one request without paging by hand.
+
+    Drive a GET and a POST through the proxy, then assert the method, url and
+    status filters each narrow the live capture to the intended flow, that the
+    reply reports filtered/unfiltered_total, and that a non-matching flow is
+    absent from the filtered page.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy filter Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _origin_server() as origin_url:
+        backend.start("gate-filter", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            base = origin_url.rsplit("/", 1)[0]  # .../api
+            with opener.open(origin_url, timeout=10) as response:  # GET /api/thing
+                assert response.status == 200
+            post = urllib.request.Request(
+                base + "/login",
+                data=b'{"user":"alice"}',
+                headers={"Content-Type": "application/json"},
+            )
+            with opener.open(post, timeout=10) as response:  # POST /api/login -> 201
+                assert response.status == 201
+
+            assert _poll(lambda: backend.flows("gate-filter")["total"] >= 2), (
+                "both requests through the proxy were never recorded"
+            )
+
+            posts = backend.flows("gate-filter", method="post")  # case-insensitive
+            assert posts["filtered"] is True
+            assert posts["unfiltered_total"] >= 2
+            assert posts["total"] == len(posts["flows"])
+            assert posts["count"] >= 1
+            assert all(flow["method"] == "POST" for flow in posts["flows"])
+            assert any(str(f.get("url", "")).endswith("/login") for f in posts["flows"])
+            assert not any(str(f.get("url", "")).endswith("/thing") for f in posts["flows"])
+
+            things = backend.flows("gate-filter", url_contains="/thing")
+            assert things["count"] >= 1
+            assert all("/thing" in str(f.get("url", "")) for f in things["flows"])
+
+            created = backend.flows("gate-filter", status=201)
+            assert created["count"] >= 1
+            assert all(flow.get("status") == 201 for flow in created["flows"])
+            assert any(str(f.get("url", "")).endswith("/login") for f in created["flows"])
+        finally:
+            backend.stop("gate-filter")
+
+
+@pytest.mark.integration
 def test_proxy_decodes_a_gzip_response_body() -> None:
     """A gzip'd upstream response must reach the analyst as the payload.
 

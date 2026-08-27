@@ -346,6 +346,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一枚 localStorage 令牌 + 一枚 sessionStorage 项，断言 `web.storage` 取回其 `key`/`value`、`origin` 指回被测源、两区
   `count` 正确（缺浏览器时 skip≠pass）；单测直接驱动 `page.evaluate`，覆盖两区键值映射、超长值有界、大区按上限截断置
   `has_more`、以及被拒存储区透出 `error`。该工具计入读效果，工具面因此 268→269。
+- **`proxy.flows` 只能整页翻、没法过滤——真实抓包动辄上千条**。列表此前只有分页（`offset`/`limit`），要在成百上千
+  条 flow 里找某一条请求只能一页页人肉翻。给 `proxy.flows` 加四个可选过滤器，在分页**之前**收窄：`method`（精确、
+  大小写不敏感，GET 不等于 POST）、`host` 与 `url_contains`（大小写不敏感子串，便于按域名或路径片段定位）、`status`
+  （精确状态码）。设了任一过滤器时，`total`/`count`/`has_more` 描述的是命中子集，另回 `filtered` 为真与
+  `unfiltered_total`（整次抓包的规模）——一小撮命中不会被读成一小撮抓包；`dropped` 仍按整个环的淘汰量计（过滤前），
+  免得过滤页误报历史丢了多少。`status` 过滤永远不匹配尚无状态的 flow（失败或在途、`status` 为 null），避免把「未知」
+  当成「命中一切」。无过滤器时行为与字段完全不变（不多出 `filtered`/`unfiltered_total`），工具计数与读写归类不变。
+  活体门经代理打一条 GET 和一条 POST，断言 `method`/`url_contains`/`status` 各自把实时抓包收窄到目标 flow、回
+  `filtered`/`unfiltered_total`、且非命中 flow 不在过滤页里（缺 mitmproxy 时 skip≠pass）；单测覆盖四种过滤器与组合、
+  `total` 报命中数而 `unfiltered_total` 留全量、无过滤器不多出字段、以及 `status` 过滤跳过失败 flow。
 - **JS/WASM 输出超过 400 KB 就被截断且无从取回**。`js.deobfuscate`/`js.beautify`（webcrack）、`wasm.wat`
   （wasm2wat）、`wasm.info`（wasm-objdump）都只把结果内联返回、超 400 KB 直接切掉——而一份反混淆后的打包脚本常有
   几 MB，一个非平凡 WASM 模块的 WAT 反汇编动辄上兆，于是分析者拿到的是残缺的前 400 KB、且没有任何办法读到其余部分

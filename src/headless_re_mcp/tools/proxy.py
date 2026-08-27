@@ -68,6 +68,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        method: str | None = None,
+        host: str | None = None,
+        url_contains: str | None = None,
+        status: Annotated[int | None, Field(ge=100, le=599)] = None,
     ) -> dict[str, Any]:
         """List captured HTTP flows (method, url, status, content type).
 
@@ -86,8 +90,27 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         content_type. dropped is how many the capture ring already evicted;
         a page that filled the limit is not the whole log. metadata_truncated
         marks bounded oversized summary fields.
+
+        Narrow a large capture with the optional filters, applied before
+        pagination: method (exact, case-insensitive), host and url_contains
+        (case-insensitive substrings), and status (exact code). When any filter
+        is set the reply also carries filtered true and unfiltered_total (the
+        whole capture's size), and total/count/has_more describe the matched
+        subset -- so a small match is not read as a small capture. A status
+        filter never matches a failed or in-flight flow (one with a null
+        status).
         """
-        return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.proxy_flows(
+                session_id,
+                offset=offset,
+                limit=limit,
+                method=method,
+                host=host,
+                url_contains=url_contains,
+                status=status,
+            )
+        )
 
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
