@@ -306,9 +306,13 @@ class AdbBackend:
             raise AdbError("backend_error", f"cannot reach adb server: {exc}") from exc
 
     def _device(self, serial: str) -> Any:
+        # Validate the serial before consulting adbutils so an injection attempt
+        # is rejected as invalid_params on any host -- not masked behind
+        # capability_unavailable when adbutils is missing.
+        checked = _check_serial(serial)
         client = self._client(socket_timeout=_ADB_TRANSPORT_TIMEOUT_S)
         try:
-            dev = client.device(serial=_check_serial(serial))
+            dev = client.device(serial=checked)
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -345,11 +349,14 @@ class AdbBackend:
         return {"devices": page, "count": len(page), "has_more": has_more}
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:
-        client = self._client()
-        if not isinstance(port, int) or not 1 <= port <= 65535:
+        # Validate the endpoint before consulting adbutils: an out-of-range port
+        # or an injection in the host is wrong regardless of whether adbutils is
+        # installed, and a bool would otherwise slip through isinstance(_, int).
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise AdbError("invalid_params", "port must be 1..65535", port=port)
         endpoint = f"{host}:{port}"
         _check_serial(endpoint)
+        client = self._client()
         try:
             message = client.connect(endpoint, timeout=10.0)
         except Exception as exc:  # noqa: BLE001
@@ -478,8 +485,8 @@ class AdbBackend:
         return result
 
     def uninstall(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _call(dev.uninstall, pkg, timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
@@ -500,8 +507,8 @@ class AdbBackend:
         return result
 
     def launch(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _device_shell(
                 dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"]
@@ -526,8 +533,8 @@ class AdbBackend:
         }
 
     def force_stop(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _device_shell(dev, ["am", "force-stop", pkg])
         except AdbError:

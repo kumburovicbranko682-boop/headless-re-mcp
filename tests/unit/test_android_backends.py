@@ -79,6 +79,58 @@ class TestAdbArgumentValidation:
         assert info.value.code == "capability_unavailable"
 
 
+class TestAdbValidationPrecedesAvailability:
+    """Injection is rejected before adbutils is consulted, on any host.
+
+    The validators are exercised directly above, but that only proves the regex;
+    it does not prove the method paths reach them before touching the optional
+    backend. Force adbutils absent and drive the real methods: a hostile serial,
+    package, or port must still surface invalid_params rather than the
+    capability_unavailable that would otherwise mask it -- so the injection
+    guarantee holds on a machine without adbutils (skip != pass).
+    """
+
+    def _unavailable_backend(self) -> AdbBackend:
+        backend = AdbBackend()
+        backend._available = False
+        backend._adbutils = None
+        return backend
+
+    def test_connect_rejects_bad_port_without_adbutils(self) -> None:
+        backend = self._unavailable_backend()
+        with pytest.raises(AdbError) as info:
+            backend.connect(port=99999)
+        assert info.value.code == "invalid_params"
+
+    def test_connect_rejects_bool_port_without_adbutils(self) -> None:
+        backend = self._unavailable_backend()
+        with pytest.raises(AdbError) as info:
+            backend.connect(port=True)  # type: ignore[arg-type]
+        assert info.value.code == "invalid_params"
+
+    def test_connect_rejects_injection_in_host_without_adbutils(self) -> None:
+        backend = self._unavailable_backend()
+        with pytest.raises(AdbError) as info:
+            backend.connect(host="127.0.0.1; rm -rf /", port=5555)
+        assert info.value.code == "invalid_params"
+
+    @pytest.mark.parametrize("method", ["uninstall", "launch", "force_stop"])
+    def test_package_methods_reject_injection_without_adbutils(self, method: str) -> None:
+        backend = self._unavailable_backend()
+        with pytest.raises(AdbError) as info:
+            getattr(backend, method)("emulator-5554", "com.x; id")
+        assert info.value.code == "invalid_params"
+
+    @pytest.mark.parametrize(
+        "method", ["info", "properties", "packages", "logcat", "current_activity"]
+    )
+    def test_device_methods_reject_bad_serial_without_adbutils(self, method: str) -> None:
+        backend = self._unavailable_backend()
+        with pytest.raises(AdbError) as info:
+            getattr(backend, method)("bad serial; rm -rf /")
+        assert info.value.code == "invalid_params"
+
+
 class TestFridaTargetAuthorization:
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
         client = FridaClient()
