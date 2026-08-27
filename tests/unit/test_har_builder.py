@@ -125,6 +125,41 @@ class TestHarPrimitives:
         ]
         assert har.request_cookies("") == []
 
+    def test_post_data_of_urlencoded_form_is_parsed_into_params(self) -> None:
+        post = har.post_data(b"user=alice&pw=s3cret&blank=", "application/x-www-form-urlencoded")
+        assert post is not None
+        # Spec: params and text are mutually exclusive -- a form yields params.
+        assert "text" not in post, post
+        params = {p["name"]: p["value"] for p in post["params"]}
+        assert params == {"user": "alice", "pw": "s3cret", "blank": ""}
+
+    def test_post_data_of_multipart_form_carries_fields_and_files(self) -> None:
+        boundary = "X-BOUND-9449"
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="title"\r\n\r\n'
+            "hello\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="upload"; filename="a.txt"\r\n'
+            "Content-Type: text/plain\r\n\r\n"
+            "file-body\r\n"
+            f"--{boundary}--\r\n"
+        ).encode()
+        post = har.post_data(body, f"multipart/form-data; boundary={boundary}")
+        assert post is not None
+        assert "text" not in post, post
+        by_name = {p["name"]: p for p in post["params"]}
+        assert by_name["title"]["value"] == "hello"
+        assert by_name["upload"]["fileName"] == "a.txt"
+        assert by_name["upload"]["contentType"] == "text/plain"
+        assert by_name["upload"]["value"] == "file-body"
+
+    def test_post_data_of_non_form_body_stays_text(self) -> None:
+        post = har.post_data(b'{"k":"v"}', "application/json")
+        assert post is not None
+        assert post["text"] == '{"k":"v"}'
+        assert "params" not in post, post
+
     def test_response_cookies_parse_set_cookie_with_attributes(self) -> None:
         cookies = har.response_cookies(
             "token=xyz; Path=/; Domain=.host; HttpOnly; Secure\nab=1"

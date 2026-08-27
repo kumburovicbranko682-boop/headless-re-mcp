@@ -184,7 +184,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timings CDP observed. The on-the-wire Host and Cookie request headers and
         every Set-Cookie response header are merged in from CDP's ExtraInfo
         events, and request/response cookies are parsed into the HAR cookies
-        arrays. Response bodies are not inlined (fetch them with
+        arrays. Form request bodies (URL-encoded and multipart) are parsed into
+        postData.params. Response bodies are not inlined (fetch them with
         web.network.get); a field CDP never reported stays -1 (not observed)
         rather than invented.
         """

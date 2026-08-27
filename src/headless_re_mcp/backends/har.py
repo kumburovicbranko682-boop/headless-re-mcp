@@ -36,6 +36,7 @@ HAR_VERSION = "1.2"
 _MAX_HEADERS = 300
 _MAX_HEADER_VALUE = 8 * 1024
 _MAX_BODY_TEXT = 64 * 1024
+_MAX_POST_PARAMS = 512
 
 
 def creator() -> JsonObject:
@@ -180,10 +181,127 @@ def content(body: bytes, mime: str, *, size: int | None = None) -> JsonObject:
     return entry
 
 
+def _mime_base(mime: str) -> str:
+    """The bare media type of a Content-Type, lowercased (no parameters)."""
+    return (mime or "").split(";")[0].strip().lower()
+
+
+def _mime_param(mime: str, key: str) -> str | None:
+    """Read one ``;key=value`` parameter from a Content-Type (unquoted)."""
+    for part in (mime or "").split(";")[1:]:
+        name, sep, value = part.strip().partition("=")
+        if sep and name.strip().lower() == key.lower():
+            value = value.strip()
+            if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                value = value[1:-1]
+            return value
+    return None
+
+
+def _urlencoded_params(body: bytes) -> list[JsonObject]:
+    """Parse an ``application/x-www-form-urlencoded`` body into HAR params."""
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+    params: list[JsonObject] = []
+    for name, value in parse_qsl(text, keep_blank_values=True):
+        params.append({"name": name[:_MAX_HEADER_VALUE], "value": value[:_MAX_HEADER_VALUE]})
+        if len(params) >= _MAX_POST_PARAMS:
+            break
+    return params
+
+
+def _mime_headers(head: bytes) -> dict[str, str]:
+    """Parse the header block of one multipart part into a lowercased mapping."""
+    headers: dict[str, str] = {}
+    for line in head.split(b"\r\n"):
+        try:
+            text = line.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        name, sep, value = text.partition(":")
+        if sep:
+            headers[name.strip().lower()] = value.strip()
+    return headers
+
+
+def _cd_param(disposition: str, key: str) -> str | None:
+    """Read a Content-Disposition parameter (e.g. name / filename), unquoted."""
+    for part in disposition.split(";"):
+        name, sep, value = part.strip().partition("=")
+        if sep and name.strip().lower() == key.lower():
+            value = value.strip()
+            if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                value = value[1:-1]
+            return value
+    return None
+
+
+def _multipart_params(body: bytes, mime: str) -> list[JsonObject]:
+    """Parse a ``multipart/form-data`` body into HAR params.
+
+    Each field becomes ``{name, value}``; a file part instead carries
+    ``fileName`` and ``contentType`` (and a value only when its content decodes
+    as text), so a login/upload POST reads as its fields, not one opaque blob.
+    """
+    boundary = _mime_param(mime, "boundary")
+    if not boundary:
+        return []
+    delim = b"--" + boundary.encode("utf-8", "replace")
+    params: list[JsonObject] = []
+    for segment in body.split(delim):
+        part = segment.lstrip(b"\r\n")
+        # The preamble, inter-part noise and the closing "--" marker are not parts.
+        if not part or part.startswith(b"--"):
+            continue
+        head, sep, content = part.partition(b"\r\n\r\n")
+        if not sep:
+            continue
+        headers = _mime_headers(head)
+        disposition = headers.get("content-disposition", "")
+        name = _cd_param(disposition, "name")
+        if name is None:
+            continue
+        if content.endswith(b"\r\n"):
+            content = content[:-2]
+        param: JsonObject = {"name": name[:_MAX_HEADER_VALUE]}
+        filename = _cd_param(disposition, "filename")
+        content_type = headers.get("content-type")
+        if filename is not None:
+            param["fileName"] = filename[:_MAX_HEADER_VALUE]
+        if content_type:
+            param["contentType"] = content_type[:_MAX_HEADER_VALUE]
+        try:
+            param["value"] = content[:_MAX_HEADER_VALUE].decode("utf-8")
+        except UnicodeDecodeError:
+            # Binary file content has no text value; name/fileName/type stand alone.
+            if filename is None:
+                param["value"] = ""
+        params.append(param)
+        if len(params) >= _MAX_POST_PARAMS:
+            break
+    return params
+
+
 def post_data(body: bytes, mime: str) -> JsonObject | None:
-    """A HAR ``request.postData`` object, or None when there is no request body."""
+    """A HAR ``request.postData`` object, or None when there is no request body.
+
+    Form bodies are parsed into ``params`` (URL-encoded and multipart), which the
+    spec treats as mutually exclusive with ``text``; every other body stays a
+    bounded ``text`` preview.
+    """
     if not body:
         return None
+    base = _mime_base(mime)
+    if base == "application/x-www-form-urlencoded":
+        params = _urlencoded_params(body)
+        if params:
+            return {"mimeType": mime, "params": params}
+    elif base == "multipart/form-data":
+        params = _multipart_params(body, mime)
+        if params:
+            return {"mimeType": mime, "params": params}
     text, encoding, kept = _text_of(body)
     entry: JsonObject = {"mimeType": mime or "application/octet-stream", "text": text}
     comment = []
