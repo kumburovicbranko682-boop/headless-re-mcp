@@ -271,6 +271,44 @@ def _kill_own_process_group(pid: int) -> list[int]:
     return []
 
 
+def reap_detached_helpers(
+    process: Any,
+    group_id: int,
+    reader_threads: tuple[Any, ...] = (),
+) -> list[int]:
+    """After a tool exits on its own, kill any detached helper it left behind.
+
+    A tool started with ``start_new_session`` leads its own process group. A
+    worker it orphaned to init keeps that group id but loses the parent link,
+    so the ppid walk in :func:`terminate_process_tree` cannot see it -- and when
+    the tool exits normally nothing calls that walk at all, so the orphan (a
+    lingering JVM/dotnet runner, say) survives the call that was told to finish.
+
+    Enumerate the group the tool led (POSIX) or its descendants (Windows). If a
+    reader thread is still blocked or a member survives, terminate the tool's
+    tree and, on POSIX, every remaining member of the recorded group -- matched
+    on each member's own ``pgrp`` field so a reaped leader's recycled pid cannot
+    misdirect the kill. Returns the killed PIDs. Never raises: this is cleanup.
+    """
+    pid = getattr(process, "pid", None)
+    readers_blocked = any(thread.is_alive() for thread in reader_threads)
+    if os.name == "nt":
+        leftover = readers_blocked or bool(
+            isinstance(pid, int) and pid > 0 and collect_descendants(int(pid))
+        )
+    else:
+        leftover = readers_blocked or bool(group_id and collect_process_group(group_id))
+    if not leftover:
+        return []
+    killed = terminate_process_tree(process, wait_s=2.0, kill_group=os.name != "nt")
+    if os.name != "nt" and group_id:
+        killed.extend(terminate_process_group(group_id))
+    for thread in reader_threads:
+        with suppress(Exception):
+            thread.join(timeout=2.0)
+    return killed
+
+
 def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: bool = False) -> list[int]:
     """Kill a spawned process and everything it started. Returns the killed PIDs.
 

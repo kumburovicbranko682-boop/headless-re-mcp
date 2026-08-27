@@ -427,6 +427,12 @@ def _capture_process(
     stderr_thread.start()
     monitor_thread.start()
 
+    # start_new_session (POSIX) makes Exeinfo PE its own group leader, so the
+    # group id is its pid. Used to reap a child a wrapper orphaned to init after
+    # the tool has exited, when the parent/child walk sees nothing.
+    leader_pid = getattr(process, "pid", None)
+    group_id = int(leader_pid) if os.name != "nt" and leader_pid else 0
+
     deadline = monotonic() + timeout
     timed_out = False
     limited = False
@@ -472,6 +478,12 @@ def _capture_process(
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
         monitor_thread.join(timeout=1.0)
+        if not (timed_out or limited or cancelled):
+            # Exeinfo PE ended on its own; sweep the session group so a wrapper's
+            # orphaned child cannot outlive the call that was told to finish.
+            from headless_re_mcp.core.process_tree import reap_detached_helpers
+
+            reap_detached_helpers(process, group_id, (stdout_thread, stderr_thread))
         # The readers close their own pipes; only close here when the reader has
         # finished, so a reader still blocked on a survivor's pipe never wedges
         # this thread on close().
@@ -534,7 +546,7 @@ def _terminate_process(process: Any) -> None:
     """Stop the scanner and anything it started; see die._terminate_process."""
     from headless_re_mcp.core.process_tree import terminate_process_tree
 
-    terminate_process_tree(process, wait_s=1.0)
+    terminate_process_tree(process, wait_s=1.0, kill_group=os.name != "nt")
 
 
 def _close_pipe(pipe: Any) -> None:

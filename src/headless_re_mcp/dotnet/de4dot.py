@@ -379,27 +379,9 @@ def _capture_process(
         # Windows the job object and the Toolhelp walk cover this. On POSIX the
         # parent/child walk is blind to a child the runner orphaned to init, so
         # enumerate the session group the runner led instead.
-        readers_blocked = stdout_thread.is_alive() or stderr_thread.is_alive()
-        if os.name == "nt":
-            from headless_re_mcp.core.process_tree import collect_descendants
+        from headless_re_mcp.core.process_tree import reap_detached_helpers
 
-            leftover_children = readers_blocked or bool(
-                process.pid and collect_descendants(int(process.pid))
-            )
-        else:
-            from headless_re_mcp.core.process_tree import collect_process_group
-
-            leftover_children = readers_blocked or bool(
-                group_id and collect_process_group(group_id)
-            )
-        if leftover_children:
-            _terminate_process(process)
-            if os.name != "nt" and group_id:
-                from headless_re_mcp.core.process_tree import terminate_process_group
-
-                terminate_process_group(group_id)
-            stdout_thread.join(timeout=2.0)
-            stderr_thread.join(timeout=2.0)
+        reap_detached_helpers(process, group_id, (stdout_thread, stderr_thread))
     # The readers close their own pipes; only close here when the reader has
     # finished, so a reader still blocked on a survivor's pipe never wedges this
     # thread on close().
