@@ -12,6 +12,7 @@ run that wrote nothing still raises.
 from __future__ import annotations
 
 import ast
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,10 @@ def _jadx(tmp_path: Path) -> tuple[JadxClient, Path, Path]:
     tool = tmp_path / "jadx"
     tool.write_text("#!/bin/sh\n", encoding="utf-8")
     apk = tmp_path / "app.apk"
-    apk.write_bytes(b"PK\x03\x04")
+    # A real zip: the client now refuses a non-zip APK before launching jadx,
+    # and zipfile.is_zipfile checks the archive tail, not just the PK magic.
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"manifest")
     out = tmp_path / "out"
     return JadxClient(tool), apk, out
 

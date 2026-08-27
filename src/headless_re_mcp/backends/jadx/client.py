@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,31 @@ class JadxError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _require_apk_zip(apk: Path) -> None:
+    """Refuse a non-zip APK before launching the JVM.
+
+    An apk.* session's target is always a validated zip -- ``describe_apk``
+    opens it as a ``ZipFile`` and requires ``AndroidManifest.xml`` at session
+    create -- so this never rejects a real input; it catches the file being
+    truncated or replaced on disk after the session opened. Without it jadx
+    still starts a JVM and fails with an opaque Java error that ``_run`` can
+    only report as "jadx produced no sources" (a ``backend_error``), turning a
+    stale or corrupt file into a paid JVM launch and a parameter mistake
+    misread as a backend failure. ``zipfile.is_zipfile`` reads only the
+    archive tail (it does not decompress, so the check itself has no zip-bomb
+    exposure) and turns that cryptic failure into a precise ``invalid_params``
+    up front -- the same fail-fast guard ``apktool``'s ``decode`` / ``sign``
+    already apply, and the shape the wasm tools use to check the ``\\0asm``
+    magic before launching wabt.
+    """
+    if not zipfile.is_zipfile(apk):
+        raise JadxError(
+            "invalid_params",
+            "input is not a valid APK (not a zip archive)",
+            path=str(apk),
+        )
 
 
 def _note_partial_decompile(result: JsonObject, *, code: int, stderr: str) -> JsonObject:
@@ -195,6 +221,7 @@ class JadxClient:
             raise JadxError("capability_unavailable", "jadx is not configured")
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
+        _require_apk_zip(apk)
         out_dir.mkdir(parents=True, exist_ok=True)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [str(self.executable), *extra, str(apk)]
