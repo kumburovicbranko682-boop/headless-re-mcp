@@ -60,6 +60,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（`r2.xrefs` 忽略地址，把全表当成结果）
+
+- `r2.xrefs(address)` 过去执行 `axj @ <addr>`，但 `axj` 打印的是 radare2 的**全量**交叉引用表、
+  且无视 `@` seek——于是不论传什么地址，工具都回整份二进制的引用（还被 4096 上限截断），`address`
+  参数形同虚设。改用地址作用域的 `axtj @ <addr>`（即“引用到该地址”的调用方/使用方），这才是整数
+  地址参数的本意。命令白名单正则同步放行受限的 `axtj`/`axfj`（仍单一 seek、仍拒绝拼接命令），裸
+  `axj` 作为只读列举继续在白名单内。`r2.xrefs` 工具文档改述为作用域结果：每条 item 带 from、
+  type、opcode、fcn_name/refname 与 from_address，被查询的目标落在顶层 address/address_va。
+- 回归双保险：新单测钉住客户端只发 `axtj @ <addr>`、绝不回退裸 `axj`（并放行受限 axtj/axfj、
+  拒绝拼接 axtj）；新实测 gate 用 mingw-w64 现编一个 PE（`gate_add` 只被 `gate_compute` 调、后者
+  只被 `main` 调），证明 `r2.xrefs(gate_add)` 只回那一条 CALL、条数远小于函数总数，而非旧的全表转储；
+  缺 radare2 或 mingw 时按 “skip != pass” 显式跳过。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
