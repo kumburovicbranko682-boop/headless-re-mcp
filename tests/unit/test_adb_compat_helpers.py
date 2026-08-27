@@ -23,6 +23,7 @@ from __future__ import annotations
 from headless_re_mcp.backends.adb.client import (
     _accepted_kwargs,
     _accepts_timeout,
+    _bind_open_transport,
     _device_info_row,
     _is_timeout,
 )
@@ -110,3 +111,90 @@ def test_device_info_row_tolerates_a_serial_only_tuple() -> None:
     ``unknown`` default rather than IndexError on the absent second field."""
     row = _device_info_row(("R58N123",))
     assert row == {"serial": "R58N123", "state": "unknown"}
+
+
+class _NoTransport:
+    """A device that offers no open_transport to wrap."""
+
+
+def test_bind_open_transport_leaves_a_device_without_the_method_untouched() -> None:
+    dev = _NoTransport()
+    assert _bind_open_transport(dev, 5.0) is dev
+    assert not hasattr(dev, "open_transport")
+
+
+class _RecDev:
+    """Records how its open_transport was ultimately invoked."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def open_transport(self, command: object = None, timeout: object = None) -> str:
+        self.calls.append({"command": command, "timeout": timeout})
+        return "transport"
+
+
+def test_bind_open_transport_supplies_the_hang_ceiling_as_the_default() -> None:
+    """The wrapped call, made with no timeout, must reach the real method with
+    the ceiling in place of adbutils' ten-minute default."""
+    dev = _RecDev()
+    bound = _bind_open_transport(dev, 7.5)
+    assert bound is dev
+    assert dev.open_transport() == "transport"
+    assert dev.calls == [{"command": None, "timeout": 7.5}]
+
+
+class _PositionalOnlyDev:
+    """open_transport that rejects keyword args but accepts them positionally."""
+
+    def __init__(self) -> None:
+        self.args: tuple[object, ...] | None = None
+
+    def open_transport(self, command: object = None, timeout: object = None, /) -> str:
+        self.args = (command, timeout)
+        return "transport"
+
+
+def test_bind_open_transport_falls_back_to_positional_args() -> None:
+    """An adbutils build whose open_transport takes command/timeout positionally
+    (rejecting the keyword form) must still receive both, via the fallback."""
+    dev = _PositionalOnlyDev()
+    _bind_open_transport(dev, 3.0)
+    assert dev.open_transport() == "transport"
+    assert dev.args == (None, 3.0)
+
+
+class _CommandOnlyDev:
+    """open_transport that accepts only a single positional command."""
+
+    def __init__(self) -> None:
+        self.command: object = "unset"
+
+    def open_transport(self, command: object = None, /) -> str:
+        self.command = command
+        return "transport"
+
+
+def test_bind_open_transport_falls_back_to_command_only() -> None:
+    """The oldest shape takes just a command; both timeout-carrying forms raise
+    TypeError and the wrapper must degrade to the single-argument call."""
+    dev = _CommandOnlyDev()
+    _bind_open_transport(dev, 3.0)
+    assert dev.open_transport() == "transport"
+    assert dev.command is None
+
+
+class _UnassignableDev:
+    """A slotless device whose open_transport attribute cannot be reassigned."""
+
+    __slots__ = ()
+
+    def open_transport(self, command: object = None, timeout: object = None) -> str:
+        return "transport"
+
+
+def test_bind_open_transport_returns_the_device_when_it_cannot_be_rebound() -> None:
+    """If the wrapper cannot be installed (a slotless device), binding must give
+    the device back rather than raise -- the caller still has a usable device."""
+    dev = _UnassignableDev()
+    assert _bind_open_transport(dev, 5.0) is dev
