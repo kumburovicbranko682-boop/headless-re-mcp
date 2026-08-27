@@ -1,0 +1,58 @@
+"""Every non-PE tool module's ``_dump`` refuses an envelope that is not an object.
+
+Each protocol-independent tool module turns a :class:`Result` into a plain dict
+via a private ``_dump`` helper before handing it to the MCP layer. The helper
+asserts the serialised envelope is a JSON object and raises ``TypeError`` if it
+is not, because a caller that receives a bare list or scalar where an
+``ok/data/error/meta`` object is promised cannot tell success from failure. The
+guard is the same across the Android (``apk``/``device``/``frida``), web
+(``web``/``js_wasm``/``proxy``) and radare2/Ghidra (``r2``/``ghidra``) surfaces;
+this pins that contract on all of them at once so a refactor cannot quietly drop
+it from one module.
+"""
+
+from __future__ import annotations
+
+import importlib
+from typing import Any
+
+import pytest
+
+# The non-PE tool modules, one per track dimension. Each exposes a module-level
+# ``_dump`` with the identical envelope-shape guard.
+_MODULES = [
+    "headless_re_mcp.tools.apk",
+    "headless_re_mcp.tools.device",
+    "headless_re_mcp.tools.frida",
+    "headless_re_mcp.tools.js_wasm",
+    "headless_re_mcp.tools.web",
+    "headless_re_mcp.tools.proxy",
+    "headless_re_mcp.tools.r2",
+    "headless_re_mcp.tools.ghidra",
+]
+
+
+class _NotAnObject:
+    """Stand-in Result whose serialisation is a list, not an object."""
+
+    def model_dump(self, *, mode: str = "python") -> Any:
+        return ["not", "an", "object"]
+
+
+class _AnObject:
+    def model_dump(self, *, mode: str = "python") -> Any:
+        return {"ok": True, "data": None, "error": None, "meta": {}}
+
+
+@pytest.mark.parametrize("module_name", _MODULES)
+def test_dump_rejects_a_non_object_envelope(module_name: str) -> None:
+    module = importlib.import_module(module_name)
+    with pytest.raises(TypeError, match="did not serialize to an object"):
+        module._dump(_NotAnObject())  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("module_name", _MODULES)
+def test_dump_passes_a_real_object_envelope_through(module_name: str) -> None:
+    module = importlib.import_module(module_name)
+    dumped = module._dump(_AnObject())  # type: ignore[attr-defined]
+    assert dumped == {"ok": True, "data": None, "error": None, "meta": {}}
