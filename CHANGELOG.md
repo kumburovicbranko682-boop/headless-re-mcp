@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（js.unpack_bundle 失败路径的解包树只按数量、不按字节设限）
+
+- `js.unpack_bundle` 过去在成功路径调 `prune_capped_dir`（数量 + 字节双约束、保留最新），
+  而 `finally` 里另跑一个只按数量的旧保留器 `prune_jsre_unpack_dirs`。二者职责重叠，且带来一个
+  实际缺口：webcrack 超时或报错时往往已经写下部分解包树，这条失败路径只经过旧保留器——只有
+  数量上限（8 棵），没有 256 MiB 的字节上限，于是几次失败各留一棵大树就能越过字节预算而无人回收。
+  现删掉这个与 `prune_capped_dir` 分叉的旧保留器（连同 `_MAX_JSRE_UNPACK_DIRS` 及不再需要的
+  `shutil`/`suppress` 导入），把 `prune_capped_dir` 挪进 `finally`，成功与失败路径都走同一套
+  数量 + 字节约束。删掉钉死旧函数的单测，改测实路径：新增一条“连续失败的解包循环同样受限”的
+  直测，成功循环的断言改用共享常量 `JSRE_UNPACK_MAX_ENTRIES`（`prune_capped_dir` 的
+  数量/字节/保留最新语义已有专门直测覆盖）。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

@@ -2,39 +2,20 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from headless_re_mcp.core.service_jsre import (
-    _MAX_JSRE_UNPACK_DIRS,
-    JsReAnalysisMixin,
-    prune_jsre_unpack_dirs,
-)
+from headless_re_mcp.backends.jsre import JsReError
+from headless_re_mcp.core.limits import JSRE_UNPACK_MAX_ENTRIES
+from headless_re_mcp.core.service_jsre import JsReAnalysisMixin
 
 
 def _fill_unpack(directory: Path, *, files: int = 100, size: int = 10 * 1024) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     for index in range(files):
         (directory / f"mod-{index}.js").write_bytes(b"x" * size)
-
-
-def test_prune_keeps_only_the_newest_unpack_trees(tmp_path: Path) -> None:
-    root = tmp_path / "jsre"
-    root.mkdir()
-    for index in range(20):
-        directory = root / f"unpack-{index:03d}"
-        _fill_unpack(directory)
-        os.utime(directory, (index + 1, index + 1))
-
-    prune_jsre_unpack_dirs(root, keep=8)
-
-    left = sorted(path.name for path in root.iterdir())
-    assert left == [f"unpack-{index:03d}" for index in range(12, 20)]
-    total = sum(path.stat().st_size for path in root.rglob("*.js"))
-    assert total == 8 * 100 * 10 * 1024
 
 
 class _FakeJs:
@@ -63,7 +44,12 @@ class _Harness(JsReAnalysisMixin):
 def test_an_unpack_loop_cannot_grow_jsre_without_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """20 unpacks of 100 x 10 KiB left 19.5 MiB. Retention never saw them."""
+    """20 unpacks of 100 x 10 KiB left 19.5 MiB. Retention never saw them.
+
+    js_unpack_bundle bounds the directory through prune_capped_dir with the
+    shared JSRE_UNPACK_MAX_ENTRIES cap, not the count-only helper this file used
+    to pin (which the live path stopped calling).
+    """
     monkeypatch.setattr("headless_re_mcp.core.service_jsre.JsClient", _FakeJs)
     harness = _Harness(tmp_path)
     bundle = tmp_path / "app.js"
@@ -74,9 +60,53 @@ def test_an_unpack_loop_cannot_grow_jsre_without_bound(
 
     root = tmp_path / "jsre"
     dirs = [path for path in root.iterdir() if path.is_dir()]
-    assert len(dirs) == _MAX_JSRE_UNPACK_DIRS
+    assert len(dirs) == JSRE_UNPACK_MAX_ENTRIES
     total = sum(path.stat().st_size for path in root.rglob("*.js"))
-    assert total == _MAX_JSRE_UNPACK_DIRS * 100 * 10 * 1024
+    assert total == JSRE_UNPACK_MAX_ENTRIES * 100 * 10 * 1024
+
+
+class _FailingJs:
+    """webcrack that writes a partial tree, then reports failure (e.g. a timeout)."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def unpack_bundle(
+        self,
+        path: Path,
+        out_dir: Path,
+        *,
+        timeout: float = 300.0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        del path, timeout, offset, limit
+        _fill_unpack(out_dir)
+        raise JsReError("timeout", "tool timed out")
+
+
+def test_a_failing_unpack_loop_is_bounded_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that fails after webcrack wrote a partial tree still gets pruned.
+
+    Pruning used to sit on the success path while the finally ran a count-only
+    helper, so repeated failures that each left a tree behind accumulated with
+    no byte bound. prune_capped_dir now runs in the finally on every path, so a
+    loop of failures cannot grow jsre past the shared entry cap either.
+    """
+    monkeypatch.setattr("headless_re_mcp.core.service_jsre.JsClient", _FailingJs)
+    harness = _Harness(tmp_path)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    for _ in range(JSRE_UNPACK_MAX_ENTRIES + 4):
+        result = harness.js_unpack_bundle(str(bundle))
+        assert result.ok is False
+        assert result.error is not None
+
+    root = tmp_path / "jsre"
+    dirs = [path for path in root.iterdir() if path.is_dir()]
+    assert len(dirs) == JSRE_UNPACK_MAX_ENTRIES
 
 
 def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
