@@ -138,6 +138,30 @@ def test_new_executable_region_when_base_appears() -> None:
     assert neo["address"] == MODULE_BASE + 0x1000
 
 
+def test_region_clipping_outside_the_module_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from headless_re_mcp.unpack import observe
+
+    # Defense in depth: even if the overlap test wrongly reports a region that
+    # lies past module_end as overlapping, the anchor clips to None and the
+    # region is dropped rather than emitting an observation at a bogus address.
+    monkeypatch.setattr(observe, "overlaps_module", lambda *a, **k: True)
+    outside = _region(
+        MODULE_BASE + MODULE_SIZE + 0x1000,
+        0x1000,
+        _PAGE_EXECUTE_READ,
+        protect_name="execute_read",
+    )
+    observations = collect_oep_observations(
+        module_base=MODULE_BASE,
+        module_size=MODULE_SIZE,
+        regions=[outside],
+        previous_regions=[],
+    )
+    assert observations == []
+
+
 def test_imports_resolved_only_with_hint() -> None:
     without = collect_oep_observations(
         module_base=MODULE_BASE,
