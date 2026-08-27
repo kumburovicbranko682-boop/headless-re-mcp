@@ -291,20 +291,42 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
             ps = _device_shell(dev, "ps -A", timeout=_ADB_PROBE_TIMEOUT_S)
         except AdbError:
             return None
-        pids: list[int] = []
-        for line in str(ps).splitlines():
-            if package not in line:
-                continue
-            for token in line.split()[:3]:
-                if token.isdigit():
-                    pids.append(int(token))
-                    break
-            if len(pids) >= 16:
-                break
-        return pids
+        return _pids_from_ps(str(ps), package)
     pids = [int(token) for token in text.replace(",", " ").split() if token.isdigit()]
     if not pids:
         return None
+    return pids
+
+
+def _pids_from_ps(ps_output: str, package: str) -> list[int]:
+    """PIDs for ``package`` parsed from ``ps -A``, matching the name column.
+
+    Android lists an app's process under its exact package name (or
+    ``package:sub`` for its private/isolated processes) in the final column.
+    Testing ``package in line`` instead matched the substring anywhere on the
+    row, so an unrelated app sharing a name prefix -- ``com.foo`` lives inside
+    ``com.foo.bar`` -- was counted too. force_stop only reads this to verify a
+    stop, so a just-killed package with a prefix-sharing neighbour still
+    running came back ``stopped=False`` with the neighbour's PID, reading its
+    own success as a failure. The PID is still taken from the leading numeric
+    column so the ``USER PID ...`` (toybox) and ``PID USER ...`` (busybox)
+    layouts both parse.
+    """
+    prefix = package + ":"
+    pids: list[int] = []
+    for line in ps_output.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name = parts[-1]
+        if name != package and not name.startswith(prefix):
+            continue
+        for token in parts[:3]:
+            if token.isdigit():
+                pids.append(int(token))
+                break
+        if len(pids) >= 16:
+            break
     return pids
 
 
