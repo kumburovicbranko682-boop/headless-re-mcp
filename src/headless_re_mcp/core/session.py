@@ -406,6 +406,21 @@ _PT_DYNAMIC = 2
 _PT_INTERP = 3
 _PT_NOTE = 4
 _SHT_SYMTAB = 2
+_SHT_DYNSYM = 11
+# The exported dynamic symbols -- the names a shared object (or executable)
+# offers other images, read straight off the .dynsym section and its linked
+# .dynstr. This is the native export surface: the pair to DT_NEEDED (imports),
+# the raw-symbol complement to DT_VERDEF (versioned exports) and the analogue
+# of a PE export table, an APK's exported components or a WASM export section.
+# A symbol counts as exported when it is defined (a real section index, not
+# SHN_UNDEF) and globally/weakly bound; the scan and the reported list are both
+# bounded so a symbol-heavy library cannot make the read or the fact unbounded.
+_STB_GLOBAL = 1
+_STB_WEAK = 2
+_SHN_UNDEF = 0
+_SHN_LORESERVE = 0xFF00
+_ELF_MAX_DYNSYM_SCAN = 200_000
+_ELF_MAX_EXPORTS = 8192
 _DT_NULL = 0
 _DT_NEEDED = 1
 _DT_STRTAB = 5
@@ -2536,6 +2551,13 @@ def _elf_layout_facts(
     stripped = _elf_is_stripped(stream, order, bits, shoff, shentsize, shnum)
     if stripped is not None:
         facts["stripped"] = stripped
+    # The exported dynamic symbols -- the object's public API surface, read off
+    # .dynsym/.dynstr the way readelf --dyn-syms and nm -D do. Present only when
+    # the image actually exports something, so an executable that exports
+    # nothing (or a static binary with no .dynsym) omits the fact.
+    exports = _elf_exported_symbols(stream, order, bits, shoff, shentsize, shnum)
+    if exports:
+        facts["exported_symbols"] = exports
 
 
 def _elf_program_headers(
@@ -2993,6 +3015,107 @@ def _elf_is_stripped(
         if int.from_bytes(entry[4:8], order) == _SHT_SYMTAB:  # type: ignore[arg-type]
             return False
     return True
+
+
+def _elf_exported_symbols(
+    stream: BinaryIO, order: str, bits: int, shoff: int, shentsize: int, shnum: int
+) -> list[str]:
+    """The names of the defined, globally/weakly bound dynamic symbols.
+
+    Locates .dynsym through the section headers (SHT_DYNSYM), reads its linked
+    string table (sh_link -> .dynstr), and returns the names of the symbols the
+    object exports -- those with a real section index (not SHN_UNDEF, so
+    defined here rather than imported) and GLOBAL or WEAK binding. This is the
+    native export surface readelf --dyn-syms / nm -D report; sorted for
+    determinism. Every step is bounded (section count, symbol scan, string
+    read) so a hostile or symbol-heavy image degrades to a shorter list rather
+    than a large read, and any structural surprise yields an empty list.
+    """
+    if shoff <= 0 or shnum <= 0 or shnum > _ELF_MAX_SHNUM:
+        return []
+    want = 64 if bits == 64 else 40
+    entsize = max(shentsize, want)
+    stream.seek(shoff)
+    table = stream.read(entsize * shnum)
+    dynsym: tuple[int, int, int, int] | None = None  # (offset, size, entsize, link)
+    for i in range(shnum):
+        entry = table[i * entsize : i * entsize + want]
+        if len(entry) < want:
+            break
+        if int.from_bytes(entry[4:8], order) != _SHT_DYNSYM:  # type: ignore[arg-type]
+            continue
+        if bits == 64:
+            sh_offset = int.from_bytes(entry[24:32], order)  # type: ignore[arg-type]
+            sh_size = int.from_bytes(entry[32:40], order)  # type: ignore[arg-type]
+            sh_link = int.from_bytes(entry[40:44], order)  # type: ignore[arg-type]
+            sh_entsize = int.from_bytes(entry[56:64], order)  # type: ignore[arg-type]
+        else:
+            sh_offset = int.from_bytes(entry[16:20], order)  # type: ignore[arg-type]
+            sh_size = int.from_bytes(entry[20:24], order)  # type: ignore[arg-type]
+            sh_link = int.from_bytes(entry[24:28], order)  # type: ignore[arg-type]
+            sh_entsize = int.from_bytes(entry[36:40], order)  # type: ignore[arg-type]
+        dynsym = (sh_offset, sh_size, sh_entsize, sh_link)
+        break
+    if dynsym is None:
+        return []
+    sym_off, sym_size, sym_entsize, link = dynsym
+    sym_stride = 24 if bits == 64 else 16
+    if sym_entsize:  # honour a declared entry size, but never below the real one
+        sym_stride = max(sym_stride, sym_entsize)
+    if sym_off <= 0 or sym_size <= 0 or link <= 0 or link >= shnum:
+        return []
+    # The linked section is .dynstr; read it the same bounded way DT_STRTAB is.
+    link_entry = table[link * entsize : link * entsize + want]
+    if len(link_entry) < want:
+        return []
+    if bits == 64:
+        str_off = int.from_bytes(link_entry[24:32], order)  # type: ignore[arg-type]
+        str_size = int.from_bytes(link_entry[32:40], order)  # type: ignore[arg-type]
+    else:
+        str_off = int.from_bytes(link_entry[16:20], order)  # type: ignore[arg-type]
+        str_size = int.from_bytes(link_entry[20:24], order)  # type: ignore[arg-type]
+    if str_off <= 0 or not (0 < str_size <= _ELF_MAX_STRTAB):
+        return []
+    stream.seek(str_off)
+    strblob = stream.read(str_size)
+
+    def name_at(offset: int) -> str | None:
+        if 0 <= offset < len(strblob):
+            end = strblob.find(b"\x00", offset)
+            if end == -1:
+                end = len(strblob)
+            return strblob[offset:end].decode("utf-8", errors="replace") or None
+        return None
+
+    count = min(sym_size // sym_stride, _ELF_MAX_DYNSYM_SCAN)
+    if count <= 0:
+        return []
+    stream.seek(sym_off)
+    syms = stream.read(sym_stride * count)
+    exports: set[str] = set()
+    for i in range(count):
+        rec = syms[i * sym_stride : i * sym_stride + sym_stride]
+        if len(rec) < sym_stride:
+            break
+        if bits == 64:
+            st_name = int.from_bytes(rec[0:4], order)  # type: ignore[arg-type]
+            st_info = rec[4]
+            st_shndx = int.from_bytes(rec[6:8], order)  # type: ignore[arg-type]
+        else:
+            st_name = int.from_bytes(rec[0:4], order)  # type: ignore[arg-type]
+            st_info = rec[12]
+            st_shndx = int.from_bytes(rec[14:16], order)  # type: ignore[arg-type]
+        # Defined here (a real section index) and externally visible.
+        if st_shndx == _SHN_UNDEF or st_shndx >= _SHN_LORESERVE:
+            continue
+        if (st_info >> 4) not in (_STB_GLOBAL, _STB_WEAK):
+            continue
+        name = name_at(st_name)
+        if name:
+            exports.add(name)
+        if len(exports) >= _ELF_MAX_EXPORTS:
+            break
+    return sorted(exports)
 
 
 def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, Any]:

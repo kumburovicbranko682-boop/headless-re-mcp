@@ -391,6 +391,74 @@ def _elf64_static_with_symtab() -> bytes:
     return ehdr + program + sections
 
 
+# Symbol binding / type / special section index constants for the .dynsym builder.
+_STB_LOCAL, _STB_GLOBAL, _STB_WEAK = 0, 1, 2
+_STT_NOTYPE, _STT_OBJECT, _STT_FUNC = 0, 1, 2
+_SHN_UNDEF, _SHN_ABS = 0, 0xFFF1
+
+
+def _shdr64_full(
+    sh_type: int,
+    *,
+    sh_offset: int = 0,
+    sh_size: int = 0,
+    sh_link: int = 0,
+    sh_entsize: int = 0,
+) -> bytes:
+    entry = bytearray(64)
+    entry[4:8] = sh_type.to_bytes(4, "little")
+    entry[24:32] = sh_offset.to_bytes(8, "little")
+    entry[32:40] = sh_size.to_bytes(8, "little")
+    entry[40:44] = sh_link.to_bytes(4, "little")
+    entry[56:64] = sh_entsize.to_bytes(8, "little")
+    return bytes(entry)
+
+
+def _sym64(name_off: int, bind: int, typ: int, shndx: int) -> bytes:
+    entry = bytearray(24)
+    entry[0:4] = name_off.to_bytes(4, "little")
+    entry[4] = (bind << 4) | (typ & 0xF)
+    entry[6:8] = shndx.to_bytes(2, "little")
+    return bytes(entry)
+
+
+def _elf64_with_dynsym(
+    symbols: list[tuple[str, int, int, int]], *, dynsym_size: int | None = None
+) -> bytes:
+    """A section-header-only ELF carrying a .dynsym and its linked .dynstr.
+
+    Each symbol is ``(name, bind, type, shndx)``; the reader selects the
+    exported ones (defined section index, GLOBAL/WEAK binding) exactly as it
+    does on a real image read through readelf --dyn-syms. ``dynsym_size`` forces
+    the section's declared byte size (defaulting to the real one) so a lying
+    size can be exercised. Laid out ehdr | .dynstr | .dynsym | section headers,
+    with a leading null symbol as .dynsym always carries.
+    """
+    dynstr = bytearray(b"\x00")
+    offsets: list[int] = []
+    for name, _bind, _typ, _shndx in symbols:
+        offsets.append(len(dynstr))
+        dynstr += name.encode("utf-8") + b"\x00"
+    syms = bytearray(_sym64(0, 0, 0, 0))  # index 0: the null symbol
+    for (_name, bind, typ, shndx), off in zip(symbols, offsets, strict=True):
+        syms += _sym64(off, bind, typ, shndx)
+
+    ehdr_len = 64
+    dynstr_off = ehdr_len
+    dynsym_off = dynstr_off + len(dynstr)
+    sh_off = dynsym_off + len(syms)
+    declared = dynsym_size if dynsym_size is not None else len(syms)
+    sections = (
+        _shdr64_full(0)  # SHT_NULL
+        + _shdr64_full(
+            11, sh_offset=dynsym_off, sh_size=declared, sh_link=2, sh_entsize=24
+        )  # SHT_DYNSYM, linked to section 2 (.dynstr)
+        + _shdr64_full(3, sh_offset=dynstr_off, sh_size=len(dynstr))  # SHT_STRTAB
+    )
+    ehdr = _ehdr64(3, phoff=0, phnum=0, shoff=sh_off, shnum=3)  # ET_DYN
+    return ehdr + bytes(dynstr) + bytes(syms) + sections
+
+
 # PT_GNU_STACK/PT_GNU_RELRO and the PF_X permission bit -- the segments that
 # carry the NX and RELRO mitigations. PF_R|PF_W is a non-executable stack.
 _PT_GNU_STACK = 0x6474E551
@@ -797,6 +865,86 @@ def test_a_lying_verdaux_count_stays_bounded(tmp_path: Path) -> None:
     )
     facts = describe_native(path)["native"]
     assert facts["version_defs"] == [{"name": "libprobe.so.1", "base": True, "parents": []}]
+
+
+def test_exported_symbols_lists_defined_global_and_weak(tmp_path: Path) -> None:
+    # The export surface: a defined GLOBAL function and a defined WEAK object
+    # are exported; an undefined GLOBAL (an import) and a defined LOCAL are
+    # not. readelf --dyn-syms / nm -D select the same set.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_with_dynsym(
+            [
+                ("exported_add", _STB_GLOBAL, _STT_FUNC, 10),
+                ("exported_counter", _STB_WEAK, _STT_OBJECT, 19),
+                ("imported_puts", _STB_GLOBAL, _STT_FUNC, _SHN_UNDEF),
+                ("local_helper", _STB_LOCAL, _STT_FUNC, 10),
+            ]
+        ),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["exported_symbols"] == ["exported_add", "exported_counter"]
+
+
+def test_no_dynsym_leaves_the_export_fact_out(tmp_path: Path) -> None:
+    # An image with section headers but no .dynsym (a static binary keeps only
+    # .symtab) exports nothing through the dynamic table; the fact is omitted
+    # rather than reported as an empty list.
+    path = _write(tmp_path, "a.bin", _elf64_static_with_symtab())
+    assert "exported_symbols" not in describe_native(path)["native"]
+
+
+def test_a_symbol_at_a_special_section_index_is_not_exported(tmp_path: Path) -> None:
+    # SHN_ABS (and other reserved indices) are not a real section, so an
+    # absolute GLOBAL symbol is not part of the export surface -- the reader
+    # requires a genuine section index, the way readelf shows "ABS" not a Ndx.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_with_dynsym(
+            [
+                ("real_export", _STB_GLOBAL, _STT_FUNC, 10),
+                ("abs_symbol", _STB_GLOBAL, _STT_OBJECT, _SHN_ABS),
+            ]
+        ),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["exported_symbols"] == ["real_export"]
+
+
+def test_a_nameless_export_is_skipped(tmp_path: Path) -> None:
+    # A defined GLOBAL whose st_name points at the empty string names nothing;
+    # the reader skips it rather than reporting an empty symbol, while still
+    # reading its well-formed sibling.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_with_dynsym(
+            [
+                ("", _STB_GLOBAL, _STT_FUNC, 10),
+                ("named", _STB_GLOBAL, _STT_FUNC, 10),
+            ]
+        ),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["exported_symbols"] == ["named"]
+
+
+def test_a_lying_dynsym_size_stays_bounded(tmp_path: Path) -> None:
+    # A hostile sh_size far larger than the file cannot force a huge read: the
+    # scan is capped and stops at the first short record, keeping the symbols
+    # that actually parsed.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_with_dynsym(
+            [("exported_add", _STB_GLOBAL, _STT_FUNC, 10)],
+            dynsym_size=24 * 10_000_000,
+        ),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["exported_symbols"] == ["exported_add"]
 
 
 def test_soname_and_build_id_from_a_shared_object(tmp_path: Path) -> None:

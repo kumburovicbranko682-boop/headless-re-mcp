@@ -24,6 +24,10 @@ Two triage themes the other native gates cannot cover from system binaries:
   A library linked with a version script carries the Verdef chain readelf -V
   renders as its "Version definition section", which the reader must match node
   for node (BASE flag and inherited parents included).
+- Exported symbols (ELF .dynsym) -- the object's public API surface, the pair
+  to DT_NEEDED imports and the raw-symbol complement to DT_VERDEF. A plain
+  shared library's default-visibility globals become dynamic symbols readelf
+  --dyn-syms lists, which the reader must select name for name.
 
 skip != pass when a tool is missing; gcc/readelf ship with the CI runner and
 llvm is installed on the Linux lane.
@@ -68,6 +72,22 @@ _VERSION_SCRIPT = (
     "PROBE_2.0 { global: probe_two; } PROBE_1.0;\n"
 )
 _LIB_SONAME = "libprobe.so.1"
+
+# A plain library (no version script) whose default-visibility globals become
+# the .dynsym exports the reader must recover -- two functions and a datum,
+# plus a static helper that must stay out of the dynamic table.
+_EXPORTS_C = (
+    "int exp_counter = 7;\n"
+    "int exp_add(int a, int b){return a+b;}\n"
+    "int exp_mul(int a, int b){return a*b;}\n"
+    "static int helper(int x){return x+1;}\n"
+    "int exp_use(int x){return helper(x)+exp_counter;}\n"
+)
+_KNOWN_EXPORTS = {"exp_counter", "exp_add", "exp_mul", "exp_use"}
+# readelf -W --dyn-syms rows: "Num: Value Size Type Bind Vis Ndx Name".
+_READELF_DYNSYM_RE = re.compile(
+    r"^\s*\d+:\s+\S+\s+\S+\s+\S+\s+(\S+)\s+\S+\s+(\S+)\s+(\S+)"
+)
 
 # llvm-objdump --macho --all-headers prints the LC_BUILD_VERSION block as
 # "cmd LC_BUILD_VERSION" followed by platform/sdk/minos lines.
@@ -177,6 +197,32 @@ def _readelf_version_defs(readelf: str, binary: Path) -> list[dict[str, Any]]:
         if parent_match and defs:
             defs[-1]["parents"].append(parent_match.group(1))
     return defs
+
+
+def _readelf_dyn_exports(readelf: str, binary: Path) -> set[str]:
+    """The exported symbol names as readelf --dyn-syms decodes them.
+
+    Selects the same set the reader does -- a real section index (Ndx a decimal
+    number, not UND/ABS) and GLOBAL or WEAK binding -- from readelf's independent
+    walk of .dynsym, so the two decoders can be compared name for name. -W keeps
+    readelf from truncating long names; any @version suffix is dropped.
+    """
+    result = subprocess.run(
+        [readelf, "-W", "--dyn-syms", str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    names: set[str] = set()
+    for line in result.stdout.splitlines():
+        match = _READELF_DYNSYM_RE.match(line)
+        if not match:
+            continue
+        bind, ndx, name = match.group(1), match.group(2), match.group(3)
+        if ndx.isdigit() and bind in ("GLOBAL", "WEAK") and name:
+            names.add(name.split("@")[0])
+    return names
 
 
 def _session_native(service: AnalysisService, binary: Path) -> tuple[str, dict[str, Any]]:
@@ -356,6 +402,47 @@ def test_elf_version_defs_agree_with_readelf(tmp_path: Path) -> None:
         # The BASE node names the object itself -- the same string DT_SONAME
         # reports -- so the two provider-side facts agree.
         assert native["soname"] == _LIB_SONAME
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_elf_exported_symbols_agree_with_readelf(tmp_path: Path) -> None:
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — exports gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — exports gate not run (skip != pass)")
+
+    # A plain shared library (no version script) exports its default-visibility
+    # globals through .dynsym -- the export surface this gate cross-checks.
+    source = tmp_path / "exports.c"
+    source.write_text(_EXPORTS_C)
+    lib = tmp_path / "libexports.so"
+    result = subprocess.run(
+        [gcc, "-shared", "-fPIC", "-O2", "-o", str(lib), str(source)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    ground_truth = _readelf_dyn_exports(readelf, lib)
+    assert ground_truth >= _KNOWN_EXPORTS, ground_truth
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, lib)
+        reader_exports = set(native["exported_symbols"])
+        # The tool-free .dynsym walk and readelf --dyn-syms select the exact
+        # same exported names -- including whatever globals the toolchain
+        # injected, since both apply the one rule to the one table.
+        assert reader_exports == ground_truth
+        # And the library's own API is really in there, static helper excluded.
+        assert reader_exports >= _KNOWN_EXPORTS
+        assert "helper" not in reader_exports
     finally:
         if session_id is not None:
             service.close_session(session_id)
