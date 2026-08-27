@@ -25,6 +25,16 @@ _DATA_URL = (
     "</head><body>hello</body></html>"
 )
 
+# A real module: one exported ``add(i32, i32) -> i32``. Assembled by hand so the
+# WASM gate checks actual disassembly instead of an empty module's boilerplate.
+_WASM_ADD = bytes((
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,  # magic + version
+    0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,  # type sec: (i32, i32) -> i32
+    0x03, 0x02, 0x01, 0x00,  # function section: one func of type 0
+    0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00,  # export "add" -> func 0
+    0x0A, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B,  # code: get0 get1 i32.add end
+))
+
 
 def _browser_available() -> bool:
     backend = WebBackend()
@@ -77,8 +87,14 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # webcrack must actually decode the hex-escaped string array: the raw
+        # fixture only carries "\x48\x33\x61...", so seeing the plain text proves
+        # deobfuscation ran rather than the tool merely echoing the input.
+        assert "H3adl3ss" in code, code[:400]
+        assert "\\x48" not in code, "hex escapes should be decoded, not passed through"
     finally:
         service.close_all()
 
@@ -87,13 +103,34 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
-    # The smallest valid module: magic + version, no sections.
-    module = tmp_path / "empty.wasm"
-    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    module = tmp_path / "add.wasm"
+    module.write_bytes(_WASM_ADD)
     service = AnalysisService()
     try:
         result = service.wasm_wat(str(module))
         assert result.ok, result.error
-        assert "module" in result.data["wat"]
+        wat = result.data["wat"]
+        assert "module" in wat
+        # A real disassembly names the exported function and its opcode; an empty
+        # module would only ever yield "(module)".
+        assert 'export "add"' in wat, wat
+        assert "i32.add" in wat, wat
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_info_when_wabt_present(tmp_path: Path) -> None:
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm-objdump) not installed — WASM Gate not run (skip != pass)")
+    module = tmp_path / "add.wasm"
+    module.write_bytes(_WASM_ADD)
+    service = AnalysisService()
+    try:
+        result = service.wasm_info(str(module))
+        assert result.ok, result.error
+        objdump = result.data["objdump"]
+        assert "Export" in objdump, objdump
+        assert "add" in objdump, objdump
     finally:
         service.close_all()
