@@ -368,6 +368,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   会先转储所有线程栈、点名卡住的测试再退出。`faulthandler_exit_on_timeout` 是
   pytest 9.0 才有的选项，test extra 的 pytest 下限随之从 8.3 抬到 9.0——在 8.x 上
   它只是一条 unknown-option 警告，退出兜底会静默失效。
+- `..` 会话 id 守卫测试不再只在 POSIX 上成立：`test_dotdot_session_ids_are_rejected_by_the_segment_guard`
+  过去断言 `(<root>/<category>/<segment>).exists()` 为假，`segment=".."` 时这依赖平台——
+  POSIX 因中间的 `<category>` 目录不存在而 `stat` 失败（判为不存在，通过），Windows 却把
+  `..` 词法规约到存在的 artifact root 上（判为存在，Windows quality job 因此单测步骤真红）。
+  被守卫的产品代码本身没问题（`_is_safe_session_segment` 照旧显式拒 `.`/`..`/空串，各 helper
+  在建目录前就抛 `invalid_params`）；断言改为探测 category 目录本身未被创建，两平台同义，
+  仍然证明守卫触发前磁盘上什么都没落。
 - 关闭挂起的最后一个盲区：pytest-timeout 与 faulthandler 兜底都按测试武装、测试后
   解除，谁都不覆盖**最后一个测试结束之后**的解释器关闭阶段。多个并发压力测试用非
   守护线程驱动产品代码（Windows 共享冲突下的时间线并发追加、artifact 探针、proxy/web

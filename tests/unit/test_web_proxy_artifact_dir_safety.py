@@ -60,8 +60,14 @@ def test_dotdot_session_ids_are_rejected_by_the_segment_guard(tmp_path: Path) ->
                 with pytest.raises(error_type) as info:
                     helper(segment)
                 assert info.value.code == "invalid_params"
-                # The guard fires before any category directory is created,
-                # and "<category>/.." never collapses onto the artifact root.
-                assert not (root / category / segment).exists()
+                # The guard fires before any category directory is created, so
+                # the whole artifact tree stays empty. Probe the category dir
+                # itself rather than "<category>/<segment>": for segment ".."
+                # the latter is platform-dependent -- POSIX fails the stat
+                # because the missing "<category>" cannot be walked, while
+                # Windows collapses ".." lexically onto the existing root and
+                # reports the escape as real. The category-dir probe means the
+                # same thing on both and still proves nothing was written.
+                assert not (root / category).exists()
     finally:
         service.close_all()
