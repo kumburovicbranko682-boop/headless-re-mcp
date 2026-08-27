@@ -133,10 +133,13 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_script_source(session_id: str, script_id: str) -> dict[str, Any]:
         """Fetch one script's source (large sources spill to an artifact).
 
-        Answers with scriptId, bytes and source, plus truncated and
-        source_path when the text was cut at the buffer. There is no code
-        or text field. A source over the capture cap is refused rather
-        than written to disk.
+        Answers with scriptId, bytes, source and base64_encoded, plus
+        truncated and source_path when the payload was cut at the buffer.
+        A WebAssembly module has no text source, so source is its base64
+        bytecode with base64_encoded true (decode before use); reading it
+        as text yields the wasm binary, not an empty script. base64_encoded
+        is false for ordinary JavaScript. There is no code or text field. A
+        source over the capture cap is refused rather than written to disk.
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 
