@@ -195,11 +195,17 @@ def test_serve_web_releases_its_analysis_sessions_when_it_stops(tmp_path: Path) 
     from headless_re_mcp.config import Settings
     from headless_re_mcp.web import app as web_app
 
+    # A concrete free port: run_web now refuses 0 (an ephemeral bind nothing
+    # downstream could name), and uvicorn is stubbed so nothing binds anyway.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    free_port = probe.getsockname()[1]
+    probe.close()
     settings = replace(
         Settings.load(),
         artifact_root=tmp_path / "artifacts",
         http_host="127.0.0.1",
-        http_port=0,
+        http_port=free_port,
     )
     closed: list[bool] = []
 
@@ -212,7 +218,7 @@ def test_serve_web_releases_its_analysis_sessions_when_it_stops(tmp_path: Path) 
         patch.object(web_app, "AnalysisService", TrackingService),
         patch.object(uvicorn, "run", lambda *args, **kwargs: None),
     ):
-        code = web_app.run_web(settings, host="127.0.0.1", port=0, quiet_banner=True)
+        code = web_app.run_web(settings, host="127.0.0.1", port=free_port, quiet_banner=True)
 
     assert code == 0
     assert closed, "the server exited without releasing its sessions"

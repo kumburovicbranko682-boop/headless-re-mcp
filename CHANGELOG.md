@@ -60,6 +60,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（`--port 0` 起一个谁也找不到的健康服务，supervise 下更被当成不健康无限杀）
+
+- `run_web` 校验了主机（必须可解析、必须回环）却不校验端口。`--port 0` 一路放行：
+  `port_is_free` 绑 0 永远成功（内核随手给临时端口），uvicorn 也接受 0 并在内核挑的号上
+  正常服务——但横幅、`app.state.bind_port` 和监督器的探活 URL 只能复读它们拿到的 0。
+  单跑时这是一台**没人找得到**的健康服务（uvicorn 自己的 "running on" 是 INFO，被
+  `log_level="warning"` 压掉，横幅还打印 `http://127.0.0.1:0/?token=…`）；`supervise` 下
+  则是最坏情形：对 `:0` 的探活永远连不上，而 unhealthy 重启**有意不计入** crash-loop
+  上限（uptime 也不算 short-lived），监督器就把健康子进程无限杀重启。超过 65535 的值死法
+  不同：`socket.bind` 抛的是 `OverflowError`（不是 `OSError`），逃出 `port_is_free` 的
+  捕获、以事故而非拒绝收场。现 `run_web` 在回环校验后同样 fail-closed 拒绝 1..65535 之外
+  的端口（提示不指定 `--port` 即可自动选空闲端口），`_run_supervisor` 对 serve-web 目标
+  也在起进程前拒绝——省得越界值先白白拉起五次子进程才等到 crash-loop 判词；stdio 目标
+  不用端口，不受影响。既有一条把 `port=0` 当「随便什么端口」桩便利的会话清理测试改用
+  真实空闲端口，意图不变。新增回归钉住：0/-1/65536/70000 均在任何副作用（占制品根、发
+  token）之前被拒；配置文件里 `http_port: 0` 同样拒绝；`supervise --target serve-web
+  --port 0` 直接退 2 且监督器从未构造；`--target serve --port 0` 照常运行；合法端口
+  照常走到选端口器。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

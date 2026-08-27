@@ -207,6 +207,16 @@ def _run_supervisor(settings: Settings, args: argparse.Namespace) -> int:
 
     host = args.host or settings.http_host
     port = args.port if args.port is not None else settings.http_port
+    if args.target == "serve-web" and not 1 <= int(port) <= 65535:
+        # Port 0 is the poisonous value here: the child binds an ephemeral
+        # port and serves normally, while the readiness URL names port 0 and
+        # can never answer -- and unhealthy restarts deliberately do not count
+        # toward the crash-loop bound, so the supervisor would kill that
+        # healthy child forever. run_web refuses the same range at its own
+        # boundary; refusing here as well spares the out-of-range values five
+        # pointless child spawns before the crash-loop verdict.
+        print(f"supervise: 端口必须在 1..65535，当前为 {port}")
+        return 2
     # Readiness only exists on the web target; stdio has no HTTP surface, so
     # supervising it means restarting on exit alone.
     ready_url = (
