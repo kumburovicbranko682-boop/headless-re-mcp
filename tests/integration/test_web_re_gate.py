@@ -73,12 +73,25 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:
         pytest.skip("webcrack not installed — JS Gate not run (skip != pass)")
     assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    # In the raw fixture the secret exists only as hex escapes
+    # ("\x48\x33\x61\x64\x6c\x33\x73\x73") inside a rotated string array, and
+    # member access is bracketed (_0xarr["push"], _0xs["split"]). Asserting only
+    # bytes>0 would pass even if webcrack returned the untouched input; these
+    # markers prove it actually ran the string-decode and member-access passes.
+    raw = _JS_FIXTURE.read_text(encoding="utf-8")
+    assert "H3adl3ss" not in raw  # the secret is hex-escaped, not plaintext, in the source
     service = AnalysisService()
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # String-array decode: the hex-escaped literal is recovered as plaintext.
+        assert "H3adl3ss" in code, "webcrack did not decode the string array"
+        # Member-access simplification: bracketed string keys become dot access.
+        assert ".split(" in code, "webcrack did not simplify bracketed member access"
+        assert ".push(" in code
     finally:
         service.close_all()
 

@@ -150,6 +150,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归:非零退出带部分代码/文件/文本时各字段齐备、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及五个工具的描述都点名 `exit_code` / `tool_failed`。
 
+### 测试（`js.deobfuscate` gate 从「有输出即过」收紧到「真去混淆了」）
+
+- **webcrack gate 只断言 `code` 是字符串且 `bytes>0`——原样退回未处理的输入也照样过。** 这条 live gate
+  证明不了 webcrack 真跑了去混淆:任何非空回包都能满足。夹具 `fixtures/web/obfuscated_sample.js` 是
+  obfuscator.io 风格样本,秘密串只以十六进制转义 `"\x48\x33\x61\x64\x6c\x33\x73\x73"` 藏在轮转字符串
+  数组里,成员访问也是方括号形式(`_0xarr["push"]`、`_0xs["split"]`)。现收紧断言:回包里必须出现解码
+  后的明文 `H3adl3ss`(原文里根本没有这几个字面字符,证明字符串数组被解开),且方括号成员访问被简化成点
+  号(`.split(` / `.push(`,证明成员访问 pass 真的跑了)。这些都是 webcrack 的核心变换,一旦随版本漂移
+  坏掉,gate 就会红——正是它该干的事。webcrack 2.16.0 实测通过;缺 webcrack 时明确 skip(skip≠pass)。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
