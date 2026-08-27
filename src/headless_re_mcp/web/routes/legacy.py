@@ -917,15 +917,24 @@ def register_legacy_routes(
     def session_knowledge(
         session_id: str,
         kind: str | None = Query(default=None),
+        offset: int = Query(default=0, ge=0),
         limit: int = Query(default=200, ge=1, le=500),
         authorization: str | None = Header(default=None),
         token_q: str | None = Query(default=None, alias="token"),
     ) -> JSONResponse:
-        """Accumulated analysis findings for one session, optionally one kind."""
+        """Accumulated analysis findings for one session, optionally one kind.
+
+        The reply reports ``has_more`` and ``total`` against the whole record,
+        but every sibling listing here (functions, strings, timeline, audit,
+        artifacts) also takes ``offset`` so the rest is reachable. Without it a
+        caller was told there was more knowledge with no way to page to it.
+        """
         _require_token(authorization, token_q)
         return JSONResponse(
             _result_payload(
-                service.knowledge_query(session_id, kind=kind, limit=limit)
+                service.knowledge_query(
+                    session_id, kind=kind, offset=offset, limit=limit
+                )
             )
         )
 

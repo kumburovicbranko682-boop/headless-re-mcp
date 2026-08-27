@@ -422,6 +422,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   那个工具。实测 3000 个未清理会话时，单次回包 **993 KiB**。现在与相邻的 `artifacts.list` /
   `audit.list` 一样分页（默认 100，回 `total` / `offset` / `has_more`），同一场景 33 KiB；
   就绪探针也改成只取一行——它要确认的是"存储答不答话"，不是"有多少话要说"。
+- **`GET /api/sessions/{id}/knowledge` 说了 `has_more` 却没有 `offset` 可翻**。`list_knowledge`
+  与 `service.knowledge_query` 一直支持 `offset` 并回 `total`/`has_more`，控制台里相邻的每一个列表
+  端点（functions、strings、timeline、audit、artifacts、sessions/unclean）也都暴露了 `offset`,
+  唯独这条只透传 `limit`——回包告诉调用方"还有更多知识条目",却不给任何参数去取。补 `offset`
+  查询参数（`Query(default=0, ge=0)`，与相邻端点一致；负值 422）并透传给服务。补测:路由把
+  `offset`/`limit`/`kind` 原样交给 service、`offset=-1` 被 422 拒绝。
 - **CLI 后端超时只杀启动器，工具本身留下来继续跑**。jadx、apktool、apksigner 与 Ghidra 的
   `analyzeHeadless` 都是启动 JVM 的脚本，webcrack 启动的是 node，而
   `subprocess.run(timeout=...)` 只杀它直接生出来的那个进程。本机实测：杀掉启动器之后，它启动的

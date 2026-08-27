@@ -1044,6 +1044,64 @@ def test_the_monitor_timeline_follows_the_session_instead_of_its_first_frames(
     assert shown[0] == "step 253"
 
 
+def test_session_knowledge_endpoint_forwards_offset_so_a_paged_read_advances(
+    tmp_path: Path,
+) -> None:
+    """The reply says has_more, so the caller must be able to page past it.
+
+    list_knowledge (and service.knowledge_query) have always taken offset, and
+    every sibling listing route exposes it, but this endpoint dropped it: a
+    caller told has_more=True had no query parameter to reach the rest.
+    """
+    from headless_re_mcp.core.models import Result
+
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    app = create_app(service, token=token, settings=settings)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    seen: dict[str, object] = {}
+
+    def fake_query(
+        session_id: str,
+        *,
+        kind: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Result[dict[str, object]]:
+        seen.update(session_id=session_id, kind=kind, offset=offset, limit=limit)
+        return Result(
+            ok=True,
+            data={
+                "session_id": session_id,
+                "entries": [],
+                "count": 0,
+                "total": 99,
+                "offset": offset,
+                "limit": limit,
+                "has_more": True,
+            },
+        )
+
+    service.knowledge_query = fake_query  # type: ignore[assignment]
+    client = TestClient(app)
+
+    resp = client.get(
+        "/api/sessions/s1/knowledge",
+        headers=headers,
+        params={"offset": 40, "limit": 20, "kind": "finding"},
+    )
+    assert resp.status_code == 200
+    assert seen == {"session_id": "s1", "kind": "finding", "offset": 40, "limit": 20}
+    assert resp.json()["data"]["offset"] == 40
+
+    rejected = client.get(
+        "/api/sessions/s1/knowledge", headers=headers, params={"offset": -1}
+    )
+    assert rejected.status_code == 422
+
+
 def test_web_exposes_dynamic_resume_and_pause(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     service = AnalysisService(settings)
