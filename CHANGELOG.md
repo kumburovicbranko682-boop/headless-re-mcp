@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（监控帧事件面板披露窗口总量与真实丢失）
+
+- 监控快照的 `events` 段（`build_monitor_snapshot` / `_event_tail`）只透出事件列表和
+  `next_cursor`，把持久事件日志批次里现成的诚实元数据全部丢掉：一个跑到 sequence 103 的
+  会话画出的帧只有最新 24 条，读起来却像完整事件流；更严重的是 native ring 在 drain 拷贝
+  之前覆盖掉的事件（真正丢失、不只是不在窗口里）也无声消失。帧现在带上 `total`
+  （日志高水位 `latest_sequence`）、`truncated`（窗口起点在 sequence 1 之后，即帧外还有
+  更早事件）与 `dropped_total`（曾存在但已不被任何介质持有的事件数）；安静会话三者分别为
+  真实总量、`false`、`0`，无日志/出错路径保持原有 `error` 语义并回落到 0/false。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
