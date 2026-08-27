@@ -774,6 +774,7 @@ class WebBackend:
                 )
                 for e in handle.requests.values()
             ]
+            dropped = handle.requests_dropped
         serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
         if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
             raise WebError(
@@ -784,12 +785,25 @@ class WebBackend:
             )
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(serialized.text, encoding="utf-8")
-        return {
+        result: JsonObject = {
             "path": str(out_path),
             "entry_count": serialized.entry_count,
             "truncated": serialized.truncated,
             "size": serialized.size,
+            "dropped": dropped,
         }
+        if dropped:
+            # The request ring holds at most _MAX_REQUESTS; anything older was
+            # evicted before this export ran. Without saying so, a HAR with
+            # entry_count entries reads as the whole session, and the caller
+            # replays it believing nothing earlier existed. truncated is a
+            # different axis (entries dropped to fit the size cap here), so both
+            # can be set at once.
+            result["note"] = (
+                "the capture ring evicted older requests before export; the HAR "
+                "is missing the earliest requests of the session"
+            )
+        return result
 
     def close_all(self) -> None:
         with self._lock:

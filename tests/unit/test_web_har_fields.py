@@ -32,6 +32,7 @@ def _tool_docstring(name: str) -> str:
 
 class _Handle:
     lock = Lock()
+    requests_dropped = 0
     requests = {
         "1": {
             "method": "GET",

@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（HAR 导出不再把被环形缓冲淘汰的流谎报为完整抓包）
+
+- `proxy.export_har` 与 `web.har.export` 都从有界的抓包环形缓冲(proxy 最多 `_MAX_FLOWS` 条流、
+  web 最多 `_MAX_REQUESTS` 条请求)构建 HAR。会话流量超过容量时,最早的行在导出前就已被淘汰,
+  文件里只剩尾段。过去返回只有 `path`/`entry_count`/`truncated`/`size`:`entry_count` 讲的是写进
+  文件的条数,`truncated` 讲的是为压到导出大小上限而丢掉的条目——两者都不披露「环形缓冲早已丢了
+  更早的行」。于是一份 `entry_count` 条的 HAR 被读成整场会话,调用方据此回放、断定之前什么都没
+  发生。现两者都返回 `dropped`(环形缓冲在导出前淘汰的行数);`dropped>0` 时附 `note`,明说最早的
+  流/请求已完全缺失。`dropped`(抓包期淘汰)与 `truncated`(导出期压缩)是两条独立的轴,可同时置位。
+  `proxy.flows`/`web.network_list` 早已披露 `dropped`,本轮把同一诚实契约补进 HAR 导出。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
