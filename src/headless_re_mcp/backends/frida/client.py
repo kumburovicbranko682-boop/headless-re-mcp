@@ -315,13 +315,39 @@ class FridaClient:
             with contextlib.suppress(Exception):
                 session.detach()
 
-    def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
-        self._require(pid, allowed_pid)
+    def _read_with_script(self, pid: int, run: Callable[[Any], JsonObject]) -> JsonObject:
+        """Attach locally, load the enumeration script, run ``run(script)``, detach.
+
+        A frida-side failure *after* the attach -- the target dies, a page is
+        unreadable, ``script.load()`` is rejected -- is mapped to a structured
+        ``backend_error`` (or ``timeout``) rather than surfacing as a raw frida
+        exception that the service envelope logs as an ``internal_error``
+        incident. That matches the device-path readers (java_enumerate,
+        hook_template_device) and the r2/apk adapters, which already convert a
+        backend fault this way; only these local readers still leaked the raw
+        error. Attach failures are already FridaError from ``_attach_local`` and
+        propagate unchanged (it runs before the mapped block).
+        """
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
-            capped = max(1, min(int(limit), 256))
+            return run(script)
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - frida raises many native errors
+            if _is_timeout(exc):
+                raise _timeout_error(_PROBE_TIMEOUT_S) from exc
+            raise FridaError("backend_error", f"frida read failed: {exc}", pid=pid) from exc
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
+    def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
+        self._require(pid, allowed_pid)
+        capped = max(1, min(int(limit), 256))
+
+        def run(script: Any) -> JsonObject:
             raw = script.exports_sync.modules(capped)
             if isinstance(raw, dict):
                 held = list(raw.get("modules") or [])
@@ -345,9 +371,8 @@ class FridaClient:
                 "total": total,
                 "has_more": total > len(items),
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._read_with_script(pid, run)
 
     def exports(
         self,
@@ -361,10 +386,8 @@ class FridaClient:
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
         capped = max(1, min(int(limit), 512))
-        session = self._attach_local(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
+
+        def run(script: Any) -> JsonObject:
             raw = script.exports_sync.exports(module_name.strip(), capped + 1)
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
@@ -388,20 +411,23 @@ class FridaClient:
                 "count": len(items),
                 "has_more": has_more,
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._read_with_script(pid, run)
 
     def memory_read(
         self, pid: int, address: int, size: int, *, allowed_pid: int
     ) -> JsonObject:
         self._require(pid, allowed_pid)
+        # Match the r2 disasm/xrefs contract: a non-negative int address. The
+        # tool boundary types address as int but sets no lower bound, so a
+        # negative value would otherwise reach ptr(address) in the agent and
+        # come back as an internal_error incident rather than invalid_params.
+        if type(address) is not int or address < 0:
+            raise FridaError("invalid_params", "address must be a non-negative int")
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
-        session = self._attach_local(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
+
+        def run(script: Any) -> JsonObject:
             data = bytes(script.exports_sync.read(int(address), int(size)))
             return {
                 "address": address,
@@ -409,9 +435,8 @@ class FridaClient:
                 "encoding": "hex",
                 "data": data.hex(),
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._read_with_script(pid, run)
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:

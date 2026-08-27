@@ -130,6 +130,72 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+class _FailingApi:
+    def modules(self, limit: int = 64) -> list[dict[str, Any]]:
+        del limit
+        raise RuntimeError("target process disappeared")
+
+
+class _FailingScript:
+    exports_sync = _FailingApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _FailingSession:
+    def __init__(self) -> None:
+        self.detached = False
+
+    def create_script(self, source: str) -> _FailingScript:
+        del source
+        return _FailingScript()
+
+    def detach(self) -> None:
+        self.detached = True
+
+
+class _FailingFrida:
+    def __init__(self) -> None:
+        self.session = _FailingSession()
+
+    def attach(self, pid: int) -> _FailingSession:
+        del pid
+        return self.session
+
+
+def test_frida_local_read_maps_a_backend_fault_and_detaches() -> None:
+    """A frida fault after attach must be backend_error, not an internal incident.
+
+    The local readers used to let a raw frida exception (target died, page
+    unreadable) escape to the service envelope, which logs it as an
+    internal_error incident -- the same anti-pattern the r2 and apk adapters
+    were fixed for. It now maps to backend_error and still detaches the probe.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _FailingFrida()
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1, limit=8)
+    assert caught.value.code == "backend_error"
+    assert client._frida.session.detached is True
+
+
+def test_frida_memory_read_rejects_a_negative_address() -> None:
+    """The tool types address as int but sets no lower bound; the client must.
+
+    Without this a negative address reaches ptr(address) in the agent and comes
+    back as an internal_error incident instead of a clean invalid_params, unlike
+    the r2 disasm/xrefs siblings which reject it up front.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _Frida()
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(1, -1, 16, allowed_pid=1)
+    assert caught.value.code == "invalid_params"
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident
