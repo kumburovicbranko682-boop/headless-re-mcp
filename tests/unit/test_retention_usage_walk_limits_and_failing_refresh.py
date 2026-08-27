@@ -26,6 +26,18 @@ def test_the_walk_stops_at_the_file_limit_and_reports_a_floor(tmp_path: Path) ->
     assert usage.truncated is True
 
 
+def test_a_broken_symlink_is_skipped_not_counted(tmp_path: Path) -> None:
+    # stat() follows links, so a dangling one raises mid-walk. One bad entry
+    # must cost only itself: the file is skipped and the rest of the tree is
+    # still totalled as a complete (untruncated) answer.
+    (tmp_path / "real.bin").write_bytes(b"x" * 4)
+    (tmp_path / "ghost").symlink_to(tmp_path / "nope.bin")
+
+    usage = measure_usage(tmp_path)
+
+    assert usage == DiskUsage(bytes=4, files=1, truncated=False)
+
+
 def test_a_walk_that_dies_midway_reports_what_it_saw_as_a_floor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
