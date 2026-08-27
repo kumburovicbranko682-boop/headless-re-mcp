@@ -152,6 +152,52 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  # Real-backend coverage for the radare2 line. radare2 is cross-platform and
+  # apt-installable, so its live gate runs for real on Linux instead of skipping
+  # forever -- "skip != pass" only means something when the backend is present
+  # somewhere. gcc ships on ubuntu-latest, so the gate builds its own ELF rather
+  # than needing the Windows PE fixture.
+  linux-r2-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install radare2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y radare2
+          r2 -v
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: radare2 gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_m11_r2_live_gate.py \
+            -rs --tb=short --junitxml=r2-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("r2-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # radare2 was just installed, so a skip here means the gate could not
+          # reach it -- exactly the false-green "skip != pass" warns about.
+          if not cases:
+              sys.exit("no r2 gate was collected")
+          if skipped:
+              sys.exit(f"r2 gate skipped despite an installed radare2: {skipped}")
+          print(f"r2 gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
