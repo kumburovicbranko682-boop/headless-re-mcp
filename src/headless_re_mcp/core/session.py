@@ -430,6 +430,20 @@ _DT_VERNEED = 0x6FFFFFFE
 _DT_VERNEEDNUM = 0x6FFFFFFF
 _ELF_MAX_VERNEED = 64
 _ELF_MAX_VERNAUX = 128
+# Versioned-symbol definitions (.gnu.version_d): DT_VERDEF points at a chain of
+# Verdef records, one per version node the object *provides* (e.g. GLIBC_2.34
+# in libc.so.6, or PROBE_1.0 in a library built with a version script). This is
+# the export-side pair to DT_VERNEED -- the ABI contract a shared object
+# exposes, the versioned-symbol analogue of DT_SONAME and the native counterpart
+# to the exported surface an APK or a managed assembly declares. The first node
+# carries VER_FLG_BASE and names the object itself; later nodes may chain a
+# parent version. readelf -V prints the same "Version definition section", so
+# the toolchain gate can cross-check it. Bounded like the Verneed walk.
+_DT_VERDEF = 0x6FFFFFFC
+_DT_VERDEFNUM = 0x6FFFFFFD
+_VER_FLG_BASE = 0x1
+_ELF_MAX_VERDEF = 128
+_ELF_MAX_VERDAUX = 128
 _DT_BIND_NOW = 24
 _DT_FLAGS = 30
 _DT_FLAGS_1 = 0x6FFFFFFB
@@ -2486,6 +2500,11 @@ def _elf_layout_facts(
                 # Absent for a binary with no versioned imports.
                 if names["version_needs"]:
                     facts["version_needs"] = names["version_needs"]
+                # The version nodes the object provides (DT_VERDEF) -- its
+                # exported ABI contract, present on a versioned shared object.
+                # readelf -V shows the same "Version definition section".
+                if names["version_defs"]:
+                    facts["version_defs"] = names["version_defs"]
         else:
             pie = False
         if pie is not None:
@@ -2691,6 +2710,8 @@ def _elf_dynamic_names(
     strsz: int | None = None
     verneed_va: int | None = None
     verneed_num: int | None = None
+    verdef_va: int | None = None
+    verdef_num: int | None = None
     for i in range(count):
         entry = table[i * entsize : (i + 1) * entsize]
         if len(entry) < entsize:
@@ -2716,6 +2737,10 @@ def _elf_dynamic_names(
             verneed_va = val
         elif tag == _DT_VERNEEDNUM:
             verneed_num = val
+        elif tag == _DT_VERDEF:
+            verdef_va = val
+        elif tag == _DT_VERDEFNUM:
+            verdef_num = val
     if strtab_va is None:
         return None
     str_off = _elf_vaddr_to_off(strtab_va, loads)
@@ -2747,12 +2772,19 @@ def _elf_dynamic_names(
         if vn_off is not None:
             version_needs = _elf_version_needs(stream, order, vn_off, verneed_num, read_name)
 
+    version_defs: list[dict[str, Any]] = []
+    if verdef_va is not None:
+        vd_off = _elf_vaddr_to_off(verdef_va, loads)
+        if vd_off is not None:
+            version_defs = _elf_version_defs(stream, order, vd_off, verdef_num, read_name)
+
     return {
         "needed": [name for off in needed_offsets if (name := read_name(off))],
         "soname": read_name(soname_off) if soname_off is not None else None,
         "rpath": read_paths(rpath_off),
         "runpath": read_paths(runpath_off),
         "version_needs": version_needs,
+        "version_defs": version_defs,
         "canary": any(sym in blob for sym in _ELF_CANARY_SYMBOLS),
     }
 
@@ -2810,6 +2842,69 @@ def _elf_version_needs(
         if vn_next == 0:
             break
         pos += vn_next
+    return results
+
+
+def _elf_version_defs(
+    stream: BinaryIO,
+    order: str,
+    off: int,
+    declared: int | None,
+    read_name: Callable[[int], str | None],
+) -> list[dict[str, Any]]:
+    """The Verdef chain: which version nodes the object *defines* (provides).
+
+    Each 20-byte Verdef record carries flags (VER_FLG_BASE marks the node that
+    names the object itself), a ``vd_cnt`` count of chained 8-byte Verdaux
+    records and the ``vd_aux``/``vd_next`` relative hops. The first Verdaux of a
+    record is the version node's own name (``vda_name``); any that follow name
+    parent versions it inherits (e.g. PROBE_2.0 inheriting PROBE_1.0). Mirrors
+    the Verneed walk's bounding exactly: every count and hop is capped and a
+    malformed record stops the walk, so a hostile chain degrades to a shorter
+    list rather than a large read or an unbounded loop.
+    """
+    results: list[dict[str, Any]] = []
+    count = min(declared, _ELF_MAX_VERDEF) if declared else _ELF_MAX_VERDEF
+    pos = off
+    for _ in range(count):
+        stream.seek(pos)
+        record = stream.read(20)
+        if len(record) < 20:
+            break
+        vd_version = int.from_bytes(record[0:2], order)  # type: ignore[arg-type]
+        vd_flags = int.from_bytes(record[2:4], order)  # type: ignore[arg-type]
+        vd_cnt = int.from_bytes(record[6:8], order)  # type: ignore[arg-type]
+        vd_aux = int.from_bytes(record[12:16], order)  # type: ignore[arg-type]
+        vd_next = int.from_bytes(record[16:20], order)  # type: ignore[arg-type]
+        if vd_version != 1:  # the only revision ever defined; anything else is garbage
+            break
+        names: list[str] = []
+        aux_pos = pos + vd_aux
+        for _ in range(min(vd_cnt, _ELF_MAX_VERDAUX) if vd_aux > 0 else 0):
+            stream.seek(aux_pos)
+            aux = stream.read(8)
+            if len(aux) < 8:
+                break
+            vda_name = int.from_bytes(aux[0:4], order)  # type: ignore[arg-type]
+            vda_next = int.from_bytes(aux[4:8], order)  # type: ignore[arg-type]
+            name = read_name(vda_name)
+            if name:
+                names.append(name)
+            if vda_next == 0:
+                break
+            aux_pos += vda_next
+        if names:
+            # The first Verdaux is the node's own name; the rest are parents.
+            results.append(
+                {
+                    "name": names[0],
+                    "base": bool(vd_flags & _VER_FLG_BASE),
+                    "parents": names[1:],
+                }
+            )
+        if vd_next == 0:
+            break
+        pos += vd_next
     return results
 
 

@@ -19,6 +19,11 @@ Two triage themes the other native gates cannot cover from system binaries:
   link also carries the DT_VERNEED chain (which GLIBC_x.y tags of which
   libraries the loader must satisfy -- the library-level minimum-runtime
   fact), which readelf -V must decode identically.
+- Provided symbol versions (ELF DT_VERDEF) -- the export side of the versioned
+  symbol story: the version nodes a shared object defines as its ABI contract.
+  A library linked with a version script carries the Verdef chain readelf -V
+  renders as its "Version definition section", which the reader must match node
+  for node (BASE flag and inherited parents included).
 
 skip != pass when a tool is missing; gcc/readelf ship with the CI runner and
 llvm is installed on the Linux lane.
@@ -47,6 +52,22 @@ _READELF_ABI_RE = re.compile(r"OS: (\w+), ABI: (\d+\.\d+\.\d+)")
 # lines followed by one "Name: GLIBC_2.34  Flags: ..." line per version tag.
 _READELF_VERNEED_FILE_RE = re.compile(r"Version: 1\s+File: (\S+)\s+Cnt: \d+")
 _READELF_VERNEED_NAME_RE = re.compile(r"Name: (\S+)\s+Flags:")
+# readelf -V renders each Verdef node as "... Flags: BASE  Index: 1  Cnt: 1
+# Name: libprobe.so.1", with any inherited parent on a following
+# "Parent 1: PROBE_1.0" line.
+_READELF_VERDEF_NAME_RE = re.compile(r"Flags:\s+(\S+).*?\bName:\s+(\S+)")
+_READELF_VERDEF_PARENT_RE = re.compile(r"Parent \d+:\s+(\S+)")
+_READELF_SECTION_RE = re.compile(r"^Version \w+ section")
+
+# A tiny library that defines two symbols bound to two version nodes, the
+# second inheriting the first -- enough for ld to emit a three-node Verdef
+# section (the BASE soname node plus the two script nodes).
+_LIB_C = "int probe_one(void){return 1;}\nint probe_two(void){return 2;}\n"
+_VERSION_SCRIPT = (
+    "PROBE_1.0 { global: probe_one; local: *; };\n"
+    "PROBE_2.0 { global: probe_two; } PROBE_1.0;\n"
+)
+_LIB_SONAME = "libprobe.so.1"
 
 # llvm-objdump --macho --all-headers prints the LC_BUILD_VERSION block as
 # "cmd LC_BUILD_VERSION" followed by platform/sdk/minos lines.
@@ -119,6 +140,43 @@ def _readelf_version_needs(readelf: str, binary: Path) -> list[dict[str, Any]]:
         if name_match and needs:
             needs[-1]["versions"].append(name_match.group(1))
     return needs
+
+
+def _readelf_version_defs(readelf: str, binary: Path) -> list[dict[str, Any]]:
+    """The Verdef chain as readelf -V decodes it, in the reader's fact shape.
+
+    readelf renders each version node as a "... Flags: BASE ... Name: X" line
+    (BASE marking the node that names the object), with any inherited parent on
+    a following "Parent n: Y" line. Walked over the "Version definition
+    section" only, so a version-needs or symbols section in the same output
+    cannot leak into the result.
+    """
+    result = subprocess.run(
+        [readelf, "-V", str(binary)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    defs: list[dict[str, Any]] = []
+    in_section = False
+    for line in result.stdout.splitlines():
+        if _READELF_SECTION_RE.match(line.strip()):
+            in_section = "Version definition section" in line
+            continue
+        if not in_section:
+            continue
+        name_match = _READELF_VERDEF_NAME_RE.search(line)
+        if name_match:
+            defs.append(
+                {
+                    "name": name_match.group(2),
+                    "base": name_match.group(1) == "BASE",
+                    "parents": [],
+                }
+            )
+            continue
+        parent_match = _READELF_VERDEF_PARENT_RE.search(line)
+        if parent_match and defs:
+            defs[-1]["parents"].append(parent_match.group(1))
+    return defs
 
 
 def _session_native(service: AnalysisService, binary: Path) -> tuple[str, dict[str, Any]]:
@@ -243,6 +301,61 @@ def test_elf_version_needs_agree_with_readelf(tmp_path: Path) -> None:
         assert libc is not None, ground_truth
         assert libc["versions"], ground_truth
         assert all(str(tag).startswith("GLIBC_") for tag in libc["versions"])
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_elf_version_defs_agree_with_readelf(tmp_path: Path) -> None:
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — verdef gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — verdef gate not run (skip != pass)")
+
+    # A shared library linked with a version script provides the DT_VERDEF
+    # chain this gate cross-checks -- the export side of the versioned-symbol
+    # story the verneed gate covers for imports.
+    source = tmp_path / "lib.c"
+    source.write_text(_LIB_C)
+    script = tmp_path / "version.map"
+    script.write_text(_VERSION_SCRIPT)
+    lib = tmp_path / "libprobe.so"
+    result = subprocess.run(
+        [
+            gcc, "-shared", "-fPIC", "-o", str(lib), str(source),
+            f"-Wl,--version-script={script}", f"-Wl,-soname,{_LIB_SONAME}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    ground_truth = _readelf_version_defs(readelf, lib)
+    if not ground_truth:
+        pytest.skip("toolchain emitted no version-defs chain — gate not run (skip != pass)")
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, lib)
+        # The tool-free Verdef walk and readelf -V decode the same chain: the
+        # same nodes in the same order, each with the same BASE flag and the
+        # same inherited parents.
+        assert native["version_defs"] == ground_truth
+        # And it is the real thing the version script asked for: a BASE node
+        # naming the library (its soname) plus the two script nodes, the
+        # second inheriting the first.
+        assert native["version_defs"] == [
+            {"name": _LIB_SONAME, "base": True, "parents": []},
+            {"name": "PROBE_1.0", "base": False, "parents": []},
+            {"name": "PROBE_2.0", "base": False, "parents": ["PROBE_1.0"]},
+        ]
+        # The BASE node names the object itself -- the same string DT_SONAME
+        # reports -- so the two provider-side facts agree.
+        assert native["soname"] == _LIB_SONAME
     finally:
         if session_id is not None:
             service.close_session(session_id)

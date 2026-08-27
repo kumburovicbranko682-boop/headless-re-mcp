@@ -445,6 +445,8 @@ def _elf64_dynamic_with_strtab(
     runpath: int | None = None,
     verneed: bytes | None = None,
     verneed_num: int = 1,
+    verdef: bytes | None = None,
+    verdef_num: int = 1,
 ) -> bytes:
     """A dynamic ELF whose DT_STRTAB points at ``strtab``.
 
@@ -454,7 +456,8 @@ def _elf64_dynamic_with_strtab(
     ``rpath``/``runpath`` add a DT_RPATH/DT_RUNPATH tag whose value is the given
     string-table offset. ``verneed`` appends a .gnu.version_r blob behind the
     dynamic array and points DT_VERNEED at it, declaring ``verneed_num``
-    records.
+    records; ``verdef`` appends a .gnu.version_d blob behind that and points
+    DT_VERDEF at it, declaring ``verdef_num`` records.
     """
     entries: list[tuple[int, int]] = []
     if rpath is not None:
@@ -468,18 +471,26 @@ def _elf64_dynamic_with_strtab(
     ph_off = 64
     strtab_off = ph_off + 56 * 2  # == 176, matching DT_STRTAB above
     dyn_off = strtab_off + len(strtab)
+    # The dynamic array size is fixed once every row is known, so the version
+    # blobs that sit behind it get stable file offsets. Count the rows added
+    # below (2 per present version tag) plus the trailing DT_NULL, then place
+    # each blob in turn: with the vaddr == offset PT_LOAD, each file offset is
+    # its virtual address too, so DT_VERNEED/DT_VERDEF can point straight at it.
+    row_count = len(entries) + (2 if verneed is not None else 0)
+    row_count += (2 if verdef is not None else 0) + 1
+    blob_base = dyn_off + row_count * 16
     if verneed is not None:
-        # The verneed blob sits right behind the dynamic array; with the
-        # vaddr == offset PT_LOAD its file offset is its virtual address too.
-        vn_off = dyn_off + (len(entries) + 3) * 16  # + DT_VERNEED/NUM/NULL rows
-        entries += [(0x6FFFFFFE, vn_off), (0x6FFFFFFF, verneed_num)]
+        entries += [(0x6FFFFFFE, blob_base), (0x6FFFFFFF, verneed_num)]
+    if verdef is not None:
+        vd_off = blob_base + (len(verneed) if verneed is not None else 0)
+        entries += [(0x6FFFFFFC, vd_off), (0x6FFFFFFD, verdef_num)]
     entries.append((0, 0))  # DT_NULL
     dyn = b"".join(
         tag.to_bytes(8, "little") + val.to_bytes(8, "little") for tag, val in entries
     )
     program = _phdr64(1, p_offset=0, p_filesz=0x10000, p_vaddr=0) + _phdr64(2, dyn_off, len(dyn))
     ehdr = _ehdr64(3, phoff=ph_off, phnum=2, shoff=0, shnum=0)  # ET_DYN
-    return ehdr + program + strtab + dyn + (verneed or b"")
+    return ehdr + program + strtab + dyn + (verneed or b"") + (verdef or b"")
 
 
 def _verneed_blob(entries: list[tuple[int, list[int]]]) -> bytes:
@@ -500,6 +511,30 @@ def _verneed_blob(entries: list[tuple[int, list[int]]]) -> bytes:
         vn_next = 16 + len(aux) if index + 1 < len(entries) else 0
         # vn_version, vn_cnt, vn_file, vn_aux, vn_next
         out += struct.pack("<HHIII", 1, len(name_offs), file_off, 16, vn_next) + bytes(aux)
+    return bytes(out)
+
+
+def _verdef_blob(entries: list[tuple[int, list[int], int]]) -> bytes:
+    """A .gnu.version_d blob: one Verdef record per ``(name_off, parents, flags)``.
+
+    ``name_off`` is the version node's own name and each ``parents`` entry a
+    parent version it inherits, all as offsets into the dynamic string table;
+    ``flags`` carries VER_FLG_BASE (1) for the node that names the object. The
+    first Verdaux is the node's own name and the rest its parents, laid out
+    contiguously with the standard 20-byte record / 8-byte aux hops ld emits.
+    """
+    out = bytearray()
+    for index, (name_off, parents, flags) in enumerate(entries):
+        aux_offs = [name_off, *parents]
+        aux = bytearray()
+        for j, off in enumerate(aux_offs):
+            vda_next = 8 if j + 1 < len(aux_offs) else 0
+            aux += struct.pack("<II", off, vda_next)  # vda_name, vda_next
+        vd_next = 20 + len(aux) if index + 1 < len(entries) else 0
+        # vd_version, vd_flags, vd_ndx, vd_cnt, vd_hash, vd_aux, vd_next
+        out += struct.pack(
+            "<HHHHIII", 1, flags, index + 1, len(aux_offs), 0, 20, vd_next
+        ) + bytes(aux)
     return bytes(out)
 
 
@@ -696,6 +731,72 @@ def test_a_lying_vernaux_count_stays_bounded(tmp_path: Path) -> None:
     )
     facts = describe_native(path)["native"]
     assert facts["version_needs"] == [{"file": "libc.so.6", "versions": ["GLIBC_2.34"]}]
+
+
+def test_version_defs_report_the_nodes_the_object_provides(tmp_path: Path) -> None:
+    # DT_VERDEF is the export-side fact: the version nodes a shared object
+    # defines. The first carries VER_FLG_BASE and names the object; a later
+    # node may inherit a parent. readelf -V decodes the same section.
+    strtab = b"\x00libprobe.so.1\x00PROBE_1.0\x00PROBE_2.0\x00"
+    # base(soname)@1, PROBE_1.0@15, PROBE_2.0@25 inheriting PROBE_1.0.
+    verdef = _verdef_blob([(1, [], 0x1), (15, [], 0), (25, [15], 0)])
+    path = _write(
+        tmp_path, "a.bin", _elf64_dynamic_with_strtab(strtab, verdef=verdef, verdef_num=3)
+    )
+    facts = describe_native(path)["native"]
+    assert facts["version_defs"] == [
+        {"name": "libprobe.so.1", "base": True, "parents": []},
+        {"name": "PROBE_1.0", "base": False, "parents": []},
+        {"name": "PROBE_2.0", "base": False, "parents": ["PROBE_1.0"]},
+    ]
+
+
+def test_no_verdef_leaves_the_fact_out(tmp_path: Path) -> None:
+    # A binary that defines no version nodes (an ordinary executable, or a
+    # library built without a version script) has no Verdef chain; the fact is
+    # omitted rather than reported as an empty list.
+    path = _write(tmp_path, "a.bin", _elf64_dynamic_with_needed())
+    assert "version_defs" not in describe_native(path)["native"]
+
+
+def test_a_truncated_verdef_chain_reports_what_parsed(tmp_path: Path) -> None:
+    # vd_next pointing past the file is hostile input: the walk keeps the node
+    # it already read and stops, rather than raising or looping.
+    strtab = b"\x00libprobe.so.1\x00PROBE_1.0\x00"
+    record = bytearray(_verdef_blob([(1, [], 0x1)]))
+    record[16:20] = (0x7FFFFFFF).to_bytes(4, "little")  # vd_next -> far past EOF
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_dynamic_with_strtab(strtab, verdef=bytes(record), verdef_num=2),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["version_defs"] == [{"name": "libprobe.so.1", "base": True, "parents": []}]
+
+
+def test_a_verdef_with_a_wrong_revision_is_ignored(tmp_path: Path) -> None:
+    # vd_version must be 1 (the only revision ever defined); anything else
+    # means the chain is garbage, so no fact is invented from it.
+    strtab = b"\x00libprobe.so.1\x00"
+    record = bytearray(_verdef_blob([(1, [], 0x1)]))
+    record[0:2] = (7).to_bytes(2, "little")
+    path = _write(
+        tmp_path, "a.bin", _elf64_dynamic_with_strtab(strtab, verdef=bytes(record))
+    )
+    assert "version_defs" not in describe_native(path)["native"]
+
+
+def test_a_lying_verdaux_count_stays_bounded(tmp_path: Path) -> None:
+    # vd_cnt is attacker-controlled; a huge claim walks at most the capped
+    # number of aux records and keeps only the names that resolve.
+    strtab = b"\x00libprobe.so.1\x00"
+    record = bytearray(_verdef_blob([(1, [], 0x1)]))
+    record[6:8] = (0xFFFF).to_bytes(2, "little")  # vd_cnt: 65535 claimed
+    path = _write(
+        tmp_path, "a.bin", _elf64_dynamic_with_strtab(strtab, verdef=bytes(record))
+    )
+    facts = describe_native(path)["native"]
+    assert facts["version_defs"] == [{"name": "libprobe.so.1", "base": True, "parents": []}]
 
 
 def test_soname_and_build_id_from_a_shared_object(tmp_path: Path) -> None:
