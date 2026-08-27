@@ -283,8 +283,12 @@ def test_reading_the_timeline_does_not_collide_with_trimming_it(
             if "read_failed" in page:
                 read_failures.append(str(page["read_failed"]))
 
-    threads = [threading.Thread(target=writer, args=(i,)) for i in range(3)]
-    threads += [threading.Thread(target=reader) for _ in range(3)]
+    # Daemon threads plus an aliveness check: a worker wedged on a Windows
+    # sharing violation would otherwise outlive its timed join silently and
+    # then hang interpreter shutdown after the suite has passed -- the one
+    # phase no per-test watchdog covers.
+    threads = [threading.Thread(target=writer, args=(i,), daemon=True) for i in range(3)]
+    threads += [threading.Thread(target=reader, daemon=True) for _ in range(3)]
     for thread in threads:
         thread.start()
     time.sleep(3)
@@ -292,6 +296,7 @@ def test_reading_the_timeline_does_not_collide_with_trimming_it(
     for thread in threads:
         thread.join(timeout=30)
 
+    assert not any(thread.is_alive() for thread in threads), "a timeline worker wedged"
     assert reads[0] > 0, "the readers must actually have run"
     assert not write_failures, f"{len(write_failures)} appends lost, first: {write_failures[0]}"
     assert not read_failures, f"{len(read_failures)} reads failed, first: {read_failures[0]}"
@@ -324,12 +329,15 @@ def test_appends_that_trim_at_the_same_time_do_not_fail_each_other(
             if "write_failed" in entry:
                 failures.append(str(entry["write_failed"]))
 
-    threads = [threading.Thread(target=hammer, args=(i,), name=f"tl-{i}") for i in range(6)]
+    threads = [
+        threading.Thread(target=hammer, args=(i,), name=f"tl-{i}", daemon=True) for i in range(6)
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=60)
 
+    assert not any(thread.is_alive() for thread in threads), "an append worker wedged"
     assert not failures, f"{len(failures)} appends failed, first: {failures[0]}"
     assert path.stat().st_size <= 4096 + 4096, "the cap must still hold under contention"
     listed = list_session_timeline(path, limit=256)
