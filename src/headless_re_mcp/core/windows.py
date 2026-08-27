@@ -11,6 +11,15 @@ from typing import Any
 
 JsonObject = dict[str, Any]
 
+# A window title is data the debuggee controls: SetWindowText accepts a string
+# of arbitrary length, and GetWindowTextLengthW reports it back. Sizing a
+# buffer from that raw length lets a hostile sample make every enumeration pass
+# allocate hundreds of megabytes per window (create_unicode_buffer is 2 bytes a
+# char), and window enumeration runs against the debuggee on ui.windows.list
+# and on the periodic desktop monitors. No real title needs this many chars, so
+# both enumerators clamp to it.
+_MAX_WINDOW_TITLE_CHARS = 4096
+
 
 def window_is_capturable(row: JsonObject) -> bool:
     """True when a snapshot row has a positive, non-minimized capture rectangle."""
@@ -151,9 +160,9 @@ def list_process_windows(pid: int) -> list[JsonObject]:
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
         if owner_pid.value != pid:
             return True
-        length = user32.GetWindowTextLengthW(hwnd)
-        title = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, title, length + 1)
+        length = max(0, int(user32.GetWindowTextLengthW(hwnd)))
+        title = ctypes.create_unicode_buffer(min(length, _MAX_WINDOW_TITLE_CHARS) + 1)
+        user32.GetWindowTextW(hwnd, title, len(title))
         class_name = ctypes.create_unicode_buffer(256)
         user32.GetClassNameW(hwnd, class_name, len(class_name))
         visible = bool(user32.IsWindowVisible(hwnd))
@@ -205,7 +214,7 @@ def list_input_desktop_windows(*, allowed_pids: frozenset[int] | None = None) ->
         if allowed_pids is not None and pid not in allowed_pids:
             return True
         length = max(0, int(user32.GetWindowTextLengthW(hwnd)))
-        title = ctypes.create_unicode_buffer(min(length, 4096) + 1)
+        title = ctypes.create_unicode_buffer(min(length, _MAX_WINDOW_TITLE_CHARS) + 1)
         user32.GetWindowTextW(hwnd, title, len(title))
         class_name = ctypes.create_unicode_buffer(256)
         user32.GetClassNameW(hwnd, class_name, len(class_name))
