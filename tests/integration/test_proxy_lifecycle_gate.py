@@ -9,7 +9,15 @@ reported as a running capture.
 from __future__ import annotations
 
 import socket
+import tempfile
+import threading
 import time
+import urllib.request
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,6 +29,41 @@ def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
+
+
+_ORIGIN_BODY = b'{"ok":true,"who":"origin"}'
+
+
+@contextmanager
+def _origin_server() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(_ORIGIN_BODY)))
+            self.end_headers()
+            self.wfile.write(_ORIGIN_BODY)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/api/thing"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+def _poll(predicate: Callable[[], Any], *, timeout: float = 10.0) -> Any:
+    deadline = time.monotonic() + timeout
+    found = predicate()
+    while not found and time.monotonic() < deadline:
+        time.sleep(0.1)
+        found = predicate()
+    return found
 
 
 def _mitmproxy_available() -> bool:
@@ -62,6 +105,49 @@ def test_proxy_start_means_listening_and_stop_releases_the_port() -> None:
         time.sleep(0.1)
     else:
         pytest.fail("proxy port was still accepting connections after stop")
+
+
+@pytest.mark.integration
+def test_proxy_actually_intercepts_and_records_a_request() -> None:
+    """Start/stop is not enough: the point of the proxy is to record traffic.
+
+    Drive a real HTTP request through the running proxy to a local origin and
+    assert the flow is captured and that flow_get returns the exact response
+    body. This is the interception contract Web and Android both rely on, and
+    nothing exercised it live before -- the lifecycle gate never sent a byte.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy interception Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _origin_server() as origin_url:
+        backend.start("gate-capture", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            with opener.open(origin_url, timeout=10) as response:
+                assert response.status == 200
+                assert response.read() == _ORIGIN_BODY
+
+            def _captured() -> dict[str, Any] | None:
+                listing = backend.flows("gate-capture")
+                for flow in listing["flows"]:
+                    if str(flow.get("url", "")).endswith("/api/thing"):
+                        return flow
+                return None
+
+            flow = _poll(_captured)
+            assert flow is not None, "the request through the proxy was never recorded"
+            assert flow["method"] == "GET"
+            assert flow["status"] == 200
+
+            detail = backend.flow_get("gate-capture", flow["id"], Path(tempfile.mkdtemp()))
+            assert detail["request"]["method"] == "GET"
+            assert detail["response"]["status"] == 200
+            assert detail["response"]["body"] == _ORIGIN_BODY.decode("utf-8")
+        finally:
+            backend.stop("gate-capture")
 
 
 @pytest.mark.integration
