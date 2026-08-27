@@ -129,15 +129,28 @@ def _ingest_tool_calls(
     calls: Any,
     tool_fragments: dict[int, dict[str, str]],
     tool_buffer_bytes: int,
+    *,
+    snapshot: bool = False,
 ) -> tuple[int, list[str]]:
-    """Accumulate streamed or snapshot tool calls. Returns (bytes, output pieces)."""
+    """Accumulate streamed or snapshot tool calls. Returns (bytes, output pieces).
+
+    A streamed delta carries a stable ``index`` that ties fragments of the same
+    call across chunks together, so those are keyed on it. A message *snapshot*
+    -- a provider that answers ``stream: true`` by sending the whole assistant
+    message in one chunk rather than deltas -- follows the non-streaming schema,
+    where each tool call is already complete and carries no ``index``. Keying
+    those on ``index`` collapses every snapshot call onto 0, concatenating their
+    names and arguments into a single call whose arguments no longer parse, so a
+    snapshot provider that returns parallel tool calls fails the whole run. The
+    list is in call order, so the position is the correct key there.
+    """
     if not isinstance(calls, list):
         return tool_buffer_bytes, []
     pieces: list[str] = []
-    for raw_call in calls:
+    for position, raw_call in enumerate(calls):
         if not isinstance(raw_call, dict):
             continue
-        index = int(raw_call.get("index", 0))
+        index = position if snapshot else int(raw_call.get("index", 0))
         if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
             raise ValueError(
                 "provider tool-call count exceeded "
@@ -405,15 +418,18 @@ class OpenAICompatibleProvider:
                 content = _plain_text(delta.get("content"))
                 hidden = _hidden_texts(delta)
                 calls = delta.get("tool_calls")
+                calls_are_snapshot = False
                 has_delta = bool(content or hidden or calls)
                 if not has_delta and not saw_incremental:
                     content = _plain_text(message.get("content"))
                     hidden = _hidden_texts(message)
                     calls = message.get("tool_calls")
+                    calls_are_snapshot = bool(calls)
                 elif not calls and not tool_fragments:
                     message_calls = message.get("tool_calls")
                     if isinstance(message_calls, list) and message_calls:
                         calls = message_calls
+                        calls_are_snapshot = True
                 if content:
                     saw_incremental = True
                     yield ProviderEvent("text_delta", text=content)
@@ -423,7 +439,7 @@ class OpenAICompatibleProvider:
                 if calls:
                     saw_incremental = True
                     tool_buffer_bytes, pieces = _ingest_tool_calls(
-                        calls, tool_fragments, tool_buffer_bytes
+                        calls, tool_fragments, tool_buffer_bytes, snapshot=calls_are_snapshot
                     )
                     for piece in pieces:
                         yield ProviderEvent("output_delta", text=piece)
