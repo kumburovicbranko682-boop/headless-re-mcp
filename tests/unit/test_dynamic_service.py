@@ -2019,6 +2019,32 @@ class _ArgumentRegisterWorker(FakeDynamicWorker):
         return super().request(command, params, timeout=timeout)
 
 
+class _RegisterOnlyStackWorker(FakeDynamicWorker):
+    """x86 fake that parks on an API but cannot serve stack.read.
+
+    registers.read reports eip on the target so the pause is confirmed, but the
+    base fake never advertised stack.read, so the argument capture (which lives
+    on the stack for x86) fails -- the exact case where an empty arguments list
+    is missing data rather than a genuine zero-argument call.
+    """
+
+    def __init__(self, api_address: int) -> None:
+        super().__init__(architecture="x86")
+        self.api_address = api_address
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "registers.read":
+            self.requests.append((command, params or {}))
+            return {"registers": {"eip": self.api_address, "esp": 0x120000}}
+        return super().request(command, params, timeout=timeout)
+
+
 def test_trace_api_arguments_captures_register_arguments(tmp_path: Path) -> None:
     api_address = 0x140002000
     binary = tmp_path / "fixture.exe"
@@ -2067,6 +2093,78 @@ def test_trace_api_arguments_stops_when_break_is_not_ours(tmp_path: Path) -> Non
     assert traced.data["stopped_elsewhere"] is True
     commands = [command for command, _ in worker.requests]
     assert commands.count("breakpoints.remove") == 1
+
+
+def test_trace_api_arguments_flags_unreadable_stack_on_x86(tmp_path: Path) -> None:
+    """An x86 hit whose stack read failed must not read as a zero-arg call.
+
+    The pause lands on the target (eip matches), so the hit is real, but the
+    stack that holds the arguments cannot be read. Without a flag the empty
+    arguments list is indistinguishable from a call that takes no arguments.
+    """
+    api_address = 0x00401000
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary, machine=0x014C)
+    worker = _RegisterOnlyStackWorker(api_address)
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    traced = service.trace_api_arguments(
+        session_id, address=api_address, max_hits=2, argument_count=3
+    )
+
+    assert traced.ok and traced.data is not None
+    data = traced.data
+    assert data["convention"] == "x86_stack_arguments"
+    assert data["hit_count"] == 2
+    for hit in data["hits"]:
+        assert hit["instruction_pointer"] == api_address
+        assert hit["arguments"] == []
+        assert hit["arguments_read_failed"] is True
+    assert data["arguments_read_failed_hits"] == 2
+    commands = [command for command, _ in worker.requests]
+    assert commands.count("breakpoints.remove") == 1
+
+
+def test_trace_api_arguments_marks_success_as_read(tmp_path: Path) -> None:
+    """A hit whose arguments were captured carries arguments_read_failed=False."""
+    api_address = 0x140002000
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _ArgumentRegisterWorker(api_address)
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    traced = service.trace_api_arguments(session_id, address=api_address, max_hits=2)
+
+    assert traced.ok and traced.data is not None
+    data = traced.data
+    assert all(hit["arguments_read_failed"] is False for hit in data["hits"])
+    assert data["arguments_read_failed_hits"] == 0
+
+
+def test_trace_api_arguments_zero_count_is_not_a_read_failure(tmp_path: Path) -> None:
+    """argument_count=0 asks for nothing, so an empty list is not a failure."""
+    api_address = 0x00401000
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary, machine=0x014C)
+    worker = _RegisterOnlyStackWorker(api_address)
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    traced = service.trace_api_arguments(
+        session_id, address=api_address, max_hits=1, argument_count=0
+    )
+
+    assert traced.ok and traced.data is not None
+    data = traced.data
+    assert data["hit_count"] == 1
+    assert data["hits"][0]["arguments"] == []
+    assert data["hits"][0]["arguments_read_failed"] is False
+    assert data["arguments_read_failed_hits"] == 0
 
 
 def test_stack_arguments_skip_the_return_address() -> None:
