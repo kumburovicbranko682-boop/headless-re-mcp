@@ -30,6 +30,7 @@ import pytest
 
 from headless_re_mcp.backends.apk import ApkClient
 from headless_re_mcp.backends.apktool import ApktoolClient
+from headless_re_mcp.backends.apktool.client import _DEBUG_KEYSTORE
 from headless_re_mcp.backends.jadx import JadxClient
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
@@ -1050,5 +1051,87 @@ def test_apk_repack_rejects_a_directory_that_is_not_a_decode_output(tmp_path: Pa
         assert not result.ok and result.error is not None
         assert result.error.code != "internal_error", result.error
         assert result.error.code == "invalid_params", result.error
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_decode_repack_sign_round_trip_with_apksigner(tmp_path: Path) -> None:
+    """The full patch workflow -- decode, rebuild, sign -- must produce a
+    verifiably signed APK.
+
+    apk.sign shells out to apksigner and is the step that makes a rebuilt APK
+    installable, closing the decode -> edit -> build -> sign loop. It had no
+    end-to-end coverage: keystore discovery (the standard Android debug keystore
+    by default), the apksigner invocation with its password argument, and the
+    post-sign ``apksigner verify`` step all went unproven. Drive the whole chain
+    through the real service and assert the signed APK lands on disk marked
+    signed with the debug keystore -- signed is only True because the service's
+    own verify pass accepted the output, so a green means apksigner actually
+    verified the signature. skip != pass when apktool, apksigner, or the debug
+    keystore is absent.
+    """
+    settings = Settings.load()
+    client = ApktoolClient(settings.apktool, settings.apksigner)
+    if not client.available:
+        pytest.skip(
+            "apktool not configured (HEADLESS_RE_APKTOOL / PATH) — Gate not run (skip != pass)"
+        )
+    if not client.signer_available:
+        pytest.skip(
+            "apksigner not configured (HEADLESS_RE_APKSIGNER / PATH) — Gate not run (skip != pass)"
+        )
+    if not _DEBUG_KEYSTORE.is_file():
+        pytest.skip(
+            f"debug keystore missing at {_DEBUG_KEYSTORE} — Gate not run (skip != pass)"
+        )
+    apk = _build_apk(tmp_path / "sign.apk", dex=_build_populated_dex())
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        decoded = service.apk_decode(session_id, timeout=300.0, no_resources=True)
+        assert decoded.ok, decoded.error
+        repacked = service.apk_repack(session_id, timeout=300.0)
+        assert repacked.ok, repacked.error
+
+        signed = service.apk_sign(session_id, timeout=300.0)
+        assert signed.ok and signed.data is not None, signed.error
+        assert signed.data["signed"] is True, signed.data
+        assert signed.data["debug_keystore"] is True, signed.data
+        out = Path(signed.data["apk"])
+        assert out.is_file() and out.stat().st_size > 0, signed.data
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_sign_before_repack_is_a_clean_not_found(tmp_path: Path) -> None:
+    """Signing before anything was rebuilt must be a structured not_found.
+
+    apk.sign defaults its input to the session's repacked.apk. Calling it before
+    apk.repack (that file does not exist yet) has to surface not_found so the
+    caller learns "build first", never internal_error from an apksigner run on a
+    missing path. Only apksigner is needed to reach this branch -- it fires
+    before any keystore work -- so the gate does not depend on apktool.
+    """
+    settings = Settings.load()
+    if not ApktoolClient(settings.apktool, settings.apksigner).signer_available:
+        pytest.skip(
+            "apksigner not configured (HEADLESS_RE_APKSIGNER / PATH) — Gate not run (skip != pass)"
+        )
+    apk = _build_apk(tmp_path / "nosign.apk", dex=_build_populated_dex())
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        result = service.apk_sign(session_id, timeout=300.0)
+        assert not result.ok and result.error is not None
+        assert result.error.code != "internal_error", result.error
+        assert result.error.code == "not_found", result.error
     finally:
         service.close_all()
