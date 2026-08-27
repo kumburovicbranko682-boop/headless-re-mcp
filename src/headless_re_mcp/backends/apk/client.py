@@ -285,6 +285,47 @@ def _exported_components(apk: Any) -> dict[str, list[str]]:
     return groups
 
 
+def _permission_protection(apk: Any, names: set[str]) -> tuple[dict[str, str], list[str]]:
+    """Base protection level per requested permission, and the dangerous subset.
+
+    androguard's ``get_details_permissions`` maps a requested permission to
+    ``[protectionLevel, label, description]``, but only for permissions it can
+    resolve: AOSP platform permissions, plus custom ones the APK itself declares
+    with a numeric protectionLevel. The protection level answers what a bare name
+    list cannot -- an app requesting a *dangerous* permission (contacts, location,
+    SMS, mic ...) is the runtime-consent attack surface a review looks at first.
+    Only the base token is kept ("normal|instant" -> "normal"), and a permission
+    is flagged dangerous when any ``|``-separated token is exactly "dangerous".
+    Restricted to ``names`` (the already-capped requested set) so an unbounded
+    details dict cannot outgrow the reply, and guarded so a build without the
+    bundled AOSP DB degrades to no levels rather than failing ``permissions()``.
+    """
+    try:
+        details = apk.get_details_permissions()
+    except Exception:  # noqa: BLE001 - AOSP permission DB varies by version
+        return {}, []
+    if not isinstance(details, dict):
+        return {}, []
+    levels: dict[str, str] = {}
+    dangerous: list[str] = []
+    for perm, info in details.items():
+        perm = str(perm)
+        if perm not in names:
+            continue
+        raw_level = ""
+        if isinstance(info, (list, tuple)) and info:
+            raw_level = str(info[0])
+        elif isinstance(info, str):
+            raw_level = info
+        tokens = [tok.strip().lower() for tok in raw_level.split("|") if tok.strip()]
+        if not tokens:
+            continue
+        levels[perm] = tokens[0]
+        if "dangerous" in tokens:
+            dangerous.append(perm)
+    return levels, sorted(dangerous)
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -476,11 +517,23 @@ class ApkClient:
             )
         except Exception:  # noqa: BLE001 - older androguard lacks this
             requested, requested_more = declared, declared_more
+        try:
+            custom, custom_more = _cap_names(
+                apk.get_declared_permissions(), _MAX_PERMISSIONS
+            )
+        except Exception:  # noqa: BLE001 - older androguard lacks this
+            custom, custom_more = [], False
+        protection_levels, dangerous = _permission_protection(
+            apk, set(declared) | set(requested)
+        )
         return {
             "permissions": declared,
             "requested_permissions": requested,
+            "custom_permissions": custom,
+            "protection_levels": protection_levels,
+            "dangerous": dangerous,
             "count": len(declared),
-            "has_more": declared_more or requested_more,
+            "has_more": declared_more or requested_more or custom_more,
         }
 
     def certificates(self, path: Path) -> JsonObject:

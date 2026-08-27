@@ -1248,6 +1248,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   按类别分组、`exported` 恒为扁平列表子集、清单抛错时退化空组,以及名字解析与判定规则本身。实机 gate(`test_m11_android_apk_live_gate.py`)对真实夹具断言 MainActivity(无
   filter、无 `android:exported`)不在任何导出组里、四组皆空——证明该判定跑在真实 androguard 解码的清单上,而非只在 mock 里。
 
+- **`apk.permissions` 只回权限名,不报保护级别,而「申请了哪些 dangerous 权限」是 Android 权限审查最先要问的。** 过去 payload 仅有 `permissions`/
+  `requested_permissions`(均为 uses-permission 名)、`count`、`has_more`,分析者无法从名字区分 `INTERNET`(normal)与 `READ_CONTACTS`(dangerous)。
+  androguard 的 `get_details_permissions` 能把每条申请权限映射到 `[protectionLevel, label, description]`(平台 AOSP 权限,及 APK 自声明的带数值
+  protectionLevel 的自定义权限),故新增三个字段:`protection_levels` 把每条能解析的申请权限映射到其基础保护级别(`normal|instant` 取基础 token → `normal`;
+  其余如 `dangerous`/`signature` 原样),`dangerous` 是其中保护级别含 `dangerous` token 的子集(运行时授权攻击面:通讯录/定位/短信/麦克风…),
+  `custom_permissions` 则来自 `get_declared_permissions`——App 用 `<permission>` 自己定义的权限,与它申请的权限是两个面。级别取值只保留基础 token 并小写;
+  解析不到的权限(自定义或本版 DB 不识别)不进 `protection_levels`(缺席不等于安全),也不进 `dangerous`。`protection_levels`/`dangerous` 限定在已封顶的申请集内、
+  整条 `try` 兜底——本版无 AOSP DB 时退化为空级别而非让 `permissions()` 失败。工具描述改为点名 `protection_levels`/`dangerous`/`custom_permissions` 三字段及其语义。
+  单测(`test_apk_permission_levels.py`)覆盖:基础级别抽取、`dangerous` 子集、解析不到的权限缺席而非误报 normal、`custom_permissions` 独立列出、老字段不变、
+  DB 缺失退化空、以及辅助函数按名字集限定+token 归一化。实机 gate(`test_m11_android_apk_live_gate.py`)用真实 androguard AOSP DB 断言 INTERNET 解析为 `normal`、
+  不在 dangerous、且夹具无自定义权限——证明级别来自真实权限库而非 mock。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

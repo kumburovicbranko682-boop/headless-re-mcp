@@ -48,11 +48,19 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.permissions")
     def apk_permissions(session_id: str) -> dict[str, Any]:
-        """List declared and requested permissions.
+        """List requested permissions, their protection levels, and dangerous ones.
 
-        Answers with permissions, requested_permissions, count, and has_more
-        so a list that filled the cap is not read as every permission. There
-        is no declared or requested field.
+        Answers with permissions and requested_permissions (the uses-permission
+        names), count, and has_more so a list that filled the cap is not read as
+        every permission. There is no declared or requested field.
+        protection_levels maps a requested permission to its base protection
+        level ("normal", "dangerous", "signature" ...) for those androguard can
+        resolve from the platform DB or the APK's own <permission> declarations;
+        a permission absent from the map is simply unresolved, not necessarily
+        safe. dangerous is the subset of requested permissions whose level is
+        dangerous -- the runtime-consent attack surface (contacts, location, SMS,
+        mic ...). custom_permissions lists the permissions the app itself defines
+        via <permission>, distinct from the ones it requests.
         """
         return _dump(analysis.apk_permissions(session_id))
 

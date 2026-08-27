@@ -129,6 +129,14 @@ def test_m11_androguard_apk_surface() -> None:
     permissions = client.permissions(_APK)
     assert "android.permission.INTERNET" in permissions["permissions"], permissions
     assert "android.permission.INTERNET" in permissions["requested_permissions"], permissions
+    # Protection levels are read from androguard's real AOSP permission DB, not a
+    # mock: INTERNET is a "normal" permission, so it resolves to that level and is
+    # not in the dangerous subset. The fixture declares no <permission> of its own.
+    assert permissions["protection_levels"].get("android.permission.INTERNET") == "normal", (
+        permissions
+    )
+    assert permissions["dangerous"] == [], permissions
+    assert permissions["custom_permissions"] == [], permissions
 
     native = client.native_libs(_APK)
     assert native["abis"] == ["arm64-v8a"], native
