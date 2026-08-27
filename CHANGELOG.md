@@ -825,6 +825,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `list_missions(offset=...)`,端点补 `offset`/`total`/`has_more`(`count` 仍是页大小,向后兼容)。补测:
   store 按 offset 翻页无重叠且覆盖全部、`count_missions` 按状态各自计数;HTTP 单任务用例加断言
   `total=1`/`has_more=False`/`offset=0`。
+- **`GET /api/agent/threads/{id}` 把消息与事件的最新窗口当成整段对话返回**。线程详情端点直接回
+  `list_messages`(最新窗口,默认页 500、留存 2000,另受 8 MiB 字节上限约束)与 `list_thread_events`
+  (跨该线程各 run 的最新窗口,默认页 4000,另受字节上限约束),却不给任何截断信号。一条忙碌线程翻新几百条
+  消息或几千条事件后,监控台只拿到最近一段,却以为那是整段对话与全部 run 日志——早前刚补的
+  `/events/history` 已回 `has_more`,这条快照路径还没有。新增 store 的 `count_messages` 与
+  `count_thread_events`(各一次 `COUNT(*)`,后者按 run 归属 join 回线程),端点补
+  `messages_total`/`events_total` 与 `messages_truncated`/`events_truncated`(页长小于总数即为真;`messages`
+  与 `events` 数组保持原样,向后兼容)。补测:store 计数在计数/字节两种封顶下都超过窗口长度且只算本线程;
+  HTTP 层忙碌线程两个 `*_truncated` 皆真、短线程皆假且 `*_total` 与页长一致。
 - **Cursor 下划线别名解析 + 全表面无碰撞**：Cursor 以 `static_functions` 调用而 catalog 注册的是
   `static.functions`,`install_cursor_underscore_aliases` 在 `get_tool` 处解析且不新增 ListTools 项。
   它用普通 dict 建下划线→点名映射,两个折叠成同一下划线形的点名会互相静默覆盖(OpenAI 桥接对这类

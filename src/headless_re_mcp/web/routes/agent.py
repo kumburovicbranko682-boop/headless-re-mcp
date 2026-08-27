@@ -149,12 +149,24 @@ def register_agent_routes(
         item = store.get_thread(thread_id)
         if item is None:
             raise HTTPException(status_code=404, detail="thread_not_found")
+        # Both lists are newest windows capped by count and by serialized bytes,
+        # so a full page cannot tell a whole thread from one the caps cut short.
+        # Report the totals and a truncated flag so a busy thread's older
+        # messages and events are not silently read as absent.
+        messages = store.list_messages(thread_id)
+        events = store.list_thread_events(thread_id)
+        messages_total = store.count_messages(thread_id)
+        events_total = store.count_thread_events(thread_id)
         return JSONResponse(
             {
                 "ok": True,
                 "thread": item.dump(),
-                "messages": [message.dump() for message in store.list_messages(thread_id)],
-                "events": [event.dump() for event in store.list_thread_events(thread_id)],
+                "messages": [message.dump() for message in messages],
+                "events": [event.dump() for event in events],
+                "messages_total": messages_total,
+                "events_total": events_total,
+                "messages_truncated": len(messages) < messages_total,
+                "events_truncated": len(events) < events_total,
             }
         )
 

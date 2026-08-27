@@ -405,3 +405,68 @@ def test_event_history_reports_more_when_the_page_was_cut(tmp_path: Path, monkey
     assert len(seqs) == len(set(seqs))
     delta_count = sum(1 for event in collected if event["type"] == "message.delta")
     assert delta_count == 50
+
+
+def test_thread_detail_flags_a_windowed_message_and_event_history(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The thread view returns newest windows, not the whole thread.
+
+    Both messages and events are capped by count and by serialized bytes, so a
+    busy thread's page reads as the entire conversation and run log unless the
+    endpoint reports the totals and marks the windows truncated.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    store = app.state.agent_store
+    store.message_page_max_bytes = 2048
+    store.event_page_max_bytes = 2048
+    thread = store.create_thread()
+    for index in range(30):
+        store.add_message(thread.id, "user", f"{index}:" + "m" * 400)
+    run = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=30
+    )
+    for index in range(30):
+        store.append_event(run.id, "message.delta", {"n": index, "delta": "e" * 400})
+
+    with TestClient(app) as client:
+        body = client.get(f"/api/agent/threads/{thread.id}", headers=headers).json()
+
+    assert body["ok"] is True
+    assert body["messages_total"] == 30
+    # 30 deltas plus the run.started event create_run appends.
+    assert body["events_total"] == 31
+    assert len(body["messages"]) < body["messages_total"]
+    assert len(body["events"]) < body["events_total"]
+    assert body["messages_truncated"] is True
+    assert body["events_truncated"] is True
+
+
+def test_thread_detail_does_not_flag_a_thread_that_fits(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A short thread returns whole, with truncated flags off and honest totals."""
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    store = app.state.agent_store
+    thread = store.create_thread()
+    for index in range(3):
+        store.add_message(thread.id, "user", f"m{index}")
+    run = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=30
+    )
+    store.append_event(run.id, "llm.started", {"round": 1})
+
+    with TestClient(app) as client:
+        body = client.get(f"/api/agent/threads/{thread.id}", headers=headers).json()
+
+    assert body["messages_total"] == 3
+    assert len(body["messages"]) == 3
+    assert body["messages_truncated"] is False
+    assert body["events_total"] == len(body["events"])
+    assert body["events_truncated"] is False

@@ -425,6 +425,22 @@ class AgentStore:
             ).fetchall()
         return [AgentMessage(**dict(row)) for row in rows]
 
+    def count_messages(self, thread_id: str) -> int:
+        """How many retained messages the thread holds, page or no page.
+
+        ``list_messages`` returns a newest window capped by count and by
+        serialized bytes, so a caller handed a full page cannot tell a whole
+        thread from one the caps cut short. Comparing this total against the
+        page length is what lets the thread endpoint report the window as
+        truncated instead of passing a slice off as the entire conversation.
+        """
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE thread_id=?",
+                (thread_id,),
+            ).fetchone()
+        return int(row["n"])
+
     def create_run(self, thread_id: str, *, provider_profile: str, model: str | None, deadline_seconds: float) -> AgentRun:
         if self.get_thread(thread_id) is None:
             raise KeyError(thread_id)
@@ -593,6 +609,23 @@ class AgentStore:
                 (thread_id, bounded, byte_limit),
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
+
+    def count_thread_events(self, thread_id: str) -> int:
+        """How many retained events span the thread's runs, page or no page.
+
+        ``list_thread_events`` returns a newest window capped by count and by
+        serialized bytes. A thread with many runs outgrows that window, and a
+        full page then reads as the whole history. This total lets the thread
+        endpoint say the event window was cut rather than imply the run log
+        stops where the page happens to end.
+        """
+        with self._reading() as con:
+            row = con.execute(
+                "SELECT COUNT(*) AS n FROM run_events e"
+                " JOIN runs r ON r.id = e.run_id WHERE r.thread_id=?",
+                (thread_id,),
+            ).fetchone()
+        return int(row["n"])
 
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> RunEvent:

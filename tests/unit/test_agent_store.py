@@ -157,6 +157,54 @@ def test_list_thread_events_keeps_finished_run_history(tmp_path: Path) -> None:
     assert dumped["created_ms"] > 0
 
 
+def test_count_thread_events_totals_every_run_and_stops_at_the_thread(tmp_path: Path) -> None:
+    """The event window spans a thread's runs; the count is all of them.
+
+    list_thread_events returns a newest window capped by count and by bytes, so
+    a busy thread's full page reads as the whole run log. count_thread_events
+    gives the total behind that window, and only for this thread's runs. When
+    nothing is capped the count matches an unbounded listing exactly.
+    """
+    store = AgentStore(tmp_path / "count-thread-events.db")
+    thread = store.create_thread()
+    other = store.create_thread()
+    first = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=30)
+    second = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=30)
+    stray = store.create_run(other.id, provider_profile="p", model=None, deadline_seconds=30)
+    for index in range(4):
+        store.append_event(first.id, "message.delta", {"n": index})
+    for index in range(3):
+        store.append_event(second.id, "message.delta", {"n": index})
+    store.append_event(stray.id, "message.delta", {"n": 0})
+
+    # Nothing is capped here, so the count is exactly what a full listing holds.
+    assert store.count_thread_events(thread.id) == len(
+        store.list_thread_events(thread.id, limit=8000)
+    )
+    assert store.count_thread_events(other.id) == len(
+        store.list_thread_events(other.id, limit=8000)
+    )
+    # The thread's own runs carry more events than the single stray run, and the
+    # stray run's events never fall inside this thread's total.
+    assert store.count_thread_events(thread.id) > store.count_thread_events(other.id)
+    assert all(event.run_id != stray.id for event in store.list_thread_events(thread.id))
+
+
+def test_count_thread_events_exceeds_a_byte_capped_window(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "count-thread-events-bytes.db")
+    store.event_page_max_bytes = 2048
+    thread = store.create_thread()
+    run = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=30)
+    for index in range(20):
+        store.append_event(run.id, "message.delta", {"index": index, "delta": "x" * 500})
+
+    window = store.list_thread_events(thread.id, limit=8000)
+    total = store.count_thread_events(thread.id)
+    assert len(window) < total
+    # 20 deltas plus the run.started event create_run appends.
+    assert total == 21
+
+
 def test_tool_call_identity_is_run_scoped_and_arguments_are_redacted(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "agent.db")
     first_thread = store.create_thread()
@@ -271,6 +319,37 @@ def test_a_short_thread_is_returned_whole(tmp_path: Path) -> None:
 
     assert [m.content for m in store.list_messages(thread.id)] == ["m0", "m1", "m2", "m3", "m4"]
     assert [m.content for m in store.list_messages(thread.id, limit=2)] == ["m3", "m4"]
+
+
+def test_count_messages_reports_the_total_a_capped_window_hides(tmp_path: Path) -> None:
+    """The message window is a newest slice; the count is the whole thread.
+
+    A caller handed a full page cannot tell a complete thread from one the cap
+    cut short. count_messages answers that so the thread endpoint can flag the
+    window as truncated instead of passing a slice off as the conversation.
+    """
+    store = AgentStore(tmp_path / "count-messages.db")
+    store.retained_messages_per_thread = 100
+    thread = store.create_thread()
+    for index in range(40):
+        store.add_message(thread.id, "user", f"message {index}")
+
+    assert store.count_messages(thread.id) == 40
+    window = store.list_messages(thread.id, limit=10)
+    assert len(window) == 10
+    assert store.count_messages(thread.id) > len(window)
+
+
+def test_count_messages_is_scoped_to_its_own_thread(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "count-scope.db")
+    mine = store.create_thread()
+    other = store.create_thread()
+    for index in range(3):
+        store.add_message(mine.id, "user", f"m{index}")
+    store.add_message(other.id, "user", "not mine")
+
+    assert store.count_messages(mine.id) == 3
+    assert store.count_messages(other.id) == 1
 
 def test_opening_the_database_does_not_disturb_a_running_service(tmp_path: Path) -> None:
     """Reading the state of a live service must not be what stops it.
