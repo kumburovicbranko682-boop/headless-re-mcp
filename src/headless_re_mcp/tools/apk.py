@@ -57,7 +57,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with certificates (subject, issuer, serial, sha256),
         signature_files, v1_signed, and has_more so a list that filled the
-        cap is not read as every signer. There is no certs or signatures field.
+        cap is not read as every signer. cert_parse_errors is present and
+        non-zero when a signing cert could not be parsed and was dropped (a
+        malformed or hostile cert), so the signer list is not read as complete
+        when one silently vanished. There is no certs or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 
