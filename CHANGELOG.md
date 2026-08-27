@@ -494,6 +494,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `C:\Program Files\vm\revert.ps1` 整行变成一个参数。现在按命令行拆并保住路径。
 - **jadx / apktool / ghidra 写入后 prune 共享父目录会删掉其它会话**。关闭时只清自己的
   工作树。Ghidra 的 `export_*.json` 已登记为产物，关会话不再一并 `rmtree`。
+- **`doctor` 的 radare2 探针只看 PATH，无视配置的 `HEADLESS_RE_R2`**。它用的是只查
+  `shutil.which` 的 `probe_command`，而 `r2.*` 工具跑的是 `R2Client(settings.r2)`，直接用
+  配置路径。于是操作者把 `HEADLESS_RE_R2` 指到不在 PATH 上的 r2 时，doctor 报 radare2
+  缺失、工具却能用——与 webcrack 解析修复同一类 doctor/工具不一致（这次是 doctor 假阴性）。
+  改用 `probe_optional_tool("radare2", …, "r2", ("r2","rizin"))`，与 adb / jadx / apktool /
+  webcrack / wabt 一致：先认配置路径，再回落 PATH。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
