@@ -55,6 +55,7 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        url_filter: str = "",
     ) -> dict[str, Any]:
         """List captured HTTP flows (method, url, status, content type).
 
@@ -68,9 +69,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;
         a page that filled the limit is not the whole log. metadata_truncated
-        marks bounded oversized summary fields.
+        marks bounded oversized summary fields. url_filter keeps only flows
+        whose url contains that substring (case-insensitive), applied before
+        paging so total is the match count; dropped still counts every eviction.
         """
-        return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.proxy_flows(session_id, offset=offset, limit=limit, url_filter=url_filter)
+        )
 
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:

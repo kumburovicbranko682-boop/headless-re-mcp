@@ -132,6 +132,52 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     assert "blocked_reason" in doc
 
 
+def test_web_network_list_filters_by_url_substring(monkeypatch: Any) -> None:
+    """url_filter narrows a busy capture to one endpoint, case-insensitively."""
+    backend = WebBackend()
+    handle = _FakeHandle(0)
+    handle.requests = {
+        "1": {
+            "requestId": "1",
+            "url": "https://x/api/login",
+            "method": "POST",
+            "resourceType": "XHR",
+            "status": 200,
+            "mimeType": "application/json",
+        },
+        "2": {
+            "requestId": "2",
+            "url": "https://x/static/app.js",
+            "method": "GET",
+            "resourceType": "Script",
+            "status": 200,
+            "mimeType": "text/javascript",
+        },
+        "3": {
+            "requestId": "3",
+            "url": "https://x/API/logout",
+            "method": "POST",
+            "resourceType": "XHR",
+            "status": 200,
+            "mimeType": "application/json",
+        },
+    }
+    handle.requests_dropped = 4
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    payload = backend.network_list("s", url_filter="/api/")
+    assert payload["total"] == 2
+    assert {row["url"] for row in payload["requests"]} == {
+        "https://x/api/login",
+        "https://x/API/logout",
+    }
+    # dropped is the ring's eviction count, unaffected by the filter.
+    assert payload["dropped"] == 4
+    # A blank filter returns the whole capture.
+    assert backend.network_list("s", url_filter="  ")["total"] == 3
+    doc = _tool_docstring("web.network.list")
+    assert "url_filter" in doc
+
+
 def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     class _Cdp:
         def __init__(self) -> None:

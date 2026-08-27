@@ -73,6 +73,7 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        url_filter: str = "",
     ) -> dict[str, Any]:
         """List captured network requests.
 
@@ -86,8 +87,15 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         web.network.get can then fetch. metadata_truncated marks bounded
         oversized request fields. Headers are omitted from this index to keep it
         lean; fetch them per row with web.network.get. There is no type field.
+        url_filter keeps only rows whose url contains that substring
+        (case-insensitive), applied before paging so total is the match count --
+        the way to find one endpoint on a page that captured hundreds.
         """
-        return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.web_network_list(
+                session_id, offset=offset, limit=limit, url_filter=url_filter
+            )
+        )
 
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:

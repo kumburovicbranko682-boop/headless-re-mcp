@@ -130,9 +130,16 @@ class WebAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def web_network_list(
-        self, session_id: str, offset: int = 0, limit: int = 100
+        self, session_id: str, offset: int = 0, limit: int = 100, url_filter: str = ""
     ) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "network_list", session_id, offset=offset, limit=limit)
+        return self._web_wrap(
+            session_id,
+            "network_list",
+            session_id,
+            offset=offset,
+            limit=limit,
+            url_filter=url_filter,
+        )
 
     def web_network_get(self, session_id: str, request_id: str) -> Result[JsonObject]:
         try:

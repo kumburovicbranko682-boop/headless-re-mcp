@@ -612,15 +612,25 @@ class ProxyBackend:
             "retained_bytes_max": _MAX_RETAINED_BYTES,
         }
 
-    def flows(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    def flows(
+        self, session_id: str, *, offset: int = 0, limit: int = 100, url_filter: str = ""
+    ) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
-        start = max(0, int(offset))
-        cap = max(1, min(int(limit), 1000))
-        window = items[start : start + cap]
+        # dropped reflects ring eviction across the whole capture, so compute it
+        # from the unfiltered snapshot before any url_filter narrows the view.
         dropped = 0
         if items:
             dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        # A case-insensitive URL substring filter, applied before paging, so one
+        # endpoint or host is reachable on a busy capture instead of only by
+        # walking every page; total then reports the match count.
+        needle = url_filter.strip().lower() if isinstance(url_filter, str) else ""
+        if needle:
+            items = [item for item in items if needle in str(item.get("url", "")).lower()]
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = items[start : start + cap]
         return {
             "flows": window,
             "count": len(window),

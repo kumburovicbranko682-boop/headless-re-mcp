@@ -218,6 +218,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`web.network.list` 与 `proxy.flows` 没有 URL 过滤，繁忙抓包只能逐页翻找**。二者原来只分页，而 `apk.*`/`frida.*` 列表工具
+  早有 `name_filter`。现给两者都加上 `url_filter`：对 url 做大小写不敏感子串匹配，在分页之前应用，于是 `total` 即匹配数，能在
+  抓到成百上千请求的页面上直接定位某个端点/主机/`.json`；`dropped`（环形缓冲淘汰计数）仍基于未过滤的全量，不受过滤影响。
 - **`apk.open` 的 `security` 不含 `sharedUserId`，共享沙箱信号缺失**。声明了 `android:sharedUserId` 的应用会与同 id、同签名的
   其它应用共享同一 Linux 沙箱，其值本身即信号（`android.uid.system` 是重大红旗）。该属性位于根 `<manifest>` 标签而非
   `<application>`，故新增 `_manifest_root_attr` 从清单树读取，并把 `shared_user_id`（字符串或 null）并入 `security`；

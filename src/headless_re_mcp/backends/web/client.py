@@ -869,11 +869,21 @@ class WebBackend:
         runner.shutdown()
         return {"closed": True, "clean": clean}
 
-    def network_list(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    def network_list(
+        self, session_id: str, *, offset: int = 0, limit: int = 100, url_filter: str = ""
+    ) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
             items = list(handle.requests.values())
             dropped = handle.requests_dropped
+        # A case-insensitive URL substring filter, applied before paging, so a
+        # single endpoint (/api/, a host, a .json) is reachable on a page that
+        # captured hundreds of requests instead of only by walking every page.
+        # total then reports the match count; dropped stays the ring's eviction
+        # count, which the filter does not change.
+        needle = url_filter.strip().lower() if isinstance(url_filter, str) else ""
+        if needle:
+            items = [item for item in items if needle in str(item.get("url", "")).lower()]
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         # Headers ride on the ring entry so network.get and har.export can reach

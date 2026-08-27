@@ -84,6 +84,32 @@ def test_proxy_flows_puts_the_page_in_flows_with_content_type(
     assert "metadata_truncated" in doc
 
 
+def test_proxy_flows_filters_by_url_substring(monkeypatch: Any) -> None:
+    """url_filter narrows a busy capture to one endpoint, case-insensitively."""
+    recorder = _FlowRecorder(capacity=50)
+    urls = ["http://x/api/login", "http://x/static/app.js", "http://x/API/logout"]
+    for index, url in enumerate(urls):
+        request = SimpleNamespace(method="GET", pretty_url=url, host="x")
+        response = SimpleNamespace(status_code=200, headers={"content-type": "text/html"})
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder)
+    )
+    payload = backend.flows("s", url_filter="/api/")
+    assert payload["total"] == 2
+    assert {row["url"] for row in payload["flows"]} == {
+        "http://x/api/login",
+        "http://x/API/logout",
+    }
+    # A blank filter returns the whole capture unchanged.
+    assert backend.flows("s", url_filter="  ")["total"] == 3
+    doc = _tool_docstring("proxy.flows")
+    assert "url_filter" in doc
+
+
 def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:
     """The catalog named the page and never said when the ring had already lost rows.
 
