@@ -7,7 +7,9 @@
 #   * Web       -- CDP driving via Playwright's bundled Chromium, webcrack, wabt
 #   * Intercept -- mitmproxy lifecycle plus a real HTTP flow captured,
 #                  retrieved, exported to HAR, and replayed through the proxy
-#   * Android   -- androguard APK metadata and safe degradation with no device
+#   * Android   -- androguard APK metadata, a real hand-assembled DEX parsed
+#                  end to end (classes/methods/strings/xrefs), and safe
+#                  degradation with no device
 #   * Static    -- radare2 against a locally built ELF (the non-PE mapping path)
 # tests/integration/conftest.py skips the Windows-only gates by name, and -rs
 # prints every remaining skip reason, so a skip here never reads as a pass.

@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 新增（Android DEX 内容操作首次拿到真机 gate：手工组装最小合法 classes.dex）
+
+- **`apk.classes` / `apk.methods` / `apk.strings` / `apk.xrefs` 的成功路径此前从未跑过真 androguard**。
+  其余 Android 测试用的合成 APK 里 `classes.dex` 是占位垃圾，`AnalyzeAPK` 直接拒收——于是这四个操作
+  在集成层只走过 `backend_error` 分支，成功路径（`get_classes` 的 external 过滤、`get_methods` 的
+  descriptor/access 渲染、`get_strings`、按方法名扫 xref）只在单元层对着假对象跑。androguard 不需要
+  外部工具，只要一个结构合法的 `.dex`,所以照 WASM 模块手工组装、ELF 夹具现场编译的同一思路,在测试里
+  逐字节组装出最小的真 DEX:一个类 `Lcom/gate/Sample;`(继承 Object)带一个 `public static secret()V`,
+  方法体是 `const-string v0, "gate-secret"; return-void`——刚好够 androguard 建出真实对象图
+  (非 external 的 ClassAnalysis、带 descriptor 与 access 的 EncodedMethod、被引用的 StringAnalysis、
+  xref 表)。遵守 DEX 规则:string_ids 按内容排序、type_ids 按 string 索引排序、adler32 校验和
+  (bytes[12:])与 SHA-1 签名(bytes[32:])。新 gate `test_android_dex_operations_parse_a_real_dex`
+  经 service 层驱动全部四个操作并断言:classes 恰为该类、methods 恰为 `secret ()V public static`、
+  strings 含 `gate-secret`、`xrefs("secret")` 找到方法且 callers 为空(真实的空答案,不是错误信封)。
+  androguard 缺席时明确 skip(skip != pass);linux-integration CI 装了 `[android]`,该 gate 在 CI
+  上真跑。Android 线自此四条 DEX 内容操作全部有真后端回归护栏。
+
 ### 修复（apk.open 遇畸形 manifest 泄漏原始 KeyError，被记成 internal_error 事故）
 
 - **`apk.open` 对一个 zip 合法、`AndroidManifest.xml` 却是垃圾的 APK 会崩**。实测 androguard 4.1.4 对解析不了的
