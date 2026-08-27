@@ -517,6 +517,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`unpack.verify` 在 APK 会话上仍会解析产物树里的 PE**。先 `require_pe()`。
 - **敌意 `NumberOfSections=0xFFFF` 会按节数分配重建头**。超过 96 节直接拒绝。
   导入名按描述符 + ILT（原地 IAT 时不再加上一份 IAT 长度）落盘。
+- **过小的 `SizeOfOptionalHeader` 让转储头解析抛出裸 `struct.error`**。
+  `parse_runtime_headers` 只按声明跨度校验一次，可选头里的入口点、对齐、目录数
+  等字段却一律按固定偏移读取；转储少报这个大小、镜像又在这些字段之前截断时，
+  `struct.unpack_from` 抛出的 `struct.error` 不是 `ValueError`，服务信封便把它归成
+  记事故的 `internal_error`，而不是像同模块其他不可用头那样给出干净的
+  `invalid_request`。现在先确认镜像装得下 magic 与固定字段（PE32+ 112 / PE32 96
+  字节），再把跟在后面的目录数组按镜像实际长度夹取——诚实的头依旧原样解析。
 - **工作流导航在等的时候，第二次 `events.read` 会把游标拆开**，再被映射成会拆掉
   x64dbg 的 `rpc_protocol_error`。导航等待时只读持久日志；游标不一致改报
   `event_cursor_inconsistent`。
