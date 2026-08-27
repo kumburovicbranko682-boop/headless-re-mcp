@@ -106,7 +106,7 @@ rpc.exports = {
   exports: function (moduleName, limit) {
     var mod = Process.findModuleByName(moduleName);
     if (mod === null) {
-      return {found: false, exports: []};
+      return {found: false, exports: [], total: 0};
     }
     var all = mod.enumerateExports();
     var items = [];
@@ -114,7 +114,12 @@ rpc.exports = {
       var e = all[i];
       items.push({name: e.name, address: e.address.toString(), type: e.type});
     }
-    return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
+    // total is all.length, not items.length: enumerateExports already walked
+    // the whole table, so the true size is free here. Without it the caller
+    // sees has_more but cannot tell 65 exports from 6500 -- modules already
+    // returns its total, and exports left the caller guessing the next limit.
+    return {found: true, module: mod.name, base: mod.base.toString(),
+            exports: items, total: all.length};
   },
   read: function (address, size) {
     // Read through the NativePointer method, not the legacy Memory.read* free
@@ -392,7 +397,7 @@ class FridaClient:
                         "type": str(item.get("type", "")),
                     }
                 )
-            return {
+            result: JsonObject = {
                 "found": bool(raw.get("found")),
                 "module": str(raw.get("module") or module_name),
                 "base": str(raw.get("base") or ""),
@@ -400,6 +405,14 @@ class FridaClient:
                 "count": len(items),
                 "has_more": has_more,
             }
+            # total is how many exports the module has, not how many this page
+            # returned: it lets a caller size the next limit instead of paging
+            # blind. Guard the type so an older injected script without the
+            # field degrades to the pre-total shape rather than raising.
+            raw_total = raw.get("total")
+            if isinstance(raw_total, int) and not isinstance(raw_total, bool):
+                result["total"] = raw_total
+            return result
         finally:
             with contextlib.suppress(Exception):
                 session.detach()

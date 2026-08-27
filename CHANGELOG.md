@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（frida.exports 补齐 total,与 frida.modules 对齐)
+
+- `frida.exports` 此前只回 `count` 与 `has_more`:调用方知道「还有」,却无从得知这个模块到底有
+  多少导出,只能盲翻下一页。而 `frida.modules` 早已返回 `total`。注入脚本里 `enumerateExports()`
+  本就把整张表走了一遍,`all.length` 是白得的真实总数——现在脚本连同 `total` 一起返回(未找到
+  模块时为 0),Python 端按 `modules` 的做法把它透出;类型有守卫,旧脚本缺该字段时降级回原形状
+  而非报错。回归测试覆盖分页(40 项按 10 翻,total=40)、整表放得下(total 等于 count 而非页
+  大小)、以及旧脚本无 total 时的降级。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
