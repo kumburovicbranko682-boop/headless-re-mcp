@@ -14,6 +14,18 @@ from typing import Any, Final
 from headless_re_mcp.detection import pe as pe_mod
 from headless_re_mcp.detection.pe import PeFormatError, scan_pe
 from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, inspect_dotnet
+from headless_re_mcp.dotnet.tables import (
+    TableSizingError,
+)
+from headless_re_mcp.dotnet.tables import (
+    coded_index_size as _coded_index_size,
+)
+from headless_re_mcp.dotnet.tables import (
+    table_row_size as _shared_table_row_size,
+)
+from headless_re_mcp.dotnet.tables import (
+    table_start_offset as _shared_table_start,
+)
 
 JsonObject = dict[str, Any]
 
@@ -615,142 +627,45 @@ def _read_index(buf: bytes, at: int, size: int) -> tuple[int, int]:
     return int.from_bytes(buf[at : at + 2], "little"), 2
 
 
-def _coded_index_size(row_counts: dict[int, int], tables: tuple[int, ...], tag_bits: int) -> int:
-    max_rows = max((row_counts.get(t, 0) for t in tables), default=0)
-    return 4 if max_rows >= (1 << (16 - tag_bits)) else 2
-
-
-def _simple_index_size(row_counts: dict[int, int], table: int) -> int:
-    return 4 if row_counts.get(table, 0) >= 65536 else 2
-
-
 def _table_row_size(meta: _MetaCtx, table: int) -> int:
-    """ECMA-335 II.22 row sizes for tables we may need to skip/parse."""
-    rc = meta.row_counts
-    s = meta.string_index_size
-    b = meta.blob_index_size
-    g = meta.guid_index_size
-    type_def_or_ref = _coded_index_size(rc, (0x02, 0x01, 0x1B), 2)
-    has_constant = _coded_index_size(rc, (0x04, 0x08, 0x17), 2)
-    has_custom_attribute = _coded_index_size(
-        rc,
-        (
-            0x06,
-            0x04,
-            0x01,
-            0x02,
-            0x08,
-            0x09,
-            0x0A,
-            0x00,
-            0x0E,
-            0x17,
-            0x14,
-            0x11,
-            0x1A,
-            0x1B,
-            0x20,
-            0x23,
-            0x26,
-            0x27,
-            0x28,
-            0x2A,
-            0x2C,
-            0x2B,
-        ),
-        5,
-    )
-    has_field_marshal = _coded_index_size(rc, (0x04, 0x08), 1)
-    has_decl_security = _coded_index_size(rc, (0x02, 0x06, 0x20), 2)
-    member_ref_parent = _coded_index_size(rc, (0x02, 0x01, 0x1A, 0x06, 0x1B), 3)
-    has_semantics = _coded_index_size(rc, (0x14, 0x17), 1)
-    method_def_or_ref = _coded_index_size(rc, (0x06, 0x0A), 1)
-    member_forwarded = _coded_index_size(rc, (0x04, 0x06), 1)
-    implementation = _coded_index_size(rc, (0x26, 0x23, 0x27), 2)
-    custom_attribute_type = _coded_index_size(rc, (0x06, 0x0A), 3)
-    resolution_scope = _coded_index_size(rc, (0x00, 0x1A, 0x23, 0x01), 2)
-    type_or_method_def = _coded_index_size(rc, (0x02, 0x06), 1)
+    """ECMA-335 II.22 row size, via the shared sizer in ``dotnet.tables``.
 
-    sizes: dict[int, int] = {
-        0x00: 2 + s + g + g + g,  # Module
-        0x01: resolution_scope + s + s,  # TypeRef
-        0x02: (
-            4
-            + s
-            + s
-            + type_def_or_ref
-            + _simple_index_size(rc, 0x04)
-            + _simple_index_size(rc, 0x06)
-        ),
-        0x03: _simple_index_size(rc, 0x04),  # FieldPtr
-        0x04: 2 + s + b,  # Field
-        0x05: _simple_index_size(rc, 0x06),  # MethodPtr
-        0x06: 4 + 2 + 2 + s + b + _simple_index_size(rc, 0x08),  # MethodDef
-        0x07: _simple_index_size(rc, 0x08),  # ParamPtr
-        0x08: 2 + 2 + s,  # Param
-        0x09: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x06),
-        0x0A: member_ref_parent + s + b,  # MemberRef
-        0x0B: 2 + has_constant + b,  # Constant
-        0x0C: has_custom_attribute + custom_attribute_type + b,
-        0x0D: has_field_marshal + b,  # FieldMarshal
-        0x0E: 2 + has_decl_security + b,  # DeclSecurity
-        0x0F: 2 + 4,  # ClassLayout placeholder; fixed below
-        0x10: 4 + _simple_index_size(rc, 0x04),  # FieldLayout
-        0x11: b,  # StandAloneSig
-        0x12: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x14),
-        0x13: _simple_index_size(rc, 0x14),  # EventPtr
-        0x14: 2 + s + type_def_or_ref,  # Event
-        0x15: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x17),
-        0x16: _simple_index_size(rc, 0x17),  # PropertyPtr
-        0x17: 2 + s + b,  # Property
-        0x18: 2 + method_def_or_ref + has_semantics,  # MethodSemantics
-        0x19: (
-            _simple_index_size(rc, 0x02) + method_def_or_ref + method_def_or_ref
-        ),
-        0x1A: s,  # ModuleRef
-        0x1B: b,  # TypeSpec
-        0x1C: 2 + member_forwarded + s + _simple_index_size(rc, 0x1A),
-        0x1D: 4 + _simple_index_size(rc, 0x04),  # FieldRVA
-        0x20: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # Assembly
-        0x21: 4,  # AssemblyProcessor
-        0x22: 12,  # AssemblyOS
-        0x23: 4 + 2 + 2 + 2 + 2 + 4 + b + s + s,  # AssemblyRef
-        0x24: 4 + _simple_index_size(rc, 0x23),  # AssemblyRefProcessor
-        0x25: 12 + _simple_index_size(rc, 0x23),  # AssemblyRefOS
-        0x26: 4 + s + implementation,  # File
-        0x27: 0,  # ExportedType; fixed below
-        0x28: 4 + 4 + s + implementation,  # ManifestResource
-        0x29: _simple_index_size(rc, 0x02) + implementation,  # NestedClass
-        0x2A: 0,  # GenericParam; fixed below
-        0x2B: _simple_index_size(rc, 0x2A) + type_def_or_ref,
-        0x2C: method_def_or_ref + b,  # MethodSpec
-    }
-    # Fix ClassLayout: PackingSize(2)+ClassSize(4)+Parent TypeDef
-    sizes[0x0F] = 2 + 4 + _simple_index_size(rc, 0x02)
-    # AssemblyProcessor
-    sizes[0x21] = 4
-    # ExportedType: Flags(4)+TypeDefId(4)+TypeName(str)+TypeNamespace(str)+Implementation
-    sizes[0x27] = 4 + 4 + s + s + implementation
-    # GenericParam: Number(2)+Flags(2)+Owner+Name
-    sizes[0x2A] = 2 + 2 + type_or_method_def + s
-
-    if table not in sizes:
+    Thin wrapper so the enumerator keeps raising ``DotnetInspectError`` (which
+    the service layer maps to a structured envelope) rather than leaking the
+    sizer's ``TableSizingError``.
+    """
+    try:
+        return _shared_table_row_size(
+            meta.row_counts,
+            table,
+            string_index_size=meta.string_index_size,
+            blob_index_size=meta.blob_index_size,
+            guid_index_size=meta.guid_index_size,
+        )
+    except TableSizingError as exc:
         raise DotnetInspectError(
             "unsupported_metadata",
             f"cannot size metadata table {table:#x}; enumeration aborted",
-            details={"table": table},
-        )
-    return sizes[table]
+            details={"table": exc.table},
+        ) from exc
 
 
 def _table_start(meta: _MetaCtx, table: int) -> int:
-    offset = meta.table_data_offset
-    for bit in range(table):
-        rows = meta.row_counts.get(bit)
-        if not rows:
-            continue
-        offset += _table_row_size(meta, bit) * rows
-    return offset
+    try:
+        return _shared_table_start(
+            meta.row_counts,
+            table,
+            table_data_offset=meta.table_data_offset,
+            string_index_size=meta.string_index_size,
+            blob_index_size=meta.blob_index_size,
+            guid_index_size=meta.guid_index_size,
+        )
+    except TableSizingError as exc:
+        raise DotnetInspectError(
+            "unsupported_metadata",
+            f"cannot size metadata table {table:#x}; enumeration aborted",
+            details={"table": exc.table},
+        ) from exc
 
 
 def _iter_table_rows(meta: _MetaCtx, table: int) -> Iterable[tuple[int, int]]:
