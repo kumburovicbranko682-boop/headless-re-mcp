@@ -199,3 +199,47 @@ def test_force_stop_is_honest_when_the_process_list_is_unreadable() -> None:
     assert payload["stopped"] is None
     assert "remaining_pids" not in payload
     assert "note" in payload
+
+
+def test_force_stop_is_honest_when_pidof_returns_a_host_error() -> None:
+    """A host-error line from pidof must not be mistaken for a clean stop.
+
+    adbutils can echo the adb host's own ``error:`` / ``adb:`` message as stdout
+    instead of raising -- an offline device answers ``pidof`` that way. The
+    message even contains "not found", which would otherwise trip the
+    pidof-missing branch into the ps -A fallback; on the same offline device
+    that fallback matches nothing and reads as "no survivors, so stopped". The
+    verify never ran, so stopped must be null, not a false true.
+    """
+    dev = _ScriptedDev(
+        {
+            ("am", "force-stop"): "",
+            ("pidof",): "adb: error: device 'emulator-5554' not found",
+        }
+    )
+    payload = _backend_with(dev).force_stop("emulator-5554", "com.example.app")
+    assert payload["stopped"] is None
+    assert "remaining_pids" not in payload
+    assert "note" in payload
+
+
+def test_force_stop_is_honest_when_the_ps_fallback_returns_a_host_error() -> None:
+    """A device that drops during the ps -A fallback leaves stopped null.
+
+    ``pidof: not found`` is a genuine missing-binary message (no host-error
+    prefix), so the fallback runs; but if the device is offline by then, ps -A
+    answers with a host-error line that matches no package row. Without the
+    guard that empty match reads as a clean stop; it must be a could-not-verify
+    null instead.
+    """
+    dev = _ScriptedDev(
+        {
+            ("am", "force-stop"): "",
+            ("pidof",): "/system/bin/sh: pidof: not found",
+            ("ps", "-A"): "error: device offline",
+        }
+    )
+    payload = _backend_with(dev).force_stop("emulator-5554", "com.example.app")
+    assert payload["stopped"] is None
+    assert "remaining_pids" not in payload
+    assert "note" in payload

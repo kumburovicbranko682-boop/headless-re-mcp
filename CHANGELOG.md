@@ -70,6 +70,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   输出抛 `AdbError`，两个调用方已有的 `except AdbError` 分支即把结果如实报成 null + “could not
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
+- **`device.force_stop` 的复核也会把主机错误串读成「已停」的假阳性。**它的三态 `stopped`
+  由 `_pids_for_package` 支撑，却和 `_pm_path` / getprop / pm list 不同，从不跑
+  `_is_host_error_output`。adbutils 会把 adb 主机端的 `error:` / `adb:` 行当 stdout 返回而不抛
+  （掉线设备的 pidof/ps 就这样回），对 pidof 尤其致命：主机错误里没有任何 pid，而
+  `error: device '…' not found` 恰好含 "not found"，会把 pidof-缺失分支带进 `ps -A` 回退——同一台
+  掉线设备的回退又匹配不到任何进程行、返回 `[]`，`force_stop` 便读成干净的 `stopped=true`。复核
+  从未真正跑过，正是 `_pm_path` 那处为 install/uninstall 拦下的同类假阳性。现在 pidof 输出与
+  `ps -A` 回退输出都过一遍主机错误判定，命中即返回 None，让 `force_stop` 如实报 `stopped=null` 并带
+  could-not-read 备注；真正的 `pidof: not found` 无此前缀，仍照旧走回退，空 pidof 输出仍读成
+  `stopped=true`。新增两测分别钉住 pidof 主机错误与 ps 回退主机错误两种情形。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
