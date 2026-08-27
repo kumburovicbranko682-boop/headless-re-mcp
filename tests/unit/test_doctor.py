@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -26,6 +27,7 @@ from headless_re_mcp.doctor import (
     probe_upx,
     probe_x64dbg_binaries,
     probe_x64dbg_source,
+    required_probe_names,
     run_doctor,
 )
 
@@ -334,6 +336,111 @@ def test_missing_nonpe_backends_carry_install_remediation(
         probe = probes[name]
         assert probe.status is ProbeStatus.MISSING, f"{name}: {probe.status}"
         assert probe.remediation, f"{name} is MISSING with no install remediation"
+
+
+def test_linux_required_set_contains_no_backend() -> None:
+    """On Linux only the platform and interpreter are required; no RE backend is.
+
+    This is the maturity contract for the non-PE lines (and for PE-on-Linux): a
+    backend is optional, so a host that installed none of them still passes
+    ``doctor --strict`` -- the CI 'Doctor and core service smoke' step runs
+    exactly that. Windows deliberately keeps IDA/x64dbg required because that is
+    where the PE chain runs, so the two sets differ on purpose; pin the Linux one
+    by value rather than trusting run_doctor's ambient platform choice. If a
+    backend is ever promoted into the Linux required set, that is a deliberate
+    change to this contract and must update this test, not slip past it.
+    """
+    linux_required = required_probe_names("linux")
+    assert linux_required == frozenset({"platform", "python"})
+    # Every backend doctor probes -- PE and non-PE alike -- must stay out of the
+    # Linux required set; that exclusion is what keeps a missing one non-blocking.
+    backends = {
+        "ida_idalib",
+        "x64dbg_headless_binaries",
+        "x64dbg_source",
+        "native_toolchain",
+        "windbg",
+        "radare2",
+        "ghidra",
+        "frida",
+        "java",
+        "androguard",
+        "adbutils",
+        "adb",
+        "jadx",
+        "apktool",
+        "apksigner",
+        "playwright",
+        "mitmproxy",
+        "webcrack",
+        "wabt",
+    }
+    assert linux_required.isdisjoint(backends)
+
+
+def test_doctor_ready_on_linux_with_every_backend_missing() -> None:
+    """The Linux counterpart to the Windows optional-backend readiness test.
+
+    A report carrying only platform+python READY with every backend MISSING is
+    still ready under the Linux required set -- the state a freshly provisioned
+    Linux host is in before any FOSS backend (or IDA/x64dbg) is installed. Built
+    with the Linux set passed explicitly so the assertion holds even when the
+    unit suite runs on the Windows CI job, whose ambient required set differs.
+    """
+    report = DoctorReport(
+        probes=(
+            Probe("platform", ProbeStatus.READY, "ok"),
+            Probe("python", ProbeStatus.READY, "ok"),
+            Probe("ida_idalib", ProbeStatus.MISSING, "missing"),
+            Probe("x64dbg_headless_binaries", ProbeStatus.MISSING, "missing"),
+            Probe("radare2", ProbeStatus.MISSING, "missing"),
+            Probe("ghidra", ProbeStatus.MISSING, "missing"),
+            Probe("frida", ProbeStatus.MISSING, "missing"),
+            Probe("androguard", ProbeStatus.MISSING, "missing"),
+            Probe("adb", ProbeStatus.MISSING, "missing"),
+            Probe("jadx", ProbeStatus.MISSING, "missing"),
+            Probe("apktool", ProbeStatus.MISSING, "missing"),
+            Probe("apksigner", ProbeStatus.MISSING, "missing"),
+            Probe("playwright", ProbeStatus.MISSING, "missing"),
+            Probe("mitmproxy", ProbeStatus.MISSING, "missing"),
+            Probe("webcrack", ProbeStatus.MISSING, "missing"),
+            Probe("wabt", ProbeStatus.MISSING, "missing"),
+        ),
+        required_probes=required_probe_names("linux"),
+    )
+    assert report.ready is True
+
+
+@pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="the Linux required set only applies when doctor runs on Linux (skip != pass)",
+)
+def test_run_doctor_strict_is_ready_on_a_bare_linux_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: the real run_doctor path is ready with no backend installed.
+
+    The two tests above pin the pieces (the required set, and readiness given
+    that set); this exercises the whole ``doctor --strict`` decision the CI smoke
+    step depends on. Force every optional backend absent -- nothing on PATH, no
+    importable module -- and the report is still ready, because only platform and
+    the interpreter are required. A regression that promoted any backend into the
+    Linux required set would flip report.ready to False and fail that CI step;
+    this fails first, naming the required probe that is not ready.
+    """
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    monkeypatch.setattr(doctor_module.importlib.util, "find_spec", lambda _name: None)
+
+    report = run_doctor(_settings(None, tmp_path / "artifacts"))
+
+    assert report.required_probes == frozenset({"platform", "python"})
+    not_ready = [
+        probe.name
+        for probe in report.probes
+        if probe.name in report.required_probes and probe.status is not ProbeStatus.READY
+    ]
+    assert not_ready == [], f"required probes not ready on a bare host: {not_ready}"
+    assert report.ready is True
 
 
 def test_x64dbg_source_probe_requires_official_target(tmp_path: Path) -> None:
