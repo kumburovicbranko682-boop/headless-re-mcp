@@ -81,6 +81,20 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.read_file")
+    def apk_read_file(session_id: str, name: str) -> dict[str, Any]:
+        """Read one entry's bytes from the APK zip, bounded, without unpacking.
+
+        Answers with name, size, returned_bytes, content, base64_encoded, and
+        truncated. content is the entry decoded as text, or base64 when
+        base64_encoded is true (binary). size is the declared uncompressed
+        length; returned_bytes is how many bytes content holds; the read is
+        capped at 200000 bytes and truncated says more remained. A name not in
+        the archive is not_found; an entry too large to materialize on the
+        fallback path is too_large. There is no data, bytes or body field.
+        """
+        return _dump(analysis.apk_read_file(session_id, name))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,

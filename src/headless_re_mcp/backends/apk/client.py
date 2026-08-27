@@ -8,7 +8,9 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import base64
 import threading
+import zipfile
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
@@ -27,6 +29,11 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# apk.read_file: the inline byte cap on returned content, and a hard ceiling
+# that refuses to materialize an entry through the androguard fallback path
+# (the stdlib path streams a bounded read and never needs it).
+_MAX_FILE_INLINE = 200_000
+_MAX_FILE_READ_BYTES = 25_000_000
 # Page ceilings, kept equal to the apk.* tool schema maxima so the MCP path
 # (schema-validated) and the agent/OpenAI paths (clamped here) agree on the
 # largest page. test_apk_offset_schema.py pins them against the schema.
@@ -325,6 +332,92 @@ class ApkClient:
             "count": len(libs),
             "has_more": has_more,
         }
+
+    def read_file(self, path: Path, name: str) -> JsonObject:
+        """Read one entry's bytes from the APK zip, bounded, without unpacking.
+
+        Reading a single entry (an asset, raw resource, embedded config,
+        secondary dex header...) previously required apk.decode unpacking the
+        whole tree; nothing in the surface could read a named archive entry.
+        The read is capped at 200000 bytes: a text entry comes back decoded in
+        content, a binary one base64-encoded with base64_encoded true. size is
+        the entry's declared uncompressed length, returned_bytes what content
+        actually holds, and truncated says more remained past the cap. The
+        bytes are streamed through a bounded read, so a decompression bomb
+        cannot be materialized.
+        """
+        resolved = self._require(path)
+        target = str(name)
+        if not target:
+            raise ApkError("invalid_params", "name is required")
+        content, declared, truncated = self._read_entry(resolved, target)
+        text: str | None
+        if b"\x00" not in content:
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                text = None
+        else:
+            text = None
+        if text is not None:
+            body, base64_encoded = text, False
+        else:
+            body, base64_encoded = base64.b64encode(content).decode("ascii"), True
+        return {
+            "name": target,
+            "size": declared,
+            "returned_bytes": len(content),
+            "content": body,
+            "base64_encoded": base64_encoded,
+            "truncated": truncated,
+        }
+
+    def _read_entry(self, apk_path: Path, name: str) -> tuple[bytes, int, bool]:
+        """Return (capped bytes, declared size, truncated) for one zip entry.
+
+        The stdlib path streams at most _MAX_FILE_INLINE + 1 decompressed bytes,
+        so memory stays bounded no matter what the entry's true size is. Some
+        APKs use zip structures stdlib rejects; those fall back to androguard,
+        where the declared size is checked before the entry is materialized.
+        """
+        try:
+            with zipfile.ZipFile(apk_path) as archive:
+                try:
+                    info = archive.getinfo(name)
+                except KeyError as exc:
+                    raise ApkError("not_found", "file not in apk", name=name) from exc
+                with archive.open(name) as stream:
+                    chunk = stream.read(_MAX_FILE_INLINE + 1)
+        except zipfile.BadZipFile:
+            return self._read_entry_via_androguard(apk_path, name)
+        truncated = len(chunk) > _MAX_FILE_INLINE
+        return chunk[:_MAX_FILE_INLINE], int(info.file_size), truncated
+
+    def _read_entry_via_androguard(self, apk_path: Path, name: str) -> tuple[bytes, int, bool]:
+        apk = self._apk(apk_path)
+        if name not in set(apk.get_files() or []):
+            raise ApkError("not_found", "file not in apk", name=name)
+        declared: int | None = None
+        try:
+            info = (apk.zip.infolist() or {}).get(name)
+            if info is not None:
+                declared = int(getattr(info, "uncompressed_size", 0) or 0)
+        except Exception:  # noqa: BLE001 - directory shapes vary by version
+            declared = None
+        if declared is not None and declared > _MAX_FILE_READ_BYTES:
+            raise ApkError(
+                "too_large",
+                "apk entry exceeds read cap",
+                name=name,
+                size=declared,
+                cap=_MAX_FILE_READ_BYTES,
+            )
+        try:
+            raw = apk.get_file(name)
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to read file: {exc}") from exc
+        truncated = len(raw) > _MAX_FILE_INLINE
+        return raw[:_MAX_FILE_INLINE], (declared if declared is not None else len(raw)), truncated
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
