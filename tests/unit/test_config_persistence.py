@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -129,6 +130,52 @@ def test_config_update_refuses_a_file_it_could_not_read_back(
 
     assert path.read_bytes() == original
     assert list(tmp_path.glob(".config.json-*.tmp")) == []
+
+
+def test_concurrent_merges_of_distinct_keys_lose_nothing(tmp_path: Path) -> None:
+    """Two threads writing different keys must both survive in the final file.
+
+    These writers are real and concurrent in one process: workspace.mode_set
+    persists ``workspace_profile`` from an agent tool thread while the console
+    persists the ``agent_*`` autonomy keys from a request thread. The merge is
+    a read-modify-write of the whole file, so unserialized, each in-flight
+    merge reads a snapshot missing the other's key and the later replace
+    silently drops the earlier write -- this module's own docstring's "silently
+    drop someone's IDA path", just concurrently. Every key here is written
+    exactly once, so any lost update stays visible at the end.
+    """
+    path = tmp_path / "config.json"
+    keys_per_writer = 25
+    barrier = threading.Barrier(2)
+    failures: list[BaseException] = []
+
+    def writer(prefix: str) -> None:
+        try:
+            barrier.wait(timeout=10)
+            for index in range(keys_per_writer):
+                update_config_values({f"{prefix}_{index}": index}, config_path=path)
+        except BaseException as exc:  # noqa: BLE001 - surfaced in the assertion below
+            failures.append(exc)
+
+    threads = [
+        threading.Thread(target=writer, args=(prefix,), name=f"cfg-{prefix}")
+        for prefix in ("alpha", "beta")
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert not failures, failures
+    assert not any(thread.is_alive() for thread in threads)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    expected = {
+        f"{prefix}_{index}"
+        for prefix in ("alpha", "beta")
+        for index in range(keys_per_writer)
+    }
+    missing = sorted(expected - set(data))
+    assert not missing, f"concurrent merges lost keys: {missing}"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
