@@ -719,9 +719,28 @@ class ApkClient:
         out.sort(key=lambda c: (str(c["type"]), str(c["name"])))
         return out, has_more
 
+    @staticmethod
+    def _member_sizes(path: Path) -> dict[str, int]:
+        """Uncompressed size per archive member, read from the central directory.
+
+        The zip metadata carries file_size without decompressing anything, so a
+        packed multi-megabyte payload can be flagged by size without reading it.
+        A malformed/absent archive degrades to no sizes rather than an error.
+        """
+        sizes: dict[str, int] = {}
+        try:
+            with zipfile.ZipFile(path) as archive:
+                for info in archive.infolist():
+                    if not info.is_dir():
+                        sizes[info.filename] = int(info.file_size)
+        except (OSError, zipfile.BadZipFile):
+            return {}
+        return sizes
+
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        libs: list[str] = []
+        sizes = self._member_sizes(path)
+        entries: list[JsonObject] = []
         abis: set[str] = set()
         has_more = False
         for name in apk.get_files() or []:
@@ -729,17 +748,25 @@ class ApkClient:
             if not text.startswith("lib/"):
                 continue
             parts = text.split("/")
-            if len(parts) >= 3:
-                abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
+            abi = parts[1] if len(parts) >= 3 else ""
+            if abi:
+                abis.add(abi)
+            if len(entries) >= _MAX_NATIVE_LIBS:
                 has_more = True
                 continue
-            libs.append(text)
-        libs.sort()
+            # Each .so is now an object (path, abi, and size when the archive
+            # metadata had it) rather than a bare path, matching the rest of the
+            # apk surface and letting the packed payload be spotted by size.
+            entry: JsonObject = {"path": text, "abi": abi}
+            size = sizes.get(text)
+            if isinstance(size, int):
+                entry["size"] = size
+            entries.append(entry)
+        entries.sort(key=lambda item: str(item["path"]))
         return {
-            "native_libs": libs,
+            "native_libs": entries,
             "abis": sorted(abis),
-            "count": len(libs),
+            "count": len(entries),
             "has_more": has_more,
         }
 

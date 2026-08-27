@@ -221,6 +221,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`web.scripts` 无法只看运行时生成脚本，也不能按 URL 定位**。给它加上 `dynamic_only` 与 `url_filter`：前者只留
   `dynamic=True` 的脚本（`eval`/`new Function`/注入 `<script>`，其 url 通常为空，正是加壳器解包后 payload 的落点，url 过滤够不着），
   后者对 url 做大小写不敏感子串匹配；二者都在分页前应用，于是 `total` 即匹配数——在解析了成百上千脚本的页面上直接锁定目标。
+- **`apk.native_libs` 只给裸路径，看不出哪个 `.so` 是加壳后的大 payload**。它原来把每个原生库当成一个字符串路径返回，是整个
+  apk 面里唯一没用富对象的列表（`certificates`/`components` 早已是带字段的对象）。现把每个条目改成 `{path, abi, size}`：`abi`
+  取 `lib/<abi>/` 目录（直接挂在 `lib/` 下的散文件为空），`size` 是从 zip 中央目录读到的**未压缩**字节数——不解压、不读内容即可
+  凭元数据把体积异常的 payload `.so` 标出来（元数据读不到时才省略 `size`）。`abis` 仍是去重排序的 ABI 集合，`count`/`has_more`
+  不变。
 - **`web.cookies` 缺席：浏览器的 cookie jar 只能从抓包的 Set-Cookie 头里零散拼**。抓包里的 Set-Cookie 只是某一次响应的片段，
   而 web RE 真正要的是当前完整的 jar——JS 通过 `document.cookie` 写入的、跨若干次重定向（其请求早被环形缓冲淘汰）累积的、以及
   页面自身脚本读不到的 HttpOnly cookie（会话/鉴权令牌往往正是这类）。新增只读工具 `web.cookies`，走 CDP `Network.getAllCookies`

@@ -103,7 +103,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with native_libs, abis, count, and has_more so a list that
         filled the cap is not read as every .so. There is no libs or
-        libraries field.
+        libraries field. Each native_libs entry is an object with path, abi
+        (the lib/<abi>/ folder, empty for a stray file directly under lib/),
+        and size -- the uncompressed byte count from the archive metadata, so
+        a packer's oversized payload .so stands out without reading it. size
+        is omitted only when the archive metadata could not be read. abis is
+        the deduped, sorted set of ABI folders.
         """
         return _dump(analysis.apk_native_libs(session_id))
 

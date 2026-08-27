@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import zipfile
 from pathlib import Path
 
 from headless_re_mcp.backends.apk.client import ApkClient
@@ -51,7 +52,45 @@ def test_apk_native_libs_names_native_libs_not_libraries() -> None:
     assert len(payload["native_libs"]) == 256
     assert payload["has_more"] is True
     assert payload["abis"] == ["arm64-v8a"]
+    # Each entry is an object (path, abi); size is absent when the archive
+    # metadata was not readable (dummy.apk is not a real zip on disk).
+    first = payload["native_libs"][0]
+    assert first["path"].startswith("lib/arm64-v8a/")
+    assert first["abi"] == "arm64-v8a"
+    assert "size" not in first
     doc = _tool_docstring("apk.native_libs")
     assert "Answers with native_libs" in doc
     assert "abis" in doc
     assert "has_more" in doc
+    assert "size" in doc
+
+
+def test_apk_native_libs_reports_uncompressed_size_from_the_archive(
+    tmp_path: Path,
+) -> None:
+    """The packed payload .so is flagged by size without decompressing it."""
+    apk_path = tmp_path / "app.apk"
+    small = b"\x7fELF" + b"\x00" * 100
+    packed = b"\x7fELF" + b"\x01" * 50_000
+    with zipfile.ZipFile(apk_path, "w") as archive:
+        archive.writestr("lib/arm64-v8a/libsmall.so", small)
+        archive.writestr("lib/armeabi-v7a/libpacked.so", packed)
+        archive.writestr("classes.dex", b"dex\n035\x00")
+
+    class _RealFilesApk:
+        def get_files(self) -> list[str]:
+            return [
+                "lib/arm64-v8a/libsmall.so",
+                "lib/armeabi-v7a/libpacked.so",
+                "classes.dex",
+            ]
+
+    client = ApkClient()
+    client._apk = lambda _path: _RealFilesApk()  # type: ignore[method-assign]
+    payload = client.native_libs(apk_path)
+    by_path = {entry["path"]: entry for entry in payload["native_libs"]}
+    assert by_path["lib/arm64-v8a/libsmall.so"]["size"] == len(small)
+    assert by_path["lib/armeabi-v7a/libpacked.so"]["size"] == len(packed)
+    assert by_path["lib/armeabi-v7a/libpacked.so"]["abi"] == "armeabi-v7a"
+    assert payload["abis"] == ["arm64-v8a", "armeabi-v7a"]
+    assert payload["count"] == 2
