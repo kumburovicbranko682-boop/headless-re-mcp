@@ -102,6 +102,42 @@ def test_the_zerofall_preview_masks_every_credential_it_would_import(tmp_path: P
     assert "somethingUnknown" in result["ignored"]
 
 
+def test_the_zerofall_preview_names_dropped_nested_ai_keys_it_will_not_import(
+    tmp_path: Path,
+) -> None:
+    """Only ``ai.apiBaseUrl`` is imported out of the nested ``ai`` object.
+
+    The preview's ``ignored`` list is how an operator confirms what will and
+    will not carry over. It named every dropped top-level key but silently
+    swallowed the ``ai`` object whole: a Zerofall export with ``ai.model`` or
+    ``ai.temperature`` had those quietly discarded while ``ignored`` implied
+    only ``apiBaseUrl`` lived there. The dropped sub-keys now appear as
+    ``ai.<name>`` so nothing vanishes without being reported.
+    """
+    store_raw = {
+        "ai": {
+            "apiBaseUrl": "https://api.example.com",
+            "model": "should-be-ignored",
+            "temperature": 0.2,
+        },
+        "model": "gpt-4.1-mini",
+        "keepsOut": True,
+    }
+    result = _store(tmp_path).preview_zerofall(store_raw)
+
+    ignored = result["ignored"]
+    assert "ai.model" in ignored
+    assert "ai.temperature" in ignored
+    assert "keepsOut" in ignored
+    # apiBaseUrl is imported, so it is never reported as dropped, and the bare
+    # "ai" container is not itself an ignored key -- its parts are named.
+    assert "ai.apiBaseUrl" not in ignored
+    assert "ai" not in ignored
+    # A non-dict ai carries nothing importable, so it is reported whole.
+    bare = _store(tmp_path).preview_zerofall({"ai": "not-an-object"})
+    assert "ai" in bare["ignored"]
+
+
 def test_the_environment_key_overrides_the_file_and_still_never_leaks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

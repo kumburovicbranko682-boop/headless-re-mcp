@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（Zerofall 导入预览把 `ai` 对象里未导入的子键悄悄吞掉，不列进 `ignored`）
+
+- `preview_zerofall` 的 `ignored` 是操作者据以确认「哪些字段会/不会被带过来」的清单。它逐一点名了
+  所有不导入的**顶层**键，却把整个嵌套 `ai` 对象从 `ignored` 里减掉了——而 `ai` 只导入一个键
+  （`ai.apiBaseUrl`）。于是一份带 `ai.model` / `ai.temperature` 的 Zerofall 配置，这些子键被静默
+  丢弃，`ignored` 却让人以为 `ai` 下面只有 apiBaseUrl。现改为逐一枚举被丢弃的子键为 `ai.<name>`
+  列入 `ignored`（`ai.apiBaseUrl` 已导入故不出现）；当 `ai` 存在但根本不是对象时（其下无任何可导入
+  项），回退为整体报一个 `ai`。纯属**增补上报**，不改变实际导入的字段集合。新增回归：给一份含
+  `ai.model` / `ai.temperature` 的输入断言二者出现在 `ignored` 而 `ai.apiBaseUrl` / 裸 `ai` 不出现，
+  并对非对象 `ai` 断言整体入列；去掉修复后该用例失败（`ignored` 只剩顶层 `keepsOut`）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

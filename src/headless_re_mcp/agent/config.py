@@ -244,7 +244,25 @@ class ProviderConfigStore:
 
     def preview_zerofall(self, raw: dict[str, Any]) -> dict[str, Any]:
         fields = self._flatten_zerofall(raw)
-        ignored = sorted(set(raw) - {key for key in ZEROFALL_IMPORT_FIELDS if "." not in key} - {"ai"})
+        importable_top = {key for key in ZEROFALL_IMPORT_FIELDS if "." not in key}
+        # Report what will *not* be imported, named precisely. The nested ``ai``
+        # object is imported only one key deep (``ai.apiBaseUrl``), so a bare
+        # "ai" in ``ignored`` would hide that its other sub-keys are dropped --
+        # an operator reading this could not tell ``ai.model`` was silently
+        # discarded. Enumerate the dropped sub-keys as ``ai.<name>`` instead, and
+        # fall back to a bare "ai" only when the value is present but not a dict
+        # (in which case nothing under it is imported).
+        ignored_keys = set(raw) - importable_top - {"ai"}
+        ai_value = raw.get("ai")
+        if isinstance(ai_value, dict):
+            ignored_keys |= {
+                f"ai.{sub}"
+                for sub in ai_value
+                if f"ai.{sub}" not in ZEROFALL_IMPORT_FIELDS
+            }
+        elif "ai" in raw:
+            ignored_keys.add("ai")
+        ignored = sorted(ignored_keys)
         preview = redact(fields)
         if "apiKey" in fields:
             preview["apiKey"] = masked_secret(str(fields["apiKey"]))
