@@ -325,8 +325,16 @@ class AgentOrchestrator:
 
     async def decide(self, run_id: str, tool_call_id: str, args_sha256: str, *, approved: bool) -> JsonObject:
         run = self.store.get_run(run_id)
-        if run is None or run.status in TERMINAL_RUN_STATUSES or run.cancel_requested:
-            raise ValueError("run is terminal or missing")
+        if run is None:
+            # A run that never existed is not a conflict. The old shared
+            # ValueError("run is terminal or missing") both refused to say which
+            # of the two happened and rode the route's 409 path, so approving a
+            # tool call on a nonexistent run answered 409 "terminal or missing"
+            # -- while the sibling cancel endpoint answers a plain 404 for the
+            # same id. Raise KeyError so the route can report run_not_found.
+            raise KeyError(run_id)
+        if run.status in TERMINAL_RUN_STATUSES or run.cancel_requested:
+            raise ValueError("run is terminal")
         decision = self.store.decide_tool_call(run_id, tool_call_id, args_sha256, approved=approved)
         self.store.append_event(run_id, "approval.approved" if approved else "approval.rejected", {"tool_call_id": tool_call_id, "args_sha256": args_sha256})
         safe = redact(decision)
