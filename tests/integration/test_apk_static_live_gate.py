@@ -843,3 +843,59 @@ def test_apk_readers_merge_classes_across_secondary_dex(tmp_path: Path) -> None:
         assert [m["name"] for m in methods.data["methods"]] == [_DEX_CROSS_CALLER]
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_dex_readers_fail_soft_on_a_corrupt_dex(tmp_path: Path) -> None:
+    """A parseable APK with a garbage classes.dex must fault, not crash.
+
+    The manifest is valid AXML but classes.dex is truncated/garbage, so the
+    androguard analysis pass (AnalyzeAPK / get_classes) blows up. That raw
+    exception must be wrapped into the structured backend_error envelope every
+    DEX reader shares -- never surface as internal_error (a logged server defect)
+    and never escape as an uncaught traceback. The failure must also stay scoped
+    to the DEX line: the manifest readers, which never touch the DEX, still
+    decode the package, so an agent learns the APK is readable but its code is
+    not, rather than losing the whole session.
+
+    This is the Android sibling of the r2/Ghidra fail-soft gates: the same fault
+    contract, exercised against adversarial bytes an agent will encounter in the
+    wild (obfuscated, packed, or partially downloaded apps).
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK live gate not run (skip != pass)")
+
+    corrupt_dexes = {
+        "magic-only": b"dex\n035\x00" + b"\x00" * 8,
+        "not-a-dex": b"\x7fELF this is not dalvik bytecode at all" * 4,
+        "random-tail": b"dex\n035\x00" + bytes(range(200)),
+    }
+    for label, payload in corrupt_dexes.items():
+        apk = _build_apk(tmp_path / f"corrupt-{label}.apk", dex=payload)
+        service = AnalysisService()
+        try:
+            created = service.create_session(str(apk))
+            assert created.ok and created.data is not None, created.error
+            session_id = created.data["session"]["id"]
+
+            # The DEX-backed readers must every one fail closed with a structured,
+            # non-internal_error code rather than leaking the androguard exception.
+            dex_calls = {
+                "apk_classes": lambda: service.apk_classes(session_id, limit=50),
+                "apk_strings": lambda: service.apk_strings(session_id, limit=50),
+                "apk_xrefs": lambda: service.apk_xrefs(session_id, "onCreate"),
+                "apk_methods": lambda: service.apk_methods(session_id, "com.example.App"),
+            }
+            for name, call in dex_calls.items():
+                result = call()
+                assert not result.ok and result.error is not None, (label, name, result)
+                assert result.error.code != "internal_error", (label, name, result.error)
+                assert result.error.code == "backend_error", (label, name, result.error)
+
+            # The fault is scoped to the DEX: the manifest still decodes, so the
+            # session is usable for everything that does not need the bytecode.
+            opened = service.apk_open(session_id)
+            assert opened.ok and opened.data is not None, (label, opened.error)
+            assert opened.data["package"] == _PACKAGE, (label, opened.data)
+        finally:
+            service.close_all()
