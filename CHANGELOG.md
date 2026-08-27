@@ -14,7 +14,9 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建；真实 Windows 后端 gate 继续留在 Windows job，Linux 收集时给 Windows-only 集成测试明确 skip 原因。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建；真实 Windows 后端 gate 继续留在 Windows job，Linux 收集时给 Windows-only 集成测试明确 skip 原因。另加 `linux-ghidra-live` job：装 JDK 21 与 Ghidra（带缓存）后在 Ubuntu 上真机跑 `analyzeHeadless`，对一份现编的 ELF 断言真实的函数/符号/反编译/交叉引用，并在 Ghidra 已装却 skip 时判失败——这是本项目第一个真正执行 `analyzeHeadless` 的 CI。
+
+Ghidra 反编译线此前在 Linux 上根本跑不起来，因为从来没有任何测试真跑过 `analyzeHeadless`（只断言"缺失时优雅降级"），两个 bug 一直藏着：(1) `_find_analyze_headless` 把 Windows 的 `analyzeHeadless.bat` 排在 POSIX 脚本之前，Linux 于是挑中批处理文件、以 `PermissionError` 启动失败（`doctor` 探针还照样报 ready，指向一个根本跑不了的启动器）；(2) `ExportJson.py` 读的是未定义的全局 `ARGS` 而非 `getScriptArgs()`，分析成功之后每次导出都以 `NameError` 失败。现在启动器发现按平台排序、导出脚本从 `getScriptArgs()` 取参，Ghidra 的 functions/symbols/xrefs/decompile 在 Linux 真机可用；两处都补了不依赖真机 Ghidra 的单元测试守回归。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 

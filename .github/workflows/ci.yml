@@ -152,6 +152,75 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  # Real-backend coverage for the Ghidra line. Ghidra is a cross-platform JVM
+  # tool, so its headless analysis runs for real on Linux instead of only being
+  # asserted-when-missing -- "skip != pass" only means something when the
+  # backend is actually present somewhere. This is the first CI that ever runs
+  # analyzeHeadless; two bugs (the launcher picked the Windows .bat on POSIX and
+  # the export script read an undefined ARGS) hid here precisely because nothing
+  # exercised it.
+  linux-ghidra-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GHIDRA_VERSION: "11.3.2"
+      GHIDRA_DATE: "20250415"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          # Ghidra 11.3.x requires JDK 21+.
+          java-version: "21"
+
+      - name: Cache Ghidra release
+        id: ghidra-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/ghidra
+          key: ghidra-${{ env.GHIDRA_VERSION }}-${{ env.GHIDRA_DATE }}
+
+      - name: Install Ghidra
+        if: steps.ghidra-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/ghidra
+          url="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip"
+          curl -fsSL -o /tmp/ghidra.zip "$url"
+          unzip -q /tmp/ghidra.zip -d ~/ghidra
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: Ghidra headless gate runs for real (skip != pass)
+        run: |
+          export HEADLESS_RE_GHIDRA_HOME="$(echo ~/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC)"
+          test -x "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" || { echo "analyzeHeadless missing at $HEADLESS_RE_GHIDRA_HOME"; exit 1; }
+          python -m headless_re_mcp doctor --json | python -c "import json,sys; d=json.load(sys.stdin); g=[p for p in d.get('probes',[]) if p.get('name')=='ghidra']; print('ghidra probe:', g); sys.exit(0 if g and g[0].get('status')=='ready' else 'ghidra probe not ready with Ghidra installed')"
+          python -m pytest tests/integration/test_ghidra_live_gate.py \
+            -rs --tb=short --junitxml=ghidra-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("ghidra-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # Ghidra was just installed, so a skip here means the gate could not
+          # reach it -- exactly the false-green "skip != pass" warns about.
+          if not cases:
+              sys.exit("no ghidra gate was collected")
+          if skipped:
+              sys.exit(f"ghidra gate skipped despite an installed Ghidra: {skipped}")
+          print(f"ghidra gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
