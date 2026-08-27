@@ -451,6 +451,131 @@ async def test_stdio_reader_drains_oversized_records_without_buffering_them() ->
     assert following_oversized is False
 
 
+def test_request_id_only_answers_a_string_or_int_id() -> None:
+    """The error reply borrows the request's id, and only a JSON-RPC id counts.
+
+    A line whose top level is not an object, that carries no id, or whose id is
+    a bool or a float cannot correlate a reply, so _request_id returns None and
+    the caller stays silent -- the same silence a fully unparseable line gets.
+    bool is checked before int because ``True`` is an ``int`` in Python and
+    would otherwise sneak through as id 1.
+    """
+    from headless_re_mcp.mcp.stdio_errors import _request_id
+
+    assert _request_id("123") is None  # valid JSON, but not an object
+    assert _request_id('{"method":"x"}') is None  # object with no id
+    assert _request_id('{"id":true}') is None  # bool is not a usable id
+    assert _request_id('{"id":1.5}') is None  # float is not a usable id
+    assert _request_id('{"id":9}') == 9
+    assert _request_id('{"id":"abc"}') == "abc"
+
+
+def test_parse_failure_reply_keeps_only_the_first_line_of_a_multiline_error() -> None:
+    """A non-recursion parse error becomes a one-line JSON-RPC message.
+
+    pydantic's errors run many lines; putting all of them in the message would
+    smuggle newlines into an NDJSON reply and bury the id. The reply keeps the
+    first line only, bounded, so it stays a single readable record.
+    """
+    import json
+
+    from headless_re_mcp.mcp.stdio_errors import _error_for_parse_failure
+
+    reply = _error_for_parse_failure('{"id":5}', ValueError("bad line one\nsecond line"))
+    assert reply is not None
+    dumped = json.loads(reply.model_dump_json())
+    assert dumped["id"] == 5
+    assert dumped["error"]["message"] == "bad line one"
+
+
+def test_parse_failure_reply_is_silent_without_an_id() -> None:
+    from headless_re_mcp.mcp.stdio_errors import _error_for_parse_failure
+
+    assert _error_for_parse_failure("{not-json", ValueError("nope")) is None
+
+
+@pytest.mark.asyncio
+async def test_read_bounded_line_reports_end_of_stream_as_empty() -> None:
+    from io import BytesIO
+
+    from headless_re_mcp.mcp.stdio_errors import _read_bounded_line
+
+    line, oversized = await _read_bounded_line(BytesIO(b""), limit=64)
+    assert line == b""
+    assert oversized is False
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.asyncio
+async def test_stdio_server_forwards_good_lines_and_answers_bad_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole stdio wrapper: good in, error out, over the real streams.
+
+    A valid request reaches the read stream the server consumes. A line that is
+    valid JSON but not a JSON-RPC message, and an oversized line, each carry a
+    recoverable id, so each is answered on the write stream (the fake stdout)
+    with an INVALID_REQUEST named after that id instead of vanishing. This is
+    the robustness _run_stdio depends on, exercised end to end rather than via
+    the pure helpers alone.
+    """
+    import json
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    from headless_re_mcp.mcp import stdio_errors
+
+    class _KeepOpen(BytesIO):
+        # TextIOWrapper closes its underlying buffer when the wrapper is
+        # finalised on context exit; keep it readable so the test can inspect
+        # what the writer already flushed.
+        def close(self) -> None:  # noqa: D401 - trivial override
+            return None
+
+    valid = b'{"jsonrpc":"2.0","id":1,"method":"ping"}'
+    not_rpc = b'{"id":2,"foo":"bar"}'  # valid JSON object, not a JSON-RPC message
+    oversized = b'{"id":3,"foo":"bar"}'  # short here, delivered flagged oversized
+    # No recoverable id, so both of these must be dropped in silence rather
+    # than answered -- the same contract the pure helper enforces.
+    faceless = b"not json at all"
+
+    script: list[tuple[bytes, bool]] = [
+        (valid, False),
+        (not_rpc, False),
+        (oversized, True),
+        (faceless, False),
+        (faceless, True),
+    ]
+
+    async def _scripted(stream: object, *, limit: int = 0) -> tuple[bytes, bool]:
+        if not script:
+            return b"", False
+        return script.pop(0)
+
+    monkeypatch.setattr(stdio_errors, "_read_bounded_line", _scripted)
+
+    out_buffer = _KeepOpen()
+    monkeypatch.setattr("sys.stdin", SimpleNamespace(buffer=BytesIO()))
+    monkeypatch.setattr("sys.stdout", SimpleNamespace(buffer=out_buffer))
+
+    async with stdio_errors.stdio_server_with_parse_replies() as (read_stream, write_stream):
+        forwarded = await read_stream.receive()
+        # Once the good line is consumed, the reader drains the two bad lines
+        # onto the write stream and then hits EOF; closing our write clone lets
+        # the writer task finish so the context manager can exit.
+        await write_stream.aclose()
+
+    payload = json.loads(forwarded.message.model_dump_json())
+    assert payload["id"] == 1
+    assert payload["method"] == "ping"
+
+    lines = [line for line in out_buffer.getvalue().decode("utf-8").splitlines() if line]
+    answered = {json.loads(line)["id"]: json.loads(line) for line in lines}
+    assert set(answered) == {2, 3}
+    for reply in answered.values():
+        assert reply["error"]["code"] == -32600
+
+
 def test_server_instructions_cover_apk_and_web_not_just_pe() -> None:
     """The initialize payload told the model it could only open a PE.
 
