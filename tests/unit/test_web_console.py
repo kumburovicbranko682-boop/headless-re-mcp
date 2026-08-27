@@ -173,6 +173,57 @@ def test_the_spa_fallback_serves_deep_links_but_never_api_paths(tmp_path: Path) 
         assert "root" not in fell_through.text, path
 
 
+def test_spa_fallback_authorizes_a_deep_link_via_the_token_query_param(tmp_path: Path) -> None:
+    """A refreshed deep link carries ?token=, not a bearer header.
+
+    The SPA catch-all accepts the token either way; the query branch is what
+    lets someone reload /threads/x straight from the address bar (where a
+    bearer header cannot be set) and still get the console shell rather than a
+    401. Pin that branch, which no bearer-header test reaches.
+    """
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+
+    page = client.get(f"/threads/some-thread-id?token={token}")
+    assert page.status_code == 200
+    assert '<div id="root"></div>' in page.text
+
+    wrong = client.get("/threads/some-thread-id?token=" + token[:-1] + "X")
+    assert wrong.status_code == 401
+
+
+def test_spa_fallback_reports_a_missing_build_instead_of_a_blank_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A console without a built SPA must say how to build it, not 500.
+
+    The catch-all serves spa/index.html; if the WebUI was never built the file
+    is absent, and the route answers 503 with the exact npm commands rather
+    than letting a FileNotFoundError surface as an opaque internal error. Hide
+    just that one file so the degradation path runs.
+    """
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    real_is_file = Path.is_file
+
+    def fake_is_file(self: Path) -> bool:
+        if self.name == "index.html" and self.parent.name == "spa":
+            return False
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", fake_is_file)
+    response = client.get("/threads/some-thread-id", headers=headers)
+    assert response.status_code == 503
+    assert "WebUI build missing" in response.json()["detail"]
+    assert "npm run build" in response.json()["detail"]
+
+
 def test_percent_encoded_token_equals_still_opens_the_console(tmp_path: Path) -> None:
     from headless_re_mcp.web.routes.legacy import repair_encoded_token_query
 
@@ -515,6 +566,29 @@ def test_a_corrupt_token_file_regenerates_instead_of_crashing(
     assert json.loads(path.read_text(encoding="utf-8"))["token"] == token
     if os.name != "nt":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_web_token_write_failure_removes_the_partial_file_and_reraises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed token write must not leave a truncated file behind.
+
+    load_or_create_web_token opens the file O_EXCL, then writes and fsyncs. If
+    that write raises (a full disk, say), an empty or partial file would sit
+    there and _read_web_token would reject it on every later boot, wedging the
+    console. The creator unlinks the partial file and re-raises so the next
+    attempt starts clean.
+    """
+
+    def boom(fd: int, payload: bytes) -> None:
+        os.close(fd)
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(web_auth, "_write_token_fd", boom)
+    path = tmp_path / "web_token.json"
+    with pytest.raises(RuntimeError, match="disk full"):
+        load_or_create_web_token(path=path)
+    assert not path.exists(), "a failed write must not leave a token file behind"
 
 
 def test_web_workspace_mode_get_and_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
