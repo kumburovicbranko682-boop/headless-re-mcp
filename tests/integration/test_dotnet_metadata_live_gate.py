@@ -31,6 +31,7 @@ _METHOD_NAME = "Compute"
 _MEMBER_NAME = "WriteLine"
 _RESOURCE_NAME = "config.json"
 _MODULE_NAME = "HeadlessReFixture.dll"
+_ASSEMBLY_NAME = "HeadlessReFixture"
 _METHOD_TOKEN = 0x06000001
 _CALL_TOKEN = 0x0A000001
 
@@ -50,7 +51,7 @@ def _u32(value: int) -> bytes:
     return struct.pack("<I", value)
 
 
-def _build_dotnet_assembly(path: Path) -> _Assembly:
+def _build_dotnet_assembly(path: Path, *, include_assembly: bool = False) -> _Assembly:
     """Emit a minimal, verifiable PE/CLR assembly with populated tables.
 
     Layout mirrors the empty-table scaffold in the dotnet unit tests, extended
@@ -60,6 +61,12 @@ def _build_dotnet_assembly(path: Path) -> _Assembly:
     heap index is 2 bytes, which keeps the ECMA-335 row sizes the reader
     computes matching ours. One row per table covers all five enumeration kinds
     (types/methods/fields/resources/strings) plus IL and MemberRef xrefs.
+
+    When ``include_assembly`` is set, an Assembly row (table 0x20, which sits
+    between MemberRef 0x0A and ManifestResource 0x28 in bit order) is added so
+    the ``assembly_name`` recovery -- which has to size and skip every
+    intervening table to reach the Assembly row's Name column -- is proven end
+    to end through the service, not only in the clr_inspect unit test.
     """
     strings = bytearray(b"\x00")
 
@@ -75,16 +82,18 @@ def _build_dotnet_assembly(path: Path) -> _Assembly:
     idx_method = add_str(_METHOD_NAME)
     idx_member = add_str(_MEMBER_NAME)
     idx_resource = add_str(_RESOURCE_NAME)
+    idx_assembly = add_str(_ASSEMBLY_NAME) if include_assembly else 0
 
     guid_heap = b"\x11" * 16
     blob_heap = b"\x00"
     us_heap = b"\x00"
 
     method_rva = 0x1050
-    # Module(0) TypeDef(2) Field(4) MethodDef(6) MemberRef(10) ManifestResource(40)
-    valid = (
-        (1 << 0x00) | (1 << 0x02) | (1 << 0x04) | (1 << 0x06) | (1 << 0x0A) | (1 << 0x28)
-    )
+    # Module(0) TypeDef(2) Field(4) MethodDef(6) MemberRef(10) [Assembly(32)] ManifestResource(40)
+    valid = (1 << 0x00) | (1 << 0x02) | (1 << 0x04) | (1 << 0x06) | (1 << 0x0A) | (1 << 0x28)
+    if include_assembly:
+        valid |= 1 << 0x20
+    row_count = 7 if include_assembly else 6
     tables = bytearray()
     tables += _u32(0)                    # reserved
     tables += bytes([2, 0])              # schema major/minor
@@ -92,7 +101,7 @@ def _build_dotnet_assembly(path: Path) -> _Assembly:
     tables += bytes([1])                 # reserved
     tables += struct.pack("<Q", valid)
     tables += struct.pack("<Q", 0)       # sorted
-    tables += _u32(1) * 6                 # row counts, ascending bit order
+    tables += _u32(1) * row_count         # row counts, ascending bit order
     # Module: generation, name, mvid, encid, encbaseid
     tables += _u16(0) + _u16(idx_module) + _u16(1) + _u16(0) + _u16(0)
     # TypeDef: flags, name, namespace, extends, fieldlist, methodlist
@@ -103,6 +112,20 @@ def _build_dotnet_assembly(path: Path) -> _Assembly:
     tables += _u32(method_rva) + _u16(0) + _u16(0x0016) + _u16(idx_method) + _u16(0) + _u16(1)
     # MemberRef: class (TypeDef rid 1 -> (1<<3)|0), name, signature
     tables += _u16(8) + _u16(idx_member) + _u16(0)
+    if include_assembly:
+        # Assembly (0x20, before ManifestResource in bit order): hashalg, major,
+        # minor, build, rev, flags, publickey(blob), name, culture.
+        tables += (
+            _u32(0x8004)
+            + _u16(1)
+            + _u16(0)
+            + _u16(0)
+            + _u16(0)
+            + _u32(0)
+            + _u16(0)
+            + _u16(idx_assembly)
+            + _u16(0)
+        )
     # ManifestResource: offset, flags, name, implementation (in this file -> 0)
     tables += _u32(0) + _u32(0x0001) + _u16(idx_resource) + _u16(0)
 
@@ -265,6 +288,44 @@ def test_dotnet_metadata_enumerate_il_xrefs_without_de4dot(tmp_path: Path) -> No
         assert xrefs.data["kind"] == "xrefs"
         assert xrefs.data["total"] == 1
         assert xrefs.data["items"][0]["name"] == _MEMBER_NAME
+    finally:
+        service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_dotnet_inspect_recovers_assembly_name_end_to_end(tmp_path: Path) -> None:
+    """dotnet.inspect must surface assembly_name for an assembly with that table.
+
+    The clr_inspect unit test proves ``_parse_metadata_root`` reads the Assembly
+    row, but only by calling the parser directly. Here the Assembly table travels
+    through the whole service path (create_session -> dotnet_inspect), so the
+    row-sizing that has to skip Module/TypeDef/Field/MethodDef/MemberRef to reach
+    it is exercised as an agent would hit it -- and the earlier enumerations must
+    still decode, proving the extra table did not shift any offsets.
+    """
+    assembly = _build_dotnet_assembly(tmp_path / _MODULE_NAME, include_assembly=True)
+    service = _make_service(tmp_path / "artifacts")
+    created = service.create_session(str(assembly.path))
+    assert created.ok and created.data is not None, created.error
+    session_id = str(created.data["session"]["id"])
+    try:
+        inspected = service.dotnet_inspect(session_id, require_verified=True)
+        assert inspected.ok and inspected.data is not None, inspected.error
+        assert inspected.data["verified_clr"] is True
+        assert inspected.data["module_name"] == _MODULE_NAME
+        assert inspected.data["assembly_name"] == _ASSEMBLY_NAME
+
+        # The Assembly row is inserted mid-stream; the type/method/resource reads
+        # that come after it must still land on the right rows.
+        types = service.dotnet_enumerate(session_id, "types", limit=16)
+        assert types.ok and types.data is not None, types.error
+        assert types.data["items"][0]["name"] == _TYPE_NAME
+        methods = service.dotnet_enumerate(session_id, "methods", limit=16)
+        assert methods.ok and methods.data is not None, methods.error
+        assert methods.data["items"][0]["name"] == _METHOD_NAME
+        resources = service.dotnet_enumerate(session_id, "resources", limit=16)
+        assert resources.ok and resources.data is not None, resources.error
+        assert resources.data["items"][0]["name"] == _RESOURCE_NAME
     finally:
         service.close_session(session_id)
 
