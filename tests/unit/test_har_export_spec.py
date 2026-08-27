@@ -315,3 +315,106 @@ def test_proxy_export_har_refuses_when_even_an_empty_har_exceeds_the_cap(
     with pytest.raises(ProxyError) as info:
         backend.export_har("s", tmp_path / "capture.har")
     assert info.value.code == "too_large"
+
+
+def test_har_entry_fills_the_status_text_when_known_and_stays_empty_otherwise() -> None:
+    """A known reason phrase fills the required statusText; unknown keeps it "".
+
+    statusText is a required HAR member the exporters left empty, so a viewer
+    rendered a bare status code instead of a full "200 OK" line. When the
+    capture recorded the reason phrase it fills response.statusText; when it did
+    not (HTTP/2 carries none) the field stays the spec-valid empty string.
+    """
+    known = har_entry(
+        method="GET",
+        url="https://x/1",
+        status=404,
+        mime_type="text/html",
+        status_text="Not Found",
+    )
+    _assert_valid_har(json.dumps(build_har([known])))
+    assert known["response"]["statusText"] == "Not Found"
+    unknown = har_entry(method="GET", url="https://x/1", status=200, mime_type="")
+    _assert_valid_har(json.dumps(build_har([unknown])))
+    assert unknown["response"]["statusText"] == ""
+
+
+def test_proxy_flow_records_the_reason_phrase(tmp_path: Path) -> None:
+    """mitmproxy's response.reason becomes status_text and the HAR statusText."""
+    recorder = _FlowRecorder()
+    request = SimpleNamespace(method="GET", pretty_url="http://x/1", host="x")
+    response = SimpleNamespace(
+        status_code=404,
+        reason="Not Found",
+        headers={"content-type": "text/plain"},
+        raw_content=b"nope",
+    )
+    recorder.response(SimpleNamespace(id="1", request=request, response=response))
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["status_text"] == "Not Found"
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["response"]["statusText"] == "Not Found"
+
+
+def test_proxy_flow_without_a_reason_leaves_status_text_null(tmp_path: Path) -> None:
+    """No reason phrase keeps status_text null and the HAR statusText empty."""
+    backend = _proxy_backend_with_flows(1)
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["status_text"] is None
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["response"]["statusText"] == ""
+
+
+def test_web_capture_records_the_status_text_from_cdp(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """CDP's response.statusText lands on the summary and the HAR statusText."""
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    class _Handle:
+        def __init__(self) -> None:
+            self.lock = Lock()
+            self.requests: dict[str, Any] = {}
+            self.requests_dropped = 0
+            self.cdp = _Cdp()
+
+    handle = _Handle()
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+    handle.cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r1",
+            "request": {"url": "https://example.com/a", "method": "GET"},
+            "type": "Document",
+        }
+    )
+    handle.cdp.handlers["Network.responseReceived"](
+        {
+            "requestId": "r1",
+            "response": {"status": 404, "mimeType": "text/html", "statusText": "Not Found"},
+        }
+    )
+    assert handle.requests["r1"]["status_text"] == "Not Found"
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    out = tmp_path / "capture.har"
+    backend.har_export("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["response"]["statusText"] == "Not Found"

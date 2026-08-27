@@ -472,6 +472,7 @@ class WebBackend:
                 "resourceType": resource_type,
                 "status": None,
                 "mimeType": None,
+                "status_text": None,
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
@@ -486,12 +487,19 @@ class WebBackend:
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            # CDP reports the reason phrase; keep it so the request summary and
+            # the HAR's statusText carry it beside the code (empty on HTTP/2).
+            status_text, status_text_truncated = _bounded_metadata(
+                resp.get("statusText"), _MAX_METADATA_BYTES
+            )
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
                     entry["status"] = resp.get("status")
                     entry["mimeType"] = mime_type
-                    if mime_truncated:
+                    if status_text:
+                        entry["status_text"] = status_text
+                    if mime_truncated or status_text_truncated:
                         entry["metadata_truncated"] = True
 
         def on_script(params: JsonObject) -> None:
@@ -813,6 +821,7 @@ class WebBackend:
                     status=e.get("status"),
                     mime_type=e.get("mimeType") or "",
                     resource_type=e.get("resourceType"),
+                    status_text=e.get("status_text"),
                 )
                 for e in handle.requests.values()
             ]

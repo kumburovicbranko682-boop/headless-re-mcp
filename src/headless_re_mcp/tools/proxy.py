@@ -59,9 +59,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List captured HTTP flows (method, url, status, content type).
 
         Answers with flows (id, seq, method, url, host, status, content_type,
-        response_size), count, total, offset, has_more, and dropped.
-        response_size is the decoded response body length in bytes (0 when the
-        response had no body). body_omitted is set on a row whose
+        response_size, status_text), count, total, offset, has_more, and
+        dropped. response_size is the decoded response body length in bytes (0
+        when the response had no body). status_text is the HTTP reason phrase
+        (e.g. OK, Not Found; null when the flow had no response or on HTTP/2,
+        which carries none); export_har uses it for the HAR statusText.
+        body_omitted is set on a row whose
         request/response body was over the retain cap. A flow mitmproxy could
         not complete (TLS refused, upstream unreachable, connection reset) is
         captured too, carrying error=true and error_msg with a null status;
