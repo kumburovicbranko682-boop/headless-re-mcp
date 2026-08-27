@@ -27,6 +27,17 @@ _ALLOWED = frozenset(
         "pdj",
         "axj",
         "aa",
+        # Deeper, still read-only analysis passes. ``aa`` alone is shallow: it
+        # misses functions only reachable through a call (stripped binaries) and
+        # data references formed by multi-instruction address materialisation
+        # (ARM adrp/add). ``aac`` (analyze called functions), ``aar`` (analyze
+        # data references) and the ``aaa`` umbrella recover those. They operate
+        # on the already-opened image inside r2's own analyzer -- no target
+        # execution, no host/file/network access -- so they do not widen the
+        # command-injection surface the rest of this allowlist guards against.
+        "aac",
+        "aar",
+        "aaa",
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
@@ -117,6 +128,7 @@ class R2Client:
         binary: Path,
         address: int,
         *,
+        analysis: str = "aa",
         timeout: float = 30.0,
     ) -> JsonObject:
         """References that target ``address`` (``axtj``), not the global graph.
@@ -129,11 +141,16 @@ class R2Client:
         call/data site in ``from`` (mapped to ``from_address``) and the
         enclosing function in ``fcn_addr``/``fcn_name``, so a caller can walk
         the graph inbound one address at a time.
+
+        ``analysis`` selects the analysis pass run before the query. The default
+        ``aa`` is fast but shallow; pass a deeper pass (e.g. ``aaa``) to recover
+        references ``aa`` misses -- notably ARM ``adrp/add`` data loads. It is
+        validated against the same command allowlist as everything else.
         """
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axtj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        data = self.run(binary, [analysis, cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address
         return enrich_r2_payload(data, binary=binary)
