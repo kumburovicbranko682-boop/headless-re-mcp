@@ -7,11 +7,18 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
+# Every r2 tool schema declares ``0 < timeout <= 120``. See clamp_cli_timeout.
+_MAX_TIMEOUT_S = 120.0
 _ALLOWED = frozenset(
     {
         "i",
@@ -107,6 +114,10 @@ class R2Client:
         return enrich_r2_payload(data, binary=binary)
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise R2Error("invalid_params", str(exc)) from exc
         if not self.available or self.executable is None:
             raise R2Error("capability_unavailable", "radare2/rizin is not installed")
         if not binary.is_file():
