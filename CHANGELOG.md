@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（proxy.replay 补记会话时间线）
+
+- `proxy.replay` 在 `tools/catalog.py` 里被归为写操作:它把一条已捕获的请求重新发往真实服务器,是有副
+  作用的出站动作(可能再次下单、重放一次攻击、改动服务端状态)。它的写操作同类兄弟——proxy.start /
+  stop / export_har / ca.install_android——都会往会话时间线写一条,唯独 replay 走的是读操作形状的
+  `_proxy_wrap`、什么都不记。于是 `timeline.list` 能看到代理起停、HAR 导出,却看不到有没有对目标重放过
+  流量。现在成功的 replay 会记一条 `proxy.replay` 时间线条目并点名 flow_id。
+- 与兄弟们一致,只在成功时记:一次失败的 replay 不会留下误导性的"已重放"痕迹。新增
+  `tests/unit/test_proxy_replay_timeline.py` 钉住成功记一条(带 flow_id)、失败不记。
+
 ### 新增（frida 路径的设备变更补齐审计日志）
 
 - 上一步把 adb 路径的设备变更(device.install/launch/push/…)写入了审计日志,但同一类"改动目标设备"

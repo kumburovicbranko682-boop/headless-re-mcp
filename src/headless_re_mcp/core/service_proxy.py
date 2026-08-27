@@ -138,7 +138,22 @@ class ProxyAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def proxy_replay(self, session_id: str, flow_id: str) -> Result[JsonObject]:
-        return self._proxy_wrap(session_id, "replay", session_id, flow_id)
+        try:
+            data = self._proxy.replay(session_id, flow_id)
+            # replay re-sends a captured request to the live server -- an
+            # outbound, side-effecting action classed as a state change, so it
+            # belongs in the session timeline next to proxy.start/stop rather
+            # than passing silently through the read-shaped _proxy_wrap. Landing
+            # it here is what lets timeline.list answer "which flows were
+            # replayed against the target", not just that a proxy ran.
+            _timeline_append(
+                self, session_id, "proxy.replay", "proxy flow replayed", flow_id=flow_id
+            )
+            return _success(data, session_id=session_id, backend="proxy")
+        except ProxyError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def proxy_export_har(self, session_id: str) -> Result[JsonObject]:
         try:
