@@ -63,6 +63,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (importorskip,桩无法复现该 KeyError)对畸形 manifest 断言 open 不抛且 `native_abis` 完整、版本为 `None`;并把
   `test_android_re_gate` 里那条本就跑在这枚合成 APK 上的 `apk.open` 断言从「ok 或有 error」收紧为——装了 androguard
   时必须 ok 且 `native_abis=={arm64-v8a,x86_64}`、版本为 `None`,没装时是干净的 `capability_unavailable`。
+- 顺带钉住会话入口的同类契约(实测确认其本就健壮、并非 bug):`classify_target` 先认 `.apk` 扩展名再看字节,于是一个根本
+  不是 zip、或虽是 zip 却没有 `AndroidManifest.xml` 的 `.apk`,仍会走 APK 路径让 `describe_apk` 抛 `ValueError`。
+  `create_session` 必须把它映射成结构化的 `invalid_request`(与上面 open 的修复同一规则),而不是让裸异常落进
+  `internal_error` 事故。新增两条纯 stdlib(不依赖 androguard、处处可跑)的回归钉住这条:非 zip 的 `.apk` 与无 manifest 的
+  `.apk` 都回 `invalid_request` 且绝非 `internal_error`——APK 分析的必经入口自此有了防敌意输入的回归护栏。
 
 ### 修复（浏览器 smoke 测试破坏整套集成收集且选择器漂移）
 
