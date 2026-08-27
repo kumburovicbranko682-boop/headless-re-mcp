@@ -311,9 +311,30 @@ class _WebSession:
         self.driver_pid: int | None = None
 
     def close(self) -> None:
-        for closer in (self.context.close, self.browser.close, self.playwright.stop):
-            with contextlib.suppress(Exception):  # teardown is best-effort
+        failures: list[JsonObject] = []
+        for name, closer in (
+            ("context", self.context.close),
+            ("browser", self.browser.close),
+            ("playwright", self.playwright.stop),
+        ):
+            # Each closer still runs even after an earlier one throws: a failed
+            # context close must not strand the browser and driver behind it.
+            try:
                 closer()
+            except Exception as exc:
+                failures.append(
+                    {
+                        "closer": name,
+                        "error": f"{type(exc).__name__}: {exc}"[:500],
+                    }
+                )
+        if failures:
+            raise WebError(
+                "web_cleanup_failed",
+                f"{len(failures)} browser cleanup operations failed",
+                failed_count=len(failures),
+                failures=failures,
+            )
 
 
 class WebBackend:
@@ -557,26 +578,43 @@ class WebBackend:
         # live handle (or a test double) and must be torn down.
         if type(handle) is object:
             return {"closed": True, "note": "open was aborted"}
-        runner = handle.runner
-        if runner is None:
-            handle.close()
-            return {"closed": True}
-        clean = True
-        if not runner.wedged:
-            # Teardown talks to the browser, so it belongs on the same thread as
-            # everything else. Bounded, because close is the recovery path: it
-            # has to reclaim the session even when the browser is beyond saving.
-            with contextlib.suppress(WebError):
-                runner.call(handle.close, timeout=20.0)
-        if runner.wedged:
-            clean = False
-            # Playwright objects cannot be touched from this thread, and a
-            # wedged runner will never run handle.close. The node driver is
-            # what still holds Chromium; killing it is the only close that
-            # works from here.
-            _reap_web_session(handle)
-        runner.shutdown()
-        return {"closed": True, "clean": clean}
+        try:
+            runner = handle.runner
+            if runner is None:
+                handle.close()
+                return {"closed": True}
+            clean = True
+            cleanup_error: WebError | None = None
+            if not runner.wedged:
+                # Teardown talks to the browser, so it belongs on the same thread
+                # as everything else. Bounded, because close is the recovery path:
+                # it has to reclaim the session even when the browser is beyond
+                # saving. A timeout wedges the runner and is handled below; any
+                # other failure is a real teardown error the caller must see.
+                try:
+                    runner.call(handle.close, timeout=20.0)
+                except WebError as exc:
+                    if exc.code != "timeout":
+                        cleanup_error = exc
+            if runner.wedged:
+                clean = False
+                # Playwright objects cannot be touched from this thread, and a
+                # wedged runner will never run handle.close. The node driver is
+                # what still holds Chromium; killing it is the only close that
+                # works from here.
+                _reap_web_session(handle)
+            if cleanup_error is not None:
+                # Leave the runner alive so a retry can drive handle.close again;
+                # shutting it down would strand the still-live browser objects.
+                raise cleanup_error
+            runner.shutdown()
+            return {"closed": True, "clean": clean}
+        except BaseException:
+            # Cleanup did not finish. Keep the sole handle available for a later
+            # close/close_all attempt unless another open already claimed the id.
+            with self._lock:
+                self._sessions.setdefault(session_id, handle)
+            raise
 
     def network_list(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
         handle = self._get(session_id)
