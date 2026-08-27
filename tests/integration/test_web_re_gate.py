@@ -77,8 +77,22 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # Prove webcrack actually deobfuscated rather than echoing the input.
+        # The fixture stores the secret as a \x-escaped entry in a rotated string
+        # array ("\x48\x33\x61\x64\x6c\x33\x73\x73") and reaches String methods
+        # through computed ["split"] accesses. A webcrack that ran but transformed
+        # nothing -- a broken install, an upstream behaviour change -- would leave
+        # the \x escapes and the bracket access untouched and still sail past the
+        # bytes>0 check above, reading green on zero deobfuscation. Requiring the
+        # recovered literal plus the bracket-to-dot member simplification (both
+        # core webcrack transforms, verified against webcrack 2.16.0) makes that
+        # empty pass fail here instead.
+        assert "H3adl3ss" in code
+        assert ".split(" in code
+        assert '["split"]' not in code
     finally:
         service.close_all()
 
