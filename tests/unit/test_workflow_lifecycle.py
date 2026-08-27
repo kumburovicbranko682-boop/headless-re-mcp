@@ -194,6 +194,100 @@ def test_truncated_matching_module_name_is_invalidated_conservatively() -> None:
     assert transition.refresh_required == {"payload"}
 
 
+def test_base_selector_module_is_invalidated_only_when_a_load_reuses_its_base() -> None:
+    state = track_module(
+        ModuleLifecycleState(),
+        "pinned",
+        ModuleSelector(base=0x71000000),
+        _mapping(0x71000000, name="helper.dll", path=r"C:\sample\fixtures\helper.dll"),
+    )
+
+    # A base-keyed selector ignores the reported name entirely: a load elsewhere
+    # leaves the binding valid even though the name matches exactly.
+    untouched = consume_module_events(
+        state,
+        _batch(
+            0,
+            _event(
+                1,
+                "module.loaded",
+                {"base": 0x72000000, "size": 0x1000, "name": "helper.dll"},
+            ),
+        ),
+    )
+    assert untouched.invalidated_keys == frozenset()
+
+    # A load that reuses the pinned base invalidates it regardless of the name.
+    reloaded = consume_module_events(
+        state,
+        _batch(
+            0,
+            _event(
+                1,
+                "module.loaded",
+                {"base": 0x71000000, "size": 0x1000, "name": "totally-different.dll"},
+            ),
+        ),
+    )
+    assert reloaded.invalidated_keys == {"pinned"}
+    assert reloaded.refresh_required == {"pinned"}
+
+
+def test_nameless_load_falls_back_to_matching_the_runtime_base() -> None:
+    state = _tracked_state()
+
+    # Without a name, a load can only be tied back through its runtime base;
+    # a different base leaves the binding valid.
+    mismatch = consume_module_events(
+        state,
+        _batch(0, _event(1, "module.loaded", {"base": 0x1230000, "size": 0x1000})),
+    )
+    assert mismatch.invalidated_keys == frozenset()
+
+    # A nameless load at the tracked runtime base still invalidates it.
+    match = consume_module_events(
+        state,
+        _batch(
+            0,
+            _event(1, "module.loaded", {"base": 0x7FF800000000, "size": 0x1000}),
+        ),
+    )
+    assert match.invalidated_keys == {"payload"}
+    assert match.refresh_required == {"payload"}
+
+
+def test_path_selector_matches_the_loaded_basename() -> None:
+    state = track_module(
+        ModuleLifecycleState(),
+        "bypath",
+        ModuleSelector(path=r"C:\sample\fixtures\event_fixture.dll"),
+        _mapping(0x7FF800000000),
+    )
+
+    transition = consume_module_events(
+        state,
+        _batch(
+            0,
+            _event(
+                1,
+                "module.loaded",
+                {"base": 0x7FF900000000, "size": 0x5000, "name": "event_fixture.dll"},
+            ),
+        ),
+    )
+
+    assert transition.invalidated_keys == {"bypath"}
+    assert transition.refresh_required == {"bypath"}
+
+
+def test_module_unloaded_without_a_valid_base_is_rejected() -> None:
+    with pytest.raises(WorkflowInvariantError, match="valid base"):
+        consume_module_events(
+            _tracked_state(),
+            _batch(0, _event(1, "module.unloaded", {"base": -1})),
+        )
+
+
 def test_event_loss_marks_every_tracked_module_stale() -> None:
     state = track_module(
         _tracked_state(),
