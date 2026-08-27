@@ -241,11 +241,23 @@ class ApkClient:
             )
         except Exception:  # noqa: BLE001 - older androguard lacks this
             requested, requested_more = declared, declared_more
+        # count is len(declared) for backward compatibility, but declared
+        # permissions are the custom ones an app *defines* -- most apps define
+        # none -- while requested_permissions are what it asks for (INTERNET,
+        # CAMERA...), typically dozens. A caller reading count alone therefore
+        # saw 0 for the common app and concluded "no permissions" while the
+        # requested list held many. requested_count makes that list countable
+        # without inferring it from len(). The single has_more OR'd both lists,
+        # so a caller could not tell which one hit its cap -- exactly what the
+        # docstring promised it could; the per-list flags make that explicit.
         return {
             "permissions": declared,
             "requested_permissions": requested,
             "count": len(declared),
+            "requested_count": len(requested),
             "has_more": declared_more or requested_more,
+            "permissions_has_more": declared_more,
+            "requested_permissions_has_more": requested_more,
         }
 
     def certificates(self, path: Path) -> JsonObject:

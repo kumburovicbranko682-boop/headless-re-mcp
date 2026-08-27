@@ -45,9 +45,14 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_permissions(session_id: str) -> dict[str, Any]:
         """List declared and requested permissions.
 
-        Answers with permissions, requested_permissions, count, and has_more
-        so a list that filled the cap is not read as every permission. There
-        is no declared or requested field.
+        Answers with permissions (the custom permissions the app defines, often
+        none) and requested_permissions (what it asks for, e.g. INTERNET). count
+        is len(permissions) and requested_count is len(requested_permissions) --
+        read the matching one, since count alone reads as 0 for the common app
+        that defines no permissions but requests many. has_more is true if
+        either list filled its cap; permissions_has_more and
+        requested_permissions_has_more say which, so a filled list is not read
+        as every permission. There is no declared or requested field.
         """
         return _dump(analysis.apk_permissions(session_id))
 
