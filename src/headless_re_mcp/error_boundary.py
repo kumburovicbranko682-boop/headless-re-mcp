@@ -39,11 +39,24 @@ _LOG_PATH: Path | None = None
 # what reaches the on-disk incident log, the HTTP 500 body and the CLI stderr
 # envelope. The strict ``[:=]`` boundary (rather than a trailing ``\w*``) is
 # deliberate -- it keeps "tokenized=false" and similar diagnostics readable.
+#
+# The authorization pattern masks any scheme, not just bearer: the structured
+# redactor masks every value under an ``authorization`` key, so ``Basic <creds>``
+# and a bare ``authorization=<token>`` must be masked inline too, or a value that
+# is payload-safe leaks the moment it lands in a message. A recognised scheme
+# word is kept visible and only the credential after it is masked; the optional
+# scheme is an enumerated set rather than "any word" on purpose, because a bare
+# ``authorization=<secret> ...`` would otherwise have its secret eaten as if it
+# were the scheme, leaving the real credential in the clear. An exotic scheme's
+# own ``credential=`` / ``token=`` parameters are caught by the second pattern.
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
     re.compile(
-        r"(?i)((?:api[_-]?key|private[_-]?key|access[_-]?key|token|secret"
-        r"|password|passwd|credential)\s*[:=]\s*)[^\s,;]+"
+        r"(?i)(authorization\s*[:=]\s*"
+        r"(?:bearer\s+|basic\s+|digest\s+|negotiate\s+|ntlm\s+)?)[^\s,;]+"
+    ),
+    re.compile(
+        r"(?i)((?:api[_-]?key|provider[_-]?api[_-]?keys?|private[_-]?key"
+        r"|access[_-]?key|token|secret|password|passwd|credential)\s*[:=]\s*)[^\s,;]+"
     ),
 )
 

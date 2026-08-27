@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（事故日志内联脱敏对 authorization 只盖 bearer，Basic/裸 token/providerApiKeys 仍泄漏）
+
+- `error_boundary` 的内联脱敏守着最高暴露面（落盘事故日志、HTTP 500 正文、CLI stderr 信封），
+  其关键字集本应与 `redaction.py` 的结构化脱敏对齐。上一轮补齐了 `private_key`/`access_key`/`passwd`/
+  `credential` 后仍有残口:结构化脱敏对 `authorization` 键的**任意**值都打码,而内联只有 `Authorization:
+  Bearer …` 一条模式——于是 `Authorization: Basic <base64>`、裸 `authorization=<token>` 以及
+  `providerApiKeys=<secret>` 在异常消息里原样泄漏,尽管作为字典键时它们是被打码的(经实测确认三处均漏)。
+  现把 authorization 模式改为覆盖任意方案:识别到的方案词(bearer/basic/digest/negotiate/ntlm)保留可读、
+  只打码其后的凭据;方案是**枚举**而非"任意单词",否则裸 `authorization=<secret> 后续文字` 会把 secret 当作
+  方案吃掉、把真凭据留在明文里(冷门方案如 AWS 的 `Credential=`/`token=` 参数由第二条模式兜住)。第二条模式
+  另加 `providerApiKeys`。严格 `[:=]` 边界不变,`tokenized=false` 与不带值的 `authorization checks passed`
+  仍可读。脱敏矩阵测试新增这三种泄漏形态,并新增一条断言钉住"只盖凭据、保留方案词与后续文字"。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

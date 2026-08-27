@@ -63,6 +63,14 @@ def test_tool_exception_returns_ai_envelope_and_logs(
         "access_key=sk-DEADBEEFsecret",
         "passwd=sk-DEADBEEFsecret",
         "credential: sk-DEADBEEFsecret",
+        # The structured redactor masks every value under an ``authorization``
+        # key, not only bearer, and covers ``providerApiKeys``. The inline
+        # scrubber used to catch only ``Authorization: Bearer``, so a Basic
+        # header, a bare ``authorization=`` token, and ``providerApiKeys=``
+        # each leaked in the clear when they landed in a message.
+        "Authorization: Basic sk-DEADBEEFsecret",
+        "authorization=sk-DEADBEEFsecret",
+        "providerApiKeys=sk-DEADBEEFsecret",
     ],
 )
 def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:
@@ -85,6 +93,34 @@ def test_redaction_leaves_ordinary_diagnostics_intact() -> None:
     text = "read 4096 bytes at offset=1234 for session id=abc (retryable=false)"
 
     assert boundary._redact_text(text) == text
+    # A bare "authorization" mention with no value is not a header; the strict
+    # [:=] boundary must leave it readable.
+    plain = "authorization checks passed for session abc"
+    assert boundary._redact_text(plain) == plain
+
+
+def test_authorization_masks_the_credential_not_the_scheme_or_trailing_prose() -> None:
+    """Any auth scheme is masked, the scheme word stays, and prose survives.
+
+    The scheme is kept visible for readability, but only an *enumerated* scheme:
+    matching "any word" would let a bare ``authorization=<secret> to host`` have
+    its secret consumed as the scheme, leaving the real credential in the clear.
+    """
+    bearer = boundary._redact_text("upstream 401 for Authorization: Bearer sk-LIVEsecret now")
+    assert "sk-LIVEsecret" not in bearer
+    assert "Authorization: Bearer [REDACTED]" in bearer
+    assert bearer.endswith(" now")
+
+    basic = boundary._redact_text("proxy rejected Authorization: Basic dXNlcjpwYXNz here")
+    assert "dXNlcjpwYXNz" not in basic
+    assert "Authorization: Basic [REDACTED]" in basic
+    assert basic.endswith(" here")
+
+    bare = boundary._redact_text("token store returned authorization=sk-RAWsecret to caller")
+    assert "sk-RAWsecret" not in bare
+    assert "authorization=[REDACTED]" in bare
+    # The secret must not be mistaken for a scheme: the words after it survive.
+    assert bare.endswith(" to caller")
 
 
 def test_a_bearer_secret_never_reaches_the_envelope_or_the_log(
