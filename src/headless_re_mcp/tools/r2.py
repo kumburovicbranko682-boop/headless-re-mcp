@@ -100,6 +100,23 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.relocs")
+    def r2_relocs(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Relocations radare2 read (irj) -- the dynamic-linking fixups.
+
+        Runs ``irj``. Answers with items, each carrying name (the symbol the
+        entry binds, empty for a nameless reloc), type (the relocation kind),
+        vaddr and address (va/rva/module), plus count. This is the relocation
+        table: where the loader patches addresses in, so a GOT slot for an
+        imported function reads as that import wired to a site, a view neither
+        r2.imports nor r2.symbols gives. There is no integer address field.
+        Read items_truncated, items_total and items_limit when the list filled
+        the cap (4096). There is no relocs, truncated or has_more field.
+        """
+        return _dump(analysis.r2_relocs(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,
