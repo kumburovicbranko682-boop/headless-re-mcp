@@ -29,6 +29,11 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _MAX_LOGCAT_LINES = 5000
 _MAX_LOGCAT_CHARS = 200_000
+# Only the package attribute near the top of the manifest is needed. Reading
+# the whole member first would let a bomb-compressed AndroidManifest.xml -- a
+# few KiB on disk that inflates to gigabytes -- decompress in full before the
+# slice ever ran.
+_MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
@@ -184,8 +189,13 @@ def _device_info_row(info: Any) -> JsonObject:
 def _apk_package_name(path: Path) -> str | None:
     """Best-effort package id from the APK, without pulling androguard in."""
     try:
-        with zipfile.ZipFile(path) as archive:
-            data = archive.read("AndroidManifest.xml")[:65536]
+        with (
+            zipfile.ZipFile(path) as archive,
+            archive.open("AndroidManifest.xml") as manifest,
+        ):
+            # read(n) on the member stream decompresses at most n bytes; the old
+            # read()[:n] inflated the entire entry into memory before slicing.
+            data = manifest.read(_MAX_MANIFEST_BYTES)
     except Exception:  # noqa: BLE001
         return None
     try:

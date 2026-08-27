@@ -6,6 +6,8 @@ import ctypes
 import os
 import signal
 import subprocess
+import sys
+import time
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
@@ -20,6 +22,23 @@ _MAX_CHILD_PIDS = 16
 # tool run, and the walk is bounded so a fork bomb cannot hold the killer.
 _MAX_KILL_DESCENDANTS = 64
 _MAX_KILL_DEPTH = 4
+
+
+def _enable_linux_child_subreaper() -> bool:
+    """Adopt orphaned tool grandchildren so this process can reap them."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        result = int(libc.prctl(36, 1, 0, 0, 0))  # PR_SET_CHILD_SUBREAPER
+        return result == 0
+    except (AttributeError, OSError):
+        return False
+
+
+_LINUX_CHILD_SUBREAPER = _enable_linux_child_subreaper()
+
+
 def _child_enum_limit(max_pids: int) -> int:
     """UI discovery defaults to 16; kill walks may ask for more.
 
@@ -344,6 +363,42 @@ def _kill_own_process_group(pid: int) -> list[int]:
     return []
 
 
+def _reap_terminated(pids: list[int], wait_s: float) -> None:
+    """Best-effort reap of descendants adopted by the Linux subreaper.
+
+    A SIGKILL is asynchronous: the target stays in state R for a scheduler
+    tick and then lingers as a zombie until someone waits on it. Callers that
+    return immediately after a kill would report a helper as still alive when
+    it is merely not reaped yet. With PR_SET_CHILD_SUBREAPER the orphan is our
+    child, so waitpid can retire it here instead of hoping init gets to it.
+    """
+    if not _LINUX_CHILD_SUBREAPER:
+        return
+    pending = {pid for pid in pids if pid > 0}
+    deadline = time.monotonic() + max(0.0, wait_s)
+    while pending:
+        for pid in tuple(pending):
+            try:
+                waited, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                # Not currently our child. Either someone already retired it
+                # (Popen.wait on a launcher, init before the reparent) and the
+                # pid is gone, or it has not yet been reparented to this
+                # subreaper and will become waitable in a moment. /proc tells
+                # the two apart, so a fully retired pid does not make the
+                # sweep spin until the deadline.
+                if not Path(f"/proc/{pid}").exists():
+                    pending.discard(pid)
+                continue
+            except OSError:
+                continue
+            if waited == pid:
+                pending.discard(pid)
+        if not pending or time.monotonic() >= deadline:
+            return
+        time.sleep(0.01)
+
+
 def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: bool = False) -> list[int]:
     """Kill a spawned process and everything it started. Returns the killed PIDs.
 
@@ -383,6 +438,7 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
     if kill_group and os.name != "nt" and isinstance(pid, int):
         with suppress(Exception):
             os.killpg(pid, 9)
+    _reap_terminated(descendants, min(wait_s, 1.0))
     return killed
 
 
@@ -407,7 +463,11 @@ def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> lis
         # group sweep can, and it matches on pgrp so a recycled leader pid
         # cannot make it hit an unrelated group.
         killed.extend(terminate_process_group(pid))
-        return list(dict.fromkeys(killed))
+        killed = list(dict.fromkeys(killed))
+        # Callers assert the helper is gone the moment this returns; without a
+        # reap that answer depends on how fast the kernel processes the kill.
+        _reap_terminated(killed, min(wait_s, 1.0))
+        return killed
     return []
 
 
@@ -433,6 +493,7 @@ def terminate_pid_tree(pid: int) -> list[int]:
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    _reap_terminated([pid, *descendants], 1.0)
     return killed
 
 

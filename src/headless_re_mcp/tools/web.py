@@ -80,12 +80,17 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
-        """Fetch one request's response body (large bodies spill to an artifact).
+        """Fetch one request's response body (large or binary bodies spill).
 
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
-        not truncated. A body over the capture cap is refused rather than
-        written to disk.
+        not truncated. A binary body (base64_encoded true) is never inlined or
+        base64-written to disk: it is decoded and body_path holds the raw
+        bytes, body is empty, body_truncated is false, and body_bytes is the
+        decoded size. When CDP has no body for the request (a redirect, or a
+        body already evicted from its cache) body is empty and body_error says
+        why, while body, base64_encoded and body_truncated stay present. A
+        body over the capture cap is refused rather than written to disk.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
@@ -170,10 +175,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.har.export")
     def web_har_export(session_id: str) -> dict[str, Any]:
-        """Export captured network activity to a HAR artifact.
+        """Export captured network activity to a spec-valid HAR 1.2 artifact.
 
-        Answers with path and entry_count, plus artifact_id when the HAR
-        was registered. There is no har, entries or artifact field.
+        Answers with path, entry_count and truncated, plus artifact_id when
+        the HAR was registered. truncated is true when the oldest entries were
+        dropped to keep the file under the capture cap. There is no har,
+        entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

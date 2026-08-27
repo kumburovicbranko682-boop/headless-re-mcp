@@ -14,6 +14,8 @@ a session is funnelled onto that session's own thread -- see ``_Runner``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import queue
 import threading
@@ -25,6 +27,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.har import har_entry, serialize_har
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -146,6 +149,48 @@ def _spill_text(
         )
     preview = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
     return preview, out, True
+
+
+def _spill_bytes(
+    raw: bytes,
+    *,
+    artifact_dir: Path,
+    filename: str,
+    kind: str,
+) -> Path:
+    """Write raw bytes to a session artifact, refusing over the capture cap.
+
+    The bytes counterpart of ``_spill_text``: a binary response body cannot be
+    represented as JSON text, so it always goes to disk. The cap is measured on
+    the real bytes, not on a base64 expansion of them.
+    """
+    if len(raw) > UNREGISTERED_CAPTURE_MAX_BYTES:
+        raise WebError(
+            "too_large",
+            f"{kind} exceeds capture cap",
+            size=len(raw),
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+    ):
+        raise WebError("invalid_params", f"invalid {kind} artifact filename")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    out = artifact_dir / filename
+    out.write_bytes(raw)
+    written, over = capped_file_size(out, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
+    if over:
+        raise WebError(
+            "too_large",
+            f"{kind} exceeds capture cap",
+            size=written,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    return out
 
 
 class _Runner:
@@ -541,9 +586,43 @@ class WebBackend:
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
         except Exception as exc:  # noqa: BLE001
-            return {**entry, "body_error": str(exc)}
+            # CDP has no body for some requests -- a redirect, or a body already
+            # evicted from its cache. Keep the documented shape (empty body, not
+            # base64, not truncated) with body_error explaining why, so a caller
+            # reading result["body"] does not hit a missing key on this path.
+            return {
+                **entry,
+                "body": "",
+                "base64_encoded": False,
+                "body_truncated": False,
+                "body_error": str(exc),
+            }
         if not isinstance(body, str):
             body = str(body)
+        if base64_encoded:
+            # CDP returns base64 for a binary body (image, font, wasm...). The
+            # earlier code fed that base64 *string* to the text spill, so a large
+            # binary body wrote base64 into the .bin artifact -- not the bytes a
+            # caller opening body_path expects -- and measured the cap against
+            # the ~33% larger base64. Decode once, cap on the real size, and
+            # spill the actual bytes; a binary body is never inlined as text.
+            try:
+                raw = base64.b64decode(body, validate=False)
+            except (ValueError, binascii.Error) as exc:
+                return {**entry, "body_error": f"response body was not valid base64: {exc}"}
+            spill_path = _spill_bytes(
+                raw,
+                artifact_dir=artifact_dir,
+                filename=f"body-{uuid4().hex}.bin",
+                kind="response body",
+            )
+            result = dict(entry)
+            result["body"] = ""
+            result["body_truncated"] = False
+            result["body_path"] = str(spill_path)
+            result["body_bytes"] = len(raw)
+            result["base64_encoded"] = True
+            return result
         inline, spill, cut = _spill_text(
             body,
             artifact_dir=artifact_dir,
@@ -555,7 +634,7 @@ class WebBackend:
         result["body_truncated"] = cut
         if spill is not None:
             result["body_path"] = str(spill)
-        result["base64_encoded"] = base64_encoded
+        result["base64_encoded"] = False
         return result
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
@@ -686,45 +765,30 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             entries = [
-                {
-                    "request": {"method": e.get("method"), "url": e.get("url")},
-                    "response": {
-                        "status": e.get("status") or 0,
-                        "content": {"mimeType": e.get("mimeType") or ""},
-                    },
-                    "_resourceType": e.get("resourceType"),
-                }
+                har_entry(
+                    method=e.get("method"),
+                    url=e.get("url"),
+                    status=e.get("status"),
+                    mime_type=e.get("mimeType") or "",
+                    resource_type=e.get("resourceType"),
+                )
                 for e in handle.requests.values()
             ]
-        import json
-
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        text = json.dumps(har, ensure_ascii=False)
-        truncated = False
-        encoded = text.encode("utf-8")
-        while entries and len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
-            drop = max(1, len(entries) // 8)
-            del entries[-drop:]
-            har["log"]["entries"] = entries
-            text = json.dumps(har, ensure_ascii=False)
-            encoded = text.encode("utf-8")
-            truncated = True
-        if len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+        serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
+        if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
             raise WebError(
                 "too_large",
                 "HAR export exceeds capture cap",
-                size=len(encoded),
+                size=serialized.size,
                 cap=UNREGISTERED_CAPTURE_MAX_BYTES,
             )
-        out_path.write_text(text, encoding="utf-8")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(serialized.text, encoding="utf-8")
         return {
             "path": str(out_path),
-            "entry_count": len(entries),
-            "truncated": truncated,
-            "size": len(encoded),
+            "entry_count": serialized.entry_count,
+            "truncated": serialized.truncated,
+            "size": serialized.size,
         }
 
     def close_all(self) -> None:

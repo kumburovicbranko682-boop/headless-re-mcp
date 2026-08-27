@@ -29,6 +29,13 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# Page ceilings, kept equal to the apk.* tool schema maxima so the MCP path
+# (schema-validated) and the agent/OpenAI paths (clamped here) agree on the
+# largest page. test_apk_offset_schema.py pins them against the schema.
+_MAX_CLASSES_PAGE = 1000
+_MAX_METHODS_PAGE = 1000
+_MAX_STRINGS_PAGE = 2000
+_MAX_XREFS_PAGE = 1000
 
 
 class ApkError(RuntimeError):
@@ -71,6 +78,23 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
+    """Clamp a page window at the source, not only at the tool schema.
+
+    The apk.* schemas bound ``offset >= 0`` and ``limit`` within range, but the
+    agent and OpenAI-bridge transports call the handler directly and never run
+    that pydantic validation -- only the MCP path does. A negative offset then
+    becomes a tail slice (``names[-1:-1+limit]`` returned an empty page that
+    still reported ``has_more``), and a negative limit an all-but-the-tail slice
+    (``names[0:-5]``), so page zero silently misread the DEX. Clamp here so the
+    contract holds on every path, the way the web, proxy and jsre list backends
+    already do; ``xrefs`` already clamped its limit and now shares the ceiling.
+    """
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), max_limit))
+    return start, cap
 
 
 class _ParsedApk:
@@ -334,13 +358,14 @@ class ApkClient:
                     break
                 names.append(klass.name)
             names.sort()
-            window = names[offset : offset + limit]
+            start, cap = _clamp_page(offset, limit, max_limit=_MAX_CLASSES_PAGE)
+            window = names[start : start + cap]
             return {
                 "classes": window,
                 "count": len(window),
                 "total": len(names),
-                "offset": offset,
-                "has_more": offset + len(window) < len(names),
+                "offset": start,
+                "has_more": start + len(window) < len(names),
                 "scan_capped": scan_more,
             }
 
@@ -380,14 +405,15 @@ class ApkClient:
                     )
                 if scan_more:
                     break
-            window = methods[offset : offset + limit]
+            start, cap = _clamp_page(offset, limit, max_limit=_MAX_METHODS_PAGE)
+            window = methods[start : start + cap]
             return {
                 "class_name": found[0].name,
                 "methods": window,
                 "count": len(window),
                 "total": len(methods),
-                "offset": offset,
-                "has_more": offset + len(window) < len(methods),
+                "offset": start,
+                "has_more": start + len(window) < len(methods),
                 "scan_capped": scan_more,
             }
 
@@ -402,13 +428,14 @@ class ApkClient:
                     break
                 seen.add(str(item.get_value())[:_MAX_STRING_LEN])
             values = sorted(seen)
-            window = values[offset : offset + limit]
+            start, cap = _clamp_page(offset, limit, max_limit=_MAX_STRINGS_PAGE)
+            window = values[start : start + cap]
             return {
                 "strings": window,
                 "count": len(window),
                 "total": len(values),
-                "offset": offset,
-                "has_more": offset + len(window) < len(values),
+                "offset": start,
+                "has_more": start + len(window) < len(values),
                 "scan_capped": scan_more,
             }
 
@@ -418,7 +445,7 @@ class ApkClient:
             raise ApkError("invalid_params", "method_name is required")
         parsed = self._parsed(path)
         with _androguard_read(path):
-            cap = max(1, int(limit))
+            _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
             callers: list[JsonObject] = []
             has_more = False
             for method in parsed.analysis.get_methods():
@@ -446,7 +473,6 @@ class ApkClient:
                 # whether the enumeration ended or merely stopped.
                 "has_more": has_more,
             }
-
 
 def _dotted_to_smali(name: str) -> str:
     """com.example.Foo -> Lcom/example/Foo; so either form resolves a class."""
