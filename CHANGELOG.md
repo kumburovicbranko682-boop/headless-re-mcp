@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（apk.sign 的 keystore 口令不得落到 argv，失败时也不得进错误详情）
+
+- 命令行在进程存活期间是全局可读的（任何本地用户都能读 `/proc/<pid>/cmdline`，Windows 亦有进程列表），
+  所以把签名 JVM 起成 `apksigner ... --ks-pass pass:hunter2 ...` 会在整段（JVM 启动本就慢的）签名过程里把
+  keystore 口令泄露给机器上的每个账户。apksigner 原生支持 `env:NAME`，而子进程的环境不像它的 argv 那样
+  全局可读，故本后端把口令放进 `APKSIGNER_KS_PASS`、给 apksigner 传 `env:APKSIGNER_KS_PASS`（`--ks-pass`
+  与 `--key-pass` 都是）；失败时还会在 stderr 进入错误信封前把口令擦成 `***`，作为纵深防御以防工具自己的
+  诊断把它回显出来。这是 apktool 后端最敏感的契约，却此前无任何测试钉住——既有 apktool 测试只覆盖
+  非 zip 输入校验。一旦重构改用更短、极常见的 `pass:<password>` argv 写法，或去掉 stderr 擦除，泄露就会
+  静默复活。新增回归用一个记录 argv 与 env 的 `_run` 桩钉死：口令不出现在 sign 也不出现在 verify 的 argv 上、
+  确实进了子进程环境、两个凭据参数都是 `env:` 形式，且失败的 sign / verify 的 stderr 详情里绝不带口令
+  （debug keystore 路径直接针对 `pass:` 源令牌断言，避开「别名 androiddebugkey 本就含子串 android」的误报）。
+  把 sign 命令一改为 `pass:<password>` 即让两条 argv 用例同时失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
