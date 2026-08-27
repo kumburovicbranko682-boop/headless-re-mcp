@@ -6,7 +6,14 @@
            UpgradeCode="A7C3E9B1-4D2F-4A8E-9C11-8F2E6D1B0A09">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"
              Description="Headless reverse-engineering MCP and browser workbench (no IDA)" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <!-- AllowSameVersionUpgrades: every build gets a fresh ProductCode (Id="*"),
+         and FindRelatedProducts does not treat an equal version as upgradable
+         by default. Installing a same-version rebuild would therefore create a
+         second ARP entry sharing this fixed folder and the same HKCU key paths,
+         and uninstalling either entry runs RemoveFolderEx over the files both
+         depend on. Same version must replace, never coexist. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Feature Id="ProductFeature" Title="Core and browser workbench" Level="1">
       <ComponentGroupRef Id="ProductFiles" />

@@ -612,6 +612,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - UPX / XVLKC / Scylla / VMPDump / de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为
   本机没装 CLI 就说成 `capability_unavailable`。
 
+### 修复（同版本 MSI 重装并存互毁）
+
+- `Product.wxs` 的 `MajorUpgrade` 加 `AllowSameVersionUpgrades="yes"`。每次构建的
+  ProductCode 都是新的（`Id="*"`）,而 WiX 默认不把相同版本视为可升级,于是重装同版本
+  MSI 会在「添加/删除程序」里留下两个条目,共用同一个固定安装目录与同一批 HKCU 键路径
+  ——卸载其中任何一个,`RemoveFolderEx` 都会删光另一个赖以运行的文件。对固定目录的
+  按用户安装,同版本必须替换而非并存。正式发布因 tag 守卫强制版本一致不受影响,受影响
+  的是 `workflow_dispatch` 空跑产物与本地迭代的重复安装。
+
 ### 新增（会话目标类型）
 
 - 会话不再只认 PE。`Session` 增加 `target`（`pe|apk|web`）与 `locator`，`architecture`、
