@@ -111,6 +111,121 @@ def _build_one_class_dex() -> bytes:
     return bytes(body)
 
 
+def _build_two_method_dex() -> bytes:
+    """A valid DEX (v035) whose ``caller()`` invokes ``callee()`` in one class.
+
+    The one-class fixture above has no methods, so it cannot exercise call-graph
+    analysis. This adds two static methods to ``com.example.Gate`` and a real
+    ``invoke-static`` from caller to callee, giving androguard a genuine
+    cross-reference edge for the apk.xrefs gate to recover. The section layout
+    mirrors the no-method fixture but adds the proto_ids / method_ids /
+    class_data / code_item sections a method-bearing class requires; checksum
+    and signature are filled in last so androguard validates it. The bytes were
+    verified end to end -- androguard reports callee's only caller as caller.
+    """
+    strings = [_CLASS_SMALI, "Ljava/lang/Object;", "V", "callee", "caller"]
+    assert strings == sorted(strings)
+    s_class, s_super, s_void, s_callee, s_caller = range(5)
+    type_ids = [s_class, s_super, s_void]
+    t_class, t_super, t_void = 0, 1, 2
+
+    n = len(strings)
+    header_size = 0x70
+    string_ids_off = header_size
+    proto_ids_off = string_ids_off + 4 * n
+    method_ids_off = proto_ids_off + 12  # one proto
+    type_ids_off = method_ids_off + 8 * 2  # two methods
+    class_defs_off = type_ids_off + 4 * len(type_ids)
+    data_off = class_defs_off + 32
+
+    data = bytearray()
+
+    def emit(chunk: bytes) -> int:
+        offset = data_off + len(data)
+        data.extend(chunk)
+        return offset
+
+    def pad_to(boundary: int) -> None:
+        while (data_off + len(data)) % boundary:
+            data.append(0)
+
+    string_offsets: list[int] = []
+    for text in strings:
+        string_offsets.append(emit(_uleb128(len(text)) + text.encode("ascii") + b"\x00"))
+
+    pad_to(4)
+    # callee: return-void (one code unit).
+    callee_code_off = emit(struct.pack("<HHHHII", 0, 0, 0, 0, 0, 1) + bytes([0x0E, 0x00]))
+    pad_to(4)
+    # caller: invoke-static {}, meth@0 (callee); return-void (four code units).
+    caller_insns = bytes([0x71, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E, 0x00])
+    caller_code_off = emit(struct.pack("<HHHHII", 1, 0, 0, 0, 0, 4) + caller_insns)
+
+    class_data = bytearray()
+    class_data += _uleb128(0)  # static fields
+    class_data += _uleb128(0)  # instance fields
+    class_data += _uleb128(2)  # direct methods
+    class_data += _uleb128(0)  # virtual methods
+    # Direct methods, encoded as method_idx deltas: callee is method 0, caller 1.
+    class_data += _uleb128(0) + _uleb128(0x9) + _uleb128(callee_code_off)
+    class_data += _uleb128(1) + _uleb128(0x9) + _uleb128(caller_code_off)
+    class_data_off = emit(bytes(class_data))
+
+    pad_to(4)
+    map_off = data_off + len(data)
+    map_items = [
+        (0x0000, 1, 0),
+        (0x0001, n, string_ids_off),
+        (0x0002, len(type_ids), type_ids_off),
+        (0x0003, 1, proto_ids_off),
+        (0x0005, 2, method_ids_off),
+        (0x0006, 1, class_defs_off),
+        (0x2000, 1, class_data_off),
+        (0x2001, 2, callee_code_off),
+        (0x2002, n, string_offsets[0]),
+        (0x1000, 1, map_off),
+    ]
+    map_items.sort(key=lambda item: item[2])
+    map_blob = struct.pack("<I", len(map_items))
+    for type_code, size, offset in map_items:
+        map_blob += struct.pack("<HHII", type_code, 0, size, offset)
+    emit(map_blob)
+
+    file_size = data_off + len(data)
+
+    proto_ids = struct.pack("<III", s_void, t_void, 0)  # shorty "V", returns void
+    method_ids = struct.pack("<HHI", t_class, 0, s_callee)  # callee
+    method_ids += struct.pack("<HHI", t_class, 0, s_caller)  # caller
+    type_ids_blob = b"".join(struct.pack("<I", value) for value in type_ids)
+    class_def = struct.pack(
+        "<IIIIIIII", t_class, 0x1, t_super, 0, 0xFFFFFFFF, 0, class_data_off, 0
+    )
+
+    header = bytearray()
+    header += b"dex\n035\x00" + b"\x00" * 4 + b"\x00" * 20
+    header += struct.pack("<I", file_size)
+    header += struct.pack("<I", header_size)
+    header += struct.pack("<I", 0x12345678)
+    header += struct.pack("<I", 0) + struct.pack("<I", 0)  # link size/off
+    header += struct.pack("<I", map_off)
+    header += struct.pack("<I", n) + struct.pack("<I", string_ids_off)
+    header += struct.pack("<I", len(type_ids)) + struct.pack("<I", type_ids_off)
+    header += struct.pack("<I", 1) + struct.pack("<I", proto_ids_off)
+    header += struct.pack("<I", 0) + struct.pack("<I", 0)  # field ids
+    header += struct.pack("<I", 2) + struct.pack("<I", method_ids_off)
+    header += struct.pack("<I", 1) + struct.pack("<I", class_defs_off)
+    header += struct.pack("<I", file_size - data_off) + struct.pack("<I", data_off)
+
+    body = bytearray(header)
+    body += b"".join(struct.pack("<I", offset) for offset in string_offsets)
+    body += proto_ids + method_ids + type_ids_blob + class_def + bytes(data)
+    assert len(body) == file_size, (len(body), file_size)
+
+    body[12:32] = hashlib.sha1(bytes(body[32:])).digest()
+    body[8:12] = struct.pack("<I", zlib.adler32(bytes(body[12:])) & 0xFFFFFFFF)
+    return bytes(body)
+
+
 def _build_axml_manifest(package: str = _PACKAGE) -> bytes:
     """A compiled AndroidManifest (AXML) of ``<manifest package="...">``.
 
@@ -152,11 +267,16 @@ def _build_axml_manifest(package: str = _PACKAGE) -> bytes:
     return struct.pack("<HHI", 0x0003, 8, 8 + len(body)) + body
 
 
-def _build_valid_apk(path: Path) -> Path:
-    """Assemble a real, androguard-parseable APK with native libs and a v1 sig."""
+def _build_valid_apk(path: Path, *, dex: bytes | None = None) -> Path:
+    """Assemble a real, androguard-parseable APK with native libs and a v1 sig.
+
+    ``dex`` overrides the packed classes.dex; it defaults to the no-method
+    fixture so existing callers are unchanged, and the xrefs gate passes the
+    two-method fixture instead.
+    """
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("AndroidManifest.xml", _build_axml_manifest())
-        archive.writestr("classes.dex", _build_one_class_dex())
+        archive.writestr("classes.dex", dex if dex is not None else _build_one_class_dex())
         archive.writestr("lib/arm64-v8a/libnative.so", b"\x7fELFplaceholder")
         archive.writestr("lib/x86_64/libnative.so", b"\x7fELFplaceholder")
         archive.writestr("META-INF/CERT.RSA", b"placeholder-signature")
@@ -348,6 +468,47 @@ def test_android_apksigner_signs_the_repacked_apk(tmp_path: Path) -> None:
         assert signed.data["signed"] is True
         assert signed.data["debug_keystore"] is True
         assert signed.data["size"] > 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_apk_xrefs_finds_the_real_caller(tmp_path: Path) -> None:
+    """apk.methods lists both methods and apk.xrefs recovers the call edge.
+
+    The default fixture has no methods, so call-graph analysis -- apk.xrefs,
+    the capability an agent uses to answer "who calls this?" -- had no
+    executable coverage. This packs a two-method DEX whose ``caller`` invokes
+    ``callee`` and asserts androguard's real cross-reference analysis reports
+    ``caller`` as the one caller of ``callee`` (and nothing calls ``caller``),
+    so a regression that returned an empty or wrong caller set fails here
+    instead of passing on a fixture with no edges to get wrong.
+    """
+    apk = _build_valid_apk(tmp_path / "xrefs.apk", dex=_build_two_method_dex())
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        methods = service.apk_methods(session_id, _CLASS_SMALI)
+        assert methods.ok, methods.error
+        names = {method["name"] for method in methods.data["methods"]}
+        assert {"caller", "callee"} <= names, methods.data["methods"]
+
+        callers_of_callee = service.apk_xrefs(session_id, "callee")
+        assert callers_of_callee.ok, callers_of_callee.error
+        caller_names = {row["method"] for row in callers_of_callee.data["callers"]}
+        assert caller_names == {"caller"}, callers_of_callee.data
+        assert callers_of_callee.data["count"] == 1
+        assert callers_of_callee.data["has_more"] is False
+
+        # callee makes no calls, so nothing cross-references caller: the empty
+        # result must come back as a real (successful) empty page.
+        callers_of_caller = service.apk_xrefs(session_id, "caller")
+        assert callers_of_caller.ok, callers_of_caller.error
+        assert callers_of_caller.data["callers"] == []
+        assert callers_of_caller.data["count"] == 0
     finally:
         service.close_all()
 
