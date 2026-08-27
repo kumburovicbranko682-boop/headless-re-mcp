@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,6 +51,35 @@ def _spawn_target() -> tuple[subprocess.Popen[bytes], set[str]]:
         stderr=subprocess.DEVNULL,
     )
     return proc, {"libc.so.6"}
+
+
+@pytest.mark.integration
+def test_m11_frida_devices_lists_the_local_device() -> None:
+    """frida.devices is the enumeration entry point and needs no target.
+
+    Every other frida capability starts from a device; listing them is what an
+    agent calls first, yet it had no live coverage. Unlike attach, enumeration
+    needs no ptrace, so this runs even on a locked-down host. Drive it through
+    the service layer (frida_devices) so the real client-to-envelope path is
+    exercised, and assert the always-present local device with its documented
+    id/name/type shape -- a regression that returned an empty list or dropped a
+    field fails here. skip != pass: skips only when frida is absent.
+    """
+    if not FridaClient().available:
+        pytest.skip("frida Python module not installed — live Gate not run (skip≠pass)")
+    service = AnalysisService()
+    try:
+        result = service.frida_devices()
+        assert result.ok, result.error
+        devices = result.data["devices"]
+        assert result.data["count"] == len(devices)
+        local = [d for d in devices if d.get("type") == "local"]
+        assert local, f"no local frida device was enumerated: {devices}"
+        entry = local[0]
+        assert entry["id"] == "local"
+        assert isinstance(entry["name"], str) and entry["name"]
+    finally:
+        service.close_all()
 
 
 @pytest.mark.integration
