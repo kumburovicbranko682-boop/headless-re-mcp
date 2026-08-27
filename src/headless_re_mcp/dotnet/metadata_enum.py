@@ -61,9 +61,29 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x2B: ("br.s", 1),
     0x2C: ("brfalse.s", 1),
     0x2D: ("brtrue.s", 1),
+    0x2E: ("beq.s", 1),
+    0x2F: ("bge.s", 1),
+    0x30: ("bgt.s", 1),
+    0x31: ("ble.s", 1),
+    0x32: ("blt.s", 1),
+    0x33: ("bne.un.s", 1),
+    0x34: ("bge.un.s", 1),
+    0x35: ("bgt.un.s", 1),
+    0x36: ("ble.un.s", 1),
+    0x37: ("blt.un.s", 1),
     0x38: ("br", 4),
     0x39: ("brfalse", 4),
     0x3A: ("brtrue", 4),
+    0x3B: ("beq", 4),
+    0x3C: ("bge", 4),
+    0x3D: ("bgt", 4),
+    0x3E: ("ble", 4),
+    0x3F: ("blt", 4),
+    0x40: ("bne.un", 4),
+    0x41: ("bge.un", 4),
+    0x42: ("bgt.un", 4),
+    0x43: ("ble.un", 4),
+    0x44: ("blt.un", 4),
     0x6F: ("callvirt", 4),
     0x72: ("ldstr", 4),
     0x73: ("newobj", 4),
@@ -74,12 +94,39 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
 
 # Branch targets (both the short 1-byte and long 4-byte forms) and the ldc.i4
 # constant carry signed operands; every other opcode with an operand here
-# carries an unsigned metadata token. Only the short branches were read as
-# signed, so a long backward branch or a negative constant came back as its
-# two's-complement bit pattern -- br -10 printed as 4294967286 -- which misreads
-# the control flow the disassembly exists to show.
+# carries an unsigned metadata token. A negative displacement (a backward
+# branch, the shape of every loop) must decode as its signed value, not as the
+# two's-complement bit pattern -- br -10 as -10, not 4294967286.
 _SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
-    {"br.s", "brfalse.s", "brtrue.s", "br", "brfalse", "brtrue", "ldc.i4"}
+    {
+        "br.s",
+        "brfalse.s",
+        "brtrue.s",
+        "beq.s",
+        "bge.s",
+        "bgt.s",
+        "ble.s",
+        "blt.s",
+        "bne.un.s",
+        "bge.un.s",
+        "bgt.un.s",
+        "ble.un.s",
+        "blt.un.s",
+        "br",
+        "brfalse",
+        "brtrue",
+        "beq",
+        "bge",
+        "bgt",
+        "ble",
+        "blt",
+        "bne.un",
+        "bge.un",
+        "bgt.un",
+        "ble.un",
+        "blt.un",
+        "ldc.i4",
+    }
 )
 
 

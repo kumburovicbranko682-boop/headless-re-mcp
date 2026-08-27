@@ -92,6 +92,45 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
     assert partial is False
 
 
+def test_il_comparison_branches_consume_their_displacement_and_stay_aligned() -> None:
+    """beq/bge/bgt/ble/blt/bne.un (and .un/.s) must be sized, or loops desync.
+
+    The table carried the unconditional and boolean branches (br/brfalse/brtrue,
+    short and long) but not the *comparison* branches emitted for ``if (a < b)``
+    and every relational loop. Absent, each was treated as a zero-operand
+    unknown that advanced a single byte, so the 1-byte (short) or 4-byte (long)
+    signed displacement that follows was read as the next opcode -- the same
+    one-byte/four-byte shear the missing ldc.i4.s caused, on opcodes that appear
+    in nearly every non-trivial method. Sizing them keeps the stream aligned and
+    decodes a backward branch as the negative offset it is: ``ble.s -6`` as -6,
+    ``blt 0x11223344`` unsigned-looking bytes as their signed int32, and the
+    trailing ``call`` lands on its real token instead of mid-displacement.
+    """
+    il = (
+        bytes([0x31])
+        + (-6).to_bytes(1, "little", signed=True)  # ble.s -6 (short, backward)
+        + bytes([0x3F])
+        + (-20).to_bytes(4, "little", signed=True)  # blt -20 (long, backward)
+        + bytes([0x40])
+        + (0x00001122).to_bytes(4, "little", signed=True)  # bne.un +forward
+        + bytes([0x28])
+        + (0x0A000001).to_bytes(4, "little")  # call token, unsigned, still aligned
+        + bytes([0x2A])  # ret
+    )
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    decoded = [(insn["mnemonic"], insn["operand"]) for insn in instructions]
+    assert decoded == [
+        ("ble.s", -6),
+        ("blt", -20),
+        ("bne.un", 0x00001122),
+        ("call", 0x0A000001),
+        ("ret", None),
+    ]
+    assert partial is False
+
+
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     binary = tmp_path / "empty_tables.exe"
     _write_minimal_clr(binary)

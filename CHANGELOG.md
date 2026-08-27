@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dotnet.il` 漏认整族比较分支 `beq`/`bge`/`blt`/… 从此处起方法体错位）
+
+- `_OPCODES` 收了无条件与布尔分支(`br`/`brfalse`/`brtrue`,短、长两形式),却漏掉了 `if (a < b)`
+  和每个关系循环都会发出的**比较分支**:`beq`/`bge`/`bgt`/`ble`/`blt`/`bne.un` 及其 `.un`、`.s`
+  变体(短形式 0x2E–0x37、长形式 0x3B–0x44)。缺表的它们被当成零操作数未知码只前进 1 字节,于是紧随
+  其后的 1 字节(短)或 4 字节(长)有符号位移被当作下一条指令的操作码——与漏认 `ldc.i4.s` 同样的
+  错位,而这些操作码在几乎每个非平凡方法里都出现:一进循环体就错位,后半段解成乱码并连累据此采集的
+  `call`/`newobj` token。现按 ECMA-335 / coreclr `opcode.def` 补齐这 20 个比较分支,并全部列入
+  `_SIGNED_OPERANDS`(位移是有符号的,向后跳即负偏移),于是 `ble.s -6` 解成 -6 而非 250、`blt -20`
+  解成 -20 而非 40 亿,其后指令保持对齐。新增直测:`ble.s -6; blt -20; bne.un +N; call <tok>; ret`
+  断言各分支读出正确符号、末尾 `call`/`ret` 仍对齐且 `partial` 为假。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
