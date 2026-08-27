@@ -97,6 +97,27 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.interfaces")
+    def apk_interfaces(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Census the interfaces implemented across the app, ranked by use.
+
+        The aggregate of the implements relationship: where apk.subclasses
+        answers "who implements this one interface", this lists every interface
+        implemented by an internal class with how many classes implement it,
+        mapping the app's callback and contract surface -- how widely
+        Ljava/lang/Runnable;, a listener, or a custom interface is used. Each row
+        is interface (smali name) and implementor_count; external classes are
+        skipped. Answers with interfaces, count, total (distinct interfaces),
+        classes_scanned (capped at 10000 with scan_capped), offset and has_more.
+        Rows sort by implementor_count descending then interface, so the
+        most-used lead and ties page stably.
+        """
+        return _dump(analysis.apk_interfaces(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,

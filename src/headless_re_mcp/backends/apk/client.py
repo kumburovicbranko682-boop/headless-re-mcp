@@ -349,6 +349,51 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def interfaces(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """Census the interfaces implemented across the app, ranked by use.
+
+        The aggregate view of the implements relationship: where apk.subclasses
+        answers "who implements this one interface", this lists every interface
+        implemented by an internal class together with how many classes
+        implement it, mapping the app's callback and contract surface -- how
+        widely Ljava/lang/Runnable;, a listener, or a custom interface is used.
+        Each row is interface (smali name) and implementor_count. External
+        classes are skipped; the interface name itself may be framework or
+        internal. Rows sort by implementor_count descending then interface, so
+        the most-used lead and ties page stably. total is the number of distinct
+        interfaces, classes_scanned the classes examined (capped at 10000 with
+        scan_capped), and offset/has_more page it.
+        """
+        parsed = self._parsed(path)
+        counts: dict[str, int] = {}
+        scanned = 0
+        scan_more = False
+        for klass in parsed.analysis.get_classes():
+            if klass.is_external():
+                continue
+            if scanned >= _MAX_CLASSES_COLLECT:
+                scan_more = True
+                break
+            scanned += 1
+            for iface in klass.implements or []:
+                name = str(iface)
+                counts[name] = counts.get(name, 0) + 1
+        ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        rows: list[JsonObject] = [
+            {"interface": name, "implementor_count": count} for name, count in ordered
+        ]
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_CLASSES_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "interfaces": window,
+            "count": len(window),
+            "total": len(rows),
+            "classes_scanned": scanned,
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
     def methods(
         self,
         path: Path,
