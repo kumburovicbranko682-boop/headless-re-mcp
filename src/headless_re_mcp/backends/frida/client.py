@@ -415,12 +415,25 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
+            actual = len(data)
+            result: JsonObject = {
                 "address": address,
-                "size": size,
+                "size": actual,
                 "encoding": "hex",
                 "data": data.hex(),
             }
+            # readByteArray returns only the bytes it could actually read: a
+            # range that runs off the end of a mapped region comes back short,
+            # and a start frida cannot read at all yields an empty buffer
+            # (new Uint8Array(null) has length 0, so no exception is raised).
+            # Echoing the requested size regardless would tell the caller the
+            # reply holds `size` bytes while `data` decodes to fewer -- it would
+            # then read past the real data into whatever follows. So size is the
+            # true byte count, and a short read is flagged with the unmet request.
+            if actual < int(size):
+                result["requested"] = int(size)
+                result["short_read"] = True
+            return result
         finally:
             with contextlib.suppress(Exception):
                 session.detach()

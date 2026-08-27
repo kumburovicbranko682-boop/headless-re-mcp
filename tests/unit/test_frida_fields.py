@@ -79,6 +79,69 @@ def test_frida_modules_says_when_the_page_is_not_the_whole_list() -> None:
     doc = _tool_docstring("frida.modules")
     assert "has_more" in doc
 
+
+def _memory_client_returning(buffer: list[int]) -> FridaClient:
+    """A client whose Frida read probe hands back exactly ``buffer``."""
+    api = type("_ReadApi", (), {"read": lambda self, address, size: list(buffer)})()
+    script = type("_ReadScript", (), {"exports_sync": api, "load": lambda self: None})()
+    session = type(
+        "_ReadSession",
+        (),
+        {"create_script": lambda self, source: script, "detach": lambda self: None},
+    )()
+    frida = type("_ReadFrida", (), {"attach": lambda self, pid: session})()
+    client = FridaClient()
+    client._available = True
+    client._frida = frida
+    return client
+
+
+def test_frida_memory_read_reports_the_bytes_it_actually_got() -> None:
+    """A full read must report size equal to the bytes returned, no short flag.
+
+    Measured: probe returns 4 bytes for a size-4 request -> size 4, data the
+    4 bytes hex, and no short_read. size must track data, not the request.
+    """
+    client = _memory_client_returning([0xDE, 0xAD, 0xBE, 0xEF])
+    payload = client.memory_read(1, 0x1000, 4, allowed_pid=1)
+    assert payload["size"] == 4
+    assert payload["data"] == "deadbeef"
+    assert "short_read" not in payload
+    assert "requested" not in payload
+    doc = _tool_docstring("frida.memory.read")
+    assert "short_read" in doc
+
+
+def test_frida_memory_read_flags_a_short_read_instead_of_claiming_the_full_size() -> None:
+    """A range into unmapped memory comes back short; size must not lie.
+
+    Measured: probe returns only 4 bytes for a size-16 request -> size 4
+    (the real count), data those 4 bytes, short_read True, requested 16.
+    Echoing size 16 would let the caller decode past the real data.
+    """
+    client = _memory_client_returning([0x01, 0x02, 0x03, 0x04])
+    payload = client.memory_read(1, 0x2000, 16, allowed_pid=1)
+    assert payload["size"] == 4
+    assert payload["data"] == "01020304"
+    assert payload["short_read"] is True
+    assert payload["requested"] == 16
+
+
+def test_frida_memory_read_flags_an_unreadable_start_as_an_empty_short_read() -> None:
+    """An unreadable start yields an empty buffer, not an exception.
+
+    Measured: new Uint8Array(null) is length 0, so the probe returns [] for a
+    size-8 request -> size 0, data "", short_read True, requested 8. Without
+    the flag a size-0 success reads as a real zero-length region.
+    """
+    client = _memory_client_returning([])
+    payload = client.memory_read(1, 0x3000, 8, allowed_pid=1)
+    assert payload["size"] == 0
+    assert payload["data"] == ""
+    assert payload["short_read"] is True
+    assert payload["requested"] == 8
+
+
 class _ExportApi:
     def exports(self, name: str, count: int) -> dict[str, Any]:
         return {
