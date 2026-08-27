@@ -66,3 +66,57 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+
+
+class _NameLikeAsn1:
+    """Stands in for ``asn1crypto.x509.Name``: ``str()`` is an object repr
+    carrying a memory address and raw DER; the readable DN is on
+    ``human_friendly``."""
+
+    def __init__(self, human: str) -> None:
+        self.human_friendly = human
+
+    def __str__(self) -> str:  # what the old code emitted for a real cert
+        return "<asn1crypto.x509.Name 140637888198176 b'0b1\\x0b0\\t\\x06'>"
+
+
+class _NamedCert:
+    def __init__(self) -> None:
+        self.subject = _NameLikeAsn1("Common Name: Fixture Test, Organization: Example")
+        self.issuer = _NameLikeAsn1("Common Name: Issuer CA")
+        self.serial_number = 296028018442173800
+        self.sha256_fingerprint = "30 79 D7 51"
+
+
+class _SignedFakeApk:
+    def get_signature_names(self) -> list[str]:
+        return ["META-INF/FIXTUREK.RSA"]
+
+    def get_certificates(self) -> list[_NamedCert]:
+        return [_NamedCert()]
+
+
+def test_apk_certificate_subject_is_readable_not_object_repr() -> None:
+    """subject/issuer must be the human-friendly DN, never the Name object repr.
+
+    ``APK.get_certificates()`` returns ``asn1crypto.x509.Certificate`` whose
+    ``subject`` is an ``x509.Name``; ``str()`` on one is
+    ``<asn1crypto.x509.Name 0x.. b'..'>`` -- a live process memory address plus
+    raw DER, non-deterministic and useless to the caller. Only a *signed* APK
+    reaches this path, and every prior cert test used plain-string stand-ins, so
+    the repr leak went unseen until a real signature was parsed (verified live
+    against a jarsigner-signed APK on androguard 4.1.4). Rendering
+    ``.human_friendly`` fixes it; this guards the render without needing
+    androguard or a signed fixture on disk.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _SignedFakeApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    cert = payload["certificates"][0]
+    assert cert["subject"] == "Common Name: Fixture Test, Organization: Example"
+    assert cert["issuer"] == "Common Name: Issuer CA"
+    # the exact symptoms of the object-repr leak must be gone
+    assert "asn1crypto" not in cert["subject"]
+    assert "b'" not in cert["subject"]
+    assert cert["serial"] == "296028018442173800"
+    assert cert["sha256"] == "30 79 D7 51"

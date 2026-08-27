@@ -77,6 +77,26 @@ gate（缺相应工具时明确 skip，skip≠pass）：
   `MainActivity.smali`。apktool 2.10.0 实测通过：`d -o -f` 与产物布局（`AndroidManifest.xml` +
   `smali*/`）仍如客户端所设。
 
+### 修复（`apk.certificates` 的 subject/issuer 漏出对象 repr、带进程内存地址）
+
+- **`apk.certificates` 的 `subject`/`issuer` 返回的是 asn1crypto 对象的 repr，不是可读证书主体。**
+  `APK.get_certificates()` 给的是 `asn1crypto.x509.Certificate`，其 `subject`/`issuer` 为
+  `x509.Name`；客户端用 `str(cert.subject)`，而 `x509.Name.__str__` 返回的是
+  `<asn1crypto.x509.Name 140637888198176 b'0b1\x0b0...'>`——**带一个活的进程内存地址**（每次运行都变，
+  不确定且轻微泄漏）外加裸 DER，对调用方毫无用处。这条只有**已签名** APK 才会走到，而此前唯一的
+  证书测试用的是纯字符串桩、夹具又是未签名的（只测到 `v1_signed=False`、空证书列表），所以这处 repl
+  泄漏一直没被照出。改为渲染 `x509.Name.human_friendly`（asn1crypto 多年稳定 API，返回
+  `Common Name: ..., Organization: ...`），仅当对象无该属性时回退到 `str`。`serial`/`sha256` 本就正确，
+  未动。真机验证：以 JDK `keytool`+`jarsigner` 对夹具做 v1 签名，androguard 4.1.4 上 `subject` 现为
+  `Common Name: Fixture Test, Organization: Example, ...`、`sha256` 为真实指纹。
+- 配套夹具与两层测试：新增 `fixtures/android/fixture-signed.apk`（把 `fixture.apk` 用一次性自签名
+  key v1 签名，签名配方记在 gate docstring 里以备重建）；`test_apk_certificates_fields.py` 加一条快
+  单测（无需 androguard/签名夹具），以一个 `str()` 为对象 repr、`human_friendly` 为可读 DN 的 Name 桩
+  钉住渲染走 `human_friendly`、且 `asn1crypto`/`b'` 这类 repr 症状不再出现；新增
+  `test_apk_certificates_gate.py` 则经 `AnalysisService` 全栈对真签名 APK 跑 `apk.certificates`，钉住
+  `v1_signed=True`、`signature_files` 含 `.RSA`、单张证书的 `subject` 含 `Fixture Test`/`Example`、
+  `sha256` 为 64 位十六进制指纹，并守住对象 repr 泄漏不复现。缺 `android` extra 时明确 skip（skip≠pass）。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /

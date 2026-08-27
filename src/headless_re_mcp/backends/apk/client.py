@@ -56,6 +56,25 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _readable_name(value: Any) -> str:
+    """Render a certificate subject/issuer as a readable Distinguished Name.
+
+    ``APK.get_certificates()`` returns ``asn1crypto.x509.Certificate`` objects
+    whose ``subject`` / ``issuer`` are ``x509.Name`` instances. ``str()`` on one
+    yields its object repr -- ``<asn1crypto.x509.Name 0x7f.. b'0b1\\x0b..'>`` --
+    which carries a process memory address (non-deterministic, mildly leaky) and
+    no usable DN. ``.human_friendly`` returns the real thing ("Common Name: ...,
+    Organization: ...") and has been stable in asn1crypto for years; fall back to
+    ``str`` only if a future/older type lacks it.
+    """
+    if value is None:
+        return ""
+    human = getattr(value, "human_friendly", None)
+    if isinstance(human, str) and human:
+        return human
+    return str(value)
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -259,8 +278,8 @@ class ApkClient:
             try:
                 items.append(
                     {
-                        "subject": str(getattr(cert, "subject", "")),
-                        "issuer": str(getattr(cert, "issuer", "")),
+                        "subject": _readable_name(getattr(cert, "subject", None)),
+                        "issuer": _readable_name(getattr(cert, "issuer", None)),
                         "serial": str(getattr(cert, "serial_number", "")),
                         "sha256": cert.sha256_fingerprint
                         if hasattr(cert, "sha256_fingerprint")
