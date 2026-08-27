@@ -242,6 +242,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   覆盖那个空目录（目录不存在时照样新建）。新增一个捕获 argv、钉住 `-f` 的单测（CI 无需 webcrack 即可守护），
   并提交一个 3 模块的 webpack bundle 夹具 + gate：webcrack 在场时把它拆成多个文件，缺席时干净跳过
   （skip != pass）。
+- **浏览器抓取面（CDP）补上端到端 gate**。原有的 CDP 冒烟只驱动 `data:` URL——不加载外部脚本、也不发请求，
+  于是 `web.network.get` / `web.script.source` / `web.screenshot` / `web.har.export` 全无 gate 覆盖。
+  新增 gate 起一个一次性的同源 localhost 站点（外链脚本 + JSON fetch），等 network/script 的 CDP 事件落定，
+  再断言 fetch 的响应体、外链脚本源码、一张 PNG 和一份 HAR 都带着预期字节回来。已针对 Playwright Chromium
+  （headless-shell 151）跑通、连跑五次稳定；无浏览器时干净跳过（skip != pass）。经核查这条抓取链路本身健壮，
+  本次是补测试而非修 bug。
 - Frida 远程设备不再每次调用都重新 `add_remote_device`，改为先复用已注册设备。
 - **Watchdog 字段名对不上，每次巡检都会崩**。代码读 `_reported_disconnected`（set），
   字段却声明成 `_disconnected_streak`。未捕获时整次巡检变成 `watchdog_failed`。
