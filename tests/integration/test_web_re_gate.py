@@ -7,12 +7,14 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from headless_re_mcp.backends.jsre import JsClient, WasmClient
 from headless_re_mcp.backends.web import WebBackend
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -79,6 +81,37 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
         assert result.ok, result.error
         assert isinstance(result.data["code"], str)
         assert result.data["bytes"] > 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present(tmp_path: Path) -> None:
+    """webcrack's bundle unpack writes a tree and the service pages over it.
+
+    js.deobfuscate returns text, but unpack_bundle is the only JS op that writes
+    files, so its whole result surface -- _capped_file_listing, the pagination
+    fields, the service's own out_dir creation and pruning -- had only unit-stub
+    coverage. webcrack always emits at least the deobfuscated entry into -o, so a
+    real run must come back with a non-empty tree the window agrees with.
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    service = AnalysisService(replace(Settings.load(), artifact_root=tmp_path / "artifacts"))
+    try:
+        result = service.js_unpack_bundle(str(_JS_FIXTURE), limit=50)
+        assert result.ok, result.error
+        data = result.data
+        assert data["file_count"] >= 1
+        assert data["total"] == data["file_count"]
+        assert isinstance(data["files"], list) and data["files"]
+        assert data["count"] == len(data["files"])
+        assert data["offset"] == 0
+        # The window and the count have to tell the same story about whether more
+        # files are behind the page -- the has_more contract the unit tests pin.
+        assert data["has_more"] is (data["offset"] + data["count"] < data["total"])
+        assert Path(data["output_dir"]).is_dir()
     finally:
         service.close_all()
 
