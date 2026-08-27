@@ -167,23 +167,32 @@ class ApkClient:
 
     def open(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        return {
-            "opened": True,
-            "package": apk.get_package(),
-            "version_name": apk.get_androidversion_name(),
-            "version_code": apk.get_androidversion_code(),
-            "min_sdk": apk.get_min_sdk_version(),
-            "target_sdk": apk.get_target_sdk_version(),
-            "main_activity": apk.get_main_activity(),
-            "permission_count": len(apk.get_permissions()),
-            "native_abis": sorted(
-                {
-                    name.split("/")[1]
-                    for name in apk.get_files()
-                    if name.startswith("lib/") and len(name.split("/")) >= 3
-                }
-            ),
-        }
+        # APK() parses the zip container eagerly but decodes AndroidManifest.xml
+        # lazily, so a resource-obfuscated or truncated manifest survives _apk()
+        # and only blows up here -- get_androidversion_name() does a bare
+        # androidversion["Name"] and raises KeyError when the manifest never
+        # parsed. Left uncaught that surfaces as internal_error; wrap it so a bad
+        # manifest reads as backend_error like every other apk.* accessor does.
+        try:
+            return {
+                "opened": True,
+                "package": apk.get_package(),
+                "version_name": apk.get_androidversion_name(),
+                "version_code": apk.get_androidversion_code(),
+                "min_sdk": apk.get_min_sdk_version(),
+                "target_sdk": apk.get_target_sdk_version(),
+                "main_activity": apk.get_main_activity(),
+                "permission_count": len(apk.get_permissions()),
+                "native_abis": sorted(
+                    {
+                        name.split("/")[1]
+                        for name in apk.get_files()
+                        if name.startswith("lib/") and len(name.split("/")) >= 3
+                    }
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to read APK metadata: {exc}") from exc
 
     def manifest(self, path: Path) -> JsonObject:
         apk = self._apk(path)

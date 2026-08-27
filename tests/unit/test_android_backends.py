@@ -327,6 +327,48 @@ class TestApkClassification:
             describe_apk(plain)
 
 
+class TestApkOpenReportsMalformedManifest:
+    """A manifest that never parsed must read as backend_error, not internal_error.
+
+    APK() decodes AndroidManifest.xml lazily, so a resource-obfuscated or
+    truncated manifest survives the constructor and only fails inside open()'s
+    accessors -- get_androidversion_name() does a bare androidversion["Name"] and
+    raises KeyError. Left uncaught the service maps that to internal_error, which
+    reads to an agent as "the tool is broken" rather than "this APK is
+    unreadable", so it retries instead of moving on. Every other apk.* accessor
+    already wraps this as backend_error; open() must match.
+    """
+
+    def test_client_open_wraps_bad_manifest_as_backend_error(self, tmp_path: Path) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        client = ApkClient()
+        if not client.available:
+            pytest.skip("androguard not installed — parse path not exercised (skip != pass)")
+        with pytest.raises(ApkError) as info:
+            client.open(_apk(tmp_path / "broken.apk"))
+        assert info.value.code == "backend_error"
+
+    def test_service_open_maps_bad_manifest_to_backend_error_not_internal(
+        self, tmp_path: Path
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient
+        from headless_re_mcp.core.service import AnalysisService
+
+        if not ApkClient().available:
+            pytest.skip("androguard not installed — parse path not exercised (skip != pass)")
+        service = AnalysisService()
+        try:
+            created = service.create_session(str(_apk(tmp_path / "broken.apk")), target="apk")
+            session_id = str(created.data["session"]["id"])
+            opened = service.apk_open(session_id)
+            assert opened.ok is False
+            assert opened.error is not None
+            assert opened.error.code == "backend_error"
+        finally:
+            service.close_all()
+
+
 class TestApktoolBoundaries:
     def test_missing_apktool_degrades(self, tmp_path: Path) -> None:
         client = ApktoolClient(None, None)
