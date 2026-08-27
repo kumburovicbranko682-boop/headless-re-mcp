@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+补上 `wasm.info`（wasm-objdump）对真实工具的执行覆盖。wabt 线的两个工具里，`wasm.wat`（wasm2wat）已有
+live gate，而其兄弟 `wasm.info` 只对一个假二进制跑过单测——`-h -x` 调用与输出包装从未对真实工具验证过；
+另有一处潜在不对称值得钉住：`WasmClient.available` 只由 wasm2wat 决定，但 `info` 需要单独解析的
+wasm-objdump，故"available"本身并不保证 `info` 能跑。新增 `tests/integration/test_wasm_objdump_live_gate.py`：
+模块字节内嵌（一次性用 wat2wasm 生成），故 gate 只依赖被测工具；该模块含两个导出函数（add、mul）、一个
+内存与一个全局，断言 wasm-objdump 恢复出真实结构——段表（Type/Function/Memory/Global/Export/Code）与
+函数/导出名（`<add>`、`<mul>`、add/mul/mem/answer）——而非仅"输出非空"。新增 `linux-wasm-objdump` CI job：
+装 wabt、跑该 gate 并解析 junitxml，wabt 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

@@ -152,6 +152,45 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-wasm-objdump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install wabt and the package
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wabt
+          wasm-objdump --version
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: wasm-objdump gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_wasm_objdump_live_gate.py \
+            -rs --tb=short --junitxml=wasm-objdump-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("wasm-objdump-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # wabt was just installed, so a skip here means wasm-objdump could not
+          # inspect a real module -- the false-green "skip != pass" warns about.
+          # This is the only test that runs wasm.info against the real tool.
+          if not cases:
+              sys.exit("no wasm-objdump gate was collected")
+          if skipped:
+              sys.exit(f"wasm-objdump gate skipped despite an installed wabt: {skipped}")
+          print(f"wasm-objdump gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
