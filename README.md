@@ -396,6 +396,8 @@ Android 写侧（重打包与反编译）也各有一个基于同一个 `sample.
 
 Ghidra headless 此前只有降级路径（未配置时 `capability_unavailable`）的覆盖，真机路径无人跑过，于是藏了两个只在非 Windows 才暴露的 bug：启动器选择器在 Linux 上优先挑了 Windows 的 `.bat`（Popen 报 Exec format error），且 `ExportJson.py` 读了 Ghidra 根本不定义的全局 `ARGS`（正确 API 是 `getScriptArgs()`）导致每次导出都为空——两者都已修复。新增的 `test_ghidra_headless_gate.py` 现场编一个小 ELF、跑通 `ghidra.functions/symbols/xrefs/decompile`：断言编进去的 `add/compute/main` 都在、`add` 有来自 `compute` 的交叉引用、反编译出的 C 里含对 `add` 的调用。依赖 `HEADLESS_RE_GHIDRA_HOME`、JRE 与 C 编译器，缺则如实跳过。
 
+动态分析（Frida）此前只有两类覆盖：要么 mock 掉 `frida` 模块，要么是 Windows PE 会话那条 `test_m11_frida_live_gate.py`，跨平台的进程内枚举路径（`frida.modules`/`frida.exports`/`frida.memory.read`）从没真机跑过，于是藏了一个只在现代 frida 才暴露的 bug：枚举脚本用早已删除的全局 `Memory.readByteArray`（frida ≥14 直接抛 "not a function"），导致 `frida.memory.read` 在所有现代 frida（这里实测 17.x）上必然失败，而 mock 测试一路绿——已改用 `NativePointer#readByteArray` 修复。新增的 `tests/integration/test_frida_local_gate.py` 不需要设备或模拟器：frida 直接注入一个本地子进程，跑通 `modules`（真实模块表）、`exports`（libc 真符号）、`memory.read`、`attach` 与 `hook.template` 的 `noop`；其中 `memory.read` 在模块基址读回可执行镜像魔数（ELF/Mach-O/PE 之一）作为上述修复的回归护栏，并额外验证 `allowed_pid` 不匹配时在任何注入之前就被 `permission_denied` 挡下。依赖装了 `android` extra 的 frida，且宿主允许 ptrace 注入（受限容器/`ptrace_scope` 下会如实跳过，skip ≠ pass）。
+
 抓包（mitmproxy）除了起停/端口释放的生命周期 Gate，现在还有一个端到端的抓包 Gate（`tests/integration/test_proxy_capture_gate.py`）：起一个本地 HTTP 源、把请求经代理转发过去，断言 `proxy.flows` 记到了这条流、`proxy.flow.get` 能取到请求/响应体、`proxy.export_har` 导出的 HAR 里带着它，并进一步用 `proxy.replay` 重放该流、确认请求被再次发出并二次捕获——纯 HTTP、免 CA、免外网。Web 静态侧则修了一个真实缺陷：`js.unpack_bundle` 在 webcrack 2.x 下必然报 “output directory already exists”（客户端预建了输出目录），加上 `-f` 后恢复可用，并新增了 `js.unpack_bundle` 与 `wasm.info`（wasm-objdump）的 live Gate。
 
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
