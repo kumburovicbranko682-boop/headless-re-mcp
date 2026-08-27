@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`artifacts.list` / `audit.list` 分页在时间戳相同时可能漏读或重复）
+
+- 两个读取器都只按时间戳排序：`list_artifacts` 按 `created_at DESC`，`list_audit` 按
+  `at DESC`，都没有决定性的二级排序键。同一时钟滴答内注册的多条记录会共用同一个
+  isoformat 字符串（粗分辨率时钟——尤其是 Windows——很容易产生这种并列），而 SQLite 对
+  `ORDER BY` 键相等的行不保证顺序。每一页是独立的 `LIMIT/OFFSET` 查询，于是两页可能对某条
+  并列行的位置各执一词，导致它两页都没有（漏读）或两页都有（重复）。`audit.list` 还更隐蔽：
+  `append_audit` 的裁剪按 `at DESC, id DESC` 保留最新若干行，而读取只按 `at`，读到的窗口可能
+  与裁剪保留的窗口并不一致。现两个 SQLite 读取器都补上 `id` 作为二级键（`created_at/at DESC,
+  id DESC`），与裁剪已用的全序一致；内存版仓库的对应排序也补上 `id`，让两种后端对同一批并列
+  记录给出相同顺序。新增按后端参数化的两条测试：冻结时钟制造 `created_at`/`at` 并列，断言整表
+  读取按 `id` 降序、且分页拼接与整表读取逐项一致（不漏不重）。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

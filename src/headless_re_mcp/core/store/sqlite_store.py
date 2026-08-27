@@ -450,19 +450,28 @@ class SessionStore:
     def list_artifacts(self, session_id: str | None = None, *, offset: int = 0, limit: int = 50) -> JsonObject:
         limit = max(1, min(int(limit), 256))
         offset = max(0, int(offset))
+        # created_at ties break by id so the order is a total one. Several
+        # artifacts registered inside one clock tick share an isoformat string
+        # (coarse-resolution clocks, notably Windows, make that ordinary), and
+        # SQLite leaves the order of rows equal under ORDER BY unspecified. Each
+        # page is a separate LIMIT/OFFSET query, so without the tie-break two
+        # pages could disagree on where a tied row sits -- dropping it from both
+        # or returning it in both. The id column is the primary key, so adding
+        # it fixes the order the same way the audit trim already does.
         with self._lock, self._connect() as conn:
             if session_id:
                 total = conn.execute(
                     "SELECT COUNT(*) AS c FROM artifacts WHERE session_id=?", (session_id,)
                 ).fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM artifacts WHERE session_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM artifacts WHERE session_id=?"
+                    " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
             else:
                 total = conn.execute("SELECT COUNT(*) AS c FROM artifacts").fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM artifacts ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM artifacts ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         items = [dict(row) for row in rows]
@@ -527,19 +536,25 @@ class SessionStore:
     ) -> JsonObject:
         limit = max(1, min(int(limit), 256))
         offset = max(0, int(offset))
+        # at DESC, id DESC -- the same total order append_audit trims by. Rows
+        # sharing an isoformat `at` are otherwise ordered arbitrarily by SQLite,
+        # so a paged read could skip or repeat a tied row across LIMIT/OFFSET
+        # queries; worse, the reader disagreeing with the trim's order meant the
+        # window a caller could page might not be the window that survived.
         with self._lock, self._connect() as conn:
             if session_id:
                 total = conn.execute(
                     "SELECT COUNT(*) AS c FROM audit WHERE session_id=?", (session_id,)
                 ).fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM audit WHERE session_id=? ORDER BY at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM audit WHERE session_id=?"
+                    " ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
             else:
                 total = conn.execute("SELECT COUNT(*) AS c FROM audit").fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM audit ORDER BY at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM audit ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         items = []

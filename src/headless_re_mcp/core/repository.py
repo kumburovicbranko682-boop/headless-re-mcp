@@ -612,7 +612,11 @@ class InMemoryAnalysisRepository:
             items = [dict(item) for item in self._artifacts.values()]
         if session_id is not None:
             items = [item for item in items if item["session_id"] == session_id]
-        items.sort(key=lambda item: str(item["created_at"]), reverse=True)
+        # (created_at, id) descending, matching the sqlite store: a stable sort
+        # alone is deterministic here, but the tie order it would keep (insertion
+        # order) is not the one the sqlite reader returns, so the two backends
+        # would page a tied set differently. Break ties by id so both agree.
+        items.sort(key=lambda item: (str(item["created_at"]), str(item["id"])), reverse=True)
         total = len(items)
         page = items[offset : offset + limit]
         return {
@@ -758,7 +762,9 @@ class InMemoryAnalysisRepository:
             entries = [dict(item) for item in self._audit]
         if session_id is not None:
             entries = [item for item in entries if item["session_id"] == session_id]
-        entries.sort(key=lambda item: str(item["at"]), reverse=True)
+        # (at, id) descending, matching the sqlite store and its audit trim, so
+        # both backends page a set of same-timestamp rows in the same order.
+        entries.sort(key=lambda item: (str(item["at"]), str(item["id"])), reverse=True)
         total = len(entries)
         page = entries[offset : offset + limit]
         return {
