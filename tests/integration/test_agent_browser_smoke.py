@@ -12,12 +12,19 @@ from typing import Any
 
 import pytest
 import uvicorn
-from playwright.sync_api import Response, expect, sync_playwright
 
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.web.app import create_app
+
+# Playwright is the optional `browser` extra. Skip this whole module when it is
+# absent -- like the other backend gates -- so collecting tests/ without that
+# extra degrades to a skip instead of erroring out the entire collection.
+_sync_api = pytest.importorskip("playwright.sync_api")
+Response = _sync_api.Response
+expect = _sync_api.expect
+sync_playwright = _sync_api.sync_playwright
 
 JsonObject = dict[str, Any]
 
