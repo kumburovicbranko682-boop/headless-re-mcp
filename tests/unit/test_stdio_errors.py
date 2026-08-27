@@ -33,15 +33,16 @@ class _CapturingBytesIO(BytesIO):
 
     ``stdio_server_with_parse_replies`` wraps ``sys.stdout.buffer`` in a
     TextIOWrapper, which closes the underlying buffer when it is finalized --
-    so a plain BytesIO is unreadable by the time the test inspects it. Snapshot
-    the bytes on close and keep the buffer open instead.
+    so a plain BytesIO is unreadable by the time the test inspects it. Ignore
+    the close and keep the buffer readable instead. The writer flushes after
+    every reply, so ``getvalue()`` is complete whether or not the wrapper has
+    been finalized yet (it reliably had not on Windows CI, where reading a
+    close-time snapshot returned nothing).
     """
 
-    captured: bytes = b""
-
     def close(self) -> None:  # noqa: D401 - see class docstring
-        self.captured = self.getvalue()
         # Deliberately not calling super().close(): keep it readable.
+        pass
 
 
 @pytest.mark.asyncio
@@ -105,7 +106,7 @@ async def test_wrapper_forwards_valid_and_replies_to_invalid_with_id(
 
     assert received_ids == [1]
 
-    written = stdout_buffer.captured.decode("utf-8")
+    written = stdout_buffer.getvalue().decode("utf-8")
     replies = [json.loads(row) for row in written.splitlines() if row.strip()]
     # Exactly one reply: the invalid line that carried an id. The valid line
     # went to the read stream, and the id-less garbage produced nothing.
@@ -129,7 +130,7 @@ async def test_wrapper_writes_a_reply_for_each_addressed_message(
         async with stdio_server_with_parse_replies() as (_read_stream, write_stream):
             await write_stream.aclose()
 
-    written = stdout_buffer.captured.decode("utf-8")
+    written = stdout_buffer.getvalue().decode("utf-8")
     replies = [json.loads(row) for row in written.splitlines() if row.strip()]
     assert [r["id"] for r in replies] == ["a", "b"]
     assert all(r["error"]["code"] == INVALID_REQUEST_CODE for r in replies)

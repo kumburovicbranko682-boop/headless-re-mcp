@@ -1,135 +1,130 @@
-"""R2Client input validation and error-mapping guards.
+"""R2Client argument guards, availability refusal, and executable discovery.
 
-The command whitelist (test_r2_command_whitelist) and the address enrichment
-(test_r2_disasm_fields) are covered elsewhere; this pins the client-level
-robustness guards that turn a bad request or a launch failure into a structured
-R2Error instead of letting it reach the service envelope as an internal_error:
-
-* disasm/xrefs reject a non-int or negative address, and disasm bounds count,
-  before any command is built or process spawned;
-* run maps a missing capability, a missing binary, an un-launchable executable
-  (OSError), and a non-zero exit onto the R2Error codes the service maps to
-  capability_unavailable / not_found / backend_error.
+The whitelist and timeout bounds are pinned elsewhere; these cover the
+client-side contracts around them -- disasm and xrefs refuse addresses and
+counts that would build a command outside the whitelist, a missing install
+or binary is a named refusal rather than a launch failure, and discovery
+returns the first radare2 flavour found on PATH.
 """
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-import headless_re_mcp.backends.r2.client as r2_module
-from headless_re_mcp.backends.common.bounded_run import Completed
-from headless_re_mcp.backends.r2.client import R2Client, R2Error
+from headless_re_mcp.backends.r2.client import R2Client, R2Error, _discover
+
+JsonObject = dict[str, Any]
 
 
-def _client_and_binary(tmp_path: Path) -> tuple[R2Client, Path]:
-    executable = tmp_path / "r2.exe"
-    executable.write_bytes(b"")
-    binary = tmp_path / "sample.exe"
-    binary.write_bytes(b"MZ")
-    return R2Client(executable), binary
+def _client_with_fake_run(tmp_path: Path) -> tuple[R2Client, list[tuple[Any, ...]]]:
+    client = R2Client(executable=tmp_path / "r2")
+    calls: list[tuple[Any, ...]] = []
+
+    def _fake_run(binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+        calls.append((binary, commands, timeout))
+        return {"raw": "[]", "commands": commands}
+
+    client.run = _fake_run  # type: ignore[method-assign]
+    return client, calls
 
 
-@pytest.mark.parametrize("bad_address", [-1, True, 1.5, "0x1000", None])
-def test_disasm_rejects_a_bad_address_before_spawning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_address: object
+def test_open_names_a_missing_binary(tmp_path: Path) -> None:
+    client = R2Client(executable=tmp_path / "r2")
+    with pytest.raises(R2Error) as info:
+        client.open(tmp_path / "gone.exe")
+    assert info.value.code == "not_found"
+    assert str(info.value.details["path"]).endswith("gone.exe")
+
+
+def test_disasm_builds_the_whitelisted_command_and_echoes_the_request(
+    tmp_path: Path,
 ) -> None:
-    client, binary = _client_and_binary(tmp_path)
+    client, calls = _client_with_fake_run(tmp_path)
+    binary = tmp_path / "sample.bin"
+    binary.write_bytes(b"\x90" * 16)
+    data = client.disasm(binary, 0x401000, count=7, timeout=12.0)
+    assert calls == [(binary, ["aa", "pdj 7 @ 4198400"], 12.0)]
+    # Enrichment turns the flat int into the unified Address shape, echoes
+    # the raw request in address_va, and repoints count at the parsed items.
+    assert data["address"] == {"va": 0x401000}
+    assert data["address_va"] == 0x401000
+    assert data["count"] == 0
+    assert data["items"] == []
+    assert data["module"] == "sample.bin"
 
-    def fail(*args: Any, **kwargs: Any) -> Completed:  # pragma: no cover - must not run
-        raise AssertionError("run_bounded must not be reached on a bad address")
 
-    monkeypatch.setattr(r2_module, "run_bounded", fail)
-    with pytest.raises(R2Error) as caught:
-        client.disasm(binary, bad_address)  # type: ignore[arg-type]
-    assert caught.value.code == "invalid_params"
-
-
-@pytest.mark.parametrize("bad_count", [0, -5, 513, 1000, True, 2.0])
-def test_disasm_bounds_the_instruction_count(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_count: object
+def test_disasm_refuses_addresses_and_counts_outside_the_whitelist(
+    tmp_path: Path,
 ) -> None:
-    client, binary = _client_and_binary(tmp_path)
+    """A bool address or a count of 0 would build a pdj line the whitelist
+    regex rejects; refusing here names the actual parameter instead."""
+    client, calls = _client_with_fake_run(tmp_path)
+    binary = tmp_path / "sample.bin"
+    binary.write_bytes(b"\x90" * 16)
+    for bad_address in (-1, True, "0x401000"):
+        with pytest.raises(R2Error) as info:
+            client.disasm(binary, bad_address)  # type: ignore[arg-type]
+        assert info.value.code == "invalid_params"
+        assert "address" in info.value.message
+    for bad_count in (0, 513, True, 2.5):
+        with pytest.raises(R2Error) as info:
+            client.disasm(binary, 0x1000, count=bad_count)  # type: ignore[arg-type]
+        assert info.value.code == "invalid_params"
+        assert "count" in info.value.message
+    assert calls == []
 
-    def fail(*args: Any, **kwargs: Any) -> Completed:  # pragma: no cover - must not run
-        raise AssertionError("run_bounded must not be reached on a bad count")
 
-    monkeypatch.setattr(r2_module, "run_bounded", fail)
-    with pytest.raises(R2Error) as caught:
-        client.disasm(binary, 0x1000, count=bad_count)  # type: ignore[arg-type]
-    assert caught.value.code == "invalid_params"
-
-
-@pytest.mark.parametrize("bad_address", [-1, True, 1.5, "0x1000", None])
-def test_xrefs_rejects_a_bad_address_before_spawning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_address: object
+def test_xrefs_builds_the_whitelisted_command_and_refuses_bad_addresses(
+    tmp_path: Path,
 ) -> None:
-    client, binary = _client_and_binary(tmp_path)
+    client, calls = _client_with_fake_run(tmp_path)
+    binary = tmp_path / "sample.bin"
+    binary.write_bytes(b"\x90" * 16)
+    data = client.xrefs(binary, 4096, timeout=8.0)
+    assert calls == [(binary, ["aa", "axj @ 4096"], 8.0)]
+    assert data["address"] == {"va": 4096}
 
-    def fail(*args: Any, **kwargs: Any) -> Completed:  # pragma: no cover - must not run
-        raise AssertionError("run_bounded must not be reached on a bad address")
-
-    monkeypatch.setattr(r2_module, "run_bounded", fail)
-    with pytest.raises(R2Error) as caught:
-        client.xrefs(binary, bad_address)  # type: ignore[arg-type]
-    assert caught.value.code == "invalid_params"
-
-
-def test_run_reports_capability_unavailable_without_an_executable(tmp_path: Path) -> None:
-    binary = tmp_path / "sample.exe"
-    binary.write_bytes(b"MZ")
-    # A configured path that is not a file: available is False, so the client
-    # never tries to spawn a missing tool.
-    client = R2Client(tmp_path / "does-not-exist-r2")
-    with pytest.raises(R2Error) as caught:
-        client.run(binary, ["i"])
-    assert caught.value.code == "capability_unavailable"
+    for bad_address in (-5, False):
+        with pytest.raises(R2Error) as info:
+            client.xrefs(binary, bad_address)
+        assert info.value.code == "invalid_params"
+    assert len(calls) == 1
 
 
-def test_run_reports_not_found_for_a_missing_binary(tmp_path: Path) -> None:
-    executable = tmp_path / "r2.exe"
-    executable.write_bytes(b"")
-    client = R2Client(executable)
-    with pytest.raises(R2Error) as caught:
-        client.run(tmp_path / "absent.exe", ["i"])
-    assert caught.value.code == "not_found"
-
-
-def test_run_maps_a_launch_oserror_to_backend_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_run_refuses_before_launching_when_r2_or_the_binary_is_missing(
+    tmp_path: Path,
 ) -> None:
-    client, binary = _client_and_binary(tmp_path)
+    missing_install = R2Client(executable=tmp_path / "not-installed")
+    binary = tmp_path / "sample.bin"
+    binary.write_bytes(b"\x90" * 16)
+    with pytest.raises(R2Error) as info:
+        missing_install.run(binary, ["i"])
+    assert info.value.code == "capability_unavailable"
 
-    def raise_oserror(*args: Any, **kwargs: Any) -> Completed:
-        raise PermissionError("exec format error")
+    executable = tmp_path / "r2"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    installed = R2Client(executable=executable)
+    with pytest.raises(R2Error) as info:
+        installed.run(tmp_path / "gone.exe", ["i"])
+    assert info.value.code == "not_found"
 
-    monkeypatch.setattr(r2_module, "run_bounded", raise_oserror)
-    with pytest.raises(R2Error) as caught:
-        client.run(binary, ["i"])
-    assert caught.value.code == "backend_error"
 
-
-def test_run_maps_a_nonzero_exit_to_backend_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_discover_returns_the_first_flavour_found(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    client, binary = _client_and_binary(tmp_path)
+    fake = tmp_path / "rizin"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
 
-    def nonzero(*args: Any, **kwargs: Any) -> Completed:
-        return Completed(3, b"", b"r2: fatal")
+    def _which(name: str) -> str | None:
+        return str(fake) if name == "rizin" else None
 
-    monkeypatch.setattr(r2_module, "run_bounded", nonzero)
-    with pytest.raises(R2Error) as caught:
-        client.run(binary, ["i"])
-    assert caught.value.code == "backend_error"
-    assert caught.value.details.get("exit_code") == 3
-
-
-def test_open_reports_not_found_for_a_missing_binary(tmp_path: Path) -> None:
-    executable = tmp_path / "r2.exe"
-    executable.write_bytes(b"")
-    client = R2Client(executable)
-    with pytest.raises(R2Error) as caught:
-        client.open(tmp_path / "absent.exe")
-    assert caught.value.code == "not_found"
+    monkeypatch.setattr(shutil, "which", _which)
+    assert _discover() == fake
+    # And a machine with none of the three flavours yields an unavailable client.
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert _discover() is None
+    assert R2Client().available is False
