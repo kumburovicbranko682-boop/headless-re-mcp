@@ -50,11 +50,27 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
         session_id = session["id"]
 
-        # androguard opens a real APK; on the synthetic archive it must still
-        # answer with a structured envelope rather than raising.
+        # androguard opens a real APK; on the synthetic archive its manifest is
+        # not AXML-valid, which is exactly the corrupted/obfuscated case seen in
+        # the wild. It must still answer with a structured envelope rather than
+        # raising -- and never as internal_error, which would file our own code
+        # as broken (and mint an incident) for a merely malformed input.
+        from headless_re_mcp.backends.apk.client import ApkClient
+
         opened = service.apk_open(session_id)
         assert isinstance(opened.ok, bool)
-        assert opened.ok or opened.error is not None
+        if ApkClient().available:
+            # Real androguard: the ZIP parses, the version getters raise
+            # KeyError internally and degrade to None, and the file-derived
+            # facts (native ABIs) still come back. Before the open() guard this
+            # was ok=False / internal_error.
+            assert opened.ok, opened.error
+            assert set(opened.data["native_abis"]) == {"arm64-v8a", "x86_64"}
+            assert opened.data["version_name"] is None
+        else:
+            assert opened.ok is False
+            assert opened.error is not None
+            assert opened.error.code == "capability_unavailable"
 
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()

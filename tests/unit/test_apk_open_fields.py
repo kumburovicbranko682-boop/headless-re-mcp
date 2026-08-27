@@ -76,3 +76,59 @@ def test_apk_open_names_version_name_and_native_abis_not_version() -> None:
     assert "Answers with package" in doc
     assert "version_name" in doc
     assert "native_abis" in doc
+
+
+class _MalformedManifestApk:
+    """Mimics androguard on a ZIP-valid APK with an unparseable manifest.
+
+    Measured against androguard 4.1.4: most getters swallow the parse failure
+    and return None/[], but get_androidversion_name/get_androidversion_code
+    raise KeyError('Name')/KeyError('Code'). The files are still readable, so
+    native_abis and permission_count parse fine.
+    """
+
+    def get_package(self) -> str:
+        return ""
+
+    def get_androidversion_name(self) -> str:
+        raise KeyError("Name")
+
+    def get_androidversion_code(self) -> str:
+        raise KeyError("Code")
+
+    def get_min_sdk_version(self) -> None:
+        return None
+
+    def get_target_sdk_version(self) -> None:
+        return None
+
+    def get_main_activity(self) -> None:
+        return None
+
+    def get_permissions(self) -> list[str]:
+        return []
+
+    def get_files(self) -> list[str]:
+        return ["lib/arm64-v8a/libx.so", "lib/x86_64/libx.so", "classes.dex"]
+
+
+def test_apk_open_degrades_when_the_manifest_will_not_parse() -> None:
+    """A malformed-but-openable APK must not escape as a bare KeyError.
+
+    androguard opens a ZIP-valid APK whose AndroidManifest.xml cannot be
+    decoded, then raises KeyError('Name') from the version getter. Unwrapped
+    that left the backend as a bare exception, and the service's catch-all
+    filed it as internal_error with a logged incident -- reporting our code as
+    broken for a merely malformed input and hiding the fields that did parse.
+    open() now reads those getters tolerantly (None), the same way androguard
+    already treats its sibling getters, so the readable facts still come back.
+    """
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _MalformedManifestApk()  # type: ignore[method-assign]
+    payload = client.open(Path("dummy.apk"))
+    assert payload["opened"] is True
+    assert payload["version_name"] is None
+    assert payload["version_code"] is None
+    assert payload["native_abis"] == ["arm64-v8a", "x86_64"]
+    assert payload["permission_count"] == 0

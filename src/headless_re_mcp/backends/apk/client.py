@@ -37,6 +37,26 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _safe_attr(getter: Any) -> Any:
+    """Read one androguard manifest getter, tolerating the ones that raise.
+
+    androguard is inconsistent on a ZIP-valid APK whose AndroidManifest.xml is
+    not decodable (obfuscated, truncated, or deliberately corrupted, which is
+    common in the wild): most getters swallow the parse failure and return
+    ``None``/``[]``, but ``get_androidversion_name``/``get_androidversion_code``
+    raise ``KeyError('Name')`` / ``KeyError('Code')``. Left unwrapped in
+    ``open()`` that bare KeyError escaped the backend, and the service's
+    catch-all filed it as ``internal_error`` with a logged incident -- telling
+    the caller our code broke when the APK is merely malformed, and burying the
+    fields that did parse. Smoothing it to ``None`` matches what androguard
+    already does for the sibling getters on the same input.
+    """
+    try:
+        return getter()
+    except Exception:  # noqa: BLE001 - androguard raises many types
+        return None
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -167,23 +187,33 @@ class ApkClient:
 
     def open(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        return {
-            "opened": True,
-            "package": apk.get_package(),
-            "version_name": apk.get_androidversion_name(),
-            "version_code": apk.get_androidversion_code(),
-            "min_sdk": apk.get_min_sdk_version(),
-            "target_sdk": apk.get_target_sdk_version(),
-            "main_activity": apk.get_main_activity(),
-            "permission_count": len(apk.get_permissions()),
-            "native_abis": sorted(
-                {
-                    name.split("/")[1]
-                    for name in apk.get_files()
-                    if name.startswith("lib/") and len(name.split("/")) >= 3
-                }
-            ),
-        }
+        # The version getters raise on an unparseable manifest; read them
+        # through _safe_attr so one bad attribute cannot turn an otherwise
+        # readable open() into a bare KeyError. The outer guard is a backstop:
+        # any other androguard surprise still answers with a structured
+        # envelope, the contract every sibling apk.* method already honours.
+        try:
+            return {
+                "opened": True,
+                "package": _safe_attr(apk.get_package),
+                "version_name": _safe_attr(apk.get_androidversion_name),
+                "version_code": _safe_attr(apk.get_androidversion_code),
+                "min_sdk": _safe_attr(apk.get_min_sdk_version),
+                "target_sdk": _safe_attr(apk.get_target_sdk_version),
+                "main_activity": _safe_attr(apk.get_main_activity),
+                "permission_count": len(apk.get_permissions()),
+                "native_abis": sorted(
+                    {
+                        name.split("/")[1]
+                        for name in apk.get_files()
+                        if name.startswith("lib/") and len(name.split("/")) >= 3
+                    }
+                ),
+            }
+        except ApkError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to read APK metadata: {exc}") from exc
 
     def manifest(self, path: Path) -> JsonObject:
         apk = self._apk(path)
