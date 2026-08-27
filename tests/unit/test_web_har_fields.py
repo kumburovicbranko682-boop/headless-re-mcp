@@ -31,16 +31,18 @@ def _tool_docstring(name: str) -> str:
 
 
 class _Handle:
-    lock = Lock()
-    requests = {
-        "1": {
-            "method": "GET",
-            "url": "https://x",
-            "status": 200,
-            "mimeType": "text/plain",
-            "resourceType": "XHR",
+    def __init__(self, *, requests_dropped: int = 0) -> None:
+        self.lock = Lock()
+        self.requests_dropped = requests_dropped
+        self.requests = {
+            "1": {
+                "method": "GET",
+                "url": "https://x",
+                "status": 200,
+                "mimeType": "text/plain",
+                "resourceType": "XHR",
+            }
         }
-    }
 
 
 def test_web_har_export_puts_the_file_in_path_not_har(
@@ -59,6 +61,23 @@ def test_web_har_export_puts_the_file_in_path_not_har(
     assert "artifact" not in payload
     assert payload["entry_count"] == 1
     assert payload["path"].endswith("c.har")
+    assert payload["dropped"] == 0
     doc = _tool_docstring("web.har.export")
     assert "Answers with path" in doc
     assert "entry_count" in doc
+    assert "dropped" in doc
+
+
+def test_web_har_export_reports_requests_that_aged_out(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A HAR built from the ring is missing whatever the ring already evicted.
+
+    network.list reports dropped; without the same field on the export a long
+    session's HAR reads as the whole capture while the oldest traffic is gone.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _Handle(requests_dropped=7))
+    payload = backend.har_export("s", tmp_path / "c.har")
+    assert payload["dropped"] == 7
+    assert payload["entry_count"] == 1

@@ -171,8 +171,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_har_export(session_id: str) -> dict[str, Any]:
         """Export captured network activity to a HAR artifact.
 
-        Answers with path and entry_count, plus artifact_id when the HAR
-        was registered. There is no har, entries or artifact field.
+        Answers with path, entry_count, size, truncated and dropped, plus
+        artifact_id when the HAR was registered. dropped is how many requests
+        aged out of the capture ring before the export and so are not in the
+        file; truncated means entries were dropped to fit the capture cap.
+        There is no har, entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

@@ -60,7 +60,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
-### 修复（监控台回环护栏）
+### 修复（web.har.export 丢弃计数）
+
+- `web.har.export` 现在回传 `dropped`(导出前已从抓包环形缓冲里被挤掉、因而不在 HAR 里的
+  请求数),与 `web.network.list` 一致。此前长会话导出的 HAR 会静默丢掉最早的流量却读起来
+  像完整抓包;`truncated` 只表示为塞进容量上限而从尾部删了条目,并不覆盖环形缓冲的老化。
+  工具描述也补齐了 `size` / `truncated` / `dropped` 三个此前未列出的返回字段。
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
   `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,

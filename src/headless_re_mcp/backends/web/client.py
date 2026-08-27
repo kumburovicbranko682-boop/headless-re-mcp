@@ -685,6 +685,7 @@ class WebBackend:
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
+            dropped = handle.requests_dropped
             entries = [
                 {
                     "request": {"method": e.get("method"), "url": e.get("url")},
@@ -725,6 +726,10 @@ class WebBackend:
             "entry_count": len(entries),
             "truncated": truncated,
             "size": len(encoded),
+            # Requests that aged out of the capture ring before the export, so
+            # the file is missing them. network.list already reports this; a HAR
+            # that silently drops the oldest traffic reads as the whole session.
+            "dropped": dropped,
         }
 
     def close_all(self) -> None:
