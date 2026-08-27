@@ -518,6 +518,11 @@ class FridaClient:
         frida = self._need()
         try:
             devices = _run_deadline(frida.enumerate_devices, timeout=30.0)
+        except FridaError:
+            # _run_deadline raises FridaError("timeout") when the enumeration
+            # hangs; rewrapping it below would relabel a timeout as a
+            # backend_error and hide a code the caller could act on.
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate devices: {exc}") from exc
         items = [
@@ -545,6 +550,11 @@ class FridaClient:
         device = self._resolve_device(device_id)
         try:
             apps = _run_deadline(device.enumerate_applications, timeout=30.0)
+        except FridaError:
+            # A hung enumeration surfaces as FridaError("timeout") from
+            # _run_deadline; keep that code instead of flattening it to
+            # backend_error the way the sibling device methods already do.
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
         capped = max(1, min(int(limit), 1000))

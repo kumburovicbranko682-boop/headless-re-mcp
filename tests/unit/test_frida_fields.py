@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import headless_re_mcp.backends.frida.client as frida_client
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.tools.frida import build_frida_tools
 
@@ -198,6 +199,37 @@ def test_frida_applications_puts_the_list_in_applications_and_says_when_it_stopp
     doc = _tool_docstring("frida.applications")
     assert "Answers with applications" in doc
     assert "has_more" in doc
+
+
+@pytest.mark.parametrize("method", ["enumerate_devices", "applications"])
+def test_frida_device_enumeration_keeps_a_timeout_a_timeout(
+    method: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hung enumeration must report ``timeout``, not ``backend_error``.
+
+    Both calls bound the native enumeration with ``_run_deadline``, which raises
+    ``FridaError("timeout")`` when it hangs. The generic ``except Exception`` that
+    turns a real frida failure into ``backend_error`` used to swallow that too,
+    relabelling a timeout the caller could retry as an opaque backend fault --
+    the same miscasting the spawn / java paths already guard against.
+    """
+
+    def fake_deadline(work: Any, *, timeout: float, on_timeout: Any = None) -> Any:
+        raise frida_client._timeout_error(timeout)
+
+    monkeypatch.setattr(frida_client, "_run_deadline", fake_deadline)
+    client = FridaClient()
+    client._available = True
+    client._frida = _DeviceFrida()
+    client._resolve_device = lambda device_id: _Device()  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as caught:
+        if method == "enumerate_devices":
+            client.enumerate_devices()
+        else:
+            client.applications("usb", limit=10)
+    assert caught.value.code == "timeout"
+
 
 class _JavaApi:
     def classes(self, name_filter: str, count: int) -> list[str]:
