@@ -120,6 +120,27 @@ def test_frida_instruments_a_live_process() -> None:
 
 
 @pytest.mark.integration
+def test_frida_loads_a_probe_hook_and_rejects_unknown_templates() -> None:
+    """hook_template must compile+load a probe script, and reject unknown names."""
+    client = _client_or_skip()
+    with _target() as pid:
+        _attach_or_skip(client, pid)
+
+        # The "noop" template is plain JS (rpc.exports), so it compiles and loads
+        # into any process -- proof frida injected and ran a script, not just read
+        # memory. It is a probe: destroyed on detach, nothing stays resident.
+        hooked = client.hook_template(pid, "noop", allowed_pid=pid)
+        assert hooked["loaded"] is True
+        assert hooked["template"] == "noop"
+        assert hooked["device"] == "local"
+        assert hooked["persisted"] is False
+
+        with pytest.raises(FridaError) as excinfo:
+            client.hook_template(pid, "no_such_template", allowed_pid=pid)
+        assert excinfo.value.code == "invalid_params"
+
+
+@pytest.mark.integration
 def test_frida_refuses_a_pid_outside_the_session() -> None:
     """The single-pid guard must refuse a pid other than the session's debuggee."""
     client = _client_or_skip()
