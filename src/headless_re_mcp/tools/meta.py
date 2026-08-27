@@ -226,8 +226,9 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         in place. A dead worker is reported rather than restarted, because a
         restarted debugger is attached to nothing; use session.recover once you
         are ready to relaunch. Browser and proxy sessions appear here too, as
-        backend web and proxy rows; session.recover cannot rebuild those, so a
-        dead row's last_error names the call that can (web.open / proxy.start).
+        backend web and proxy rows; a dead row's last_error names the direct
+        call that relaunches it (web.open / proxy.start), and session.recover
+        accepts web/proxy to do the same thing.
         """
         return _dump(analysis.session_health(session_id))
 
@@ -235,7 +236,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def session_recover(
         session_id: str,
         backends: list[
-            Annotated[str, Field(pattern="^(ida|static|x64dbg|dynamic)$")]
+            Annotated[str, Field(pattern="^(ida|static|x64dbg|dynamic|web|proxy)$")]
         ] | None = None,
     ) -> dict[str, Any]:
         """Re-open backends whose worker process died, without resuming execution.
@@ -247,9 +248,12 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         replacement. When replaced is true the old id answers invalid_request
         from here on, so a caller that keeps it is stuck with no way back.
 
-        Defaults to the backends this session already had; pass ida/x64dbg to
-        force specific ones. A recovered dynamic backend is attached to nothing,
-        so relaunch or reattach explicitly afterwards.
+        Defaults to the backends this session already had; pass ida/x64dbg/web/
+        proxy to force specific ones. A recovered dynamic backend is attached
+        to nothing, so relaunch or reattach explicitly afterwards. A recovered
+        browser reopens at the session locator and a recovered proxy rebinds
+        its old port; the dead instance's in-memory captures are gone, so
+        export flows or HAR before recovering if they matter.
         """
         return _dump(analysis.session_recover(session_id, backends))
 

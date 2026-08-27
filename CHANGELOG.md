@@ -264,6 +264,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   说 exited、唯一能救活它的调用却拒绝。现在 driver 已死（pid 判定，无歧义）时 open 收割残骸并
   顶替重开，不再要求先 close；wedged 但 driver 仍活着的会话维持拒绝——它还握着真实进程，得让
   close 先按既有路径收割。
+- **`session.recover` 只认 PE**。工具白名单直接拒绝 `web`/`proxy`，默认路径也只考虑 ida/x64dbg，
+  于是这个唯一的「刻意恢复」动词对着一具浏览器尸体回答「没什么可恢复」。现在 recover 接受
+  `web`/`proxy`：崩溃的浏览器走 close→open 在会话 locator 上重开（close 已会快速收割死 driver、
+  剥离 wedged 实例），崩溃的代理沿用原 host/port 重启（`proxy.start` 本就会顶替死实例）；健康实例
+  报 `kept` 不被打扰，重开失败照旧把信封整体判失败。默认路径以「后端表里仍挂着该会话的句柄」为
+  「本来就有」的判据。watchdog 的可恢复集合随之扩到 web/proxy——开了自动恢复的死浏览器/死代理
+  现在与死调试器同权处理；集外类型（若未来健康行新增）仍走「报告一次」而非 5 次徒劳恢复。
+  顺带修复：FAILED 会话的替换重建此前不带原 target，`data:` 这类无法自分类的 web locator 会被当
+  文件路径重建而当场失败，现在原 target 随替换传递。恢复会丢弃死实例内存中的抓包缓冲，工具文档
+  明确提示先导出再恢复。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。

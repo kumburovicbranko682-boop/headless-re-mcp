@@ -26,11 +26,11 @@ JsonObject = dict[str, Any]
 
 DEFAULT_ALERT_HISTORY = 128
 
-# The backends session.recover knows how to rebuild. Health rows also cover
-# web and proxy sessions, whose recovery verbs are web.open / proxy.start;
-# feeding those into session.recover would fail every attempt until the
-# abandonment limit and bury the one alert that says what to actually do.
-_RECOVERABLE_BACKENDS = frozenset({"ida", "x64dbg"})
+# The backends session.recover knows how to rebuild. Feeding it a kind it
+# does not recognise would fail every attempt until the abandonment limit
+# and bury the one alert that says what to actually do, so anything outside
+# this set is reported instead of recovered.
+_RECOVERABLE_BACKENDS = frozenset({"ida", "x64dbg", "web", "proxy"})
 
 
 class _HealthSource(Protocol):

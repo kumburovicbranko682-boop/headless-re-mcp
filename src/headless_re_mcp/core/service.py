@@ -507,7 +507,9 @@ class AnalysisService(
         Recovery is deliberate rather than implicit: a crashed dynamic backend
         comes back attached to nothing, so the caller decides whether to relaunch.
         Live backends are kept as-is, and by default only backends this session
-        already had are restored.
+        already had are restored. A recovered browser reopens at the session
+        locator and a recovered proxy rebinds its old port; the dead instance's
+        in-memory capture buffers go with it, so export what matters first.
         """
         try:
             session = self.registry.get(session_id)
@@ -528,6 +530,19 @@ class AnalysisService(
                     or self._runtime_owner.phase(session_id, kind)
                     is BackendRuntimePhase.FAILED
                 )
+                # Web and proxy live outside the runtime owner, but their
+                # backends keep the session's handle for as long as it exists,
+                # dead or alive -- presence there is the "already had" test.
+                if any(
+                    row.get("session_id") == session_id
+                    for row in self._web_backend.liveness()
+                ):
+                    requested += (BackendKind.WEB,)
+                if any(
+                    row.get("session_id") == session_id
+                    for row in self._proxy_backend.liveness()
+                ):
+                    requested += (BackendKind.PROXY,)
             if session.state is SessionState.FAILED:
                 # FAILED is terminal by design, so recovery rebuilds the session
                 # instead of quietly reviving one whose invariants already broke.
@@ -535,10 +550,14 @@ class AnalysisService(
                     session_id,
                     str(session.locator or session.binary or ""),
                     requested,
+                    target=session.target.value,
                 )
 
             entries: list[JsonObject] = []
             for kind in requested:
+                if kind in (BackendKind.WEB, BackendKind.PROXY):
+                    entries.append(self._reopen_backend(session_id, kind))
+                    continue
                 backend = self._runtime_owner.get(session_id, kind)
                 if backend is not None and self._worker_is_alive(backend):
                     entries.append(self._restore_backend_transport(kind, backend))
@@ -649,6 +668,10 @@ class AnalysisService(
         return entry
 
     def _reopen_backend(self, session_id: str, kind: BackendKind) -> JsonObject:
+        if kind is BackendKind.WEB:
+            return self._recover_web_backend(session_id)
+        if kind is BackendKind.PROXY:
+            return self._recover_proxy_backend(session_id)
         opened = (
             self.open_static(session_id)
             if kind == BackendKind.IDA
@@ -663,11 +686,63 @@ class AnalysisService(
             entry["error"] = opened.error.model_dump(mode="json")
         return entry
 
+    def _recover_web_backend(self, session_id: str) -> JsonObject:
+        """Reopen a dead or wedged browser at the session's locator.
+
+        A healthy browser is kept untouched. Anything else goes through
+        close-then-open: close already knows how to reap a dead driver fast
+        and how to strip a wedged one, and open reopens the session locator
+        (an explicit request on a session that never had a browser opens one
+        the same way, matching how an explicit ida request reopens static).
+        """
+        rows = {
+            str(row.get("session_id")): row for row in self._web_backend.liveness()
+        }
+        row = rows.get(session_id)
+        if row is not None and row.get("alive") and not row.get("wedged"):
+            return {"backend": "web", "action": "kept", "ok": True}
+        if row is not None:
+            self.web_close(session_id)
+        opened = self.web_open(session_id, url="")
+        entry: JsonObject = {"backend": "web", "action": "reopened", "ok": bool(opened.ok)}
+        if not opened.ok and opened.error is not None:
+            entry["error"] = opened.error.model_dump(mode="json")
+        return entry
+
+    def _recover_proxy_backend(self, session_id: str) -> JsonObject:
+        """Restart a crashed proxy on the host and port it had.
+
+        proxy.start already replaces a crashed instance, so this only has to
+        carry the old endpoint over; a session with no proxy at all gets the
+        defaults, mirroring an explicit proxy.start.
+        """
+        status = self._proxy_backend.status(session_id)
+        if status.get("running"):
+            return {"backend": "proxy", "action": "kept", "ok": True}
+        kwargs: dict[str, Any] = {}
+        host = status.get("host")
+        port = status.get("port")
+        if isinstance(host, str) and host:
+            kwargs["host"] = host
+        if isinstance(port, int) and 1 <= port <= 65535:
+            kwargs["port"] = port
+        started = self.proxy_start(session_id, **kwargs)
+        entry: JsonObject = {
+            "backend": "proxy",
+            "action": "reopened",
+            "ok": bool(started.ok),
+        }
+        if not started.ok and started.error is not None:
+            entry["error"] = started.error.model_dump(mode="json")
+        return entry
+
     def _recover_by_replacement(
         self,
         session_id: str,
         binary: str,
         requested: tuple[BackendKind, ...],
+        *,
+        target: str | None = None,
     ) -> Result[JsonObject]:
         """Rebuild a failed session as a fresh one over the same binary."""
         # Snapshot facts first: close_session may trim the old id, and a
@@ -675,7 +750,10 @@ class AnalysisService(
         knowledge = self.services.artifacts.list_knowledge(session_id, limit=500)
         with suppress(BaseException):
             self.close_session(session_id)
-        created = self.create_session(binary)
+        # The original target rides along: a web locator such as a data: URL
+        # does not classify on its own, and rebuilding it as a file session
+        # fails on the spot.
+        created = self.create_session(binary, target=target)
         if not created.ok or created.data is None:
             return created
         payload = created.data.get("session")
@@ -1173,8 +1251,8 @@ class AnalysisService(
         caller polls stayed blind to two whole target kinds. Their backends
         expose passive liveness (a pid check and a thread flag; never an RPC),
         and the rows keep the monitor's shape so callers and the watchdog
-        read one schema. session.recover cannot rebuild these: last_error
-        names the verb that can.
+        read one schema. last_error names the direct relaunch verb;
+        session.recover accepts web/proxy and does the same thing.
         """
         rows: list[JsonObject] = []
         now = time()
@@ -3092,8 +3170,14 @@ def _recover_backend_kinds(backends: list[str]) -> tuple[BackendKind, ...]:
             kind = BackendKind.IDA
         elif name in {"x64dbg", "dynamic"}:
             kind = BackendKind.X64DBG
+        elif name == "web":
+            kind = BackendKind.WEB
+        elif name == "proxy":
+            kind = BackendKind.PROXY
         else:
-            raise ValueError("backends entries must be one of: ida, static, x64dbg, dynamic")
+            raise ValueError(
+                "backends entries must be one of: ida, static, x64dbg, dynamic, web, proxy"
+            )
         if kind not in kinds:
             kinds.append(kind)
     return tuple(kinds)
