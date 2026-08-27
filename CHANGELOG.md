@@ -1275,8 +1275,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
-
-### 变更（Android 后端清理）
+- **`web.script.source` 的小体积、字节计数与失败路径钉死**：唯一的既有用例喂进超过内联上限
+  的源码,于是永远 spill、永远带 `source_path`,把小体积路径(`_spill_text` 不产出制品、客户端
+  也就不该挂 `source_path`)留成死代码,另有三处纯 ASCII 大源码夹具够不到的分支一并失活。新增
+  5 个用例:小源码原样内联、`truncated=False`、不挂 `source_path`、且不往制品目录写任何文件
+  (钉住 `if spill is not None` 只在真有落盘时才附路径);`bytes` 报 `len(encode("utf-8"))` 而非
+  字符数——三个欧元符号是 3 字符 9 字节,字段须读 9,否则调用方按它估下载量会差一个多字节因子;
+  CDP `getScriptSource` 抛普通异常映射为 `not_found` 并带上脚本 id;但取源过程中抛出的 `WebError`
+  (如 runner 卡死报 `backend_error`)必须原样透传、保留自身错误码,而不是被通用处理器重贴成
+  `not_found` 掩盖真因;缺 `scriptSource` 键的回复是空体、`bytes=0`、不 spill,靠 `get()` 默认值
+  兜住而非 KeyError。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
