@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 变更（Android `apk.*` gate 断言真实降级行为并纳入 CI）
+
+- `test_android_re_gate.py` 对 `apk.open` 的断言此前是 `opened.ok or opened.error is not None`
+  ——对任何 `Result` 恒真，等于什么都不验。改为钉住实测行为（androguard 4.1.4）：喂一个能被
+  识别为 APK、但 `AndroidManifest.xml` 不是合法 AXML 的合成包，androguard 解析失败必须落成
+  结构化 `backend_error`（androguard 缺席则 `capability_unavailable`），绝不抛异常、绝不是
+  带事故的 `internal_error`。另加 `test_android_apk_ops_degrade_without_incident_on_a_hostile_manifest`
+  遍历 `manifest`/`permissions`/`certificates`/`components`/`native_libs`/`classes`/`methods`/
+  `strings`/`xrefs` 九个 getter：读 zip 而非 manifest 的几个（native_libs/certificates/
+  components/permissions）可尽力返回成功，其余失败一律须为结构化 `backend_error`/
+  `capability_unavailable`，无一崩溃或漏出 `internal_error` 事故。新增
+  `.github/workflows/android-gate.yml`：按 PR 路径触发、只装 `.[test,dev,android]`（androguard
+  纯 pip，无需 Node/wabt/Java/浏览器）跑这条 gate——此前 `ci.yml` 只跑单测，唯一的集成工作流是
+  手动自托管、不装 androguard 的 Windows PE job，这条 gate 在那里只会降级（skip != pass），
+  形同虚设。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
