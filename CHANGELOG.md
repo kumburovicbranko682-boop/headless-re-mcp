@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 变更（mitmproxy 抓包补 live gate，并把整条代理面纳入 CI）
+
+- 代理后端此前只有生命周期 gate（`test_proxy_lifecycle_gate.py`：start 真绑、stop 真放端口、
+  占用端口被拒），代理的本职——把请求路由过去并抓下来——却没有任何实机 gate：recorder、
+  `flow.get`、`export_har` 全程无人看守。新增 `tests/integration/test_proxy_capture_gate.py`：
+  在本机起一个 HTTP origin，让一个 GET 和一个 POST 真的经代理转发,断言两条 flow 都被记录、
+  `flow.get` 能取回**请求体**（POST 实际发出的 `{"secret":"H3adl3ss"}`——RE 场景最想看、且历史上
+  曾被 recorder 整个丢掉的东西）与响应体、`export_har` 把两条写进真实 HAR 文件（对 mitmproxy 12.2.3
+  实测通过）。全程 localhost、无外网、Linux 可移植，mitmproxy 缺席按「skip != pass」诚实跳过。
+  新增 `.github/workflows/proxy-gate.yml`：按 PR 路径触发、只装 `.[test,dev,proxy]`（mitmproxy 纯
+  pip，无需 Node/wabt/Java/浏览器）跑生命周期 + 抓包两条 gate——此前 `ci.yml` 只跑单测，唯一集成
+  工作流是手动自托管、不装 mitmproxy 的 Windows PE job，这两条 gate 在那里只会 skip（skip != pass），
+  形同虚设。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

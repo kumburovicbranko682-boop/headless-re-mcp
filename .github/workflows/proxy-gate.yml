@@ -1,0 +1,64 @@
+# Per-PR mitmproxy gate — makes the proxy backend's live gates real in CI.
+#
+# The proxy backend has two live gates: test_proxy_lifecycle_gate.py (start
+# binds, stop frees the port, an occupied port is refused) and
+# test_proxy_capture_gate.py (a GET and a POST routed through the proxy are
+# recorded, flow_get returns the request/response bodies, export_har writes
+# them). Nothing ran either: ci.yml runs unit tests only, and the sole
+# integration workflow (windows-integration.yml) is a manual, self-hosted PE
+# job that installs .[test,dev,web] -- not mitmproxy -- so both gates only ever
+# skipped there (skip != pass). This job installs the proxy extra and runs them
+# on Linux so a regression -- a port that stops releasing, a recorder that stops
+# capturing the request body -- fails here, on the PR, instead of shipping.
+#
+# Light and path-scoped: mitmproxy is a pure pip install (no Node, wabt, Java,
+# or browser), and the gate stands up a localhost origin, so it needs no network
+# egress. Runs only when the proxy backend, its service/tools, or a gate changes.
+name: proxy-gate
+
+on:
+  pull_request:
+    paths:
+      - "src/headless_re_mcp/backends/proxy/**"
+      - "src/headless_re_mcp/core/service_proxy.py"
+      - "src/headless_re_mcp/tools/proxy.py"
+      - "tests/integration/test_proxy_lifecycle_gate.py"
+      - "tests/integration/test_proxy_capture_gate.py"
+      - ".github/workflows/proxy-gate.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proxy-gate:
+    # Pinned, not ubuntu-latest: the mitmproxy the gates were validated against
+    # (12.2.3) should not shift when the image alias rolls.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package (proxy extra; no browser/node/java needed)
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,proxy]"
+
+      - name: Tool sanity — mitmproxy must import, not skip the gates
+        # If mitmproxy is missing both gates skip and the job reads green on zero
+        # coverage. Fail loudly here instead so a broken install cannot pass.
+        run: |
+          python -c "from mitmproxy import version; print('mitmproxy', version.VERSION)"
+          python -c "from headless_re_mcp.backends.proxy import ProxyBackend; ProxyBackend()._check_available(); print('proxy backend available')"
+
+      - name: Proxy gates (lifecycle + capture)
+        # -rs prints skip reasons so a skip never reads as a pass.
+        run: |
+          python -m pytest -rs --tb=short --timeout=120 \
+            tests/integration/test_proxy_lifecycle_gate.py \
+            tests/integration/test_proxy_capture_gate.py
