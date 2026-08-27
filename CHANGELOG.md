@@ -138,7 +138,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `disasm`/`xrefs` 会二次 enrich(内层 `run` 一次、外层整形一次),故两处调用都传架构、单测专门钉住它熬过两轮。
   服务 Gate 断言现编 ELF(CI 上即 x86-64)的 `r2.functions`/`disasm` 输出携带会话检出的 `architecture`(非 x86/x64
   的架构如 aarch64 不建模、留空,故按会话有没有报架构来条件断言,不把 runner 的 ISA 钉死);单测用非 PE 夹具正反
-  两面钉住「传了架构就出现在非 PE 输出里」「不传且无 PE 头就一律不报」。
+  两面钉住「传了架构就出现在非 PE 输出里」「不传且无 PE 头就一律不报」。这条串接经 `_r2_request` 惠及全部只读
+  r2 工具:`r2.info` 走 `i` 返回未解析原文(`parsed=False`),此前它的架构「取自 PE 头」,现同样反映会话身份——
+  实测原生 x64 ELF 的 `r2.info` 顶层报 `architecture: x64` 且无 `image_base`;`r2.info` 的 docstring 相应改口
+  (架构取自会话身份:PE 取 PE 头、原生取 ELF/Mach-O 头,`image_base` 仍是 PE 首选基址),并补单测钉住未解析的
+  `i` 路径也带上串进来的架构、且不凭空造 `image_base`,让架构串接在 r2 的两种输出形态(解析列表与原始文本)上都有覆盖。
 
 ### 新增（抓包代理实测 Gate：真的录到流量、也真的能重放）
 
