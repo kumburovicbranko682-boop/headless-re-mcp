@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 frida 的超时/自省/清理 helper 钉进测试）
+
+- 每个 frida 调用底下都压着一族纯 helper,却没有一个有直接单测:`_bound_timeout` 是截止时间守卫(拒非正、
+  其余夹到工作流上限);`_accepts_timeout` 判一个原生方法能否收 deadline——必须对只有 `**kwargs` 的可调用回
+  否(frida `spawn` 的 aux 选项走 `**kwargs`,把 timeout 塞那儿会变成 spawn 参数而非挂起上限);`_is_timeout`
+  按类型名或消息把异常归为超时;`_invoke` 只在方法具名 timeout 时才传;`_run_deadline` 用守护线程 future 给
+  不可中断的原生调用兜底,超时时尽力而为地跑 `on_timeout` 再抛 frida 超时;`_detach_all`/`_kill_spawned` 跑在
+  `finally` 清理里,即便 detach/kill 抛错也必须把列表抽干。
+- 新增 `tests/unit/test_frida_pure_helpers.py`(不需 frida 或设备):`_bound_timeout` 正常/夹顶/拒非正;
+  `_is_timeout` 按名或消息识别;`_accepts_timeout` 具名为真、只 `**kwargs` 或都没有为假、签名读不出时为假;
+  `_invoke` 仅在具名时传 timeout;`_detach_all`/`_kill_spawned` 抽干列表并吞掉抛错;`_run_deadline` 正常回值、
+  透传 work 异常、超时抛 frida 超时(带/不带 on_timeout,且 on_timeout 自身抛错被吞不掩盖超时);`_timeout_error`
+  带上截止秒数。`frida/client.py` 中 262-263、270、274-289、292-328 的纯逻辑补齐,纯补测、不改行为。
+
 ### 加固（把 proxy 流的字节计量与 body/header 整形 helper 钉进测试）
 
 - 抓到的流全是不可信的服务端数据,而这条后端把整个流对象留在环里,于是一族纯 helper 负责约束它存什么、
