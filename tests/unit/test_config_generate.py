@@ -239,12 +239,7 @@ def test_strip_secrets_covers_the_full_credential_vocabulary() -> None:
 
 
 def _poisoned_report(*, ready: bool):
-    from headless_re_mcp.doctor import (
-        DoctorReport,
-        Probe,
-        ProbeStatus,
-        required_probe_names,
-    )
+    from headless_re_mcp.doctor import DoctorReport, Probe, ProbeStatus
 
     leaky = Probe(
         "ida_idalib",
@@ -254,18 +249,16 @@ def _poisoned_report(*, ready: bool):
     )
     if not ready:
         return DoctorReport(probes=(leaky,))
-    # Ready needs every required probe present and READY. The required set is
-    # platform-specific -- Windows demands IDA and x64dbg, Linux only platform
-    # and python -- so build it from the live set rather than pinning Windows,
-    # and always keep the secret-bearing ida probe so the scrub assertion bites.
-    required = required_probe_names()
-    probes = [leaky]
-    probes.extend(
-        Probe(name, ProbeStatus.READY, "ready")
-        for name in sorted(required)
-        if name != leaky.name
+    # Ready needs every required probe present and READY; the required set is
+    # platform-dependent and always contains "platform" since Linux support.
+    return DoctorReport(
+        probes=(
+            leaky,
+            Probe("platform", ProbeStatus.READY, "ready"),
+            Probe("python", ProbeStatus.READY, "ready"),
+            Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ready"),
+        )
     )
-    return DoctorReport(probes=tuple(probes), required_probes=required)
 
 
 def test_generated_bundle_scrubs_a_secret_from_the_doctor_report_when_ready(

@@ -857,9 +857,9 @@ def test_web_pick_file_returns_a_local_path(
         "busy": False,
         "error": None,
     })
-    # The route gates on is_windows_host(), not os.name, so force that instead
-    # of mutating the process-wide os module (which makes pathlib build a
-    # WindowsPath on Linux).
+    # The route gates on is_windows_host(), not os.name, so a per-module patch
+    # is enough to exercise the Windows path without mutating the process-wide
+    # os module (which would make pathlib construct WindowsPath on Linux).
     monkeypatch.setattr(legacy_mod, "is_windows_host", lambda: True)
     monkeypatch.setenv(
         "HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json")
