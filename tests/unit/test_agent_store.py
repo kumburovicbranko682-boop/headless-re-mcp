@@ -73,6 +73,30 @@ def test_a_reordered_argument_payload_still_approves_the_call(tmp_path: Path) ->
     assert store.consume_approval(run.id, "call-1", client_hash)
 
 
+def test_count_missions_is_the_unpaged_total_the_list_is_drawn_from(tmp_path: Path) -> None:
+    """The mission list caps at a page; the count is the whole queue.
+
+    Without it the mission view shows a capped page and reads as the entire
+    queue, so an operator cannot tell a short queue from the top of a long one.
+    """
+    store = AgentStore(tmp_path / "mission-count.db")
+    thread = store.create_thread()
+    for index in range(7):
+        store.create_mission(thread.id, f"objective {index}")
+    # Move some off PENDING so the status filter has something to count.
+    for _ in range(3):
+        claimed = store.claim_next_mission()
+        assert claimed is not None
+
+    assert store.count_missions() == 7
+    assert store.count_missions(status=MissionStatus.PENDING) == 4
+    assert store.count_missions(status=MissionStatus.RUNNING) == 3
+    # The count is the total behind the page, not the page: a limit of 2 still
+    # counts all seven.
+    assert len(store.list_missions(limit=2)) == 2
+    assert store.count_missions() == 7
+
+
 def test_list_thread_events_keeps_finished_run_history(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "thread-events.db")
     thread = store.create_thread()

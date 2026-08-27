@@ -175,6 +175,21 @@ def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, mo
         listed = client.get("/api/agent/missions", headers=headers).json()
         assert listed["count"] == 1
         assert listed["scheduler_running"] is True
+        # One mission, shown whole: the total matches and nothing is hidden.
+        assert listed["total"] == 1
+        assert listed["truncated"] is False
+
+        # A second mission plus a limit of one makes the page a strict subset,
+        # and the view must say so rather than reading as the whole queue.
+        client.post(
+            "/api/agent/missions",
+            headers=headers,
+            json={"objective": "second objective", "max_runs": 2},
+        )
+        capped = client.get("/api/agent/missions?limit=1", headers=headers).json()
+        assert capped["count"] == 1
+        assert capped["total"] == 2
+        assert capped["truncated"] is True
 
         fetched = client.get(f"/api/agent/missions/{mission['id']}", headers=headers)
         assert fetched.status_code == 200
