@@ -175,6 +175,12 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Enumerate loaded Java classes on the authorized device pid (ART only).
 
+        pid selects the target and defaults to this session's most recently
+        authorized pid (the last frida.spawn or frida.attach.app) when 0, the
+        same convention frida.hook.template names; an explicit pid outside this
+        session's authorized set is refused as permission_denied, and with no
+        authorized pid yet the call asks for frida.spawn first. name_filter,
+        when set, keeps only class names that contain it.
         Answers with classes, count, and has_more so a page that filled the
         limit is not read as every loaded class.
         """
@@ -191,6 +197,11 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List declared methods of a Java class on the authorized device pid (ART only).
 
+        pid selects the target and defaults to this session's most recently
+        authorized pid (the last frida.spawn or frida.attach.app) when 0, the
+        same convention frida.hook.template names; an explicit pid outside this
+        session's authorized set is refused as permission_denied, and with no
+        authorized pid yet the call asks for frida.spawn first.
         Answers with methods, class_name, count, and has_more so a page that
         filled the limit is not read as every declared method.
         """

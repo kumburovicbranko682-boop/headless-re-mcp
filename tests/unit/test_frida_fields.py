@@ -249,6 +249,10 @@ def test_frida_java_classes_puts_the_list_in_classes_and_says_when_it_stopped() 
     doc = _tool_docstring("frida.java.classes")
     assert "Answers with classes" in doc
     assert "has_more" in doc
+    # hook.template cites this tool as the source of the pid convention, so
+    # the convention has to actually be described here.
+    assert "pid" in doc
+    assert "permission_denied" in doc
 
 def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() -> None:
     """The catalog never named the payload.
@@ -273,6 +277,8 @@ def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() 
     doc = _tool_docstring("frida.java.methods")
     assert "Answers with methods" in doc
     assert "has_more" in doc
+    assert "pid" in doc
+    assert "permission_denied" in doc
 
 
 class _SpawnDevice:
