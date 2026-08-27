@@ -77,8 +77,38 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # Prove webcrack actually deobfuscated rather than echoing the input:
+        # the fixture hides its secret as the escaped literal "\x48\x33..."
+        # ("H3adl3ss"), which never appears decoded in the source. Its presence
+        # in the output is something an echo or a broken pass cannot fake, so it
+        # pins the gate to a real decode instead of only "some bytes came back".
+        assert "H3adl3ss" not in _JS_FIXTURE.read_text(encoding="utf-8")
+        assert "H3adl3ss" in code
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present() -> None:
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_JS_FIXTURE))
+        assert result.ok, result.error
+        # The client creates the output dir before invoking webcrack, and modern
+        # webcrack refuses a pre-existing -o directory unless --force is passed.
+        # Before that fix this returned backend_error "webcrack unpack failed"
+        # having written nothing; the assertions below only hold once webcrack
+        # actually wrote its output, so this is the live guard for that fix.
+        data = result.data
+        assert data["file_count"] >= 1, data
+        assert data["count"] >= 1, data
+        assert any("deobfuscated" in name for name in data["files"]), data["files"]
     finally:
         service.close_all()
 
