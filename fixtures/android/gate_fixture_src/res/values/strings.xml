@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Minimal resource table for the gate fixture. Its only job is to make the
+  built APK carry a resources.arsc that references the Android framework, so
+  `apktool d` records usesFramework in apktool.yml and `apktool b` can resolve
+  the manifest's android:* attributes on rebuild. Without a resource table the
+  decode->build round trip fails in aapt2 with "attribute android:name not
+  found", which is a fixture limitation, not an apktool bug: real APKs always
+  ship a resource table.
+-->
+<resources>
+    <string name="app_name">GateFixture</string>
+</resources>
