@@ -1,9 +1,12 @@
 """apktool decode/build and apksigner re-signing as bounded subprocesses.
 
 Both CLIs need a JRE and are user-provided, so a missing tool degrades to
-``capability_unavailable`` instead of blocking readiness. Keystore passwords are
-never copied into error details: a failed sign reports the tool's stderr with
-the password argument withheld.
+``capability_unavailable`` instead of blocking readiness. Keystore passwords
+never reach an observable channel: the password travels to apksigner in an
+environment variable (its native ``env:`` source) rather than on argv -- a
+command line is world-readable in the process table for as long as the signing
+JVM runs -- and a failed sign scrubs the password from stderr before it enters
+error details.
 """
 
 from __future__ import annotations
@@ -20,6 +23,10 @@ _MAX_STDERR = 8000
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
+# The child-only variable both --ks-pass and --key-pass read via env:NAME.
+# Deliberately not HEADLESS_RE_*: that prefix is the operator config namespace,
+# and this is not a knob -- it exists only in the signer's copied environment.
+_PASSWORD_ENV = "APKSIGNER_KS_PASS"
 
 
 class ApktoolError(RuntimeError):
@@ -30,10 +37,12 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
-def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+def _run(
+    cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
+) -> tuple[str, str, int]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
+        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
     except TimedOut as exc:
         # apktool and apksigner are scripts that start a JVM, so the deadline
         # has to bind the JVM too, not just the script that launched it.
@@ -163,6 +172,12 @@ class ApktoolClient:
                 "keystore_password and key_alias are required for a custom keystore",
             )
         out_apk.parent.mkdir(parents=True, exist_ok=True)
+        # pass:<password> would put the secret on argv, and argv is readable by
+        # every local process (/proc/<pid>/cmdline, Windows process listings)
+        # for as long as the signing JVM runs. apksigner reads env:NAME
+        # natively, and the copied environment is visible only to the child.
+        sign_env = dict(os.environ)
+        sign_env[_PASSWORD_ENV] = password
         _, stderr, code = _run(
             [
                 str(self.apksigner),
@@ -170,19 +185,21 @@ class ApktoolClient:
                 "--ks",
                 str(store),
                 "--ks-pass",
-                f"pass:{password}",
+                f"env:{_PASSWORD_ENV}",
                 "--ks-key-alias",
                 alias,
                 "--key-pass",
-                f"pass:{password}",
+                f"env:{_PASSWORD_ENV}",
                 "--out",
                 str(out_apk),
                 str(apk),
             ],
             timeout=timeout,
+            env=sign_env,
         )
         if code != 0 or not out_apk.is_file():
-            # stderr can echo the argument vector, so scrub the password if present.
+            # argv no longer carries the password, but keep scrubbing stderr as
+            # defense in depth: the tool's own diagnostics must never leak it.
             scrubbed = stderr.replace(password, "***") if password else stderr
             raise ApktoolError(
                 "backend_error",
