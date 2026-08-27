@@ -5,7 +5,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from headless_re_mcp.backends.adb.client import AdbBackend
+import pytest
+
+from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
 from headless_re_mcp.tools.device import build_device_tools
 
 
@@ -62,3 +64,28 @@ def test_device_current_activity_names_package_and_activity() -> None:
     assert "Answers with package and activity" in doc
     assert "There is no foreground" in doc
     assert "component" in doc
+
+
+class _NoForegroundDev:
+    def app_current(self, timeout: float | None = None) -> None:
+        del timeout
+        return None
+
+
+def test_device_current_activity_rejects_a_missing_foreground() -> None:
+    """A None read used to answer {package: None, activity: None} as success.
+
+    Measured against AdbBackend.current_activity: app_current() returning
+    None still answered a successful tool call with two null fields, so an
+    unattended agent treated a failed dumpsys as an empty foreground instead
+    of a read that failed.
+    """
+    backend = AdbBackend()
+    backend._available = True
+    backend._device = lambda serial: _NoForegroundDev()  # type: ignore[method-assign]
+    with pytest.raises(AdbError) as caught:
+        backend.current_activity("emulator-5554")
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "failed to read current activity"
+    doc = " ".join(_tool_docstring("device.current_activity").split())
+    assert "backend error" in doc
