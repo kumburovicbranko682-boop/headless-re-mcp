@@ -234,6 +234,20 @@ def test_close_swallows_an_rpc_fault_during_pre_stop() -> None:
     assert transport.closed is True
 
 
+def test_close_tolerates_an_already_dropped_transport() -> None:
+    proc = _FakeProc(returncode=None, stdin=None)
+    client = _client(_transport=None, _process=proc, _capabilities=frozenset())
+
+    def fake_request(method: str, params: JsonObject, *, timeout: float) -> JsonObject:
+        raise AssertionError("pre-stop chatter must not run without a transport")
+
+    client._request = fake_request  # type: ignore[method-assign]
+    client.close()
+    assert client._closed is True
+    assert client._transport is None
+    assert proc.wait_calls == 1
+
+
 def test_close_kills_a_worker_that_will_not_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     proc = _FakeProc(returncode=None, wait_raises=True)
     client = _client(_transport=_FakeTransport(), _process=proc, _capabilities=frozenset())
@@ -270,9 +284,29 @@ def test_terminate_kills_first_then_drops_the_transport() -> None:
     assert client._transport is None
 
 
+def test_terminate_tolerates_an_already_dropped_transport() -> None:
+    client = _client(_transport=None)
+    client._terminate_process = lambda: None  # type: ignore[method-assign]
+    client.terminate()
+    assert client._closed is True
+    assert client._transport is None
+
+
 # --------------------------------------------------------------------------
 # reconnect() guards
 # --------------------------------------------------------------------------
+
+
+def test_trace_status_skips_validation_when_uninitialized() -> None:
+    client = _client()
+
+    def fake_request(
+        method: str, params: JsonObject | None = None, *, timeout: float = 10.0
+    ) -> JsonObject:
+        return {"initialized": False}
+
+    client.request = fake_request  # type: ignore[method-assign]
+    assert client.trace_status() == {"initialized": False}
 
 
 def test_reconnect_refuses_a_closed_client() -> None:
@@ -293,6 +327,14 @@ def test_reconnect_is_a_no_op_while_still_connected() -> None:
     client.reconnect()
     assert id(client._transport) == id(transport)
     assert transport.closed is False
+
+
+def test_reconnect_rebuilds_a_dropped_transport() -> None:
+    client = _client(_transport=None)
+    rebuilt: list[bool] = []
+    client._reconnect = lambda: rebuilt.append(True)  # type: ignore[method-assign]
+    client.reconnect()
+    assert rebuilt == [True]
 
 
 # --------------------------------------------------------------------------
