@@ -6,7 +6,9 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.adb.client import AdbBackend
+import pytest
+
+from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
 from headless_re_mcp.tools.device import build_device_tools
 
 
@@ -77,3 +79,58 @@ def test_device_info_names_sdk_and_abi_not_android_version() -> None:
     assert "abi" in doc
     assert "no SDK" in doc
     assert "android_version" in doc
+
+
+class _OfflineDev:
+    """A device whose getprop returns the adb host's error line as stdout."""
+
+    def get_state(self, timeout: float | None = None) -> str:
+        del timeout
+        return "offline"
+
+    def shell(self, args: Any, timeout: float | None = None) -> str:
+        del args, timeout
+        return "error: device offline"
+
+
+class _UnsetPropDev:
+    def get_state(self, timeout: float | None = None) -> str:
+        del timeout
+        return "device"
+
+    def shell(self, args: Any, timeout: float | None = None) -> str:
+        del timeout
+        # A real device that simply has none of these identity props set:
+        # getprop answers with an empty line, not an error.
+        return ""
+
+
+def test_device_info_treats_a_host_error_getprop_as_a_failure() -> None:
+    """An offline device must not report "error: device offline" as its model.
+
+    adbutils' shell can return the adb host's own error line as stdout without
+    raising, so a raw getprop would surface it as the model/abi value. info()
+    now guards each read like properties()/packages(): a host-error dump is a
+    backend_error, not a phantom device identity.
+    """
+    backend = AdbBackend()
+    backend._available = True
+    backend._device = lambda serial: _OfflineDev()  # type: ignore[method-assign]
+    with pytest.raises(AdbError) as excinfo:
+        backend.info("emulator-5554")
+    assert excinfo.value.code == "backend_error"
+
+
+def test_device_info_keeps_an_unset_property_as_empty_not_an_error() -> None:
+    """An unset property is a real empty string, not a host error.
+
+    getprop for a property that is not set answers with a blank line; that must
+    stay "" rather than being mistaken for the offline case and raising.
+    """
+    backend = AdbBackend()
+    backend._available = True
+    backend._device = lambda serial: _UnsetPropDev()  # type: ignore[method-assign]
+    payload = backend.info("emulator-5554")
+    assert payload["state"] == "device"
+    assert payload["model"] == ""
+    assert payload["abi"] == ""

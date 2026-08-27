@@ -452,25 +452,29 @@ class AdbBackend:
 
     def info(self, serial: str) -> JsonObject:
         dev = self._device(serial)
+
+        def prop(name: str) -> str:
+            # adbutils' shell can hand back the adb host's own error: / adb:
+            # line as stdout without raising (a device that went offline), so a
+            # raw getprop would report "error: device offline" as the model or
+            # abi. Guard each read like properties()/packages() do, so a dead
+            # device is a failure, not a phantom set of device identities. An
+            # unset property is a real empty string, not a host error, and is
+            # left as "".
+            text = _device_shell(dev, f"getprop {name}", timeout=_ADB_PROBE_TIMEOUT_S)
+            if _is_host_error_output(text):
+                raise AdbError("backend_error", "getprop failed", output=text[:800])
+            return text.strip()
+
         try:
             return {
                 "serial": _check_serial(serial),
                 "state": _call(dev.get_state, timeout=_ADB_PROBE_TIMEOUT_S),
-                "model": _device_shell(
-                    dev, "getprop ro.product.model", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "device": _device_shell(
-                    dev, "getprop ro.product.device", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "sdk": _device_shell(
-                    dev, "getprop ro.build.version.sdk", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "release": _device_shell(
-                    dev, "getprop ro.build.version.release", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "abi": _device_shell(
-                    dev, "getprop ro.product.cpu.abi", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
+                "model": prop("ro.product.model"),
+                "device": prop("ro.product.device"),
+                "sdk": prop("ro.build.version.sdk"),
+                "release": prop("ro.build.version.release"),
+                "abi": prop("ro.product.cpu.abi"),
             }
         except AdbError:
             raise

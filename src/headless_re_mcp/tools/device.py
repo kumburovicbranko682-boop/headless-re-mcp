@@ -54,7 +54,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return model, SDK, release, and ABI for one device serial.
 
         Answers with serial, state, model, device, sdk, release and abi.
-        There is no SDK, ABI, android_version or version field.
+        There is no SDK, ABI, android_version or version field. An adb host
+        error line (a device that went offline) is a failure, not a device
+        whose model or abi is the error text; an unset property is a real
+        empty string.
         """
         return _dump(analysis.device_info(serial))
 
