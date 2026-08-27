@@ -62,7 +62,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         response_size), count, total, offset, has_more, and dropped.
         response_size is the decoded response body length in bytes (0 when the
         response had no body). body_omitted is set on a row whose
-        request/response body was over the retain cap. The list field is flows,
+        request/response body was over the retain cap. A flow mitmproxy could
+        not complete (TLS refused, upstream unreachable, connection reset) is
+        captured too, carrying error=true and error_msg with a null status;
+        such flows were previously dropped entirely. A completed flow always
+        carries a numeric status and no error field. The list field is flows,
         not items or requests, and the type column is content_type. dropped is
         how many the capture ring already evicted; a page that filled the limit
         is not the whole log. metadata_truncated marks bounded oversized summary
