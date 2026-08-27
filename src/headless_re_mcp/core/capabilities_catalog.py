@@ -132,7 +132,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "frida.device",
         "backend": "frida",
         "status_probe": "frida",
-        "tools": ["frida.devices", "frida.device.connect", "frida.spawn", "frida.java.classes", "frida.java.methods"],
+        "tools": ["frida.devices", "frida.device.connect", "frida.spawn", "frida.attach.app", "frida.java.classes", "frida.java.methods"],
         "summary": "USB/emulator/remote Frida with per-session target authorization",
         "optional": True,
     },

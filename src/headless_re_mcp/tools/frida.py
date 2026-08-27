@@ -149,6 +149,21 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.frida_spawn(session_id, package))
 
+    @tools.tool(name="frida.attach.app")
+    def frida_attach_app(session_id: str, package: str) -> dict[str, Any]:
+        """Authorize a running app's pid on the connected device without restarting it.
+
+        The device counterpart to frida.spawn for an app that is already
+        running (spawn relaunches from scratch and drops its state, e.g. a
+        manual login). Resolves the package's live pid from the device's
+        application list and adds it to this session's authorized set so
+        frida.java.* and frida.hook.template can target it.
+        Answers with package, pid and device. There is no spawned, attached or
+        session field. A package that is installed but not running answers
+        invalid_state; launch it (device.launch) or use frida.spawn instead.
+        """
+        return _dump(analysis.frida_attach_app(session_id, package))
+
     @tools.tool(name="frida.java.classes")
     def frida_java_classes(
         session_id: str,

@@ -25,6 +25,10 @@ _AUTH_KEY = "frida_authorized"
 # Authorizations for processes that are long gone are dead weight; keep only a
 # recent window so a session that spawns repeatedly cannot grow without bound.
 _MAX_AUTHORIZED = 64
+# Upper bound on the application listing attach scans to resolve a running pid.
+# The backend caps the enumeration at 1000 regardless, so this asks for as much
+# as it will ever return in a single bounded call rather than paging.
+_MAX_APP_SCAN = 1000
 
 
 def _as_rpc(exc: FridaError | AdbError) -> XdbgRpcError:
@@ -162,6 +166,47 @@ class FridaDeviceMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def frida_attach_app(self, session_id: str, package: str) -> Result[JsonObject]:
+        try:
+            auth = self._frida_auth(session_id)
+            pkg = package.strip()
+            if not pkg:
+                raise FridaError("invalid_params", "package is required")
+            device_id = auth.get("device_id")
+            listing = FridaClient().applications(device_id, limit=_MAX_APP_SCAN)
+            pid = _running_pid_for(listing, pkg)
+            if pid <= 0:
+                # spawn relaunches from scratch; attach is the tool for an app
+                # already running (e.g. after a manual login), so a package that
+                # is only installed -- not running -- is a caller error, not a
+                # backend fault. Point at both ways forward.
+                raise FridaError(
+                    "invalid_state",
+                    f"{pkg} is not running on the device; launch it (device.launch) "
+                    "or use frida.spawn to start it",
+                )
+            auth = dict(auth)
+            auth["pids"] = _append_recent(auth.get("pids"), pid)
+            auth["packages"] = _append_recent(auth.get("packages"), pkg)
+            self._save_auth(session_id, auth)
+            _timeline_append(
+                self,
+                session_id,
+                "frida.attach.app",
+                "frida authorized running app",
+                package=pkg,
+                pid=pid,
+            )
+            return _success(
+                {"package": pkg, "pid": pid, "device": str(device_id or "local")},
+                session_id=session_id,
+                backend="frida",
+            )
+        except (FridaError, AdbError) as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def frida_java_classes(
         self, session_id: str, name_filter: str = "", limit: int = 200, pid: int = 0
     ) -> Result[JsonObject]:
@@ -219,3 +264,21 @@ def _last_pid(auth: JsonObject) -> int:
     if not pids:
         raise FridaError("invalid_state", "no spawned/attached pid; call frida.spawn first")
     return int(pids[-1])
+
+
+def _running_pid_for(listing: JsonObject, package: str) -> int:
+    """Return the live pid of a package in a frida application listing, or 0.
+
+    frida reports pid 0 for an app that is installed but not running, so only a
+    positive pid is a process this session can attach to; a malformed pid is
+    treated the same as absent rather than trusted.
+    """
+    for app in listing.get("applications") or []:
+        if str(app.get("identifier")) != package:
+            continue
+        try:
+            pid = int(app.get("pid") or 0)
+        except (TypeError, ValueError):
+            return 0
+        return pid if pid > 0 else 0
+    return 0

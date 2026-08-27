@@ -290,6 +290,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "frida.server.ensure",
         "frida.applications",
         "frida.spawn",
+        "frida.attach.app",
         "frida.java.classes",
         "frida.java.methods",
         # Web static (js.* / wasm.*)
