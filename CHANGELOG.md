@@ -124,6 +124,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - UPX / XVLKC / Scylla / VMPDump / de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为
   本机没装 CLI 就说成 `capability_unavailable`。
 
+### 修复（设备抓取保留说明与死代码）
+
+- `device.screenshot` / `device.pull` 的保留实际由 `prune_capped_dir`
+  （`UNREGISTERED_CAPTURE_MAX_ENTRIES=32` 条 + `UNREGISTERED_CAPTURE_MAX_BYTES=64 MiB`）执行,
+  按 mtime 逐出最旧、恒留最新;而 `service_device.py` 里还留着一份早期只按条数裁剪的
+  `prune_device_artifacts`/`_MAX_DEVICE_ARTIFACTS`,production 从不调用,仅被自己的测试撑活——
+  一个「过得去却不反映真实行为」的测试。现删去这份死代码,把测试改为直接覆盖真正的
+  `prune_capped_dir`（含字节预算分支）。两个工具的 docstring 过去只说「最新 32 个」,
+  漏了 64 MiB 总量上限;现补全为「最新 32 个、合计 64 MiB,逐出最旧」。
+
 ### 新增（会话目标类型）
 
 - 会话不再只认 PE。`Session` 增加 `target`（`pe|apk|web`）与 `locator`，`architecture`、

@@ -8,32 +8,62 @@ from types import SimpleNamespace
 
 import pytest
 
+from headless_re_mcp.core.limits import (
+    UNREGISTERED_CAPTURE_MAX_ENTRIES,
+    prune_capped_dir,
+)
 from headless_re_mcp.core.results import _success
 from headless_re_mcp.core.service_device import (
-    _MAX_DEVICE_ARTIFACTS,
     DeviceAnalysisMixin,
-    prune_device_artifacts,
     refuse_oversized_device_file,
 )
 
 
-def test_prune_keeps_only_the_newest_captures(tmp_path: Path) -> None:
-    directory = tmp_path / "device"
-    directory.mkdir()
-    for index in range(80):
+def _fill(directory: Path, count: int, *, each: int) -> None:
+    directory.mkdir(exist_ok=True)
+    for index in range(count):
         path = directory / f"screenshot-{index:03d}.png"
-        path.write_bytes(b"x" * 256 * 1024)
+        path.write_bytes(b"x" * each)
         # Distinct mtimes so "newest" is the highest index, not a tie.
         os.utime(path, (index + 1, index + 1))
 
-    prune_device_artifacts(directory, keep=32)
+
+def test_prune_keeps_only_the_newest_captures(tmp_path: Path) -> None:
+    """The production prune (prune_capped_dir) drops the oldest by mtime.
+
+    device.screenshot / device.pull retire the old count-only helper for the
+    shared prune_capped_dir, so pin the behaviour the device directory relies
+    on: the newest UNREGISTERED_CAPTURE_MAX_ENTRIES survive, oldest first.
+    """
+    directory = tmp_path / "device"
+    _fill(directory, 80, each=256 * 1024)
+
+    prune_capped_dir(
+        directory,
+        max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
+        max_bytes=1 << 40,
+    )
 
     left = sorted(path.name for path in directory.iterdir())
-    assert len(left) == 32
+    assert len(left) == UNREGISTERED_CAPTURE_MAX_ENTRIES
     assert left[0] == "screenshot-048.png"
     assert left[-1] == "screenshot-079.png"
     total = sum(path.stat().st_size for path in directory.iterdir())
-    assert total == 32 * 256 * 1024
+    assert total == UNREGISTERED_CAPTURE_MAX_ENTRIES * 256 * 1024
+
+
+def test_prune_also_honours_the_byte_budget(tmp_path: Path) -> None:
+    """When the byte cap bites before the count cap, it still keeps the newest."""
+    directory = tmp_path / "device"
+    _fill(directory, 20, each=256 * 1024)
+
+    prune_capped_dir(directory, max_entries=1000, max_bytes=10 * 256 * 1024)
+
+    left = sorted(path.name for path in directory.iterdir())
+    assert len(left) == 10
+    assert left[-1] == "screenshot-019.png"
+    total = sum(path.stat().st_size for path in directory.iterdir())
+    assert total <= 10 * 256 * 1024
 
 
 class _Harness(DeviceAnalysisMixin):
@@ -61,9 +91,9 @@ def test_a_screenshot_loop_cannot_grow_the_device_directory_without_bound(
 
     directory = tmp_path / "device"
     files = list(directory.iterdir())
-    assert len(files) == _MAX_DEVICE_ARTIFACTS
+    assert len(files) == UNREGISTERED_CAPTURE_MAX_ENTRIES
     total = sum(path.stat().st_size for path in files)
-    assert total == _MAX_DEVICE_ARTIFACTS * 256 * 1024
+    assert total == UNREGISTERED_CAPTURE_MAX_ENTRIES * 256 * 1024
 
 
 @pytest.mark.parametrize(
