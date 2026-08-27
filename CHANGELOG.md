@@ -61,11 +61,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   断言**解出来的值**：包名 `com.gate.sample`、versionName/Code、min/target SDK、`INTERNET` 权限、
   启动 Activity（intent-filter MAIN/LAUNCHER 解析出的 `main_activity`）与两个 ABI，而不只是“调用返回了”。
   同一 gate 还手工编码一份合法的 `classes.dex`（format 035：带**强制的 Adler32 校验和**与 SHA-1 签名的
-  头、`map_list`，以及 string/type/proto/method/class 各表，外加一个方法体
-  `const-string v0, "gate-secret-marker"; return-void`），打进同一个 APK，从而把静态两半都证实：
-  `apk.classes` 找到内部类、`apk.methods` 列出 `gateSecret`（`()V`、`public static`）、`apk.strings`
-  解出该常量；另有一条反向直测钉住 `apk.methods` 对未定义类返回干净的 `not_found`。缺 androguard 时
-  如实跳过（skip 不等于 pass）。
+  头、`map_list`，以及 string/type/proto/method/class 各表，外加两个方法体——`gateSecret` 跑
+  `const-string v0, "gate-secret-marker"; return-void`，`gateCaller` 跑
+  `invoke-static {}, gateSecret; return-void`），打进同一个 APK，从而把静态两半都证实：
+  `apk.classes` 找到内部类、`apk.methods` 列出两个方法（`gateSecret` 为 `()V`、`public static`）、
+  `apk.strings` 解出该常量、`apk.xrefs(gateSecret)` 从调用图里认出 `gateCaller` 这个调用者；另有一条
+  反向直测钉住 `apk.methods` 对未定义类返回干净的 `not_found`。至此 DEX 分析面
+  （classes/methods/strings/xrefs）都有真解码实测。缺 androguard 时如实跳过（skip 不等于 pass）。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
