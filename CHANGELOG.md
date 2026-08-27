@@ -24,6 +24,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（frida RPC agent 脚本的枚举/分页逻辑必须产出客户端要的形状）
+
+- `frida.modules` / `frida.exports` / `frida.java.classes` / `frida.java.methods` 各自注入
+  `_ENUM_SCRIPT` / `_JAVA_SCRIPT` 这两段 agent，再从 `script.exports_sync` 读回一个特定形状。
+  这些 JavaScript 里带着真逻辑——每页的上限、`classes` 的子串过滤、以及类枚举「到量就抛哨兵
+  再吞掉哨兵」这套只能这样收尾的截断——可这段代码在测试里**哪儿都不跑**：Python 侧把
+  `create_script` 打桩，现场 gate 又要真设备。于是一个少页一条的 cap、一个谁都不匹配的过滤，或
+  一次把哨兵字符串改名导致真错误逃逸的改动，都能一路绿灯，只在分析师第一次对真实进程用这些工具
+  时才炸。新增 `tests/unit/test_frida_rpc_agents_behavior.py`：用一套 mock 的 Frida 运行时
+  （`Java` / `Process` / `ptr` 这些目标进程才有的全局，填上确定性数据）在 node 里驱动**出厂的**
+  两段 agent，逐个 RPC 导出断言它返回的正是 Python 客户端依赖的契约——`modules` 到 cap 分页并如实
+  报 `total`、`exports` 的 `found` 真伪与分页、`classes` 的过滤与哨兵截断、`methods` 对未加载类
+  的 `found:false` 诚实。`read` 有意留给内存读取那条线自己的用例，这里只钉它们没覆盖到的枚举逻辑。
+  变异校验过：抽掉 `modules` 的 cap 会让本该 2 条的结果变 5 条、改坏哨兵会让错误逃逸到 node 非零
+  退出，两者都被测到。托管 runner 自带 node，单测作业里真跑；node 确实缺失时按 skip != pass 跳过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
