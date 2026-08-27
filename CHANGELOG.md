@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+Android 静态线的 DEX 分析首次有了对真实 Dalvik 字节码的执行覆盖。此前 Android 唯一的集成测试用合成 APK
+（手搓 zip），只断言 androguard "返回 ok 或 error"——于是 `apk.classes` / `apk.methods` / `apk.strings` /
+`apk.xrefs` 从未真正分析过 DEX，解析与分页只对 mock 跑过。这四个走 androguard 的 `AnalyzeAPK`，它分析包
+内 classes.dex，并不需要二进制 AndroidManifest.xml，故把一个真实 DEX 塞进最小 zip 即可完整走通 DEX 分析
+路径。新增 `tests/integration/test_androguard_dex_live_gate.py`：DEX 内嵌（用 javac + Android D8 一次性把一
+段带命名方法/独特字符串/方法间调用的类编译为真实 Dalvik 字节码），故 gate 只依赖 androguard——无需 Android
+SDK、无需模拟器；断言 androguard 恢复出这些具体事实——类 `Lcom/example/Widget;`、方法
+greeting/addNumbers/compute、字符串 `ANDROGUARD_DEX_MARKER`，以及 `compute` 调用 `addNumbers` 的真实交叉
+引用。诚实边界：只覆盖 DEX 分析类工具；清单类工具（`apk.open`/`apk.manifest`/`apk.permissions`/
+`apk.components`）解析二进制 AXML，需要 Android build tools 生成，未覆盖，已写进 docstring。新增
+`linux-androguard-dex` CI job：装 androguard、跑该 gate 并解析 junitxml，androguard 已装却 skip 时判失败
+（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
