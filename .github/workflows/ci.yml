@@ -122,6 +122,24 @@ jobs:
       - name: Linux unit tests
         run: python -m pytest tests/unit -q -rs --tb=short --cov --cov-report=term
 
+      - name: Set up Node.js for the JS RE line
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: JS reverse-engineering gate (webcrack)
+        # The webcrack line's real defect -- the client pre-creates the output
+        # directory and webcrack aborts on an existing one without -f -- is
+        # invisible to the unit tests, which mock the subprocess. Only a live
+        # webcrack exercises it, so install one and run the gate for real.
+        # Verifying the binary first turns a failed install into a red step
+        # instead of a quietly skipped (green) one: -k webcrack selects the two
+        # gates that need it, and the CDP/wasm cases stay out of this run.
+        run: |
+          npm install -g webcrack
+          webcrack --version
+          python -m pytest tests/integration/test_web_re_gate.py -q -rs --tb=short -k webcrack
+
       - name: Doctor and core service smoke
         run: |
           python -m headless_re_mcp doctor --json --strict

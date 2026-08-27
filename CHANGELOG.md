@@ -242,6 +242,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   与 `chromium_headless_shell-*` 两种构建),既不启动也不 import 浏览器。包在且浏览器已装 → detected;
   包在但无浏览器 → missing 并给出 `python -m playwright install chromium` 的补救提示;包不在 → missing。
   这样 `web.cdp` 的状态就与 `web.open` 是否真能跑一致了。四条分支均有 CI 可跑的单测覆盖。
+- **webcrack 的 JS 逆向线现在进 CI 真跑,不再永远跳过**。它此前那个真实缺陷(客户端先建输出目录、
+  而 webcrack 不给 `-f` 就对已存在目录直接报错退出)单测抓不到——单测把子进程 mock 掉了,只有活的
+  webcrack 才会触发,而托管 CI 从不装 webcrack,于是这条线在 CI 里一直是"跳过=看着绿"。现在
+  `linux-quality` 作业加了一步:`actions/setup-node@v4`(Node 22,webcrack 支持的版本)后
+  `npm install -g webcrack`,再对 `test_web_re_gate.py` 按 `-k webcrack` 跑那两条 gate
+  (deobfuscate 与 webpack 拆包)。跑之前先 `webcrack --version`:装失败就让这步变红,而不是静悄悄
+  跳过、假装通过。CDP 与 wasm 两类用例不在本次选择内(无浏览器 / 无 wabt),照旧在各自环境里跑。
+  该 gate 模块对 playwright 是惰性导入,所以 CI 不装 `browser` extra 也能干净收集。
 - **同一条"探针别谎报就绪"的规矩接着补到启动器类工具:jadx / apktool / apksigner / webcrack**。
   这四个都不是自带运行时的原生二进制——jadx、apktool、apksigner 是启动 JVM 的脚本,webcrack 跑在
   node 上。可 `probe_optional_tool` 之前只看启动器本身在不在 PATH(或配置路径)上,于是一台装了 jadx
