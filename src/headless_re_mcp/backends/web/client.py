@@ -173,6 +173,23 @@ def _ws_frame_summary(params: JsonObject, *, from_client: bool) -> tuple[JsonObj
     return None
 
 
+def _har_ws_message(frame: JsonObject) -> JsonObject:
+    """One stored WS frame as Chrome DevTools' ``_webSocketMessages`` shape.
+
+    type is send/receive from the direction we recorded; opcode is derived from
+    the frame we kept (a frame marked omitted "binary" is opcode 2, everything
+    else is a text frame, opcode 1); data is the retained UTF-8 text, empty when
+    the frame was binary or clipped for size (we never stored its bytes, so there
+    is nothing faithful to write). No ``time`` is emitted because the capture
+    records no per-frame timestamp.
+    """
+    return {
+        "type": "send" if frame.get("from_client") else "receive",
+        "opcode": 2 if frame.get("omitted") == "binary" else 1,
+        "data": frame.get("text", ""),
+    }
+
+
 def _spill_text(
     text: str,
     *,
@@ -924,6 +941,11 @@ class WebBackend:
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
+            ws_by_request: dict[str, list[JsonObject]] = {}
+            for request_id, frame in handle.ws_frames:
+                bucket = ws_by_request.setdefault(request_id, [])
+                if len(bucket) < _MAX_WS_MESSAGES:
+                    bucket.append(_har_ws_message(frame))
             entries = [
                 har_entry(
                     method=e.get("method"),
@@ -931,6 +953,9 @@ class WebBackend:
                     status=e.get("status"),
                     mime_type=e.get("mimeType") or "",
                     resource_type=e.get("resourceType"),
+                    websocket_messages=ws_by_request.get(str(e.get("requestId")))
+                    if e.get("websocket")
+                    else None,
                 )
                 for e in handle.requests.values()
             ]

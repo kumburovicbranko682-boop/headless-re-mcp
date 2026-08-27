@@ -15,6 +15,7 @@ written whole.
 from __future__ import annotations
 
 import json
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -104,6 +105,32 @@ def test_har_entry_tolerates_missing_status_and_url() -> None:
     assert "_resourceType" not in entry
 
 
+def test_har_entry_attaches_websocket_messages_and_stays_spec_valid() -> None:
+    """A socket's frames ride along as Chrome's _webSocketMessages extension.
+
+    The entry must still validate as a spec-complete HAR entry (the extension is
+    additive, underscore-prefixed), and an entry with no frames must not grow an
+    empty _webSocketMessages key that a viewer would render as a broken socket.
+    """
+    messages = [
+        {"type": "send", "opcode": 1, "data": "hello"},
+        {"type": "receive", "opcode": 1, "data": "echo:hello"},
+    ]
+    entry = har_entry(
+        method="GET",
+        url="wss://example.com/live",
+        status=101,
+        mime_type="",
+        resource_type="WebSocket",
+        websocket_messages=messages,
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["_webSocketMessages"] == messages
+
+    plain = har_entry(method="GET", url="https://example.com/", status=200, mime_type="text/html")
+    assert "_webSocketMessages" not in plain
+
+
 def test_har_entry_parses_the_query_string_from_the_url() -> None:
     """A HAR viewer reads request params from queryString, not just the URL.
 
@@ -187,6 +214,9 @@ class _WebHandle:
             }
             for index in range(count)
         }
+        # Real sessions always carry this; the HAR export reads it to attach a
+        # socket's frames. These fixtures have no WebSocket rows, so it is empty.
+        self.ws_frames: deque[tuple[str, dict[str, Any]]] = deque()
 
 
 def test_web_har_export_writes_a_valid_har_that_carries_every_request(

@@ -146,3 +146,50 @@ def test_a_plain_request_row_never_gets_websocket_fields(
     row = {r["url"]: r for r in backend.network_list("s")["requests"]}["http://x/y"]
     assert "websocket" not in row
     assert "ws_messages" not in row
+
+
+def test_har_export_carries_the_socket_frames_as_websocketmessages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import json
+
+    backend, handle, cdp = _wired()
+    fire = cdp.handlers
+
+    # A plain request and a WebSocket in the same capture: only the socket entry
+    # gets _webSocketMessages, and the plain one is untouched.
+    fire["Network.requestWillBeSent"](
+        {"requestId": "1", "type": "Document", "request": {"url": "http://x/y", "method": "GET"}}
+    )
+    fire["Network.responseReceived"](
+        {"requestId": "1", "response": {"status": 200, "mimeType": "text/html"}}
+    )
+    fire["Network.webSocketCreated"]({"requestId": "9", "url": "ws://x/live"})
+    fire["Network.webSocketHandshakeResponseReceived"](
+        {"requestId": "9", "response": {"status": 101}}
+    )
+    fire["Network.webSocketFrameSent"](_text_frame("9", '{"op":"subscribe"}'))
+    fire["Network.webSocketFrameReceived"](
+        {"requestId": "9", "response": {"opcode": 1, "mask": False, "payloadData": '{"tick":1}'}}
+    )
+    blob = base64.b64encode(b"\x00\x01\x02\xff").decode("ascii")
+    fire["Network.webSocketFrameReceived"](
+        {"requestId": "9", "response": {"opcode": 2, "mask": False, "payloadData": blob}}
+    )
+
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    out = tmp_path / "capture.har"
+    result = backend.har_export("s", out)
+    assert result["entry_count"] == 2
+
+    log = json.loads(out.read_text(encoding="utf-8"))["log"]
+    by_url = {e["request"]["url"]: e for e in log["entries"]}
+    assert "_webSocketMessages" not in by_url["http://x/y"]
+
+    ws_entry = by_url["ws://x/live"]
+    assert ws_entry["response"]["status"] == 101
+    assert ws_entry["_webSocketMessages"] == [
+        {"type": "send", "opcode": 1, "data": '{"op":"subscribe"}'},
+        {"type": "receive", "opcode": 1, "data": '{"tick":1}'},
+        {"type": "receive", "opcode": 2, "data": ""},
+    ]

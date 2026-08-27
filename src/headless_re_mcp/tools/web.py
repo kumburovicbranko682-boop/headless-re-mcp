@@ -195,8 +195,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with path, entry_count and truncated, plus artifact_id when
         the HAR was registered. truncated is true when the oldest entries were
-        dropped to keep the file under the capture cap. There is no har,
-        entries or artifact field.
+        dropped to keep the file under the capture cap. A WebSocket the page
+        opened is exported as an entry too, and its retained frames ride along
+        as Chrome DevTools' _webSocketMessages array (each {type send/receive,
+        opcode, data}) so the socket's conversation travels with the HAR rather
+        than the entry being a bare 101 handshake. There is no har, entries or
+        artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

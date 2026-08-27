@@ -18,12 +18,14 @@ the websockets server is genuinely unavailable.
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -154,6 +156,23 @@ def test_web_lists_a_websocket_and_returns_its_frames() -> None:
                 texts = {(m["from_client"], m.get("text")) for m in data["websocket_messages"]}
                 assert (True, "hello") in texts, texts
                 assert (False, "echo:hello") in texts, texts
+
+                # The exported HAR must carry the frames, not just a 101 entry:
+                # Chrome DevTools reads them from the _webSocketMessages array.
+                exported = service.web_har_export(session_id)
+                assert exported.ok, exported.error
+                har = json.loads(Path(exported.data["path"]).read_text(encoding="utf-8"))
+                ws_entries = [
+                    e
+                    for e in har["log"]["entries"]
+                    if str(e["request"]["url"]).endswith("/live")
+                ]
+                assert ws_entries, "the WebSocket was absent from the HAR"
+                frames = ws_entries[0].get("_webSocketMessages")
+                assert frames, "the HAR entry carried no _webSocketMessages"
+                pairs = {(m["type"], m.get("data")) for m in frames}
+                assert ("send", "hello") in pairs, pairs
+                assert ("receive", "echo:hello") in pairs, pairs
             finally:
                 service.web_close(session_id)
     finally:

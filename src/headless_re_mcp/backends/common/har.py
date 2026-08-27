@@ -89,6 +89,7 @@ def har_entry(
     started_date_time: str | None = None,
     resource_type: str | None = None,
     response_body_size: int | None = None,
+    websocket_messages: list[JsonObject] | None = None,
 ) -> JsonObject:
     """One spec-complete HAR 1.2 entry from the fields a summary actually has.
 
@@ -99,7 +100,12 @@ def har_entry(
     knows the decoded response body length (``response_body_size``) it fills
     ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
     ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
-    browser capture keeps that hint.
+    browser capture keeps that hint. ``websocket_messages``, when given, rides
+    along as Chrome DevTools' ``_webSocketMessages`` extension array -- the
+    de-facto format an analyst's HAR viewer reads WebSocket frames from -- so a
+    socket's frames travel with the export instead of the entry being just a
+    bare 101 handshake. Each message is {type: send|receive, opcode, data};
+    per-frame timestamps are not captured, so no fabricated ``time`` is written.
     """
     status_code = int(status) if isinstance(status, int) else 0
     url_text = str(url or "")
@@ -137,6 +143,8 @@ def har_entry(
     }
     if resource_type:
         entry["_resourceType"] = str(resource_type)
+    if websocket_messages:
+        entry["_webSocketMessages"] = websocket_messages
     return entry
 
 
