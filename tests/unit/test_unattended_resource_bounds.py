@@ -172,6 +172,68 @@ class TestProxyCaptureIsBounded:
         assert result["count"] == 2
         assert result["has_more"] is True
 
+    def test_har_export_is_bounded_like_the_web_exporter(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """HAR export drops entries to fit the capture cap.
+
+        The flow ring is count-bounded, but each summary can carry a 16 KiB
+        URL and _register_capture records whatever size this writes without a
+        cap of its own. Left unbounded a full capture serialises to tens of
+        MiB that an unattended proxy.export_har would add to the artifact root
+        every call. web.har_export already drops entries to fit; the proxy
+        exporter now matches, so assert it stops below the cap, says so, and
+        still writes valid HAR JSON.
+        """
+        import json
+
+        from headless_re_mcp.backends.proxy import client as mod
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 2000)
+        recorder = _FlowRecorder(capacity=100)
+        for index in range(12):
+            flow = _FakeFlow(index)
+            # A realistic long query string, well under the per-summary URL cap
+            # but enough that a dozen of them overrun the shrunken capture cap.
+            flow.request.pretty_url = "https://example.com/" + ("a" * 500) + f"?i={index}"
+            recorder.response(flow)
+        inst = _ProxyInstance("127.0.0.1", 1)
+        inst.recorder = recorder
+        backend = ProxyBackend()
+        backend._instances["s"] = inst
+
+        out = tmp_path / "capture.har"
+        payload = backend.export_har("s", out)
+
+        assert payload["truncated"] is True
+        assert payload["size"] <= 2000
+        assert out.stat().st_size <= 2000
+        assert 0 < payload["entry_count"] < 12
+        # Truncation keeps the file valid HAR, not a byte-sliced fragment.
+        doc = json.loads(out.read_text(encoding="utf-8"))
+        assert len(doc["log"]["entries"]) == payload["entry_count"]
+
+    def test_har_export_leaves_a_small_capture_intact(
+        self, tmp_path: Any
+    ) -> None:
+        """A capture that fits is written whole and not marked truncated."""
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+        recorder = _FlowRecorder(capacity=100)
+        for index in range(4):
+            recorder.response(_FakeFlow(index))
+        inst = _ProxyInstance("127.0.0.1", 1)
+        inst.recorder = recorder
+        backend = ProxyBackend()
+        backend._instances["s"] = inst
+
+        payload = backend.export_har("s", tmp_path / "capture.har")
+
+        assert payload["truncated"] is False
+        assert payload["entry_count"] == 4
+        assert payload["size"] == (tmp_path / "capture.har").stat().st_size
+
     def test_concurrent_writers_and_readers_stay_consistent(self) -> None:
         """mitmproxy writes from its loop thread while tools read from workers."""
         recorder = _FlowRecorder(capacity=50)

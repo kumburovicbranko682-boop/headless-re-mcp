@@ -193,6 +193,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
+- **`proxy.export_har` 落盘无界**。摘要环有界，但每条摘要可带 16 KiB 的 URL，跑满的 2000 条
+  一次序列化就是几十 MiB；`_register_capture` 只登记不设自己的字节上限，于是一个无人值守的
+  `proxy.export_har` 每调一次就往产物根加那么多。`web.har_export` 早就按 `UNREGISTERED_CAPTURE_
+  MAX_BYTES` 丢条目收敛，proxy 这条一直没有。现在与它对齐：丢到装得下为止、回 `truncated` 与
+  `size`，落盘的仍是完整合法的 HAR（不是被字节截断的碎片），装不下最小 HAR 时回 `too_large`。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时
