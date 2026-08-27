@@ -348,3 +348,78 @@ def test_a_granted_autonomy_survives_a_restart_through_the_config_file(
     # The explicit empty effects list persisted by the grant stays fail-closed
     # on reload, rather than being repopulated by the packed-analysis preset.
     assert reloaded.auto_approve_effects == frozenset()
+
+
+def test_provider_put_keeps_fields_the_body_does_not_send(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A partial PUT must not reset fields written by other flows.
+
+    The settings dialog sends only base_url/model(/api_key), but probe_models
+    persists known_models and the Zerofall import fills thinking/effort/
+    threshold/catalogs on the same profile. Absent fields used to reset to
+    their defaults, so every save from the dialog silently wiped them. Absent
+    keeps the stored value; present still replaces, including clearing.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    for var in (
+        "HEADLESS_RE_PROVIDER_API_KEY",
+        "HEADLESS_RE_PROVIDER_BASE_URL",
+        "HEADLESS_RE_PROVIDER_MODEL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        seeded = client.put(
+            "/api/providers/default",
+            headers=headers,
+            json={
+                "base_url": "https://example.invalid/v1",
+                "model": "model-one",
+                "api_key": "secret-key",
+                "known_models": ["model-one", "model-two"],
+                "model_catalogs": [{"name": "catalog"}],
+                "enable_thinking": True,
+                "reasoning_effort": "high",
+                "context_compression_threshold_percent": 60,
+            },
+        )
+        assert seeded.status_code == 200
+
+        # The Web UI's「保存模型」payload.
+        updated = client.put(
+            "/api/providers/default",
+            headers=headers,
+            json={"base_url": "https://example.invalid/v1", "model": "model-two", "make_current": True},
+        )
+        assert updated.status_code == 200
+        profile = updated.json()["profile"]
+        assert profile["model"] == "model-two"
+        assert profile["configured"] is True
+        assert profile["known_models"] == ["model-one", "model-two"]
+        assert profile["model_catalogs"] == [{"name": "catalog"}]
+        assert profile["enable_thinking"] is True
+        assert profile["reasoning_effort"] == "high"
+        assert profile["context_compression_threshold_percent"] == 60
+
+        # Fields present in the body still replace the stored values,
+        # including explicit clearing.
+        cleared = client.put(
+            "/api/providers/default",
+            headers=headers,
+            json={
+                "model": "model-two",
+                "known_models": [],
+                "enable_thinking": False,
+                "reasoning_effort": None,
+            },
+        )
+        assert cleared.status_code == 200
+        profile = cleared.json()["profile"]
+        assert profile["known_models"] == []
+        assert profile["enable_thinking"] is False
+        assert profile["reasoning_effort"] is None
+        # Fields still absent keep on keeping.
+        assert profile["context_compression_threshold_percent"] == 60

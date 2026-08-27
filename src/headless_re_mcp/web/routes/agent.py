@@ -568,16 +568,49 @@ def register_agent_routes(
                 existing = None
             incoming_key = body.get("api_key")
             api_key = str(incoming_key) if isinstance(incoming_key, str) and incoming_key.strip() else (existing.api_key if existing else None)
+            # The Web UI's save sends only base_url/model(/api_key), but other
+            # writers fill the remaining fields on the same profile:
+            # probe_models persists known_models, the Zerofall import fills
+            # thinking/effort/threshold/catalogs. These used to reset to their
+            # defaults whenever the body omitted them, so every save from the
+            # settings dialog silently wiped them. Absent now keeps the stored
+            # value; a field present in the body still replaces it, including
+            # explicitly clearing with []/false/null.
+            known_models = (
+                [str(x) for x in body["known_models"] if isinstance(x, str)]
+                if isinstance(body.get("known_models"), list)
+                else (list(existing.known_models) if existing else [])
+            )
+            model_catalogs = (
+                [dict(x) for x in body["model_catalogs"] if isinstance(x, dict)]
+                if isinstance(body.get("model_catalogs"), list)
+                else ([dict(x) for x in existing.model_catalogs] if existing else [])
+            )
+            enable_thinking = (
+                bool(body["enable_thinking"])
+                if "enable_thinking" in body
+                else (existing.enable_thinking if existing else False)
+            )
+            reasoning_effort = (
+                (str(body["reasoning_effort"]) if body["reasoning_effort"] else None)
+                if "reasoning_effort" in body
+                else (existing.reasoning_effort if existing else None)
+            )
+            compression_threshold = (
+                int(body["context_compression_threshold_percent"])
+                if body.get("context_compression_threshold_percent") is not None
+                else (existing.context_compression_threshold_percent if existing else 75)
+            )
             profile = ProviderProfile(
                 id=profile_id,
                 base_url=str(body.get("base_url") or (existing.base_url if existing else "")),
                 model=str(body.get("model") or (existing.model if existing else "")),
                 api_key=api_key,
-                known_models=[str(x) for x in body.get("known_models", []) if isinstance(x, str)],
-                model_catalogs=[dict(x) for x in body.get("model_catalogs", []) if isinstance(x, dict)],
-                enable_thinking=bool(body.get("enable_thinking", False)),
-                reasoning_effort=str(body["reasoning_effort"]) if body.get("reasoning_effort") else None,
-                context_compression_threshold_percent=int(body.get("context_compression_threshold_percent", 75)),
+                known_models=known_models,
+                model_catalogs=model_catalogs,
+                enable_thinking=enable_thinking,
+                reasoning_effort=reasoning_effort,
+                context_compression_threshold_percent=compression_threshold,
             )
             public = configs.save(profile, make_current=body.get("make_current", True) is not False)
         except (TypeError, ValueError) as exc:

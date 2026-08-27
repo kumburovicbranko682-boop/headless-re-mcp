@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（设置面板每次「保存模型」都抹掉同一 profile 上别处写入的字段）
+
+- `PUT /api/providers/{id}` 对缺省字段的语义不对称：`base_url` / `model` / `api_key` 缺省时回落到
+  既有 profile，而 `known_models`、`model_catalogs`、`enable_thinking`、`reasoning_effort`、
+  `context_compression_threshold_percent` 缺省时直接重置为默认值（空表 / false / null / 75）。
+  设置面板的「保存模型」只发 `base_url`+`model`(+`api_key`)，但同一 profile 上还有别的写入方：
+  「拉取模型列表」（`probe_models`）会把探测到的 `known_models` 持久化，Zerofall 导入会填入
+  思考开关、推理档位、压缩阈值与模型目录。于是每次从设置面板保存，这些字段都被无声抹掉——
+  模型下拉框在下次打开且接口暂时探测不通时消失，通过 API/导入配置的思考与压缩参数悄悄回到
+  默认值，用户毫无提示。现统一为局部更新语义：body 里**没带**的字段保留存储值，**带了**的字段
+  照旧替换（包括显式清空 `[]` / `false` / `null`）。
+- 新增一条路由直测：先全量播种 profile，再用设置面板同款载荷（只有 base_url+model）PUT 一次，
+  断言 `known_models` / `model_catalogs` / `enable_thinking` / `reasoning_effort` / 压缩阈值全部
+  保留且 `configured` 仍为 true；再验证显式清空仍生效、未提字段继续保留。修复前该用例停在
+  `known_models` 被清成空表。相关 48 条测试、ruff、mypy 均通过。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
