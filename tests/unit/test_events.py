@@ -16,6 +16,7 @@ from headless_re_mcp.core.events import (
 
 JsonObject = dict[str, Any]
 _MAX_JSON_INTEGER = (1 << 63) - 1
+_MIN_JSON_INTEGER = -(1 << 63)
 
 
 def _event(
@@ -225,6 +226,53 @@ def test_event_sequence_source_kind_and_data_are_defensive() -> None:
     for events in invalid_events:
         with pytest.raises(DebugEventProtocolError):
             _parse(_batch(events=deepcopy(events)))
+
+
+def test_pointer_fields_decode_twos_complement_addresses() -> None:
+    """A debuggee faulting at a kernel-range address must not poison the stream.
+
+    The native shim serializes duint pointers through jansson's signed 64-bit
+    json_int_t, so an exception address at or above 2**63 arrives as its
+    two's-complement negative. Rejecting it failed the whole batch, which broke
+    dynamic.wait and kept the drain pump failing until 1024 further events
+    pushed the record out of the native ring.
+    """
+    payload = _batch(
+        latest=2,
+        events=[
+            _event(
+                1,
+                "exception",
+                {"code": 0xC0000005, "address": -1, "first_chance": True},
+            ),
+            _event(
+                2,
+                "thread.created",
+                {"thread_id": 4128, "start_address": _MIN_JSON_INTEGER},
+            ),
+        ],
+    )
+    batch = _parse(payload)
+
+    assert batch.events[0].data["address"] == 0xFFFFFFFFFFFFFFFF
+    assert batch.events[1].data["start_address"] == 1 << 63
+
+
+@pytest.mark.parametrize(
+    ("kind", "data"),
+    [
+        ("process.created", {"process_id": -1}),
+        ("thread.exited", {"thread_id": 4128, "exit_code": -1}),
+        ("exception", {"code": -1, "address": 0x1000}),
+        ("module.loaded", {"base": 0x1000, "size": -1}),
+        ("breakpoint.hit", {"address": 0x1000, "type": -1}),
+    ],
+)
+def test_count_like_fields_still_reject_negatives(kind: str, data: JsonObject) -> None:
+    payload = _batch(latest=1, events=[_event(1, kind, data)])
+
+    with pytest.raises(DebugEventProtocolError):
+        _parse(payload)
 
 
 def test_truncation_marker_requires_present_text() -> None:
