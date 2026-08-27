@@ -158,6 +158,8 @@ jobs:
     env:
       GHIDRA_VERSION: "11.2.1"
       GHIDRA_DIST: "ghidra_11.2.1_PUBLIC_20241105"
+      JADX_VERSION: "1.5.6"
+      APKTOOL_VERSION: "3.0.3"
     steps:
       - uses: actions/checkout@v7
 
@@ -214,6 +216,25 @@ jobs:
       - name: Point at Ghidra
         run: echo "HEADLESS_RE_GHIDRA_HOME=$HOME/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC" >> "$GITHUB_ENV"
 
+      - name: Install jadx and apktool (Android static tools)
+        # Both are Java CLIs (the JDK is already set up above). jadx decompiles
+        # jar/dex/apk; apktool bundles its own aapt2 so it builds/decodes a
+        # framework-free APK without the Android SDK. apksigner is intentionally
+        # not installed -- its gate asserts the capability_unavailable path.
+        run: |
+          curl -fsSL -o /tmp/jadx.zip \
+            "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"
+          mkdir -p "$HOME/jadx"
+          unzip -q /tmp/jadx.zip -d "$HOME/jadx"
+          chmod +x "$HOME/jadx/bin/jadx"
+          mkdir -p "$HOME/apktool"
+          curl -fsSL -o "$HOME/apktool/apktool.jar" \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"
+          printf '#!/bin/sh\nexec java -jar %s/apktool/apktool.jar "$@"\n' "$HOME" > "$HOME/apktool/apktool"
+          chmod +x "$HOME/apktool/apktool"
+          echo "HEADLESS_RE_JADX=$HOME/jadx/bin/jadx" >> "$GITHUB_ENV"
+          echo "HEADLESS_RE_APKTOOL=$HOME/apktool/apktool" >> "$GITHUB_ENV"
+
       - name: Backends are discoverable (skip != pass)
         # If a backend is not actually reachable its gate would skip and read as
         # a pass. Fail loudly here instead so a broken install is fixed rather
@@ -225,6 +246,8 @@ jobs:
           done
           test -x "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" \
             || { echo "::error::ghidra analyzeHeadless missing at $HEADLESS_RE_GHIDRA_HOME"; exit 1; }
+          test -x "$HEADLESS_RE_JADX" || { echo "::error::jadx missing at $HEADLESS_RE_JADX"; exit 1; }
+          test -x "$HEADLESS_RE_APKTOOL" || { echo "::error::apktool missing at $HEADLESS_RE_APKTOOL"; exit 1; }
           python -c "import mitmproxy, playwright, androguard, adbutils, frida; print('python backends importable')"
 
       - name: Non-PE backend gates
@@ -242,6 +265,7 @@ jobs:
             tests/integration/test_m11_frida_live_gate.py \
             tests/integration/test_m11_ghidra_live_gate.py \
             tests/integration/test_android_re_gate.py \
+            tests/integration/test_android_tools_gate.py \
             tests/integration/test_agent_browser_smoke.py \
             -q -rs --tb=short --timeout=300
 
