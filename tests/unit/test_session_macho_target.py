@@ -23,6 +23,7 @@ from headless_re_mcp.core.session import (
     classify_target,
     detect_macho_architecture,
 )
+from headless_re_mcp.core.session import _read_fat_slices as read_fat_slices
 
 # (raw magic bytes, is64, endianness) for the four thin Mach-O forms.
 _LE64 = b"\xcf\xfa\xed\xfe"
@@ -58,12 +59,122 @@ def test_classify_target_leaves_pe_and_elf_alone(tmp_path: Path) -> None:
     assert classify_target(elf) is TargetKind.ELF
 
 
-def test_classify_target_does_not_claim_a_fat_binary(tmp_path: Path) -> None:
-    # FAT_MAGIC (0xCAFEBABE) collides with Java .class; a fat file is left to
-    # the PE fallback rather than mis-typed as a thin Mach-O we cannot base.
+def test_classify_target_rejects_a_malformed_cafebabe(tmp_path: Path) -> None:
+    # A 0xCAFEBABE file whose arch table does not check out (here nfat=0) is not
+    # a fat Mach-O; it falls through to the PE default rather than being claimed.
     fat = tmp_path / "universal"
     fat.write_bytes(b"\xca\xfe\xba\xbe" + bytes(60))
     assert classify_target(fat) is not TargetKind.MACHO
+
+
+def _thin_bytes(magic: bytes = _LE64, cputype: int = 0x01000007) -> bytes:
+    # A header-only thin Mach-O -- enough for a slice, whose magic is all the
+    # fat validator reads at the slice offset.
+    return magic + struct.pack("<IIIII", cputype, 3, 2, 0, 0) + struct.pack("<II", 0, 0)
+
+
+def _write_fat(
+    path: Path,
+    slices: tuple[tuple[int, bytes], ...],
+    *,
+    magic: bytes = b"\xca\xfe\xba\xbe",
+    is64: bool = False,
+) -> Path:
+    """Wrap thin (cputype, bytes) slices in a fat/universal header.
+
+    Fat headers are always big-endian. Each slice is page-aligned after the
+    header + arch table so the declared offsets sit wholly inside the file.
+    """
+    entry_size = 32 if is64 else 20
+    header_end = 8 + entry_size * len(slices)
+    cursor = (header_end + 0xFFF) & ~0xFFF
+    placed: list[tuple[int, int, int, bytes]] = []  # cputype, offset, size, blob
+    for cputype, blob in slices:
+        placed.append((cputype, cursor, len(blob), blob))
+        cursor += (len(blob) + 0xFFF) & ~0xFFF
+    header = magic + struct.pack(">I", len(slices))
+    for cputype, offset, size, _blob in placed:
+        if is64:
+            header += struct.pack(">IIQQII", cputype, 3, offset, size, 12, 0)
+        else:
+            header += struct.pack(">IIIII", cputype, 3, offset, size, 12)
+    image = bytearray(header)
+    for _cputype, offset, _size, blob in placed:
+        image = image.ljust(offset, b"\x00") + blob
+    path.write_bytes(bytes(image))
+    return path
+
+
+# A conventional x86_64 + arm64 universal pair, the common macOS distribution.
+_X64_ARM64 = (
+    (0x01000007, _thin_bytes(cputype=0x01000007)),
+    (0x0100000C, _thin_bytes(cputype=0x0100000C)),
+)
+
+
+def test_classify_target_claims_a_valid_fat_macho(tmp_path: Path) -> None:
+    binary = _write_fat(tmp_path / "universal", _X64_ARM64)
+    assert classify_target(binary) is TargetKind.MACHO
+
+
+def test_read_fat_slices_enumerates_the_contained_architectures(tmp_path: Path) -> None:
+    binary = _write_fat(tmp_path / "universal", _X64_ARM64)
+    slices = read_fat_slices(binary)
+    assert slices is not None
+    assert [s["architecture"] for s in slices] == ["x64", "arm64"]
+    assert all(s["size"] > 0 and s["offset"] > 0 for s in slices)
+
+
+def test_read_fat_slices_handles_fat_magic_64_offsets(tmp_path: Path) -> None:
+    binary = _write_fat(
+        tmp_path / "u64",
+        ((0x0100000C, _thin_bytes(cputype=0x0100000C)),),
+        magic=b"\xca\xfe\xba\xbf",
+        is64=True,
+    )
+    assert classify_target(binary) is TargetKind.MACHO
+    slices = read_fat_slices(binary)
+    assert slices is not None and slices[0]["architecture"] == "arm64"
+
+
+def test_read_fat_slices_rejects_a_java_class_lookalike(tmp_path: Path) -> None:
+    # A Java class is 0xCAFEBABE + minor(2) + major(2); major >= 45 makes the
+    # big-endian nfat_arch read >= 45, above the ceiling, so it is never a fat.
+    java = tmp_path / "Fake.class"
+    java.write_bytes(b"\xca\xfe\xba\xbe\x00\x00\x00\x34" + bytes(256))
+    assert read_fat_slices(java) is None
+    assert classify_target(java) is not TargetKind.MACHO
+
+
+def test_read_fat_slices_rejects_an_out_of_bounds_slice(tmp_path: Path) -> None:
+    # A well-formed count but a slice pointing past EOF is not a fat Mach-O.
+    header = b"\xca\xfe\xba\xbe" + struct.pack(">I", 1)
+    header += struct.pack(">IIIII", 0x01000007, 3, 0x100000, 0x1000, 12)  # offset past EOF
+    bogus = tmp_path / "bogus"
+    bogus.write_bytes(header + bytes(64))
+    assert read_fat_slices(bogus) is None
+
+
+def test_read_fat_slices_rejects_a_slice_without_a_macho_magic(tmp_path: Path) -> None:
+    # Offsets in bounds, but the bytes at the slice offset are not a thin Mach-O.
+    not_macho = b"\x7fELF" + bytes(28)
+    header = b"\xca\xfe\xba\xbe" + struct.pack(">I", 1)
+    header += struct.pack(">IIIII", 0x01000007, 3, 0x1000, len(not_macho), 12)
+    image = bytearray(header).ljust(0x1000, b"\x00") + not_macho
+    path = tmp_path / "elfslice"
+    path.write_bytes(bytes(image))
+    assert read_fat_slices(path) is None
+
+
+def test_registry_create_labels_fat_as_multi_arch_with_slice_metadata(tmp_path: Path) -> None:
+    binary = _write_fat(tmp_path / "app", _X64_ARM64)
+    session = SessionRegistry().create(binary)
+    assert session.target is TargetKind.MACHO
+    # No single architecture for a fat file -- the backends pick a slice.
+    assert session.architecture is None
+    macho = session.metadata["macho"]
+    assert macho["fat"] is True
+    assert [s["architecture"] for s in macho["slices"]] == ["x64", "arm64"]
 
 
 @pytest.mark.parametrize(
