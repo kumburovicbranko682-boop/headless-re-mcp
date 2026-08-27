@@ -678,6 +678,16 @@ class WebBackend:
                     size=size,
                     cap=UNREGISTERED_CAPTURE_MAX_BYTES,
                 )
+            if size == 0:
+                # A capture that returns leaving a zero-byte file is not a
+                # screenshot: registering it would hand the caller an empty PNG.
+                with contextlib.suppress(OSError):
+                    out_path.unlink()
+                raise WebError(
+                    "backend_error",
+                    "screenshot produced an empty file",
+                    path=str(out_path),
+                )
             return {"path": str(out_path), "size": size}
 
         return self._runner(handle).call(work)

@@ -79,3 +79,25 @@ def test_web_screenshot_over_the_cap_is_deleted(tmp_path: Path, monkeypatch: Any
         backend.screenshot("s", out)
     assert caught.value.code == "too_large"
     assert out.exists() is False
+
+
+def test_web_screenshot_that_is_empty_is_deleted(tmp_path: Path, monkeypatch: Any) -> None:
+    """A capture that returns leaving a zero-byte file is not a screenshot.
+
+    Reporting a path and size 0 would register an empty PNG the caller cannot
+    open; the empty file is deleted and the call fails instead.
+    """
+    out = tmp_path / "shot.png"
+
+    class Page:
+        def screenshot(self, path: str, full_page: bool = False) -> None:
+            del full_page
+            Path(path).write_bytes(b"")
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=Page()))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    with pytest.raises(WebError) as caught:
+        backend.screenshot("s", out)
+    assert caught.value.code == "backend_error"
+    assert out.exists() is False
