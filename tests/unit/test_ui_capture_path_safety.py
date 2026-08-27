@@ -33,3 +33,34 @@ def test_invalid_ui_capture_session_cannot_create_directories_outside_artifacts(
         assert not escaped.exists()
     finally:
         service.close_all()
+
+
+@pytest.mark.parametrize("method_name", ["ui_screenshot", "ui_ocr"])
+@pytest.mark.parametrize("session_id", ["..", ".", ""])
+def test_dot_segment_ui_capture_sessions_are_invalid_on_every_platform(
+    tmp_path: Path,
+    method_name: str,
+    session_id: str,
+) -> None:
+    """``..`` passes ``Path(session_id).name != session_id`` and would resolve
+    ``ui/<session>`` onto the artifact root itself; the segment guard must
+    reject it before the platform gate answers, so the contract is identical
+    on Windows and POSIX."""
+    artifact_root = tmp_path / "artifacts"
+    service = AnalysisService(
+        replace(
+            Settings.load(tmp_path / "missing-config.json"),
+            artifact_root=artifact_root,
+        )
+    )
+
+    try:
+        method = getattr(service, method_name)
+        result = method(session_id, 1)
+
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert not (artifact_root / "ui").exists()
+    finally:
+        service.close_all()

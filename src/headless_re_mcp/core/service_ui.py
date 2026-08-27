@@ -823,10 +823,14 @@ class UiAutomationMixin:
         include_same_image_children: bool = False
     ) -> Result[JsonObject]:
         """Capture a PID-bounded hwnd to a BMP under artifact_root/ui/<session>."""
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
         # Hostile input is rejected before the platform gate: a path-escaping
         # session id must read as invalid_request on every platform, not as a
-        # platform limitation on Linux.
-        if not session_id or Path(session_id).name != session_id:
+        # platform limitation on Linux. The audited segment helper also rejects
+        # "..", which name != session_id concedes and which would resolve
+        # ui/<session> onto the artifact root itself.
+        if not _is_safe_session_segment(session_id):
             return _failure(
                 ValueError("invalid session id for UI capture path"),
                 session_id=session_id,
@@ -878,9 +882,12 @@ class UiAutomationMixin:
         include_same_image_children: bool = False
     ) -> Result[JsonObject]:
         """OCR a PID-bounded hwnd via screenshot + Windows OCR / tesseract."""
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
         # Same ordering as ui_screenshot: reject hostile input before the
-        # platform gate so invalid_request is platform-independent.
-        if not session_id or Path(session_id).name != session_id:
+        # platform gate so invalid_request is platform-independent, via the
+        # audited segment helper that also refuses "..".
+        if not _is_safe_session_segment(session_id):
             return _failure(
                 ValueError("invalid session id for UI capture path"),
                 session_id=session_id,
