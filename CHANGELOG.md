@@ -102,6 +102,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   消息条数),与其余读取器口径一致;仍回最新的尾部,且因 limit 上限等于环容量、一次即可取完
   整个缓冲,故不需要 offset。文档串同步说明,并扩展回归测试断言 `total`。
 
+### 新增回归（抓包体保留预算按最旧优先、够用即止地淘汰,由多受害者场景直测固定）
+
+- 新流到达、其体会把 `_retained_bytes` 顶过 `_MAX_RETAINED_BYTES` 时,`_FlowRecorder._record` 按插入
+  顺序遍历已保留的体、逐个略去,一旦腾出空间立刻停:`for retained_id, retained in list(self._raw.items()):
+  if self._retained_bytes + stored_bytes <= _MAX_RETAINED_BYTES: break; if retained is not _OMITTED_BODY:
+  self._omit_retained(retained_id)`;循环后 `omitted = self._retained_bytes + stored_bytes >
+  _MAX_RETAINED_BYTES` 再判一次。该循环两处性质要紧,而既有预算测试(两个 600 字节流对 1000 字节预算)只有
+  *一个*淘汰候选,两处都留空:一是**最旧优先、且够用即止**——`list(self._raw.items())` 是插入序,故最旧的体
+  先走,`break` 一腾出空间就停;只有一个受害者时,分不清最旧优先和最新优先,也分不清「只淘够用的」和「全淘」。
+  改成最新优先,被丢的是更近、更可能有价值的体,留下的反是陈的;删掉 `break`,一个大流一来就把整只保留环冲空。
+  二是**比整只预算还大的新流会略去自己**——全淘光后新流仍不合身时,循环后重算的 `omitted` 标的是*它*,而不是
+  留一个单体就爆表的体;既有测试的第二个流在第一个走后就合身,那次重算的真分支从没被走过。新增两例分别钉:
+  三个体加第四个只淘最旧一个(中间两个与新的都留;最新优先会丢第三个、全淘会连中间两个也丢),以及一个三倍于
+  预算的新流在淘光其余后略去自己、保留字节归零(去掉重算则它会被留下、字节顶破上限)。三处反向变异各被相应
+  用例逮到,既有抓包边界用例全绿。
+
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
