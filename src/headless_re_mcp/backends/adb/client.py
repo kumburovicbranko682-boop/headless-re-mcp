@@ -270,7 +270,18 @@ def _apk_package_name(path: Path) -> str | None:
 
 def _pm_path(dev: Any, package: str) -> str | None:
     raw = _device_shell(dev, ["pm", "path", package], timeout=_ADB_PROBE_TIMEOUT_S)
-    for line in str(raw).splitlines():
+    text = str(raw)
+    # adbutils can hand back the adb host's own "error:" / "adb:" line as stdout
+    # rather than raising -- an offline device answers pm path with a host error,
+    # the same way it does getprop / pm list. Read as "no package: line" that
+    # would report a real install as installed=False and an uninstall as
+    # uninstalled=True: the verify never ran. Raise so install/uninstall report
+    # None ("could not verify"), the honest answer their handlers already emit
+    # when the probe cannot run. A genuinely absent package answers with empty
+    # output (exit 1, no text), which is not a host error and stays None.
+    if _is_host_error_output(text):
+        raise AdbError("backend_error", "pm path failed", output=text[:800])
+    for line in text.splitlines():
         line = line.strip()
         if line.startswith("package:"):
             return line.split(":", 1)[1].strip() or line
