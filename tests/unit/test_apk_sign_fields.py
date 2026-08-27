@@ -8,7 +8,12 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.apktool.client import _PASSWORD_ENV, ApktoolClient, ApktoolError
+from headless_re_mcp.backends.apktool.client import (
+    _KEY_PASSWORD_ENV,
+    _PASSWORD_ENV,
+    ApktoolClient,
+    ApktoolError,
+)
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -176,6 +181,95 @@ def test_sign_keeps_the_keystore_password_off_the_command_line(
     verify_cmd, verify_env = calls[1]
     assert all(password not in arg for arg in verify_cmd)
     assert verify_env is None
+
+
+def test_sign_uses_a_distinct_key_password_when_the_caller_gives_one(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A release keystore can guard its key with its own password.
+
+    When key_password differs from the store password, --key-pass must point at
+    a second child-only variable carrying that key password, while --ks-pass
+    keeps carrying the store password. Neither secret may appear on argv.
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    store_pw = "store-pw"
+    key_pw = "key-pw-different"
+    calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+    def fake_run(
+        cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
+    ) -> tuple[str, str, int]:
+        calls.append((list(cmd), env))
+        if "verify" not in cmd:
+            out.write_bytes(b"PKSIGN")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+    client = ApktoolClient(fake_tool, signer)
+    payload = client.sign(
+        apk,
+        out,
+        keystore=keystore,
+        keystore_password=store_pw,
+        key_alias="release",
+        key_password=key_pw,
+    )
+    assert payload["signed"] is True
+
+    sign_cmd, sign_env = calls[0]
+    assert all(store_pw not in arg for arg in sign_cmd)
+    assert all(key_pw not in arg for arg in sign_cmd)
+    # The store password stays on --ks-pass; the key password rides its own var.
+    assert sign_cmd.count(f"env:{_PASSWORD_ENV}") == 1
+    assert f"env:{_KEY_PASSWORD_ENV}" in sign_cmd
+    assert sign_env is not None
+    assert sign_env[_PASSWORD_ENV] == store_pw
+    assert sign_env[_KEY_PASSWORD_ENV] == key_pw
+
+
+def test_sign_scrubs_a_distinct_key_password_from_stderr(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A leaked key password in tool output must be masked like the store one."""
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    store_pw = "store-pw"
+    key_pw = "key-pw-secret"
+
+    def failing_sign(cmd: list[str], **_kwargs: Any) -> tuple[str, str, int]:
+        return "", f"error near env:{key_pw} and {store_pw}", 1
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", failing_sign)
+    client = ApktoolClient(fake_tool, signer)
+    with pytest.raises(ApktoolError) as caught:
+        client.sign(
+            apk,
+            out,
+            keystore=keystore,
+            keystore_password=store_pw,
+            key_alias="release",
+            key_password=key_pw,
+        )
+    stderr = str(caught.value.details["stderr"])
+    assert store_pw not in stderr
+    assert key_pw not in stderr
+    assert "***" in stderr
 
 
 def test_apk_sign_does_not_claim_signed_when_verify_fails(

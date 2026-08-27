@@ -192,6 +192,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
   漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
 
+### 变更（apk.sign 支持 key 口令与 store 口令不同的发行 keystore）
+
+- `apk.sign` 此前只有一个 `keystore_password`，`--ks-pass` 与 `--key-pass` 都指向它。发行
+  keystore 常给 key 单独设一个不同于 store 的口令；这类 keystore 一律签不了，apksigner 只会
+  吐一段「口令错」的晦涩报错。现新增可选参数 `key_password`：给了就让 `--key-pass` 走一个独立
+  的、仅子进程可见的环境变量（`APKSIGNER_KEY_PASS`）承载 key 口令，`--ks-pass` 仍走 store 口令；
+  留空则回退到 `keystore_password`——即 key 与 store 同口令的常见情形与所有 debug keystore，
+  只携带一个 secret，与既有行为逐字节一致。stderr 抹除现同时覆盖两个口令。新增单测钉住
+  「口令不同时 `--key-pass` 指向 `env:APKSIGNER_KEY_PASS`、两个口令都不上 argv」与「不同的 key
+  口令也会从 stderr 抹除」。
+
 ### 修复（签名口令上进程表）
 
 - `apk.sign` 过去以 `--ks-pass pass:<口令>` 把 keystore 口令明文放进 apksigner 的命令行。
