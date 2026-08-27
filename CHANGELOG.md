@@ -101,6 +101,31 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（全库排查:深嵌套 JSON 让 json.loads 抛 RecursionError 而非 JSONDecodeError）
+
+- `json.loads` 对深嵌套输入抛 `RecursionError`——它是 `RuntimeError` 而非 `ValueError`,
+  只捕 `JSONDecodeError` 的守卫全部接不住。逐一排查全库解析不可信/半可信 JSON 的调用点,
+  修复七处(各自的字节上限都放得下触发所需的几 KB 括号;Python 3.11 上 C 递归计入解释器
+  1000 层默认限额,3.12 上 C 解码器约 1 万层,两者均在 CI 矩阵内):
+  - `backends/x64dbg/rpc_frame.py` 与 `backends/x64dbg/client.py`:RPC 帧体(上限 8 MiB)
+    一段深括号会以裸 RecursionError 逃逸,而非既定的 `XdbgRpcError("rpc_protocol_error")`。
+    该模块 docstring 自称 fuzz target,但 fuzz 语料从未包含深嵌套——已补样本,未修复时
+    该用例违反"只许抛 XdbgRpcError"的契约。
+  - `backends/ida/gate.py::_last_json_line`:该循环本为跳过 idalib 混在 stdout 里的杂行,
+    一行深括号却让整个扫描连同其下方 worker 的真实裁决一起被放弃;现按"不是我们的 JSON"
+    跳过。`backends/ida/client.py::_read_stdout` 同款:读取线程死于一行杂输出后,finally
+    入队 EOF 标记,整个会话陪葬;现按普通日志行记录。
+  - `backends/ghidra/client.py`:export JSON 解析补入 RecursionError,保持
+    `backend_error("export JSON invalid")` 的既定错误面。
+  - `web/launch_util.py::_parse_healthz_http`:任意进程都能占住被探测端口;深嵌套响应体
+    应答"不是我们的服务"(None),3.11 上原本以 RecursionError 炸掉启动器。
+  - `agent/personas.py::_read_index`:索引文件用户可手改,读不动必须回落默认而非炸掉
+    所有 persona 读取。
+  - `core/ui_ocr.py`:OCR worker 最后一行不可解析时,同函数所有相邻失败路径都包成
+    `UiPidBoundaryError`,唯独这处裸抛;现一致包装。
+  - `mcp/stdio_errors.py` 与 `detection/die.py` 早已显式防护同类问题,本轮是把这一约定
+    补齐到其余边界。回归测试在未修复代码上以 RecursionError 失败,修复后通过。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

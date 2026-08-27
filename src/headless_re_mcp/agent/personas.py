@@ -76,7 +76,10 @@ class PersonaStore:
             if truncated:
                 return {"current": DEFAULT_PERSONA_ID, "items": {}}
             data = json.loads(text)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, RecursionError):
+            # The index is user-editable on disk; a hand-mangled deeply nested
+            # file must fall back to defaults like any other unreadable index,
+            # and RecursionError from json.loads is not a JSONDecodeError.
             return {"current": DEFAULT_PERSONA_ID, "items": {}}
         return data if isinstance(data, dict) else {"current": DEFAULT_PERSONA_ID, "items": {}}
 

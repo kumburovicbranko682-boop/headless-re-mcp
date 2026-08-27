@@ -1202,7 +1202,11 @@ class XdbgClient:
 
         try:
             response = json.loads(response_raw)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+            # RecursionError joins the tuple because json.loads raises it on
+            # deeply nested bodies (a few KB of brackets fit the frame cap),
+            # and it is not a ValueError, so it escaped as a raw interpreter
+            # error instead of the protocol error this path promises.
             raise XdbgRpcError(
                 "rpc_protocol_error", "RPC response is not valid UTF-8 JSON"
             ) from exc

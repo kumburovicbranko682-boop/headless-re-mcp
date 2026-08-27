@@ -246,7 +246,7 @@ class GhidraClient:
             )
         try:
             payload = json.loads(encoded.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as exc:
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
             raise GhidraError(
                 "backend_error",
                 "export JSON invalid",

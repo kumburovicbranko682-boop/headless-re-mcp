@@ -140,7 +140,11 @@ def _last_json_line(text: str) -> dict[str, Any]:
     for line in reversed(text.splitlines()):
         try:
             value = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
+            # This loop exists because idalib prints stray lines around the
+            # worker's JSON. One nested past the recursion limit (a couple KB
+            # of brackets) raised RecursionError instead, abandoning the scan
+            # and the lines below it; it is just as much "not our JSON".
             continue
         if isinstance(value, dict):
             return value

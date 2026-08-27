@@ -109,7 +109,10 @@ def _parse_healthz_http(raw: bytes) -> JsonObject | None:
     body = body[:content_length]
     try:
         data = json.loads(body.decode("utf-8", errors="replace"))
-    except ValueError:
+    except (ValueError, RecursionError):
+        # Any process can squat the probed port; a deeply nested body raises
+        # RecursionError (not a ValueError) out of json.loads, and this
+        # function's contract is None for anything that is not our service.
         return None
     if isinstance(data, dict) and data.get("service") == "headless-re-mcp-web":
         return data

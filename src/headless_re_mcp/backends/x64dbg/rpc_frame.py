@@ -34,7 +34,10 @@ def parse_rpc_frame(data: bytes) -> dict[str, Any]:
     raw = data[4 : 4 + size]
     try:
         response = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        # json.loads raises RecursionError -- a RuntimeError, not a ValueError
+        # -- on deeply nested input: the decoder descends into b"[" * 1001
+        # (fits any sane frame cap) before it can notice anything is wrong.
         raise XdbgRpcError(
             "rpc_protocol_error", "RPC response is not valid UTF-8 JSON"
         ) from exc

@@ -38,6 +38,13 @@ def test_roundtrip_frame() -> None:
         b"\x05\x00\x00\x00" + b'"abc"',
         (10).to_bytes(4, "little") + b"{not-json",
         (2).to_bytes(4, "little") + b"{}" + b"xx",
+        # Valid length prefix, valid UTF-8, nested past the recursion limit:
+        # json.loads raises RecursionError (a RuntimeError, not a ValueError)
+        # while descending, before it can notice the string is unterminated,
+        # so this escaped the JSONDecodeError catch as a raw interpreter error.
+        pytest.param(
+            (20_000).to_bytes(4, "little") + b"[" * 20_000, id="deep-nesting"
+        ),
     ],
 )
 def test_frame_parser_rejects_garbage(blob: bytes) -> None:
