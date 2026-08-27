@@ -18,6 +18,13 @@ def test_m11_r2_live_address_mapping() -> None:
         pytest.skip("radare2/rizin not installed — live Gate not run (skip≠pass)")
     fixture = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "headless_fixture.exe"
     if not fixture.is_file():
+        # The canonical fixture is a build artifact that is not checked in, so
+        # this gate skipped on every clean checkout. radare2 analyses PE
+        # cross-platform, and the address-mapping contract asserted below holds
+        # on any PE, so fall back to a committed one: skip should mean r2 is
+        # missing, not that the sample lives in a directory nobody populates.
+        fixture = _PROJECT_ROOT / "fixtures" / "upx" / "console_fixture-x64.pre-upx.exe"
+    if not fixture.is_file():
         pytest.skip(f"fixture missing: {fixture}")
 
     opened = client.open(fixture, timeout=60.0)
