@@ -3438,6 +3438,59 @@ class TestExportedFileListsDiscloseTruncation:
         assert result["has_more"] is True
 
 
+class TestJsReRefusesOversizedInput:
+    """The webcrack/wabt adapters cap input size before launching the tool.
+
+    The comment on _MAX_INPUT_BYTES records the incident: an unattended pass
+    pointed js.deobfuscate at a captured bundle and 2 MiB of it reached the
+    child. The guard refuses an oversized file with too_large so a stray large
+    input never binds a core for the rest of the timeout -- but nothing pinned
+    it, so a regression that dropped the check would pass silently.
+    """
+
+    def test_webcrack_refuses_an_input_over_the_byte_cap(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_INPUT_BYTES", 4)
+        monkeypatch.setattr(
+            mod, "_run", lambda *a, **k: pytest.fail("must not launch on an oversized input")
+        )
+        oversized = tmp_path / "big.js"
+        oversized.write_bytes(b"console.log(1)")  # 14 bytes > the 4-byte cap
+        client = mod.JsClient(tmp_path / "webcrack")
+        assert client.available
+
+        with pytest.raises(mod.JsReError) as caught:
+            client.deobfuscate(oversized)
+        assert caught.value.code == "too_large"
+        assert caught.value.details["max_file_size"] == 4
+
+    def test_wasm2wat_refuses_an_input_over_the_byte_cap(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        from headless_re_mcp.backends.jsre import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_INPUT_BYTES", 4)
+        monkeypatch.setattr(
+            mod, "_run", lambda *a, **k: pytest.fail("must not launch on an oversized input")
+        )
+        # A file named wasm2wat resolves as the tool, so availability passes and
+        # the size guard -- not capability_unavailable -- is what fires.
+        fake_tool = tmp_path / "wasm2wat"
+        fake_tool.write_text("x", encoding="utf-8")
+        oversized = tmp_path / "big.wasm"
+        oversized.write_bytes(b"\x00asm\x01\x00\x00\x00")  # 8 bytes > the 4-byte cap
+        client = mod.WasmClient(fake_tool)
+        assert client.available
+
+        with pytest.raises(mod.JsReError) as caught:
+            client.wat(oversized)
+        assert caught.value.code == "too_large"
+        assert caught.value.details["max_file_size"] == 4
+
+
 class TestGhidraExportDisclosesTruncation:
     def test_the_headless_script_marks_cut_lists_and_cut_decompilation(self) -> None:
         from pathlib import Path

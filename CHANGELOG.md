@@ -115,6 +115,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   对 `wasm-objdump` 断言 Type/Function/Export/Code 四个 section 头与导出名 `add` 都在。wabt 缺失时按工具分别
   如实 skip（wasm2wat 与 wasm-objdump 各判各的），skip != pass。
 
+### 新增（JS/WASM 输入体积上限的单元回归）
+
+- `js.deobfuscate` / `wasm.wat` 的 16 MiB 输入上限（`_MAX_INPUT_BYTES`，防止无人值守把抓到的大 bundle
+  原样喂给 node/wasm2wat、绑死一个核直到超时）此前没有任何测试钉住——删掉该检查整个套件照样全绿。
+  新增两个单元回归（webcrack 与 wasm2wat 各一）：把上限 monkeypatch 到 4 字节后断言超限输入以
+  `too_large`（细节含 `max_file_size`）拒绝，并把 `_run` 换成必失败桩证明超限文件从未到达子进程。
+
 ### 修复（抓包停止后端口不释放）
 
 - `proxy.stop` / `proxy.close_all` 及关闭 Web 会话时，mitmproxy 12.x 下监听端口**停不掉**：
