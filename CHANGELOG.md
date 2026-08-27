@@ -215,6 +215,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
   漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
 
+### 新增回归（`apk.classes` 只列本应用定义的类、跳过被引用的框架类，由异构类集直测固定）
+
+- androguard 的 `Analysis.get_classes()` 会为 DEX *提到*的每个类返回一个节点,既含本应用定义的那几个,
+  也含它只是引用的框架/库类(`Landroid/app/Activity;`、`Ljava/lang/Object;`、`Lkotlin/Unit;` 等成百上千个)。
+  `apk.classes` 回答的是「本应用定义了哪些类」,故 `if klass.is_external(): continue` 跳过被引用的外部类。
+  删掉这个 `continue`,`apk.classes` 就被框架类淹没:问「这个 APK 有什么」的分析者拿到一堆 `Landroid/…`/
+  `Ljava/…` 盖过应用自己的代码,`total` 数的是引用而非定义,而且列表是排序的——排在应用包前面的框架名
+  会把真正的类整个挤出第一页。这个跳过在既有测试里是空操作:`test_apk_page_clamp` 的 `_FakeClass.is_external()`
+  恒回 False、每个夹具类都是内部类,分支从不触发,删掉它那套照绿。新增用例喂进内部与外部混合的类集——
+  外部名故意排在应用包*之前*(`Landroid`)与*之后*(`Lzzz`),使守卫不会被误当成掐头/去尾的切片——断言只回
+  应用自己的类、`total`/`has_more` 描述的是内部集、分页也在内部集上走而不被外部引用撑大。
+
 ### 修复（签名口令上进程表）
 
 - `apk.sign` 过去以 `--ks-pass pass:<口令>` 把 keystore 口令明文放进 apksigner 的命令行。
