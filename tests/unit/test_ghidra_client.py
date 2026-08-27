@@ -256,6 +256,7 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     assert "decompiled" in decompile
     assert "truncated" in decompile
     assert "found" in decompile
+    assert "decompile_completed" in decompile
 
 
 def _decompile_run(monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
@@ -311,6 +312,70 @@ def test_ghidra_decompile_trusts_a_found_flag_the_script_already_wrote(
     client = _client(tmp_path)
     payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
     assert payload["found"] is True
+
+
+def test_ghidra_decompile_reports_completed_false_when_the_decompiler_did_not_finish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A found function whose decompiler timed out used to read as an empty body.
+
+    ExportJson writes function/entry for a found function but empty decompiled when
+    decompileCompleted() is false (the 30s budget, or an error). Without
+    decompile_completed a caller cannot tell that from a function that decompiled to
+    nothing, and an unattended pass would record the empty string as the body.
+    """
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "big", "entry": "0x401000",'
+        ' "decompile_completed": false, "decompiled": "", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is True
+    assert payload["decompile_completed"] is False
+    assert payload["decompiled"] == ""
+
+
+def test_ghidra_decompile_reports_completed_true_when_the_decompiler_finished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "main", "entry": "0x401000",'
+        ' "decompile_completed": true, "decompiled": "int main(){}", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is True
+    assert payload["decompile_completed"] is True
+
+
+def test_ghidra_decompile_derives_completed_from_output_for_an_older_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An older script that never wrote decompile_completed still gets a truthful one.
+
+    The JSON crosses the Jython boundary, so a version-skewed script can omit the
+    flag. Non-empty output is proof the decompiler finished; empty output for a
+    found function is the conservative "did not", never a silent True.
+    """
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "main", "entry": "0x401000",'
+        ' "decompiled": "int main(){}", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    finished = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert finished["decompile_completed"] is True
+
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "big", "entry": "0x401000",'
+        ' "decompiled": "", "truncated": false}',
+    )
+    unfinished = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert unfinished["found"] is True
+    assert unfinished["decompile_completed"] is False
 
 
 def test_ghidra_refuses_an_oversized_export_json(

@@ -87,6 +87,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   命中时才写 `function`/`entry`。现由脚本显式写出 `found` 布尔，客户端在解析这份跨解释器 JSON 时
   也会在缺字段时按 `function` 是否存在补齐 `found`：`found=false` 明确表示“该地址没有函数”，此时
   空的 `decompiled` 是这个原因而非空函数体。
+- 同一地址上还有第二种空串：函数**找到了**但反编译器没跑完（30 秒预算耗尽，或反编译出错），
+  postScript 仍会写出 `function`/`entry` 而 `decompiled` 为空，读起来与“反编译出空函数体”一模
+  一样，无人值守的一遍会把超时的大函数记成空函数。现由脚本写出 `decompile_completed` 布尔
+  （仅 `decompileCompleted()` 为真时置 true），客户端在缺字段时保守补齐：有输出即视为完成、
+  空输出的已找到函数视为未完成，绝不静默判 true。`found=true` 且 `decompile_completed=false`
+  即“反编译没跑完”，而非空函数体。`ghidra.decompile` 文档串点名了这个字段。
 
 
 - `error_boundary` 的行内脱敏(异常消息、事故日志、HTTP 500 体、CLI stderr 信封走的同一条
