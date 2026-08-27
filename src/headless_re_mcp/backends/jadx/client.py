@@ -30,6 +30,17 @@ _MAX_COUNTED_FILES = 50_000
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
+    """Relative .java paths, sorted, with the page as the alphabetical prefix.
+
+    The whole tree is collected (bounded by ``_MAX_COUNTED_FILES``) and sorted
+    before ``cap`` is applied. Capping the rglob order first and sorting the
+    slice returned an arbitrary subset of filesystem-walk order that only looked
+    sorted: on an APK with more decompiled classes than ``cap`` the listing
+    dropped files from wherever the walk reached them past the cap, not from the
+    alphabetical tail, so browsing the "sorted" list for a class inside the
+    returned range could miss one that was silently cut, and ``has_more`` read
+    as "more after the last name" when the gap was really in the middle.
+    """
     names: list[str] = []
     total = 0
     has_more = False
@@ -39,14 +50,15 @@ def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]
         if not path.is_file():
             continue
         total += 1
-        if len(names) < cap:
+        if len(names) < _MAX_COUNTED_FILES:
             names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
         if total >= _MAX_COUNTED_FILES:
             has_more = True
             break
     names.sort()
+    if len(names) > cap:
+        has_more = True
+        names = names[:cap]
     return names, total, has_more
 
 

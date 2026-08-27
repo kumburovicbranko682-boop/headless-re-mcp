@@ -3433,6 +3433,34 @@ class TestExportedFileListsDiscloseTruncation:
         assert len(result["java_files"]) == 4
         assert result["has_more"] is True
 
+    def test_a_truncated_jadx_source_list_is_the_alphabetical_prefix(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """Sorting the capped slice returned an arbitrary subset of walk order.
+
+        With more classes than the cap the listing dropped whichever files the
+        rglob reached past it, not the alphabetical tail, so the "sorted" reply
+        could omit a class inside the returned range. Twenty files written in
+        reverse order make filesystem-walk order unlikely to match the prefix by
+        luck; the page must still be the five alphabetically-smallest.
+        """
+        from headless_re_mcp.backends.jadx import client as mod
+
+        monkeypatch.setattr(mod, "_MAX_LISTED_FILES", 5)
+        out = tmp_path / "out"
+        sources = out / "sources"
+        sources.mkdir(parents=True)
+        for index in reversed(range(20)):
+            (sources / f"C{index:02d}.java").write_text("class C {}", encoding="utf-8")
+        client = mod.JadxClient(tmp_path / "jadx.bat")
+        (tmp_path / "jadx.bat").write_text("x", encoding="utf-8")
+        client._run = lambda *args, **kwargs: ("", "", 0)  # type: ignore[method-assign]
+        result = client.export_sources(tmp_path / "app.apk", out)
+        got = [name.replace("\\", "/") for name in result["java_files"]]
+        assert got == [f"sources/C{index:02d}.java" for index in range(5)]
+        assert result["java_file_count"] == 20
+        assert result["has_more"] is True
+
     def test_jadx_decompile_does_not_return_a_homonym_class(self, tmp_path: Any) -> None:
         from headless_re_mcp.backends.jadx import client as mod
         from headless_re_mcp.backends.jadx.client import JadxError
