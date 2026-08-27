@@ -71,6 +71,25 @@ def test_decompile_still_reports_a_truly_missing_class_as_not_found(
     assert "candidates" not in caught.value.details
 
 
+def test_decompile_qualified_missing_name_with_homonyms_is_not_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The caller already gave a package (com.missing.Widget); homonyms in other
+    # packages are not the class it named, so this is not_found, not an
+    # ambiguity the caller could resolve by qualifying a name it already
+    # qualified.
+    out = tmp_path / "out"
+    _write_class(out, "com/a", "Widget", "class Widget {}")
+    _write_class(out, "com/b", "Widget", "class Widget {}")
+    client = _client_with_sources(tmp_path, monkeypatch)
+
+    with pytest.raises(JadxError) as caught:
+        client.decompile(tmp_path / "app.apk", out, "com.missing.Widget")
+
+    assert caught.value.code == "not_found"
+    assert "candidates" not in caught.value.details
+
+
 def test_decompile_uses_the_only_simple_name_match(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
