@@ -236,3 +236,80 @@ def test_ldc_r8_reserves_its_eight_operand_bytes() -> None:
     assert [insn["mnemonic"] for insn in instructions] == ["ldc.r8", "ret"]
     assert instructions[1]["ip"] == len(il) - 1
     assert partial is False
+
+
+def test_two_byte_opcodes_decode_as_a_unit_and_stay_aligned() -> None:
+    """The 0xFE family decodes the prefix + sub-opcode + operand together.
+
+    Reading only the 0xFE and letting the sub-opcode fall through decoded it as
+    a top-level opcode; for initobj and the wide ldloc the operand bytes were
+    then read as instructions and the method desynced -- and the old code also
+    flagged the whole rest partial. Here ceq (no operand), initobj (4-byte
+    token) and ldloc (2-byte slot) must each decode whole, the ret must land in
+    step, and partial must stay false.
+    """
+    il = (
+        b"\xfe\x01"  # ceq
+        + b"\xfe\x15" + struct.pack("<I", 0x0200_0001)  # initobj <token>
+        + b"\xfe\x0c" + struct.pack("<H", 3)  # ldloc 3
+        + b"\x2a"  # ret
+    )
+    instructions, partial = _disassemble_il(il, max_insns=MAX_IL_INSNS)
+
+    assert [insn["mnemonic"] for insn in instructions] == ["ceq", "initobj", "ldloc", "ret"]
+    assert instructions[1]["operand"] == 0x0200_0001
+    assert instructions[2]["operand"] == 3
+    assert instructions[-1]["ip"] == len(il) - 1
+    assert partial is False
+
+
+def test_constrained_prefix_then_callvirt_both_decode() -> None:
+    """constrained. is a prefix carrying a token; the call after it still decodes.
+
+    A generic call on a type parameter emits `constrained. <T>` then `callvirt
+    <method>`. The prefix's 4-byte token must be consumed so the callvirt is
+    read as an instruction, not from inside the token bytes.
+    """
+    il = (
+        b"\xfe\x16" + struct.pack("<I", 0x1B00_0002)  # constrained. <token>
+        + b"\x6f" + struct.pack("<I", 0x0A00_0003)  # callvirt <method>
+        + b"\x2a"  # ret
+    )
+    instructions, partial = _disassemble_il(il, max_insns=MAX_IL_INSNS)
+
+    assert [insn["mnemonic"] for insn in instructions] == ["constrained.", "callvirt", "ret"]
+    assert instructions[0]["operand"] == 0x1B00_0002
+    assert instructions[1]["operand"] == 0x0A00_0003
+    assert instructions[-1]["ip"] == len(il) - 1
+    assert partial is False
+
+
+def test_two_byte_slot_index_is_unsigned_and_two_bytes_wide() -> None:
+    """ldarg's 0xFE form takes an unsigned uint16 slot: 0xFFFF is 65535."""
+    il = b"\xfe\x09" + struct.pack("<H", 0xFFFF) + b"\x2a"  # ldarg 65535; ret
+    instructions, partial = _disassemble_il(il, max_insns=MAX_IL_INSNS)
+    assert [insn["mnemonic"] for insn in instructions] == ["ldarg", "ret"]
+    assert instructions[0]["operand"] == 0xFFFF
+    assert instructions[1]["ip"] == 4
+    assert partial is False
+
+
+def test_unknown_two_byte_opcode_advances_past_the_prefix() -> None:
+    """An unassigned 0xFE sub-opcode still consumes both bytes, not just one."""
+    il = b"\xfe\x08\x2a"  # 0xFE 0x08 is unassigned; then ret
+    instructions, partial = _disassemble_il(il, max_insns=MAX_IL_INSNS)
+    assert [insn["mnemonic"] for insn in instructions] == ["fe_08", "ret"]
+    assert instructions[1]["ip"] == 2
+    assert partial is False
+
+
+def test_a_truncated_two_byte_opcode_is_partial() -> None:
+    """A 0xFE with no sub-opcode, or a token cut short, is truncation not garbage."""
+    dangling, partial = _disassemble_il(b"\xfe", max_insns=MAX_IL_INSNS)
+    assert partial is True
+    assert dangling == []
+
+    # initobj declares a 4-byte token but only two bytes remain.
+    short, short_partial = _disassemble_il(b"\xfe\x15\x01\x02", max_insns=MAX_IL_INSNS)
+    assert short_partial is True
+    assert all(insn["mnemonic"] != "initobj" for insn in short)

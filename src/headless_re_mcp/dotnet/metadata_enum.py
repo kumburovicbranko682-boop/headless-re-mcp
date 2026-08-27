@@ -181,6 +181,44 @@ _SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
     }
 )
 
+# The two-byte opcodes: a 0xFE prefix followed by this sub-opcode. Keyed by the
+# second byte, valued (mnemonic, operand width). All operands here are unsigned
+# -- a 2-byte local/argument slot index, a 4-byte metadata token, or the 1-byte
+# alignment/no. prefix bytes -- so none join _SIGNED_OPERANDS. ceq/cgt/clt back
+# every comparison expression, initobj every struct construction and default(T),
+# constrained. every generic call on a type parameter, and ldftn every delegate
+# creation, so these are common, not exotic.
+_OPCODES_FE: Final[dict[int, tuple[str, int]]] = {
+    0x00: ("arglist", 0),
+    0x01: ("ceq", 0),
+    0x02: ("cgt", 0),
+    0x03: ("cgt.un", 0),
+    0x04: ("clt", 0),
+    0x05: ("clt.un", 0),
+    0x06: ("ldftn", 4),
+    0x07: ("ldvirtftn", 4),
+    0x09: ("ldarg", 2),
+    0x0A: ("ldarga", 2),
+    0x0B: ("starg", 2),
+    0x0C: ("ldloc", 2),
+    0x0D: ("ldloca", 2),
+    0x0E: ("stloc", 2),
+    0x0F: ("localloc", 0),
+    0x11: ("endfilter", 0),
+    0x12: ("unaligned.", 1),
+    0x13: ("volatile.", 0),
+    0x14: ("tail.", 0),
+    0x15: ("initobj", 4),
+    0x16: ("constrained.", 4),
+    0x17: ("cpblk", 0),
+    0x18: ("initblk", 0),
+    0x19: ("no.", 1),
+    0x1A: ("rethrow", 0),
+    0x1C: ("sizeof", 4),
+    0x1D: ("refanytype", 0),
+    0x1E: ("readonly.", 0),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class Page:
@@ -791,9 +829,28 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
         start = i
         op = il[i]
         if op == 0xFE:
-            rebuilt.append({"ip": start, "mnemonic": "prefix.fe", "operand": None})
-            i += 1
-            partial = True
+            # Two-byte opcode: the 0xFE prefix plus a sub-opcode. Reading only
+            # the prefix and letting the sub-opcode byte fall through decoded it
+            # as a top-level opcode, and for the ones carrying a 2-byte slot
+            # index or 4-byte token (ldloc/ldarg, initobj, constrained., ldftn,
+            # sizeof) the operand bytes were then read as instructions and the
+            # rest of the method desynced. Decode the pair as a unit.
+            if i + 1 >= len(il):
+                partial = True
+                break
+            sub = il[i + 1]
+            info2 = _OPCODES_FE.get(sub)
+            if info2 is None:
+                rebuilt.append({"ip": start, "mnemonic": f"fe_{sub:02x}", "operand": None})
+                i += 2
+                continue
+            name, imm = info2
+            if i + 2 + imm > len(il):
+                partial = True
+                break
+            operand = int.from_bytes(il[i + 2 : i + 2 + imm], "little") if imm else None
+            rebuilt.append({"ip": start, "mnemonic": name, "operand": operand})
+            i += 2 + imm
             continue
         if op == 0x45:
             # switch is the one CIL opcode with a variable-length operand:
