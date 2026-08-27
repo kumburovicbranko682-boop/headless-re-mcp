@@ -758,10 +758,25 @@ class WebBackend:
         source = resp.get("scriptSource", "")
         if not isinstance(source, str):
             source = str(source)
+        # A WebAssembly script has no text source: getScriptSource returns an
+        # empty scriptSource and carries the module in a base64 ``bytecode``
+        # field. Reading scriptSource alone reports source="" for every wasm
+        # module web.wasm.list surfaces -- indistinguishable from a genuinely
+        # empty script, and the bytes are silently dropped. Fall back to the
+        # bytecode, delivered as base64 with base64_encoded set, exactly as
+        # web.network.get hands back a binary response body.
+        base64_encoded = False
+        filename = f"script-{uuid4().hex}.js"
+        if not source:
+            bytecode = resp.get("bytecode")
+            if isinstance(bytecode, str) and bytecode:
+                source = bytecode
+                base64_encoded = True
+                filename = f"wasm-{uuid4().hex}.wasm.b64"
         inline, spill, cut = _spill_text(
             source,
             artifact_dir=artifact_dir,
-            filename=f"script-{uuid4().hex}.js",
+            filename=filename,
             kind="script source",
         )
         result: JsonObject = {
@@ -769,6 +784,7 @@ class WebBackend:
             "bytes": len(source.encode("utf-8", errors="replace")),
             "source": inline,
             "truncated": cut,
+            "base64_encoded": base64_encoded,
         }
         if spill is not None:
             result["source_path"] = str(spill)
