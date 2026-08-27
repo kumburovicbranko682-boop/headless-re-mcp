@@ -301,6 +301,21 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
+        # cdb can exit non-zero after a usable session (a command that errored
+        # late still printed the stack or module list), so a non-zero exit that
+        # produced output stays a success -- the same rule the live-process
+        # path already applies. But a non-zero exit that wrote nothing is a
+        # failed open (missing or corrupt dump, wrong bitness): threads/modules/
+        # disasm drop exit_code and answer with only the (empty) output field,
+        # so without this guard a failed analysis reads as "the dump has no
+        # threads/modules/code" rather than a read that never ran.
+        if completed.returncode not in {0, 1} and not out:
+            raise WindbgError(
+                "backend_error",
+                "cdb dump analysis failed",
+                exit_code=completed.returncode,
+                stderr=err[:2000],
+            )
         return {
             "dump": str(dump),
             "output": out,

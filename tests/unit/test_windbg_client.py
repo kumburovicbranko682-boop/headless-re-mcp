@@ -155,6 +155,67 @@ def test_attach_puts_cdb_text_in_output_not_version_or_platform(
     assert "platform" not in payload
 
 
+def test_dump_analysis_that_failed_with_no_output_is_an_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed dump open that printed nothing must not read as an empty result.
+
+    cdb exits non-zero and writes nothing when it cannot open the dump (missing
+    or corrupt file, wrong bitness). The dump wrappers drop exit_code and answer
+    with only the output field, so without a guard modules()/threads()/disasm()
+    would return an empty string a caller reads as "the dump has none" rather
+    than a read that never ran. The live-process path already fails closed here;
+    the dump path must too.
+    """
+    from headless_re_mcp.backends.common.bounded_run import Completed
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+
+    def failed(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(0x80000003, b"", b"Could not open dump file, Win32 error 0n2")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", failed)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    with pytest.raises(WindbgError) as exc:
+        WindbgClient(cdb).modules(dump)
+
+    assert exc.value.code == "backend_error"
+    assert exc.value.details["exit_code"] == 0x80000003
+    assert "Win32 error" in str(exc.value.details["stderr"])
+
+
+def test_dump_analysis_nonzero_exit_with_output_stays_a_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cdb often exits non-zero after a usable session; keep that output.
+
+    A late command error does not undo the stack or module list cdb already
+    printed, so a non-zero exit that produced content is still an answer -- the
+    same allowance analyzeHeadless and the live-process path get.
+    """
+    from headless_re_mcp.backends.common.bounded_run import Completed
+
+    cdb = tmp_path / "cdb.exe"
+    cdb.write_bytes(b"MZ")
+    dump = tmp_path / "crash.dmp"
+    dump.write_bytes(b"dump")
+
+    def noisy(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(1, b"0000000`77000000 ntdll.dll", b"warning")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", noisy)
+    monkeypatch.setattr(windbg_module, "_is_launchable_cdb", lambda _path: True)
+
+    payload = WindbgClient(cdb).modules(dump)
+    assert payload["modules"] == "0000000`77000000 ntdll.dll"
+
+
 def test_windbg_descriptions_name_the_fields_cdb_text_comes_back_in() -> None:
     import ast
 
