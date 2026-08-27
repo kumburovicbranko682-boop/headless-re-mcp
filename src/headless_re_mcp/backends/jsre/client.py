@@ -8,6 +8,7 @@ needs Node.js 22 or 24; wabt provides ``wasm2wat`` and ``wasm-objdump``.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,6 +41,34 @@ _MAX_INPUT_BYTES = 16 * 1024 * 1024
 # subprocess into a precise invalid_params -- the same reason the size cap
 # refuses input up front rather than handing it to the child.
 _WASM_MAGIC = b"\x00asm"
+# js.secrets scans the file text for hardcoded credentials. The patterns are
+# deliberately the well-known, high-precision provider formats rather than a
+# generic entropy heuristic: a match on one of these is almost never a false
+# positive, and the labelled type tells the caller what was leaked. Bounded
+# like every other scan: a distinct-finding collect cap, a page cap and a
+# per-value length clamp so one pathological token cannot blow up the reply.
+_MAX_SECRETS_COLLECT = 2000
+_MAX_SECRETS_PAGE = 1000
+_MAX_SECRET_LEN = 512
+_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("aws_access_key_id", re.compile(r"\bA(?:KIA|SIA)[0-9A-Z]{16}\b")),
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    (
+        "google_oauth_client_id",
+        re.compile(r"\b[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com\b"),
+    ),
+    ("slack_token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,48}\b")),
+    ("github_token", re.compile(r"\bgh[pousr]_[0-9A-Za-z]{36,255}\b")),
+    ("stripe_key", re.compile(r"\b[sr]k_(?:live|test)_[0-9A-Za-z]{16,99}\b")),
+    (
+        "jwt",
+        re.compile(r"\beyJ[0-9A-Za-z_-]{8,}\.eyJ[0-9A-Za-z_-]{8,}\.[0-9A-Za-z_-]{8,}"),
+    ),
+    (
+        "private_key",
+        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"),
+    ),
+)
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -99,6 +128,58 @@ def _looks_like_wasm(path: Path) -> bool:
             return handle.read(4) == _WASM_MAGIC
     except OSError:
         return False
+
+
+def scan_secrets(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """Scan a JavaScript (or any text) file for hardcoded credentials.
+
+    Node-free and read-only: the web-RE analog of apk.secrets over the DEX
+    string pool, but for a downloaded or minified frontend bundle, which is one
+    of the commonest places a live API key leaks. Matches a fixed set of
+    well-known provider formats -- AWS access key id, Google API key and OAuth
+    client id, Slack, GitHub and Stripe tokens, JWTs, and PEM private-key
+    headers -- chosen for precision, so a hit is almost never a false positive
+    and its type says what was leaked. It uses no entropy heuristic (a bespoke
+    or generic key will be missed) and never launches webcrack, so it needs no
+    Node. Each finding is type and value (the matched token, clamped), deduped
+    and sorted by (type, value). Returns findings, count, total, offset and
+    has_more so a filled page is not read as every secret; total is capped at
+    2000 with scan_capped when more may exist. Input over 16 MiB is refused as
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    text = raw.decode("utf-8", errors="replace")
+    seen: set[tuple[str, str]] = set()
+    scan_more = False
+    for label, pattern in _SECRET_PATTERNS:
+        if scan_more:
+            break
+        for match in pattern.finditer(text):
+            if len(seen) >= _MAX_SECRETS_COLLECT:
+                scan_more = True
+                break
+            value = match.group(0)[:_MAX_SECRET_LEN]
+            seen.add((label, value))
+    findings = [
+        {"type": label, "value": value} for label, value in sorted(seen)
+    ]
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_SECRETS_PAGE))
+    window = findings[start : start + cap]
+    return {
+        "findings": window,
+        "count": len(window),
+        "total": len(findings),
+        "offset": start,
+        "has_more": start + len(window) < len(findings),
+        "scan_capped": scan_more,
+    }
 
 
 def _run(

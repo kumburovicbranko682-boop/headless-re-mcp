@@ -49,6 +49,29 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_beautify(path, timeout=timeout))
 
+    @tools.tool(name="js.secrets")
+    def js_secrets(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Scan a JavaScript (or text) file for hardcoded credentials.
+
+        Node-free and read-only: the web-RE analog of apk.secrets over the DEX
+        string pool, but for a downloaded or minified frontend bundle -- one of
+        the commonest places a live API key leaks. Matches a fixed set of
+        well-known provider formats (AWS access key id, Google API key and OAuth
+        client id, Slack, GitHub and Stripe tokens, JWTs, PEM private-key
+        headers) chosen for precision, so a hit is almost never a false positive
+        and its type says what leaked. It uses no entropy heuristic (a bespoke
+        or generic key is missed) and never launches webcrack, so it needs no
+        Node. Answers with findings (each type and value, the matched token
+        clamped), count, total, offset and has_more so a filled page is not read
+        as every secret; total is capped at 2000 with scan_capped when more may
+        exist. Input over 16 MiB is refused as too_large.
+        """
+        return _dump(analysis.js_secrets(path, offset=offset, limit=limit))
+
     @tools.tool(name="js.unpack_bundle")
     def js_unpack_bundle(
         path: str,
