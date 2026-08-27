@@ -185,6 +185,23 @@ class _LlmOutputMeter:
         self._last_mono = now
 
 
+def _utf8_lossy(text: str) -> str:
+    """The same text, guaranteed UTF-8 encodable.
+
+    json.loads accepts a lone \\ud800 escape, so provider deltas and
+    tool-call fields can carry unpaired surrogates. Everything that goes back
+    into the conversation is UTF-8 encoded on the next request (httpx builds
+    the body with ensure_ascii=False and .encode("utf-8")), and ids reach
+    SQLite text binds, both of which raise on a surrogate. Same replace
+    policy as the transport's byte decode: lossy but alive.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "replace").decode("utf-8")
+    return text
+
+
 def _arguments_too_deep(value: Any, *, limit: int = _MAX_ARGUMENT_DEPTH) -> bool:
     """True when a JSON value nests deeper than ``limit``.
 
@@ -427,16 +444,19 @@ class AgentOrchestrator:
                     await self._finish_cancel(run_id)
                     return
                 if event.type == "text_delta" and event.text:
-                    meter.add(event.text)
-                    text_bytes += len(event.text.encode("utf-8"))
+                    # The size check's own encode raised on an unpaired
+                    # surrogate before anything else saw the delta.
+                    delta = _utf8_lossy(event.text)
+                    meter.add(delta)
+                    text_bytes += len(delta.encode("utf-8"))
                     if text_bytes > _MAX_ASSISTANT_RESPONSE_BYTES:
                         raise RuntimeError(
                             "provider_response_too_large: assistant response exceeded "
                             f"{_MAX_ASSISTANT_RESPONSE_BYTES:,} bytes"
                         )
-                    text_parts.append(event.text)
-                    pending_delta.append(event.text)
-                    pending_chars += len(event.text)
+                    text_parts.append(delta)
+                    pending_delta.append(delta)
+                    pending_chars += len(delta)
                     if pending_chars >= _DELTA_FLUSH_CHARS:
                         self._flush_message_delta(run_id, pending_delta)
                         pending_chars = 0
@@ -482,15 +502,20 @@ class AgentOrchestrator:
                 return
             assistant_tool_calls = []
             for call in completed_calls:
-                assistant_tool_calls.append({"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False, sort_keys=True)}})
+                # id, name and the dumped arguments all come from the model
+                # and go back out through httpx's UTF-8 encode next round;
+                # id additionally reaches SQLite text binds below.
+                assistant_tool_calls.append({"id": _utf8_lossy(call.id), "type": "function", "function": {"name": _utf8_lossy(call.name), "arguments": _utf8_lossy(json.dumps(call.arguments, ensure_ascii=False, sort_keys=True))}})
             conversation.append({"role": "assistant", "content": visible_text or None, "tool_calls": assistant_tool_calls})
             for call in completed_calls:
                 if self._check_cancelled(run_id):
                     await self._finish_cancel(run_id)
                     return
-                result = await self._handle_tool_call(run_id, call.id or uuid.uuid4().hex, call.name, call.arguments)
-                conversation.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result, ensure_ascii=False, default=str)})
-                self.store.add_message(run.thread_id, "tool", json.dumps(result, ensure_ascii=False, default=str), run_id=run_id, tool_call_id=call.id)
+                call_id = _utf8_lossy(call.id)
+                result = await self._handle_tool_call(run_id, call_id or uuid.uuid4().hex, call.name, call.arguments)
+                result_json = _utf8_lossy(json.dumps(result, ensure_ascii=False, default=str))
+                conversation.append({"role": "tool", "tool_call_id": call_id, "content": result_json})
+                self.store.add_message(run.thread_id, "tool", result_json, run_id=run_id, tool_call_id=call_id)
                 if self._check_cancelled(run_id):
                     await self._finish_cancel(run_id)
                     return

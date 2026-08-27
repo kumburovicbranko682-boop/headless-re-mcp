@@ -295,6 +295,81 @@ async def test_a_tool_outside_the_agent_transport_is_refused_rather_than_fatal(
 
 
 @pytest.mark.asyncio
+async def test_surrogates_from_the_model_or_tool_never_reach_the_next_request(
+    tmp_path: Path,
+) -> None:
+    """Everything handed back to the provider must survive httpx's encode.
+
+    httpx builds the next request body with ensure_ascii=False and
+    .encode("utf-8"), which raises on an unpaired surrogate -- and json.loads
+    lets a lone \\ud800 escape through, so the model's own text deltas, its
+    tool-call ids, and tool results (hostile binary strings pass through
+    backend JSON parses) can all carry one. The text delta case crashed even
+    earlier, on the size accounting's own encode. Either way the run died on
+    an incident-labelled internal error.
+    """
+    import json
+
+    seen: list[list[JsonObject]] = []
+
+    def leaky() -> JsonObject:
+        return {"ok": True, "data": {"note": "from \ud800 binary"}}
+
+    class SurrogateProvider:
+        def __init__(self) -> None:
+            self.round = 0
+
+        def stream_chat(
+            self,
+            *,
+            messages: Sequence[JsonObject],
+            tools: Sequence[JsonObject],
+            model: str,
+            enable_thinking: bool = False,
+            reasoning_effort: str | None = None,
+        ) -> AsyncIterator[ProviderEvent]:
+            del tools, model, enable_thinking, reasoning_effort
+            seen.append(list(messages))
+            return self._events()
+
+        async def _events(self) -> AsyncIterator[ProviderEvent]:
+            self.round += 1
+            if self.round == 1:
+                yield ProviderEvent("text_delta", text="hello \ud800 world")
+                yield ProviderEvent(
+                    "completed",
+                    tool_calls=(ProviderToolCall("call \ud800 id", "test.tool", {}),),
+                )
+            else:
+                yield ProviderEvent("completed", tool_calls=())
+
+        async def list_models(self) -> list[str]:
+            return ["fake"]
+
+    store = AgentStore(tmp_path / "surrogate-conv.db")
+    thread = store.create_thread()
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(leaky)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: SurrogateProvider(),
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.COMPLETED
+    assert len(seen) == 2, "the run has to make it to the second request"
+    json.dumps(seen[1], ensure_ascii=False, default=str).encode("utf-8")
+    text = "".join(
+        str(item.get("content"))
+        for item in seen[1]
+        if item.get("role") == "assistant" and item.get("content")
+    )
+    assert "hello" in text and "world" in text, "the clean parts of the delta must survive"
+
+
+@pytest.mark.asyncio
 async def test_an_ordinary_argument_is_left_alone(tmp_path: Path) -> None:
     """The limit is far above anything the catalog actually takes."""
     executed: list[str] = []

@@ -137,7 +137,18 @@ def bounded_tool_result(value: Any, *, max_bytes: int = 262_144) -> tuple[JsonOb
         normalized: JsonObject = value
     else:
         normalized = {"value": value}
-    encoded = json.dumps(normalized, ensure_ascii=False, default=str).encode("utf-8")
+    text = json.dumps(normalized, ensure_ascii=False, default=str)
+    try:
+        encoded = text.encode("utf-8")
+    except UnicodeEncodeError:
+        # Hostile binary strings pass through backend JSON parses as unpaired
+        # surrogates (json.loads accepts a lone \ud800 escape), so a tool
+        # result can hold one, and this size check raised before any bound
+        # was applied -- an incident-labelled run failure whose cause was the
+        # target's own data. Sanitize and re-derive the dict so the bounded
+        # result stays UTF-8 encodable everywhere downstream.
+        encoded = text.encode("utf-8", "replace")
+        normalized = json.loads(encoded.decode("utf-8"))
     if len(encoded) <= max_bytes:
         return normalized, False
     summary: JsonObject = {

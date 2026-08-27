@@ -451,6 +451,52 @@ async def test_stdio_reader_drains_oversized_records_without_buffering_them() ->
     assert following_oversized is False
 
 
+def test_a_surrogate_in_a_tool_result_still_gets_a_reply_line() -> None:
+    """One bad reply must not kill the stdout writer and hang the session.
+
+    json.loads lets a lone \\ud800 escape through, so a hostile string inside
+    a tool result (structured output serializes the raw dict) reaches the
+    wire serializer, where pydantic's Rust core raises
+    PydanticSerializationError. That exception escaped stdout_writer's
+    except clause, the task group collapsed, and every request after the bad
+    one got no response at all.
+    """
+    import json
+
+    from mcp.types import CallToolResult, JSONRPCMessage, JSONRPCResponse, TextContent
+
+    from headless_re_mcp.mcp.stdio_errors import serialize_reply
+
+    bad = "strings \ud800 from a hostile binary"
+    result = CallToolResult(
+        content=[TextContent(type="text", text=bad)],
+        structuredContent={"ok": True, "data": {"note": bad}},
+    )
+    message = JSONRPCMessage(
+        JSONRPCResponse(jsonrpc="2.0", id=9, result=result.model_dump(by_alias=True))
+    )
+
+    line = serialize_reply(message)
+
+    line.encode("utf-8")
+    dumped = json.loads(line)
+    assert dumped["id"] == 9, "the caller correlates by id; the reply must keep it"
+    note = dumped["result"]["structuredContent"]["data"]["note"]
+    assert "\ud800" not in note
+    assert note.startswith("strings ") and note.endswith(" from a hostile binary")
+
+
+def test_a_clean_reply_serializes_on_the_fast_path() -> None:
+    import json
+
+    from mcp.types import JSONRPCMessage, JSONRPCResponse
+
+    from headless_re_mcp.mcp.stdio_errors import serialize_reply
+
+    message = JSONRPCMessage(JSONRPCResponse(jsonrpc="2.0", id=1, result={"ok": True}))
+    assert json.loads(serialize_reply(message))["result"] == {"ok": True}
+
+
 def test_server_instructions_cover_apk_and_web_not_just_pe() -> None:
     """The initialize payload told the model it could only open a PE.
 

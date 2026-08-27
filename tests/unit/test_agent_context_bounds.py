@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from headless_re_mcp.agent.context import compact_messages
+from headless_re_mcp.agent.context import bounded_tool_result, compact_messages
 
 
 def test_compaction_counts_tool_call_arguments_toward_the_context_budget() -> None:
@@ -64,3 +64,34 @@ def test_compaction_reserves_room_for_its_own_system_messages() -> None:
 
     assert wire_chars <= 8_000, f"8,000-character budget produced {wire_chars}"
     assert str(compacted[-1].get("content", "")).startswith("latest:")
+
+
+def test_a_surrogate_in_a_tool_result_is_replaced_not_fatal() -> None:
+    """Hostile binary strings reach tool results as unpaired surrogates.
+
+    json.loads accepts a lone \\ud800 escape in backend JSON, and this
+    function's own size check encodes the result before any bound applies,
+    so the target's data crashed the size check itself -- an
+    incident-labelled run failure. The bounded result must come back UTF-8
+    encodable, because the conversation, the store, and httpx all encode it
+    again.
+    """
+    bounded, truncated = bounded_tool_result(
+        {"ok": True, "data": {"note": "from \ud800 the binary"}}
+    )
+
+    assert truncated is False
+    json.dumps(bounded, ensure_ascii=False).encode("utf-8")
+    note = bounded["data"]["note"]
+    assert "\ud800" not in note
+    assert note.startswith("from ") and note.endswith(" the binary")
+
+
+def test_an_oversized_surrogate_result_still_truncates_cleanly() -> None:
+    bounded, truncated = bounded_tool_result(
+        {"ok": True, "data": {"blob": "\ud800" + "x" * 40_000}}, max_bytes=1_024
+    )
+
+    assert truncated is True
+    assert bounded["ok"] is True
+    json.dumps(bounded, ensure_ascii=False).encode("utf-8")

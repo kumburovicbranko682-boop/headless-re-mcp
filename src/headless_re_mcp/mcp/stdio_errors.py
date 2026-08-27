@@ -68,6 +68,27 @@ def _request_id(line: str) -> str | int | None:
     return value
 
 
+def serialize_reply(message: Any) -> str:
+    """One outgoing JSON-RPC message as its NDJSON wire line.
+
+    pydantic's Rust serializer raises PydanticSerializationError (a
+    ValueError) when any str field holds an unpaired surrogate -- and
+    json.loads lets a lone \\ud800 escape through, so a hostile string inside
+    a tool result (structured output serializes the raw dict) reaches this
+    point. Letting it raise killed the stdout writer task and with it the
+    whole stdio session: every request after one bad reply hung with no
+    response at all. The lossy fallback answers with '?' where the surrogate
+    was, which the caller can still parse and correlate by id.
+    """
+    try:
+        payload: str = message.model_dump_json(by_alias=True, exclude_none=True)
+        return payload
+    except ValueError:
+        data = message.model_dump(by_alias=True, exclude_none=True, mode="json")
+        encoded = json.dumps(data, ensure_ascii=False, default=str)
+        return encoded.encode("utf-8", "replace").decode("utf-8")
+
+
 @asynccontextmanager
 async def stdio_server_with_parse_replies() -> Any:
     """SDK stdio, except an unreadable request with an id gets an error reply.
@@ -125,9 +146,7 @@ async def stdio_server_with_parse_replies() -> Any:
         try:
             async with write_stream_reader:
                 async for session_message in write_stream_reader:
-                    payload = session_message.message.model_dump_json(
-                        by_alias=True, exclude_none=True
-                    )
+                    payload = serialize_reply(session_message.message)
                     await stdout.write(payload + "\n")
                     await stdout.flush()
         except anyio.ClosedResourceError:

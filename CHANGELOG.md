@@ -64,6 +64,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   返回），store 的 `propose_tool_call` 独立可达处也以自己的口径拒绝而非裸抛编码错误。
   五条新回归测试在未修复代码上全部复现原崩溃。
 
+### 修复（一个含代理项的工具结果杀死整个 MCP stdio 会话 / 炸掉下一轮 provider 请求）
+
+- 同一注入源(`json.loads` 放行孤立 `\ud800` 转义)在两条出口上各有一处致命点,均已实证:
+  **MCP stdio 出口**——工具以 `structured_output=True` 注册,结果 dict 原样进
+  `structuredContent`,序列化推迟到 `stdout_writer` 的 `model_dump_json`;pydantic 的
+  Rust 序列化器对未配对代理项抛 `PydanticSerializationError`,而该协程只捕
+  `ClosedResourceError`,任务组随之坍塌——一个含代理项的工具结果(敌意二进制的字符串
+  经后端 JSON 透传即可)之后,**整个 stdio 会话所有请求永久无响应**。现抽出
+  `serialize_reply`:快路径不变,失败时经 `model_dump(mode="json")` 有损重序列化,
+  调用方仍能按 id 关联到一条可解析的回复。**provider 出口**——本机 httpx 的
+  `encode_json` 用 `ensure_ascii=False` 构体再 `.encode("utf-8")`,对代理项抛
+  `UnicodeEncodeError`;而 orchestrator 把 tool_calls(id/name/参数)与正文追加进对话
+  发生在参数预检拒绝**之前**,含代理项的字段必然进入下一轮请求体。更早的两处:正文
+  delta 的字节计数 `event.text.encode("utf-8")` 当场炸;`bounded_tool_result` 的
+  体积裁剪先 encode 后设界,目标自己的数据就能把运行炸成事故。现在正文 delta 在摄入处、
+  tool_calls 三字段与工具结果 JSON 在进对话处、`bounded_tool_result` 在裁剪处统一走
+  `_utf8_lossy`(与传输层字节解码同款的 replace 策略),`tool_call_id` 一并消毒后才触
+  SQLite。五条新测试(stdio 序列化两条、`bounded_tool_result` 两条、端到端"交给
+  provider 的一切必须扛住 httpx 那次 encode"一条)在未修复代码上全部复现原崩溃。
+
 ### 修复（模型幻觉工具名铸事故号炸掉整个运行）
 
 - `_handle_tool_call` 用 `catalog.require(name)` 查规格,未知名字抛 `KeyError`,调用点
