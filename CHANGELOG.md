@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（浏览器 smoke 测试破坏整套集成收集且选择器漂移）
+
+- `tests/integration/test_agent_browser_smoke.py` 在模块顶层 `from playwright.sync_api import ...`，
+  未装 playwright 的机器上这会让 **整个 `tests/integration` 目录收集失败**（是 error 而非 skip），
+  比其它后端一贯的「skip != pass」还糟——Linux 上没有 playwright 时连非 PE 的 r2/proxy/android Gate
+  都无法收集。改用 `pytest.importorskip` 让缺 playwright 干净地跳过本模块。
+- 浏览器启动此前写死 `C:\Program Files\Google\Chrome\...` 绝对路径，等于这条 Web/agent E2E 只能在
+  装了该路径 Chrome 的 Windows 上跑；因而它长期没被执行，SPA 早已改版而选择器全线漂移。改为像
+  `WebBackend.open` 一样用 Playwright 自带 Chromium（缺浏览器则如实 skip），并把选择器对齐当前
+  SPA（工作方向落地页「开始一段分析」、以 `消息` 输入框识别工作台、`设置` 打开「模型与设置」对话框、
+  `接口地址`/`模型`/`API 密钥`/`保存模型`、保存后对话框不再自动关闭需显式关）。据此在 Linux + Chromium
+  下实测通过：一次读工具的完整 SSE→run→工具执行→二轮往返，以及 provider 密钥不回流到
+  `/api/providers`、DOM、storage 与任何响应体。原先靠 `workflow.cancel` 触发审批卡的分支已删除——
+  当前默认 autonomy 会自动放行该 `state_change`，审批卡不再出现；审批 UI 由 webui 组件测试覆盖。
+
 ### 新增（radare2 ELF 实测 Gate 与可移植 ELF 夹具）
 
 - 跨平台静态那条线此前只有 PE 夹具的 r2 实测 Gate，Linux/ELF 目标走的 `enrich_r2_payload`
