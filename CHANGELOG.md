@@ -55,7 +55,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,
   且每个非本机探测都往事故日志写一条记录(可被扫描器刷爆)。现改为中间件内直接返回 403。
 
-### 修复（`..` 绕过产物归属守卫）
+### 修复（`apk.sign` 的 keystore 密码不再暴露在进程命令行上）
+
+- `apk.sign` 走 apksigner,此前把密码以 `--ks-pass pass:<密码>` / `--key-pass pass:<密码>`
+  放在子进程 argv 上。`/proc/<pid>/cmdline` 对本机任何用户可读——在签名进程存活的窗口里,
+  同机的其它用户 `ps`/读 cmdline 就能抓到 release keystore 密码。SECURITY.md 只承诺「密码不进
+  错误详情」,代码也只擦了 stderr,唯独没堵住 argv 这个更直接的泄漏面。
+- 现在密码经环境变量下发:argv 改用 apksigner 的 `env:` 规格(`--ks-pass env:HRE_APKSIGNER_KS_PASS`),
+  真正的密码只放进签名子进程的环境。`/proc/<pid>/environ` 只有同 uid(即跑工具的操作者本人)可读,
+  argv 里再也没有密码的任何形态。仅签名那一趟带此变量;随后的 verify 用未加料的父环境跑,绝不继承密码。
+- stderr 擦洗保留为第二道防线(万一 keystore 路径或提示回显了密码),但 argv 已不含密码,主泄漏面已堵。
+- 新增回归:签名 argv 里既无明文密码也无 `pass:`、两个密码参数都指向 `env:` 变量、密码经子环境下发
+  且父环境原样保留,以及 verify 趟不带密码变量、进程环境事后也不残留该变量。
 
 - 全仓沿用 `not session_id or Path(session_id).name != session_id` 作「单路径段」判据,但
   `Path("..").name == ".."`,故 `..` 能溜过。用在 `_session_artifact_roots` 时后果最重:每个

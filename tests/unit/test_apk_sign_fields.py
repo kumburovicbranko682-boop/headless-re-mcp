@@ -8,7 +8,11 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.apktool.client import ApktoolClient, ApktoolError
+from headless_re_mcp.backends.apktool.client import (
+    _KS_PASS_ENV,
+    ApktoolClient,
+    ApktoolError,
+)
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -124,6 +128,97 @@ def test_a_failed_sign_scrubs_the_keystore_password_from_stderr(
     verify_stderr = str(verify_failure.value.details["stderr"])
     assert password not in verify_stderr
     assert "***" in verify_stderr
+
+
+def test_keystore_password_is_delivered_by_env_not_on_the_argv(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A password on the argv is world-readable via /proc/<pid>/cmdline.
+
+    Any local user can list another process's command line, so ``pass:<pw>`` on
+    the apksigner argv leaked the keystore password for the life of the signing
+    process. It must ride in the environment (the env: spec names a variable
+    apksigner reads), which only the same uid can read via /proc/<pid>/environ.
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    password = "hunter2-release-pw"
+    monkeypatch.setenv("HRE_PARENT_MARKER", "present")
+
+    seen: dict[str, Any] = {}
+
+    def capture(cmd: list[str], *, timeout: float, env: Any = None) -> tuple[str, str, int]:
+        if "sign" in cmd:  # the verify pass carries no password
+            seen["cmd"] = list(cmd)
+            seen["env"] = dict(env) if env is not None else None
+        out.write_bytes(b"PKSIGN")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", capture)
+    client = ApktoolClient(fake_tool, signer)
+    payload = client.sign(
+        apk, out, keystore=keystore, keystore_password=password, key_alias="release"
+    )
+    assert payload["signed"] is True
+
+    argv = seen["cmd"]
+    joined = " ".join(argv)
+    # The secret is nowhere on the command line, in any form.
+    assert password not in joined
+    assert "pass:" not in joined
+    # Both password arguments point at the variable apksigner will read.
+    assert argv.count(f"env:{_KS_PASS_ENV}") == 2
+    # The password rides in the child environment, and the parent env is intact.
+    assert seen["env"] is not None
+    assert seen["env"][_KS_PASS_ENV] == password
+    assert seen["env"]["HRE_PARENT_MARKER"] == "present"
+
+
+def test_verify_pass_does_not_carry_the_keystore_password(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Only the sign pass needs the secret; verify must not inherit it.
+
+    The password variable is added to the sign child's environment only, so a
+    later verify (which runs with the plain parent environment) never sees it.
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    password = "hunter2-release-pw"
+    monkeypatch.delenv(_KS_PASS_ENV, raising=False)
+
+    verify_env: dict[str, Any] = {}
+
+    def capture(cmd: list[str], *, timeout: float, env: Any = None) -> tuple[str, str, int]:
+        if "verify" in cmd:
+            verify_env["env"] = env
+        out.write_bytes(b"PKSIGN")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", capture)
+    client = ApktoolClient(fake_tool, signer)
+    client.sign(
+        apk, out, keystore=keystore, keystore_password=password, key_alias="release"
+    )
+    # verify inherits the parent environment (env=None), which has no password var.
+    assert verify_env["env"] is None
+    import os
+
+    assert _KS_PASS_ENV not in os.environ
 
 
 def test_apk_sign_does_not_claim_signed_when_verify_fails(
