@@ -340,6 +340,26 @@ def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None
                     "cookies",
                     "headers",
                 }, sample["response"]
+
+                # The enrichment must be real, not just structurally present:
+                # the /app.js request the browser actually made carries request
+                # and response headers and a finished transfer size.
+                js_entry = next(
+                    (e for e in log["entries"] if e["request"]["url"].endswith("/app.js")),
+                    None,
+                )
+                assert js_entry is not None, [e["request"]["url"] for e in log["entries"]]
+                # requestWillBeSent carries the request headers Chromium sends
+                # (Host arrives via a separate extra-info event, so assert on
+                # user-agent, which is always present here).
+                req_header_names = {h["name"].lower() for h in js_entry["request"]["headers"]}
+                assert "user-agent" in req_header_names, js_entry["request"]["headers"]
+                assert js_entry["response"]["headers"], js_entry["response"]
+                resp_header_names = {h["name"].lower() for h in js_entry["response"]["headers"]}
+                assert "content-type" in resp_header_names, js_entry["response"]["headers"]
+                assert js_entry["response"]["status"] == 200, js_entry["response"]
+                assert isinstance(js_entry["response"]["bodySize"], int), js_entry["response"]
+                assert js_entry["response"]["bodySize"] > 0, js_entry["response"]
             finally:
                 service.web_close(session_id)
         finally:
