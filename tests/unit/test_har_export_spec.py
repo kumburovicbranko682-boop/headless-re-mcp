@@ -121,6 +121,23 @@ def test_har_entry_parses_the_query_string_from_the_url() -> None:
     assert params == [("q", "hello world"), ("tag", "a"), ("tag", "b"), ("flag", "")]
 
 
+def test_har_entry_tolerates_a_url_the_splitter_rejects() -> None:
+    """A malformed URL must not sink the whole export.
+
+    ``urlsplit`` raises ValueError on a URL with an unterminated IPv6 host
+    (``http://[::1``), which a capture can hold verbatim from a redirect or a
+    hostile page. The queryString parse swallows that and returns an empty
+    param list so the entry -- and the log it rides in -- still validates,
+    rather than letting one bad row abort a HAR the analyst asked for.
+    """
+    from headless_re_mcp.backends.common.har import _query_string
+
+    assert _query_string("http://[::1") == []
+    entry = har_entry(method="GET", url="http://[::1", status=200, mime_type="text/html")
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["request"]["queryString"] == []
+
+
 def test_har_entry_reports_a_known_response_body_size() -> None:
     """When the capture knows the decoded body length it must not emit -1."""
     known = har_entry(
