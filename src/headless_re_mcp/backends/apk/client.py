@@ -37,6 +37,21 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _page_bounds(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
+    """Clamp a page request to a start >= 0 and a bounded window size.
+
+    The MCP schema constrains these with ``Field(ge=0, le=...)``, but the agent
+    transport dispatches straight to the handler without enforcing it (see
+    ``CommandCatalog.invoke``), so a model-supplied ``offset=-1`` reached the
+    slice below and Python negative-indexing returned the wrong window instead
+    of an empty tail. The sibling backends (proxy flows, jsre unpack, adb
+    listings) all clamp here; this makes the apk pager match them.
+    """
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), max_limit))
+    return start, cap
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -303,13 +318,14 @@ class ApkClient:
                 break
             names.append(klass.name)
         names.sort()
-        window = names[offset : offset + limit]
+        start, cap = _page_bounds(offset, limit, max_limit=1000)
+        window = names[start : start + cap]
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
-            "offset": offset,
-            "has_more": offset + len(window) < len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
             "scan_capped": scan_more,
         }
 
@@ -348,14 +364,15 @@ class ApkClient:
                 )
             if scan_more:
                 break
-        window = methods[offset : offset + limit]
+        start, cap = _page_bounds(offset, limit, max_limit=1000)
+        window = methods[start : start + cap]
         return {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
             "total": len(methods),
-            "offset": offset,
-            "has_more": offset + len(window) < len(methods),
+            "offset": start,
+            "has_more": start + len(window) < len(methods),
             "scan_capped": scan_more,
         }
 
@@ -369,13 +386,14 @@ class ApkClient:
                 break
             seen.add(str(item.get_value())[:_MAX_STRING_LEN])
         values = sorted(seen)
-        window = values[offset : offset + limit]
+        start, cap = _page_bounds(offset, limit, max_limit=2000)
+        window = values[start : start + cap]
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
-            "offset": offset,
-            "has_more": offset + len(window) < len(values),
+            "offset": start,
+            "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
         }
 
