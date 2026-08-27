@@ -150,6 +150,11 @@ def test_inspect_reads_assembly_name_past_intervening_tables() -> None:
     report = inspect_dotnet(fixture, require_verified=True)
     assert report.module_name == "MyModule.dll"
     assert report.assembly_name == "MyAssembly"
+    # The Assembly table's four-part version and the Module table's MVID are the
+    # managed identity facts triage keys off; both must come back from the real
+    # tables, not None. The MVID is the fixed value the builder stamps in.
+    assert report.assembly_version == "1.0.0.0"
+    assert report.mvid == "8b8a2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
     assert report.metadata_stats is not None
     assert report.metadata_stats.type_count == 2
     assert report.metadata_stats.method_count == 2

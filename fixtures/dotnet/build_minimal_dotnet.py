@@ -17,6 +17,7 @@ Run ``python fixtures/dotnet/build_minimal_dotnet.py`` to regenerate it.
 from __future__ import annotations
 
 import struct
+import uuid
 from pathlib import Path
 
 _SECTION_RVA = 0x2000
@@ -37,6 +38,11 @@ RESOURCE_FLAGS = 0x0001  # Public
 METADATA_VERSION = "v4.0.30319"
 ENTRY_POINT_TOKEN = 0x06000002  # Run
 CALL_TARGET_TOKEN = 0x0A000001  # MemberRef row 1
+# Every compiler stamps a Module Version ID -- a GUID regenerated on each build
+# -- into the #GUID heap, and the Module row's Mvid points at it. A real
+# assembly is never missing one, so the fixture carries a fixed, recognizable
+# value the inspect gate can assert against.
+MODULE_MVID = "8b8a2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
 
 
 def _u8(v: int) -> bytes:
@@ -122,8 +128,8 @@ def build() -> bytes:
     for bit in range(64):
         if valid & (1 << bit):
             tables += _u32(row_counts[bit])
-    # Module: Generation Name Mvid EncId EncBaseId
-    tables += _u16(0) + _u16(i_module) + _u16(0) + _u16(0) + _u16(0)
+    # Module: Generation Name Mvid EncId EncBaseId (Mvid -> #GUID row 1)
+    tables += _u16(0) + _u16(i_module) + _u16(1) + _u16(0) + _u16(0)
     # TypeDef x2: Flags Name Namespace Extends FieldList MethodList
     tables += _u32(0) + _u16(i_type_module) + _u16(i_ns) + _u16(0) + _u16(1) + _u16(1)
     tables += _u32(0x00100001) + _u16(i_type_sample) + _u16(i_ns) + _u16(0) + _u16(1) + _u16(1)
@@ -150,7 +156,7 @@ def build() -> bytes:
     stream_defs = [
         ("#~", tables_stream),
         ("#Strings", strings_heap),
-        ("#GUID", b""),
+        ("#GUID", uuid.UUID(MODULE_MVID).bytes_le),
         ("#Blob", _pad4(b"\x00")),
     ]
 

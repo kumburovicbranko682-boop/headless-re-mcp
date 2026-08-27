@@ -84,6 +84,11 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         # TypeDef/Field/MethodDef tables that sit before Assembly in any real
         # image; a shallow walk returns None here.
         assert report["assembly_name"] == "MyAssembly"
+        # The assembly's four-part version and the module's MVID are the managed
+        # analogue of a native binary's soname/build-id: the declared identity
+        # plus a per-build fingerprint. Both must come off the real tables.
+        assert report["assembly_version"] == "1.0.0.0"
+        assert report["mvid"] == "8b8a2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
         stats = report["metadata_stats"]
         assert stats["type_count"] == 2
         assert stats["method_count"] == 2

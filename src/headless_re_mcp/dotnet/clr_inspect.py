@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -79,6 +80,12 @@ class DotnetInspectReport:
     assembly_name: str | None
     note: str
     metadata_stats: MetadataStats | None = None
+    # The Assembly table's four-part version and the Module table's MVID -- a
+    # per-build GUID. Together they are the managed analogue of a native
+    # binary's soname/build-id: the assembly's declared identity plus a
+    # fingerprint that changes on every recompile, which triage keys off.
+    assembly_version: str | None = None
+    mvid: str | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -97,6 +104,8 @@ class DotnetInspectReport:
             "streams": list(self.streams),
             "module_name": self.module_name,
             "assembly_name": self.assembly_name,
+            "assembly_version": self.assembly_version,
+            "mvid": self.mvid,
             "metadata_stats": (
                 self.metadata_stats.to_dict() if self.metadata_stats is not None else None
             ),
@@ -187,6 +196,8 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
     streams: list[str] = []
     module_name: str | None = None
     assembly_name: str | None = None
+    assembly_version: str | None = None
+    mvid: str | None = None
     metadata_stats: MetadataStats | None = None
     verified = False
     note = "COR20 present"
@@ -202,6 +213,8 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
                     streams,
                     module_name,
                     assembly_name,
+                    assembly_version,
+                    mvid,
                     metadata_stats,
                 ) = _parse_metadata_root(meta)
                 note = "verified COR20 + BSJB metadata"
@@ -227,6 +240,8 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
         streams=tuple(streams),
         module_name=module_name,
         assembly_name=assembly_name,
+        assembly_version=assembly_version,
+        mvid=mvid,
         note=note,
         metadata_stats=metadata_stats,
     )
@@ -265,19 +280,21 @@ def _decode_flags(flags: int) -> tuple[str, ...]:
 
 def _parse_metadata_root(
     meta: bytes,
-) -> tuple[str | None, list[str], str | None, str | None, MetadataStats | None]:
+) -> tuple[
+    str | None, list[str], str | None, str | None, str | None, str | None, MetadataStats | None
+]:
     if len(meta) < 16 or meta[:4] != _CLR_METADATA_SIG:
-        return None, [], None, None, None
+        return None, [], None, None, None, None, None
     version_len = int.from_bytes(meta[12:16], "little")
     if version_len < 0 or 16 + version_len > len(meta):
-        return None, [], None, None, None
+        return None, [], None, None, None, None, None
     version_raw = meta[16 : 16 + version_len]
     version = version_raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
     # Align version block to 4 bytes.
     version_padded = (version_len + 3) & ~3
     cursor = 16 + version_padded
     if cursor + 4 > len(meta):
-        return version, [], None, None, None
+        return version, [], None, None, None, None, None
     stream_count = int.from_bytes(meta[cursor + 2 : cursor + 4], "little")
     cursor += 4
     streams: list[str] = []
@@ -300,25 +317,34 @@ def _parse_metadata_root(
 
     module_name: str | None = None
     assembly_name: str | None = None
+    assembly_version: str | None = None
+    mvid: str | None = None
     stats: MetadataStats | None = None
     try:
-        module_name, assembly_name, stats = _parse_tables_and_names(meta, stream_map)
+        module_name, assembly_name, assembly_version, mvid, stats = _parse_tables_and_names(
+            meta, stream_map
+        )
     except Exception:
         module_name = None
         assembly_name = None
+        assembly_version = None
+        mvid = None
         stats = None
-    return version, streams, module_name, assembly_name, stats
+    return version, streams, module_name, assembly_name, assembly_version, mvid, stats
 
 
 def _parse_tables_and_names(
     meta: bytes,
     stream_map: dict[str, tuple[int, int]],
-) -> tuple[str | None, str | None, MetadataStats | None]:
-    """Best-effort Module/Assembly names + table row counts from #~ + heaps."""
+) -> tuple[str | None, str | None, str | None, str | None, MetadataStats | None]:
+    """Best-effort Module/Assembly identity + table row counts from #~ + heaps.
+
+    Returns ``(module_name, assembly_name, assembly_version, mvid, stats)``.
+    """
     tables_key = "#~" if "#~" in stream_map else ("#-" if "#-" in stream_map else None)
     strings_key = "#Strings" if "#Strings" in stream_map else None
     if tables_key is None:
-        return None, None, None
+        return None, None, None, None, None
     t_off, t_size = stream_map[tables_key]
     tables = meta[t_off : t_off + t_size]
     strings = b""
@@ -327,9 +353,13 @@ def _parse_tables_and_names(
         s_off, s_size = stream_map[strings_key]
         strings = meta[s_off : s_off + s_size]
         strings_heap_bytes = s_size
+    guids = b""
+    if "#GUID" in stream_map:
+        g_off, g_size = stream_map["#GUID"]
+        guids = meta[g_off : g_off + g_size]
     us_heap_bytes = stream_map["#US"][1] if "#US" in stream_map else None
     if len(tables) < 24:
-        return None, None, None
+        return None, None, None, None, None
     heap_sizes = tables[6]
     string_index_size = 4 if (heap_sizes & 0x01) else 2
     valid = int.from_bytes(tables[8:16], "little")
@@ -338,7 +368,7 @@ def _parse_tables_and_names(
     for bit in range(64):
         if valid & (1 << bit):
             if cursor + 4 > len(tables):
-                return None, None, None
+                return None, None, None, None, None
             row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
             cursor += 4
 
@@ -365,12 +395,29 @@ def _parse_tables_and_names(
             end = len(strings)
         return strings[index:end].decode("utf-8", errors="replace")
 
-    module_name: str | None = None
-    assembly_name: str | None = None
-    if not strings:
-        return None, None, stats
     guid_index_size = 4 if (heap_sizes & 0x02) else 2
     blob_index_size = 4 if (heap_sizes & 0x04) else 2
+
+    def read_guid_index(buf: bytes, at: int) -> int:
+        return int.from_bytes(buf[at : at + guid_index_size], "little")
+
+    def guid_at(index: int) -> str | None:
+        # The #GUID heap is 1-based: index N is the Nth 16-byte GUID. Rendered
+        # the way .NET's Guid.ToString() does (first three groups little-endian),
+        # which is what every managed tool prints, so it can be matched by eye.
+        if index <= 0:
+            return None
+        start = (index - 1) * 16
+        if start + 16 > len(guids):
+            return None
+        return str(uuid.UUID(bytes_le=guids[start : start + 16]))
+
+    module_name: str | None = None
+    assembly_name: str | None = None
+    assembly_version: str | None = None
+    mvid: str | None = None
+    if not strings:
+        return None, None, None, None, stats
     # Walk the tables in ascending order, sizing each one so the offset lands
     # on the next. The Module table (0x00) is first, but the Assembly table
     # (0x20) sits behind TypeDef/Field/MethodDef and friends -- an assembly
@@ -386,12 +433,19 @@ def _parse_tables_and_names(
         )
         if row_size is None:
             break
-        if bit == 0x00:  # Module: Generation(2) then Name
+        if bit == 0x00:  # Module: Generation(2), Name(str), Mvid(guid)
             name_idx, _ = read_string_index(tables, offset + 2)
             module_name = string_at(name_idx)
-        elif bit == 0x20:  # Assembly: Name follows the fixed fields + PublicKey blob
+            mvid = guid_at(read_guid_index(tables, offset + 2 + string_index_size))
+        elif bit == 0x20:  # Assembly: HashAlg(4), Major/Minor/Build/Revision(2 each), ...
+            major = int.from_bytes(tables[offset + 4 : offset + 6], "little")
+            minor = int.from_bytes(tables[offset + 6 : offset + 8], "little")
+            build = int.from_bytes(tables[offset + 8 : offset + 10], "little")
+            revision = int.from_bytes(tables[offset + 10 : offset + 12], "little")
+            assembly_version = f"{major}.{minor}.{build}.{revision}"
+            # Name follows the fixed fields + Flags(4) + PublicKey blob index.
             name_at = offset + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
             name_idx, _ = read_string_index(tables, name_at)
             assembly_name = string_at(name_idx)
         offset += row_size * rows
-    return module_name, assembly_name, stats
+    return module_name, assembly_name, assembly_version, mvid, stats
