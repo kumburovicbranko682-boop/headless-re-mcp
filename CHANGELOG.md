@@ -332,6 +332,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   解析（畸形或老版本缺该 getter）时逐组件降级为「未暴露/未设」，绝不谎报可达，也不因此让整次调用失败。活体门在
   真实 APK 上断言带 LAUNCHER intent-filter 的启动 Activity 读作 `exported`、其余三类不暴露、`exported` 映射只含
   该 Activity；单测另覆盖显式 `exported="false"` 压过 intent-filter、`permission` 透出、以及清单不可解析时的降级。
+- **`apk.components` 的 `<provider>` 默认暴露判定不分 API 版本**。ContentProvider 的默认导出规则在 API 17 翻过面：
+  未显式设 `android:exported` 时，`targetSdk < 17` 默认**导出**、≥17 默认私有——与 activity/service/receiver 那套
+  「看有没有 intent-filter」不同。此前对 provider 也套用 intent-filter 启发，等于对老应用漏报了默认导出的 provider
+  攻击面（而老应用恰恰最值得审）。现读取有效 `targetSdk`（`get_effective_target_sdk_version`，回落 min），provider
+  未显式声明时按 `has_filter or targetSdk<17` 判定；版本读不出则保守取现代默认（私有）。活体门里那份未声明 uses-sdk
+  的清单被 androguard 解成有效 sdk=1，其无过滤 provider 遂如实落入 `exported` 映射（服务/接收器不落），在真实二进制
+  清单上验证该规则；单测另分别用 targetSdk 16/17 断言 provider 默认从导出翻为私有。
 - **`apk.components` 光有 `has_intent_filter` 布尔，却不给 intent-filter 里到底是什么**。判断深链攻击面要看
   具体的 action/category/data——自定义 URL scheme、host、path 模式、MIME 类型才是隐式 Intent 的真正入口，只知道
   「有没有 filter」远远不够。现在组件声明了 intent-filter 时，其 `details` 记录附带 `intent_filters`：每个元素为

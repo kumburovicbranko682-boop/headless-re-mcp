@@ -414,11 +414,20 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         svc_detail = details["services"][0]
         assert svc_detail["exported"] is False
         assert svc_detail["has_intent_filter"] is False
+        # The fixture declares no uses-sdk, so androguard resolves the effective
+        # targetSdk to 1; below API 17 a filterless provider is exported by
+        # default. That the DataProvider lands in the exported map -- while the
+        # service/receiver do not -- proves the API-17 provider rule fires on a
+        # real binary manifest, not just in the unit stubs.
+        prov_detail = details["providers"][0]
+        assert prov_detail["exported"] is True
+        assert prov_detail["exported_explicit"] is None
+        assert prov_detail["has_intent_filter"] is False
         assert components.data["exported"] == {
             "activities": ["com.example.headlessre.MainActivity"],
             "services": [],
             "receivers": [],
-            "providers": [],
+            "providers": ["com.example.headlessre.DataProvider"],
         }
 
         libs = service.apk_native_libs(session_id)

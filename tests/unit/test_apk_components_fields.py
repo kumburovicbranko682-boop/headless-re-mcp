@@ -148,6 +148,66 @@ def _detail(payload: dict, kind: str, name: str) -> dict:
     return next(row for row in payload["details"][kind] if row["name"] == name)
 
 
+_LEGACY_PROVIDER_XML = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="com.x">
+  <application>
+    <provider android:name="com.x.LegacyProvider"/>
+  </application>
+</manifest>
+"""
+
+
+class _ProviderApk:
+    def __init__(self, target_sdk: int) -> None:
+        self._target = target_sdk
+
+    def get_activities(self) -> list[str]:
+        return []
+
+    def get_services(self) -> list[str]:
+        return []
+
+    def get_receivers(self) -> list[str]:
+        return []
+
+    def get_providers(self) -> list[str]:
+        return ["com.x.LegacyProvider"]
+
+    def get_main_activity(self) -> str:
+        return ""
+
+    def get_effective_target_sdk_version(self) -> int:
+        return self._target
+
+    def get_android_manifest_xml(self) -> object:
+        from lxml import etree
+
+        return etree.fromstring(_LEGACY_PROVIDER_XML.encode("utf-8"))
+
+
+def test_apk_components_provider_default_flips_at_api_17() -> None:
+    """A content provider with no explicit flag and no intent-filter follows
+    the platform default that changed at API 17: exported below 17, private
+    at or above. Getting this wrong hides (or invents) a provider attack
+    surface on pre-17 apps, which are exactly the ones worth auditing.
+    """
+    client = ApkClient()
+
+    client._apk = lambda _p: _ProviderApk(16)  # type: ignore[method-assign]
+    legacy = client.components(Path("old.apk"))
+    prov = _detail(legacy, "providers", "com.x.LegacyProvider")
+    assert prov["exported"] is True
+    assert prov["exported_explicit"] is None
+    assert legacy["exported"]["providers"] == ["com.x.LegacyProvider"]
+
+    client._apk = lambda _p: _ProviderApk(17)  # type: ignore[method-assign]
+    modern = client.components(Path("new.apk"))
+    prov = _detail(modern, "providers", "com.x.LegacyProvider")
+    assert prov["exported"] is False
+    assert modern["exported"]["providers"] == []
+
+
 def test_apk_components_reports_effective_export_state() -> None:
     """Export state drives Android attack-surface triage.
 

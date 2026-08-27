@@ -74,8 +74,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         For attack-surface triage, details maps each of those four kinds to
         per-component records: name, exported (Android's effective value --
-        the explicit android:exported when set, otherwise inferred from the
-        presence of an intent-filter), exported_explicit (the raw attribute,
+        the explicit android:exported when set, otherwise inferred: an
+        intent-filter for activities/services/receivers, and the API-17 default
+        flip for providers -- exported below targetSdk 17, private at/above),
+        exported_explicit (the raw attribute,
         or null when unset so an inferred value is distinguishable from a
         declared one), has_intent_filter, and permission when the component
         is guarded by one. When a component declares intent-filters, the

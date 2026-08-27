@@ -70,6 +70,37 @@ def _android_bool(value: str | None) -> bool | None:
     return value.strip().lower() == "true"
 
 
+def _effective_target_sdk(apk: Any) -> int | None:
+    """The app's effective targetSdk, falling back to minSdk, as an int.
+
+    The provider export default depends on it, so a best-effort read is worth
+    more than nothing; anything unparseable yields ``None`` and callers keep
+    the conservative modern default.
+    """
+    for method in ("get_effective_target_sdk_version", "get_target_sdk_version"):
+        getter = getattr(apk, method, None)
+        if getter is None:
+            continue
+        try:
+            value = getter()
+        except Exception:  # noqa: BLE001 - androguard raises raw types
+            value = None
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                pass
+    getter = getattr(apk, "get_min_sdk_version", None)
+    if getter is not None:
+        try:
+            value = getter()
+            if value is not None:
+                return int(value)
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
 def _collect_named(parent: Any, tag: str) -> list[str]:
     """Collect the ``android:name`` of each ``tag`` child, bounded and de-duped."""
     names: list[str] = []
@@ -425,15 +456,16 @@ class ApkClient:
         return filters
 
     def _component_details(
-        self, apk: Any, plural: str, tag: str, names: list[str]
+        self, apk: Any, plural: str, tag: str, names: list[str], target_sdk: int | None
     ) -> tuple[list[JsonObject], list[str]]:
         """Annotate each named component with its export state.
 
         ``exported`` is Android's effective value: the explicit
-        ``android:exported`` when the manifest sets it, otherwise inferred
-        from whether the component declares an ``<intent-filter>`` (the
-        platform default for activities/services/receivers, and a safe
-        approximation for providers, which normally set the flag explicitly).
+        ``android:exported`` when the manifest sets it. When it is unset,
+        activities/services/receivers default to exported iff they declare an
+        ``<intent-filter>``; a ``<provider>`` instead follows the platform
+        default that flipped at API 17 -- exported below a targetSdk of 17,
+        private at or above it (an intent-filter still forces it exported).
         ``exported_explicit`` preserves the raw attribute (``None`` when unset)
         so a caller can tell a declared value from an inferred one.
         """
@@ -451,7 +483,13 @@ class ApkClient:
                 filters = []
                 permission = None
             has_filter = bool(filters)
-            effective = explicit if explicit is not None else has_filter
+            if explicit is not None:
+                effective = explicit
+            elif tag == "provider":
+                legacy_default = target_sdk is not None and target_sdk < 17
+                effective = has_filter or legacy_default
+            else:
+                effective = has_filter
             entry: JsonObject = {
                 "name": name,
                 "exported": effective,
@@ -480,11 +518,12 @@ class ApkClient:
             "receivers": receivers,
             "providers": providers,
         }
+        target_sdk = _effective_target_sdk(apk)
         details: JsonObject = {}
         exported: JsonObject = {}
         for plural, tag in _COMPONENT_TAGS:
             comp_details, comp_exported = self._component_details(
-                apk, plural, tag, name_lists[plural]
+                apk, plural, tag, name_lists[plural], target_sdk
             )
             details[plural] = comp_details
             exported[plural] = comp_exported
