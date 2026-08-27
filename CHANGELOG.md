@@ -185,6 +185,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   这里看不到的原因缺类」。退出码为 0 时这些字段一概不出现;「非零退出且磁盘无源码」仍照旧抛 `backend_error`。
 - 新增回归:非零退出带部分树时各字段齐备并经 export→decompile 透传、干净退出无失败字段、非零且无输出仍抛错、
   surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及两个工具的描述都点名 `exit_code` / `tool_failed`。
+- **`apk.decompile` 把超长类切到内联上限后，剩下的部分随一个打不开的裸路径丢失。**它回
+  `truncated=true` 加一个磁盘路径就完事，可面上没有任何工具能打开裸路径——`artifacts.read` 收的是
+  `artifact_id`。于是一个大于上限的类，被切掉的后半段无从取回；而 `static.decompile` 早就把全文落成
+  制品并回 `artifact_id`，`artifacts.read` 自己的契约也写着「太大无法内联的反编译会注册为制品并以
+  `artifact_id` 作答」，唯独 jadx 没照做。现在截断时把 jadx 已经写好的 `.java` 文件经共享的
+  `_register_capture`（kind=`jadx_source`）注册，回包带上 `artifact_id` 与 `hint=full_source_in_artifact`；
+  文件落在 `artifact_root/jadx/<id>` 下，正好过 `artifacts.read` 的根包含校验，调用方即可从 `offset`
+  往后翻完整源码。纯增量：未截断的类仍全量内联、不带 `artifact_id`/`hint`，注册失败也只作为
+  `artifact_error` 随回包传出、不让 decompile 失败。新增回归覆盖截断类的 `artifact_id` 可经
+  `artifacts.read` 读回等于整类、未截断类不带制品字段、描述点名 `artifact_id` 与 `artifacts.read`。
 
 ### 修复（frida 设备解析卡死不再永占 worker）
 

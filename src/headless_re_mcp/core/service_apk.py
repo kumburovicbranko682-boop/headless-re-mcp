@@ -20,7 +20,11 @@ from headless_re_mcp.config import Settings
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, _dir_size
 from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
+from headless_re_mcp.core.service_ext import (
+    _record_backend,
+    _register_capture,
+    _timeline_append,
+)
 from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
@@ -197,6 +201,26 @@ class ApkAnalysisMixin:
             _timeline_append(
                 self, session_id, "apk.decompile", "jadx decompiled class", class_name=class_name
             )
+            # A class over the inline cap comes back truncated with a bare
+            # on-disk path nothing on the surface can open, so the cut-off
+            # remainder was unreachable -- unlike static.decompile, which spills
+            # the full text to an artifact, and contrary to the artifacts.read
+            # contract ("a decompilation too large to return inline is
+            # registered as an artifact and answered with artifact_id"). Register
+            # the file jadx already wrote so the whole source is retrievable with
+            # artifacts.read; the file lives under artifact_root/jadx/<id>, so the
+            # read path check accepts it.
+            if data.get("truncated") and isinstance(data.get("path"), str):
+                data = _register_capture(
+                    self,
+                    session_id,
+                    Path(data["path"]),
+                    kind="jadx_source",
+                    source="apk.decompile",
+                    payload=data,
+                )
+                if "artifact_id" in data:
+                    data["hint"] = "full_source_in_artifact"
             return _success(data, session_id=session_id, backend="apk")
         except (ApkError, JadxError) as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
