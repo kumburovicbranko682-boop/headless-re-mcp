@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.json_budget import fit_json_text
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -38,6 +39,11 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Headroom fit_json_text leaves for a web result's other fields when it bounds an
+# inline body/source/html by encoded size: the largest is a url capped at
+# _MAX_URL_BYTES (16 KiB); the rest are small scalars. Smaller than the shared
+# default because there is no bulky stderr field here.
+_WEB_FIELD_RESERVE = 32 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -113,6 +119,14 @@ def _spill_text(
     CDP already delivered the whole payload. Writing it to the session artifact
     dir still fills the disk before retention runs: a single media response is
     enough. Returns ``(inline, spill_path_or_none, truncated)``.
+
+    The inline text is bounded by its JSON-encoded size, not just its raw byte
+    count: the transport discards the whole reply -- the spill path included --
+    for a ~16 KiB summary once the encoded envelope outruns the result budget,
+    and a page controls this body, so an escape-heavy 200 KB response could take
+    the pointer to its own spilled copy down with it. Whenever the inline is cut
+    (by the raw preview cap or the encoded bound) the full bytes are written to
+    disk, so a ``truncated`` reply always carries a spill path to the rest.
     """
     payload = text.encode("utf-8", errors="replace")
     size = len(payload)
@@ -123,7 +137,12 @@ def _spill_text(
             size=size,
             cap=UNREGISTERED_CAPTURE_MAX_BYTES,
         )
-    if size <= _MAX_INLINE_BODY:
+    spilled = size > _MAX_INLINE_BODY
+    candidate = (
+        text if not spilled else payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
+    )
+    inline, _original_bytes, encoded_cut = fit_json_text(candidate, reserve=_WEB_FIELD_RESERVE)
+    if not spilled and not encoded_cut:
         return text, None, False
     if (
         not filename
@@ -144,8 +163,7 @@ def _spill_text(
             size=written,
             cap=UNREGISTERED_CAPTURE_MAX_BYTES,
         )
-    preview = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
-    return preview, out, True
+    return inline, out, True
 
 
 class _Runner:
@@ -652,11 +670,23 @@ class WebBackend:
                 raise WebError("backend_error", "dom snapshot returned no document")
             html = clipped.get("html")
             text = html if isinstance(html, str) else ""
+            # Bound the inline HTML by encoded size too, not only the raw char
+            # cap: a page controls its own DOM, and an escape-heavy 200 KB
+            # snapshot could push the reply past the result budget and be
+            # discarded whole. There is no spill here, so this only trims the
+            # inline and flags it -- the full DOM was never retained.
+            html_inline, _html_bytes, html_cut = fit_json_text(
+                text[:_MAX_INLINE_BODY], reserve=_WEB_FIELD_RESERVE
+            )
             return {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
-                "html": text[:_MAX_INLINE_BODY],
-                "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
+                "html": html_inline,
+                "truncated": (
+                    bool(clipped.get("truncated"))
+                    or len(text) > _MAX_INLINE_BODY
+                    or html_cut
+                ),
             }
 
         return self._runner(handle).call(work)

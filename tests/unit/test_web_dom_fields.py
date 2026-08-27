@@ -71,3 +71,38 @@ def test_web_dom_snapshot_names_html_and_says_when_it_was_cut(
     doc = _tool_docstring("web.dom.snapshot")
     assert "html" in doc
     assert "truncated" in doc
+
+
+class _EscapePage:
+    url = "https://example/app"
+
+    def evaluate(self, script: str, cap: int) -> dict[str, Any]:
+        del script, cap
+        return {"html": "d" * 3000, "truncated": False}
+
+    def title(self) -> str:
+        return "Example"
+
+
+def test_web_dom_snapshot_bounds_html_by_encoded_size(monkeypatch: Any) -> None:
+    """An escape-heavy DOM must not push the reply past the result budget.
+
+    dom_snapshot keeps no spill copy, so an oversized html would take the whole
+    reply down with it at the transport. Shrink the budget and confirm the html
+    is trimmed to fit the encoded budget and flagged truncated, rather than
+    returned whole.
+    """
+    import json
+
+    from headless_re_mcp.backends.common import json_budget
+    from headless_re_mcp.backends.web import client as web_client
+
+    monkeypatch.setattr(json_budget, "RESULT_BUDGET_BYTES", 500)
+    monkeypatch.setattr(web_client, "_WEB_FIELD_RESERVE", 100)
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=_EscapePage()))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.dom_snapshot("s")
+    assert payload["truncated"] is True
+    assert len(payload["html"]) < 3000
+    assert len(json.dumps(payload["html"], ensure_ascii=False).encode("utf-8")) <= 500 - 100
