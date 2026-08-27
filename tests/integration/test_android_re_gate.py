@@ -1,15 +1,25 @@
-"""Android RE gate: session classification, APK metadata, and safe degradation.
+"""Android RE gate: session classification, real APK parsing, and degradation.
 
-Runs without a device or extra tools by building a synthetic (harmless) APK in
-a temp dir. Parts that need a real device / jadx / adbutils are asserted only
-for a structured envelope, never a crash, so the gate is meaningful on a bare
-machine while still exercising the Android surface end to end (skip != pass for
-the live-device parts, which have their own explicit skips).
+Runs without a device or extra tools by building a genuinely valid APK in a
+temp dir: a compiled binary AndroidManifest (AXML) that declares a package, and
+a valid classes.dex that defines one class. That makes the gate drive the real
+androguard backend end to end -- manifest parse and DEX analysis -- rather than
+only the stdlib zip classification, so a regression in the androguard
+integration fails here instead of hiding behind a "structured envelope" check.
+Parts that need a real device / jadx / adbutils still degrade to an envelope
+(skip != pass for the live-device parts, which have their own explicit skips).
+
+The APK is assembled by hand rather than committed as a binary so every byte is
+transparent and the fixture cannot silently rot; both formats are simple enough
+that a few dozen lines produce something androguard validates as a real app.
 """
 
 from __future__ import annotations
 
+import hashlib
+import struct
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -18,12 +28,134 @@ from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.core.session import classify_target
 
+_PACKAGE = "com.example.gate"
+_CLASS_SMALI = "Lcom/example/Gate;"
 
-def _build_synthetic_apk(path: Path) -> Path:
+
+def _uleb128(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _build_one_class_dex() -> bytes:
+    """A valid DEX (v035) that defines one class with no methods.
+
+    Only the sections a lone class needs are emitted: two strings (the class and
+    its ``java.lang.Object`` superclass descriptors), the two matching type ids,
+    one class_def, and the map list. The header's checksum (adler32 over
+    everything after it) and signature (sha1 over everything after the
+    signature) are filled in last, exactly as the format requires, so
+    androguard's validator accepts it.
+    """
+    strings = [_CLASS_SMALI, "Ljava/lang/Object;"]
+    header_size = 0x70
+    string_ids_off = header_size
+    type_ids_off = string_ids_off + 4 * len(strings)
+    class_defs_off = type_ids_off + 4 * len(strings)
+    data_off = class_defs_off + 32
+
+    string_data = bytearray()
+    string_offsets: list[int] = []
+    for text in strings:
+        string_offsets.append(data_off + len(string_data))
+        string_data += _uleb128(len(text)) + text.encode("ascii") + b"\x00"
+
+    map_off = data_off + len(string_data)
+    pad = (-map_off) % 4
+    map_off += pad
+    map_items = [
+        (0x0000, 1, 0),
+        (0x0001, len(strings), string_ids_off),
+        (0x0002, len(strings), type_ids_off),
+        (0x0006, 1, class_defs_off),
+        (0x2002, len(strings), data_off),
+        (0x1000, 1, map_off),
+    ]
+    map_list = struct.pack("<I", len(map_items))
+    for type_code, size, offset in map_items:
+        map_list += struct.pack("<HHII", type_code, 0, size, offset)
+
+    file_size = map_off + len(map_list)
+    header = bytearray()
+    header += b"dex\n035\x00" + b"\x00" * 4 + b"\x00" * 20
+    header += struct.pack("<I", file_size)
+    header += struct.pack("<I", header_size)
+    header += struct.pack("<I", 0x12345678)
+    header += struct.pack("<I", 0) + struct.pack("<I", 0)  # link size/off
+    header += struct.pack("<I", map_off)
+    header += struct.pack("<I", len(strings)) + struct.pack("<I", string_ids_off)
+    header += struct.pack("<I", len(strings)) + struct.pack("<I", type_ids_off)
+    header += struct.pack("<I", 0) + struct.pack("<I", 0)  # proto ids
+    header += struct.pack("<I", 0) + struct.pack("<I", 0)  # field ids
+    header += struct.pack("<I", 0) + struct.pack("<I", 0)  # method ids
+    header += struct.pack("<I", 1) + struct.pack("<I", class_defs_off)
+    header += struct.pack("<I", file_size - data_off) + struct.pack("<I", data_off)
+
+    body = bytearray(header)
+    body += b"".join(struct.pack("<I", offset) for offset in string_offsets)
+    body += struct.pack("<I", 0) + struct.pack("<I", 1)  # type ids -> string ids
+    # class_def: class=type0, public, super=type1, no interfaces/source/data.
+    body += struct.pack("<IIIIIIII", 0, 0x1, 1, 0, 0xFFFFFFFF, 0, 0, 0)
+    body += string_data + b"\x00" * pad + map_list
+
+    body[12:32] = hashlib.sha1(bytes(body[32:])).digest()
+    body[8:12] = struct.pack("<I", zlib.adler32(bytes(body[12:])) & 0xFFFFFFFF)
+    return bytes(body)
+
+
+def _build_axml_manifest(package: str = _PACKAGE) -> bytes:
+    """A compiled AndroidManifest (AXML) of ``<manifest package="...">``.
+
+    No android-namespace attributes are used, so no resource map is needed: a
+    UTF-8 string pool plus one start/end element pair with a single plain-string
+    ``package`` attribute is enough for androguard to report the package.
+    """
+    strings = ["manifest", "package", package]
+
+    def _encode(text: str) -> bytes:
+        raw = text.encode("utf-8")
+        return bytes([len(text), len(raw)]) + raw + b"\x00"
+
+    string_data = bytearray()
+    offsets: list[int] = []
+    for text in strings:
+        offsets.append(len(string_data))
+        string_data += _encode(text)
+    while len(string_data) % 4:
+        string_data.append(0)
+
+    offset_array = b"".join(struct.pack("<I", offset) for offset in offsets)
+    strings_start = 28 + len(offset_array)
+    pool_size = strings_start + len(string_data)
+    pool = struct.pack("<HHI", 0x0001, 28, pool_size)
+    pool += struct.pack("<IIIII", len(strings), 0, 0x00000100, strings_start, 0)
+    pool += offset_array + bytes(string_data)
+
+    start = struct.pack("<HHI", 0x0102, 16, 56)
+    start += struct.pack("<II", 0xFFFFFFFF, 0xFFFFFFFF)  # line, comment
+    start += struct.pack("<II", 0xFFFFFFFF, 0)  # ns=-1, name="manifest"
+    start += struct.pack("<HHHHHH", 0x14, 0x14, 1, 0, 0, 0)
+    start += struct.pack("<III", 0xFFFFFFFF, 1, 2)  # attr ns=-1, name, rawValue
+    start += struct.pack("<HBBI", 8, 0, 0x03, 2)  # typed value: TYPE_STRING -> "..."
+    end = struct.pack("<HHI", 0x0103, 16, 24)
+    end += struct.pack("<II", 0xFFFFFFFF, 0xFFFFFFFF) + struct.pack("<II", 0xFFFFFFFF, 0)
+
+    body = pool + start + end
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(body)) + body
+
+
+def _build_valid_apk(path: Path) -> Path:
+    """Assemble a real, androguard-parseable APK with native libs and a v1 sig."""
     with zipfile.ZipFile(path, "w") as archive:
-        # Minimal (not AXML-valid) manifest is enough for stdlib classification.
-        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
-        archive.writestr("classes.dex", b"dex\n035\x00placeholder")
+        archive.writestr("AndroidManifest.xml", _build_axml_manifest())
+        archive.writestr("classes.dex", _build_one_class_dex())
         archive.writestr("lib/arm64-v8a/libnative.so", b"\x7fELFplaceholder")
         archive.writestr("lib/x86_64/libnative.so", b"\x7fELFplaceholder")
         archive.writestr("META-INF/CERT.RSA", b"placeholder-signature")
@@ -33,7 +165,7 @@ def _build_synthetic_apk(path: Path) -> Path:
 
 @pytest.mark.integration
 def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
-    apk = _build_synthetic_apk(tmp_path / "sample.apk")
+    apk = _build_valid_apk(tmp_path / "sample.apk")
 
     assert classify_target(apk) is TargetKind.APK
 
@@ -50,11 +182,35 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
         session_id = session["id"]
 
-        # androguard opens a real APK; on the synthetic archive it must still
-        # answer with a structured envelope rather than raising.
+        # Real androguard manifest parse: the package comes from the AXML we
+        # compiled, and the native ABIs from the committed lib/ entries.
         opened = service.apk_open(session_id)
-        assert isinstance(opened.ok, bool)
-        assert opened.ok or opened.error is not None
+        assert opened.ok, opened.error
+        assert opened.data["package"] == _PACKAGE
+        assert set(opened.data["native_abis"]) == {"arm64-v8a", "x86_64"}
+
+        manifest = service.apk_manifest(session_id)
+        assert manifest.ok, manifest.error
+        assert manifest.data["package"] == _PACKAGE
+        assert "manifest" in manifest.data["manifest_xml"]
+
+        permissions = service.apk_permissions(session_id)
+        assert permissions.ok, permissions.error
+        assert permissions.data["permissions"] == []
+
+        # Real DEX analysis: the defined class is enumerated with a real page.
+        classes = service.apk_classes(session_id)
+        assert classes.ok, classes.error
+        assert _CLASS_SMALI in classes.data["classes"]
+        assert classes.data["count"] >= 1
+        assert classes.data["has_more"] is False
+
+        # The class defines no methods, so a real (empty) page comes back, not
+        # a not_found: enumeration succeeded and simply found nothing.
+        methods = service.apk_methods(session_id, _CLASS_SMALI)
+        assert methods.ok, methods.error
+        assert methods.data["count"] == 0
+        assert methods.data["methods"] == []
 
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()
@@ -70,7 +226,7 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
 @pytest.mark.integration
 def test_android_pe_tool_rejects_apk_session(tmp_path: Path) -> None:
-    apk = _build_synthetic_apk(tmp_path / "sample.apk")
+    apk = _build_valid_apk(tmp_path / "sample.apk")
     service = AnalysisService()
     try:
         created = service.create_session(str(apk))
