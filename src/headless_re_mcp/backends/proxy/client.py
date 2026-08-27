@@ -395,9 +395,10 @@ class _FlowRecorder:
 
 
 class _ProxyInstance:
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, ssl_insecure: bool = False) -> None:
         self.host = host
         self.port = port
+        self.ssl_insecure = ssl_insecure
         self.recorder = _FlowRecorder()
         self._running_signal = _RunningSignal()
         self._thread: threading.Thread | None = None
@@ -476,6 +477,14 @@ class _ProxyInstance:
             except TypeError:
                 master = DumpMaster(opts)
             _strip_dump_cli_addons(master)
+            if self.ssl_insecure:
+                # Do not verify the upstream server's TLS certificate. RE targets
+                # routinely use self-signed, private-CA or pinned certificates,
+                # and mitmproxy's default verification turns those into a 502 with
+                # no flow recorded at all -- the analyst sees an empty capture.
+                # Set after construction: ssl_insecure is only registered once the
+                # TLS addon has loaded, which DumpMaster() does.
+                master.options.update(ssl_insecure=True)
             # The signal goes in last so its running() fires after every other
             # addon's: that is what makes it mean "the hazard window is over".
             master.addons.add(self.recorder, self._running_signal)
@@ -539,7 +548,13 @@ class ProxyBackend:
             raise ProxyError("invalid_state", "no proxy running for this session; call proxy.start")
         return inst
 
-    def start(self, session_id: str, host: str = "127.0.0.1", port: int = 8080) -> JsonObject:
+    def start(
+        self,
+        session_id: str,
+        host: str = "127.0.0.1",
+        port: int = 8080,
+        ssl_insecure: bool = False,
+    ) -> JsonObject:
         self._check_available()
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
@@ -557,7 +572,7 @@ class ProxyBackend:
                     )
             # Reserve before listen: two workers racing start() used to each
             # bind a port, and only the last write to this dict was tracked.
-            inst = _ProxyInstance(host, port)
+            inst = _ProxyInstance(host, port, ssl_insecure=ssl_insecure)
             self._instances[session_id] = inst
         try:
             inst.start()
@@ -575,6 +590,7 @@ class ProxyBackend:
                     "host": host,
                     "port": port,
                     "endpoint": f"{host}:{port}",
+                    "ssl_insecure": ssl_insecure,
                 }
         with contextlib.suppress(Exception):
             inst.stop()

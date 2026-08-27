@@ -236,6 +236,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   两条摘要列表也各加 `has_request_body` 提示：`proxy.flows` 按 `request.raw_content` 是否非空标记，
   `web.network.list` 沿用 CDP 的 `requestWillBeSent`——扫一眼列表即可把 `flow.get`/`network.get` 指向
   真正带请求体的那几条，不必逐个打开。
+- **HTTPS 抓包对自签/私有 CA/固定证书的上游无法解密，且失败时静默**。MITM 代理的核心价值就是解密 TLS，
+  但 `proxy.start` 不暴露任何上游 TLS 选项，mitmproxy 默认要校验上游证书——而本工具面向的 App、
+  移动端与自建/测试服务器几乎清一色用自签或私有 CA 证书。实测这类上游会被判 502、且**整条 flow 都不记录**
+  （记录钩子只在 `response` 完成时触发，TLS 上游失败只产生 `error` flow），抓包看起来是空的、也没有任何线索。
+  `proxy.start` 新增 `ssl_insecure`（对应 mitmproxy 的 `--ssl-insecure`：仅跳过对上游服务器证书的校验，
+  代理照旧向客户端出示自己的 CA）：开启后客户端（信任代理 CA）拿到 200，`flow.get` 能回读代理从 TLS 流里
+  解出的明文正文。`proxy.start` 返回值补上 `ssl_insecure`。新增活体门用现搓的自签 HTTPS origin 跑通整条
+  解密链路（缺 mitmproxy 时 skip≠pass）。
 - **APK 静态线整条没有活体覆盖**。androguard 单测全是 mock，一旦 androguard 升级改了 API（方法被删/改名、
   manifest 解码变化），单测照过、生产才炸——正是 frida `Memory.read*` 被删那类漏检。仓库此前没有任何 APK 夹具，
   于是 `apk.open/manifest/permissions/components/certificates/native_libs` 以及 `AnalyzeAPK` 分析流水线

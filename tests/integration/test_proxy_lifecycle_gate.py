@@ -8,7 +8,10 @@ reported as a running capture.
 
 from __future__ import annotations
 
+import datetime
+import ipaddress
 import socket
+import ssl
 import tempfile
 import threading
 import time
@@ -62,6 +65,74 @@ def _origin_server() -> Iterator[str]:
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}/api/thing"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+_TLS_ORIGIN_BODY = b'{"ok":true,"tls":true,"who":"origin"}'
+
+
+@contextmanager
+def _tls_origin_server() -> Iterator[str]:
+    """A self-signed HTTPS origin, like the servers this proxy really targets.
+
+    Uses cryptography (a mitmproxy dependency, so present whenever the proxy is)
+    to mint a throwaway 127.0.0.1 certificate. A public CA would defeat the
+    point: the whole reason ssl_insecure exists is upstreams that do not chain
+    to one.
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.datetime.now(datetime.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    pem = Path(tempfile.mkdtemp()) / "origin.pem"
+    pem.write_bytes(
+        cert.public_bytes(serialization.Encoding.PEM)
+        + key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(_TLS_ORIGIN_BODY)))
+            self.end_headers()
+            self.wfile.write(_TLS_ORIGIN_BODY)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(pem))
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"https://127.0.0.1:{server.server_address[1]}/api/thing"
     finally:
         server.shutdown()
         thread.join(timeout=5.0)
@@ -186,6 +257,53 @@ def test_proxy_actually_intercepts_and_records_a_request() -> None:
             assert post_detail["response"]["status"] == 201
         finally:
             backend.stop("gate-capture")
+
+
+@pytest.mark.integration
+def test_proxy_decrypts_https_when_ssl_insecure_is_set() -> None:
+    """HTTPS interception is the point of a MITM proxy, and it had no live test.
+
+    Against a self-signed upstream -- the norm for the apps and dev servers this
+    tool targets -- mitmproxy's default upstream verification returns a 502 and
+    records nothing, so the capture looks empty. ssl_insecure turns that into a
+    real decrypted flow: the client (trusting the proxy CA) gets 200 and
+    flow_get returns the plaintext body the proxy read off the TLS stream.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy HTTPS Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _tls_origin_server() as origin_url:
+        started = backend.start("gate-tls", host="127.0.0.1", port=port, ssl_insecure=True)
+        assert started["ssl_insecure"] is True
+        try:
+            ca = _poll(backend.ca_cert_path)
+            assert ca is not None, "mitmproxy never wrote its CA certificate"
+            tls_ctx = ssl.create_default_context(cafile=str(ca))
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"https": f"http://127.0.0.1:{port}"}),
+                urllib.request.HTTPSHandler(context=tls_ctx),
+            )
+            with opener.open(origin_url, timeout=15) as response:
+                assert response.status == 200
+                assert response.read() == _TLS_ORIGIN_BODY
+
+            def _captured() -> dict[str, Any] | None:
+                for flow in backend.flows("gate-tls")["flows"]:
+                    if str(flow.get("url", "")).startswith("https://") and str(
+                        flow.get("url", "")
+                    ).endswith("/api/thing"):
+                        return flow
+                return None
+
+            flow = _poll(_captured)
+            assert flow is not None, "the HTTPS request was intercepted but never recorded"
+            assert flow["status"] == 200
+            detail = backend.flow_get("gate-tls", flow["id"], Path(tempfile.mkdtemp()))
+            assert detail["request"]["url"].startswith("https://")
+            assert detail["response"]["body"] == _TLS_ORIGIN_BODY.decode("utf-8")
+        finally:
+            backend.stop("gate-tls")
 
 
 @pytest.mark.integration
