@@ -65,6 +65,28 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   jar 下载与包装脚本,并把 `HEADLESS_RE_APKTOOL` 指向它,该 gate 在 CI 上真跑。Android 重打包路径(decode/build)
   自此有了真后端回归护栏。
 
+### 修复（frida.memory.read 在 frida ≥17 上必崩：仍在用被移除的 Memory.readByteArray 全局）
+
+- **`frida.memory.read` 对任何 frida ≥17 运行时都直接抛 `TypeError: not a function`**。注入脚本里的 `read`
+  用的是 `Memory.readByteArray(ptr(address), size)`——frida 17 把 `Memory.read*` 这组自由函数全删了(实测
+  frida 17.17.0 上 `typeof Memory.readByteArray` 为 `undefined`),于是每次内存读都在 JS 侧「not a function」,
+  经 RPC 冒泡成 `backend_error`。改用自 frida 12 起就存在的指针方法 `ptr(address).readByteArray(size)`,
+  在 android extra 所钉的整个 `>=16.5` 区间(含 16.x 与 17.x)都可用。实测:修复前对本地进程 `memory.read`
+  必崩,修复后读回目标 ELF 头 `7f454c46`。这个 bug 正是下面新增的 frida 本地实测 gate 复现出来的——此前 frida
+  后端只有 `frida.devices` 一个信封断言,attach/modules/exports/**memory.read**/hook 的成功路径无任何真后端覆盖,
+  所以一个在现代 frida 上必崩的内存读悄无声息。
+
+### 新增（frida 本地 attach 实测 gate：attach/modules/exports/memory.read/hook + 授权拒绝）
+
+- **frida 后端此前几乎没有真后端覆盖**:只有 `frida.devices` 的信封检查,而 attach、modules、exports、
+  memory.read、hook 模板注入的成功路径,以及「pid 不在会话授权集内必须拒绝」的授权闸,全都没跑过真 frida。
+  frida 在 Linux 上能 attach 本地进程(对自己派生的子进程,即便 `ptrace_scope=1` 也放行),所以新增
+  `test_frida_live_gate.py`:spawn 一个本地 python 子进程,经 `FridaClient` attach 它,枚举 modules 与某模块
+  exports、从模块基址 `memory.read` 出真实字节(断言正是 ELF 魔数 `\x7fELF`——这条断言逮住了上面的
+  frida-17 bug)、加载 `noop` hook 模板并断言其 `persisted=False`(detach 即销毁的诚实披露),最后断言 attach
+  一个不等于 allowed_pid 的 pid 必得 `permission_denied`。frida 缺席或本机 ptrace 不允许 attach 时明确
+  skip(skip != pass)。CI 侧 frida 已在 `[android]` extra 里,该 gate 在 linux-integration 上真跑。
+
 ### 新增（apksigner 签名路径拿到真机 gate：签名重打包 APK 并独立验签，Android 面自此全覆盖）
 
 - **`apk.sign` 的 apksigner 路径此前也没有真后端覆盖**。它最要紧的一环——密码经环境变量交给 apksigner
