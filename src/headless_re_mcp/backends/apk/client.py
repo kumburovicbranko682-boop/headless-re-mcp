@@ -229,6 +229,13 @@ class ApkClient:
         return {
             "package": apk.get_package(),
             "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
+            # The full document's UTF-8 size. truncated alone said "there is
+            # more" without saying how much: a manifest cut at the cap read the
+            # same whether 1 KB or 1 MB was dropped, and the tail of a large
+            # manifest (the <application> children) is exactly what a reverser
+            # wants. bytes is the "how much am I missing" signal the rest of
+            # this surface (web.script.source, frida.memory.read) already gives.
+            "bytes": len(xml.encode("utf-8")),
             "truncated": len(xml) > _MAX_MANIFEST_CHARS,
         }
 
