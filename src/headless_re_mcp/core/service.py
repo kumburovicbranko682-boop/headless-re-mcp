@@ -312,6 +312,19 @@ _FATAL_WORKER_ERRORS = frozenset(
 _CONSUMER_CURSOR_ERROR = "event_cursor_inconsistent"
 _MAX_WORKFLOW_EVENT_BUDGET = 100_000
 _OEP_REGION_SNAPSHOT_LIMIT = 512
+# Mirror the dynamic.memory.read / dynamic.memory.write tool-schema bounds
+# (tools/dynamic.py: size le=2 MiB, data max_length=4 MiB). The MCP server path
+# enforces them through pydantic Field, but the agent transport invokes the
+# handler straight from model arguments (CommandCatalog.invoke -> spec.handler),
+# so without a service-side check an agent-issued size/data sails past every
+# bound: memory.read has no client-side validating wrapper (unlike read_events),
+# so the raw value reaches the worker, which reads that much target memory and
+# builds a hex reply the 8 MiB response frame then rejects as a confusing
+# rpc_protocol_error -- after the oversized read already happened. Refuse it here
+# with a clean invalid_request, the way every sibling in DynamicInspectMixin
+# validates its own bounds.
+_MAX_MEMORY_READ_BYTES = 2 * 1024 * 1024
+_MAX_MEMORY_WRITE_HEX_CHARS = 4 * 1024 * 1024
 _RUN_CONTROL_TRANSITION_EVENTS: dict[str, frozenset[str]] = {
     "debug.resume": frozenset({"debug.resumed"}),
     "debug.step_into": frozenset({"debug.resumed", "debug.stepped"}),
@@ -1928,6 +1941,16 @@ class AnalysisService(
         address: int,
         size: int,
     ) -> Result[JsonObject]:
+        if type(address) is not int or address < 0:
+            return _failure(
+                ValueError("address must be a non-negative integer"),
+                session_id=session_id,
+            )
+        if type(size) is not int or not 1 <= size <= _MAX_MEMORY_READ_BYTES:
+            return _failure(
+                ValueError(f"size must be between 1 and {_MAX_MEMORY_READ_BYTES}"),
+                session_id=session_id,
+            )
         return self._dynamic_request(
             session_id,
             "memory.read",
@@ -1940,6 +1963,18 @@ class AnalysisService(
         address: int,
         data: str,
     ) -> Result[JsonObject]:
+        if type(address) is not int or address < 0:
+            return _failure(
+                ValueError("address must be a non-negative integer"),
+                session_id=session_id,
+            )
+        if not isinstance(data, str) or not 2 <= len(data) <= _MAX_MEMORY_WRITE_HEX_CHARS:
+            return _failure(
+                ValueError(
+                    f"data must be a hex string of 2 to {_MAX_MEMORY_WRITE_HEX_CHARS} chars"
+                ),
+                session_id=session_id,
+            )
         return self._dynamic_request(
             session_id,
             "memory.write",
