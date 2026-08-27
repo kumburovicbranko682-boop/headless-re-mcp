@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把共享保留原语在抓取目录不可读时的软降级钉进测试）
+
+- `core/limits.py` 的 `prune_capped_dir` / `_dir_size` 是唯一挡在各条非 PE 抓取工具（`device.pull`、
+  `device.screenshot`、`js.unpack_bundle`——它们写的目录不入制品表、保留巡检看不见）与磁盘无界增长之间的
+  原语。它已有充分的驱逐/happy 路径测试,唯独三条「软降级」分支没被触及——而它们要紧:一旦抓取目录变得不可读
+  就抛异常,整趟保留巡检会连同它身后所有目录一起崩掉、磁盘随之泄漏。
+- 补上三例(纯补测、不改行为):抓取目录过了 `is_dir()` 却在 `iterdir()` 抛 `OSError`(权限被撤，或 is_dir 与
+  iterdir 之间目录被拆的 TOCTOU 竞态)时,`prune_capped_dir` 回 0 而非让异常逃逸;`_dir_size` 遇到某个子项在
+  遍历途中抛错(被并发覆盖/删除)时跳过它接着数;遍历本身抛错(目录已消失)时返回已数到的字节数。`core/limits.py`
+  的非 Win32 分支补齐至满覆盖(仅剩 `available_memory_bytes` 的 Win32 探针按项目惯例 skip≠pass)。
+
 ### 加固（把 HAR 导出对畸形抓取 URL 的降级钉进测试）
 
 - 共享的 HAR 1.2 组装(web 与 proxy 两条抓取线都用)里,`_query_string` 从抓来的 URL 解析出查询参数。抓来的

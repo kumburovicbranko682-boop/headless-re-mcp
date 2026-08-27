@@ -131,6 +131,28 @@ def test_prune_is_a_noop_on_a_path_that_is_not_a_directory(tmp_path: Path) -> No
     assert limits.prune_capped_dir(plain, max_entries=1, max_bytes=1) == 0
 
 
+class _UnreadableDir:
+    """Passes is_dir() but denies iterdir(), like a capture directory whose
+    permissions were dropped or that was removed between the two calls."""
+
+    def is_dir(self) -> bool:
+        return True
+
+    def iterdir(self) -> object:
+        raise OSError("permission denied")
+
+
+def test_prune_returns_zero_when_the_directory_becomes_unreadable() -> None:
+    """The listing can fail *after* the is_dir() check -- a capture directory the
+    service can no longer read (a dropped permission, or a TOCTOU race where the
+    directory is torn down between is_dir and iterdir). prune must degrade to
+    "removed nothing" rather than let the OSError escape and take the whole
+    retention pass down; a directory it cannot read is one it simply cannot
+    reclaim this round, not a fatal error for every other capture dir behind it.
+    """
+    assert limits.prune_capped_dir(_UnreadableDir(), max_entries=1, max_bytes=1) == 0  # type: ignore[arg-type]
+
+
 def test_prune_evicts_the_oldest_until_the_entry_cap_holds(tmp_path: Path) -> None:
     root = tmp_path / "captures"
     root.mkdir()
@@ -238,6 +260,42 @@ def test_dir_size_sums_files_and_skips_nested_directories(tmp_path: Path) -> Non
     # Below the file cap, so the walk visits every entry: the two top-level
     # files and the nested one sum to 60, while the directory entries add zero.
     assert limits._dir_size(sub) == 60
+
+
+class _ChildStatRaises:
+    """A walked child that raises on inspection, like a file removed out from
+    under the walk (a concurrent unpack overwrite, or a broken device pull)."""
+
+    def is_file(self) -> bool:
+        raise OSError("child vanished mid-walk")
+
+    def stat(self) -> object:
+        raise OSError("child vanished mid-walk")
+
+
+class _DirWithABadChild:
+    def rglob(self, _pattern: str) -> object:
+        yield _ChildStatRaises()
+
+
+class _DirWhoseWalkRaises:
+    def rglob(self, _pattern: str) -> object:
+        raise OSError("directory torn down mid-walk")
+
+
+def test_dir_size_skips_a_child_that_raises_mid_walk() -> None:
+    """One child failing inspection must not abort the whole size estimate; it is
+    skipped and the walk continues, so a subdirectory being reclaimed while it is
+    measured undercounts by that child rather than raising and stalling the prune
+    that called it."""
+    assert limits._dir_size(_DirWithABadChild()) == 0  # type: ignore[arg-type]
+
+
+def test_dir_size_returns_what_it_counted_when_the_walk_itself_raises() -> None:
+    """If the traversal itself fails (the directory is gone by the time it is
+    measured), _dir_size returns the bytes tallied so far -- here zero -- instead
+    of propagating. A size it cannot finish measuring must not crash eviction."""
+    assert limits._dir_size(_DirWhoseWalkRaises()) == 0  # type: ignore[arg-type]
 
 
 def test_remove_entry_deletes_a_file(tmp_path: Path) -> None:
