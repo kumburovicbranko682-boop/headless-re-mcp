@@ -59,7 +59,11 @@ _WINDOWS_ONLY_MODULES = frozenset(
         "test_m10_ui_drive_gate.py",
         "test_m10_ui_interact_gate.py",
         "test_m10_ui_pid_gate.py",
-        "test_m11_frida_live_gate.py",
+        # test_m11_frida_live_gate.py is deliberately absent: the frida live
+        # gate is portable now (a sleeping interpreter stands in for the PE
+        # fixture on POSIX), so it must be allowed to run on Linux/macOS rather
+        # than force-skipped as Windows-only. It still skips itself when frida
+        # is missing or the OS forbids a local attach.
         "test_m11_optional_backends_gate.py",
         "test_m11_windbg_live_gate.py",
         "test_m12_persist_gate.py",
