@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.network.get` 的非法 base64 错误路径与无体路径形状一致）
+
+- `web.network.get` 有两条「拿不到体」的错误路径,形状却不一样。CDP 报「没有体」(重定向、体已被
+  缓存淘汰)那条特意保留了 `body`/`base64_encoded`/`body_truncated`,注释写明「免得调用方读
+  `result["body"]` 撞上缺键」;可另一条——CDP 说是 base64、却解不开——只回 `{**entry, body_error}`,
+  把这三个字段全丢了。于是调用方统一按「有 body_error 就当空体」处理时,偏偏在这条路径上读
+  `body`/`base64_encoded`/`body_truncated` 撞缺键,正是无体路径当初要避免的事。
+- 现在非法 base64 路径与无体路径回同一形状:`body=""`、`base64_encoded=false`、`body_truncated=false`,
+  外加 `body_error` 作判别信号(仍不写 `body_path`,因为没有可用的体)。工具描述把两种「拿不到体」的
+  情形并列,并申明这三个字段恒在、读它们绝不撞缺键。
+- 既有的非法 base64 回归补上断言:除 `body_error` 在场、无 `body_path` 外,`body`/`base64_encoded`/
+  `body_truncated` 三个字段与无体路径同形。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

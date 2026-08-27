@@ -61,7 +61,12 @@ def test_binary_body_is_decoded_to_raw_bytes_on_disk(
 def test_invalid_base64_body_reports_an_error_rather_than_lying(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """A body flagged base64 that will not decode must surface, not be treated as bytes."""
+    """A body flagged base64 that will not decode must surface, not be treated as bytes.
+
+    It must also keep the documented shape (body, base64_encoded,
+    body_truncated) like the no-body error path, so a caller reading those keys
+    does not hit a missing key just because this failure took a different branch.
+    """
     # Five base64-alphabet characters: a valid data run is a multiple of four,
     # so a length of five (4n+1) can never be legal and always raises.
     backend = _backend_returning(
@@ -73,3 +78,7 @@ def test_invalid_base64_body_reports_an_error_rather_than_lying(
 
     assert "body_error" in payload
     assert "body_path" not in payload
+    # Same shape as the no-body error path: the documented fields stay present.
+    assert payload["body"] == ""
+    assert payload["base64_encoded"] is False
+    assert payload["body_truncated"] is False
