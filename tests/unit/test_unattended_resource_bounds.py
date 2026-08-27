@@ -2982,6 +2982,44 @@ class TestAdbForwardsAreReleased:
         assert caught.value.code == "capability_unavailable"
         assert backend._forwards == []
 
+    def test_a_hostile_local_spec_is_refused_before_the_device_is_touched(self) -> None:
+        """Forward specs reach ``adb forward``; a bad one is rejected up front.
+
+        The pattern check runs before serial resolution and before a slot is
+        reserved, so a spec carrying a metacharacter never reaches the device
+        and cannot leak a forward-table entry against the cap.
+        """
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        backend = AdbBackend()
+
+        def boom(serial: str) -> Any:
+            del serial
+            raise AssertionError("device must not be resolved for a bad spec")
+
+        backend._device = boom  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.forward("emulator-5554", "tcp:5555; rm -rf /", "tcp:5555")
+        assert caught.value.code == "invalid_params"
+        assert "local" in str(caught.value.details)
+        assert backend._forwards == []
+
+    def test_a_hostile_remote_spec_is_refused_before_the_device_is_touched(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
+
+        backend = AdbBackend()
+
+        def boom(serial: str) -> Any:
+            del serial
+            raise AssertionError("device must not be resolved for a bad spec")
+
+        backend._device = boom  # type: ignore[method-assign]
+        with pytest.raises(AdbError) as caught:
+            backend.forward("emulator-5554", "tcp:5555", "tcp:5555 && reboot")
+        assert caught.value.code == "invalid_params"
+        assert "remote" in str(caught.value.details)
+        assert backend._forwards == []
+
     def test_release_removes_every_forward_this_process_created(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend
 
