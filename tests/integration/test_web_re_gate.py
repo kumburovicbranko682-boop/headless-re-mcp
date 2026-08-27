@@ -77,8 +77,14 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # Prove webcrack actually deobfuscated rather than echoing the input:
+        # the fixture hides its secret as the escaped literal "\x48\x33..." and
+        # only a real unminify pass rewrites it to the readable "H3adl3ss".
+        assert "H3adl3ss" in code, code[:400]
+        assert "\\x48" not in code
     finally:
         service.close_all()
 
@@ -96,6 +102,15 @@ def test_js_unpack_bundle_when_webcrack_present() -> None:
         # pre-create with no run would leave the tree empty.
         assert result.data["file_count"] >= 1
         assert result.data["files"], "unpack produced no files"
+        # The emitted entry file must carry the real deobfuscated program, not
+        # an empty placeholder, so read it back and look for the recovered
+        # secret -- this is what also catches the webcrack "output directory
+        # already exists" failure mode (missing -f) that leaves the tree empty.
+        out_dir = Path(result.data["output_dir"])
+        emitted = sorted(out_dir.rglob("*.js"))
+        assert emitted, "unpack wrote no .js file"
+        recovered = emitted[0].read_text(encoding="utf-8", errors="replace")
+        assert "H3adl3ss" in recovered, recovered[:400]
     finally:
         service.close_all()
 
