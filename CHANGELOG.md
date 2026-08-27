@@ -60,6 +60,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（apk.sign 就绪跟错了探针）
+
+- **`apk.apktool` 能力把 `apk.sign` 一并算作 apktool 的就绪**。`apk.sign` 实际走 apksigner，
+  与 apktool 是两个独立二进制、各有自己的 doctor 探针；能力目录却把 decode/repack/sign 三个工具
+  统一挂在 `status_probe: "apktool"` 上。于是只装了 apktool、没装 apksigner 的宿主，`capabilities.list`
+  会把 `apk.apktool` 报成 detected，让人以为 `apk.sign` 可用，而它要到调用时才回
+  `capability_unavailable`——这正是 wabt 探针同类的“只查了一半”。现在把签名拆成独立能力
+  `apk.apksigner`（`status_probe: "apksigner"`，工具 `apk.sign`），`apk.apktool` 只保留
+  decode/repack；两者的就绪各自跟随其工具真正需要的二进制。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

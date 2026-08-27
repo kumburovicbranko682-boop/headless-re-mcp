@@ -108,3 +108,44 @@ def test_describe_capability_finds_known_ids_and_none_for_unknown(
     assert described["status"] == "ready"
 
     assert describe_capability("does.not.exist") is None
+
+
+def _capability_advertising(tool: str) -> dict[str, object]:
+    owners = [cap for cap in _CORE_CAPABILITIES if tool in cap["tools"]]
+    assert len(owners) == 1, f"{tool} should be advertised by exactly one capability: {owners}"
+    return dict(owners[0])
+
+
+def test_apk_sign_is_keyed_on_the_apksigner_probe_not_apktool() -> None:
+    """apk.sign runs apksigner, a separate binary from apktool.
+
+    Its readiness must follow the probe for the binary it actually needs, so a
+    host with apktool but no apksigner does not report apk.sign as usable.
+    """
+    sign = _capability_advertising("apk.sign")
+    assert sign["status_probe"] == "apksigner"
+    # decode/repack stay on the apktool probe and no longer drag sign along.
+    apktool = _capability_advertising("apk.decode")
+    assert apktool["status_probe"] == "apktool"
+    assert "apk.sign" not in apktool["tools"]
+
+
+def test_apksigner_absence_marks_only_the_sign_capability_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """apktool present, apksigner absent: decode/repack ready, sign missing.
+
+    Before the split, apk.sign rode apk.apktool's status and would have read as
+    detected here -- the exact half-claim this pins against.
+    """
+    report = DoctorReport(
+        probes=(
+            Probe("apktool", ProbeStatus.DETECTED, "stub detected"),
+            Probe("apksigner", ProbeStatus.MISSING, "stub missing"),
+        )
+    )
+    monkeypatch.setattr(capabilities_catalog, "run_doctor", lambda settings=None: report)
+
+    by_id = {cap["id"]: cap for cap in list_capabilities()}
+    assert by_id["apk.apktool"]["status"] == "detected"
+    assert by_id["apk.apksigner"]["status"] == "missing"

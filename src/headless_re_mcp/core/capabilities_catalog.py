@@ -116,8 +116,22 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "apk.apktool",
         "backend": "apk",
         "status_probe": "apktool",
-        "tools": ["apk.decode", "apk.repack", "apk.sign"],
-        "summary": "apktool decode/rebuild plus apksigner re-signing (requires a JRE)",
+        "tools": ["apk.decode", "apk.repack"],
+        "summary": "apktool decode/rebuild (requires apktool + a JRE)",
+        "optional": True,
+    },
+    {
+        # apk.sign runs apksigner, a separate binary from apktool with its own
+        # doctor probe. Bundling it under apk.apktool reported it ready whenever
+        # apktool alone resolved, so a host with apktool but no apksigner showed
+        # this capability detected while apk.sign answered capability_unavailable
+        # at call time. Key the sign capability on the probe its tool actually
+        # needs.
+        "id": "apk.apksigner",
+        "backend": "apk",
+        "status_probe": "apksigner",
+        "tools": ["apk.sign"],
+        "summary": "apksigner APK re-signing (requires apksigner + a JRE)",
         "optional": True,
     },
     {
