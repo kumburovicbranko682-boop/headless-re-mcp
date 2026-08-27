@@ -345,6 +345,22 @@ class _ProxyInstance:
             self._error = exc
             self._started.set()
         finally:
+            # master.run() returning does not free the port: Proxyserver has no
+            # done() hook, because mitmdump frees its listeners by exiting the
+            # process. Embedded in a long-lived service the socket would stay
+            # bound (and accepting, at the kernel level) forever, so stop the
+            # server instances explicitly while the loop can still run them.
+            if loop is not None:
+                with contextlib.suppress(Exception):
+                    proxyserver = (
+                        self._master.addons.get("proxyserver")
+                        if self._master is not None
+                        else None
+                    )
+                    if proxyserver is not None:
+                        loop.run_until_complete(
+                            asyncio.wait_for(proxyserver.servers.update([]), timeout=5.0)
+                        )
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound
