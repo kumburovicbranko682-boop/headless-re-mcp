@@ -14,7 +14,15 @@ PROFILES: tuple[str, ...] = ("full", "pe", "android", "web")
 # listed here (session/static/dynamic/frida/workspace/...) is core and stays in
 # every non-full profile.
 _ANDROID_PREFIXES = ("apk.", "device.")
-_WEB_PREFIXES = ("web.", "js.", "wasm.", "proxy.")
+_WEB_PREFIXES = ("web.", "js.", "wasm.")
+# The interception proxy (mitmproxy) is shared by the android and web directions
+# -- it captures browser traffic in a web session and, via
+# proxy.ca.install_android, a device's TLS in an android session -- so it is
+# hidden only in the pe direction, never in android or web. Grouping proxy under
+# _WEB_PREFIXES had hidden the whole proxy.* surface, including the android-only
+# proxy.ca.install_android, from the android work direction, contradicting the
+# "shared by Web and Android" scope stated in the README and the proxy service.
+_SHARED_ANDROID_WEB_PREFIXES = ("proxy.",)
 
 PROFILE_LABELS: dict[str, str] = {
     "full": "All tools",
@@ -30,7 +38,7 @@ def excluded_prefixes(profile: str) -> tuple[str, ...]:
     if normalized == "full":
         return ()
     if normalized == "pe":
-        return _ANDROID_PREFIXES + _WEB_PREFIXES
+        return _ANDROID_PREFIXES + _WEB_PREFIXES + _SHARED_ANDROID_WEB_PREFIXES
     if normalized == "android":
         return _WEB_PREFIXES
     if normalized == "web":

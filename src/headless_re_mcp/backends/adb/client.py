@@ -29,6 +29,11 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _MAX_LOGCAT_LINES = 5000
 _MAX_LOGCAT_CHARS = 200_000
+# Only the package attribute near the top of the manifest is needed. Reading
+# the whole member first would let a bomb-compressed AndroidManifest.xml -- a
+# few KiB on disk that inflates to gigabytes -- decompress in full before the
+# slice ever ran.
+_MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
@@ -75,6 +80,35 @@ def _check_package(package: str) -> str:
     if not _PACKAGE_RE.match(value):
         raise AdbError("invalid_params", "invalid package name", package=package)
     return value
+
+
+def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> None:
+    """Validate an adb forward endpoint, port range included.
+
+    The patterns already block shell metacharacters, but ``\\d{1,5}`` also admits
+    ``tcp:70000`` -- five digits that are not a port. ``connect`` already refuses
+    a port outside 1..65535; this makes ``forward`` say the same thing at the
+    boundary instead of handing adb a bind request it can only reject with an
+    opaque error. ``tcp:0`` is refused on both sides: adb reads a local 0 as
+    "allocate a free port", but adbutils discards the reply payload naming that
+    port, so the caller would get ``tcp:0`` back with no way to learn where to
+    connect -- and ``release_forwards`` removes by the requested spec, which can
+    never match the listener adb registered under the real port. Every such
+    forward would leak an adb-server listener and pin one of the tracked slots
+    until the cap locks the process out. A remote 0 is simply not connectable.
+    """
+    tcp = re.match(r"^tcp:(\d{1,5})$", spec or "")
+    if tcp is not None:
+        if not 1 <= int(tcp.group(1)) <= 65535:
+            raise AdbError(
+                "invalid_params", f"{side} tcp port must be 1..65535", **{side: spec}
+            )
+        return
+    if re.match(r"^localabstract:[\w.\-]+$", spec or ""):
+        return
+    if allow_jdwp and re.match(r"^jdwp:\d+$", spec or ""):
+        return
+    raise AdbError("invalid_params", f"invalid {side} forward spec", **{side: spec})
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -184,8 +218,13 @@ def _device_info_row(info: Any) -> JsonObject:
 def _apk_package_name(path: Path) -> str | None:
     """Best-effort package id from the APK, without pulling androguard in."""
     try:
-        with zipfile.ZipFile(path) as archive:
-            data = archive.read("AndroidManifest.xml")[:65536]
+        with (
+            zipfile.ZipFile(path) as archive,
+            archive.open("AndroidManifest.xml") as manifest,
+        ):
+            # read(n) on the member stream decompresses at most n bytes; the old
+            # read()[:n] inflated the entire entry into memory before slicing.
+            data = manifest.read(_MAX_MANIFEST_BYTES)
     except Exception:  # noqa: BLE001
         return None
     try:
@@ -730,10 +769,8 @@ class AdbBackend:
         }
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
-        if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+)$", local):
-            raise AdbError("invalid_params", "invalid local forward spec", local=local)
-        if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+|jdwp:\d+)$", remote):
-            raise AdbError("invalid_params", "invalid remote forward spec", remote=remote)
+        _check_forward_spec(local, side="local")
+        _check_forward_spec(remote, side="remote", allow_jdwp=True)
         serial_id = _check_serial(serial)
         key = (serial_id, local)
         # Resolve the device before occupying a slot: a failed lookup used to
