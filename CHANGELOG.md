@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（只读部署写守护 Gate）
+
+- 新集成 Gate `tests/integration/test_write_guard_gate.py`（纯 Python，任何平台可跑）把
+  `local_full_access=0` 的只读部署契约钉死在真实 `headless_re_mcp serve` 进程上：按
+  `tools/catalog.py` 的读写分级枚举全部 **117 个写工具**，从服务器广告的 JSON schema 合成
+  恰好通过协议校验的参数逐一调用，断言每一个都返回
+  `write_disabled` 信封（`details` 指名工具与 `local_full_access`，`retryable=false`）——
+  全量而非抽样，覆盖 session/static/dynamic/unpack/apk/device/web/proxy/frida/r2/ghidra/
+  windbg 等全部后端族，写分级少收一族即失败。
+- 同时钉住三条配套语义：只读模式**不隐藏工具**（广告面与全权限模式完全一致，拒绝发生在
+  调用时而不是列表里）；守卫先于执行（对真实提交的 PE 夹具发起的合法 `session.create`
+  同样被拒，事后 `session.list` 仍为空，不留半个会话）；读面照常服务
+  （`capabilities.search`、`session.list`、`meta.metrics` 正常应答），且翻转唯一开关后
+  同样的 `session.create → knowledge.record → report.generate → session.close` 写链路全部放行。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
