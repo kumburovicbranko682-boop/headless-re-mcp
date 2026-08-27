@@ -152,6 +152,50 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-jadx-decompile:
+    # jadx is a JRE tool with no Android SDK requirement, so the decompile gate
+    # can run on a hosted runner. Every other jadx test uses a fake tree on
+    # disk; without this job nothing ever launches the real jadx CLI, so the
+    # adapter's subprocess launch, output-tree listing, class-path resolution
+    # and source read-back would never be exercised end to end. skip != pass:
+    # with jadx on PATH the gate runs for real and only skips if it is absent.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: Install jadx
+        run: |
+          JADX_VERSION=1.5.0
+          curl -fsSL -o /tmp/jadx.zip \
+            "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"
+          mkdir -p "$HOME/jadx"
+          unzip -oq /tmp/jadx.zip -d "$HOME/jadx"
+          "$HOME/jadx/bin/jadx" --version
+          echo "HEADLESS_RE_JADX=$HOME/jadx/bin/jadx" >> "$GITHUB_ENV"
+
+      - name: jadx decompile gate
+        timeout-minutes: 10
+        run: python -m pytest tests/integration/test_jadx_live_gate.py -q -rs --tb=short --timeout=300
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

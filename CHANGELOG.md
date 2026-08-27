@@ -24,6 +24,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（新增 jadx 反编译 live gate：真 APK → 真 Java，并进 CI 真跑；skip != pass）
+
+- **jadx（Android/Java 反编译线）此前只有「假磁盘树」的单测，从没有任何测试真正启动过 jadx CLI**
+  ——于是 `JadxClient` 的子进程启动、输出树枚举、点分/smali 两种类名解析、源码回读、以及
+  partial-decompile 标记，整条真实链路从未被端到端验证过。新增
+  `tests/integration/test_jadx_live_gate.py`：用标准库手工汇编一枚**真实可反编译的 DEX**
+  （`fixtures/android/build_min_apk.py`，与 androguard 静态夹具同一套 DEX 汇编技术，含
+  `com.example.gate.Secret` 类、静态方法 `decrypt()`/`caller()`、被代码引用的字符串常量
+  `gate-secret-string`，以及 `caller` 调 `decrypt`），运行时压进一枚占位 manifest 的 APK
+  （jadx 只读 DEX、不读 manifest，故无需 pyaxml，gate 只依赖 jadx + JRE）。gate 驱动**真实**
+  `JadxClient`：`export_sources` 断言树里落出 `com/example/gate/Secret.java`、干净跑不带
+  `tool_failed`；`decompile` 用点分名与 smali 名都能解析出同一份源码，且反编译出的 Java 里
+  确实含 `class Secret`、两个方法、以及往返存活的 `"gate-secret-string"` 字面量；查一个不存在
+  的类得到结构化 `not_found`。本机用 jadx 1.5.0 实跑通过（2 passed），无 jadx 时带明确原因干净跳过。
+- 夹具字节可复现（连跑两次 sha256 一致）。新增 CI 作业 `linux-jadx-decompile`（Ubuntu，3.11/3.12，
+  装 Temurin 21 + 下载 jadx 1.5.0）真跑这条 gate——skip != pass：PATH/`HEADLESS_RE_JADX` 上有
+  jadx 就真跑，缺了才显式跳过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
