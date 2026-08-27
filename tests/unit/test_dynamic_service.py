@@ -679,6 +679,52 @@ def test_dynamic_registers_read_reinterprets_high_bit_registers_as_unsigned(
     assert registers.data["registers"]["rip"] == 0x140001000
 
 
+class _HighBitStackWorker(FakeDynamicWorker):
+    """Reports a stack word with the top bit set the way the wire sends it."""
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        return super().capabilities | {"stack.read"}
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "stack.read":
+            self.requests.append((command, params or {}))
+            return {
+                "base": 0x120000,
+                "count": 2,
+                "pointer_size": 8,
+                "entries": [
+                    {"index": 0, "address": 0x120000, "value": -1},
+                    {"index": 1, "address": 0x120008, "value": 0x401234},
+                ],
+            }
+        return super().request(command, params, timeout=timeout)
+
+
+def test_stack_read_reinterprets_high_bit_words_as_unsigned(tmp_path: Path) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _HighBitStackWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    assert service.dynamic_launch(session_id).ok
+
+    stack = service.stack_read(session_id, count=2)
+
+    assert stack.ok and stack.data is not None
+    assert [entry["value"] for entry in stack.data["entries"]] == [
+        0xFFFFFFFFFFFFFFFF,
+        0x401234,
+    ]
+
+
 def test_static_and_dynamic_backends_can_coexist(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)
@@ -2132,6 +2178,30 @@ def test_stack_arguments_tolerate_missing_payloads() -> None:
     assert _stack_arguments(None, 2) == []
     assert _stack_arguments({"entries": "nope"}, 2) == []
     assert _stack_arguments({"entries": []}, 0) == []
+
+
+def test_stack_word_normalization_reinterprets_high_bit_values_as_unsigned() -> None:
+    from headless_re_mcp.core.service_trace import normalize_stack_signedness
+
+    payload = {
+        "base": 0x120000,
+        "pointer_size": 8,
+        "entries": [
+            {"index": 0, "address": 0x120000, "value": -1},
+            {"index": 1, "address": 0x120008, "value": -(1 << 63)},
+            {"index": 2, "address": 0x120010, "value": 0x401234},
+            {"index": 3, "address": 0x120018, "value": None},
+        ],
+    }
+
+    normalize_stack_signedness(payload)
+
+    assert [entry["value"] for entry in payload["entries"]] == [
+        0xFFFFFFFFFFFFFFFF,
+        1 << 63,
+        0x401234,
+        None,
+    ]
 
 
 def test_trace_api_arguments_requires_exactly_one_target(tmp_path: Path) -> None:

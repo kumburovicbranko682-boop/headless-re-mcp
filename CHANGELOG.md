@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（高位栈字读回按无符号呈现,不再显示成负数)
+
+- 与上面的寄存器同根:`stack.read` 每个条目的 `value` 是直接从被调试程序栈上拷来的
+  指针大小字,经 jansson 的有符号 `json_int_t` 上线,最高位置位时(栈上存着 -1、句柄、
+  高位指针)到 Python 端就是负 int。`_stack_arguments` 把这些字当 x86 cdecl 实参交给调用方,
+  负值会把一个高位指针误读成小负数,污染参数解码。现在在 `stack_read` 落地点把每个负的
+  条目 `value` 按 mod 2^64 还原成无符号;条目 `address` 与 `base` 是远低于 2^63 的用户态栈
+  指针,不动。新增 helper 直测与服务级测试(worker 按线格式回 `value = -1`,断言还原为
+  `0xFFFFFFFFFFFFFFFF`)。
+
 ### 修复（高位寄存器读回按无符号呈现,不再显示成负数)
 
 - `dynamic.registers.read` 遇到高位置位的 64 位寄存器时会把它读成负数。原生 shim 只能经

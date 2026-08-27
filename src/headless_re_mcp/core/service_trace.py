@@ -67,6 +67,30 @@ def normalize_register_signedness(payload: JsonObject | None) -> None:
             bank[name] = value + _UINT64_MODULUS
 
 
+def normalize_stack_signedness(payload: JsonObject | None) -> None:
+    """Fold two's-complement stack words back to unsigned, in place.
+
+    Each ``stack.read`` entry's ``value`` is a raw pointer-sized word copied
+    straight out of the debuggee's stack, so it reaches Python through the same
+    signed ``json_int_t`` and arrives negative whenever the top bit is set.
+    ``_stack_arguments`` hands these to the caller as x86 cdecl arguments, where
+    a negative would misread a high pointer or a large unsigned as a small
+    signed number. The entry ``address`` and the frame ``base`` are user-mode
+    stack pointers well below 2**63, so only ``value`` needs folding.
+    """
+    if not isinstance(payload, dict):
+        return
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        value = entry.get("value")
+        if type(value) is int and value < 0:
+            entry["value"] = value + _UINT64_MODULUS
+
+
 @dataclass(slots=True)
 class _TraceArtifactState:
     session_id: str
