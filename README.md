@@ -384,7 +384,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 已有较完整的静态查询、动态调试闭环、事件流、地址同步、workflow，以及 dump / IAT / UPX 等脱壳相关路径的代码与真机 Gate。连接级自愈已实测，但公开提交仍少，可选后端成熟度不一。
 
-**Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制。它们的真机 Gate 过去只在装了对应工具的机器上才执行；现在 GitHub 托管的 `linux-integration` CI 作业会装齐 androguard / jadx / apktool / Playwright+Chromium / webcrack / wabt / mitmproxy，并在每个 PR 与推送 `main` 时运行这些非 PE Gate——androguard 的 DEX 分析、jadx 反编译、apktool 反汇编与 decode→repack 回环、CDP 抓取网络/脚本/控制台/运行期 WASM 模块/DOM 快照、JS/WASM 静态、抓包起停与真实流量回放。该作业先跑一步“工具链自检”，缺任一工具即红，避免“工具没装好→Gate 静默跳过→看起来像通过”。换一台缺 adb/jadx/apktool/webcrack/wabt 的机器，相关 Gate 仍会如实跳过，**skip 不等于 pass**；PE 那条链路仍无对应的托管 CI（见下）。该 CI 作业本轮新加，公开历史里尚未累计绿跑记录。
+**Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制。它们的真机 Gate 过去只在装了对应工具的机器上才执行；现在 GitHub 托管的 `linux-integration` CI 作业会装齐 androguard / jadx / apktool / apksigner / Playwright+Chromium / webcrack / wabt / mitmproxy，并在每个 PR 与推送 `main` 时运行这些非 PE Gate——androguard 的 DEX 分析、jadx 反编译、apktool 反汇编与 decode→repack→sign 改包回环（apksigner 用 Android debug keystore 签名后 androguard 复核）、CDP 抓取网络/脚本/控制台/运行期 WASM 模块/DOM 快照、JS/WASM 静态、抓包起停与真实流量回放。该作业先跑一步“工具链自检”，缺任一工具即红，避免“工具没装好→Gate 静默跳过→看起来像通过”。换一台缺 adb/jadx/apktool/webcrack/wabt 的机器，相关 Gate 仍会如实跳过，**skip 不等于 pass**；PE 那条链路仍无对应的托管 CI（见下）。该 CI 作业本轮新加，公开历史里尚未累计绿跑记录。
 
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：

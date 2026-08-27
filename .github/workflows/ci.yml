@@ -145,8 +145,9 @@ jobs:
           PY
 
   # The non-PE lines (Android, Web, proxy) ship integration Gates that drive
-  # real open-source tools -- androguard, jadx, apktool, Playwright/Chromium,
-  # webcrack, wabt, mitmproxy -- against committed fixtures. The unit jobs never
+  # real open-source tools -- androguard, jadx, apktool, apksigner,
+  # Playwright/Chromium, webcrack, wabt, mitmproxy -- against committed fixtures.
+  # The unit jobs never
   # run tests/integration, so those Gates otherwise only ever execute on a
   # developer's machine and silently rot when a backend's CLI or API drifts.
   # This job installs that toolchain on Linux and runs exactly the Gates it can
@@ -184,11 +185,11 @@ jobs:
       - name: Install Chromium for Playwright
         run: python -m playwright install --with-deps chromium
 
-      - name: Install JS/WASM tools (webcrack, wabt)
+      - name: Install JS/WASM and Android signing tools (webcrack, wabt, apksigner)
         run: |
           npm install -g webcrack
           sudo apt-get update
-          sudo apt-get install -y wabt
+          sudo apt-get install -y wabt apksigner
 
       - name: Install Android CLI tools (jadx, apktool)
         run: |
@@ -214,6 +215,7 @@ jobs:
           set -euo pipefail
           jadx --version
           apktool --version
+          apksigner --version
           webcrack --version
           wasm2wat --version
           python - <<'PY'
