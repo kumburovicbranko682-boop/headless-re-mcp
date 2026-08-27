@@ -465,3 +465,123 @@ class TestPeOnlyToolsRefuseApkSessions:
             assert signed.error.code == "invalid_params"
         finally:
             service.close_all()
+
+
+class TestDevicePullDoesNotReportAGhost:
+    """A pull that left no file used to be reported as a local path with size 0.
+
+    Measured: adbutils pull_dir on a missing remote makedirs the destination
+    and returns 0; a no-op pull returns 0 and writes nothing. Both replies
+    still named a local path, and capped_file_size reads a missing path as
+    size 0 rather than an error. An unattended agent then reads an artifact
+    that was never written.
+    """
+
+    def _pull(self, tmp_path: Path, sync: object) -> dict[str, Any]:
+        class _Dev:
+            def __init__(self) -> None:
+                self.sync = sync
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend.pull("emulator-5554", "/sdcard/missing.bin", tmp_path / "pulled.bin")
+
+    def test_a_directory_at_the_destination_is_not_a_pull(self, tmp_path: Path) -> None:
+        class _Sync:
+            def pull(self, remote: str, local: str) -> int:
+                Path(local).mkdir(parents=True, exist_ok=True)
+                return 0
+
+        with pytest.raises(AdbError) as caught:
+            self._pull(tmp_path, _Sync())
+        assert caught.value.code == "invalid_params"
+        assert "directory" in caught.value.message
+
+    def test_a_no_op_pull_is_not_a_file(self, tmp_path: Path) -> None:
+        class _Sync:
+            def pull(self, remote: str, local: str) -> int:
+                return 0
+
+        with pytest.raises(AdbError) as caught:
+            self._pull(tmp_path, _Sync())
+        assert caught.value.code == "backend_error"
+        assert "did not produce a local file" in caught.value.message
+
+    def test_a_written_file_is_still_pulled(self, tmp_path: Path) -> None:
+        class _Sync:
+            def pull(self, remote: str, local: str) -> int:
+                Path(local).write_bytes(b"abc")
+                return 3
+
+        dest = tmp_path / "pulled.bin"
+        result = self._pull(tmp_path, _Sync())
+        assert result == {"remote": "/sdcard/missing.bin", "local": str(dest), "size": 3}
+        assert dest.is_file()
+        assert dest.read_bytes() == b"abc"
+
+    def test_the_tool_description_names_a_missing_local(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import device as device_mod
+
+        tree = ast.parse(inspect.getsource(device_mod.build_device_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["device_pull"]
+        assert "local file" in docs["device_pull"]
+
+
+class TestDeviceScreenshotDoesNotReportAGhost:
+    """A screenshot that wrote nothing used to be reported as a PNG path.
+
+    Measured: image.save was a no-op and the reply still named the path with
+    size 0. An unattended agent then reads a screenshot that was never taken.
+    """
+
+    def _shot(self, tmp_path: Path, image: object) -> dict[str, Any]:
+        class _Dev:
+            def screenshot(self) -> object:
+                return image
+
+        backend = AdbBackend()
+        backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+        return backend.screenshot("emulator-5554", tmp_path / "shot.png")
+
+    def test_a_save_that_wrote_nothing_is_not_a_screenshot(self, tmp_path: Path) -> None:
+        class _Img:
+            def save(self, path: str) -> None:
+                return None
+
+        with pytest.raises(AdbError) as caught:
+            self._shot(tmp_path, _Img())
+        assert caught.value.code == "backend_error"
+        assert "did not produce a local file" in caught.value.message
+
+    def test_a_written_png_is_still_a_screenshot(self, tmp_path: Path) -> None:
+        class _Img:
+            def save(self, path: str) -> None:
+                Path(path).write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        dest = tmp_path / "shot.png"
+        result = self._shot(tmp_path, _Img())
+        assert result == {"path": str(dest), "serial": "emulator-5554", "size": dest.stat().st_size}
+        assert dest.is_file()
+
+    def test_the_tool_description_names_a_missing_file(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import device as device_mod
+
+        tree = ast.parse(inspect.getsource(device_mod.build_device_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["device_screenshot"]
+        assert "local file" in docs["device_screenshot"]

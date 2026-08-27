@@ -670,6 +670,14 @@ class WebBackend:
                 handle.page.screenshot(path=str(out_path), full_page=full_page)
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"screenshot failed: {exc}") from exc
+            if not out_path.is_file():
+                # A no-op page.screenshot still named the path, so an unattended
+                # agent reads a capture that was never taken.
+                raise WebError(
+                    "backend_error",
+                    "screenshot did not produce a local file",
+                    path=str(out_path),
+                )
             size, over = capped_file_size(out_path, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
             if over:
                 raise WebError(

@@ -580,6 +580,14 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"screenshot failed: {exc}") from exc
+        if not out_path.is_file():
+            # A save that wrote nothing still named a path, so an unattended
+            # agent reads a screenshot that was never captured.
+            raise AdbError(
+                "backend_error",
+                "screenshot did not produce a local file",
+                path=str(out_path),
+            )
         size, over = capped_file_size(out_path, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
         if over:
             raise AdbError(
@@ -632,6 +640,17 @@ class AdbBackend:
                 "invalid_params",
                 "refusing to keep a pulled directory",
                 remote=remote_path,
+            )
+        if not local_path.is_file():
+            # adbutils treats a missing remote as a directory pull that makedirs
+            # the destination and returns 0, and a no-op pull returns 0 too.
+            # Either way nothing was written, so an unattended agent must not
+            # read this reply as an artifact that landed.
+            raise AdbError(
+                "backend_error",
+                "pull did not produce a local file",
+                remote=remote_path,
+                local=str(local_path),
             )
         pulled, over = capped_file_size(local_path, cap=cap)
         if over:

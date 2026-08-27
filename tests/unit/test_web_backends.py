@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -223,6 +224,63 @@ class TestJsReDegradation:
         with pytest.raises(JsReError) as info:
             client.wat(module)
         assert info.value.code == "capability_unavailable"
+
+
+class TestWebScreenshotDoesNotReportAGhost:
+    """A screenshot that wrote nothing used to be reported as a PNG path.
+
+    Measured: page.screenshot was a no-op and the reply still named the path
+    with size 0, because capped_file_size reads a missing path as size 0. An
+    unattended agent then reads a capture that was never taken.
+    """
+
+    def _shot(self, tmp_path: Path, page: object) -> dict[str, Any]:
+        from headless_re_mcp.backends.web.client import WebBackend, _Runner, _WebSession
+
+        backend = WebBackend()
+        runner = _Runner("test-web-shot")
+        handle = _WebSession(None, None, None, page, None)
+        handle.runner = runner
+        backend._sessions["s"] = handle
+        try:
+            return backend.screenshot("s", tmp_path / "shot.png")
+        finally:
+            runner.shutdown()
+
+    def test_a_save_that_wrote_nothing_is_not_a_screenshot(self, tmp_path: Path) -> None:
+        class _Page:
+            def screenshot(self, path: str, full_page: bool = False) -> None:
+                return None
+
+        with pytest.raises(WebError) as caught:
+            self._shot(tmp_path, _Page())
+        assert caught.value.code == "backend_error"
+        assert "did not produce a local file" in caught.value.message
+
+    def test_a_written_png_is_still_a_screenshot(self, tmp_path: Path) -> None:
+        class _Page:
+            def screenshot(self, path: str, full_page: bool = False) -> None:
+                Path(path).write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        dest = tmp_path / "shot.png"
+        result = self._shot(tmp_path, _Page())
+        assert result == {"path": str(dest), "size": dest.stat().st_size}
+        assert dest.is_file()
+
+    def test_the_tool_description_names_a_missing_file(self) -> None:
+        import ast
+        import inspect
+
+        from headless_re_mcp.tools import web as web_mod
+
+        tree = ast.parse(inspect.getsource(web_mod.build_web_tools))
+        docs = {
+            node.name: ast.get_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        assert docs["web_screenshot"]
+        assert "local file" in docs["web_screenshot"]
 
 
 class TestProxyScoping:

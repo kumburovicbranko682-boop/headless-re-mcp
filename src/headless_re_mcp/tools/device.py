@@ -150,9 +150,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_screenshot(serial: str) -> dict[str, Any]:
         """Capture a device screenshot to a PNG under artifact_root/device/.
 
-        Answers with path, serial and size. The file is not a registered artifact
-        -- artifacts.read cannot open it -- only the newest 32 device captures
-        are kept, and a file over 64 MiB is deleted and refused.
+        Answers with path, serial and size. The write is checked on the way
+        out: a save that did not produce a local file is an error, not a path.
+        The file is not a registered artifact -- artifacts.read cannot open it
+        -- only the newest 32 device captures are kept, and a file over 64 MiB
+        is deleted and refused.
         """
         return _dump(analysis.device_screenshot(serial))
 
@@ -160,9 +162,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_pull(serial: str, remote_path: str) -> dict[str, Any]:
         """Pull a device file to artifact_root/device/.
 
-        Answers with remote, local and size. The file is not a registered artifact
-        -- artifacts.read cannot open it -- only the newest 32 device captures
-        are kept, and a file over 64 MiB is deleted and refused.
+        Answers with remote, local and size. The write is checked on the way
+        out: a pull that did not produce a local file is an error, not a path.
+        The file is not a registered artifact -- artifacts.read cannot open it
+        -- only the newest 32 device captures are kept, and a file over 64 MiB
+        is deleted and refused.
         """
         return _dump(analysis.device_pull(serial, remote_path))
 
