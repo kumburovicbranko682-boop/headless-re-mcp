@@ -18,6 +18,7 @@ from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import bounded_tool_result, compact_messages
 from headless_re_mcp.agent.models import (
     RUN_DEADLINE_EXCEEDED,
+    RUN_RESPONSE_TRUNCATED,
     RUN_ROUNDS_EXHAUSTED,
     TERMINAL_RUN_STATUSES,
     RunStatus,
@@ -404,6 +405,7 @@ class AgentOrchestrator:
             pending_reasoning: list[str] = []
             pending_reasoning_chars = 0
             completed_calls: tuple[ProviderToolCall, ...] = ()
+            completed_finish_reason: str | None = None
             stream_completed = False
             if self._check_cancelled(run_id):
                 await self._finish_cancel(run_id)
@@ -454,6 +456,7 @@ class AgentOrchestrator:
                 elif event.type == "completed":
                     stream_completed = True
                     completed_calls = event.tool_calls
+                    completed_finish_reason = event.finish_reason
                     if event.output_tokens is not None:
                         meter.set_provider_tokens(event.output_tokens)
             self._flush_message_delta(run_id, pending_delta)
@@ -477,6 +480,18 @@ class AgentOrchestrator:
                 await self._finish_failure(run_id, RUN_ROUNDS_EXHAUSTED, event="run.failed")
                 return
             if not completed_calls:
+                if completed_finish_reason == "length":
+                    # The provider hit its output-token limit mid-turn: the
+                    # visible answer is a fragment and there are no tool calls to
+                    # carry the run forward. Marking it completed would file a
+                    # cut-off turn as a finished one -- the same "cut-off work as
+                    # success" this loop already refuses on a stream that ends
+                    # with no completed event. Fail with a distinct reason so the
+                    # console and audit say the answer was truncated.
+                    await self._finish_failure(
+                        run_id, RUN_RESPONSE_TRUNCATED, event="run.failed"
+                    )
+                    return
                 self.store.transition(run_id, RunStatus.COMPLETED)
                 self.store.append_event(run_id, "run.completed", {"status": RunStatus.COMPLETED.value})
                 return

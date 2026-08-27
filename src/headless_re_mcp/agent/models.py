@@ -92,6 +92,13 @@ RUN_ROUNDS_EXHAUSTED = "maximum tool rounds exceeded"
 RUN_DEADLINE_EXCEEDED = "run deadline exceeded"
 RUN_BUDGET_ENDINGS = (RUN_ROUNDS_EXHAUSTED, RUN_DEADLINE_EXCEEDED)
 
+# The provider cut the final turn off at its output-token limit rather than the
+# model choosing to stop. Deliberately not a RUN_BUDGET_ENDING: those mean "our
+# bound was spent, the mission simply has more to do", whereas this is a broken
+# turn -- the visible answer is a fragment, so reporting it as a completed run
+# would present cut-off work as a finished one.
+RUN_RESPONSE_TRUNCATED = "provider response truncated at token limit"
+
 
 @dataclass(frozen=True, slots=True)
 class AgentThread:
