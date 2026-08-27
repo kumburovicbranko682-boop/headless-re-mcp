@@ -197,6 +197,7 @@ def test_wasm_session_metadata_needs_no_wabt(tmp_path: Path) -> None:
         assert wasm["well_formed"] is True
         assert wasm["function_count"] == 1
         assert wasm["export_count"] == 1
+        assert wasm["exports"] == [{"name": "add", "kind": "func"}]
         assert set(wasm["section_counts"]) == {"type", "function", "export", "code"}
     finally:
         service.close_all()

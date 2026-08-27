@@ -836,6 +836,11 @@ _WASM_SECTION_NAMES = {
 # cheap "how many of X" fact. start (8) is a single index, data_count (12) is a
 # bare count, and custom (0) begins with a name, so those are handled apart.
 _WASM_COUNTED_SECTIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 10, 11})
+# The import (2) and export (7) sections name what the module needs from the
+# host and what it exposes -- the facts a reverser reads first. Bound how many
+# we surface so a hostile module cannot make session creation allocate freely.
+_WASM_MAX_NAMES = 1024
+_WASM_EXTERNAL_KINDS = {0: "func", 1: "table", 2: "memory", 3: "global"}
 
 
 def _read_leb_u32(data: bytes, pos: int) -> tuple[int, int, bool]:
@@ -880,6 +885,8 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     section_counts: dict[str, int] = {}
     vector_counts: dict[str, int] = {}
     custom_sections: list[str] = []
+    exports: list[dict[str, Any]] = []
+    imports: list[dict[str, Any]] = []
     has_start = False
     well_formed = True
     pos = 8
@@ -902,6 +909,10 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             count, _, counted = _read_leb_u32(data, body_start)
             if counted:
                 vector_counts[f"{name}_count"] = count
+            if section_id == 7:
+                exports = _wasm_exports(data, body_start, body_end)
+            elif section_id == 2:
+                imports = _wasm_imports(data, body_start, body_end)
         elif section_id == 8:
             has_start = True
         elif section_id == 0:
@@ -929,10 +940,90 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             "memory_count": vector_counts.get("memory_count"),
             "has_start": has_start,
             "custom_sections": custom_sections,
+            "exports": exports,
+            "imports": imports,
             "well_formed": well_formed and not truncated,
             "truncated": truncated,
         }
     }
+
+
+def _read_wasm_name(data: bytes, pos: int) -> tuple[str | None, int]:
+    """Read a WASM name (LEB128 length + UTF-8 bytes) -> (name, next_pos)."""
+    length, pos, ok = _read_leb_u32(data, pos)
+    if not ok or pos + length > len(data):
+        return None, pos
+    return data[pos : pos + length].decode("utf-8", errors="replace"), pos + length
+
+
+def _wasm_exports(data: bytes, body_start: int, body_end: int) -> list[dict[str, Any]]:
+    """Names and kinds from the export section vector."""
+    count, pos, ok = _read_leb_u32(data, body_start)
+    if not ok:
+        return []
+    out: list[dict[str, Any]] = []
+    for _ in range(min(count, _WASM_MAX_NAMES)):
+        name, pos = _read_wasm_name(data, pos)
+        if name is None or pos >= body_end:
+            break
+        kind = data[pos]
+        _, pos, ok = _read_leb_u32(data, pos + 1)  # exported index
+        out.append({"name": name, "kind": _WASM_EXTERNAL_KINDS.get(kind, f"kind_{kind}")})
+        if not ok or pos > body_end:
+            break
+    return out
+
+
+def _wasm_imports(data: bytes, body_start: int, body_end: int) -> list[dict[str, Any]]:
+    """(module, name, kind) triples from the import section vector."""
+    count, pos, ok = _read_leb_u32(data, body_start)
+    if not ok:
+        return []
+    out: list[dict[str, Any]] = []
+    for _ in range(min(count, _WASM_MAX_NAMES)):
+        module, pos = _read_wasm_name(data, pos)
+        if module is None:
+            break
+        field, pos = _read_wasm_name(data, pos)
+        if field is None or pos >= body_end:
+            break
+        kind = data[pos]
+        pos, ok = _skip_wasm_import_desc(data, pos + 1, kind, body_end)
+        out.append(
+            {
+                "module": module,
+                "name": field,
+                "kind": _WASM_EXTERNAL_KINDS.get(kind, f"kind_{kind}"),
+            }
+        )
+        if not ok or pos > body_end:
+            break
+    return out
+
+
+def _skip_wasm_import_desc(data: bytes, pos: int, kind: int, body_end: int) -> tuple[int, bool]:
+    """Advance past one import descriptor so the next import can be read."""
+    if kind == 0:  # func: a type index
+        _, pos, ok = _read_leb_u32(data, pos)
+        return pos, ok
+    if kind == 3:  # global: value type + mutability, one byte each
+        return pos + 2, pos + 2 <= body_end
+    if kind == 1:  # table: element ref type, then limits
+        pos += 1
+        return _skip_wasm_limits(data, pos, body_end)
+    if kind == 2:  # memory: limits
+        return _skip_wasm_limits(data, pos, body_end)
+    return pos, False
+
+
+def _skip_wasm_limits(data: bytes, pos: int, body_end: int) -> tuple[int, bool]:
+    if pos >= body_end:
+        return pos, False
+    flag = data[pos]
+    _, pos, ok = _read_leb_u32(data, pos + 1)  # minimum
+    if ok and flag & 0x01:  # a maximum follows
+        _, pos, ok = _read_leb_u32(data, pos)
+    return pos, ok
 
 
 def detect_pe_architecture(path: Path) -> Architecture:
