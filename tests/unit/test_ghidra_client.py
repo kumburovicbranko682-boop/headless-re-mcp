@@ -239,6 +239,43 @@ def test_ghidra_refuses_an_oversized_export_json(
     assert caught.value.code == "too_large"
 
 
+def test_find_analyze_headless_prefers_the_launcher_this_os_can_run(tmp_path: Path) -> None:
+    """A real Ghidra ships both launchers side by side.
+
+    On Linux/macOS analyzeHeadless.bat exists but is not executable, so probing
+    it first (as a naive listing order did) picked the Windows script and a
+    correct install failed to launch with EACCES. The runnable one must win.
+    """
+    support = tmp_path / "ghidra" / "support"
+    support.mkdir(parents=True)
+    (support / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    (support / "analyzeHeadless.bat").write_text("@echo off\n", encoding="utf-8")
+
+    found = ghidra_client._find_analyze_headless(tmp_path / "ghidra")
+
+    assert found is not None
+    if os.name == "nt":
+        assert found.name == "analyzeHeadless.bat"
+    else:
+        assert found.name == "analyzeHeadless"
+
+
+def test_find_analyze_headless_falls_back_when_only_one_launcher_ships(tmp_path: Path) -> None:
+    """When only the other platform's launcher is present, still find it.
+
+    This is what the fake-home unit tests rely on: they lay down only the .bat.
+    """
+    support = tmp_path / "ghidra" / "support"
+    support.mkdir(parents=True)
+    only = "analyzeHeadless.bat" if os.name != "nt" else "analyzeHeadless"
+    (support / only).write_text("stub", encoding="utf-8")
+
+    found = ghidra_client._find_analyze_headless(tmp_path / "ghidra")
+
+    assert found is not None
+    assert found.name == only
+
+
 @pytest.mark.parametrize(
     ("payload", "error_type"),
     [

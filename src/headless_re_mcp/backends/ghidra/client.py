@@ -321,12 +321,26 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
+    # Ghidra ships both launchers side by side: analyzeHeadless.bat for Windows
+    # and the extensionless shell script for everything else. Probing .bat first
+    # regardless of platform picked the Windows script on Linux/macOS, where it
+    # is present but not executable, so a correct install failed to launch with
+    # EACCES. Prefer the launcher this OS can actually run.
+    if os.name == "nt":
+        candidates = (
+            "support/analyzeHeadless.bat",
+            "analyzeHeadless.bat",
+            "support/analyzeHeadless",
+            "analyzeHeadless",
+        )
+    else:
+        candidates = (
+            "support/analyzeHeadless",
+            "analyzeHeadless",
+            "support/analyzeHeadless.bat",
+            "analyzeHeadless.bat",
+        )
+    for rel in candidates:
         candidate = home / rel
         if candidate.is_file():
             return candidate
