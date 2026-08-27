@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 
 JsonObject = dict[str, Any]
+T = TypeVar("T")
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -37,6 +41,17 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+# androguard parses and analyses in-process with no timeout of its own, unlike
+# the jadx/apktool subprocess tools which take one. A hostile or pathologically
+# large APK handed to APK()/AnalyzeAPK() would otherwise park the calling MCP
+# worker thread for as long as the parse runs, with no honest fault -- the same
+# unbounded-wait the subprocess backends already guard. Bound it on a daemon
+# thread so the worker is freed and the caller gets a structured timeout. The
+# parse cannot be cancelled (pure C/Python, no yield point), so a runaway one
+# keeps running in the background until it finishes, but it no longer holds the
+# pool hostage. Generous, since a legitimate large multidex app is still seconds
+# to tens of seconds; only a stuck or absurd parse reaches this.
+_PARSE_TIMEOUT_S = 300.0
 
 
 class ApkError(RuntimeError):
@@ -45,6 +60,34 @@ class ApkError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _run_deadline(work: Callable[[], T], *, timeout: float) -> T:
+    """Run a blocking androguard call under a wall-clock deadline.
+
+    Mirrors the Frida backend's ``_run_deadline``: the work runs on a daemon
+    thread and the caller waits with ``Future.result(timeout=)``. On timeout the
+    caller is freed with an ``ApkError`` while the daemon unwinds on its own.
+    """
+    done: Future[T] = Future()
+
+    def run() -> None:
+        try:
+            done.set_result(work())
+        except BaseException as exc:  # noqa: BLE001 - handed back to the caller
+            if not done.done():
+                done.set_exception(exc)
+
+    thread = threading.Thread(target=run, name="androguard-parse", daemon=True)
+    thread.start()
+    try:
+        return done.result(timeout=timeout)
+    except FutureTimeout as exc:
+        raise ApkError(
+            "timeout",
+            f"androguard did not finish within {timeout:g}s; the APK may be "
+            "pathologically large or malformed",
+        ) from exc
 
 
 def _page_bounds(offset: int, limit: int, *, cap: int) -> tuple[int, int]:
@@ -158,7 +201,9 @@ class ApkClient:
         from androguard.core.apk import APK
 
         try:
-            apk = APK(str(resolved))
+            apk = _run_deadline(lambda: APK(str(resolved)), timeout=_PARSE_TIMEOUT_S)
+        except ApkError:
+            raise
         except Exception as exc:  # noqa: BLE001 - androguard raises many types
             raise ApkError("backend_error", f"failed to parse APK: {exc}") from exc
         with self._cache_lock:
@@ -179,7 +224,11 @@ class ApkClient:
         from androguard.misc import AnalyzeAPK
 
         try:
-            apk, dex, analysis = AnalyzeAPK(str(resolved))
+            apk, dex, analysis = _run_deadline(
+                lambda: AnalyzeAPK(str(resolved)), timeout=_PARSE_TIMEOUT_S
+            )
+        except ApkError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ApkError("backend_error", f"failed to analyze APK: {exc}") from exc
         parsed = _ParsedApk(apk, analysis, dex)

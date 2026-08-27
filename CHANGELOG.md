@@ -234,6 +234,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   再切片，一个把清单做成解压后上 GiB 的恶意 APK，能在切片之前就把进程撑爆；而 `install()` 正是拿
   调用方给的、可能有敌意的 APK 来跑这一步。现在改成 `archive.open(...).read(64 KiB)` 流式只读扫描
   窗口，读满即止，恶意清单再大也只解压这一窗。
+- **androguard 进程内解析没有时间上限**。`apk.decode/decompile/export_sources/repack/sign` 走的是
+  jadx/apktool 子进程、都带有界 `timeout`，但 `apk.open/classes/methods/strings/xrefs` 走的是进程内
+  androguard（`APK()`/`AnalyzeAPK()`），既没有 `timeout` 参数也没有任何上限：一个恶意或超大的 APK
+  丢进来，能把调用它的 MCP 工作线程占到解析跑完为止、还不给一个像样的故障，正是子进程后端早已
+  设防的那种无界等待。现在解析放到守护线程上按墙钟上限跑（`Future.result(timeout=)`，与 Frida 后端
+  `_run_deadline` 同构）：到点就把调用者放开并回 `timeout`，跑飞的解析在后台自行收尾（纯 C/Python
+  无让点、杀不掉，但不再挟持线程池）。上限给得宽（300s），合法大号 multidex 应用仍是秒级到数十秒，
+  只有卡死或离谱的解析才会触顶。
 - **未登记产物树的字节上限被文件数量绕过**。`apk.decode/decompile/export_sources` 的产物树与
   `js.unpack_bundle` 的解包树都不进产物表，只能靠本地字节上限（`_refuse_oversized_tree` 与
   `prune_capped_dir` 的 `max_bytes=64/256 MiB`）兜底。可这两处都用 `_dir_size` 量体积，而它数满

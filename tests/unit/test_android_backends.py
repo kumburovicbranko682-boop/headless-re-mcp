@@ -370,6 +370,67 @@ class TestApkPaginationIsClampedInTheBackend:
         assert result["has_more"] is True
 
 
+class TestApkAnalysisIsBoundedByADeadline:
+    """androguard runs in-process with no timeout, unlike the jadx/apktool
+    subprocess tools. A hostile or pathologically large APK would otherwise
+    park the calling MCP worker forever with no honest fault. The parse now
+    runs under a wall-clock deadline that frees the worker and reports a
+    structured timeout.
+    """
+
+    def test_the_deadline_returns_a_result_and_reraises_work_errors(self) -> None:
+        from headless_re_mcp.backends.apk.client import _run_deadline
+
+        assert _run_deadline(lambda: 42, timeout=5.0) == 42
+
+        class _Boom(RuntimeError):
+            pass
+
+        def _raise() -> int:
+            raise _Boom("androguard blew up")
+
+        with pytest.raises(_Boom):
+            _run_deadline(_raise, timeout=5.0)
+
+    def test_a_hung_parse_times_out_instead_of_parking_the_caller(self) -> None:
+        import time
+
+        from headless_re_mcp.backends.apk.client import ApkError, _run_deadline
+
+        started = time.monotonic()
+        with pytest.raises(ApkError) as excinfo:
+            _run_deadline(lambda: time.sleep(30), timeout=0.2)
+        assert excinfo.value.code == "timeout"
+        # The caller was freed at the deadline, not held for the full sleep.
+        assert time.monotonic() - started < 5.0
+
+    def test_a_stuck_analysis_surfaces_as_timeout_through_the_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        pytest.importorskip("androguard")
+        import androguard.misc as androguard_misc
+
+        from headless_re_mcp.backends.apk import client as apk_client
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        client = ApkClient()
+        if not client.available:
+            pytest.skip("androguard not importable")
+
+        def _hang(_path: str) -> Any:
+            time.sleep(30)
+
+        monkeypatch.setattr(androguard_misc, "AnalyzeAPK", _hang)
+        monkeypatch.setattr(apk_client, "_PARSE_TIMEOUT_S", 0.2)
+
+        apk = _apk(tmp_path / "app.apk")
+        with pytest.raises(ApkError) as excinfo:
+            client.classes(apk, offset=0, limit=10)
+        assert excinfo.value.code == "timeout"
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 
