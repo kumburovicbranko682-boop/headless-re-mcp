@@ -360,6 +360,12 @@ def _capture_process(
         # truncate a short-lived process's final JSON bytes.
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
+        # diec exited on its own, but a wrapper it went through may have left a
+        # detached worker behind. Reap it now so a clean scan never leaks a
+        # process into an unattended run.
+        from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
+
+        terminate_leftover_process_tree(process, wait_s=1.0)
         # The readers close their own pipes; only close here when the reader has
         # already finished, so a reader still blocked on a survivor's pipe never
         # wedges this thread on close().

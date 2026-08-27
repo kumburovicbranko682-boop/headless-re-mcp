@@ -297,6 +297,12 @@ def _capture_process(
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
+    # upx exited on its own, but the configured path may be a wrapper that left
+    # a detached worker behind. Reap it now so a clean run never leaks a process
+    # into an unattended session.
+    from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
+
+    terminate_leftover_process_tree(process, wait_s=1.0)
     # The readers close their own pipes; only close here when the reader has
     # finished, so a reader still blocked on a survivor's pipe never wedges this
     # thread on close().

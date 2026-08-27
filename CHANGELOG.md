@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（可选 CLI 后端泄漏 detached 子进程）
+
+- **die/exeinfope/upx 的 `_capture_process` 在被调进程干净退出后不再回收它留下的 detached
+  子进程**。这些适配器把工具启进独立会话组（`start_new_session`），但只在超时/超限/取消路径上
+  杀进程组；正常退出路径只关管道就返回，于是一个被 wrapper 派生、随后被 init 收养的 worker
+  会活过整次扫描——无人值守里就是每次扫描漏一个进程。de4dot 早有等价的收尾（枚举会话组、
+  发现残留就整组击杀），die/exeinfope/upx 少了这一步。新增共享的
+  `core.process_tree.terminate_leftover_process_tree`：先按后代 + 会话组枚举，只有真有幸存者
+  才动手，且用逐成员击杀而非裸 `killpg`，避免组长 pid 被复用后误伤无关组；三个适配器在读线程
+  join 之后统一调用它。回归由 `test_unattended_resource_bounds` 的
+  `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
+  `run_bounded` 的「干净退出不杀 helper」语义保持不变。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

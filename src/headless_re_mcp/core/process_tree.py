@@ -313,6 +313,36 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
     return killed
 
 
+def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+    """Kill children a launcher left running after it reported completion.
+
+    A CLI that exits cleanly (returncode 0) can still have spawned a detached
+    worker that outlives it. On POSIX the kernel reparents that worker to init
+    once the launcher is reaped, so the parent/child walk no longer sees it; the
+    session group the launcher led (``start_new_session``) still does. Enumerate
+    both, and only act when something actually survived so a clean run pays
+    nothing. The group is drained with the per-member kill rather than a bare
+    ``killpg`` so a recycled leader pid can never signal an unrelated group.
+    Never raises: this runs on a cleanup path.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    leftover: list[int] = []
+    with suppress(Exception):
+        leftover = collect_descendants(pid)
+    if os.name != "nt":
+        with suppress(Exception):
+            leftover.extend(collect_process_group(pid))
+    if not any(child != pid for child in leftover):
+        return []
+    killed = terminate_process_tree(process, wait_s=wait_s)
+    if os.name != "nt":
+        with suppress(Exception):
+            killed.extend(terminate_process_group(pid))
+    return list(dict.fromkeys(killed))
+
+
 def terminate_pid_tree(pid: int) -> list[int]:
     """Kill ``pid`` and its descendants when there is no Popen handle left.
 
