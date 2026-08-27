@@ -92,6 +92,70 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
     assert partial is False
 
 
+def test_il_operand_running_past_end_is_partial_not_an_overread() -> None:
+    """An opcode whose operand is cut off by the stream end stops honestly.
+
+    The IL comes from an attacker-controlled method body: a call (4-byte token)
+    parked at the tail with fewer than four bytes left must not read past the
+    buffer. The decoder bounds-checks the operand, drops the incomplete opcode,
+    and flags partial -- the valid prefix still decodes so the caller keeps what
+    was real without a truncated body reading as a complete one.
+    """
+    il = bytes([0x00, 0x28, 0x01, 0x02])  # nop, then call with only 2 of 4 bytes
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    assert [insn["mnemonic"] for insn in instructions] == ["nop"]
+    assert partial is True
+
+
+def test_il_unknown_opcode_is_named_not_dropped() -> None:
+    """An opcode outside the decoded subset is surfaced as op_XX, not skipped.
+
+    Silently dropping unknown bytes would desynchronise every following
+    instruction; emitting a named placeholder and advancing one byte keeps the
+    stream aligned and tells the reader exactly where the subset ran out.
+    """
+    il = bytes([0x00, 0xFF, 0x2A])  # nop, unknown 0xff, ret
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    assert [insn["mnemonic"] for insn in instructions] == ["nop", "op_ff", "ret"]
+    assert partial is False
+
+
+def test_il_two_byte_prefix_is_flagged_partial() -> None:
+    """0xFE begins a two-byte opcode the subset does not decode; say so.
+
+    The decoder emits a prefix.fe marker, advances a single byte, and sets
+    partial so a body using ceq/clt/etc. is never mistaken for a fully decoded
+    one -- the honest signal that this is an opcode subset, not a full CIL
+    disassembler.
+    """
+    il = bytes([0xFE, 0x01])  # 0xFE 0x01 == ceq in full CIL
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    assert instructions[0]["mnemonic"] == "prefix.fe"
+    assert partial is True
+
+
+def test_il_instruction_cap_reports_partial_only_when_bytes_remain() -> None:
+    """The max_insns cap flags partial iff undisassembled bytes are left.
+
+    Hitting the cap with more IL to go must read as partial so a caller does not
+    treat a capped listing as the whole method; hitting it exactly at end-of-
+    stream is a complete decode and must stay partial=False (no false alarm).
+    """
+    capped, capped_partial = _disassemble_il(bytes([0x00] * 5), max_insns=3)
+    assert len(capped) == 3
+    assert capped_partial is True
+
+    exact, exact_partial = _disassemble_il(bytes([0x00] * 3), max_insns=3)
+    assert len(exact) == 3
+    assert exact_partial is False
+
+
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     binary = tmp_path / "empty_tables.exe"
     _write_minimal_clr(binary)
