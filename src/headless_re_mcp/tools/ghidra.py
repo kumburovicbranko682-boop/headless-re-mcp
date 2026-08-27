@@ -70,6 +70,9 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Only incoming refs (getReferencesTo). Answers with items carrying from,
         to and type, plus count and has_more. Outgoing refs are not listed.
+        address_resolved is false when address did not parse to a program
+        address, so empty items with address_resolved false is a bad address,
+        not code that nothing references.
         """
         return _dump(analysis.ghidra_xrefs(session_id, address, limit=limit, timeout=timeout))
 
@@ -82,13 +85,16 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Ghidra's decompilation of the function at address.
 
         Answers with decompiled, truncated when the C was cut at the buffer,
-        found, and decompile_completed. found is false when no function contains
-        address, so an empty decompiled then means "no function here", not an
-        empty body. decompile_completed is false when a function was found but
-        its decompiler run timed out or errored (decompile_error carries why),
-        so an empty decompiled with found true is a failed run, not an empty
-        function. A second reading of code IDA decompiled differently, or of
-        code it could not.
+        found, decompile_completed and address_resolved. found is false when no
+        function contains address, so an empty decompiled then means "no
+        function here", not an empty body. address_resolved is false when
+        address never parsed to a program address at all, so found false with
+        address_resolved false is a bad address, not "no function here".
+        decompile_completed is false when a function was found but its
+        decompiler run timed out or errored (decompile_error carries why), so an
+        empty decompiled with found true is a failed run, not an empty function.
+        A second reading of code IDA decompiled differently, or of code it
+        could not.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
     return tools.bindings

@@ -119,6 +119,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   未跑完”回 `decompile_completed=false` 且透传 `decompile_error`、脚本沉默但有文本时按文本推导为真、
   脚本已写 `decompile_completed=true` 配空文本时不被推导覆盖。
 
+### 修复（ghidra.xrefs / ghidra.decompile 区分“地址没解析出来”与“确实没有”）
+
+- `ghidra.xrefs` 与 `ghidra.decompile` 接受地址字符串,过去若地址拼错或越界、`getAddress` 解析不出
+  程序地址,`xrefs` 静默回空列表、`decompile` 静默回 `found: false`,与“合法地址但无引用”“合法地址但
+  不在任何函数内”无从区分——无人值守的一遍会据此断定代码无人引用或该处没有函数,而真正的原因是它自己
+  传了个坏地址。postScript 的 `_addr` 现改为吞掉 `getAddress` 的异常并统一返回 None（坏地址不再让整份
+  导出崩掉）,两种取地址模式都显式写出 `address_resolved` 布尔:仅当地址真的解析成程序地址时才为真。
+  客户端解析这份跨解释器 JSON 时缺字段则默认 `True`,以免把脚本从未报告过的“坏地址”凭空造出来。工具
+  描述同步点名 `address_resolved`:`xrefs` 空列表配 `address_resolved=false` 是坏地址而非无引用,
+  `decompile` 的 `found=false` 配 `address_resolved=false` 是坏地址而非“此处没有函数”。补测:脚本源码
+  含 `address_resolved` 标记;客户端在坏地址回 `address_resolved=false`、脚本沉默时两模式都默认为真。
+
 ### 修复（jadx 部分反编译不再冒充完整源码树）
 
 - `apk.export_sources` / `apk.decompile`（jadx）过去丢弃 `_run` 的返回值；jadx 在部分反编译失败时

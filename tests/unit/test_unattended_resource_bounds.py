@@ -3451,6 +3451,9 @@ class TestGhidraExportDisclosesTruncation:
         # A found function whose decompiler run did not finish must be
         # distinguishable from one that decompiled to nothing.
         assert 'payload["decompile_completed"] = completed' in text
+        # An address that never parsed must be distinguishable from a valid one
+        # with no function/no references, for both address-taking modes.
+        assert 'payload["address_resolved"] = resolved' in text
 
 
 class TestAdbShellCallsAreBounded:

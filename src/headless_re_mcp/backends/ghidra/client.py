@@ -270,6 +270,16 @@ class GhidraClient:
             # record it, derive it from the presence of text -- non-empty output
             # only exists when the run finished.
             payload.setdefault("decompile_completed", bool(payload.get("decompiled")))
+            # Whether the address string resolved to a program address at all.
+            # An older script is silent; a found function proves it resolved,
+            # and absent that we assume it did rather than manufacture a
+            # bad-address verdict the script never actually reported.
+            payload.setdefault("address_resolved", True)
+        elif mode == "xrefs":
+            # Same for references: a page of results proves the address
+            # resolved. When the script is silent we default to resolved so an
+            # empty list is not recast as a bad address the script never flagged.
+            payload.setdefault("address_resolved", True)
         return payload
 
     def _run_headless(

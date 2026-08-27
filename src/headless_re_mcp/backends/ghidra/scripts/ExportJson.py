@@ -28,7 +28,13 @@ st = program.getSymbolTable()
 
 
 def _addr(value):
-    return program.getAddressFactory().getAddress(value)
+    # getAddress returns None for an unparseable string and raises for some
+    # inputs; a malformed address must not crash the whole export, so both
+    # answers collapse to None and the caller reports address_resolved False.
+    try:
+        return program.getAddressFactory().getAddress(value)
+    except Exception:
+        return None
 
 
 if mode == "functions":
@@ -62,9 +68,11 @@ elif mode == "symbols":
     payload["items"] = items
 elif mode == "xrefs":
     items = []
+    resolved = False
     if address_arg:
         addr = _addr(address_arg)
         if addr is not None:
+            resolved = True
             for ref in refmgr.getReferencesTo(addr):
                 if len(items) >= limit:
                     payload["has_more"] = True
@@ -77,13 +85,21 @@ elif mode == "xrefs":
                     }
                 )
     payload["items"] = items
+    # A malformed or out-of-range address resolves to nothing, which without
+    # this flag reads exactly like a valid address that has no references. Say
+    # which one it was so a caller can fix a bad address rather than conclude
+    # the code is unreferenced.
+    payload["address_resolved"] = resolved
 elif mode == "decompile":
     text = ""
     found = False
     completed = False
     error = ""
+    resolved = False
     if address_arg:
         addr = _addr(address_arg)
+        if addr is not None:
+            resolved = True
         fn = fm.getFunctionContaining(addr) if addr is not None else None
         if fn is not None:
             found = True
@@ -108,6 +124,10 @@ elif mode == "decompile":
     # found False means no function contained the address, so decompiled is
     # empty for that reason rather than because the body was empty.
     payload["found"] = found
+    # Distinguish that from an address that never resolved at all: a bad or
+    # out-of-range string leaves found False too, and without this a caller
+    # reads "no function here" for what was really a malformed address.
+    payload["address_resolved"] = resolved
     # A found function whose decompiler run did not finish (the 30s per-function
     # limit, or an internal error) also comes back with decompiled empty. Every
     # real function has a body, so found True with completed False is a failed

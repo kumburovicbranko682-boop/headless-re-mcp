@@ -204,12 +204,14 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     assert "has_more" in xrefs
     assert "to and from" not in xrefs
     assert "Outgoing refs are not listed" in xrefs
+    assert "address_resolved" in xrefs
 
     decompile = _tool_docstring("ghidra.decompile")
     assert "decompiled" in decompile
     assert "truncated" in decompile
     assert "found" in decompile
     assert "decompile_completed" in decompile
+    assert "address_resolved" in decompile
 
 
 def _decompile_run(monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
@@ -323,6 +325,77 @@ def test_ghidra_decompile_trusts_a_completion_flag_the_script_already_wrote(
     client = _client(tmp_path)
     payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
     assert payload["decompile_completed"] is True
+
+
+def test_ghidra_decompile_reports_a_bad_address_as_unresolved_not_no_function(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed address must not read as "no function contains it".
+
+    The script sets address_resolved false when getAddress could not parse the
+    string, leaving found false for a different reason than an address that sat
+    outside every function. Without the flag an agent reads a bad address as a
+    valid one with no owning function and never fixes its input.
+    """
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "found": false, "address_resolved": false,'
+        ' "decompile_completed": false, "decompiled": "", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "not-an-address")
+    assert payload["found"] is False
+    assert payload["address_resolved"] is False
+
+
+def test_ghidra_decompile_defaults_address_resolved_true_when_the_script_is_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An older script omits address_resolved; do not manufacture a bad address.
+
+    A found-nothing result from a script that never reported resolution must
+    stay "no function here" (address_resolved true) rather than being recast as
+    a malformed address the script did not flag.
+    """
+    _decompile_run(monkeypatch, '{"mode": "decompile", "decompiled": "", "truncated": false}')
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is False
+    assert payload["address_resolved"] is True
+
+
+def test_ghidra_xrefs_reports_a_bad_address_as_unresolved_not_no_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unparseable address must not read as "nothing references this".
+
+    Empty items with address_resolved false means the address did not resolve;
+    without the flag it is indistinguishable from a valid address that genuinely
+    has no incoming references.
+    """
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "xrefs", "items": [], "count": 0, "has_more": false,'
+        ' "address_resolved": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.xrefs(_binary(tmp_path), tmp_path / "project", "not-an-address")
+    assert payload["items"] == []
+    assert payload["address_resolved"] is False
+
+
+def test_ghidra_xrefs_defaults_address_resolved_true_when_the_script_is_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An older xrefs export omits the flag; an empty list stays "no references"."""
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "xrefs", "items": [], "count": 0, "has_more": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.xrefs(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["items"] == []
+    assert payload["address_resolved"] is True
 
 
 def test_ghidra_refuses_an_oversized_export_json(
