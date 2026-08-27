@@ -63,6 +63,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   才落库仍被送达（正是旧逻辑丢掉的那条）、首轮即带终态事件时一轮收流、无事件的终态 run 不会无限流、真 store
   端到端确认 run.completed 作为最后一帧送达。
 
+### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
+
+- `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
+  作为输出路径，指望它触发 `run_scylla` 的“output_path must differ from input_path”守卫。
+  但该断言依赖 POSIX 特有行为：`Path.exists()` 不会穿过不存在的中间目录 `nope` 去解析 `..`，
+  于是路径读作“尚不存在”，执行落到 differ 守卫。Windows 则把 `..` 按词法折叠回已存在的
+  `input.exe`，`exists()` 为真，先触发更早的“output_path must not already exist”守卫，测试遂在
+  Windows 3.11/3.12 失败。产品代码本身无恙——两条守卫拒绝的是同一危险（输出别名到输入），
+  且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
+  拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
