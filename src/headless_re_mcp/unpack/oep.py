@@ -24,6 +24,28 @@ class OepSignal:
         }
 
 
+class ScoredOep(list[JsonObject]):
+    """The scored candidate dicts, plus how many were scored before the cap.
+
+    ``score_oep_candidates`` returns the highest-scoring ``limit`` candidates.
+    Every existing caller treats the result as a plain list -- ``len``,
+    indexing, iteration, ``tuple(...)``, ``== []`` -- and all of that still
+    holds because this *is* a list. What a bare list cannot say is that
+    lower-scored candidates were dropped to honour the cap: a caller reading the
+    length as "candidates found" would read the top 8 of 30 as "8 found", the
+    same silent cut every other listing in this project is careful to disclose.
+    ``total`` (distinct RVAs that scored at all), ``limit`` (the cap) and
+    ``truncated`` ride along so the service layer can report the cut with the
+    familiar ``*_truncated`` / ``*_total`` / ``*_limit`` trio.
+    """
+
+    def __init__(self, candidates: list[JsonObject], *, total: int, limit: int) -> None:
+        super().__init__(candidates)
+        self.total = total
+        self.limit = limit
+        self.truncated = total > limit
+
+
 @dataclass(frozen=True, slots=True)
 class OepCandidate:
     candidate_id: str
@@ -54,7 +76,7 @@ def score_oep_candidates(
     observations: list[JsonObject] | tuple[JsonObject, ...],
     stub_rva_ranges: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
     max_candidates: int = 8,
-) -> list[JsonObject]:
+) -> ScoredOep:
     """Score OEP candidates from runtime observations.
 
     Supported observation kinds (M5.2):
@@ -66,6 +88,11 @@ def score_oep_candidates(
     - ``left_stub_region``
     - ``packed_ep`` (packed AddressOfEntryPoint / stub EP; role hint)
     - ``first_native_handoff`` (first native CODE handoff; not classic OEP)
+
+    Returns a :class:`ScoredOep` -- a list of the highest-scoring candidate
+    dicts capped at ``max_candidates`` -- that also reports ``total`` (how many
+    distinct RVAs scored before the cap), ``limit`` and ``truncated``, so a cut
+    that dropped lower-scored candidates is disclosed rather than silent.
     """
     if type(module_base) is not int or module_base <= 0:
         raise ValueError("module_base must be a positive integer")
@@ -145,9 +172,17 @@ def score_oep_candidates(
         )
 
     candidates.sort(key=lambda item: (-item.score, item.oep_rva))
-    if len(candidates) > max_candidates:
+    total = len(candidates)
+    if total > max_candidates:
+        # Kept for disclosure, not dropped in silence: the lowest-scored buckets
+        # are cut so one run cannot flood the caller, but ScoredOep carries the
+        # pre-cut total so "candidate_count" is never mistaken for "all found".
         candidates = candidates[:max_candidates]
-    return [item.to_dict() for item in candidates]
+    return ScoredOep(
+        [item.to_dict() for item in candidates],
+        total=total,
+        limit=max_candidates,
+    )
 
 
 def _as_rva(item: JsonObject, module_base: int) -> int | None:

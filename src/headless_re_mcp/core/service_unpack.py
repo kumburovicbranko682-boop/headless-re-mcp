@@ -1562,13 +1562,28 @@ class UnpackMixin:
                     or "observations auto-collected from runtime snapshots"
                 )
 
-            candidates = score_oep_candidates(
+            scored = score_oep_candidates(
                 module_base=module_base,
                 module_size=module_size,
                 observations=effective_observations,
                 stub_rva_ranges=effective_stub or (),
                 max_candidates=max_candidates,
             )
+            candidates = list(scored)
+            candidates_total = scored.total
+            candidates_limit = scored.limit
+            candidates_truncated = scored.truncated
+            timeline_details: JsonObject = {
+                "candidate_count": len(candidates),
+                "auto_collected": auto_collected,
+                "observation_count": len(effective_observations),
+            }
+            if candidates_truncated:
+                # The persisted record must not read as "these were all the
+                # candidates": the scored total and cap travel with the count.
+                timeline_details["candidates_truncated"] = True
+                timeline_details["candidates_total"] = candidates_total
+                timeline_details["candidates_limit"] = candidates_limit
             if state is not None and state.phase not in {
                 UnpackPhase.FAILED,
                 UnpackPhase.CANCELLED,
@@ -1585,22 +1600,14 @@ class UnpackMixin:
                             f"scored {len(candidates)} OEP candidate(s); "
                             "none are authoritative until unpack.confirm_oep"
                         ),
-                        details={
-                            "candidate_count": len(candidates),
-                            "auto_collected": auto_collected,
-                            "observation_count": len(effective_observations),
-                        },
+                        details=dict(timeline_details),
                     )
                 else:
                     state = append_timeline(
                         state,
                         event="oep_candidates_scored",
                         message=f"scored {len(candidates)} OEP candidate(s)",
-                        details={
-                            "candidate_count": len(candidates),
-                            "auto_collected": auto_collected,
-                            "observation_count": len(effective_observations),
-                        },
+                        details=dict(timeline_details),
                     )
                 state = _replace(
                     state,
@@ -1619,6 +1626,12 @@ class UnpackMixin:
                 "claims_universal_unpack": False,
                 "unpack": state.to_dict() if state is not None else None,
             }
+            if candidates_truncated:
+                # candidate_count is only the survivors; without these a caller
+                # reads the capped top-N as the full set of scored candidates.
+                payload["candidates_truncated"] = True
+                payload["candidates_total"] = candidates_total
+                payload["candidates_limit"] = candidates_limit
             if collected_note is not None:
                 payload["note"] = collected_note
             if entry_point_rva is not None:
