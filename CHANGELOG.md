@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（Prometheus 导出：空指标族省略、磁盘字节测量前不报假 0）
+
+- `metrics_exposition.render` 把已采集的遥测字典渲成 `text/plain; version=0.0.4` 文档，此前无专属
+  测试，却带着两条抓取端依赖、又极易被改动悄悄破坏的契约：其一，无样本的指标族整族省略——不会
+  留下带 `# HELP`/`# TYPE` 却零序列的空壳；其二，`headless_re_artifact_bytes` 这个量表在后台磁盘遍历
+  真正产出数字之前不发布——在此之前 `disk` 是 `{truncated, bytes: 0}`（一个下界而非测量值），发一个
+  `0` 会被读成「磁盘被清空」，而监督器重启控制台的频率足以让某次抓取正好命中这个窗口，于是宁可
+  用「缺一个样本」（诚实的断点）也不发假 0；而字节**预算**是配置、第一次抓取就已知，故始终发布。
+  新增 `tests/unit/test_metrics_exposition.py` 钉住两者，外加 build_info 恒发、工具族的 counter/gauge
+  与 `quantile` 标签、readiness 缺席时不发相关量表、标签对反斜杠/引号/换行的转义、`_has_been_measured`
+  只拒绝零字节下界，以及一条结构不变式——文档里每条样本行前都必有对应的 `# TYPE` 头。该测试单独即可
+  把 `metrics_exposition.py` 覆盖到 100%；15 条用例、`ruff` 通过，纯测试新增、无产品行为变更。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
