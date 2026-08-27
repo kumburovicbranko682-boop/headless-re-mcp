@@ -126,6 +126,56 @@ def test_a_failed_sign_scrubs_the_keystore_password_from_stderr(
     assert "***" in verify_stderr
 
 
+def test_apk_sign_keeps_the_keystore_password_out_of_argv(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A password on the command line is world-readable while apksigner runs.
+
+    ``--ks-pass pass:<secret>`` puts the keystore password in the process
+    argument vector, which any local user can read from /proc/<pid>/cmdline for
+    the life of the process -- the same leak class SECURITY.md treats as a
+    vulnerability and the stderr scrubbing already guards. The client must feed
+    the secret through the environment (env:NAME) instead: the argv names only
+    the variable, and the value rides in the child env (/proc/<pid>/environ is
+    owner-only).
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    password = "hunter2-release-pw"
+
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_run(cmd: list[str], *, timeout: float, env: Any = None) -> tuple[str, str, int]:
+        del timeout
+        calls.append((list(cmd), dict(env) if env else {}))
+        out.write_bytes(b"PKSIGN")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+    client = ApktoolClient(fake_tool, signer)
+    client.sign(apk, out, keystore=keystore, keystore_password=password, key_alias="release")
+
+    sign_cmd, sign_env = next((cmd, env) for cmd, env in calls if "sign" in cmd)
+    # The secret is nowhere in the argument vector...
+    assert password not in " ".join(sign_cmd)
+    assert f"pass:{password}" not in sign_cmd
+    # ...the password args now point at environment variables...
+    ks_pass = sign_cmd[sign_cmd.index("--ks-pass") + 1]
+    key_pass = sign_cmd[sign_cmd.index("--key-pass") + 1]
+    assert ks_pass.startswith("env:")
+    assert key_pass.startswith("env:")
+    # ...and the value actually rides in the child environment under them.
+    assert sign_env.get(ks_pass.split(":", 1)[1]) == password
+    assert sign_env.get(key_pass.split(":", 1)[1]) == password
+
+
 def test_apk_sign_does_not_claim_signed_when_verify_fails(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

@@ -30,10 +30,12 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
-def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+def _run(
+    cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
+) -> tuple[str, str, int]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
+        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
     except TimedOut as exc:
         # apktool and apksigner are scripts that start a JVM, so the deadline
         # has to bind the JVM too, not just the script that launched it.
@@ -163,6 +165,19 @@ class ApktoolClient:
                 "keystore_password and key_alias are required for a custom keystore",
             )
         out_apk.parent.mkdir(parents=True, exist_ok=True)
+        # Hand the password to apksigner through the environment, not argv. A
+        # command line is world-readable on Linux via /proc/<pid>/cmdline for
+        # the life of the process, so ``--ks-pass pass:<secret>`` leaks the
+        # keystore password to any local user -- the same class of leak the
+        # stderr scrubbing below already guards against, and which SECURITY.md
+        # treats as a vulnerability. ``env:`` reads the value from an
+        # environment variable (/proc/<pid>/environ is owner-only), so the argv
+        # names only the variable.
+        ks_pass_var = "HEADLESS_RE_KS_PASS"
+        key_pass_var = "HEADLESS_RE_KEY_PASS"
+        child_env = dict(os.environ)
+        child_env[ks_pass_var] = password
+        child_env[key_pass_var] = password
         _, stderr, code = _run(
             [
                 str(self.apksigner),
@@ -170,16 +185,17 @@ class ApktoolClient:
                 "--ks",
                 str(store),
                 "--ks-pass",
-                f"pass:{password}",
+                f"env:{ks_pass_var}",
                 "--ks-key-alias",
                 alias,
                 "--key-pass",
-                f"pass:{password}",
+                f"env:{key_pass_var}",
                 "--out",
                 str(out_apk),
                 str(apk),
             ],
             timeout=timeout,
+            env=child_env,
         )
         if code != 0 or not out_apk.is_file():
             # stderr can echo the argument vector, so scrub the password if present.
