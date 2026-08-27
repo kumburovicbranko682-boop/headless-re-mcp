@@ -40,9 +40,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   串到 enrich（PE 侧同值、零回归），ELF 的 `r2.functions/disasm/xrefs` 输出这才和 PE 一样带上 `architecture`。
   `r2.info` 文档串同步更正：架构来自会话身份（PE 读 PE 头、原生读 ELF/Mach-O 头），`image_base` 仍是 PE 专属。
 - 新增实测 Gate（`test_native_r2_gate.py`）：现编不 strip 的 ELF→建原生会话→`r2.open/functions/strings/
-  imports/disasm` 逐一断言（`gate_*` 函数、printf 导入、marker 字符串、架构串联），并验 PE 专属工具以
-  `target_mismatch` 拒绝；无 r2 或无 C 编译器时诚实 skip（skip != pass）。单测覆盖 NATIVE 分类、`describe_native`
-  （含截断头与非原生拒绝）、PE 工具在原生会话上的 `target_mismatch`，以及非 PE 的 r2 架构串联。
+  imports/exports/disasm/xrefs` 逐一断言（`gate_*` 函数、printf 导入、marker 字符串、导出表里的
+  `gate_root/gate_leaf`、对被多次调用的 `gate_leaf` 解析出真实 CALL 引用、以及全程架构串联），并验 PE 专属
+  工具以 `target_mismatch` 拒绝；无 r2 或无 C 编译器时诚实 skip（skip != pass）。单测覆盖 NATIVE 分类、
+  `describe_native`（含截断头与非原生拒绝）、PE 工具在原生会话上的 `target_mismatch`，以及非 PE 的 r2 架构
+  串联（`functions/disasm/xrefs/info` 各路径）。
 
 ### 新增（监控台工作台）
 

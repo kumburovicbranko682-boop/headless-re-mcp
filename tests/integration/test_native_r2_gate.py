@@ -6,11 +6,13 @@ ELF/Mach-O reaches the ``r2.*`` *service* surface at all. Before
 ``TargetKind.NATIVE``, ``classify_target`` mapped an ELF to PE and
 ``create_session`` rejected it in ``detect_pe_architecture`` as "not a PE file",
 so ``r2.open`` / ``r2.functions`` / ``r2.strings`` / ``r2.imports`` /
-``r2.disasm`` were unreachable for the binary format Linux and macOS ship.
+``r2.exports`` / ``r2.disasm`` / ``r2.xrefs`` were unreachable for the binary
+format Linux and macOS ship.
 
 This compiles a tiny ELF with the system C compiler, opens a session straight
 from it, and asserts each tool returns the facts the fixture was built with (the
-``gate_*`` functions, the printf import, the marker string). It also pins the
+``gate_*`` functions, the printf import, the marker string, the real CALL
+references to a function that is called more than once). It also pins the
 architecture thread: a native session knows it is x86-64 from
 ``describe_native``, and that machine type must reach the r2 output the same way
 a PE's does. A PE-only tool on the same session must still be refused, so the
@@ -144,6 +146,43 @@ def test_r2_tool_surface_reachable_for_a_native_elf_session(tmp_path: Path) -> N
         assert strings.ok, strings.error
         found = [str(item.get("string") or "") for item in strings.data["items"]]
         assert any(_MARKER in text for text in found), found
+
+        # exports: the fixture's global functions are exported (they are not
+        # static), so r2 lists gate_root/gate_leaf by name; the architecture
+        # rides along the same way it does for functions.
+        exports = service.r2_exports(session_id, timeout=120.0)
+        assert exports.ok, exports.error
+        export_names = _names(exports.data["items"])
+        assert "gate_root" in export_names, export_names
+        assert "gate_leaf" in export_names, export_names
+        if session_arch:
+            assert exports.data.get("architecture") == session_arch
+
+        # xrefs: gate_leaf is called from gate_mid (in a loop) and gate_root, so
+        # there must be real CALL references to its entry -- proof the mode
+        # resolves edges, each ``from`` endpoint carrying the threaded arch, not
+        # an empty list.
+        leaf_va = next(
+            (
+                it["address"]["va"]
+                for it in funcs.data["items"]
+                if "gate_leaf" in str(it.get("name") or "")
+                and isinstance(it.get("address"), dict)
+                and "va" in it["address"]
+            ),
+            None,
+        )
+        assert leaf_va is not None, "gate_leaf has no mapped entry to ask xrefs about"
+        xrefs = service.r2_xrefs(session_id, leaf_va, timeout=120.0)
+        assert xrefs.ok, xrefs.error
+        assert xrefs.data.get("count", 0) >= 1, "no references to gate_leaf, which is called"
+        assert any(str(it.get("type")) == "CALL" for it in xrefs.data["items"]), xrefs.data["items"]
+        if session_arch:
+            assert xrefs.data.get("architecture") == session_arch
+            assert xrefs.data.get("address", {}).get("architecture") == session_arch
+            edges = [it for it in xrefs.data["items"] if isinstance(it.get("from_address"), dict)]
+            assert edges, "no xref came back with a mapped from endpoint"
+            assert all(it["from_address"].get("architecture") == session_arch for it in edges)
 
         # A PE-only tool must reject the native session with target_mismatch,
         # not analyse it -- the native kind does not loosen the debugger guard.

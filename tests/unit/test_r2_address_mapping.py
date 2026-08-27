@@ -444,6 +444,34 @@ def test_disasm_threads_architecture_through_the_double_enrich(
     assert payload["items"][0]["address"]["architecture"] == "x64"
 
 
+def test_xrefs_threads_architecture_onto_the_edges_of_a_non_pe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """xrefs enriches twice like disasm; the ``from``/``to`` edges must carry arch.
+
+    An ELF reference edge came back with no architecture because enrich read
+    only the (absent) PE header. The session's machine type has to reach the
+    request address and every mapped endpoint.
+    """
+    binary = _non_pe(tmp_path)
+    raw = json.dumps([{"from": 0x1200, "to": 0x1189, "type": "CALL"}])
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=raw.encode(), stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+
+    payload = client.xrefs(binary, 0x1189, architecture=Architecture.X64)
+
+    assert payload["architecture"] == "x64"
+    assert payload["address"]["architecture"] == "x64"
+    edge = payload["items"][0]
+    assert edge["from_address"]["architecture"] == "x64"
+    assert edge["to_address"]["architecture"] == "x64"
+
+
 def test_r2_info_surfaces_a_threaded_architecture_on_a_non_pe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
