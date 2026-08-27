@@ -6,6 +6,7 @@ import ctypes
 import os
 import signal
 import subprocess
+import time
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
@@ -310,6 +311,91 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
     if kill_group and os.name != "nt" and isinstance(pid, int):
         with suppress(Exception):
             os.killpg(pid, 9)
+    return killed
+
+
+def collect_process_tree(parent_pid: int) -> list[int]:
+    """Descendants the ppid walk can see plus group members it cannot.
+
+    After the parent has exited the two enumerations answer different
+    questions. Windows' Toolhelp snapshot still records the dead parent's pid
+    in ``th32ParentProcessID``, so the walk finds the orphans. On POSIX the
+    orphan is reparented to init and drops out of the walk, but it keeps the
+    process group the launcher led, so the group scan still names it.
+    """
+    found: list[int] = []
+    with suppress(Exception):
+        found.extend(collect_descendants(parent_pid))
+    with suppress(Exception):
+        found.extend(collect_process_group(parent_pid))
+    return list(dict.fromkeys(pid for pid in found if pid != parent_pid))
+
+
+def _pid_still_running(pid: int) -> bool:
+    """True while ``pid`` is scheduled work, treating a POSIX zombie as gone.
+
+    ``os.kill(pid, 0)`` succeeds on a zombie, so a killed-but-unreaped orphan
+    in a container without a reaping init would read as a survivor forever.
+    """
+    if os.name == "nt":
+        with suppress(Exception):
+            return bool(enumerate_direct_children(pid, max_pids=1)) or _pid_exists_nt(pid)
+        return False
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    close = stat.rfind(")")
+    if close < 0:
+        return False
+    fields = stat[close + 2 :].split()
+    return bool(fields) and fields[0] not in {"Z", "X", "x"}
+
+
+def _pid_exists_nt(pid: int) -> bool:
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x1000, False, int(pid))  # QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return code.value == 259  # STILL_ACTIVE
+        return False
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+    """Terminate children left behind after a launcher reported completion.
+
+    A tool that exits 0 can still have detached a helper -- a wrapper's real
+    workload, a scanner's watchdog -- and the success path used to walk away
+    from it, so an unattended batch accumulated one stray process per run.
+    Checking costs two bounded enumerations when there is nothing left, so it
+    runs on every completion, not only after timeouts.
+
+    Returning before the leftovers are actually dead would let the caller
+    report a clean completion while a SIGKILL is still in flight, so the kill
+    is confirmed (bounded by ``wait_s``) rather than merely dispatched.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    leftovers: list[int] = []
+    with suppress(Exception):
+        leftovers = collect_process_tree(pid)
+    if not leftovers:
+        return []
+    killed: list[int] = []
+    with suppress(Exception):
+        killed = terminate_process_tree(process, wait_s=wait_s)
+    deadline = time.monotonic() + max(0.1, wait_s)
+    while time.monotonic() < deadline:
+        leftovers = [child for child in leftovers if _pid_still_running(child)]
+        if not leftovers:
+            break
+        time.sleep(0.02)
     return killed
 
 
