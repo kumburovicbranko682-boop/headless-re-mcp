@@ -172,7 +172,9 @@ def _build_dotnet_assembly(path: Path) -> _Assembly:
     struct.pack_into("<I", image, cor_off + 16, 0x1)          # ILONLY
     struct.pack_into("<I", image, cor_off + 20, _METHOD_TOKEN)
 
-    il = bytes([0x28, 0x01, 0x00, 0x00, 0x0A, 0x2A])  # call 0x0A000001; ret
+    # ldc.i4.s 42; pop; call 0x0A000001; ret -- the ldc.i4.s exercises a short
+    # inline operand, the exact shape the old decoder mis-aligned on.
+    il = bytes([0x1F, 0x2A, 0x26, 0x28, 0x01, 0x00, 0x00, 0x0A, 0x2A])
     body = bytes([(len(il) << 2) | 0x02]) + il         # tiny method header
     image[0x250 : 0x250 + len(body)] = body            # RVA 0x1050 -> file 0x250
     image[0x400 : 0x400 + len(meta_blob)] = meta_blob  # RVA 0x1200 -> file 0x400
@@ -249,8 +251,13 @@ def test_dotnet_metadata_enumerate_il_xrefs_without_de4dot(tmp_path: Path) -> No
         il = service.dotnet_il(session_id, assembly.method_token)
         assert il.ok and il.data is not None, il.error
         assert il.data["backend"] == "dotnet_metadata"
-        mnemonics = [insn["mnemonic"] for insn in il.data["instructions"]]
-        assert mnemonics == ["call", "ret"]
+        instructions = il.data["instructions"]
+        mnemonics = [insn["mnemonic"] for insn in instructions]
+        assert mnemonics == ["ldc.i4.s", "pop", "call", "ret"]
+        # The short operand must decode to its value, not be swallowed as the
+        # next opcode -- and the method must not be reported as partial.
+        assert instructions[0]["operand"] == 42
+        assert il.data["partial"] is False
         assert assembly.call_token in il.data["call_tokens"]
 
         xrefs = service.dotnet_xrefs(session_id, limit=16)

@@ -29,8 +29,15 @@ _TBL_METHODDEF: Final[int] = 0x06
 _TBL_MEMBERREF: Final[int] = 0x0A
 _TBL_MANIFESTRESOURCE: Final[int] = 0x28
 
-_OPCODES: Final[dict[int, tuple[str, int]]] = {
+# Single-byte opcodes: opcode -> (mnemonic, inline-operand byte count). The
+# operand size is what keeps the decoder aligned: an unknown opcode that really
+# carries an operand made the old subset table read that operand byte as the
+# next instruction, so a plain ``ldc.i4.s 10`` turned into two bogus ops. 0x45
+# (switch) is variable-length and handled separately.
+_SWITCH_OP: Final[int] = 0x45
+_OP1: Final[dict[int, tuple[str, int]]] = {
     0x00: ("nop", 0),
+    0x01: ("break", 0),
     0x02: ("ldarg.0", 0),
     0x03: ("ldarg.1", 0),
     0x04: ("ldarg.2", 0),
@@ -43,7 +50,14 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x0B: ("stloc.1", 0),
     0x0C: ("stloc.2", 0),
     0x0D: ("stloc.3", 0),
+    0x0E: ("ldarg.s", 1),
+    0x0F: ("ldarga.s", 1),
+    0x10: ("starg.s", 1),
+    0x11: ("ldloc.s", 1),
+    0x12: ("ldloca.s", 1),
+    0x13: ("stloc.s", 1),
     0x14: ("ldnull", 0),
+    0x15: ("ldc.i4.m1", 0),
     0x16: ("ldc.i4.0", 0),
     0x17: ("ldc.i4.1", 0),
     0x18: ("ldc.i4.2", 0),
@@ -53,24 +67,237 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x1C: ("ldc.i4.6", 0),
     0x1D: ("ldc.i4.7", 0),
     0x1E: ("ldc.i4.8", 0),
+    0x1F: ("ldc.i4.s", 1),
     0x20: ("ldc.i4", 4),
+    0x21: ("ldc.i8", 8),
+    0x22: ("ldc.r4", 4),
+    0x23: ("ldc.r8", 8),
     0x25: ("dup", 0),
     0x26: ("pop", 0),
+    0x27: ("jmp", 4),
     0x28: ("call", 4),
+    0x29: ("calli", 4),
     0x2A: ("ret", 0),
     0x2B: ("br.s", 1),
     0x2C: ("brfalse.s", 1),
     0x2D: ("brtrue.s", 1),
+    0x2E: ("beq.s", 1),
+    0x2F: ("bge.s", 1),
+    0x30: ("bgt.s", 1),
+    0x31: ("ble.s", 1),
+    0x32: ("blt.s", 1),
+    0x33: ("bne.un.s", 1),
+    0x34: ("bge.un.s", 1),
+    0x35: ("bgt.un.s", 1),
+    0x36: ("ble.un.s", 1),
+    0x37: ("blt.un.s", 1),
     0x38: ("br", 4),
     0x39: ("brfalse", 4),
     0x3A: ("brtrue", 4),
+    0x3B: ("beq", 4),
+    0x3C: ("bge", 4),
+    0x3D: ("bgt", 4),
+    0x3E: ("ble", 4),
+    0x3F: ("blt", 4),
+    0x40: ("bne.un", 4),
+    0x41: ("bge.un", 4),
+    0x42: ("bgt.un", 4),
+    0x43: ("ble.un", 4),
+    0x44: ("blt.un", 4),
+    0x46: ("ldind.i1", 0),
+    0x47: ("ldind.u1", 0),
+    0x48: ("ldind.i2", 0),
+    0x49: ("ldind.u2", 0),
+    0x4A: ("ldind.i4", 0),
+    0x4B: ("ldind.u4", 0),
+    0x4C: ("ldind.i8", 0),
+    0x4D: ("ldind.i", 0),
+    0x4E: ("ldind.r4", 0),
+    0x4F: ("ldind.r8", 0),
+    0x50: ("ldind.ref", 0),
+    0x51: ("stind.ref", 0),
+    0x52: ("stind.i1", 0),
+    0x53: ("stind.i2", 0),
+    0x54: ("stind.i4", 0),
+    0x55: ("stind.i8", 0),
+    0x56: ("stind.r4", 0),
+    0x57: ("stind.r8", 0),
+    0x58: ("add", 0),
+    0x59: ("sub", 0),
+    0x5A: ("mul", 0),
+    0x5B: ("div", 0),
+    0x5C: ("div.un", 0),
+    0x5D: ("rem", 0),
+    0x5E: ("rem.un", 0),
+    0x5F: ("and", 0),
+    0x60: ("or", 0),
+    0x61: ("xor", 0),
+    0x62: ("shl", 0),
+    0x63: ("shr", 0),
+    0x64: ("shr.un", 0),
+    0x65: ("neg", 0),
+    0x66: ("not", 0),
+    0x67: ("conv.i1", 0),
+    0x68: ("conv.i2", 0),
+    0x69: ("conv.i4", 0),
+    0x6A: ("conv.i8", 0),
+    0x6B: ("conv.r4", 0),
+    0x6C: ("conv.r8", 0),
+    0x6D: ("conv.u4", 0),
+    0x6E: ("conv.u8", 0),
     0x6F: ("callvirt", 4),
+    0x70: ("cpobj", 4),
+    0x71: ("ldobj", 4),
     0x72: ("ldstr", 4),
     0x73: ("newobj", 4),
+    0x74: ("castclass", 4),
+    0x75: ("isinst", 4),
+    0x76: ("conv.r.un", 0),
+    0x79: ("unbox", 4),
+    0x7A: ("throw", 0),
     0x7B: ("ldfld", 4),
+    0x7C: ("ldflda", 4),
     0x7D: ("stfld", 4),
+    0x7E: ("ldsfld", 4),
+    0x7F: ("ldsflda", 4),
+    0x80: ("stsfld", 4),
+    0x81: ("stobj", 4),
+    0x82: ("conv.ovf.i1.un", 0),
+    0x83: ("conv.ovf.i2.un", 0),
+    0x84: ("conv.ovf.i4.un", 0),
+    0x85: ("conv.ovf.i8.un", 0),
+    0x86: ("conv.ovf.u1.un", 0),
+    0x87: ("conv.ovf.u2.un", 0),
+    0x88: ("conv.ovf.u4.un", 0),
+    0x89: ("conv.ovf.u8.un", 0),
+    0x8A: ("conv.ovf.i.un", 0),
+    0x8B: ("conv.ovf.u.un", 0),
     0x8C: ("box", 4),
+    0x8D: ("newarr", 4),
+    0x8E: ("ldlen", 0),
+    0x8F: ("ldelema", 4),
+    0x90: ("ldelem.i1", 0),
+    0x91: ("ldelem.u1", 0),
+    0x92: ("ldelem.i2", 0),
+    0x93: ("ldelem.u2", 0),
+    0x94: ("ldelem.i4", 0),
+    0x95: ("ldelem.u4", 0),
+    0x96: ("ldelem.i8", 0),
+    0x97: ("ldelem.i", 0),
+    0x98: ("ldelem.r4", 0),
+    0x99: ("ldelem.r8", 0),
+    0x9A: ("ldelem.ref", 0),
+    0x9B: ("stelem.i", 0),
+    0x9C: ("stelem.i1", 0),
+    0x9D: ("stelem.i2", 0),
+    0x9E: ("stelem.i4", 0),
+    0x9F: ("stelem.i8", 0),
+    0xA0: ("stelem.r4", 0),
+    0xA1: ("stelem.r8", 0),
+    0xA2: ("stelem.ref", 0),
+    0xA3: ("ldelem", 4),
+    0xA4: ("stelem", 4),
+    0xA5: ("unbox.any", 4),
+    0xB3: ("conv.ovf.i1", 0),
+    0xB4: ("conv.ovf.u1", 0),
+    0xB5: ("conv.ovf.i2", 0),
+    0xB6: ("conv.ovf.u2", 0),
+    0xB7: ("conv.ovf.i4", 0),
+    0xB8: ("conv.ovf.u4", 0),
+    0xB9: ("conv.ovf.i8", 0),
+    0xBA: ("conv.ovf.u8", 0),
+    0xC2: ("refanyval", 4),
+    0xC3: ("ckfinite", 0),
+    0xC6: ("mkrefany", 4),
+    0xD0: ("ldtoken", 4),
+    0xD1: ("conv.u2", 0),
+    0xD2: ("conv.u1", 0),
+    0xD3: ("conv.i", 0),
+    0xD4: ("conv.ovf.i", 0),
+    0xD5: ("conv.ovf.u", 0),
+    0xD6: ("add.ovf", 0),
+    0xD7: ("add.ovf.un", 0),
+    0xD8: ("mul.ovf", 0),
+    0xD9: ("mul.ovf.un", 0),
+    0xDA: ("sub.ovf", 0),
+    0xDB: ("sub.ovf.un", 0),
+    0xDC: ("endfinally", 0),
+    0xDD: ("leave", 4),
+    0xDE: ("leave.s", 1),
+    0xDF: ("stind.i", 0),
+    0xE0: ("conv.u", 0),
 }
+
+# Two-byte opcodes, reached through the 0xFE prefix.
+_OP2: Final[dict[int, tuple[str, int]]] = {
+    0x00: ("arglist", 0),
+    0x01: ("ceq", 0),
+    0x02: ("cgt", 0),
+    0x03: ("cgt.un", 0),
+    0x04: ("clt", 0),
+    0x05: ("clt.un", 0),
+    0x06: ("ldftn", 4),
+    0x07: ("ldvirtftn", 4),
+    0x09: ("ldarg", 2),
+    0x0A: ("ldarga", 2),
+    0x0B: ("starg", 2),
+    0x0C: ("ldloc", 2),
+    0x0D: ("ldloca", 2),
+    0x0E: ("stloc", 2),
+    0x0F: ("localloc", 0),
+    0x11: ("endfilter", 0),
+    0x12: ("unaligned.", 1),
+    0x13: ("volatile.", 0),
+    0x14: ("tail.", 0),
+    0x15: ("initobj", 4),
+    0x16: ("constrained.", 4),
+    0x17: ("cpblk", 0),
+    0x18: ("initblk", 0),
+    0x19: ("no.", 1),
+    0x1A: ("rethrow", 0),
+    0x1C: ("sizeof", 4),
+    0x1D: ("refanytype", 0),
+    0x1E: ("readonly.", 0),
+}
+
+# Operands that ECMA-335 defines as signed: branch displacements (short and
+# long), leave targets, and the short/wide integer loads. Reading these
+# unsigned would report a backward jump as a huge forward offset.
+_SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
+    {
+        "ldc.i4.s",
+        "ldc.i4",
+        "ldc.i8",
+        "br.s",
+        "brfalse.s",
+        "brtrue.s",
+        "beq.s",
+        "bge.s",
+        "bgt.s",
+        "ble.s",
+        "blt.s",
+        "bne.un.s",
+        "bge.un.s",
+        "bgt.un.s",
+        "ble.un.s",
+        "blt.un.s",
+        "leave.s",
+        "br",
+        "brfalse",
+        "brtrue",
+        "beq",
+        "bge",
+        "bgt",
+        "ble",
+        "blt",
+        "bne.un",
+        "bge.un",
+        "bgt.un",
+        "ble.un",
+        "blt.un",
+        "leave",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -667,34 +894,82 @@ def _read_method_body(meta: _MetaCtx, rva: int, *, max_bytes: int) -> JsonObject
     return {"header": header, "il": il, "il_len": code_size, "truncated": truncated}
 
 
+def _read_operand(il: bytes, at: int, imm: int, name: str) -> tuple[int | None, bool]:
+    """Read an ``imm``-byte inline operand, honouring ECMA-335 signedness.
+
+    Returns (value, ok); ok is False when the operand runs past the IL, which
+    the caller turns into a bounded ``partial`` stop rather than a wild read.
+    """
+    if imm == 0:
+        return None, True
+    if at + imm > len(il):
+        return None, False
+    return int.from_bytes(il[at : at + imm], "little", signed=name in _SIGNED_OPERANDS), True
+
+
 def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], bool]:
     rebuilt: list[JsonObject] = []
     i = 0
     partial = False
-    while i < len(il) and len(rebuilt) < max_insns:
+    n = len(il)
+    while i < n and len(rebuilt) < max_insns:
         start = i
         op = il[i]
         if op == 0xFE:
-            rebuilt.append({"ip": start, "mnemonic": "prefix.fe", "operand": None})
+            if i + 1 >= n:
+                partial = True
+                break
+            second = il[i + 1]
+            info = _OP2.get(second)
+            if info is None:
+                rebuilt.append({"ip": start, "mnemonic": f"op_fe_{second:02x}", "operand": None})
+                i += 2
+                partial = True
+                continue
+            name, imm = info
+            operand, ok = _read_operand(il, i + 2, imm, name)
+            if not ok:
+                partial = True
+                break
+            rebuilt.append({"ip": start, "mnemonic": name, "operand": operand})
+            i += 2 + imm
+            continue
+        if op == _SWITCH_OP:
+            # switch is uint32 count N followed by N signed int32 jump targets;
+            # a bad count that overran the IL used to be impossible to skip, so
+            # bound it to what the IL can actually hold.
+            if i + 5 > n:
+                partial = True
+                break
+            count = int.from_bytes(il[i + 1 : i + 5], "little")
+            body = i + 5
+            if count < 0 or body + 4 * count > n:
+                rebuilt.append({"ip": start, "mnemonic": "switch", "operand": None})
+                partial = True
+                break
+            targets = [
+                int.from_bytes(il[body + 4 * k : body + 4 * k + 4], "little", signed=True)
+                for k in range(count)
+            ]
+            rebuilt.append({"ip": start, "mnemonic": "switch", "operand": targets})
+            i = body + 4 * count
+            continue
+        info = _OP1.get(op)
+        if info is None:
+            # Unknown opcode: its operand width is unknown too, so alignment
+            # past here is a guess -- say so instead of decoding operand bytes
+            # as if they were the next instruction.
+            rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})
             i += 1
             partial = True
             continue
-        info = _OPCODES.get(op)
-        if info is None:
-            rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})
-            i += 1
-            continue
         name, imm = info
-        i += 1
-        operand: int | None = None
-        if imm:
-            if i + imm > len(il):
-                partial = True
-                break
-            signed = name in {"br.s", "brfalse.s", "brtrue.s"}
-            operand = int.from_bytes(il[i : i + imm], "little", signed=signed)
-            i += imm
+        operand, ok = _read_operand(il, i + 1, imm, name)
+        if not ok:
+            partial = True
+            break
         rebuilt.append({"ip": start, "mnemonic": name, "operand": operand})
-    if len(rebuilt) >= max_insns and i < len(il):
+        i += 1 + imm
+    if len(rebuilt) >= max_insns and i < n:
         partial = True
     return rebuilt, partial
