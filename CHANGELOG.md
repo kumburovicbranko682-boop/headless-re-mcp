@@ -116,6 +116,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的递归与大小写直测,以及 `_SETTINGS_ENV_MAP` 只引用真实 `Settings` 字段的漂移护栏(否则改名
   会让某个 `HEADLESS_RE_*` 路径从生成配置里悄悄消失)。
 
+### 修复（apk.sign 口令不再进入进程命令行）
+
+- **apksigner 的 keystore/key 口令改经子进程环境变量传递，不再作为 argv 令牌**。此前
+  `apk.sign` 以 `--ks-pass pass:<口令>` / `--key-pass pass:<口令>` 组装命令行，签名期间任何
+  本机进程都能从 `/proc/<pid>/cmdline`（或 `ps` 输出）原样读到口令——SECURITY.md 明确把
+  签名口令外泄列为漏洞类别，但既有防线只覆盖了错误信封（stderr 抹除），没有覆盖进程表。
+  apksigner 原生支持 `env:<名字>` 口令来源，现改为 argv 只携带变量名
+  （`env:HRE_APKSIGNER_KS_PASS`），口令放进仅该次 sign 子进程的环境副本
+  （继承环境之上叠加，JVM 启动器所需的 PATH/JAVA_HOME 不受影响），服务自身的
+  `os.environ` 始终不被写入；verify 调用不需要口令、不传环境。stderr 抹除保留作为
+  纵深防御。补回归测试钉住：口令不出现在任何 argv 令牌、`--ks-pass`/`--key-pass` 均为
+  `env:` 形式、子进程环境含口令且为继承环境的超集、父进程环境未被污染。
+
 ### 修复（托管质量门）
 
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
