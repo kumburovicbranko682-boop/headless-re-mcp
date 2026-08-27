@@ -624,6 +624,55 @@ def _iter_memberrefs(meta: _MetaCtx) -> Iterable[JsonObject]:
         }
 
 
+def read_identity_names_from_tables(
+    *,
+    tables: bytes,
+    strings: bytes,
+    row_counts: dict[int, int],
+    string_index_size: int,
+    blob_index_size: int,
+    guid_index_size: int,
+    table_data_offset: int,
+) -> tuple[str | None, str | None]:
+    """Module (table 0x00) and Assembly (table 0x20) Name strings.
+
+    The Assembly table sits after up to thirty other tables, so reaching it
+    means sizing every present table between it and Module -- the same table
+    walk used to page types/methods. Callers that already parsed the ``#~``
+    header (clr_inspect) pass the pieces in so the file is not read twice; the
+    fields feed a throwaway context purely to reuse the row-size arithmetic.
+    """
+    ctx = _MetaCtx(
+        path=Path(),
+        pe_data=b"",
+        layout=None,
+        meta=b"",
+        stream_map={},
+        tables=tables,
+        strings=strings,
+        heap_sizes=0,
+        string_index_size=string_index_size,
+        blob_index_size=blob_index_size,
+        guid_index_size=guid_index_size,
+        row_counts=row_counts,
+        table_data_offset=table_data_offset,
+    )
+    module_name: str | None = None
+    for _rid, at in _iter_table_rows(ctx, 0x00):
+        # Module: Generation(u16) then Name(#Strings index).
+        idx, _ = _read_index(tables, at + 2, string_index_size)
+        module_name = _string_at(ctx, idx)
+        break
+    assembly_name: str | None = None
+    for _rid, at in _iter_table_rows(ctx, 0x20):
+        # Assembly: HashAlgId(u32) + four u16 version fields + Flags(u32) +
+        # PublicKey(#Blob) before the Name(#Strings index).
+        idx, _ = _read_index(tables, at + 4 + 8 + 4 + blob_index_size, string_index_size)
+        assembly_name = _string_at(ctx, idx)
+        break
+    return module_name, assembly_name
+
+
 def _iter_strings_heap(meta: _MetaCtx) -> Iterable[JsonObject]:
     data = meta.strings
     if not data:

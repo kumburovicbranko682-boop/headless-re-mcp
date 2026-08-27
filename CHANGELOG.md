@@ -59,6 +59,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   - MethodSpec（0x2B）与 GenericParamConstraint（0x2C）两张表的布局写反了。
 - 新增 `tests/unit/test_dotnet_metadata_table_sizes.py`（8 项）：五张表的行长断言各自挑选能让“错误公式”与“正确公式”取值分叉的行数，因此对旧代码为红；并端到端验证 AssemblyRef 之后 ManifestResource 的起点与资源解码正确。另加一条跨表正向用例（Module→TypeDef→Field→MethodDef→MemberRef），按独立列出的 ECMA 行长铺好字节再读回 name/token/rva——此前套件只在空表上跑过，这些行内列偏移与 `_table_start` 累加从未被真实行数据覆盖过。
 
+### 修复（`dotnet.inspect` 的 assembly_name 几乎永远为 null）
+
+- `dotnet/clr_inspect.py` 的 `_parse_tables_and_names` 想从 `#~` 表流里取 Module（0x00）与 Assembly（0x20）两张表的 Name，却只会计算这两张表自己的行长；一旦遇到它不会算行长的表就直接 `break`。Module 是第一张表故能读到，但 Assembly（0x20）排在近三十张表之后，中间的 TypeRef（0x01）/TypeDef（0x02）等在任何真实程序集里都有行——于是循环在 TypeDef 处就跳出，游标从未走到 Assembly，`assembly_name` 对几乎所有输入都返回 null，尽管报告里明明公开了这个字段。
+- 现把表游走交给元数据表读取器：`metadata_enum.read_identity_names_from_tables` 复用 `_table_start`/`_table_row_size` 的逐表行长累加（含本轮修好的行长），正确跳过中间每一张在场的表后再读 Assembly 行的 Name。它接收 `clr_inspect` 已解析好的 `#~` 头部字段（表字节、行数、堆索引宽度、行数据起点），不再二次读文件——遵守“inspect 不做无界二次读取”的既有约束。同时把 `clr_inspect` 读取元数据的上限从 64 KB 提到 2 MB，与 `metadata_enum` 一致，使中等体量程序集的表流不再被截断、名字与统计得以完整。
+- 新增回归用例：端到端 `inspect_dotnet` 在 Module 与 Assembly 之间夹入 TypeRef/TypeDef/MethodDef/MemberRef/CustomAttribute 五张表后仍报出 `assembly_name`；并直接覆盖 `read_identity_names_from_tables` 跨表读回 Module/Assembly 名。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

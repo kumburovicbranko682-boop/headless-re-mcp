@@ -192,8 +192,8 @@ def inspect_dotnet(path: str | Path, *, require_verified: bool = False) -> Dotne
 
     if meta_rva and meta_size >= 16:
         try:
-            meta_off = pe_mod._rva_to_offset(layout, meta_rva, size=min(meta_size, 0x10000))  # noqa: SLF001
-            meta = pe_mod._slice(data, meta_off, min(meta_size, 0x10000))  # noqa: SLF001
+            meta_off = pe_mod._rva_to_offset(layout, meta_rva, size=min(meta_size, 0x200000))  # noqa: SLF001
+            meta = pe_mod._slice(data, meta_off, min(meta_size, 0x200000))  # noqa: SLF001
             if meta[:4] == _CLR_METADATA_SIG:
                 verified = True
                 (
@@ -351,57 +351,25 @@ def _parse_tables_and_names(
         source="metadata_tables",
     )
 
-    def read_string_index(buf: bytes, at: int) -> tuple[int, int]:
-        if string_index_size == 4:
-            return int.from_bytes(buf[at : at + 4], "little"), 4
-        return int.from_bytes(buf[at : at + 2], "little"), 2
+    # Module (0x00) is the first table, but Assembly (0x20) sits behind every
+    # other present table. The old walk here only knew how to size Module and
+    # Assembly rows and broke out of the loop at the first table it could not
+    # size (TypeRef/TypeDef, which real assemblies always have), so it never
+    # reached Assembly and assembly_name came back null for essentially every
+    # input. Delegate the walk to the metadata table reader, which sizes every
+    # intervening table, using the header pieces already parsed here (no second
+    # file read).
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    from headless_re_mcp.dotnet import metadata_enum
 
-    def string_at(index: int) -> str | None:
-        if index <= 0 or index >= len(strings):
-            return None
-        end = strings.find(b"\0", index)
-        if end < 0:
-            end = len(strings)
-        return strings[index:end].decode("utf-8", errors="replace")
-
-    module_name: str | None = None
-    assembly_name: str | None = None
-    if not strings:
-        return None, None, stats
-    for bit in range(64):
-        rows = row_counts.get(bit)
-        if not rows:
-            continue
-        if bit == 0x00:  # Module
-            name_idx, _ = read_string_index(tables, cursor + 2)
-            module_name = string_at(name_idx)
-            guid_index_size = 4 if (heap_sizes & 0x02) else 2
-            row_size = (
-                2
-                + string_index_size
-                + guid_index_size
-                + guid_index_size
-                + guid_index_size
-            )
-            cursor += row_size * rows
-            continue
-        if bit == 0x20:  # Assembly
-            blob_index_size = 4 if (heap_sizes & 0x04) else 2
-            name_at = cursor + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
-            name_idx, _ = read_string_index(tables, name_at)
-            assembly_name = string_at(name_idx)
-            row_size = (
-                4
-                + 2
-                + 2
-                + 2
-                + 2
-                + 4
-                + blob_index_size
-                + string_index_size
-                + string_index_size
-            )
-            cursor += row_size * rows
-            continue
-        break
+    module_name, assembly_name = metadata_enum.read_identity_names_from_tables(
+        tables=tables,
+        strings=strings,
+        row_counts=row_counts,
+        string_index_size=string_index_size,
+        blob_index_size=blob_index_size,
+        guid_index_size=guid_index_size,
+        table_data_offset=cursor,
+    )
     return module_name, assembly_name, stats

@@ -82,6 +82,119 @@ def _write_verified_clr_pe(path: Path) -> None:
     path.write_bytes(image)
 
 
+def _tables_stream_with_named_assembly(assembly_name_index: int) -> bytes:
+    """A ``#~`` blob: Module + several tables + Assembly, 2-byte heap indexes.
+
+    Assembly (0x20) trails TypeRef/TypeDef/MethodDef/MemberRef/CustomAttribute,
+    so reaching its Name means every one of those rows must be sized correctly.
+    """
+
+    def u16(n: int) -> bytes:
+        return int(n).to_bytes(2, "little")
+
+    def u32(n: int) -> bytes:
+        return int(n).to_bytes(4, "little")
+
+    present = (0x00, 0x01, 0x02, 0x06, 0x0A, 0x0C, 0x20)
+    valid = 0
+    for bit in present:
+        valid |= 1 << bit
+    blob = bytearray()
+    blob += u32(0) + bytes([2, 0]) + bytes([0]) + bytes([1])  # reserved/ver/heapsizes=0/reserved
+    blob += valid.to_bytes(8, "little") + (0).to_bytes(8, "little")  # Valid + Sorted
+    for _bit in sorted(present):
+        blob += u32(1)  # one row per present table
+    blob += u16(0) + u16(1) + u16(0) + u16(0) + u16(0)  # Module: Gen, Name=1, 3×Mvid
+    blob += u16(0) + u16(0) + u16(0)  # TypeRef: ResolutionScope, Name, Namespace
+    blob += u32(0) + u16(0) + u16(0) + u16(0) + u16(1) + u16(1)  # TypeDef
+    blob += u32(0) + u16(0) + u16(0) + u16(0) + u16(0) + u16(1)  # MethodDef
+    blob += u16(0) + u16(0) + u16(0)  # MemberRef
+    blob += u16(0) + u16(0) + u16(0)  # CustomAttribute
+    blob += (  # Assembly: HashAlg, 4×version, Flags, PublicKey, Name, Culture
+        u32(0) + u16(1) + u16(0) + u16(0) + u16(0) + u32(0) + u16(0)
+        + u16(assembly_name_index) + u16(0)
+    )
+    return bytes(blob)
+
+
+def _write_clr_with_named_assembly(path: Path) -> None:
+    """Verified PE whose metadata carries a real Assembly row with a name."""
+    image = bytearray(0x800)
+    pe_offset = 0x80
+    image[:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3C, pe_offset)
+    image[pe_offset : pe_offset + 4] = b"PE\0\0"
+    file_header = pe_offset + 4
+    struct.pack_into("<HHIIIHH", image, file_header, 0x8664, 1, 0, 0, 0, 0xF0, 0x2022)
+    optional = file_header + 20
+    struct.pack_into("<HBB", image, optional, 0x20B, 14, 0)
+    struct.pack_into("<I", image, optional + 16, 0x1000)
+    struct.pack_into("<Q", image, optional + 24, 0x140000000)
+    struct.pack_into("<II", image, optional + 32, 0x1000, 0x200)
+    struct.pack_into("<II", image, optional + 56, 0x2000, 0x200)
+    struct.pack_into("<HH", image, optional + 68, 3, 0x8160)
+    struct.pack_into("<I", image, optional + 108, 16)
+    dir_base = optional + 112
+    struct.pack_into("<II", image, dir_base + 14 * 8, 0x1100, 72)
+    section = optional + 0xF0
+    image[section : section + 8] = b".text\0\0\0"
+    struct.pack_into("<IIII", image, section + 8, 0x400, 0x1000, 0x400, 0x200)
+    struct.pack_into("<I", image, section + 36, 0x60000020)
+
+    heap = b"\x00MyModule.dll\x00MyAssembly\x00"
+    tables = _tables_stream_with_named_assembly(heap.find(b"MyAssembly"))
+    version = b"v4.0.30319\0"
+    version_padded = version + b"\0" * ((4 - (len(version) % 4)) % 4)
+
+    def stream_name(name: str) -> bytes:
+        raw = name.encode("ascii") + b"\0"
+        return raw + b"\0" * ((4 - (len(raw) % 4)) % 4)
+
+    tilde_name = stream_name("#~")
+    strings_name = stream_name("#Strings")
+    root_len = 16 + len(version_padded)
+    header_len = root_len + 4 + (8 + len(tilde_name)) + (8 + len(strings_name))
+    tilde_off = header_len
+    strings_off = tilde_off + len(tables)
+
+    md = bytearray()
+    md += b"BSJB" + struct.pack("<HH", 1, 1) + struct.pack("<I", 0)
+    md += struct.pack("<I", len(version)) + version_padded
+    md += struct.pack("<HH", 0, 2)  # flags + stream count
+    md += struct.pack("<II", tilde_off, len(tables)) + tilde_name
+    md += struct.pack("<II", strings_off, len(heap)) + strings_name
+    md += tables + heap
+    assert len(md) <= 0x200
+
+    meta_off = 0x400
+    image[meta_off : meta_off + len(md)] = md
+    cor_off = 0x300
+    struct.pack_into("<I", image, cor_off, 72)
+    struct.pack_into("<HH", image, cor_off + 4, 2, 5)
+    struct.pack_into("<II", image, cor_off + 8, 0x1200, len(md))
+    struct.pack_into("<I", image, cor_off + 16, 0x1)
+    struct.pack_into("<I", image, cor_off + 20, 0x06000001)
+    path.write_bytes(image)
+
+
+def test_inspect_reports_assembly_name_behind_intervening_tables(tmp_path: Path) -> None:
+    """assembly_name must survive the walk past TypeRef/TypeDef/etc.
+
+    The old table walk broke out of its loop at the first table it could not
+    size -- always TypeRef or TypeDef -- so it never reached the Assembly table
+    and assembly_name came back null for essentially every real assembly, even
+    though the field is advertised in the report.
+    """
+    path = tmp_path / "named.exe"
+    _write_clr_with_named_assembly(path)
+    report = inspect_dotnet(path, require_verified=True)
+    assert report.verified_clr is True
+    assert report.module_name == "MyModule.dll"
+    assert report.assembly_name == "MyAssembly"
+    assert report.metadata_stats is not None
+    assert report.metadata_stats.type_count == 1
+
+
 def test_inspect_native_pe(tmp_path: Path) -> None:
     path = tmp_path / "native.exe"
     _write_native_pe(path)

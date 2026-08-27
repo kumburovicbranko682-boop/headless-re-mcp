@@ -92,6 +92,57 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
     assert partial is False
 
 
+def test_read_identity_names_walks_past_intervening_tables() -> None:
+    """Assembly (0x20) trails many tables; the walk must size all of them.
+
+    read_identity_names_from_tables reuses the table row-size arithmetic so a
+    caller (clr_inspect) can name the Module and Assembly rows without a naive
+    walk that stops at the first table it cannot size. With TypeRef/TypeDef/
+    MethodDef present between Module and Assembly, both names must resolve.
+    """
+    from headless_re_mcp.dotnet.metadata_enum import read_identity_names_from_tables
+
+    def u16(n: int) -> bytes:
+        return int(n).to_bytes(2, "little")
+
+    def u32(n: int) -> bytes:
+        return int(n).to_bytes(4, "little")
+
+    strings = b"\x00" + b"Mod\x00" + b"Asm\x00"
+    asm_idx = strings.find(b"Asm")
+
+    present = (0x00, 0x01, 0x02, 0x06, 0x20)
+    valid = 0
+    for bit in present:
+        valid |= 1 << bit
+    tables = bytearray()
+    tables += u32(0) + bytes([2, 0, 0, 1])  # reserved, major, minor, heapsizes=0, reserved
+    tables += valid.to_bytes(8, "little") + (0).to_bytes(8, "little")
+    for _bit in sorted(present):
+        tables += u32(1)
+    tables += u16(0) + u16(1) + u16(0) + u16(0) + u16(0)  # Module Name=1
+    tables += u16(0) + u16(0) + u16(0)  # TypeRef
+    tables += u32(0) + u16(0) + u16(0) + u16(0) + u16(1) + u16(1)  # TypeDef
+    tables += u32(0) + u16(0) + u16(0) + u16(0) + u16(0) + u16(1)  # MethodDef
+    tables += (
+        u32(0) + u16(1) + u16(0) + u16(0) + u16(0) + u32(0) + u16(0) + u16(asm_idx) + u16(0)
+    )  # Assembly Name=asm_idx
+
+    row_counts = dict.fromkeys(present, 1)
+    table_data_offset = 24 + 4 * len(present)
+    module_name, assembly_name = read_identity_names_from_tables(
+        tables=bytes(tables),
+        strings=strings,
+        row_counts=row_counts,
+        string_index_size=2,
+        blob_index_size=2,
+        guid_index_size=2,
+        table_data_offset=table_data_offset,
+    )
+    assert module_name == "Mod"
+    assert assembly_name == "Asm"
+
+
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     binary = tmp_path / "empty_tables.exe"
     _write_minimal_clr(binary)
