@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **267（149 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **268（150 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -327,6 +327,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   被读成「未设」。活体门用本地站点下发一枚 HttpOnly 会话 Cookie + 一枚普通 Cookie，断言 `web.cookies` 取回其值与
   HttpOnly 标志、SameSite，且普通 Cookie 也在（缺浏览器时 skip≠pass）；单测覆盖标志归一化、会话 vs 持久 expires、
   超长值有界、以及大罐按上限截断。该工具计入读效果，工具面因此 266→267。
+- **radare2 线看不到节区布局——`.text`/`.data`/`.rodata` 各在哪、多大、什么权限**。r2 线能列函数、字符串、
+  导入导出，能在某地址反汇编，却没有工具回报节区表：分析者拿不到「代码/数据各落在哪段 VA、每段多大、可执行还是
+  只读」这张在挑地址反汇编或读字符串之前最先要看的图。新增只读的 `r2.sections`：跑 `iSj`，回 `items`，每条带
+  `name`、`size`（盘上字节）、`vsize`（映射后字节）、`paddr`（文件偏移）、`vaddr`、`perm`（rwx 串，如 `-r-x`），
+  并由 `vaddr` 走与其它列表工具相同的统一 Address 富化给出 `address`（va/rva/module）、`count`；列表填满 4096 上限时
+  标 `items_truncated`/`items_total`/`items_limit`，不另造 `sections`/`truncated`/`has_more` 字段。活体门用系统 C
+  编译器现编一个 `-no-pie` ELF，断言 `r2.sections` 取回可执行的 `.text` 段、其 `address.va` 为正、ELF 不伪造 PE
+  的 `rva`、`perm` 标记为可执行（缺 r2 或缺编译器时 skip≠pass）；单测覆盖 `iSj` 条目到 Address 的映射、列表截断标注、
+  以及工具描述如实点名 `iSj`/`perm`/`vsize`/`items_truncated`。该工具计入读效果，工具面因此 267→268。
 - **JS/WASM 输出超过 400 KB 就被截断且无从取回**。`js.deobfuscate`/`js.beautify`（webcrack）、`wasm.wat`
   （wasm2wat）、`wasm.info`（wasm-objdump）都只把结果内联返回、超 400 KB 直接切掉——而一份反混淆后的打包脚本常有
   几 MB，一个非平凡 WASM 模块的 WAT 反汇编动辄上兆，于是分析者拿到的是残缺的前 400 KB、且没有任何办法读到其余部分

@@ -196,6 +196,39 @@ def test_r2_strings_imports_exports_map_on_a_real_elf(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_r2_sections_map_on_a_real_elf(tmp_path: Path) -> None:
+    """The section layout (iSj) had no live ELF coverage.
+
+    r2.sections is a separate service tool; nothing else drives iSj. Prove it
+    returns parsed items with the unified Address mapping on a real binary: the
+    executable .text section must be present, sit at a usable VA, and be marked
+    executable in its perm string -- the map a caller reads before choosing an
+    address for disasm.
+    """
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live gate not run (skip != pass)")
+    binary = _compile_elf(tmp_path)
+
+    sections = client.run(binary, ["iSj"], timeout=60.0)
+    assert sections["parsed"] is True
+    assert sections.get("count", 0) >= 1
+    text = _named(sections["items"], ".text")
+    assert text is not None, (
+        f"radare2 did not report a .text section: {[s.get('name') for s in sections['items']]}"
+    )
+    address = text.get("address")
+    assert isinstance(address, dict) and isinstance(address.get("va"), int)
+    assert address["va"] > 0
+    assert "rva" not in address, "ELF sections must not fabricate a PE RVA"
+    # .text is code, so radare2's perm string must mark it executable; this is
+    # the field a caller reads to tell code sections from data.
+    assert "x" in str(text.get("perm", "")), (
+        f".text should be executable, got perm={text.get('perm')!r}"
+    )
+
+
+@pytest.mark.integration
 def test_r2_rejects_a_command_off_the_whitelist_even_live(tmp_path: Path) -> None:
     client = R2Client()
     if not client.available:
