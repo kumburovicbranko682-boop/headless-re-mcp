@@ -16,6 +16,12 @@
 set -uo pipefail
 
 JADX_VERSION="${JADX_VERSION:-1.5.0}"
+# Ghidra is opt-in (HEADLESS_RE_INSTALL_GHIDRA=1): it is a ~400MB download and,
+# unlike the others, is found via HEADLESS_RE_GHIDRA_HOME rather than PATH. The
+# pinned 11.1.2 still bundles a Jython provider, which the ExportJson.py
+# GhidraScript needs; newer Ghidra drops Jython and would need the PyGhidra
+# extension. Override GHIDRA_URL to install a different build.
+GHIDRA_URL="${GHIDRA_URL:-https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.1.2_build/ghidra_11.1.2_PUBLIC_20240709.zip}"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "install-linux-backends.sh supports Linux only" >&2
@@ -172,12 +178,59 @@ install_jadx() {
   echo "jadx: $(jadx --version 2>/dev/null | head -1 || echo "installed to ${dest}")"
 }
 
+install_ghidra() {
+  if [[ -n "${HEADLESS_RE_GHIDRA_HOME:-}" && -x "${HEADLESS_RE_GHIDRA_HOME}/support/analyzeHeadless" ]]; then
+    echo "ghidra: already present (${HEADLESS_RE_GHIDRA_HOME})"
+    return 0
+  fi
+  if [[ "${HEADLESS_RE_INSTALL_GHIDRA:-0}" != "1" ]]; then
+    echo "ghidra: skipped (set HEADLESS_RE_INSTALL_GHIDRA=1 to fetch ~400MB)"
+    return 0
+  fi
+  if ! command -v java >/dev/null 2>&1; then
+    echo "ghidra: installing a JRE via apt first…"
+    apt_install default-jre || { echo "  ! could not install a JRE for ghidra" >&2; return 1; }
+  fi
+  local zip dest
+  zip="$(mktemp -d)/ghidra.zip"
+  echo "ghidra: downloading… (${GHIDRA_URL##*/})"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "${zip}" "${GHIDRA_URL}" || { echo "  ! ghidra download failed" >&2; return 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "${zip}" "${GHIDRA_URL}" || { echo "  ! ghidra download failed" >&2; return 1; }
+  else
+    echo "  ! neither curl nor wget found; cannot fetch ghidra" >&2
+    return 1
+  fi
+  if as_root test -w /opt 2>/dev/null || [[ "$(id -u)" -eq 0 ]]; then
+    dest=/opt/ghidra
+    as_root rm -rf "${dest}"
+    local tmp; tmp="$(mktemp -d)"
+    unzip -q "${zip}" -d "${tmp}" || { echo "  ! ghidra unzip failed" >&2; return 1; }
+    as_root mv "$(ls -d "${tmp}"/ghidra_* | head -1)" "${dest}"
+  else
+    dest="${HOME}/.local/share/ghidra"
+    rm -rf "${dest}"; mkdir -p "$(dirname "${dest}")"
+    local tmp; tmp="$(mktemp -d)"
+    unzip -q "${zip}" -d "${tmp}" || { echo "  ! ghidra unzip failed" >&2; return 1; }
+    mv "$(ls -d "${tmp}"/ghidra_* | head -1)" "${dest}"
+  fi
+  if [[ -x "${dest}/support/analyzeHeadless" ]]; then
+    echo "ghidra: installed to ${dest}"
+    echo "  -> export HEADLESS_RE_GHIDRA_HOME=${dest}"
+  else
+    echo "  ! ghidra install did not yield support/analyzeHeadless" >&2
+    return 1
+  fi
+}
+
 echo "Installing non-PE RE backends…"
 install_radare2 || failures=$((failures + 1))
 install_wabt || failures=$((failures + 1))
 install_webcrack || failures=$((failures + 1))
 install_apktool || failures=$((failures + 1))
 install_jadx || failures=$((failures + 1))
+install_ghidra || failures=$((failures + 1))
 
 if [[ "${failures}" -gt 0 ]]; then
   echo "Done with ${failures} backend(s) not installed; the rest are ready." >&2
