@@ -468,6 +468,16 @@ def _capture_process(
             except (subprocess.TimeoutExpired, OSError):
                 _terminate_process(process)
                 returncode = process.poll()
+            else:
+                # A clean exit still leaves behind anything the tool detached and
+                # orphaned to init: the ppid walk cannot see it, but it keeps the
+                # session group. Reap the group so unattended runs do not leak it.
+                from headless_re_mcp.core.process_tree import (
+                    reap_orphaned_session_group,
+                )
+
+                if os.name != "nt" and process.pid:
+                    reap_orphaned_session_group(int(process.pid))
         stop_monitor.set()
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)

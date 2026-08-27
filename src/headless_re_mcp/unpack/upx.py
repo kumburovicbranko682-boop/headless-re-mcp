@@ -277,6 +277,7 @@ def _capture_process(
     deadline = monotonic() + timeout
     timed_out = False
     cancelled = False
+    exited = False
     stop = active_bound_cancel()
     while True:
         if stop is not None and stop.is_set():
@@ -292,6 +293,7 @@ def _capture_process(
             _terminate_process(process)
             break
         if process.poll() is not None:
+            exited = True
             break
         sleep(min(0.05, remaining))
 
@@ -306,6 +308,14 @@ def _capture_process(
     if not stderr_thread.is_alive():
         with suppress(OSError):
             stderr_pipe.close()
+
+    if exited and os.name != "nt" and process.pid:
+        # A clean exit still leaves behind anything upx (or a configured wrapper)
+        # detached and orphaned to init: the ppid walk cannot see it, but it
+        # keeps the session group. Reap the group so unattended runs do not leak.
+        from headless_re_mcp.core.process_tree import reap_orphaned_session_group
+
+        reap_orphaned_session_group(int(process.pid))
 
     returncode = process.poll()
     if returncode is None:

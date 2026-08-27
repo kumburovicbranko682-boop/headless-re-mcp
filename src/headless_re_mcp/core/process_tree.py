@@ -239,6 +239,52 @@ def terminate_process_group(pgid: int) -> list[int]:
     return killed
 
 
+def _pid_running_posix(pid: int) -> bool:
+    """POSIX: True only for a schedulable process, False for zombie/dead/gone.
+
+    ``os.kill(pid, 0)`` reports a zombie as alive, so it cannot tell a process
+    that has been killed but not yet reaped from a running one. Read the state
+    field of ``/proc/<pid>/stat`` instead: 'Z'/'X'/'x' mean already dead.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    close = stat.rfind(")")
+    if close < 0:
+        return False
+    fields = stat[close + 2 :].split()
+    return bool(fields) and fields[0] not in {"Z", "X", "x"}
+
+
+def reap_orphaned_session_group(leader_pid: int, *, confirm_timeout_s: float = 2.0) -> list[int]:
+    """POSIX: kill anything still in the session group a just-exited leader led.
+
+    A CLI adapter started with ``start_new_session`` leads its own group, so its
+    process group id equals its pid. When that leader exits cleanly the ppid walk
+    sees nothing, but a helper it detached and orphaned to init keeps the group
+    id and lives on -- exactly what makes an unattended run accumulate stray
+    JVM/helper processes. Enumerate the group and kill any survivor. Members are
+    matched on their own ``pgrp`` (never signalled with a bare ``killpg`` on a
+    possibly-recycled leader pid). No-op / [] on Windows or without a group.
+
+    SIGKILL returns before the target has finished transitioning to a zombie, so
+    the killed pids are polled (bounded by ``confirm_timeout_s``) until none are
+    still schedulable -- the caller can then report the group reaped without a
+    race against a helper that was signalled a moment ago.
+    """
+    if os.name == "nt" or not isinstance(leader_pid, int) or leader_pid <= 0:
+        return []
+    killed = terminate_process_group(leader_pid)
+    if killed:
+        from time import monotonic, sleep
+
+        deadline = monotonic() + max(0.0, confirm_timeout_s)
+        while monotonic() < deadline and any(_pid_running_posix(pid) for pid in killed):
+            sleep(0.02)
+    return killed
+
+
 def _kill_own_process_group(pid: int) -> list[int]:
     """POSIX: kill ``pid``'s process group, but only when ``pid`` leads it.
 
