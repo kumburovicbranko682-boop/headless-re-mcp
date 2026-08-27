@@ -589,6 +589,26 @@ class _FlowRecorder:
         with self._lock:
             return list(self.flows)
 
+    def clear(self) -> int:
+        """Drop every recorded flow and reset the sequence and byte accounting.
+
+        Returns how many flow summaries were discarded. The seq counter is reset
+        to 0 so ``dropped`` is measured from the post-clear baseline rather than
+        reporting a phantom eviction gap. This does not touch the running proxy
+        (it keeps listening, and the CA stays installed); only the capture the
+        recorder holds is emptied.
+        """
+        with self._lock:
+            discarded = len(self.flows)
+            self.flows.clear()
+            self._seq = 0
+            self._raw.clear()
+            self._raw_sizes.clear()
+            self._retained_bytes = 0
+            self._ws.clear()
+            self._ws_bytes = 0
+            return discarded
+
     def raw(self, flow_id: str) -> Any | None:
         with self._lock:
             return self._raw.get(flow_id)
@@ -844,6 +864,20 @@ class ProxyBackend:
             "retained_bytes": inst.recorder.retained_bytes(),
             "retained_bytes_max": _MAX_RETAINED_BYTES,
         }
+
+    def clear(self, session_id: str) -> JsonObject:
+        """Empty the capture ring without stopping the proxy.
+
+        The proxy keeps running (same port, CA still installed); only the flows
+        recorded so far are dropped. This is the triage move: clear the noise,
+        reproduce the one action you care about, then read a clean capture --
+        instead of paging past everything or stop/starting and losing the port
+        and CA setup. Answers with cleared (how many flow summaries were
+        discarded) and running true.
+        """
+        inst = self._get(session_id)
+        cleared = inst.recorder.clear()
+        return {"cleared": cleared, "running": True}
 
     def stats(self, session_id: str) -> JsonObject:
         """Aggregate the whole capture into a triage summary.

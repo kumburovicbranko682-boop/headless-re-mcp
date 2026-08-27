@@ -291,6 +291,7 @@ _STATE_CHANGE_NAMES = frozenset((
     'frida.server.ensure',
     'frida.spawn',
     'proxy.ca.install_android',
+    'proxy.clear',
     'proxy.replay',
     'proxy.start',
     'proxy.stop',
@@ -353,7 +354,7 @@ _FILE_WRITE_NAMES = frozenset((
     'web.screenshot',
 ))
 _ALL_TOOL_NAMES = _READ_ONLY_NAMES | _STATE_CHANGE_NAMES | _FILE_WRITE_NAMES
-if len(_ALL_TOOL_NAMES) != 276:
+if len(_ALL_TOOL_NAMES) != 277:
     raise RuntimeError("tool effect policy contains duplicates or omissions")
 
 _WEB_NAMES = frozenset(['artifacts.describe', 'artifacts.gc', 'artifacts.list', 'audit.list', 'dynamic.breakpoints', 'dynamic.modules', 'dynamic.registers.read', 'dynamic.state', 'session.close', 'session.get', 'session.list', 'static.decompile', 'static.functions', 'static.strings', 'timeline.list', 'unpack.artifacts', 'unpack.cancel', 'unpack.status', 'workflow.cancel', 'workflow.status'])

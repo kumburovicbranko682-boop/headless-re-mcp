@@ -429,6 +429,57 @@ def test_proxy_stats_summarizes_a_live_capture() -> None:
 
 
 @pytest.mark.integration
+def test_proxy_clear_empties_a_live_capture_without_stopping() -> None:
+    """clear must empty the ring while the proxy keeps intercepting.
+
+    Drive a request, clear, and prove the capture is empty while status still
+    reports running and the CA is untouched; then drive another request and
+    prove it is captured on the fresh baseline (seq restarted, nothing dropped).
+    This is the triage loop clear exists for: wipe the noise, reproduce the one
+    action, read a clean capture -- without losing the port/CA a stop/start
+    would cost.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy clear Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _origin_server() as origin_url:
+        backend.start("gate-clear", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            with opener.open(origin_url, timeout=10) as response:
+                assert response.status == 200
+            assert _poll(lambda: backend.flows("gate-clear")["total"] >= 1), (
+                "the first request was never recorded"
+            )
+
+            cleared = backend.clear("gate-clear")
+            assert cleared["cleared"] >= 1
+            assert cleared["running"] is True
+            # The capture is empty immediately after the clear.
+            assert backend.flows("gate-clear")["total"] == 0
+            assert backend.stats("gate-clear")["total"] == 0
+            # The proxy itself is untouched: still listening on the same port.
+            status = backend.status("gate-clear")
+            assert status["running"] is True
+            assert status["port"] == port
+
+            # A request after the clear is captured on a fresh baseline.
+            with opener.open(origin_url, timeout=10) as response:
+                assert response.status == 200
+            assert _poll(lambda: backend.flows("gate-clear")["total"] >= 1), (
+                "the proxy stopped capturing after a clear"
+            )
+            after = backend.flows("gate-clear")
+            # seq restarted at the clear, so no pre-clear history is reported lost.
+            assert after["dropped"] == 0
+        finally:
+            backend.stop("gate-clear")
+
+
+@pytest.mark.integration
 def test_proxy_decodes_a_gzip_response_body() -> None:
     """A gzip'd upstream response must reach the analyst as the payload.
 

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **276（157 只读 / 119 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **277（157 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -465,6 +465,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `text/html` 归一桶。活体门在本地起 HTTP 服务经代理打 GET/POST/404，断言 `proxy.stats` 的方法计数、状态类计数、
   `top_hosts` 命中该主机、`with_request_body` 记到 POST；单测直接喂合成 ring 覆盖方法/状态类/主机/内容类型聚合、
   失败与 websocket 计数、以及 host/content-type 上限截断与去重计数。该工具计入读效果，工具面因此 273→274。
+- **抓包途中想清掉噪声重来，只能停掉代理再重启——端口和 CA 都得重来一遍**。长时间拦截里常见的分流做法是：先做一遍
+  嘈杂的登录/初始化，清掉，再复现真正关心的那一个动作、只读这段干净流量。可此前重置抓包的唯一办法是 `proxy.stop`+
+  `proxy.start`，代价是丢掉监听端口、丢掉已装好的 CA。新增 `proxy.clear`：只清空 recorder 里的 flow（连同其摘要、留存的
+  请求/响应体、WebSocket 帧），代理本身继续在同一端口监听、CA 原样不动。回 `cleared`（丢弃了几条 flow 摘要）与 `running`
+  为真；`seq` 计数一并归零，故清空后 `proxy.flows`/`proxy.stats` 只报新流量、`dropped` 从清空基线重新计，而不是把清空前的
+  历史误报成「已淘汰」。会话没有代理在跑时按 `invalid_state` 拒绝。活体门经代理打一条请求、`proxy.clear` 后断言 flows/stats
+  归零、`proxy.status` 仍 `running` 且端口不变，再打一条断言仍能抓到、且 `dropped` 为 0（证明代理没被停、基线已重置；缺
+  mitmproxy 时 skip≠pass）；单测直接驱动 recorder 覆盖清空计数、seq 归零、留存字节归零，以及后端回 `cleared`/`running`。
+  该工具计入写效果（状态变更），工具面因此 276→277。
 - **JS/WASM 输出超过 400 KB 就被截断且无从取回**。`js.deobfuscate`/`js.beautify`（webcrack）、`wasm.wat`
   （wasm2wat）、`wasm.info`（wasm-objdump）都只把结果内联返回、超 400 KB 直接切掉——而一份反混淆后的打包脚本常有
   几 MB，一个非平凡 WASM 模块的 WAT 反汇编动辄上兆，于是分析者拿到的是残缺的前 400 KB、且没有任何办法读到其余部分

@@ -63,6 +63,23 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_status(session_id))
 
+    @tools.tool(name="proxy.clear")
+    def proxy_clear(session_id: str) -> dict[str, Any]:
+        """Empty the capture without stopping the proxy.
+
+        The proxy keeps listening on the same port and its CA stays installed;
+        only the flows recorded so far (their summaries, retained bodies and
+        WebSocket frames) are dropped. This is the triage move: clear the noise
+        from setup/login, reproduce the one action you care about, then read a
+        clean proxy.flows -- instead of paging past everything or stop/starting
+        and losing the port and CA setup. Answers with cleared (how many flow
+        summaries were discarded) and running true. After this proxy.flows and
+        proxy.stats report only newly captured traffic, and dropped restarts
+        from the cleared baseline. It errors invalid_state when no proxy is
+        running for the session.
+        """
+        return _dump(analysis.proxy_clear(session_id))
+
     @tools.tool(name="proxy.stats")
     def proxy_stats(session_id: str) -> dict[str, Any]:
         """Aggregate the whole capture into a triage summary.
