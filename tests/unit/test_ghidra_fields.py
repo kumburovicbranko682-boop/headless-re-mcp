@@ -6,6 +6,7 @@ import ast
 from pathlib import Path
 
 from headless_re_mcp.backends.ghidra.client import GhidraClient
+from headless_re_mcp.core import service_ext
 from headless_re_mcp.tools.ghidra import build_ghidra_tools
 
 
@@ -51,3 +52,32 @@ def test_ghidra_analyze_puts_the_log_in_stdout_excerpt_not_functions() -> None:
     assert "project_dir" in described
     assert "no functions field" in described
     assert "no analysis field" in described
+
+
+def test_ghidra_export_tools_name_the_artifact_they_register() -> None:
+    """The export tools kept the raw JSON but the catalog never named it.
+
+    GhidraClient._export_unlocked adds export_path and project_dir to every
+    functions/symbols/xrefs/decompile payload, and the service registers that
+    export and stamps artifact_id -- the same artifact_id every other
+    artifact-producing tool here documents (proxy.export_har, web.screenshot).
+    All three reach the caller, so a caller that wanted to reopen the full
+    export with artifacts.read had no field naming it. Pin that the client
+    still produces the paths, the service still registers the id, and the four
+    export docstrings name all three.
+    """
+    client_src = Path(GhidraClient._export_unlocked.__code__.co_filename).read_text(
+        encoding="utf-8"
+    )
+    export_chunk = client_src[client_src.index("def _export_unlocked") :]
+    assert 'payload["export_path"]' in export_chunk
+    assert 'payload["project_dir"]' in export_chunk
+
+    service_src = Path(service_ext.__file__).read_text(encoding="utf-8")
+    assert 'data["artifact_id"] = art["id"]' in service_src
+
+    for name in ("ghidra.functions", "ghidra.symbols", "ghidra.xrefs", "ghidra.decompile"):
+        doc = _tool_docstring(name)
+        assert "export_path" in doc, name
+        assert "project_dir" in doc, name
+        assert "artifact_id" in doc, name

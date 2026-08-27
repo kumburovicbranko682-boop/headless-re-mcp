@@ -43,6 +43,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items, each carrying name, entry and body_size, plus count
         and has_more so a page that filled the limit is not read as the whole list.
+        The raw export is kept: the reply also carries export_path, project_dir
+        and artifact_id, so the JSON can be reopened with artifacts.read.
         A failed export is an error, not a binary with no functions.
         """
         return _dump(analysis.ghidra_functions(session_id, limit=limit, timeout=timeout))
@@ -56,7 +58,9 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Symbols Ghidra recovered.
 
         Answers with items, each carrying name, address and type, plus count
-        and has_more. The listing does not include a containing scope. A failed
+        and has_more. The listing does not include a containing scope. The raw
+        export is kept: the reply also carries export_path, project_dir and
+        artifact_id, so the JSON can be reopened with artifacts.read. A failed
         export is an error, not an empty listing.
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
@@ -71,7 +75,9 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """References to address, as Ghidra resolved them.
 
         Only incoming refs (getReferencesTo). Answers with items carrying from,
-        to and type, plus count and has_more. Outgoing refs are not listed.
+        to and type, plus count and has_more. Outgoing refs are not listed. The
+        raw export is kept: the reply also carries export_path, project_dir and
+        artifact_id, so the JSON can be reopened with artifacts.read.
         A failed export is an error, not an address with no references.
         """
         return _dump(analysis.ghidra_xrefs(session_id, address, limit=limit, timeout=timeout))
@@ -88,7 +94,9 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         and found: found is false when no function contains address, so an
         empty decompiled then means "no function here", not an empty body. A
         second reading of code IDA decompiled differently, or of code it could
-        not. A failed export is an error, not empty code.
+        not. The raw export is kept: the reply also carries export_path,
+        project_dir and artifact_id, so the JSON can be reopened with
+        artifacts.read. A failed export is an error, not empty code.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
     return tools.bindings
