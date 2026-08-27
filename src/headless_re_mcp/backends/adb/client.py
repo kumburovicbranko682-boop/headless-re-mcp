@@ -32,6 +32,12 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
+# One getprop value or package name. The lists are count-capped, but each row
+# is device-controlled: a rooted app can `setprop` a multi-megabyte value or
+# install a pathological name, and a direct MCP caller (no agent-side result
+# cap) would take all of it. A real property value or package id is well under
+# this; anything larger is clipped and the reply says so.
+_MAX_PROP_VALUE_BYTES = 1024
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -61,6 +67,14 @@ class AdbError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _clip_value(value: str, *, limit: int = _MAX_PROP_VALUE_BYTES) -> tuple[str, bool]:
+    """Bound one device-controlled string, returning it and whether it was cut."""
+    payload = value.encode("utf-8", errors="replace")
+    if len(payload) <= limit:
+        return value, False
+    return payload[:limit].decode("utf-8", errors="ignore"), True
 
 
 def _check_serial(serial: str) -> str:
@@ -393,6 +407,7 @@ class AdbBackend:
         raw = _device_shell(dev, "getprop")
         props: dict[str, str] = {}
         has_more = False
+        truncated = False
         for line in str(raw).splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if not match:
@@ -400,8 +415,17 @@ class AdbBackend:
             if len(props) >= capped:
                 has_more = True
                 break
-            props[match.group(1)] = match.group(2)
-        return {"properties": props, "count": len(props), "has_more": has_more}
+            key, key_cut = _clip_value(match.group(1))
+            value, value_cut = _clip_value(match.group(2))
+            if key_cut or value_cut:
+                truncated = True
+            props[key] = value
+        return {
+            "properties": props,
+            "count": len(props),
+            "has_more": has_more,
+            "truncated": truncated,
+        }
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500
@@ -412,6 +436,7 @@ class AdbBackend:
         raw = _device_shell(dev, args)
         pkgs: list[str] = []
         has_more = False
+        truncated = False
         for line in str(raw).splitlines():
             if not line.startswith("package:"):
                 continue
@@ -421,13 +446,17 @@ class AdbBackend:
             if len(pkgs) >= capped:
                 has_more = True
                 break
-            pkgs.append(name)
+            clipped, cut = _clip_value(name)
+            if cut:
+                truncated = True
+            pkgs.append(clipped)
         pkgs.sort()
         return {
             "packages": pkgs,
             "count": len(pkgs),
             "has_more": has_more,
             "third_party_only": third_party_only,
+            "truncated": truncated,
         }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:

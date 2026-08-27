@@ -64,9 +64,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return getprop key/value pairs for a device.
 
-        Answers with properties (the name-to-value map), count, and has_more
-        so a page that filled the cap is not read as every property. There
-        is no props or items field.
+        Answers with properties (the name-to-value map), count, has_more so a
+        page that filled the cap is not read as every property, and truncated
+        when a device-controlled key or value was clipped to its byte cap.
+        There is no props or items field.
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
@@ -78,8 +79,9 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List installed package names, optionally only third-party ones.
 
-        Answers with packages, count, has_more, and third_party_only so a
-        page that filled the cap is not read as every package.
+        Answers with packages, count, has_more, third_party_only so a page
+        that filled the cap is not read as every package, and truncated when
+        a device-controlled name was clipped to its byte cap.
         """
         return _dump(
             analysis.device_packages(
