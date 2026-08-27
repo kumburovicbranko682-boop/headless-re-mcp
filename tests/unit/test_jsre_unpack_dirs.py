@@ -147,3 +147,36 @@ def test_bounded_unpack_listing_finishes_at_the_last_readable_page(
     assert tail["count"] == 0
     assert tail["has_more"] is False
     assert tail["listing_truncated"] is listing_truncated
+
+
+def test_unpack_bundle_forces_overwrite_of_the_created_output_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The client creates out_dir, so it must invoke webcrack with --force.
+
+    webcrack's -o handler is `if (force || !existsSync(output)) rm(output);
+    else error("output directory already exists")`: it refuses to write into a
+    directory that already exists. unpack_bundle mkdirs out_dir first (and the
+    service hands it a fresh unique path per call), so without --force every
+    real unpack exits non-zero having written nothing -- the whole tool is dead
+    on any modern webcrack. The mocked _run tests above cannot see this because
+    they never run the real "already exists" check, so pin the flag statically.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+        del timeout
+        captured["cmd"] = list(cmd)
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        (out_dir / "deobfuscated.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    client = JsClient(executable=Path("/bin/true"))
+    client.unpack_bundle(bundle, tmp_path / "out")
+    assert "--force" in captured["cmd"] or "-f" in captured["cmd"], captured["cmd"]

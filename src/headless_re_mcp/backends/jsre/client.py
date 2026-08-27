@@ -147,8 +147,18 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # --force is required, not optional. webcrack's -o handler is
+        # `if (force || !existsSync(output)) rm(output); else error("output
+        # directory already exists")` -- it refuses to write into a directory
+        # that already exists. We just created out_dir (and the service hands a
+        # fresh unique path per call), so without --force every unpack exits
+        # non-zero having written nothing, i.e. the whole tool is dead on any
+        # webcrack carrying that guard. --force makes it clear and rewrite the
+        # directory it owns. The flag lives in the same handler as the guard, so
+        # any webcrack that trips the guard also honours --force.
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
+            [str(self.executable), str(resolved), "-o", str(out_dir), "--force"],
+            timeout=timeout,
         )
         files, file_count, listed_more = _capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)
         if code != 0 and not files:
