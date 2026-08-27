@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 变更（frida 后端补一条“无设备”实机 gate，钉住授权与参数校验，并纳入 CI）
+
+- 实机 frida gate（`test_m11_frida_live_gate.py`）要 attach 一个真实本地进程，没有目标就跳过；于是
+  frida 最要紧的安全契约——**在 attach 之前**就拒绝会话授权集之外的 pid、并校验参数——在没有目标的
+  机器上从未被验证过。这条契约既不需要 ptrace 也不需要 debuggee：检查都跑在任何进程访问之前。新增
+  `tests/integration/test_frida_deviceless_gate.py`：断言未授权 pid 在 `attach`/`memory_read`/
+  `modules`/`exports`/`java_enumerate`/`hook_template_device` 上一律 `permission_denied`（绝不静默
+  attach），非法参数（pid≤0、size 越界、未知 hook 模板、非 Android 包名）一律 `invalid_params`，
+  以及设备枚举始终暴露 `local` 设备（客户端与服务层 `frida_devices` 皆然、无事故）——对 frida 17.17.0
+  实测通过。新增 `.github/workflows/frida-gate.yml`：按 PR 路径触发、只装 `.[test,dev]`+frida（纯 pip
+  wheel，无需 Android SDK/设备/Node/wabt/Java/浏览器）跑这条 gate——此前 `ci.yml` 只跑单测，唯一集成
+  工作流是手动自托管的 Windows PE job，这条授权契约的回归无人看守。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
