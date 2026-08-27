@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（含工具调用的线程在下一个 run 必遭严格端点 400 拒绝）
+
+- Agent store 只持久化 assistant 的可见文本与 tool 结果行，连接两者的 `tool_calls` 块只活在
+  发起调用那个 run 的内存对话里。编排器重建历史时逐行照搬，于是第二个 run 发给 provider 的请求
+  里出现了**没有前置 assistant `tool_calls` 的 `role="tool"` 消息**——OpenAI 兼容端点
+  （OpenAI/Azure/vLLM 模板等）对这种形态直接 400，请求根本到不了模型：任何用过工具的线程，
+  其后续 run 在首个 token 之前就死掉，多 run 任务从第二个 run 起把预算烧在同一个畸形请求上。
+  测试里的 FakeProvider 从不读 `messages`，所以从未暴露。现重建时把每条存储的结果**重新挂回
+  它回答的 assistant 轮**：run 尚在保留期时从 `tool_calls` 表恢复真实调用名与（已脱敏的）参数，
+  被裁剪后降级为中性占位，且不同 run 的结果绝不挂到更早 run 的轮上。顺带修复同类的 run 内配对：
+  provider 不给 call id 时，铸造的 id 过去只在 `_handle_tool_call` 内部使用，对话与持久化仍是
+  空 id，同一 run 的下一轮就发出同样的 400 形态——现在一次铸造、三处（执行/对话/存储）同用。
+  回归测试用会捕获请求的 provider 端到端断言配对合法、恢复出真实调用名参数、裁剪后仍合法。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

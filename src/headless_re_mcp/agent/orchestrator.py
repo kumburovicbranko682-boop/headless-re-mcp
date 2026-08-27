@@ -20,6 +20,7 @@ from headless_re_mcp.agent.models import (
     RUN_DEADLINE_EXCEEDED,
     RUN_ROUNDS_EXHAUSTED,
     TERMINAL_RUN_STATUSES,
+    AgentMessage,
     RunStatus,
 )
 from headless_re_mcp.agent.providers import (
@@ -185,6 +186,64 @@ class _LlmOutputMeter:
         self._last_mono = now
 
 
+def _conversation_from_history(
+    messages: list[AgentMessage],
+    resolve_call: Callable[[str, str], JsonObject | None],
+) -> list[JsonObject]:
+    """Rebuild a provider-valid conversation from the persisted thread.
+
+    The store keeps an assistant turn's visible text and its tool results, but
+    not the ``tool_calls`` block that connected them -- that lived only in the
+    in-memory conversation of the run that made the calls. Replaying the rows
+    verbatim therefore handed the provider a ``role="tool"`` message with no
+    preceding assistant ``tool_calls``, which OpenAI-compatible endpoints
+    refuse outright as a 400 -- so on such endpoints the first follow-up run on
+    any thread whose history contains a tool call died before its first token,
+    and a multi-run mission failed on run two. Each stored result is reattached
+    to the assistant turn it answered: the call's name and (already redacted)
+    arguments are recovered from the tool_calls table while its run is
+    retained, and degrade to a neutral stub once trimmed. Rounds within one run
+    that wrote no text between calls collapse into one assistant turn, which
+    the wire format accepts; the pairing, not the round count, is what
+    providers validate.
+    """
+    conversation: list[JsonObject] = []
+    # The assistant turn the current group of tool results answers. Reset by
+    # any non-tool row; a result from a different run never attaches to an
+    # earlier run's turn.
+    anchor: JsonObject | None = None
+    anchor_run: str | None = None
+    for message in messages:
+        if message.role == "tool":
+            call_id = message.tool_call_id or uuid.uuid4().hex
+            if anchor is None or anchor_run != message.run_id:
+                anchor = {"role": "assistant", "content": None, "tool_calls": []}
+                anchor_run = message.run_id
+                conversation.append(anchor)
+            stub: JsonObject | None = None
+            if message.run_id and message.tool_call_id:
+                stub = resolve_call(message.run_id, message.tool_call_id)
+            if stub is None:
+                stub = {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "tool", "arguments": "{}"},
+                }
+            calls = anchor.setdefault("tool_calls", [])
+            calls.append(stub)
+            conversation.append(
+                {"role": "tool", "content": message.content, "tool_call_id": call_id}
+            )
+            continue
+        entry: JsonObject = {"role": message.role, "content": message.content}
+        if message.tool_call_id:
+            entry["tool_call_id"] = message.tool_call_id
+        conversation.append(entry)
+        anchor = entry if message.role == "assistant" else None
+        anchor_run = message.run_id if message.role == "assistant" else None
+    return conversation
+
+
 def _arguments_too_deep(value: Any, *, limit: int = _MAX_ARGUMENT_DEPTH) -> bool:
     """True when a JSON value nests deeper than ``limit``.
 
@@ -264,6 +323,28 @@ class AgentOrchestrator:
         """Tool calls still running, however long ago their caller gave up."""
         with self._inflight_lock:
             return self._inflight_tools
+
+    def _resolve_stored_call(self, run_id: str, tool_call_id: str) -> JsonObject | None:
+        """The persisted call behind a stored result, as an assistant stub.
+
+        The tool_calls table holds the redacted arguments, so a replayed
+        credential never reaches the provider even though the live run sent
+        the original.
+        """
+        try:
+            row = self.store.get_tool_call(run_id, tool_call_id)
+        except KeyError:
+            return None
+        return {
+            "id": tool_call_id,
+            "type": "function",
+            "function": {
+                "name": str(row.get("name") or "tool"),
+                "arguments": json.dumps(
+                    row.get("arguments") or {}, ensure_ascii=False, sort_keys=True
+                ),
+            },
+        }
 
     def _invoke_counted(self, name: str, arguments: JsonObject) -> JsonObject:
         """Run the tool, and know when the thread carrying it is free again."""
@@ -381,10 +462,7 @@ class AgentOrchestrator:
         if thread is None:
             raise KeyError(run.thread_id)
         stored_messages = self.store.list_messages(run.thread_id)
-        conversation: list[JsonObject] = [
-            {"role": message.role, "content": message.content, **({"tool_call_id": message.tool_call_id} if message.tool_call_id else {})}
-            for message in stored_messages
-        ]
+        conversation = _conversation_from_history(stored_messages, self._resolve_stored_call)
         conversation.insert(0, {"role": "system", "content": thread_system_prompt(thread.session_id, self.persona_provider() if self.persona_provider else None)})
         self.store.transition(run_id, RunStatus.STREAMING)
         self.store.append_event(run_id, "run.started", {"status": RunStatus.STREAMING.value})
@@ -480,17 +558,25 @@ class AgentOrchestrator:
                 self.store.transition(run_id, RunStatus.COMPLETED)
                 self.store.append_event(run_id, "run.completed", {"status": RunStatus.COMPLETED.value})
                 return
+            # One effective id per call, minted up front when the provider sent
+            # none. The generated id used to exist only inside _handle_tool_call
+            # while the conversation and the store kept the empty original, so
+            # the next round's request paired a tool result with no call -- the
+            # same shape strict endpoints refuse as a 400.
+            identified_calls = [
+                (call, call.id or uuid.uuid4().hex) for call in completed_calls
+            ]
             assistant_tool_calls = []
-            for call in completed_calls:
-                assistant_tool_calls.append({"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False, sort_keys=True)}})
+            for call, call_id in identified_calls:
+                assistant_tool_calls.append({"id": call_id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False, sort_keys=True)}})
             conversation.append({"role": "assistant", "content": visible_text or None, "tool_calls": assistant_tool_calls})
-            for call in completed_calls:
+            for call, call_id in identified_calls:
                 if self._check_cancelled(run_id):
                     await self._finish_cancel(run_id)
                     return
-                result = await self._handle_tool_call(run_id, call.id or uuid.uuid4().hex, call.name, call.arguments)
-                conversation.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result, ensure_ascii=False, default=str)})
-                self.store.add_message(run.thread_id, "tool", json.dumps(result, ensure_ascii=False, default=str), run_id=run_id, tool_call_id=call.id)
+                result = await self._handle_tool_call(run_id, call_id, call.name, call.arguments)
+                conversation.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps(result, ensure_ascii=False, default=str)})
+                self.store.add_message(run.thread_id, "tool", json.dumps(result, ensure_ascii=False, default=str), run_id=run_id, tool_call_id=call_id)
                 if self._check_cancelled(run_id):
                     await self._finish_cancel(run_id)
                     return
