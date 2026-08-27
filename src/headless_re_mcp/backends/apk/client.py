@@ -285,16 +285,23 @@ class ApkClient:
         v1_signed = bool(names)
         signed_v2 = _scheme_flag(apk, "is_signed_v2")
         signed_v3 = _scheme_flag(apk, "is_signed_v3")
+        # Signature Scheme v3.1 (Android 13+) carries the rotated key when an app
+        # rotates its signing key with SDK targeting; such a package can present a
+        # v3.1 block without a v3 one, so leaving v3.1 out of the OR reported a
+        # properly signed key-rotation APK as unsigned. get_certificates() already
+        # unions v1/v2/v3/v3.1 signers, so the identities are here either way.
+        signed_v31 = _scheme_flag(apk, "is_signed_v31")
         return {
             "signature_files": sig_files,
             "certificates": items,
             "v1_signed": v1_signed,
             "signed_v2": signed_v2,
             "signed_v3": signed_v3,
-            # An app targeting API 24+ is commonly signed with v2/v3 only, so a
-            # v1-only view reports "not signed" for a properly signed APK. The
-            # overall flag is what tells a caller the package is signed at all.
-            "signed": v1_signed or signed_v2 or signed_v3,
+            "signed_v31": signed_v31,
+            # An app targeting API 24+ is commonly signed with v2/v3(/v3.1) only,
+            # so a v1-only view reports "not signed" for a properly signed APK.
+            # The overall flag is what tells a caller the package is signed at all.
+            "signed": v1_signed or signed_v2 or signed_v3 or signed_v31,
             "has_more": certs_more or files_more,
         }
 

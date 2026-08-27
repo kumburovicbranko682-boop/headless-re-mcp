@@ -65,6 +65,32 @@ class _V3OnlyApk:
         return True
 
 
+class _V31OnlyApk:
+    """A key-rotation APK carrying only an APK Signature Scheme v3.1 block.
+
+    Scheme v3.1 (Android 13+) holds the rotated signing key; a package that
+    rotates its key with SDK targeting can present a v3.1 block without a v3
+    one. Its signed-ness lives entirely in ``is_signed_v31``, and older
+    androguard builds without that predicate must still read as "not v3.1"
+    rather than raise.
+    """
+
+    def get_signature_names(self) -> list[str]:
+        return []
+
+    def get_certificates(self) -> list[_Cert]:
+        return [_Cert(0)]
+
+    def is_signed_v2(self) -> bool:
+        return False
+
+    def is_signed_v3(self) -> bool:
+        return False
+
+    def is_signed_v31(self) -> bool:
+        return True
+
+
 def test_apk_certificates_names_signature_files_not_certs() -> None:
     """The catalog never named the payload.
 
@@ -83,10 +109,11 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert len(payload["signature_files"]) == 32
     assert payload["has_more"] is True
     assert payload["v1_signed"] is True
-    # A build of androguard without the v2/v3 predicates must not raise; the
-    # scheme flags default to false and the overall flag falls back to v1.
+    # A build of androguard without the v2/v3/v3.1 predicates must not raise;
+    # the scheme flags default to false and the overall flag falls back to v1.
     assert payload["signed_v2"] is False
     assert payload["signed_v3"] is False
+    assert payload["signed_v31"] is False
     assert payload["signed"] is True
     doc = _tool_docstring("apk.certificates")
     assert "Answers with certificates" in doc
@@ -155,6 +182,27 @@ def test_apk_certificates_reports_a_v3_only_apk_as_signed() -> None:
     assert payload["v1_signed"] is False
     assert payload["signed_v2"] is False
     assert payload["signed_v3"] is True
+    assert payload["signed_v31"] is False
     assert payload["signed"] is True
     assert payload["signature_files"] == []
     assert payload["certificates"] == []
+
+
+def test_apk_certificates_reports_a_v31_only_apk_as_signed() -> None:
+    """A v3.1-only key-rotation APK must not read as unsigned.
+
+    Signature Scheme v3.1 (Android 13+) carries the rotated key, and an app that
+    rotates its signing key with SDK targeting can present a v3.1 block without a
+    v3 one. Leaving v3.1 out of the overall ``signed`` OR reported such a package
+    as unsigned even though get_certificates() surfaced the signer; the new
+    signed_v31 flag and its inclusion in ``signed`` fix that.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _V31OnlyApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert payload["v1_signed"] is False
+    assert payload["signed_v2"] is False
+    assert payload["signed_v3"] is False
+    assert payload["signed_v31"] is True
+    assert payload["signed"] is True
+    assert len(payload["certificates"]) == 1
