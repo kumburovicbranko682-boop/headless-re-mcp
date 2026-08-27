@@ -1,18 +1,23 @@
 """Build the committed ``minimal.apk`` Android fixture from scratch.
 
 There is no Android SDK on the machines that run this suite (no ``aapt2`` /
-``d8`` / ``apksigner``), so the manifest is emitted here as compiled binary XML
-(AXML) by a tiny purpose-built encoder -- just enough of the format for
-androguard to read the package, versions, SDK levels, one permission, and one
-launcher activity. The APK is then v1 (JAR) signed with the JDK's ``keytool``
-and ``jarsigner`` so certificate parsing is exercised too.
+``d8`` / ``apksigner`` / ``smali``), so every part is emitted here by tiny
+purpose-built encoders:
+
+* the manifest as compiled binary XML (AXML) -- enough for androguard to read
+  the package, versions, SDK levels, one permission, and one launcher activity;
+* ``classes.dex`` as a valid DEX carrying one class
+  (``com.example.headless.Sample``) with one static method (``getSecret``) that
+  returns the string ``flag{headless-re}`` -- enough for androguard's full
+  ``AnalyzeAPK`` to enumerate the class, its method, and its strings.
+
+The APK is then v1 (JAR) signed with the JDK's ``keytool`` and ``jarsigner`` so
+certificate parsing is exercised too.
 
 The committed ``minimal.apk`` is the artifact the gate consumes; this script is
 its provenance. Re-running it produces an equivalent APK (the embedded manifest
-is byte-identical; the signature differs because a fresh throwaway key is
-generated each time). ``classes.dex`` is an intentional placeholder: the gate
-covers the manifest-level surface and asserts DEX analysis degrades cleanly, so
-a full valid DEX is deliberately out of scope.
+and DEX are byte-identical; the signature differs because a fresh throwaway key
+is generated each time).
 
 Usage::
 
@@ -23,10 +28,12 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import struct
 import subprocess
 import tempfile
 import zipfile
+import zlib
 from pathlib import Path
 
 RES_STRING_POOL_TYPE = 0x0001
@@ -216,12 +223,138 @@ def build_manifest() -> bytes:
     return struct.pack("<HHI", RES_XML_TYPE, 8, 8 + len(payload)) + payload
 
 
+def _uleb128(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def build_dex() -> bytes:
+    """A minimal but structurally valid DEX (format 035).
+
+    One class ``Lcom/example/headless/Sample;`` with a public static method
+    ``getSecret()Ljava/lang/String;`` whose body is ``const-string v0,
+    "flag{headless-re}"`` / ``return-object v0``. The id tables observe DEX's
+    ordering rules (string_ids sorted by MUTF-8 bytes; type/method ids by their
+    referenced indices) so androguard's AnalyzeAPK parses and analyses it.
+    """
+    # Strings, pre-sorted by MUTF-8 byte order as string_ids requires.
+    strings = [
+        "L",  # 0: shorty for ()L...
+        "Lcom/example/headless/Sample;",  # 1
+        "Ljava/lang/Object;",  # 2
+        "Ljava/lang/String;",  # 3
+        "Sample.java",  # 4
+        "flag{headless-re}",  # 5
+        "getSecret",  # 6
+    ]
+    type_string_idx = [1, 2, 3]  # Sample, Object, String
+    type_sample, type_object, type_string = 0, 1, 2
+
+    header_size = 0x70
+    string_ids_off = header_size
+    type_ids_off = string_ids_off + len(strings) * 4
+    proto_ids_off = type_ids_off + len(type_string_idx) * 4
+    method_ids_off = proto_ids_off + 12  # one proto
+    class_defs_off = method_ids_off + 8  # one method
+    data_off = class_defs_off + 32  # one class def
+
+    data = bytearray()
+
+    def align(width: int) -> None:
+        while (data_off + len(data)) % width != 0:
+            data.append(0)
+
+    string_data_offs: list[int] = []
+    for text in strings:
+        string_data_offs.append(data_off + len(data))
+        data += _uleb128(len(text))  # UTF-16 units; ASCII => char count
+        data += text.encode("utf-8")
+        data += b"\x00"
+
+    align(4)
+    code_off = data_off + len(data)
+    insns = struct.pack("<HHH", 0x001A, 5, 0x0011)  # const-string v0, str@5; return-object v0
+    data += struct.pack("<HHHHII", 1, 0, 0, 0, 0, len(insns) // 2)
+    data += insns
+
+    class_data_off = data_off + len(data)
+    data += _uleb128(0)  # static_fields_size
+    data += _uleb128(0)  # instance_fields_size
+    data += _uleb128(1)  # direct_methods_size
+    data += _uleb128(0)  # virtual_methods_size
+    data += _uleb128(0)  # method_idx_diff (first)
+    data += _uleb128(0x9)  # ACC_PUBLIC | ACC_STATIC
+    data += _uleb128(code_off)
+
+    align(4)
+    map_off = data_off + len(data)
+    entries = [
+        (0x0000, 1, 0),
+        (0x0001, len(strings), string_ids_off),
+        (0x0002, len(type_string_idx), type_ids_off),
+        (0x0003, 1, proto_ids_off),
+        (0x0005, 1, method_ids_off),
+        (0x0006, 1, class_defs_off),
+        (0x2000, 1, class_data_off),
+        (0x2001, 1, code_off),
+        (0x2002, len(strings), string_data_offs[0]),
+        (0x1000, 1, map_off),
+    ]
+    data += struct.pack("<I", len(entries))
+    for type_code, size, off in entries:
+        data += struct.pack("<HHII", type_code, 0, size, off)
+
+    data_size = len(data)
+
+    string_ids = b"".join(struct.pack("<I", off) for off in string_data_offs)
+    type_ids = b"".join(struct.pack("<I", idx) for idx in type_string_idx)
+    proto_ids = struct.pack("<III", 0, type_string, 0)
+    method_ids = struct.pack("<HHI", type_sample, 0, 6)
+    class_defs = struct.pack(
+        "<IIIIIIII", type_sample, 0x1, type_object, 0, 4, 0, class_data_off, 0
+    )
+
+    body = string_ids + type_ids + proto_ids + method_ids + class_defs + bytes(data)
+    file_size = header_size + len(body)
+
+    header = bytearray(header_size)
+    header[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", header, 32, file_size)
+    struct.pack_into("<I", header, 36, header_size)
+    struct.pack_into("<I", header, 40, 0x12345678)
+    struct.pack_into("<I", header, 52, map_off)
+    struct.pack_into("<I", header, 56, len(strings))
+    struct.pack_into("<I", header, 60, string_ids_off)
+    struct.pack_into("<I", header, 64, len(type_string_idx))
+    struct.pack_into("<I", header, 68, type_ids_off)
+    struct.pack_into("<I", header, 72, 1)
+    struct.pack_into("<I", header, 76, proto_ids_off)
+    struct.pack_into("<I", header, 80, 0)  # field_ids_size
+    struct.pack_into("<I", header, 84, 0)  # field_ids_off
+    struct.pack_into("<I", header, 88, 1)
+    struct.pack_into("<I", header, 92, method_ids_off)
+    struct.pack_into("<I", header, 96, 1)
+    struct.pack_into("<I", header, 100, class_defs_off)
+    struct.pack_into("<I", header, 104, data_size)
+    struct.pack_into("<I", header, 108, data_off)
+
+    full = bytearray(bytes(header) + body)
+    full[12:32] = hashlib.sha1(full[32:]).digest()
+    struct.pack_into("<I", full, 8, zlib.adler32(bytes(full[12:])) & 0xFFFFFFFF)
+    return bytes(full)
+
+
 def assemble_apk(target: Path) -> None:
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("AndroidManifest.xml", build_manifest())
-        # Placeholder DEX: valid magic, but not analysable -- the gate asserts
-        # DEX-level tools degrade to a structured envelope on it.
-        archive.writestr("classes.dex", b"dex\n035\x00" + b"\x00" * 100)
+        archive.writestr("classes.dex", build_dex())
         archive.writestr("lib/arm64-v8a/libnative.so", b"\x7fELF" + b"\x00" * 32)
         archive.writestr("lib/x86_64/libnative.so", b"\x7fELF" + b"\x00" * 32)
         archive.writestr("resources.arsc", b"\x02\x00\x0c\x00" + b"\x00" * 8)

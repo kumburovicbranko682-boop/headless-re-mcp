@@ -3,11 +3,12 @@
 The sibling ``test_android_re_gate`` builds a synthetic archive whose manifest
 is not valid AXML, so it can only prove the backend *degrades* cleanly. Nothing
 exercised androguard's happy path -- the package, versions, permissions,
-components, certificate, and native ABIs a real capture depends on -- so a
-regression in that extraction would pass CI unseen. This gate consumes a
-committed, v1-signed minimal APK (see fixtures/android/build_minimal_apk.py)
-and asserts the extracted facts. skip != pass: it skips only when androguard is
-not installed, and says so.
+components, certificate, and native ABIs a real capture depends on, nor the
+full DEX analysis behind classes/methods/strings/xrefs -- so a regression in
+that extraction would pass CI unseen. This gate consumes a committed, v1-signed
+minimal APK carrying a real one-class DEX (see
+fixtures/android/build_minimal_apk.py) and asserts the extracted facts. skip !=
+pass: it skips only when androguard is not installed, and says so.
 """
 
 from __future__ import annotations
@@ -91,10 +92,10 @@ def test_android_apk_static_happy_path() -> None:
 
 
 @pytest.mark.integration
-def test_android_apk_dex_tools_degrade_on_placeholder_dex() -> None:
-    """The fixture's classes.dex is a placeholder, so DEX analysis must return a
-    structured envelope, never crash -- the same contract the synthetic gate
-    checks, but here alongside a manifest that really parses."""
+def test_android_apk_dex_analysis_happy_path() -> None:
+    """androguard's full AnalyzeAPK path: the fixture carries a real one-class
+    DEX, so classes/methods/strings/xrefs must return the analysed facts rather
+    than a degradation envelope."""
     if not _FIXTURE.is_file():
         pytest.skip(f"fixture missing: {_FIXTURE}")
     if not _androguard_available():
@@ -104,8 +105,24 @@ def test_android_apk_dex_tools_degrade_on_placeholder_dex() -> None:
     try:
         created = service.create_session(str(_FIXTURE))
         session_id = created.data["session"]["id"]
+
         classes = service.apk_classes(session_id)
-        assert isinstance(classes.ok, bool)
-        assert classes.ok or classes.error is not None
+        assert classes.ok, classes.error
+        assert "Lcom/example/headless/Sample;" in classes.data["classes"]
+
+        methods = service.apk_methods(session_id, "com.example.headless.Sample")
+        assert methods.ok, methods.error
+        assert "getSecret" in [m["name"] for m in methods.data["methods"]]
+
+        strings = service.apk_strings(session_id)
+        assert strings.ok, strings.error
+        assert any("flag{headless-re}" in s for s in strings.data["strings"])
+
+        # getSecret has no callers in this one-method DEX: the enumeration must
+        # complete and say so, not error and not claim a phantom caller.
+        xrefs = service.apk_xrefs(session_id, "getSecret")
+        assert xrefs.ok, xrefs.error
+        assert xrefs.data["count"] == 0
+        assert xrefs.data["has_more"] is False
     finally:
         service.close_all()
