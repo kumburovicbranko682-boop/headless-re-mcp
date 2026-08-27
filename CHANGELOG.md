@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（dotnet.inspect 的 assembly_name 对真实程序集恒为空）
+
+- `clr_inspect._parse_tables_and_names` 走 #~ 表流找 Module（表 0x00）与 Assembly（表 0x20）
+  名称时，循环只为这两张表推进游标，遇到第一张“既非 Module 也非 Assembly”的表就
+  `break`。而真实 .NET 程序集在 0x00 与 0x20 之间必然还有 TypeRef/TypeDef/MethodDef 等表，
+  于是循环永远停在 Assembly 之前，`assembly_name` 对任何带类型的程序集都恒为 `None`——它读到的
+  是“未知”，而不是错误名，但这个字段实际上从不生效。Assembly 行内 Name 的偏移算术本就正确，
+  缺的只是“走到 Assembly 表”。现按 ECMA-335 II.22 的真实行宽跳过中间各表（复用
+  `metadata_enum.table_row_size`，两处调用者共用同一套尺寸规则），从而抵达 Assembly 表并读出名称；
+  无法定尺寸的表则保留已找到的名称并停下。为 `metadata_enum.table_row_size` 抽出纯函数、
+  并新增一份带真实 Module/TypeDef/Field/MethodDef/Assembly 表与 #Strings 堆的合成夹具，
+  首次覆盖此前只在空表（`valid=0`）上跑过的表游走器。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
