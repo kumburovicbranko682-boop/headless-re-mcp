@@ -97,7 +97,12 @@ def test_native_macho_analyzes_through_ghidra() -> None:
         assert created.ok, created.error
         session = created.data["session"]
         assert session["target"] == "native"
-        assert session["metadata"]["native"]["format"] == "macho"
+        native = session["metadata"]["native"]
+        assert native["format"] == "macho"
+        # The fixture carries the dynamic-linkage identity of a real executable;
+        # the stdlib reader surfaces it before Ghidra ever runs.
+        assert native["interpreter"] == "/usr/lib/dyld"
+        assert native["dylibs"] == ["/usr/lib/libSystem.B.dylib"]
         session_id = str(session["id"])
 
         functions = service.ghidra_functions(session_id, limit=64, timeout=240.0)

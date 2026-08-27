@@ -156,6 +156,10 @@ def test_native_macho_opens_and_r2_reads_it() -> None:
         assert native["pie"] is True
         # LC_UUID is the Mach-O build id; the stdlib reader surfaced it pre-tool.
         assert native["uuid"] == "00010203-0405-0607-0809-0a0b0c0d0e0f"
+        # LC_LOAD_DYLINKER / LC_LOAD_DYLIB carry the dynamic-linkage identity a
+        # real executable always has: dyld as interpreter, libSystem as dylib.
+        assert native["interpreter"] == "/usr/lib/dyld"
+        assert native["dylibs"] == ["/usr/lib/libSystem.B.dylib"]
         session_id = str(session["id"])
 
         opened = service.r2_open(session_id, timeout=60.0)
