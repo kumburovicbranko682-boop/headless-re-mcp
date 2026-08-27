@@ -140,8 +140,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List callers of every method named method_name.
 
-        Answers with callers (class and method), method_name, count, and
-        has_more so a page that filled the limit is not read as the whole list.
+        Answers with callers (class, method, and offset -- the call site's
+        bytecode offset in the caller, in 16-bit code units, so one caller that
+        invokes the target several times gives distinct locatable records rather
+        than identical duplicates), method_name, count, and has_more so a page
+        that filled the limit is not read as the whole list.
         """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 

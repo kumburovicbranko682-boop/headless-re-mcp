@@ -24,6 +24,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（apk.xrefs 带上调用点 offset，多次调用不再塌成不可分辨的重复项）
+
+- androguard 的 `MethodAnalysis.get_xref_from()` 回的是 `(ClassAnalysis, MethodAnalysis, int)`，
+  第三个元素是调用指令在**调用方**里的偏移（以 16-bit code unit 计）——正是 `show_xrefs`、baksmali、
+  jadx 打印、让逆向的人跳到确切调用点的那个数。后端过去 `for _, call, _` 把它直接扔掉，只记
+  `class` 与 `method`：于是同一个调用方若多次调用目标，就产出若干条 class+method 完全相同的记录（幽灵重复项），
+  且没有任何字段说得清每次调用在哪。所有 apk.xrefs 单测都 mock 掉解析器，这条「丢掉 offset」只在真 androguard
+  上才现形。现抽出 `_xref_offset`：int 原样返回、十进制/`0x` 字符串照解析、拿不到 offset 的形状回退 `-1`（而非
+  静默当成 offset 0——那会读成「调用方的第一条指令」这个真实位置），`methods()` 里每条 caller 记录新增 `offset`。
+  `apk.xrefs` 文档串说明 offset 是调用点在调用方里的字节码偏移。单测新增 `_xref_offset` 的 int/字符串/None/bool
+  回退断言，以及一条「同一调用方两处调用被 offset 区分成两条可定位记录」的断言。新增 live gate
+  （`test_apk_xref_callsite_live_gate.py`）内嵌一枚真 DEX（javac+D8 编出的 `com.example.Widget`，`compute` 调
+  `addNumbers`、`main` 调 `greeting`），先读 androguard 自己给 `compute→addNumbers` 的原始 offset（守卫这条守卫：
+  必须是真实非负 int，否则测试空过），再断言 `apk.xrefs` 回的 `compute` caller 的 offset 与之逐位相等、且 `greeting`
+  的调用方是 `main`。CI 新增 `linux-apk-xrefs` job 装 androguard 跑该 gate，skip≠pass 守卫在 androguard 已装却仍
+  skip 时判失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

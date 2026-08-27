@@ -56,6 +56,30 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _xref_offset(raw: Any) -> int:
+    """The call-site code offset from an androguard xref tuple, as a plain int.
+
+    androguard's ``MethodAnalysis.get_xref_from()`` yields
+    ``(ClassAnalysis, MethodAnalysis, int)`` where the third element is the
+    offset, in 16-bit code units, of the invoke instruction *inside the caller*
+    -- the same figure ``show_xrefs``, baksmali and jadx print so a reverse
+    engineer can jump to the exact call site. It is already an int on every
+    supported androguard; coerce defensively (a decimal or ``0x``-prefixed
+    string still parses) and fall back to ``-1`` for a shape that carries no
+    usable offset, so an absent one is never silently rendered as offset 0.
+    """
+    if isinstance(raw, bool):  # bool is an int subclass but never an offset
+        return -1
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return int(raw, 0)
+        except ValueError:
+            return -1
+    return -1
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -428,7 +452,7 @@ class ApkClient:
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
                 continue
-            for _, call, _ in method.get_xref_from():
+            for _, call, call_offset in method.get_xref_from():
                 if len(callers) >= cap:
                     # Only set once something was actually left out, so a result
                     # that happens to fill the page is not reported as partial.
@@ -438,6 +462,11 @@ class ApkClient:
                     {
                         "class": str(call.class_name),
                         "method": str(call.name),
+                        # The call site inside the caller. Without it, one caller
+                        # that invokes the target more than once yields several
+                        # records identical in class+method -- indistinguishable
+                        # duplicates -- and no record tells you where the call is.
+                        "offset": _xref_offset(call_offset),
                     }
                 )
             if has_more:

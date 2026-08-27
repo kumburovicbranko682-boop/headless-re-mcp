@@ -8,7 +8,12 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient, ApkError
+from headless_re_mcp.backends.apk.client import (
+    _MAX_MANIFEST_CHARS,
+    ApkClient,
+    ApkError,
+    _xref_offset,
+)
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -78,9 +83,14 @@ def test_apk_xrefs_puts_the_list_in_callers_and_says_when_it_stopped(
     assert payload["count"] == 10
     assert len(payload["callers"]) == 10
     assert payload["has_more"] is True
+    # Each caller carries its call-site offset (the fake's third tuple element),
+    # so the page is 10 distinct locatable records, not 10 that only say class +
+    # method. get_xref_from handed back offsets 0..24; the page keeps 0..9.
+    assert [caller["offset"] for caller in payload["callers"]] == list(range(10))
     doc = _tool_docstring("apk.xrefs")
     assert "Answers with callers" in doc
     assert "has_more" in doc
+    assert "offset" in doc
 
 
 def test_apk_xrefs_names_method_name_on_the_payload(
@@ -102,7 +112,63 @@ def test_apk_xrefs_names_method_name_on_the_payload(
     assert payload["method_name"] == "decrypt"
     assert "method" not in payload
     doc = " ".join(_tool_docstring("apk.xrefs").split())
-    assert "callers (class and method), method_name" in doc
+    assert "callers (class, method, and offset" in doc
+
+
+def test_xref_offset_coerces_and_falls_back_without_pretending_zero() -> None:
+    """The helper yields a real int, and -1 (not 0) when there is no offset.
+
+    androguard hands back an int; a decimal or ``0x`` string still parses. An
+    unusable shape must not render as offset 0, which reads as "the very first
+    instruction" -- a real call site -- so it falls back to -1 instead.
+    """
+    assert _xref_offset(6) == 6
+    assert _xref_offset("6") == 6
+    assert _xref_offset("0x1a") == 26
+    assert _xref_offset(None) == -1
+    assert _xref_offset("nope") == -1
+    # bool is an int subclass but never an offset.
+    assert _xref_offset(True) == -1
+
+
+class _RepeatCall:
+    def __init__(self) -> None:
+        self.class_name = "Lcom/example/Caller;"
+        self.name = "run"
+
+
+class _RepeatMethod:
+    """One caller that invokes the target twice, at two different offsets."""
+
+    name = "decrypt"
+
+    def is_external(self) -> bool:
+        return False
+
+    def get_xref_from(self) -> list[tuple[object, _RepeatCall, int]]:
+        return [(None, _RepeatCall(), 4), (None, _RepeatCall(), 22)]
+
+
+def test_apk_xrefs_distinguishes_two_call_sites_from_one_caller(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Two invokes from the same caller are two records, told apart by offset.
+
+    Before the offset was surfaced, both call sites rendered as the identical
+    ``{class, method}`` -- a caller reading the list saw a phantom duplicate and
+    could not locate either. The offset makes them distinct and locatable.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeParsed([_RepeatMethod()]),
+    )
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt")
+    assert payload["count"] == 2
+    assert all(caller["class"] == "Lcom/example/Caller;" for caller in payload["callers"])
+    assert all(caller["method"] == "run" for caller in payload["callers"])
+    assert sorted(caller["offset"] for caller in payload["callers"]) == [4, 22]
 
 
 class _ManifestBody:
