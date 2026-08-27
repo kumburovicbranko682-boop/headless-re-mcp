@@ -179,10 +179,15 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Start unpack orchestration (UPX executes; dynamic routes wait for OEP confirm).
 
-        Answers with unpack (phase, route, deadline_at) and
-        claims_universal_unpack false. Active sessions are not overwritten
-        unless replace=True. Optional force_route overrides detection.
-        There is no session field at the top level.
+        Answers with unpack (phase, route, deadline_at), claims_universal_unpack
+        false, and the detection verdict it acted on: detection_conclusion,
+        signature_scan_completed, and detection_inconclusive. Active sessions are
+        not overwritten unless replace=True. Optional force_route overrides
+        detection. There is no session field at the top level. When the route is
+        "none" because detection was inconclusive (the signature scanner did not
+        complete), the no_packer_route timeline entry and a top-level note say
+        so: the absence of a packer route is not confirmed, so read it as
+        "unknown" and re-run with DIE configured or set force_route.
         """
         return _dump(
             analysis.unpack_start(
