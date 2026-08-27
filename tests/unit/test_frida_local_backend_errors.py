@@ -1,0 +1,118 @@
+"""Local frida ops must file a backend failure as backend_error, not incident.
+
+modules/exports/memory.read attach, run one RPC, and detach. Only the attach
+was wrapped, so a frida error from the RPC -- the common one is memory.read on
+an unmapped address, where frida raises "access violation accessing 0x.." --
+propagated raw. ``_failure`` then filed it under ``internal_error`` and minted
+an incident, while the device-side java/hook paths already classified the same
+frida failures as ``backend_error``. These pin the local path to that contract
+and confirm the session is still detached on the failure path.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+
+
+class _RaisingExports:
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def modules(self, limit: int) -> Any:
+        del limit
+        raise self._exc
+
+    def exports(self, name: str, count: int) -> Any:
+        del name, count
+        raise self._exc
+
+    def read(self, address: int, size: int) -> Any:
+        del address, size
+        raise self._exc
+
+
+class _RaisingScript:
+    def __init__(self, exc: BaseException) -> None:
+        self.exports_sync = _RaisingExports(exc)
+
+    def load(self) -> None:
+        return None
+
+
+class _RaisingSession:
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+        self.detached = False
+
+    def create_script(self, source: str) -> _RaisingScript:
+        del source
+        return _RaisingScript(self._exc)
+
+    def detach(self) -> None:
+        self.detached = True
+
+
+class _RaisingFrida:
+    def __init__(self, exc: BaseException) -> None:
+        self.session = _RaisingSession(exc)
+
+    def attach(self, pid: int) -> _RaisingSession:
+        del pid
+        return self.session
+
+
+def _client(exc: BaseException) -> tuple[FridaClient, _RaisingFrida]:
+    client = FridaClient()
+    client._available = True
+    frida = _RaisingFrida(exc)
+    client._frida = frida
+    return client, frida
+
+
+def test_memory_read_maps_an_access_violation_to_backend_error() -> None:
+    client, frida = _client(RuntimeError("access violation accessing 0x0"))
+
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(1, 0x1000, 16, allowed_pid=1)
+
+    assert caught.value.code == "backend_error"
+    assert "access violation" in caught.value.message
+    assert caught.value.details["pid"] == 1
+    assert caught.value.details["address"] == 0x1000
+    assert caught.value.details["size"] == 16
+    assert frida.session.detached is True
+
+
+def test_modules_maps_a_script_failure_to_backend_error() -> None:
+    client, frida = _client(RuntimeError("script boom"))
+
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1)
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.details["pid"] == 1
+    assert frida.session.detached is True
+
+
+def test_exports_maps_a_script_failure_to_backend_error() -> None:
+    client, frida = _client(RuntimeError("enumerate boom"))
+
+    with pytest.raises(FridaError) as caught:
+        client.exports(1, "libc.so", allowed_pid=1)
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.details["module"] == "libc.so"
+    assert frida.session.detached is True
+
+
+def test_local_rpc_timeout_keeps_the_timeout_code() -> None:
+    client, _ = _client(RuntimeError("the request timed out"))
+
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(1, 0x2000, 8, allowed_pid=1)
+
+    assert caught.value.code == "timeout"

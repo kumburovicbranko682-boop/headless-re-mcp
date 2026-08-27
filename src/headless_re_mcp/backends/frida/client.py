@@ -228,6 +228,24 @@ def _timeout_error(timeout: float) -> FridaError:
     return FridaError("timeout", f"frida did not respond within {timeout:g}s")
 
 
+def _backend_error(exc: BaseException, message: str, **details: Any) -> FridaError:
+    """Classify a raw frida/script failure the way the device ops already do.
+
+    The local modules/exports/read path attaches, runs one RPC, and detaches.
+    Only the attach was wrapped: a frida error from ``create_script``/``load``
+    or from the RPC itself -- an unreadable address for ``read`` (the common
+    case, where frida raises "access violation accessing 0x.."), a module whose
+    exports will not enumerate, a script that will not compile on this runtime
+    -- propagated raw to ``_failure``'s else branch, which files it as
+    ``internal_error`` and mints an incident. That is a backend outcome, not a
+    fault in this process; the device-side java/hook paths classify the
+    identical failures as ``backend_error``, so match them. A frida-reported
+    timeout keeps its own code.
+    """
+    code = "timeout" if _is_timeout(exc) else "backend_error"
+    return FridaError(code, f"{message}: {exc}", **details)
+
+
 def _detach_all(sessions: list[Any]) -> None:
     while sessions:
         session = sessions.pop()
@@ -357,6 +375,10 @@ class FridaClient:
                 "total": total,
                 "has_more": total > len(items),
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - frida raises many script/RPC types
+            raise _backend_error(exc, "frida module enumeration failed", pid=pid) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -400,6 +422,12 @@ class FridaClient:
                 "count": len(items),
                 "has_more": has_more,
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - frida raises many script/RPC types
+            raise _backend_error(
+                exc, "frida export enumeration failed", pid=pid, module=module_name.strip()
+            ) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -421,6 +449,12 @@ class FridaClient:
                 "encoding": "hex",
                 "data": data.hex(),
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - frida raises many script/RPC types
+            raise _backend_error(
+                exc, "frida memory read failed", pid=pid, address=int(address), size=int(size)
+            ) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
