@@ -357,4 +357,33 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="wasm.tables")
+    def wasm_tables(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List a WebAssembly module's tables (indirect-call surface), wabt-free.
+
+        Tables are where call_indirect targets live: a funcref table holds the
+        function pointers an optimizer or obfuscator dispatches through, so its
+        size bounds how much indirect dispatch a module can do (wasm.sections
+        only says a table section exists). Read in pure Python -- no wabt
+        needed. Joins the import and table sections into one view over the table
+        index space. Each row is index, kind (import or local), element_type
+        (funcref for function pointers, externref for host references; an
+        unknown reference-type byte renders as hex), and min and max, the size
+        bounds in entries (max is null when the module sets none). Imported
+        tables come first, per the WASM spec, and carry module and name --
+        Emscripten modules typically import env.__indirect_function_table, a
+        strong linkage signal; imported_count marks the import/local boundary.
+        Answers with tables, count, total, offset and has_more so a filled page
+        is not read as every table; total is capped at 50000 with scan_capped
+        when more may exist, and truncated is true when a tabletype is malformed
+        (tables read so far are still returned). A file that is not a
+        WebAssembly module is refused as invalid_params, one over 16 MiB as
+        too_large.
+        """
+        return _dump(analysis.wasm_tables(path, offset=offset, limit=limit))
+
     return tools.bindings

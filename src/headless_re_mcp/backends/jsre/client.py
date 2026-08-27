@@ -139,6 +139,12 @@ _MAX_WASM_DATA_PAGE = 1000
 _WASM_MEMORY_SECTION_ID = 5
 _MAX_WASM_MEMORIES_COLLECT = 50000
 _MAX_WASM_MEMORIES_PAGE = 1000
+# wasm.tables lists the module's tables -- the indirect-call dispatch surface.
+# A tabletype is a reftype byte (funcref/externref) followed by the same limits
+# record memories use, so _read_limits is shared; entries are counts, not pages.
+_WASM_TABLE_SECTION_ID = 4
+_MAX_WASM_TABLES_COLLECT = 50000
+_MAX_WASM_TABLES_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -1460,6 +1466,140 @@ def parse_wasm_memory(path: Path, *, offset: int = 0, limit: int = 100) -> JsonO
     window = rows[start : start + cap]
     return {
         "memories": window,
+        "imported_count": imported_count,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _parse_table_imports(
+    body: bytes,
+) -> tuple[list[tuple[str, str, int, int, int | None]], bool]:
+    """Parse the import section, keeping the tabletype of each table import."""
+    out: list[tuple[str, str, int, int, int | None]] = []
+    try:
+        count, pos = _read_uleb(body, 0)
+        for _ in range(count):
+            module, pos = _read_wasm_name(body, pos)
+            field, pos = _read_wasm_name(body, pos)
+            kind = _byte_at(body, pos)
+            pos += 1
+            if kind == 1:  # table import: reftype + limits
+                reftype = _byte_at(body, pos)
+                pos += 1
+                minimum, maximum, _shared, _is64, pos = _read_limits(body, pos)
+                out.append((module, field, reftype, minimum, maximum))
+            else:
+                pos = _skip_import_desc(body, pos, kind)
+    except _WasmParseError:
+        return out, True
+    return out, False
+
+
+def _parse_table_section(
+    body: bytes,
+) -> tuple[list[tuple[int, int, int | None]], bool]:
+    """Parse vec(tabletype) into (reftype, min, max) tuples."""
+    out: list[tuple[int, int, int | None]] = []
+    try:
+        count, pos = _read_uleb(body, 0)
+        for _ in range(count):
+            reftype = _byte_at(body, pos)
+            pos += 1
+            minimum, maximum, _shared, _is64, pos = _read_limits(body, pos)
+            out.append((reftype, minimum, maximum))
+    except _WasmParseError:
+        return out, True
+    return out, False
+
+
+def parse_wasm_tables(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a WebAssembly module's tables (indirect-call surface), wabt-free.
+
+    Tables are where call_indirect targets live: a funcref table holds the
+    function pointers an optimizer or obfuscator dispatches through, so its size
+    bounds how much indirect dispatch a module can do (wasm.sections only says a
+    table section exists). Read in pure Python -- no wabt needed. Joins the
+    import (2) and table (4) sections into one view over the table index space.
+    Each row is index, kind (import or local), element_type (funcref for
+    function pointers, externref for host references; an unknown reference-type
+    byte renders as hex), and min and max, the size bounds in entries (max is
+    null when the module sets none). Imported tables come first, per the WASM
+    spec, and carry module and name -- Emscripten modules typically import
+    env.__indirect_function_table, a strong linkage signal; imported_count marks
+    the import/local boundary. Returns tables, count, total, offset and has_more
+    so a filled page is not read as every table; total is capped at 50000 with
+    scan_capped when more may exist, and truncated is true when a tabletype is
+    malformed (tables read so far are still returned). A file that is not a
+    WebAssembly module is refused as invalid_params, one over 16 MiB as
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    bodies, truncated = _collect_section_bodies(
+        raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_TABLE_SECTION_ID})
+    )
+    tab_imports: list[tuple[str, str, int, int, int | None]] = []
+    local_tabs: list[tuple[int, int, int | None]] = []
+    if _WASM_IMPORT_SECTION_ID in bodies:
+        tab_imports, imp_trunc = _parse_table_imports(bodies[_WASM_IMPORT_SECTION_ID])
+        truncated = truncated or imp_trunc
+    if _WASM_TABLE_SECTION_ID in bodies:
+        local_tabs, tab_trunc = _parse_table_section(bodies[_WASM_TABLE_SECTION_ID])
+        truncated = truncated or tab_trunc
+    rows: list[JsonObject] = []
+    scan_more = False
+    imported_count = len(tab_imports)
+    idx = 0
+    for module, field, reftype, minimum, maximum in tab_imports:
+        if len(rows) >= _MAX_WASM_TABLES_COLLECT:
+            scan_more = True
+            break
+        rows.append(
+            {
+                "index": idx,
+                "kind": "import",
+                "module": module,
+                "name": field,
+                "element_type": _valtype_name(reftype),
+                "min": minimum,
+                "max": maximum,
+            }
+        )
+        idx += 1
+    if not scan_more:
+        for reftype, minimum, maximum in local_tabs:
+            if len(rows) >= _MAX_WASM_TABLES_COLLECT:
+                scan_more = True
+                break
+            rows.append(
+                {
+                    "index": idx,
+                    "kind": "local",
+                    "element_type": _valtype_name(reftype),
+                    "min": minimum,
+                    "max": maximum,
+                }
+            )
+            idx += 1
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_TABLES_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "tables": window,
         "imported_count": imported_count,
         "count": len(window),
         "total": len(rows),
