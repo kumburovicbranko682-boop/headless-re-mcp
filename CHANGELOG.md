@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（高位寄存器读回按无符号呈现,不再显示成负数)
+
+- `dynamic.registers.read` 遇到高位置位的 64 位寄存器时会把它读成负数。原生 shim 只能经
+  jansson 的有符号 `json_int_t` 送整数,`rax` 持有 -1 返回值(`0xFFFFFFFFFFFFFFFF`)、句柄或
+  最高位置位的指针时,到 Python 端就是负 int。调试器惯例是把寄存器按无符号显示,而
+  `_register_arguments` / `_instruction_pointer` 直接读这些值——负的 `rcx` 会作为"负数函数
+  实参"呈现给 AI,而不是它实际持有的地址,污染 API 参数解码与逆向判断。现在在
+  `registers.read` 落地点把负寄存器按 mod 2^64 还原成无符号值;非负值(全部 x86 寄存器、
+  `eflags`、调试寄存器、任何用户态 `rip`)原样不动。新增 helper 直测与一条服务级测试(worker
+  按线格式回 `rax = -1`,断言服务返回 `0xFFFFFFFFFFFFFFFF`)。注:反方向的
+  `registers.write` 写入 ≥2^63 的值受限于 jansson 把超 int64 字面量解析为 real、且 C++ 侧
+  `ReadUnsigned` 拒收负值,需要协调改动原生 shim 才能修,本轮未触及。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

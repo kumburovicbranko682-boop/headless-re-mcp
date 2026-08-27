@@ -39,6 +39,33 @@ JsonObject = dict[str, Any]
 # Only used by the argument decoder that moved here with the trace surface.
 _X64_ARGUMENT_REGISTERS = ("rcx", "rdx", "r8", "r9")
 
+_UINT64_MODULUS = 1 << 64
+
+
+def normalize_register_signedness(payload: JsonObject | None) -> None:
+    """Fold two's-complement register values back to unsigned, in place.
+
+    The native shim serializes every 64-bit register through jansson's signed
+    ``json_int_t``, so a register whose high bit is set -- ``rax`` holding a -1
+    return value (``0xFFFFFFFFFFFFFFFF``), a packed handle, a pointer with the
+    top bit set -- arrives here as a negative Python int. A debugger presents
+    register contents as unsigned, and the argument/pointer decoders below read
+    these values directly, so a negative ``rcx`` would surface to the AI as a
+    negative function argument rather than the address it is. Reinterpret each
+    negative register as its unsigned 64-bit value; non-negative values (all of
+    x86, ``eflags`` and the debug registers, any user-mode ``rip``) are left
+    untouched.
+    """
+    if not isinstance(payload, dict):
+        return
+    nested = payload.get("registers")
+    bank = nested if isinstance(nested, dict) else payload
+    if not isinstance(bank, dict):
+        return
+    for name, value in bank.items():
+        if type(value) is int and value < 0:
+            bank[name] = value + _UINT64_MODULUS
+
 
 @dataclass(slots=True)
 class _TraceArtifactState:

@@ -645,6 +645,40 @@ def test_dynamic_session_state_machine(tmp_path: Path) -> None:
     assert service.registry.get(session_id).state == SessionState.CLOSED
 
 
+class _HighBitRegisterWorker(FakeDynamicWorker):
+    """Reports rax = 0xFFFFFFFFFFFFFFFF the way the wire delivers it: as -1."""
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "registers.read":
+            self.requests.append((command, params or {}))
+            return {"registers": {"rip": 0x140001000, "rax": -1, "rsp": 0x120000}}
+        return super().request(command, params, timeout=timeout)
+
+
+def test_dynamic_registers_read_reinterprets_high_bit_registers_as_unsigned(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _HighBitRegisterWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    assert service.dynamic_launch(session_id).ok
+
+    registers = service.dynamic_registers_read(session_id)
+
+    assert registers.ok and registers.data is not None
+    assert registers.data["registers"]["rax"] == 0xFFFFFFFFFFFFFFFF
+    assert registers.data["registers"]["rip"] == 0x140001000
+
+
 def test_static_and_dynamic_backends_can_coexist(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)

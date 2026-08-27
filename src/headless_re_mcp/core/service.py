@@ -109,6 +109,7 @@ from headless_re_mcp.core.service_trace import (
     TraceMixin,
     _instruction_pointer,
     _TraceArtifactState,
+    normalize_register_signedness,
 )
 from headless_re_mcp.core.service_ui import UiAutomationMixin
 from headless_re_mcp.core.service_unpack import UnpackMixin
@@ -1908,7 +1909,10 @@ class AnalysisService(
         )
 
     def dynamic_registers_read(self, session_id: str) -> Result[JsonObject]:
-        return self._dynamic_request(session_id, "registers.read")
+        result = self._dynamic_request(session_id, "registers.read")
+        if result.ok and result.data is not None:
+            normalize_register_signedness(result.data)
+        return result
 
     def dynamic_register_write(
         self,
