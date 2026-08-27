@@ -495,10 +495,16 @@ class FridaClient:
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
+            _detach_all(sessions)
             if _is_timeout(exc):
-                _detach_all(sessions)
                 raise _timeout_error(deadline) from exc
-            raise
+            # A frida error from attach or from create_script/load is a backend
+            # outcome, not a fault in this process -- the same failures the
+            # device hook path and modules/exports/read already classify. Match
+            # them so a template that will not compile does not mint an incident.
+            raise FridaError(
+                "backend_error", f"hook template failed: {exc}", pid=pid, template=template
+            ) from exc
 
     def _attach_local(self, pid: int, *, timeout: float = _PROBE_TIMEOUT_S) -> Any:
         deadline = _bound_timeout(timeout)

@@ -134,6 +134,29 @@ def test_device_hook_template_loads_a_canned_hook_and_names_the_device() -> None
     assert device.session.detached is True
 
 
+def test_local_hook_template_that_fails_to_load_is_backend_error_and_still_detaches() -> None:
+    """The local variant classifies a load failure the same as the device one.
+
+    A template that will not compile on this runtime is a backend outcome, not a
+    fault in this process -- the local modules/exports/read paths and the device
+    hook path all report it as backend_error. The local hook path used to re-raise
+    the raw frida exception, which the service mints as an internal_error incident
+    for a normal condition; it now matches. The probe session is still torn down.
+    """
+    frida = _LocalFrida(fail_load=True)
+    client = FridaClient()
+    client._available = True
+    client._frida = frida
+    with pytest.raises(FridaError) as caught:
+        client.hook_template(1234, "noop", allowed_pid=1234)
+    assert caught.value.code == "backend_error"
+    assert "hook template failed" in caught.value.message
+    assert caught.value.details.get("pid") == 1234
+    assert caught.value.details.get("template") == "noop"
+    assert frida.session is not None
+    assert frida.session.detached is True
+
+
 def test_device_hook_template_that_fails_to_load_is_backend_error_and_still_detaches() -> None:
     """A script that will not load is a backend_error, and the session is freed.
 
