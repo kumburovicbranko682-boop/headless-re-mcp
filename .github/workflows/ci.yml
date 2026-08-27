@@ -187,8 +187,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends radare2 wabt \
             gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
             gcc-arm-linux-gnueabihf libc6-dev-armhf-cross \
-            gcc-mingw-w64-x86-64 \
-            gcc-multilib libc6-dev-i386
+            gcc-mingw-w64-x86-64
 
       - name: Install webcrack (JS deobfuscation)
         run: npm install -g webcrack
@@ -315,14 +314,11 @@ jobs:
             tests/integration/test_m11_ghidra_stripped_recovery_gate.py \
             tests/integration/test_m11_ghidra_arm_decompile_gate.py \
             tests/integration/test_m11_ghidra_pe_decompile_gate.py \
-            tests/integration/test_m11_ghidra_i386_decompile_gate.py \
             tests/integration/test_m11_r2_ghidra_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_data_xref_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_arm_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_pe_agree_gate.py \
-            tests/integration/test_m11_r2_ghidra_i386_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_pe_data_xref_agree_gate.py \
-            tests/integration/test_m11_r2_ghidra_i386_data_xref_agree_gate.py \
             tests/integration/test_m11_r2_arm_xrefs_gate.py \
             tests/integration/test_m11_r2_data_xrefs_gate.py \
             tests/integration/test_m11_r2_pe_imports_gate.py \
@@ -335,6 +331,75 @@ jobs:
             tests/integration/test_android_cert_gate.py \
             tests/integration/test_android_apktool_resources_gate.py \
             tests/integration/test_agent_browser_smoke.py \
+            -q -rs --tb=short --timeout=300
+
+  linux-i386-gates:
+    # 32-bit x86 (i386) needs gcc-multilib for `gcc -m32`, and gcc-multilib
+    # HARD-conflicts with the aarch64/arm cross toolchains apt cannot co-install
+    # them, so the i386 static gates run in their own job with just radare2 +
+    # Ghidra rather than dropping ARM coverage from linux-nonpe-gates.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GHIDRA_VERSION: "11.2.1"
+      GHIDRA_DIST: "ghidra_11.2.1_PUBLIC_20241105"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install radare2 and the 32-bit x86 toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends radare2 gcc-multilib libc6-dev-i386
+
+      - name: Install package (portable backends only)
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: Cache Ghidra
+        id: cache-ghidra
+        uses: actions/cache@v4
+        with:
+          path: ~/ghidra
+          key: ghidra-${{ env.GHIDRA_VERSION }}
+
+      - name: Install Ghidra
+        if: steps.cache-ghidra.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/ghidra
+          curl -fsSL -o /tmp/ghidra.zip \
+            "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/${GHIDRA_DIST}.zip"
+          unzip -q /tmp/ghidra.zip -d ~/ghidra
+
+      - name: Point at Ghidra
+        run: echo "HEADLESS_RE_GHIDRA_HOME=$HOME/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC" >> "$GITHUB_ENV"
+
+      - name: Backends are discoverable (skip != pass)
+        run: |
+          set -e
+          for tool in r2 gcc; do
+            command -v "$tool" >/dev/null || { echo "::error::$tool not on PATH"; exit 1; }
+          done
+          echo 'int main(){return 0;}' | gcc -m32 -x c - -o /tmp/t32 \
+            || { echo "::error::gcc -m32 cannot build (missing multilib)"; exit 1; }
+          test -x "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" \
+            || { echo "::error::ghidra analyzeHeadless missing at $HEADLESS_RE_GHIDRA_HOME"; exit 1; }
+
+      - name: i386 static gates
+        run: |
+          python -m pytest \
+            tests/integration/test_m11_r2_ghidra_i386_agree_gate.py \
+            tests/integration/test_m11_ghidra_i386_decompile_gate.py \
+            tests/integration/test_m11_r2_ghidra_i386_data_xref_agree_gate.py \
             -q -rs --tb=short --timeout=300
 
   webui:
