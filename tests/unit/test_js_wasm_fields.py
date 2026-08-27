@@ -167,6 +167,65 @@ def test_js_beautify_names_bytes_not_size(tmp_path: Path) -> None:
     assert "bytes" in doc
 
 
+def test_js_deobfuscate_discloses_a_nonzero_exit(tmp_path: Path) -> None:
+    """webcrack can exit non-zero yet still print usable output.
+
+    Measured: exit 3 with output -> code returned, exit_code 3, partial True,
+    stderr carried. Returning that as a clean success is a partial result read
+    as the whole file, the same lie a truncated buffer with no flag would tell.
+    A clean run (exit 0) carries neither key.
+    """
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+
+    def fake_fail(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(3, b"partial code", b"webcrack: gave up on one chunk\n")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_fail):
+        payload = JsClient(tool).deobfuscate(src)
+    assert payload["code"] == "partial code"
+    assert payload["exit_code"] == 3
+    assert payload["partial"] is True
+    assert "gave up" in payload["stderr"]
+
+    def fake_ok(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, b"clean code", b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_ok):
+        clean = JsClient(tool).deobfuscate(src)
+    assert "exit_code" not in clean
+    assert "partial" not in clean
+    doc = _tool_docstring("js.deobfuscate")
+    assert "partial" in doc
+    assert "exit_code" in doc
+
+
+def test_wasm_wat_discloses_a_nonzero_exit(tmp_path: Path) -> None:
+    """wasm2wat can fail on part of a module and still print WAT.
+
+    Measured: exit 1 with output -> wat returned, exit_code 1, partial True.
+    A partial conversion read as complete is exactly what the flag prevents.
+    """
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    def fake_fail(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(1, b"(module)", b"wasm2wat: error near byte 40\n")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_fail):
+        payload = WasmClient(tool).wat(module)
+    assert payload["wat"] == "(module)"
+    assert payload["exit_code"] == 1
+    assert payload["partial"] is True
+    assert "error near byte 40" in payload["stderr"]
+    doc = _tool_docstring("wasm.wat")
+    assert "partial" in doc
+
+
 def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with code" in _tool_docstring("js.deobfuscate")
     assert "Answers with code" in _tool_docstring("js.beautify")

@@ -95,7 +95,14 @@ def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
     return stdout, stderr, int(completed.returncode)
 
 
-def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
+def _bounded_output(
+    text: str,
+    key: str,
+    *,
+    include_bytes: bool,
+    exit_code: int = 0,
+    stderr: str = "",
+) -> JsonObject:
     payload = text.encode("utf-8", errors="replace")
     result: JsonObject = {
         key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
@@ -103,6 +110,16 @@ def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
     }
     if include_bytes:
         result["bytes"] = len(payload)
+    if exit_code != 0:
+        # The CLI exited non-zero but still produced output, so the text is
+        # returned like jadx's partial decompiles rather than discarded. Say so:
+        # a non-zero exit reported as a clean run is a partial result mistaken
+        # for the whole file, which is exactly the conclusion an agent draws
+        # from a tool that never mentions it failed.
+        result["exit_code"] = exit_code
+        result["partial"] = True
+        if stderr:
+            result["stderr"] = stderr[:_MAX_STDERR]
     return result
 
 
@@ -130,7 +147,9 @@ class JsClient:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "code", include_bytes=True)
+        return _bounded_output(
+            stdout, "code", include_bytes=True, exit_code=code, stderr=stderr
+        )
 
     def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         # webcrack always unminifies; expose it under a formatting-focused name.
@@ -197,7 +216,9 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "wat", include_bytes=True)
+        return _bounded_output(
+            stdout, "wat", include_bytes=True, exit_code=code, stderr=stderr
+        )
 
     def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
@@ -209,7 +230,9 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "objdump", include_bytes=False)
+        return _bounded_output(
+            stdout, "objdump", include_bytes=False, exit_code=code, stderr=stderr
+        )
 
 
 def _discover_webcrack() -> Path | None:
