@@ -56,6 +56,7 @@ keytool -genkeypair -keystore "${work}/debug.keystore" -storepass android \
   -dname "CN=Headless RE Debug, O=headless-re-mcp, C=US" >/dev/null 2>&1
 apksigner sign --ks "${work}/debug.keystore" --ks-pass pass:android \
   --key-pass pass:android --v1-signing-enabled true --v2-signing-enabled true \
+  --v4-signing-enabled false \
   --out "${out_apk}" "${work}/aligned.apk"
 
 echo "wrote ${out_apk} ($(stat -c%s "${out_apk}") bytes)"
