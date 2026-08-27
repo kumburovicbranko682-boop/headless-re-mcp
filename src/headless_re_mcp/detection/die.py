@@ -285,6 +285,12 @@ def _capture_process(
             details={"executable": argv[0], "os_error": str(exc)},
         ) from exc
 
+    # POSIX: start_new_session makes the runner its own group leader, so the
+    # group id is the runner's pid. A child it detaches keeps this group id even
+    # after the kernel reparents the orphan, which is how a clean-exit leftover
+    # is found once the parent/child walk sees nothing.
+    group_id = int(process.pid) if os.name != "nt" and process.pid else 0
+
     stdout_pipe = process.stdout
     stderr_pipe = process.stderr
     if stdout_pipe is None or stderr_pipe is None:
@@ -360,6 +366,20 @@ def _capture_process(
         # truncate a short-lived process's final JSON bytes.
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
+        if not (timed_out or limited or cancelled):
+            # A scanner that exits 0 is still expected to leave nothing behind:
+            # a configured wrapper that detaches a helper is a leak, not a
+            # daemon. The parent/child walk cannot see one reparented to init,
+            # so sweep the session group the runner led.
+            from headless_re_mcp.core.process_tree import reap_detached_leftovers
+
+            if reap_detached_leftovers(
+                process,
+                group_id=group_id,
+                readers_blocked=stdout_thread.is_alive() or stderr_thread.is_alive(),
+            ):
+                stdout_thread.join(timeout=1.0)
+                stderr_thread.join(timeout=1.0)
         # The readers close their own pipes; only close here when the reader has
         # already finished, so a reader still blocked on a survivor's pipe never
         # wedges this thread on close().
@@ -417,7 +437,7 @@ def _terminate_process(process: Any) -> None:
     """
     from headless_re_mcp.core.process_tree import terminate_process_tree
 
-    terminate_process_tree(process, wait_s=1.0)
+    terminate_process_tree(process, wait_s=1.0, kill_group=os.name != "nt")
 
 
 def _close_pipe(pipe: Any) -> None:

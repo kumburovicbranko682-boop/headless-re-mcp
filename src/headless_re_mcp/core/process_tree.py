@@ -9,6 +9,7 @@ import subprocess
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -311,6 +312,75 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
         with suppress(Exception):
             os.killpg(pid, 9)
     return killed
+
+
+def reap_detached_leftovers(
+    process: Any, *, group_id: int = 0, readers_blocked: bool = False
+) -> list[int]:
+    """Kill a child a runner detached before exiting cleanly. Returns killed PIDs.
+
+    A one-shot CLI (or a wrapper around one) can return 0 while a child it
+    spawned keeps running -- and, if that child inherited stdout/stderr, holds
+    the pipe open so the reader never sees EOF. The parent/child walk is blind
+    to a child the kernel reparented to init, so on POSIX the session group the
+    runner led is enumerated instead; on Windows the descendant walk still sees
+    it. Only sweeps when a leftover is actually observed, so a clean run that
+    left nothing behind is untouched. The POSIX sweep kills by recorded group
+    id rather than ``killpg`` on the reaped leader's pid, which could have been
+    recycled. Never raises: cleanup has somewhere better to be than a traceback.
+    """
+    pid = getattr(process, "pid", None)
+    leftovers: list[int] = []
+    if os.name == "nt":
+        if isinstance(pid, int) and pid > 0:
+            with suppress(Exception):
+                leftovers = collect_descendants(pid)
+    elif isinstance(group_id, int) and group_id > 0:
+        with suppress(Exception):
+            leftovers = collect_process_group(group_id)
+    if not (readers_blocked or leftovers):
+        return []
+    killed: list[int] = []
+    if os.name == "nt":
+        with suppress(Exception):
+            killed.extend(terminate_process_tree(process, wait_s=1.0))
+    elif isinstance(group_id, int) and group_id > 0:
+        with suppress(Exception):
+            killed.extend(terminate_process_group(group_id))
+        # SIGKILL is asynchronous: os.kill returns before the kernel has torn
+        # the target down, so a caller that reads /proc the instant this returns
+        # could still see a corpse marked running. Wait until each member has
+        # left the runnable set -- gone, or a not-yet-reaped zombie -- so the
+        # contract "nothing the tool started is still running" holds on return.
+        _await_pids_gone(killed, deadline_s=2.0)
+    return killed
+
+
+def _pid_gone_or_zombie(pid: int) -> bool:
+    """POSIX: True once ``pid`` is gone or an unreaped zombie ('Z'/'X')."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return True
+    close = stat.rfind(")")
+    if close < 0:
+        return True
+    fields = stat[close + 2 :].split()
+    if not fields:
+        return True
+    return fields[0] in {"Z", "X", "x"}
+
+
+def _await_pids_gone(pids: list[int], *, deadline_s: float) -> None:
+    """POSIX: block until each pid is gone/zombie, or the deadline passes."""
+    if os.name == "nt":
+        return
+    remaining = [pid for pid in pids if isinstance(pid, int) and pid > 0]
+    deadline = monotonic() + max(0.0, deadline_s)
+    while remaining and monotonic() < deadline:
+        remaining = [pid for pid in remaining if not _pid_gone_or_zombie(pid)]
+        if remaining:
+            sleep(0.02)
 
 
 def terminate_pid_tree(pid: int) -> list[int]:
