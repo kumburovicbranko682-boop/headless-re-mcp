@@ -112,6 +112,20 @@ class ApktoolClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
+        # apktool can exit 0 yet leave an empty AndroidManifest.xml (a decode
+        # that aborted after creating the file, a full disk). An empty manifest
+        # is not a usable decode -- the same failure the rebuild path rejects --
+        # and reporting success would send the caller to edit and rebuild a tree
+        # that never actually decoded.
+        manifest_size = manifest.stat().st_size
+        if manifest_size == 0:
+            raise ApktoolError(
+                "backend_error",
+                "apktool decode produced an empty manifest",
+                exit_code=code,
+                size=manifest_size,
+                stderr=stderr[:_MAX_STDERR],
+            )
         smali_dirs = sorted(str(p.name) for p in out_dir.glob("smali*") if p.is_dir())
         return {
             "decoded_dir": str(out_dir),

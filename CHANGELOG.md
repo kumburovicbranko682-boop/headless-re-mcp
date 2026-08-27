@@ -80,6 +80,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `backend_error`（附 `size` 与 stderr 摘录）。
 
 
+### 修复（apk.decode 不再把空 manifest 的失败解包报成成功）
+
+- `apk.decode`（apktool `d`）过去只要退出码为零且 `AndroidManifest.xml` 存在就报成功；但和重打包
+  同理，apktool 可能退出 0 却留下一个零字节的 manifest（解包在创建文件后中止、磁盘写满）。空 manifest
+  并不是一次可用的解包，原样报成功会让调用方去编辑、回编一棵从未真正解包出来的树。现要求 manifest
+  非空，否则在解包这步就报 `backend_error`（附 `size` 与 stderr 摘录），与 `apk.repack` 的空/损坏产物
+  判定对称。
+
+
 ### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
 
 - `ghidra.decompile` 过去在给定地址不落在任何函数内时返回 `decompiled: ""`，与“确实反编译出空
