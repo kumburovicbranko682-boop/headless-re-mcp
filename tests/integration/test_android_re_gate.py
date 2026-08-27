@@ -8,10 +8,11 @@ degradation on a bare machine; a second, genuinely androguard-parseable APK
 permissions, every component type, and the DEX code surface (classes, methods,
 strings, xrefs) -- skipping only where the ``android`` extra is absent. When
 jadx or apktool are configured, further gates decompile that same DEX back to
-Java and disassemble it to smali, asserting the class, its methods, and an
-embedded constant come back out as source / smali. Parts that need a real
-device / adbutils are asserted only for a structured envelope, never a crash
-(skip != pass for the live-device parts).
+Java, disassemble it to smali, and run the decode -> repack loop to rebuild a
+re-openable APK -- asserting the class, its methods, and an embedded constant
+come back out, and that the rebuilt archive re-opens under androguard. Parts
+that need a real device / adbutils are asserted only for a structured envelope,
+never a crash (skip != pass for the live-device parts).
 """
 
 from __future__ import annotations
@@ -247,6 +248,53 @@ def test_android_apktool_baksmalis_dex(tmp_path: Path) -> None:
         # run() invokes greet(); the smali call site proves method bodies were
         # disassembled, not just their signatures.
         assert f"{EXPECTED['dex_class']}->{EXPECTED['dex_xref_target']}(" in smali, smali
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_apktool_repack_roundtrip(tmp_path: Path) -> None:
+    """Prove the decode -> repack loop rebuilds a real, re-openable APK.
+
+    The gates above only read APKs; this exercises the write side -- apktool's
+    ``b`` (build) path, which recompiles the smali back into a DEX and repackages
+    it. Unit tests stub the build CLI, so nothing else proves apktool actually
+    produces a valid archive. The rebuilt APK is fed back to androguard from a
+    fresh session: reading its package out again is end-to-end proof that the
+    repackage produced a genuine APK, not just some bytes on disk. Skips (skip
+    != pass) where apktool or the ``android`` extra is absent.
+    """
+    pytest.importorskip("androguard")
+    if Settings.load().apktool is None:
+        pytest.skip("apktool not configured — Android repack Gate not run (skip != pass)")
+    apk = build_valid_apk(tmp_path / "hello.apk")
+
+    service = AnalysisService()
+    try:
+        session_id = service.create_session(str(apk)).data["session"]["id"]
+
+        decoded = service.apk_decode(session_id, no_resources=True)
+        assert decoded.ok, decoded.error
+
+        repacked = service.apk_repack(session_id)
+        assert repacked.ok, repacked.error
+        # repack must not silently sign; that is apk.sign's job, and the contract
+        # is that the rebuilt APK is unsigned so a caller cannot mistake it for
+        # installable output.
+        assert repacked.data["signed"] is False, repacked.data
+        rebuilt = Path(repacked.data["apk"])
+        assert zipfile.is_zipfile(rebuilt), rebuilt
+        with zipfile.ZipFile(rebuilt) as archive:
+            names = set(archive.namelist())
+        assert "classes.dex" in names, names
+        assert "AndroidManifest.xml" in names, names
+
+        # The real test: androguard opens the rebuilt APK as a fresh target and
+        # reads the same package back. A corrupt repackage fails here.
+        reopened_id = service.create_session(str(rebuilt)).data["session"]["id"]
+        reopened = service.apk_open(reopened_id)
+        assert reopened.ok, reopened.error
+        assert reopened.data["package"] == EXPECTED["package"]
     finally:
         service.close_all()
 
