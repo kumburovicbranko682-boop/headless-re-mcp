@@ -14,7 +14,9 @@ import pytest
 
 from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_package, _check_serial
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
+from headless_re_mcp.backends.common.bounded_run import Completed
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
+from headless_re_mcp.backends.jadx import JadxClient, JadxError
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.session import classify_target, describe_apk
 from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandTransport
@@ -376,6 +378,58 @@ class TestApktoolBoundaries:
             client.decode(apk, out)
         assert info.value.code == "backend_error"
         assert info.value.details.get("exit_code") == 1
+
+
+class TestJadxBoundaries:
+    def test_missing_jadx_degrades(self, tmp_path: Path) -> None:
+        client = JadxClient(None)
+        with pytest.raises(JadxError) as info:
+            client.export_sources(_apk(tmp_path / "a.apk"), tmp_path / "out")
+        assert info.value.code == "capability_unavailable"
+
+    def test_nonzero_exit_with_sources_on_disk_is_a_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """jadx exits non-zero on partial decompiles but still writes usable Java.
+
+        Failing hard on the exit code alone would throw away a tree the caller
+        can still read, so export_sources only fails when nothing landed. This
+        pins the lenient branch: a non-zero exit that produced .java files is
+        summarised, not raised.
+        """
+        stub = tmp_path / "jadx"
+        stub.write_text("#!/bin/sh\n", encoding="utf-8")
+        apk = _apk(tmp_path / "a.apk")
+        out = tmp_path / "out"
+
+        def partial_run(*_args: Any, **_kwargs: Any) -> Completed:
+            src = out / "sources" / "com" / "example"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "Main.java").write_text("class Main {}", encoding="utf-8")
+            return Completed(returncode=1, stdout=b"", stderr=b"partial decompile")
+
+        monkeypatch.setattr("headless_re_mcp.backends.jadx.client.run_bounded", partial_run)
+        payload = JadxClient(stub).export_sources(apk, out)
+        assert payload["java_file_count"] == 1
+        assert payload["java_files"] == ["sources/com/example/Main.java"]
+
+    def test_nonzero_exit_with_no_sources_is_a_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-zero exit that wrote nothing is the real failure jadx signals."""
+        stub = tmp_path / "jadx"
+        stub.write_text("#!/bin/sh\n", encoding="utf-8")
+        apk = _apk(tmp_path / "a.apk")
+
+        def empty_run(*_args: Any, **_kwargs: Any) -> Completed:
+            return Completed(returncode=1, stdout=b"", stderr=b"nothing to decompile")
+
+        monkeypatch.setattr("headless_re_mcp.backends.jadx.client.run_bounded", empty_run)
+        with pytest.raises(JadxError) as info:
+            JadxClient(stub).export_sources(apk, tmp_path / "out")
+        assert info.value.code == "backend_error"
+        assert info.value.details.get("exit_code") == 1
+        assert "nothing to decompile" in str(info.value.details.get("stderr"))
 
 
 class TestPeOnlyToolsRefuseApkSessions:
