@@ -9,9 +9,12 @@ from threading import Lock
 from typing import Any
 
 from headless_re_mcp.backends.web.client import (
+    _MAX_HEADER_VALUE_BYTES,
+    _MAX_HEADERS,
     _MAX_METADATA_BYTES,
     _MAX_URL_BYTES,
     WebBackend,
+    _bounded_header_map,
 )
 from headless_re_mcp.tools.web import build_web_tools
 
@@ -173,6 +176,116 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert len(str(script["url"]).encode()) <= _MAX_URL_BYTES
     assert len(str(script["language"]).encode()) <= _MAX_METADATA_BYTES
     assert script["metadata_truncated"] is True
+
+
+def test_bounded_header_map_caps_count_and_marks_truncation() -> None:
+    """The header bounder caps count and flags any drop; a non-dict is empty.
+
+    Measured: MAX+5 headers -> exactly MAX kept and truncated True; a None
+    header map (CDP omits headers on some events) -> empty map, not truncated,
+    so a reader never mistakes a bounded or absent map for the whole set.
+    """
+    headers = {f"h{i}": "v" for i in range(_MAX_HEADERS + 5)}
+    out, cut = _bounded_header_map(headers)
+    assert len(out) == _MAX_HEADERS
+    assert cut is True
+    assert _bounded_header_map(None) == ({}, False)
+
+
+def test_web_captures_bounded_request_and_response_headers() -> None:
+    """Headers ride the request/response events and are captured, bounded, flagged.
+
+    CDP has no on-demand header fetch, so these events are the only chance to
+    keep them. Measured: an Authorization request header is captured verbatim,
+    a header value over the per-value cap is clipped and sets
+    request_headers_truncated, and a Set-Cookie response header lands in
+    response_headers -- the auth/cookie lines an API RE analyst most wants.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+    big_value = "v" * (_MAX_HEADER_VALUE_BYTES + 10)
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r1",
+            "request": {
+                "url": "https://a.test/api",
+                "method": "POST",
+                "headers": {"Authorization": "Bearer tok", "X-Big": big_value},
+            },
+            "type": "XHR",
+        }
+    )
+    cdp.handlers["Network.responseReceived"](
+        {
+            "requestId": "r1",
+            "response": {
+                "status": 200,
+                "mimeType": "application/json",
+                "headers": {"Set-Cookie": "sid=abc", "Content-Type": "application/json"},
+            },
+        }
+    )
+    entry = handle.requests["r1"]
+    assert entry["request_headers"]["Authorization"] == "Bearer tok"
+    assert len(entry["request_headers"]["X-Big"].encode()) <= _MAX_HEADER_VALUE_BYTES
+    assert entry["request_headers_truncated"] is True
+    assert entry["response_headers"]["Set-Cookie"] == "sid=abc"
+    assert entry["response_headers"]["Content-Type"] == "application/json"
+    assert "response_headers_truncated" not in entry
+
+
+def test_web_network_list_omits_header_maps_from_rows(monkeypatch: Any) -> None:
+    """Headers are detail-only: network.list rows must not carry them.
+
+    Measured: a stored entry holding request_headers/response_headers -> the
+    list row drops all four header keys while keeping url/method/status, so a
+    1000-row page is not inflated by bounded header maps, and the stored entry
+    still keeps them for network.get.
+    """
+    backend = WebBackend()
+
+    class _H:
+        lock = Lock()
+        requests = {
+            "r1": {
+                "requestId": "r1",
+                "url": "https://a",
+                "method": "GET",
+                "resourceType": "XHR",
+                "status": 200,
+                "mimeType": "application/json",
+                "request_headers": {"Authorization": "Bearer x"},
+                "request_headers_truncated": True,
+                "response_headers": {"Set-Cookie": "sid=1"},
+            }
+        }
+        requests_dropped = 0
+
+    handle = _H()
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    payload = backend.network_list("s", offset=0, limit=10)
+    row = payload["requests"][0]
+    assert "request_headers" not in row
+    assert "request_headers_truncated" not in row
+    assert "response_headers" not in row
+    assert "response_headers_truncated" not in row
+    assert row["url"] == "https://a"
+    assert handle.requests["r1"]["request_headers"] == {"Authorization": "Bearer x"}
+    doc = _tool_docstring("web.network.list")
+    assert "Headers are omitted" in doc
 
 
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(

@@ -315,6 +315,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (64 KiB)三重设界(重复名沿用旧的 `dict` 语义折叠为最后一个),被裁时在对应 `request` /
   `response` 上打 `metadata_truncated`;`url`、`method` 也一并按既有上限设界。文档串同步说明,
   并新增单值/条数/总量三种裁剪与正常放行的回归测试。
+### 修复（`web.network.get` 现在能看到请求/响应头）
+
+- web 抓包此前完全不留 HTTP 头:`network.list` / `network.get` 只回 url/method/status/mimeType,
+  而 Authorization、Cookie/Set-Cookie、内容协商等头恰恰是逆向一个 API 时最想看的东西——代理后端
+  (`proxy.flow.get`)一直会回这些头,web 侧却看不到,是一处后端间的不对等缺口。
+- 头只在 CDP 的 `Network.requestWillBeSent` / `Network.responseReceived` 事件上到达(没有按需
+  取头的调用),故在事件里当场(有界地)抓下:请求头存进 `request_headers`、响应头存进
+  `response_headers`,各自在数目、单值、总量上按代理后端同样的上限(100 条 / 单值 4 KiB /
+  合计 64 KiB)收界,被裁时置 `request_headers_truncated` / `response_headers_truncated`,读者不会
+  把有界的一份误当作全量。
+- 头是明细字段,`network.list` 的每行会剥掉这四个键(列表是摘要,1000 行各挂一份有界头会撑爆响应),
+  与代理的 list/get 分工一致;`web.network.get` 照旧回整条交换,头随之带出。响应未到达前
+  `response_headers` 不出现。
+- 新增回归:请求/响应头被抓取并受上限约束、条数超限置截断标记、非字典(某些事件不带头)回空且不算截断、
+  `network.list` 行不含头而底层条目保留、`network.get` 把头带出,以及两个工具文档串点名新字段。
 ### 修复（`web.network.get` 取不到响应体时仍保持形状）
 
 - `web.network.get` 的文档串承诺回 `body`、`base64_encoded`、`body_truncated`,但当 CDP

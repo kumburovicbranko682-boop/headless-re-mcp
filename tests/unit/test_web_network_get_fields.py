@@ -57,6 +57,20 @@ class _HandleNoBody:
     cdp = _CdpNoBody()
 
 
+class _HandleWithHeaders:
+    lock = Lock()
+    requests = {
+        "r1": {
+            "requestId": "r1",
+            "url": "https://x",
+            "request_headers": {"Authorization": "Bearer tok"},
+            "response_headers": {"Set-Cookie": "sid=abc"},
+            "response_headers_truncated": True,
+        }
+    }
+    cdp = _Cdp()
+
+
 def test_web_network_get_names_body_truncated_not_truncated(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -110,3 +124,25 @@ def test_web_network_get_keeps_the_documented_shape_when_the_body_is_missing(
     assert list(tmp_path.iterdir()) == []
     doc = _tool_docstring("web.network.get")
     assert "body_error" in doc
+
+
+def test_web_network_get_carries_captured_headers_through(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The detail view must surface the headers captured at request time.
+
+    Headers arrive only on the CDP request/response events (there is no
+    on-demand header fetch), so network.get is where they are read back.
+    Measured: an entry holding request_headers and response_headers -> both
+    ride along with the body, and the truncation flag survives.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _HandleWithHeaders())
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.network_get("s", "r1", tmp_path)
+    assert payload["request_headers"] == {"Authorization": "Bearer tok"}
+    assert payload["response_headers"] == {"Set-Cookie": "sid=abc"}
+    assert payload["response_headers_truncated"] is True
+    doc = _tool_docstring("web.network.get")
+    assert "request_headers" in doc
+    assert "response_headers" in doc

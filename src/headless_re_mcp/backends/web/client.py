@@ -41,6 +41,20 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Header caps, mirroring the proxy backend (100 headers, 4 KiB per value, 64 KiB
+# total). A hostile or chatty server could otherwise park megabytes of headers
+# in the capture ring per request, so each map is bounded and flagged when cut.
+_MAX_HEADERS = 100
+_MAX_HEADER_VALUE_BYTES = 4 * 1024
+_MAX_HEADERS_TOTAL_BYTES = 64 * 1024
+# Detail-only keys kept off network.list rows (headers can be large; the list is
+# a summary and the proxy backend likewise surfaces headers only in flow.get).
+_HEADER_KEYS = (
+    "request_headers",
+    "request_headers_truncated",
+    "response_headers",
+    "response_headers_truncated",
+)
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -84,6 +98,37 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _bounded_header_map(headers: object) -> tuple[dict[str, str], bool]:
+    """Bound a CDP header map in count, per-value and total size.
+
+    CDP hands headers over as a plain ``{name: value}`` object (already
+    collapsed, unlike mitmproxy's multidict), so this iterates a dict rather
+    than a multidict. The returned flag says when anything was dropped or cut,
+    so a reader never mistakes a bounded map for the whole header set.
+    """
+    if not isinstance(headers, dict):
+        return {}, False
+    out: dict[str, str] = {}
+    truncated = False
+    total = 0
+    for key, value in headers.items():
+        name = str(key)
+        if name not in out and len(out) >= _MAX_HEADERS:
+            truncated = True
+            break
+        text, cut = _bounded_metadata(value, _MAX_HEADER_VALUE_BYTES)
+        truncated = truncated or cut
+        entry_bytes = len(name.encode("utf-8", errors="replace")) + len(
+            text.encode("utf-8", errors="replace")
+        )
+        if total + entry_bytes > _MAX_HEADERS_TOTAL_BYTES:
+            truncated = True
+            break
+        total += entry_bytes
+        out[name] = text
+    return out, truncated
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -475,6 +520,15 @@ class WebBackend:
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            # Request headers -- the Authorization/Cookie/content-negotiation
+            # lines an API RE analyst most wants -- come only on this event;
+            # CDP has no on-demand header fetch, so capture (bounded) now or
+            # lose them. Kept off network.list rows and surfaced in
+            # network.get, matching the proxy's list/get split.
+            req_headers, req_headers_cut = _bounded_header_map(req.get("headers"))
+            entry["request_headers"] = req_headers
+            if req_headers_cut:
+                entry["request_headers_truncated"] = True
             with handle.lock:
                 handle.requests[str(params.get("requestId"))] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
@@ -486,6 +540,7 @@ class WebBackend:
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            resp_headers, resp_headers_cut = _bounded_header_map(resp.get("headers"))
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
@@ -493,6 +548,11 @@ class WebBackend:
                     entry["mimeType"] = mime_type
                     if mime_truncated:
                         entry["metadata_truncated"] = True
+                    # Response headers arrive only here; capture (bounded) so
+                    # network.get can show what the server actually returned.
+                    entry["response_headers"] = resp_headers
+                    if resp_headers_cut:
+                        entry["response_headers_truncated"] = True
 
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
@@ -597,7 +657,13 @@ class WebBackend:
             dropped = handle.requests_dropped
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
-        window = items[start : start + cap]
+        # Strip the (potentially large) header maps: the list is a summary, and
+        # bounded headers on up to 1000 rows would bloat the response. They stay
+        # in network.get, where the whole exchange for one request is wanted.
+        window = [
+            {k: v for k, v in entry.items() if k not in _HEADER_KEYS}
+            for entry in items[start : start + cap]
+        ]
         return {
             "requests": window,
             "count": len(window),
