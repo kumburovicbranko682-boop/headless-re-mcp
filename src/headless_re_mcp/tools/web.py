@@ -77,8 +77,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with requests (url, method, status, resourceType), count,
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
-        visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        visible. A WebSocket the page opened is listed too (resourceType
+        WebSocket, status 101) with websocket=true plus ws_messages (frame
+        count) and ws_bytes (decoded frame bytes); it used to be absent
+        entirely because a socket is not a normal request. Read its frames with
+        web.network.get. metadata_truncated marks bounded oversized request
+        fields. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -94,7 +98,13 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         decoded size. When CDP has no body for the request (a redirect, or a
         body already evicted from its cache) body is empty and body_error says
         why, while body, base64_encoded and body_truncated stay present. A
-        body over the capture cap is refused rather than written to disk.
+        body over the capture cap is refused rather than written to disk. For a
+        WebSocket row the answer is instead websocket=true with
+        websocket_messages (the retained frames in order, each with from_client
+        and size, plus text for a short UTF-8 frame or omitted binary/too_large
+        otherwise), websocket_message_count (the true total seen), and
+        websocket_truncated when fewer frames survived the retain budget than
+        that total; there is no body to fetch for a socket.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 

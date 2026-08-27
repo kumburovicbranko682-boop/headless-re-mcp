@@ -41,6 +41,15 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A page's WebSocket arrives over CDP's Network.webSocket* events, not as a
+# normal request, and its frames are pushed to us (unlike the proxy, which can
+# read them back off mitmproxy's flow on demand), so we retain them ourselves.
+# The count is what network.get returns per connection; the byte cap clips a
+# single frame's stored text; the total cap is a global budget across every
+# connection so a chatty socket cannot grow the session without bound.
+_MAX_WS_MESSAGES = 200
+_MAX_WS_MESSAGE_BYTES = 8 * 1024
+_MAX_WS_FRAMES_TOTAL = 2000
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -124,6 +133,44 @@ def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
         if truncated:
             break
     return " ".join(parts), truncated
+
+
+def _ws_frame_summary(params: JsonObject, *, from_client: bool) -> tuple[JsonObject, int] | None:
+    """One WebSocket frame's bounded summary, or None for a control frame.
+
+    CDP's frame events carry ``response`` = {opcode, mask, payloadData}. opcode 1
+    is text (payloadData is the already-decoded string, so permessage-deflate is
+    transparent here), opcode 2 is binary (payloadData is base64). Control frames
+    (ping/pong/close, opcode >= 8) are not application messages and are skipped so
+    they neither inflate the count nor appear as empty rows. The returned summary
+    mirrors the proxy's: ``from_client`` and decoded ``size``, plus ``text`` for a
+    short UTF-8 frame or ``omitted`` (binary / too_large) so a caller never gets a
+    lossy decode. The second tuple element is the decoded byte size for the
+    running total.
+    """
+    resp = params.get("response") or {}
+    opcode = resp.get("opcode")
+    payload = resp.get("payloadData") or ""
+    entry: JsonObject = {"from_client": from_client}
+    if opcode == 1:
+        raw = payload.encode("utf-8", errors="replace") if isinstance(payload, str) else b""
+        size = len(raw)
+        entry["size"] = size
+        if size > _MAX_WS_MESSAGE_BYTES:
+            entry["omitted"] = "too_large"
+        else:
+            entry["text"] = payload if isinstance(payload, str) else ""
+        return entry, size
+    if opcode == 2:
+        try:
+            raw = base64.b64decode(payload, validate=False) if isinstance(payload, str) else b""
+        except (ValueError, binascii.Error):
+            raw = b""
+        size = len(raw)
+        entry["size"] = size
+        entry["omitted"] = "binary"
+        return entry, size
+    return None
 
 
 def _spill_text(
@@ -301,6 +348,11 @@ class _WebSession:
         # this dictionary for as long as the session is open.
         self.scripts: OrderedDict[str, JsonObject] = OrderedDict()
         self.scripts_dropped = 0
+        # WebSocket frames, globally bounded across all connections (each row in
+        # `requests` only holds int counters). A frame is (request_id, summary);
+        # network.get filters by id. The deque evicts oldest-first, so a busy
+        # socket cannot exhaust memory and old frames age out like request rows.
+        self.ws_frames: deque[tuple[str, JsonObject]] = deque(maxlen=_MAX_WS_FRAMES_TOTAL)
         self.lock = threading.RLock()
         # Set right after construction: the runner is what built these objects,
         # and it is the only thread allowed to touch them again.
@@ -528,8 +580,58 @@ class WebBackend:
                     handle.console_dropped += 1
                 handle.console.append(entry)
 
+        def on_ws_created(params: JsonObject) -> None:
+            # A WebSocket is not a Network.requestWillBeSent -- it arrives here --
+            # so without this handler the connection never appeared in
+            # network.list at all, and its frames were invisible. Record it as a
+            # request row (resourceType WebSocket) so it is listed and paged like
+            # everything else; frames roll onto it as they arrive.
+            url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
+            entry = {
+                "requestId": params.get("requestId"),
+                "url": url,
+                "method": "GET",
+                "resourceType": "WebSocket",
+                "status": None,
+                "mimeType": None,
+                "websocket": True,
+                "ws_messages": 0,
+                "ws_bytes": 0,
+            }
+            if url_truncated:
+                entry["metadata_truncated"] = True
+            with handle.lock:
+                handle.requests[str(params.get("requestId"))] = entry
+                while len(handle.requests) > _MAX_REQUESTS:
+                    handle.requests.popitem(last=False)
+                    handle.requests_dropped += 1
+
+        def on_ws_handshake(params: JsonObject) -> None:
+            resp = params.get("response") or {}
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is not None:
+                    entry["status"] = resp.get("status")
+
+        def on_ws_frame(params: JsonObject, *, from_client: bool) -> None:
+            summarized = _ws_frame_summary(params, from_client=from_client)
+            if summarized is None:
+                return
+            frame, size = summarized
+            request_id = str(params.get("requestId"))
+            with handle.lock:
+                handle.ws_frames.append((request_id, frame))
+                entry = handle.requests.get(request_id)
+                if entry is not None:
+                    entry["ws_messages"] = int(entry.get("ws_messages") or 0) + 1
+                    entry["ws_bytes"] = int(entry.get("ws_bytes") or 0) + size
+
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.webSocketCreated", on_ws_created)
+        cdp.on("Network.webSocketHandshakeResponseReceived", on_ws_handshake)
+        cdp.on("Network.webSocketFrameSent", lambda p: on_ws_frame(p, from_client=True))
+        cdp.on("Network.webSocketFrameReceived", lambda p: on_ws_frame(p, from_client=False))
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,
@@ -611,8 +713,24 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             entry = handle.requests.get(request_id)
-        if entry is None:
-            raise WebError("not_found", "unknown request id", request_id=request_id)
+            if entry is None:
+                raise WebError("not_found", "unknown request id", request_id=request_id)
+            if entry.get("websocket"):
+                # A WebSocket has no HTTP response body to fetch; its payload is
+                # the frames. Return the bounded, retained slice for this
+                # connection instead of calling Network.getResponseBody (which
+                # would error). websocket_message_count is the true total ever
+                # seen; websocket_truncated says when fewer frames survived the
+                # global retain budget (or the per-call cap) than that total.
+                frames = [f for rid, f in handle.ws_frames if rid == request_id]
+                total = int(entry.get("ws_messages") or 0)
+                shown = frames[:_MAX_WS_MESSAGES]
+                return {
+                    **entry,
+                    "websocket_messages": shown,
+                    "websocket_message_count": total,
+                    "websocket_truncated": len(shown) < total,
+                }
         body = ""
         base64_encoded = False
         try:

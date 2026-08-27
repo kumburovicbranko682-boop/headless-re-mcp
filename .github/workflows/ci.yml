@@ -152,6 +152,40 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  # A page's WebSocket arrives over CDP's Network.webSocket* events, not as a
+  # normal request; the capture used to wire none of them, so the socket was
+  # absent from web.network.list and every frame was lost. This gate drives a
+  # real Chromium at a page that talks to a websockets echo origin and asserts
+  # the socket is listed with frame counters and web.network.get returns the
+  # frames both directions. skip != pass: with the browser and server installed
+  # here, a skip means the gate silently stopped guarding, so it fails the job.
+  linux-web-websocket:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package with browser support
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,browser]" websockets
+          python -m playwright install --with-deps chromium
+
+      - name: Web WebSocket capture live gate (skip is a failure)
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          python -m pytest tests/integration/test_web_websocket_capture_live_gate.py \
+            -q -rs --tb=short --timeout=300 | tee gate.log
+          if grep -qE "^SKIPPED|[0-9]+ skipped" gate.log; then
+            echo "web WebSocket gate skipped on a runner that has chromium and websockets installed"
+            exit 1
+          fi
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
