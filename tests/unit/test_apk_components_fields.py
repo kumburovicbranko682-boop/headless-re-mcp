@@ -65,3 +65,34 @@ def test_apk_components_names_the_four_lists_not_components() -> None:
     assert "Answers with activities" in doc
     assert "has_more" in doc
     assert "main_activity" in doc
+
+
+def test_apk_components_says_which_list_the_cap_hit() -> None:
+    """A combined has_more cannot say which of four lists was truncated.
+
+    Each component list is capped on its own, but the reply used to carry a
+    single has_more. With 300 activities and one of everything else, has_more
+    is True purely because of activities -- yet an audit reading the full
+    receivers list could not tell it was complete rather than a short list
+    hidden behind the same flag. The per-list flags name the truncated one.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.components(Path("dummy.apk"))
+
+    assert payload["has_more"] is True
+    # Only activities overflowed the cap; the other three are whole.
+    assert payload["activities_truncated"] is True
+    assert payload["services_truncated"] is False
+    assert payload["receivers_truncated"] is False
+    assert payload["providers_truncated"] is False
+    # The combined flag is exactly the OR of the per-list flags.
+    assert payload["has_more"] == (
+        payload["activities_truncated"]
+        or payload["services_truncated"]
+        or payload["receivers_truncated"]
+        or payload["providers_truncated"]
+    )
+    doc = _tool_docstring("apk.components")
+    assert "activities_truncated" in doc
+    assert "providers_truncated" in doc

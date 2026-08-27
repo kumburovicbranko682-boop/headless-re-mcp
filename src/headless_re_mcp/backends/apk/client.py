@@ -299,6 +299,15 @@ class ApkClient:
             "receivers": receivers,
             "providers": providers,
             "main_activity": apk.get_main_activity(),
+            # Each list is capped independently. A single combined has_more said
+            # "something is short" without saying which, so an audit for one
+            # exported receiver could not tell a complete receivers list from a
+            # truncated one hidden behind a truncated activities list. The
+            # per-list flags name exactly which enumeration is incomplete.
+            "activities_truncated": a_more,
+            "services_truncated": s_more,
+            "receivers_truncated": r_more,
+            "providers_truncated": p_more,
             "has_more": a_more or s_more or r_more or p_more,
         }
 
