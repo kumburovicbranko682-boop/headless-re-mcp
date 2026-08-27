@@ -167,23 +167,32 @@ class ApkClient:
 
     def open(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        return {
-            "opened": True,
-            "package": apk.get_package(),
-            "version_name": apk.get_androidversion_name(),
-            "version_code": apk.get_androidversion_code(),
-            "min_sdk": apk.get_min_sdk_version(),
-            "target_sdk": apk.get_target_sdk_version(),
-            "main_activity": apk.get_main_activity(),
-            "permission_count": len(apk.get_permissions()),
-            "native_abis": sorted(
-                {
-                    name.split("/")[1]
-                    for name in apk.get_files()
-                    if name.startswith("lib/") and len(name.split("/")) >= 3
-                }
-            ),
-        }
+        # androguard tolerates a manifest it cannot parse -- a plain-text
+        # AndroidManifest.xml (some packers ship one) or a truncated AXML makes
+        # APK() succeed but leaves the version getters raising KeyError('Name').
+        # Reading them here unguarded turned a malformed sample into an
+        # internal_error with a logged incident; the manifest is simply
+        # unreadable, so report it as backend_error like manifest() does.
+        try:
+            return {
+                "opened": True,
+                "package": apk.get_package(),
+                "version_name": apk.get_androidversion_name(),
+                "version_code": apk.get_androidversion_code(),
+                "min_sdk": apk.get_min_sdk_version(),
+                "target_sdk": apk.get_target_sdk_version(),
+                "main_activity": apk.get_main_activity(),
+                "permission_count": len(apk.get_permissions()),
+                "native_abis": sorted(
+                    {
+                        name.split("/")[1]
+                        for name in apk.get_files()
+                        if name.startswith("lib/") and len(name.split("/")) >= 3
+                    }
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to read APK metadata: {exc}") from exc
 
     def manifest(self, path: Path) -> JsonObject:
         apk = self._apk(path)

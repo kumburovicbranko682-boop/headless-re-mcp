@@ -51,10 +51,18 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
         session_id = session["id"]
 
         # androguard opens a real APK; on the synthetic archive it must still
-        # answer with a structured envelope rather than raising.
+        # answer with a structured envelope rather than raising. Whether
+        # androguard is installed (a manifest it cannot parse -> backend_error)
+        # or absent (capability_unavailable), the one code it must never be is
+        # internal_error: that means a raw exception escaped the backend and got
+        # filed as a false incident, which is what an unguarded version getter
+        # did until apk_open wrapped it.
         opened = service.apk_open(session_id)
         assert isinstance(opened.ok, bool)
         assert opened.ok or opened.error is not None
+        if not opened.ok:
+            assert opened.error is not None
+            assert opened.error.code != "internal_error", opened.error.message
 
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()

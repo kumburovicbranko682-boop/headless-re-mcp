@@ -268,6 +268,43 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class _ManifestlessApk:
+    """An androguard APK object whose manifest could not be parsed.
+
+    androguard tolerates a broken manifest -- APK() returns, but the version
+    getters then raise ``KeyError('Name')``. Reproduced on androguard 4.1.4 with
+    a plain-text (non-AXML) AndroidManifest.xml.
+    """
+
+    def get_package(self) -> str:
+        return ""
+
+    def get_androidversion_name(self) -> str:
+        raise KeyError("Name")
+
+
+class TestApkOpenSurvivesAnUnreadableManifest:
+    """A malformed manifest must be a backend_error, not an internal incident.
+
+    ``open()`` read the version getters unguarded, so a sample androguard could
+    not fully parse escaped as a raw KeyError -- ``_failure`` then filed it as
+    ``internal_error`` with a logged incident, the same miscasting the DIE and
+    cancel paths were fixed for. No androguard needed: the stub stands in for the
+    partially-parsed APK object.
+    """
+
+    def test_open_reports_backend_error_when_the_manifest_will_not_parse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        client = ApkClient()
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _ManifestlessApk())
+        with pytest.raises(ApkError) as info:
+            client.open(tmp_path / "app.apk")
+        assert info.value.code == "backend_error"
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 
