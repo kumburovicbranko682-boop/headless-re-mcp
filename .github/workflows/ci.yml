@@ -155,8 +155,8 @@ jobs:
   linux-integration:
     # The self-hosted Windows runner (windows-integration.yml) is the only place
     # tests/integration ran, so every portable non-PE gate -- Android/androguard,
-    # Frida, radare2, UPX unpack, wabt, mitmproxy, the web console -- was only
-    # ever exercised on Windows. This job tells the Linux half of that story on a
+    # Frida, radare2, Ghidra, UPX unpack, wabt, mitmproxy, the web console -- was
+    # only ever exercised on Windows. This job tells the Linux half of that story on a
     # stock GitHub runner using none but FOSS backends, matching this workflow's
     # "no proprietary backends required" promise. Gates run for real where their
     # backend installs and skip honestly (-rs prints why; skip != pass) where it
@@ -173,7 +173,9 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          # Ghidra 12.x refuses to launch on anything below JDK 21; the other
+          # JVM tools here (jadx, apktool, apksigner, keytool) all run on 21.
+          java-version: "21"
 
       - name: Install FOSS analysis backends
         run: |
@@ -220,6 +222,30 @@ jobs:
             echo "$HOME/jadx/bin" >> "$GITHUB_PATH"
           else
             echo "jadx unavailable; the decompile gate will skip"
+          fi
+
+      - name: Install Ghidra (best effort)
+        # The Ghidra live gate skips unless HEADLESS_RE_GHIDRA_HOME names a
+        # runnable install, and nothing here provided one, so that gate was the
+        # only entry in the list below that never actually ran in CI. Fetch a
+        # pinned release and install PyGhidra from the wheels the distro itself
+        # vendors (Ghidra >= 11.3 dropped Jython, so the adapter drives a .py
+        # postScript through PyGhidra; --no-index pins us to the exact version
+        # this Ghidra shipped with). Best-effort like jadx above: if any part
+        # fails, HEADLESS_RE_GHIDRA_HOME stays unset and the gate skips
+        # (skip != pass) rather than failing the job over an optional backend.
+        run: |
+          GHIDRA_VERSION=12.1.3
+          GHIDRA_DATE=20260817
+          GHIDRA_HOME="$HOME/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC"
+          if curl -fsSL -o /tmp/ghidra.zip \
+              "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip" \
+              && unzip -oq /tmp/ghidra.zip -d "$HOME/ghidra" \
+              && python -m pip install --no-index \
+                -f "$GHIDRA_HOME/Ghidra/Features/PyGhidra/pypkg/dist" pyghidra; then
+            echo "HEADLESS_RE_GHIDRA_HOME=$GHIDRA_HOME" >> "$GITHUB_ENV"
+          else
+            echo "ghidra unavailable; the Ghidra gate will skip"
           fi
 
       - name: Non-PE integration gates
