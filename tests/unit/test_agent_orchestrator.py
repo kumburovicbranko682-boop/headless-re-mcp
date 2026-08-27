@@ -529,6 +529,71 @@ async def test_a_provider_stream_that_ends_without_completion_fails_the_run(
 
 
 @pytest.mark.asyncio
+async def test_a_length_truncated_final_turn_fails_rather_than_completes(
+    tmp_path: Path,
+) -> None:
+    """A final turn the provider cut at its token limit is not a finished answer.
+
+    finish_reason "length" with no tool calls means the visible reply is a
+    fragment and nothing carries the run forward. Left as completed it filed a
+    cut-off turn as a finished one -- the same trap the no-completed-event guard
+    already covers -- so an unattended mission accepted a truncated answer as
+    done. It must fail with the truncation reason and write no run.completed.
+    """
+
+    class TruncatedProvider(FakeProvider):
+        async def _events(self) -> AsyncIterator[ProviderEvent]:
+            yield ProviderEvent("text_delta", text="the answer begins but is cut")
+            yield ProviderEvent("completed", tool_calls=(), finish_reason="length")
+
+    store = AgentStore(tmp_path / "truncated.db")
+    thread = store.create_thread()
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path / "truncated-config"),
+        provider_factory=lambda _: TruncatedProvider([]),
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.FAILED
+    failed = store.get_run(run["id"])
+    assert failed is not None and "truncated at token limit" in str(failed.error)
+    assert not any(
+        event.type == "run.completed" for event in store.list_events(run["id"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stop_finish_with_no_tool_calls_still_completes(tmp_path: Path) -> None:
+    """A normal finish (stop / none) with no tool calls stays a clean completion."""
+
+    class StopProvider(FakeProvider):
+        async def _events(self) -> AsyncIterator[ProviderEvent]:
+            yield ProviderEvent("text_delta", text="done")
+            yield ProviderEvent("completed", tool_calls=(), finish_reason="stop")
+
+    store = AgentStore(tmp_path / "stop.db")
+    thread = store.create_thread()
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path / "stop-config"),
+        provider_factory=lambda _: StopProvider([]),
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.COMPLETED
+    assert any(
+        event.type == "run.completed" for event in store.list_events(run["id"])
+    )
+
+
+@pytest.mark.asyncio
 async def test_max_rounds_and_oversized_tool_result_are_bounded(tmp_path: Path) -> None:
     calls = [
         (ProviderToolCall(f"call-{index}", "test.tool", {}),)

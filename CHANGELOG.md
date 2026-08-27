@@ -134,6 +134,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
+### 修复（Agent 编排器把被 token 上限截断的收尾回合当成成功完成）
+
+- provider 已在 `completed` 事件里带上 `finish_reason`，编排器却只取 `tool_calls`：当一个回合没有工具调用
+  时，无论 `finish_reason` 是什么都直接 `transition(COMPLETED)` 并写 `run.completed`。于是 provider 因输出
+  token 上限（`finish_reason=="length"`）把收尾回合截断——可见回复只是个片段、又没有工具调用把 run 往下带
+  ——会被记成一次成功完成，与模型自己决定结束无从区分。这正是同一段循环在“流在没有 `completed` 事件时结
+  束”那条分支已明确拒绝的“把被截断的工作当成成功”。现在无工具调用且 `finish_reason=="length"` 时，run 以
+  新的 `RUN_RESPONSE_TRUNCATED`（“provider response truncated at token limit”）判为 `FAILED`、不写
+  `run.completed`；该原因刻意不列入 `RUN_BUDGET_ENDINGS`——预算耗尽是“任务还没做完”，而这是收尾回合本身
+  被截断（工作破损），语义不同。正常收尾（`finish_reason` 为 `stop`/缺省）仍照常 `COMPLETED`。补回归测试
+  钉住：`length` 截断且无工具调用判 `FAILED`、错误含“truncated at token limit”、不写 `run.completed`；
+  `stop` 收尾仍 `COMPLETED` 并写 `run.completed`。
+
 ### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
 - Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
