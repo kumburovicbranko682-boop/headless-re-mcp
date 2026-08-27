@@ -126,6 +126,50 @@ def test_a_failed_sign_scrubs_the_keystore_password_from_stderr(
     assert "***" in verify_stderr
 
 
+def test_the_keystore_password_never_appears_on_the_argument_vector(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The secret rides in the child's environment, not on argv.
+
+    ``--ks-pass pass:<password>`` put the release-keystore password into
+    /proc/<pid>/cmdline, which every local user can read for as long as the
+    signing JVM runs. apksigner's ``env:`` source keeps it out of the process
+    table; only the variable name may be named on the command line.
+    """
+    fake_tool = tmp_path / "apktool.bat"
+    fake_tool.write_text("x\n", encoding="utf-8")
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    apk = tmp_path / "a.apk"
+    apk.write_bytes(b"PK")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    out = tmp_path / "signed.apk"
+    password = "hunter2-release-pw"
+    calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+    def fake_run(
+        cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
+    ) -> tuple[str, str, int]:
+        calls.append((list(cmd), env))
+        if "verify" not in cmd:
+            out.write_bytes(b"PKSIGN")
+        return "", "", 0
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", fake_run)
+    client = ApktoolClient(fake_tool, signer)
+    payload = client.sign(
+        apk, out, keystore=keystore, keystore_password=password, key_alias="release"
+    )
+    assert payload["signed"] is True
+    sign_cmd, sign_env = calls[0]
+    assert all(password not in arg for arg in sign_cmd), sign_cmd
+    assert sign_env is not None
+    assert sign_env["HEADLESS_RE_MCP_KS_PASS"] == password
+    assert sign_cmd[sign_cmd.index("--ks-pass") + 1] == "env:HEADLESS_RE_MCP_KS_PASS"
+    assert sign_cmd[sign_cmd.index("--key-pass") + 1] == "env:HEADLESS_RE_MCP_KS_PASS"
+
+
 def test_apk_sign_does_not_claim_signed_when_verify_fails(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

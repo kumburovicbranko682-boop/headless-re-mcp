@@ -17,6 +17,9 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
+# apksigner reads the keystore password from this variable (its ``env:`` pass
+# source) so the secret never appears on the world-readable argument vector.
+_KS_PASS_ENV = "HEADLESS_RE_MCP_KS_PASS"
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
@@ -30,10 +33,12 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
-def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+def _run(
+    cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
+) -> tuple[str, str, int]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
+        completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
     except TimedOut as exc:
         # apktool and apksigner are scripts that start a JVM, so the deadline
         # has to bind the JVM too, not just the script that launched it.
@@ -163,6 +168,12 @@ class ApktoolClient:
                 "keystore_password and key_alias are required for a custom keystore",
             )
         out_apk.parent.mkdir(parents=True, exist_ok=True)
+        # The password travels in the child's environment (apksigner's ``env:``
+        # source), never on argv: /proc/<pid>/cmdline is world-readable on
+        # Linux, so ``--ks-pass pass:...`` published a release-keystore secret
+        # to every local user for the lifetime of the signing JVM.
+        sign_env = dict(os.environ)
+        sign_env[_KS_PASS_ENV] = password
         _, stderr, code = _run(
             [
                 str(self.apksigner),
@@ -170,16 +181,17 @@ class ApktoolClient:
                 "--ks",
                 str(store),
                 "--ks-pass",
-                f"pass:{password}",
+                f"env:{_KS_PASS_ENV}",
                 "--ks-key-alias",
                 alias,
                 "--key-pass",
-                f"pass:{password}",
+                f"env:{_KS_PASS_ENV}",
                 "--out",
                 str(out_apk),
                 str(apk),
             ],
             timeout=timeout,
+            env=sign_env,
         )
         if code != 0 or not out_apk.is_file():
             # stderr can echo the argument vector, so scrub the password if present.

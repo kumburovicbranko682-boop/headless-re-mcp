@@ -62,6 +62,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（apk.sign 的 keystore 口令不再出现在命令行上）
+
+- `apk.sign` 此前以 `--ks-pass pass:<口令>` 把 keystore 口令放上 apksigner 的参数向量。Linux 的
+  `/proc/<pid>/cmdline` 对所有本地用户可读，签名 JVM 存活期间口令等于对全机公开——对缺省 debug
+  keystore 无所谓，对 release keystore 是实打实的泄露。改用 apksigner 原生的 `env:` 口令源：口令
+  经子进程环境变量（`HEADLESS_RE_MCP_KS_PASS`）传递，命令行上只出现变量名；stderr 抹除逻辑保留作
+  纵深防御。回归钉住：sign 调用的 argv 任何一项都不含口令，口令只在传给子进程的 env 里。
+  SECURITY.md 的敏感信息条目同步扩展到"进程参数"。
+
 ### 修复（APK 包名探测不再被 zip 炸弹撑爆内存）
 
 - `device.connect` 用来把拉取的 APK 匹配到已安装包名的廉价探测 `_apk_package_name`，此前用
