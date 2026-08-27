@@ -24,6 +24,12 @@ from pathlib import Path
 
 _ANDROID_URI = "http://schemas.android.com/apk/res/android"
 
+# A real, committed classes.dex compiled from fixtures/android/Hello.java (see
+# that file for the exact javac + d8 command). androguard's DEX analysis needs a
+# genuine DEX to read classes/methods/strings/xrefs, and building one needs the
+# Android build tools the test host lacks, so the bytes are checked in.
+_DEX_PATH = Path(__file__).resolve().parents[2] / "fixtures" / "android" / "classes.dex"
+
 # Public resource ids for the framework attributes we emit. androguard maps the
 # attribute-name string index through the resource map to these ids and looks up
 # the human-readable "android:<name>" from its built-in table.
@@ -196,20 +202,27 @@ EXPECTED = {
     "receivers": {"com.example.hello.BootReceiver"},
     "providers": {"com.example.hello.FileProvider"},
     "native_abis": {"arm64-v8a", "x86_64"},
+    # DEX-level facts from the committed classes.dex (compiled from Hello.java).
+    "dex_class": "Lcom/example/hello/Hello;",
+    "dex_methods": {"<init>", "add", "greet", "run"},
+    "dex_string": "androguard-gate-STRINGMARKER",
+    # run() calls greet(), so greet has an intra-DEX caller named run.
+    "dex_xref_target": "greet",
+    "dex_xref_caller": "run",
 }
 
 
 def build_valid_apk(path: Path) -> Path:
     """Write an APK androguard parses to :data:`EXPECTED` at ``path``.
 
-    The manifest is real binary AXML; the ``.dex`` is a placeholder because the
-    manifest surface never decodes it (the DEX-dependent tools have their own
-    Windows-independent unit coverage). Native libs and a v1 signature file make
-    the ABI and signing facts real ZIP entries.
+    The manifest is real binary AXML and the ``.dex`` is a real compiled DEX
+    (see :data:`_DEX_PATH`), so both the manifest surface and androguard's DEX
+    analysis (classes/methods/strings/xrefs) read genuine data. Native libs and
+    a v1 signature file make the ABI and signing facts real ZIP entries.
     """
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("AndroidManifest.xml", build_manifest_axml())
-        archive.writestr("classes.dex", b"dex\n035\x00placeholder")
+        archive.writestr("classes.dex", _DEX_PATH.read_bytes())
         archive.writestr("lib/arm64-v8a/libnative.so", b"\x7fELFplaceholder")
         archive.writestr("lib/x86_64/libnative.so", b"\x7fELFplaceholder")
         archive.writestr("resources.arsc", b"\x02\x00placeholder")

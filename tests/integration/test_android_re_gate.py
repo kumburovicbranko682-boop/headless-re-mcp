@@ -3,11 +3,12 @@
 Runs without a device or extra tools by building APKs in a temp dir. A
 deliberately invalid archive proves classification, stdlib metadata, and safe
 degradation on a bare machine; a second, genuinely androguard-parseable APK
-(real binary manifest, built by ``_apk_fixture``) exercises the androguard
-success path -- package, version, permissions, and every component type --
-skipping only where the ``android`` extra is absent. Parts that need a real
-device / jadx / adbutils are asserted only for a structured envelope, never a
-crash (skip != pass for the live-device parts, which have their own skips).
+(real binary manifest plus a real compiled ``classes.dex``, built by
+``_apk_fixture``) exercises the androguard success path -- package, version,
+permissions, every component type, and the DEX code surface (classes, methods,
+strings, xrefs) -- skipping only where the ``android`` extra is absent. Parts
+that need a real device / jadx / adbutils are asserted only for a structured
+envelope, never a crash (skip != pass for the live-device parts).
 """
 
 from __future__ import annotations
@@ -119,6 +120,48 @@ def test_android_static_reads_a_real_manifest(tmp_path: Path) -> None:
         manifest = service.apk_manifest(session_id)
         assert manifest.ok, manifest.error
         assert EXPECTED["package"] in manifest.data["manifest_xml"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_static_reads_dex_code(tmp_path: Path) -> None:
+    """Exercise androguard's DEX analysis against a real compiled classes.dex.
+
+    The manifest test above proves the resource surface; this one proves the
+    code surface -- the path that needs a genuine DEX and that mocked unit tests
+    (which stub androguard's analysis) cannot reach. It asserts the class, its
+    methods, an embedded string, and an intra-DEX xref (run -> greet) all read
+    back out. Skips (skip != pass) where the ``android`` extra is not installed.
+    """
+    pytest.importorskip("androguard")
+    apk = build_valid_apk(tmp_path / "hello.apk")
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        classes = service.apk_classes(session_id)
+        assert classes.ok, classes.error
+        assert EXPECTED["dex_class"] in classes.data["classes"]
+
+        methods = service.apk_methods(session_id, EXPECTED["dex_class"])
+        assert methods.ok, methods.error
+        assert {m["name"] for m in methods.data["methods"]} == EXPECTED["dex_methods"]
+
+        strings = service.apk_strings(session_id)
+        assert strings.ok, strings.error
+        assert any(EXPECTED["dex_string"] in s for s in strings.data["strings"]), (
+            strings.data["strings"]
+        )
+
+        # run() calls greet(); androguard must see that intra-DEX cross-reference.
+        xrefs = service.apk_xrefs(session_id, EXPECTED["dex_xref_target"])
+        assert xrefs.ok, xrefs.error
+        callers = {(c["class"], c["method"]) for c in xrefs.data["callers"]}
+        assert (EXPECTED["dex_class"], EXPECTED["dex_xref_caller"]) in callers, xrefs.data
     finally:
         service.close_all()
 
