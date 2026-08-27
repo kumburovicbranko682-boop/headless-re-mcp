@@ -246,6 +246,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 修复（x64dbg RPC 帧：深嵌套 JSON 抛裸 RecursionError 而非协议错误）
+
+- `parse_rpc_frame` 自称是 fuzz 目标，契约是任何畸形帧都收敛成干净的
+  `rpc_protocol_error`（帧过短、长度越界、截断、尾随字节、非 UTF-8/JSON 皆如此）。
+  但它解 body 时只捕获 `(UnicodeDecodeError, json.JSONDecodeError)`：一个长度合法、
+  远在 8 MiB 帧上限之内、却嵌套上千层的 JSON body（两万个 `[` 即可，约 20 KB）会让
+  C 解码器一路递归到 `RecursionError`——它不是 `JSONDecodeError`，于是绕过这层归类，
+  作为未捕获异常从解析器逃出，而这里其他所有畸形帧都会变成 `XdbgRpcError`。与 DIE
+  的 `_parse_json`、r2 的 `parse_r2_json`、provider 流式解析同属一类。现把
+  `RecursionError` 纳入捕获集，畸形帧照旧收敛成 `rpc_protocol_error`。新增回归：
+  两万个 `[` 的合法长度帧断言抛 `XdbgRpcError`（旧代码下以 `RecursionError` 逃逸失败）。
+
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
 - `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
