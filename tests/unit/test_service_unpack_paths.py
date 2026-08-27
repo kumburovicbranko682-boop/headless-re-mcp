@@ -427,6 +427,96 @@ def test_verify_ui_gate_reports_no_match_and_errors(
     assert errored.data["ui_gate"]["status"] == "error"
 
 
+def test_verify_reports_a_failure_for_a_bad_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    result = service.unpack_verify("no-such-session", "/tmp/whatever", use_die=False)
+    assert not result.ok and result.error is not None
+
+
+def test_verify_open_ida_without_a_baseline(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    target = _verify_target(service, session_id, binary)
+    result = service.unpack_verify(session_id, str(target), use_die=False, open_ida=True)
+    assert result.ok and result.data is not None
+    assert result.data["ida"] is not None
+    assert result.data["ida"]["static_open_ok"] is True
+
+
+def test_verify_open_ida_reports_a_failed_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    target = _verify_target(service, session_id, binary)
+    monkeypatch.setattr(
+        service,
+        "create_session",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="reopen_failed", message="cannot reopen")
+        ),
+    )
+    result = service.unpack_verify(session_id, str(target), use_die=False, open_ida=True)
+    assert result.ok and result.data is not None
+    assert result.data["ida"]["static_open_ok"] is False
+    assert any("IDA reopen failed" in item for item in result.data["unfixed"])
+
+
+def test_verify_baseline_compare_survives_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    baseline_id = _new_session(service, binary)
+    assert service.open_static(baseline_id).ok
+    session_id = _new_session(service, binary)
+    target = _verify_target(service, session_id, binary)
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("static functions unavailable")
+
+    monkeypatch.setattr(service, "static_functions", boom)
+    result = service.unpack_verify(
+        session_id,
+        str(target),
+        use_die=False,
+        open_ida=True,
+        baseline_session_id=baseline_id,
+    )
+    assert result.ok and result.data is not None
+    assert any("compare incomplete" in item for item in result.data["unfixed"])
+
+
+def test_verify_ui_gate_uses_the_runtime_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        mod,
+        "list_process_windows",
+        lambda pid: [{"title": "Runtime Window", "class_name": "W", "hwnd": 1}],
+    )
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    target = _verify_target(service, session_id, binary)
+    result = service.unpack_verify(
+        session_id,
+        str(target),
+        use_die=False,
+        expect_window_title="runtime window",
+    )
+    assert result.ok and result.data is not None
+    assert result.data["ui_gate"]["pid"] is not None
+    assert result.data["ui_gate"]["checked"] is True
+
+
 # ---------------------------------------------------------------------------
 # unpack_plan
 # ---------------------------------------------------------------------------
@@ -927,3 +1017,223 @@ def test_confirm_oep_auto_dump_runs_the_dump(tmp_path: Path) -> None:
     assert result.ok and result.data is not None
     assert result.data["auto_dump"] is True
     assert result.data["dump"] is not None
+
+
+# ---------------------------------------------------------------------------
+# _bounded_runtime_probe
+# ---------------------------------------------------------------------------
+
+
+def _probe_state(session_id: str) -> Any:
+    state = create_unpack_session(session_id, route="bounded_dynamic")
+    return transition(state, UnpackPhase.RUNNING, event="run", message="run")
+
+
+def test_bounded_probe_skips_when_dynamic_is_closed(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    state, probe = service._bounded_runtime_probe(
+        _probe_state(session_id), session_id, route="bounded_dynamic"
+    )
+    assert probe["dynamic_open"] is False
+
+
+def test_bounded_probe_reports_a_modules_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr(
+        service,
+        "dynamic_modules",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="modules_failed", message="boom")
+        ),
+    )
+    _state, probe = service._bounded_runtime_probe(
+        _probe_state(session_id), session_id, route="bounded_dynamic"
+    )
+    assert probe["modules_error"] is not None
+
+
+def test_bounded_probe_handles_an_empty_module_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr(
+        service,
+        "dynamic_modules",
+        lambda *a, **k: Result[dict[str, Any]](ok=True, data={"modules": []}),
+    )
+    _state, probe = service._bounded_runtime_probe(
+        _probe_state(session_id), session_id, route="bounded_dynamic"
+    )
+    assert probe["module_base"] is None
+
+
+def test_bounded_probe_rejects_a_non_dict_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr(
+        service,
+        "dynamic_modules",
+        lambda *a, **k: Result[dict[str, Any]](ok=True, data={"modules": [42]}),
+    )
+    _state, probe = service._bounded_runtime_probe(
+        _probe_state(session_id), session_id, route="bounded_dynamic"
+    )
+    assert probe["module_base"] is None
+
+
+def test_bounded_probe_rejects_a_bad_module_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr(
+        service,
+        "dynamic_modules",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=True, data={"modules": [{"base": "nope", "size": 16}]}
+        ),
+    )
+    _state, probe = service._bounded_runtime_probe(
+        _probe_state(session_id), session_id, route="bounded_dynamic"
+    )
+    assert probe["module_base"] is None
+
+
+def test_bounded_probe_defers_when_oep_score_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr(
+        service,
+        "dynamic_modules",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=True, data={"modules": [{"base": _MODULE_BASE, "size": _MODULE_SIZE}]}
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "unpack_score_oep",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="not_paused", message="target running")
+        ),
+    )
+    _state, probe = service._bounded_runtime_probe(
+        _probe_state(session_id), session_id, route="bounded_dynamic"
+    )
+    assert probe["module_base"] == _MODULE_BASE
+    assert probe["oep_scored"] is False
+    assert probe["oep_score_error"] is not None
+
+
+# ---------------------------------------------------------------------------
+# _run_upx_orchestration
+# ---------------------------------------------------------------------------
+
+
+def _upx_state(session_id: str) -> Any:
+    return create_unpack_session(session_id, route="upx")
+
+
+def test_run_upx_orchestration_fails_when_test_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    monkeypatch.setattr(
+        service,
+        "unpack_upx_test",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="upx_test", message="not upx")
+        ),
+    )
+    state = service._run_upx_orchestration(
+        _upx_state(session_id), session_id, timeout=1.0, open_ida=False
+    )
+    assert state.phase == UnpackPhase.FAILED
+    assert state.failure is not None and state.failure.code == "upx_test_failed"
+
+
+def test_run_upx_orchestration_fails_when_unpack_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    monkeypatch.setattr(
+        service,
+        "unpack_upx_test",
+        lambda *a, **k: Result[dict[str, Any]](ok=True, data={"tested": True}),
+    )
+    monkeypatch.setattr(
+        service,
+        "unpack_upx_unpack",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="upx_unpack", message="unpack failed")
+        ),
+    )
+    state = service._run_upx_orchestration(
+        _upx_state(session_id), session_id, timeout=1.0, open_ida=False
+    )
+    assert state.phase == UnpackPhase.FAILED
+    assert state.failure is not None and state.failure.code == "upx_unpack_failed"
+
+
+def test_run_upx_orchestration_verifies_and_reanalyzes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    unpacked = _session_unpack_dir(service, session_id) / "unpacked.exe"
+    unpacked.write_bytes(binary.read_bytes())
+    monkeypatch.setattr(
+        service,
+        "unpack_upx_test",
+        lambda *a, **k: Result[dict[str, Any]](ok=True, data={"tested": True}),
+    )
+    monkeypatch.setattr(
+        service,
+        "unpack_upx_unpack",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=True,
+            data={
+                "output_path": str(unpacked),
+                "comparison": {"changed": True},
+                "die_rescan": {"status": "completed"},
+                "reanalyze": {"static_open_ok": True},
+            },
+        ),
+    )
+    state = service._run_upx_orchestration(
+        _upx_state(session_id), session_id, timeout=1.0, open_ida=True
+    )
+    assert state.phase == UnpackPhase.REANALYZED
