@@ -588,6 +588,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - UPX / XVLKC / Scylla / VMPDump / de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为
   本机没装 CLI 就说成 `capability_unavailable`。
 
+### 修复（`js.unpack_bundle` 保留去重 + 失败路径）
+
+- `js_unpack_bundle` 过去在成功路径先跑真正的 `prune_capped_dir`
+  （`JSRE_UNPACK_MAX_ENTRIES` 条 + `JSRE_UNPACK_MAX_BYTES` 字节）,又在 `finally` 里再跑一遍
+  早期只按条数裁剪的 `prune_jsre_unpack_dirs`——同一目录裁两次;而 `finally` 里那份只保条数,
+  所以一旦 unpack 失败(webcrack 建了目录又报错),只有条数上限生效、字节上限不生效。现把保留
+  统一为在 `finally` 调用 `prune_capped_dir`(成功失败都跑,两个上限都管),删去冗余的
+  `prune_jsre_unpack_dirs`/`_MAX_JSRE_UNPACK_DIRS`(它只是 `JSRE_UNPACK_MAX_ENTRIES=8` 的重复),
+  测试改为覆盖真正的 `prune_capped_dir` 并新增「连续失败仍会回收旧树」的回归。
+
 ### 新增（会话目标类型）
 
 - 会话不再只认 PE。`Session` 增加 `target`（`pe|apk|web`）与 `locator`，`architecture`、
