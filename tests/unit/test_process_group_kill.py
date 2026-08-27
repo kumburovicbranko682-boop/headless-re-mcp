@@ -9,6 +9,13 @@ with the ppid walk monkeypatched away; these tests pin the helpers themselves,
 including the guard that keeps ``_kill_own_process_group`` from ever signalling a
 group the service does not lead (which would take down the service itself).
 
+``reap_orphaned_children`` and ``_pid_is_live`` are pinned here too:
+``reap_orphaned_children`` is what the successful-exit branch of the CLI adapters
+call to sweep a worker a wrapper detached, and it promises the worker is gone --
+not merely signalled -- before it returns; ``_pid_is_live`` is the corpse check
+that promise rests on, and reading a zombie as dead is the load-bearing part
+that a naive ``os.kill(pid, 0)`` gets wrong.
+
 POSIX-only: process groups, ``setsid`` and ``killpg`` are POSIX behaviour.
 """
 
@@ -167,6 +174,72 @@ def test_kill_own_process_group_kills_the_whole_group_it_leads(
         assert _wait_gone(grandchild), "the reparented-style member survived the group kill"
     finally:
         _kill(grandchild, leader_pid)
+
+
+def test_reap_orphaned_children_confirms_the_group_is_dead_before_returning(
+    tmp_path: Path,
+) -> None:
+    """The sweep must not return while the orphan is still schedulable.
+
+    A CLI wrapper that exits 0 after detaching a worker leaves an orphan in the
+    tool's session group. ``reap_orphaned_children`` signals that group and,
+    because SIGKILL is asynchronous, waits until the members are actually dead:
+    a caller that reports success right after the call must not still be racing
+    a live worker. The assertion is made with no ``_wait_gone`` on purpose --
+    the orphan has to be gone the instant the function returns.
+    """
+    leader_pid, grandchild = _start_group_leader(tmp_path / "gc.pid")
+    try:
+        killed = process_tree.reap_orphaned_children(leader_pid, leader_pid)
+        assert grandchild in killed
+        assert not _pid_alive(grandchild), (
+            "reap returned while the orphan was still live -- the "
+            "confirm-before-return wait did not hold"
+        )
+    finally:
+        _kill(grandchild, leader_pid)
+
+
+def test_reap_orphaned_children_is_a_noop_for_an_invalid_group() -> None:
+    """No group id means nothing to sweep, and no signal may be sent."""
+    assert process_tree.reap_orphaned_children(None, 0) == []
+    assert process_tree.reap_orphaned_children(None, -1) == []
+    assert process_tree.reap_orphaned_children(-1, 0) == []
+
+
+def test_pid_is_live_reads_a_zombie_as_dead() -> None:
+    """``_pid_is_live`` must treat a killed-but-unreaped process as gone.
+
+    ``os.kill(pid, 0)`` succeeds on a zombie, so a reap loop keyed on it would
+    wait out its whole deadline in a container whose pid 1 does not reap
+    orphans. ``_pid_is_live`` reads ``/proc/<pid>/stat`` state instead: 'Z'
+    means the kill has already landed even though the pid still answers.
+    """
+    assert process_tree._pid_is_live(os.getpid()) is True
+    proc = subprocess.Popen([sys.executable, "-c", "import os; os._exit(0)"])
+    try:
+        # It exits at once; wait for the kernel to mark it a zombie. Nothing
+        # here polls/waits the handle, so nothing reaps it out from under us.
+        deadline = time.monotonic() + 5.0
+        state = ""
+        while time.monotonic() < deadline:
+            try:
+                stat = Path(f"/proc/{proc.pid}/stat").read_text(
+                    encoding="ascii", errors="replace"
+                )
+            except OSError:
+                break
+            fields = stat[stat.rfind(")") + 2 :].split()
+            state = fields[0] if fields else ""
+            if state in {"Z", "X", "x"}:
+                break
+            time.sleep(0.02)
+        assert state == "Z", f"child did not become a zombie (state {state!r})"
+        os.kill(proc.pid, 0)  # the zombie still answers signal 0; does not raise
+        assert process_tree._pid_is_live(proc.pid) is False
+    finally:
+        with suppress(Exception):
+            proc.wait(timeout=5.0)
 
 
 def test_kill_own_process_group_still_reaches_survivors_of_a_reaped_leader(
