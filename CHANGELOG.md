@@ -596,6 +596,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   会原样打进安装包;外部工具包在 `upstream.lock.json` 早有钉扎惯例,解释器现在同等
   对待。哈希取自 python.org 官方源实测并经独立来源比对（大小 11,133,606 字节一致）。
   不匹配即报错并给出重下或随版本更新钉值的指引。
+### 修复（交接包带出本机字节码）
+
+- `build_handoff_zip.ps1` 打包前剔除 `__pycache__` / `.pyc` 等每机状态。它把活检出的
+  `src`/`tests`/`scripts` 整树复制,开发机跑过测试后这些缓存会原样进入源码交接包——
+  其余四个打包脚本（`release.ps1`、`build_msi.ps1`、`build_portable.ps1`、
+  `build_native_portable.ps1`）早有同款剔除,唯独交接包漏了,现对齐。
 
 ### 新增（会话目标类型）
 
