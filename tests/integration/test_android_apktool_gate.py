@@ -167,5 +167,13 @@ def test_android_apktool_repack_and_sign() -> None:
         # apktool rebuilds without a v1 (JAR) signature, so apksigner applies a
         # v2 APK Signature Scheme block; the verifier must report it as such.
         assert "v2 scheme" in verify.stdout.lower()
+
+        # The pure-Python identity facts must agree with the real signer: a
+        # fresh session over the signed APK sees the v2 Signing Block apksigner
+        # just wrote, which the v1 META-INF check alone would have missed.
+        resigned = service.create_session(str(out_apk))
+        assert resigned.ok, resigned.error
+        signed_meta = resigned.data["session"]["metadata"]["apk"]
+        assert signed_meta["signed_v2"] is True
     finally:
         service.close_all()
