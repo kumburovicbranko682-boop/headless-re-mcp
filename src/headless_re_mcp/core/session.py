@@ -406,6 +406,35 @@ def _is_android_package(path: Path) -> bool:
         return False
 
 
+def _no_manifest_reason(path: Path, names: list[str]) -> str:
+    """Explain a missing root manifest, naming bundle/container formats.
+
+    classify_target admits ``.aab``, ``.apks`` and ``.xapk`` as APK targets by
+    suffix, but none carries a binary ``AndroidManifest.xml`` at the archive
+    root: an app bundle keeps a protobuf manifest under ``base/manifest/`` and a
+    split container is a zip of APKs with no manifest of its own. A bare "no
+    AndroidManifest.xml" hides that the fix is to open a single base APK, so name
+    the format and say so; a plain non-APK zip keeps the original wording.
+    """
+
+    lowered = [name.lower() for name in names]
+    is_bundle = "bundleconfig.pb" in lowered or any(
+        name.endswith("base/manifest/androidmanifest.xml") for name in lowered
+    )
+    holds_apks = any(name.endswith(".apk") for name in lowered)
+    if is_bundle:
+        return (
+            f"{path} is an Android App Bundle (.aab), not a single APK; "
+            "generate a device APK from it (e.g. with bundletool) and open that"
+        )
+    if holds_apks:
+        return (
+            f"{path} is a split-APK container (.xapk/.apks), not a single APK; "
+            "extract and open the base APK inside it"
+        )
+    return f"archive has no {_APK_MANIFEST}: {path}"
+
+
 def describe_apk(path: Path) -> dict[str, Any]:
     """Read cheap identity facts from the package without a decompiler.
 
@@ -420,7 +449,7 @@ def describe_apk(path: Path) -> dict[str, Any]:
     except (OSError, zipfile.BadZipFile) as exc:
         raise ValueError(f"not a readable Android package: {path}") from exc
     if _APK_MANIFEST not in names:
-        raise ValueError(f"archive has no {_APK_MANIFEST}: {path}")
+        raise ValueError(_no_manifest_reason(path, names))
     abis = sorted(
         {
             parts[1]

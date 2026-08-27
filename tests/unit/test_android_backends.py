@@ -323,8 +323,39 @@ class TestApkClassification:
         plain = tmp_path / "archive.zip"
         with zipfile.ZipFile(plain, "w") as archive:
             archive.writestr("readme.txt", "hello")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="AndroidManifest.xml"):
             describe_apk(plain)
+
+    def test_describe_apk_names_an_app_bundle_instead_of_a_bare_manifest_error(
+        self, tmp_path: Path
+    ) -> None:
+        """An .aab reaches describe_apk (classify_target keys on the suffix) but has
+        no root binary manifest, only a protobuf one under base/manifest/. The old
+        "archive has no AndroidManifest.xml" hid that the fix is to build a device
+        APK, so the message must name the bundle and point at that fix.
+        """
+        bundle = tmp_path / "app.aab"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("BundleConfig.pb", b"\x08\x01")
+            archive.writestr("base/manifest/AndroidManifest.xml", b"\x0a\x00")
+            archive.writestr("base/dex/classes.dex", b"dex\n035\x00")
+        with pytest.raises(ValueError, match="App Bundle"):
+            describe_apk(bundle)
+
+    def test_describe_apk_names_a_split_container_instead_of_a_bare_manifest_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A split-APK container (.xapk/.apks) is a zip of APKs with no manifest of
+        its own, so it also lands here; the caller needs to be told it holds several
+        APKs and to open the base one, not that a manifest is merely absent.
+        """
+        container = tmp_path / "app.xapk"
+        with zipfile.ZipFile(container, "w") as archive:
+            archive.writestr("manifest.json", b"{}")
+            archive.writestr("base.apk", b"PK\x03\x04")
+            archive.writestr("config.arm64_v8a.apk", b"PK\x03\x04")
+        with pytest.raises(ValueError, match="split-APK container"):
+            describe_apk(container)
 
 
 class TestApktoolBoundaries:
