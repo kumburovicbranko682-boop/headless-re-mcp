@@ -40,6 +40,14 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Header maps carry the RE-relevant metadata (auth, cookies, content type, CORS),
+# but a set can be large (long cookies/tokens), so both the count and each value
+# are bounded before entering the per-request ring.
+_MAX_HEADERS = 100
+_MAX_HEADER_VALUE_BYTES = 4 * 1024
+# Kept in the per-request entry but stripped from network.list rows so a page of
+# the list stays cheap; network.get returns them in full.
+_HEADER_KEYS = ("request_headers", "response_headers")
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -61,6 +69,30 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _bounded_headers(raw: object) -> tuple[dict[str, str], bool]:
+    """Bound a CDP header map for storage in the capture ring.
+
+    A header set can be large (long cookies, bearer tokens), so cap the number
+    of headers and the length of each name/value; one response must not be able
+    to balloon a request's footprint. Returns the bounded map and whether
+    anything was dropped or clipped.
+    """
+    if not isinstance(raw, dict):
+        return {}, False
+    out: dict[str, str] = {}
+    truncated = False
+    for name, value in raw.items():
+        if len(out) >= _MAX_HEADERS:
+            truncated = True
+            break
+        key, key_cut = _bounded_metadata(name, _MAX_METADATA_BYTES)
+        val, val_cut = _bounded_metadata(value, _MAX_HEADER_VALUE_BYTES)
+        out[key] = val
+        if key_cut or val_cut:
+            truncated = True
+    return out, truncated
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -440,7 +472,10 @@ class WebBackend:
             # that one exists so the fetch is not attempted on plain GETs.
             if req.get("hasPostData") or req.get("postData") is not None:
                 entry["has_request_body"] = True
-            if url_truncated or method_truncated or type_truncated:
+            headers, headers_truncated = _bounded_headers(req.get("headers"))
+            if headers:
+                entry["request_headers"] = headers
+            if url_truncated or method_truncated or type_truncated or headers_truncated:
                 entry["metadata_truncated"] = True
             with handle.lock:
                 handle.requests[str(params.get("requestId"))] = entry
@@ -453,12 +488,15 @@ class WebBackend:
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            headers, headers_truncated = _bounded_headers(resp.get("headers"))
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
                     entry["status"] = resp.get("status")
                     entry["mimeType"] = mime_type
-                    if mime_truncated:
+                    if headers:
+                        entry["response_headers"] = headers
+                    if mime_truncated or headers_truncated:
                         entry["metadata_truncated"] = True
 
         def on_loading_failed(params: JsonObject) -> None:
@@ -605,12 +643,15 @@ class WebBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
+        # Headers live on the entry for network.get, but a list page must stay
+        # cheap, so hand back copies without them.
+        slim = [{k: v for k, v in row.items() if k not in _HEADER_KEYS} for row in window]
         return {
-            "requests": window,
-            "count": len(window),
+            "requests": slim,
+            "count": len(slim),
             "total": len(items),
             "offset": start,
-            "has_more": start + len(window) < len(items),
+            "has_more": start + len(slim) < len(items),
             "dropped": dropped,
         }
 

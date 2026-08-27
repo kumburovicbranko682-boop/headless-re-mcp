@@ -50,14 +50,19 @@ def _local_site() -> Iterator[str]:
             pass
 
         def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            marker = False
             if self.path.startswith("/app.js"):
                 body, ctype = _LOCAL_APP_JS, "application/javascript"
             elif self.path.startswith("/data.json"):
                 body, ctype = _LOCAL_DATA_JSON, "application/json"
+                marker = True
             else:
                 body, ctype = _LOCAL_PAGE, "text/html"
             self.send_response(200)
             self.send_header("Content-Type", ctype)
+            # A distinctive response header the header-capture assertion can find.
+            if marker:
+                self.send_header("X-Gate-Marker", "webre-gate-header")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -270,6 +275,15 @@ def test_web_cdp_captures_network_and_script_source() -> None:
             body = service.web_network_get(session_id, request["requestId"])
             assert body.ok, body.error
             assert body.data["body"] == _LOCAL_DATA_JSON.decode("utf-8")
+            # Response headers carry the RE-relevant metadata (content type, the
+            # custom marker we set); they must come back on network.get, and the
+            # list must not carry them.
+            resp_headers = {
+                str(k).lower(): str(v) for k, v in body.data.get("response_headers", {}).items()
+            }
+            assert resp_headers.get("x-gate-marker") == "webre-gate-header"
+            assert "json" in resp_headers.get("content-type", "")
+            assert "response_headers" not in request, "the list row must omit headers"
 
             # The POST payload the page sent is what an API reverser is after;
             # assert network_get hands back the request body, not just responses.
@@ -287,6 +301,12 @@ def test_web_cdp_captures_network_and_script_source() -> None:
             assert posted.ok, posted.error
             assert posted.data["method"] == "POST"
             assert posted.data.get("request_body") == _LOCAL_POST_BODY
+            # The request the page sent declared a JSON content type; that
+            # request header must be captured too.
+            req_headers = {
+                str(k).lower(): str(v) for k, v in posted.data.get("request_headers", {}).items()
+            }
+            assert "json" in req_headers.get("content-type", "")
         finally:
             service.close_all()
 

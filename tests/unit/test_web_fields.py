@@ -9,6 +9,7 @@ from threading import Lock
 from typing import Any
 
 from headless_re_mcp.backends.web.client import (
+    _MAX_HEADER_VALUE_BYTES,
     _MAX_METADATA_BYTES,
     _MAX_URL_BYTES,
     WebBackend,
@@ -225,6 +226,73 @@ def test_web_loading_failed_marks_the_request_instead_of_leaving_it_pending() ->
     doc = _tool_docstring("web.network.list")
     assert "failed" in doc
     assert "error_text" in doc
+
+
+def test_web_captures_bounded_request_and_response_headers() -> None:
+    """Headers (auth, cookies, content type) must be captured and bounded.
+
+    Wire the events, fire a request/response the way Chromium does (headers on
+    request.headers and response.headers), and assert the entry carries
+    request_headers and response_headers, that an oversized value is clipped and
+    flags metadata_truncated, and that network.list omits headers while the
+    stored entry keeps them for network.get.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    huge = "z" * (_MAX_HEADER_VALUE_BYTES + 500)
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r1",
+            "request": {
+                "url": "https://api/x",
+                "method": "POST",
+                "headers": {"Authorization": "Bearer secret", "X-Big": huge},
+            },
+            "type": "XHR",
+        }
+    )
+    cdp.handlers["Network.responseReceived"](
+        {
+            "requestId": "r1",
+            "response": {
+                "status": 200,
+                "mimeType": "application/json",
+                "headers": {"Content-Type": "application/json", "Set-Cookie": "sid=abc"},
+            },
+        }
+    )
+
+    entry = handle.requests["r1"]
+    assert entry["request_headers"]["Authorization"] == "Bearer secret"
+    assert len(entry["request_headers"]["X-Big"].encode()) <= _MAX_HEADER_VALUE_BYTES
+    assert entry["metadata_truncated"] is True
+    assert entry["response_headers"]["Content-Type"] == "application/json"
+    assert entry["response_headers"]["Set-Cookie"] == "sid=abc"
+
+    backend = WebBackend()
+    backend._get = lambda session_id: handle  # type: ignore[assignment]
+    row = backend.network_list("s")["requests"][0]
+    assert "request_headers" not in row
+    assert "response_headers" not in row
+    # The list row is a copy: stripping it must not strip the stored entry.
+    assert "response_headers" in handle.requests["r1"]
+    doc = _tool_docstring("web.network.get")
+    assert "request_headers" in doc
+    assert "response_headers" in doc
 
 
 def test_web_uncaught_exception_lands_in_the_console_ring() -> None:

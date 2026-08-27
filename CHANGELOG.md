@@ -259,6 +259,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   该请求记录，两个字段自动露出。活体门驱动一个 fetch 打向被内核直接拒连的回环端口的页面，断言该请求回来时标了
   `failed`、带非空 `error_text`、且没有假的 `status`（缺浏览器时 skip≠pass）；另加不依赖浏览器的单测直接驱动
   `loadingFailed` 钩子，覆盖标记、原因保留与对未知/已淘汰请求 id 的忽略。
+- **`web.network.*` 从不返回请求/响应头，比同仓的抓包线缺一大块**。网络捕获只记 url/method/status/mimeType 与
+  正文，可对 HTTP/接口逆向而言，头部才装着最关键的元数据——`Authorization`/`Cookie`/`Set-Cookie`、`Content-Type`、
+  CORS 那一组；抓包线的 `proxy.flow.get` 早就回完整头部，Web 线却完全没有，只能靠正文猜。现在 `on_request` /
+  `on_response` 分别把 `request.headers` / `response.headers` 收进按请求归档的条目，`web.network.get` 回
+  `request_headers` 与 `response_headers`（有界 map）；头集大（长 cookie/token）时按头数与单值长度设上限、超限标
+  `metadata_truncated`。`web.network.list` 刻意不带头部（每页保持轻量、返回去掉头部的副本，剥离动作不影响留存条目），
+  要头部走 `network.get`。活体门在本地服务器上给 `/data.json` 加一个独特响应头、并让页面 POST 带 JSON 内容类型，
+  断言 `network.get` 如实回响应头（含该标记与 content-type）与请求头、而列表行不含头部（缺浏览器时 skip≠pass）；
+  单测直接驱动事件，覆盖有界化、超限截断标记、list 剥离与 get 保留。
 - **HTTPS 抓包对自签/私有 CA/固定证书的上游无法解密，且失败时静默**。MITM 代理的核心价值就是解密 TLS，
   但 `proxy.start` 不暴露任何上游 TLS 选项，mitmproxy 默认要校验上游证书——而本工具面向的 App、
   移动端与自建/测试服务器几乎清一色用自签或私有 CA 证书。实测这类上游会被判 502、且**整条 flow 都不记录**
