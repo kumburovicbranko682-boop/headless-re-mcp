@@ -24,6 +24,40 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（APK 签名诚实性：v2/v3-only 的现代包不再被读成「未签名」）
+
+- **`describe_apk`（建会话时对 APK 的 stdlib 身份读取）过去只报 `signed_v1`**——它查
+  `META-INF/*.RSA/.DSA/.EC` 这类 v1（JAR）签名文件。可面向 API 30+、`v1SigningEnabled false`
+  构建的现代包**根本没有任何 META-INF 签名文件**，签名整段落在 ZIP 中央目录之前的
+  「APK Signing Block」里。于是这种包**明明签了**却 `signed_v1=False`，被判断「是否被篡改／自签」的
+  调用方读成未签名，恰好读反。现新增一个**纯 stdlib**、绝不抛异常的最佳努力解析器
+  `_apk_signing_schemes`：定位 EOCD→中央目录偏移→其前的 24 字节尾块（8 字节 size + 16 字节魔数
+  `APK Sig Block 42`），校验前后两个 size 相等后，逐条走 id-value 对，命中 v2（`0x7109871a`）/
+  v3（`0xf05368c0`，含 v3.1 轮换 `0x1b93ad61`）即置位；截断／填充／敌意块一律读成「未检出」而非开包
+  失败，ZIP64 直接跳过。`describe_apk` 因此新增 `signed_v2`/`signed_v3` 两个字段。真机用 Android
+  build-tools 的 apksigner 0.9 逐一核对：unsigned/v1-only/v2-only/v3-only/v2+v3 五种包分类全对——
+  其中 v2-only（无 META-INF 签名）以前会被读成未签名，现正确报 `signed_v2=True`。
+- **`apk.certificates`（androguard 支撑的富签名报告）同样只报 `v1_signed`**——现补上
+  `v2_signed`/`v3_signed`：经 `apk.is_signed_v2()/is_signed_v3()`（旧版 androguard 无此方法或解析
+  抛错时报 `null`「未知」，而非误报的确定 False）。工具文档相应指明这两个字段覆盖 APK Signing Block
+  的方案、且在 androguard 报不出时为 null。真机用同一批 apksigner 产物核对：v2-only 报
+  `v1_signed=False, v2_signed=True, v3_signed=False`、v3-only 报 v3 True/v2 False。
+
+### 测试（新增 APK 签名方案 live gate：真签 → 真分类；并进 CI 真跑；skip != pass）
+
+- **v2/v3 检测此前只有「手工拼装签名块」的单测，从没有任何测试证明这套 id/布局与真实签名器写出的
+  一致**。新增 `tests/integration/test_apk_signing_schemes_gate.py`：用 keytool 现场造库、用**真实**
+  apksigner 把同一枚基座 APK 分四种方案（v1-only/v2-only/v3-only/v2+v3）签出，断言 `describe_apk`
+  与（androguard 在场时）`ApkClient.certificates()` 对每一种的分类都精确对上——重点钉死 v2-only
+  这枚「无 META-INF 签名」的现代包不再被读成未签名；未签名基座则三项全 False，杜绝误报。apksigner
+  只签 zip、给了 `--min-sdk-version` 后连真 AXML manifest 都不需要，故 gate 只依赖 apksigner+keytool
+  （JRE/SDK 工具），无需设备/模拟器/pyaxml。本机用 build-tools r34 的 apksigner 0.9 + Temurin 21
+  实跑通过（3 passed），缺 apksigner/keytool 时带明确原因干净跳过（2 skipped）。既有
+  `test_android_re_gate.py` 也补断言：其 v1-only 合成包的 `signed_v2/signed_v3` 必须为 False。
+- 新增 CI 作业 `linux-apk-signing`（Ubuntu，3.11/3.12，装 Temurin 21 + 下载 build-tools r34 的
+  apksigner + 装 `.[android]` 让 certificates 半场也真跑）真跑这条 gate——skip != pass：
+  `HEADLESS_RE_APKSIGNER`/PATH 上有 apksigner 就真跑，缺了才显式跳过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

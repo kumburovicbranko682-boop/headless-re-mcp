@@ -199,3 +199,54 @@ jobs:
             throw "committed SPA is stale - run 'npm run build' in webui and commit src/headless_re_mcp/web/spa"
           }
           Write-Host "committed SPA matches webui/src"
+
+  linux-apk-signing:
+    # apksigner + keytool are JRE/SDK tools with no emulator or device
+    # requirement, so the APK signature-scheme gate runs on a hosted runner.
+    # describe_apk parses the APK Signing Block with a stdlib-only parser; every
+    # unit test hand-assembles that block, so without this job nothing proves
+    # the ids/layout match what a real signer writes -- in particular that a
+    # modern v2/v3-only APK (no META-INF signature) is not read as unsigned.
+    # This job signs one base APK four ways with the real apksigner and asserts
+    # both describe_apk and the androguard-backed certificates() classify each.
+    # skip != pass: with apksigner configured the gate runs for real and only
+    # skips if apksigner/keytool are absent.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install package with the Android extra
+        run: |
+          python -m pip install -U pip
+          # androguard drives the certificates() half of the gate; without it
+          # that test skips (importorskip) while the stdlib describe_apk half
+          # still runs for real.
+          python -m pip install -e ".[test,dev,android]"
+
+      - name: Install apksigner (Android build-tools)
+        run: |
+          BUILD_TOOLS=build-tools_r34-linux
+          curl -fsSL -o /tmp/bt.zip \
+            "https://dl.google.com/android/repository/${BUILD_TOOLS}.zip"
+          unzip -oq /tmp/bt.zip -d "$HOME/android-build-tools"
+          APKSIGNER="$HOME/android-build-tools/android-14/apksigner"
+          "$APKSIGNER" --version
+          echo "HEADLESS_RE_APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
+
+      - name: APK signature-scheme gate
+        timeout-minutes: 10
+        run: python -m pytest tests/integration/test_apk_signing_schemes_gate.py -q -rs --tb=short --timeout=300
