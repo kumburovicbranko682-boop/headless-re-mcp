@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -596,6 +596,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同时作用于 MCP 客户端与监控台 Agent 的工具面（后者按 run 读取，改了不必重建 orchestrator）。
 - 监控台增加开屏页，让用户在「本地 PE / Web / Android / 全部」之间选择方向，选择经
   `GET`/`POST /api/workspace/mode` 持久化到用户配置；也可用 `workspace.mode.get/set` 工具。
+
+### 新增（本地二进制静态分析）
+
+- `r2.entrypoints`（只读）用 radare2 的 `iej` 列出二进制的入口点：程序主入口（`type=program`），
+  以及 r2 识别出的 init/fini 构造/析构入口。对 Android 原生 `.so` 尤其有价值——`init_array`
+  构造函数在 `dlopen` 时即运行，是反分析/自解密逻辑常见的落脚点，而这些代码往往不对应任何导出
+  函数，光看 `r2.exports` 看不到。每条 item 带 `type`、`vaddr` 与统一的 `address`（va/rva/module），
+  外加 `count`；没有裸整数 address 字段。列表填满上限（4096）时给 `items_truncated` /
+  `items_total` / `items_limit`。没有 `entrypoints` / `entries` / `truncated` / `has_more` 字段。
+  没有入口点的纯数据对象作答为空 `items` 列表，而非报错。`iej` 已加入 r2 命令白名单。
 
 ### 依赖
 

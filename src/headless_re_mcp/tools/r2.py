@@ -100,6 +100,25 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.entrypoints")
+    def r2_entrypoints(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Entry points radare2 identified (iej) -- where execution can begin.
+
+        Runs ``iej``. Answers with items, each carrying type (the entry kind:
+        program for the main entry, and init/fini for the constructors and
+        destructors r2 lists when the binary has them), vaddr and address
+        (va/rva/module), plus count. For a native .so the init/fini entries
+        matter: init_array constructors run at dlopen, a common home for
+        anti-analysis and unpacking code that no exported function shows. There
+        is no integer address field. Read items_truncated, items_total and
+        items_limit when the list filled the cap (4096). There is no
+        entrypoints, entries, truncated or has_more field. A binary with no
+        entry point (a plain data object) is an empty items list, not an error.
+        """
+        return _dump(analysis.r2_entrypoints(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,
