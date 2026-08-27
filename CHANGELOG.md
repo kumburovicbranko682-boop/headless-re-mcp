@@ -24,6 +24,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（radare2 服务面 Gate 在 Linux 真跑）
+
+- radare2 那条线此前唯一的集成 Gate（`test_m11_r2_live_gate.py`）直接打 `R2Client`、跑单条 `aflj`，
+  且指向 `artifacts/fixtures-x64/` 下 Windows 构建的 PE——该夹具在 Linux 检出里不存在，于是整条 Gate
+  在 Linux 上直接跳过。也就是说 `r2.*` 的**服务面**（`r2.open`/`info`/`functions`/`strings`/`imports`/
+  `exports`/`disasm`/`xrefs`，连同 `service_ext.py` 里的会话状态守卫、后端记账、时间线与地址映射）在
+  Linux 上没有任何真正执行的覆盖。radare2 跨平台就能分析 PE，故新增
+  `tests/integration/test_r2_inspection_gate.py`：把整条服务面穿过 `AnalysisService` 指向提交进仓的
+  PE 夹具 `fixtures/upx/console_fixture-x64.pre-upx.exe`，断言函数/反汇编/请求地址都解析成
+  module+rva+va（由 PE 的 image base 推出）、字符串与具名 Windows 导入成表、`r2.open` 与 `r2.request`
+  进时间线；越界地址与条数被拦为 `invalid_params`、关闭会话后被拦为 `invalid_request`。另新增一个原生
+  Linux ELF 夹具 `fixtures/native/r2_elf_fixture`（附可复现的 `.c` 源，含 main/compute_checksum 两个具名
+  函数、.rodata 标记串与 printf 导入），经 `R2Client` 覆盖 va-only 地址映射分支（无 image base 时
+  `enrich_r2_payload` 不硬凑 rva/module）与本机 ELF 分析。radare2/rizin 缺失时全部如实跳过
+  （skip 不等于 pass），本轮在 radare2 6.2.0 的 Linux 上 5 个用例全部通过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

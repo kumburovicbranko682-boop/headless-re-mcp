@@ -390,11 +390,18 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 83 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+  radare2 服务面在 Linux 上真跑（r2.open/info/functions/strings/imports/exports/disasm/xrefs 全链路）、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
+- radare2 那条线本轮补了 Linux 真跑证据：装上 radare2 6.2.0 后，`r2.*` 整条服务面穿过
+  `AnalysisService` 对提交进仓的 PE 夹具（`fixtures/upx/console_fixture-x64.pre-upx.exe`）给出真实解析——
+  函数带 module+rva+va 地址、113 条字符串、59 个具名 Windows 导入、反汇编逐条带映射地址；越界地址/条数
+  被拦为 `invalid_params`、关闭会话后被拦为 `invalid_request`；另有一个提交进仓的原生 Linux ELF
+  （`fixtures/native/r2_elf_fixture`，附 `.c` 源）经 `R2Client` 验证 va-only 地址映射（无 image base
+  时不硬凑 rva/module）与本机 ELF 分析——5 个用例本机全绿
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
   结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
   校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。
