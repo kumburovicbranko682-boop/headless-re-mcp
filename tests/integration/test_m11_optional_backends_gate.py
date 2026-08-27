@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,12 @@ import pytest
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.capabilities_catalog import list_capabilities
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.doctor import DoctorReport, Probe, ProbeStatus
+from headless_re_mcp.doctor import (
+    DoctorReport,
+    Probe,
+    ProbeStatus,
+    required_probe_names,
+)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -66,9 +72,14 @@ def test_m11_capabilities_and_missing_backends() -> None:
         assert tools.issubset(set(by_id[cap_id]["tools"])), cap_id
         assert by_id[cap_id].get("optional") is True
 
+    # The fail-closed contract for the optional backends is portable, so prefer
+    # the Windows-built gate fixture but fall back to a committed PE. That lets
+    # Linux exercise the "no debuggee -> fail closed" path instead of skipping.
     fixture = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "headless_fixture.exe"
     if not fixture.is_file():
-        pytest.skip("fixture missing")
+        fixture = _PROJECT_ROOT / "fixtures" / "upx" / "console_fixture-x64.pre-upx.exe"
+    if not fixture.is_file():
+        pytest.skip("no PE fixture available — missing-backends Gate not run (skip != pass)")
     created = service.create_session(str(fixture))
     assert created.ok and created.data is not None
     session_id = str(created.data["session"]["id"])
@@ -119,12 +130,17 @@ def test_m11_capabilities_and_missing_backends() -> None:
                     "backend_error",
                 }
 
-        # Kernel dump analysis is fail-closed without explicit config.
+        # WinDbg (cdb) is a Windows-only backend, so off Windows every call
+        # fails closed with unsupported_on_platform before its own policy runs.
+        # On Windows the kernel-dump denial is a policy decision.
         kernel_denied = service.windbg_open_dump(
             str(fixture), commands=["lm"], timeout=5.0, kernel=True
         )
         assert not kernel_denied.ok and kernel_denied.error is not None
-        assert kernel_denied.error.code == "permission_denied"
+        if os.name == "nt":
+            assert kernel_denied.error.code == "permission_denied"
+        else:
+            assert kernel_denied.error.code == "unsupported_on_platform"
 
         for call in (
             lambda: service.windbg_attach(session_id, timeout=5.0),
@@ -138,6 +154,7 @@ def test_m11_capabilities_and_missing_backends() -> None:
                 "invalid_state",
                 "capability_unavailable",
                 "backend_unavailable",
+                "unsupported_on_platform",
                 "timeout",
                 "backend_error",
             }
@@ -153,6 +170,7 @@ def test_m11_capabilities_and_missing_backends() -> None:
                 assert result.error is not None
                 assert result.error.code in {
                     "capability_unavailable",
+                    "unsupported_on_platform",
                     "timeout",
                     "backend_error",
                     "not_found",
@@ -164,13 +182,15 @@ def test_m11_capabilities_and_missing_backends() -> None:
 
 @pytest.mark.integration
 def test_m11_doctor_optional_backends_do_not_block_core_ready() -> None:
-    """Optional radare2/ghidra/frida/windbg missing must not flip Doctor.ready."""
-    required = {
-        "platform",
-        "python",
-        "ida_idalib",
-        "x64dbg_headless_binaries",
-    }
+    """Optional radare2/ghidra/frida/windbg missing must not flip Doctor.ready.
+
+    The required set is platform-specific -- Windows needs IDA and the x64dbg
+    binaries, Linux needs only platform/python -- so the scenario is built from
+    ``required_probe_names()`` rather than a hardcoded Windows list. That keeps
+    the contract meaningful on both: optional backends never block readiness,
+    but a genuinely required probe still does.
+    """
+    required = required_probe_names()
     core = tuple(
         Probe(name, ProbeStatus.READY, f"{name} ready") for name in sorted(required)
     )
@@ -181,18 +201,19 @@ def test_m11_doctor_optional_backends_do_not_block_core_ready() -> None:
         Probe("java", ProbeStatus.MISSING, "missing"),
         Probe("windbg", ProbeStatus.MISSING, "missing"),
     )
-    report = DoctorReport(probes=core + optional_missing)
+    report = DoctorReport(probes=core + optional_missing, required_probes=required)
     assert report.ready is True
 
-    blocked_core = DoctorReport(
-        probes=(
-            Probe("platform", ProbeStatus.READY, "ok"),
-            Probe("python", ProbeStatus.READY, "ok"),
-            Probe("ida_idalib", ProbeStatus.READY, "ok"),
-            Probe("x64dbg_source", ProbeStatus.READY, "ok"),
-            Probe("x64dbg_headless_binaries", ProbeStatus.MISSING, "missing"),
-            Probe("native_toolchain", ProbeStatus.READY, "ok"),
-            *optional_missing,
+    # Knock out one genuinely required probe: readiness must fail regardless of
+    # how many optional backends are present.
+    blocking_name = sorted(required)[0]
+    blocked = tuple(
+        Probe(
+            name,
+            ProbeStatus.MISSING if name == blocking_name else ProbeStatus.READY,
+            "probe",
         )
+        for name in sorted(required)
     )
+    blocked_core = DoctorReport(probes=blocked + optional_missing, required_probes=required)
     assert blocked_core.ready is False
