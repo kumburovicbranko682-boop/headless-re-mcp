@@ -92,7 +92,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         that filled the limit is not read as the whole collected list.
         total is the number collected, capped at 10000; scan_capped is true
         when the real class count may be higher. has_more only means a
-        larger offset still has collected rows.
+        larger offset still has collected rows -- and count may be below the
+        requested limit when the result-size budget trimmed the page, so read
+        count, not limit, and page on has_more.
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
@@ -109,7 +111,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         total, offset, and has_more so a page that filled the limit is not
         read as the whole collected class. total is the number collected,
         capped at 2000; scan_capped is true when more methods may exist.
-        has_more only means a larger offset still has collected rows.
+        has_more only means a larger offset still has collected rows -- and
+        count may be below the requested limit when the result-size budget
+        trimmed the page, so read count, not limit, and page on has_more.
         """
         return _dump(
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
@@ -127,7 +131,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         that filled the limit is not read as the whole collected DEX. total
         is the number collected, capped at 5000; scan_capped is true when
         more unique strings may exist. has_more only means a larger offset
-        still has collected rows. There is no items or constants field.
+        still has collected rows -- and count may be below the requested limit
+        when the result-size budget trimmed the page (each string can be 2000
+        chars), so read count, not limit, and page on has_more. There is no
+        items or constants field.
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
@@ -141,6 +148,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with callers (class and method), method_name, count, and
         has_more so a page that filled the limit is not read as the whole list.
+        has_more is also set when the result-size budget trimmed the list; there
+        is no offset here, so a trimmed list simply omits the rest.
         """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 

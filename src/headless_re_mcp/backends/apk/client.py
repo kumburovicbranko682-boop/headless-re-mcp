@@ -14,11 +14,17 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
 
+from headless_re_mcp.backends.common.json_budget import fit_json_list
+
 JsonObject = dict[str, Any]
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
 _CACHE_LIMIT = 4
+# Headroom for a list result's small scalar siblings (count/total/offset/
+# has_more/scan_capped and a class or method name) so the whole encoded reply
+# stays under the budget; the paged list itself gets the rest.
+_LIST_FIELD_RESERVE = 16 * 1024
 _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
@@ -391,6 +397,12 @@ class ApkClient:
             names.append(klass.name)
         names.sort()
         window = names[offset : offset + limit]
+        # Bound the page by its JSON-encoded size, not just the row count: a
+        # class-name list of 1000 deeply-nested/obfuscated names can encode past
+        # the result budget and be discarded whole for a ~16 KiB summary.
+        # Trimming before has_more is computed keeps it honest -- a budget-cut
+        # page still reports more to fetch, so the caller can page past it.
+        window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
         return {
             "classes": window,
             "count": len(window),
@@ -436,6 +448,9 @@ class ApkClient:
             if scan_more:
                 break
         window = methods[offset : offset + limit]
+        # Bound the page by encoded size too: 1000 {name, descriptor, access}
+        # rows with long signatures can outgrow the budget. See classes().
+        window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
         return {
             "class_name": found[0].name,
             "methods": window,
@@ -457,6 +472,11 @@ class ApkClient:
             seen.add(str(item.get_value())[:_MAX_STRING_LEN])
         values = sorted(seen)
         window = values[offset : offset + limit]
+        # Bound the page by encoded size too, and this one bites the soonest:
+        # each string is capped at 2000 chars, so a default 200-row page can be
+        # ~400 KB -- well past the budget -- before the row count ever caps. See
+        # classes().
+        window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
         return {
             "strings": window,
             "count": len(window),
@@ -491,13 +511,17 @@ class ApkClient:
                 )
             if has_more:
                 break
+        # Bound the list by encoded size too: xrefs has no offset to page with,
+        # so a budget cut just means some callers are omitted -- fold it into
+        # has_more so a caller does not read a trimmed list as the whole set.
+        callers, _dropped, budget_cut = fit_json_list(callers, reserve=_LIST_FIELD_RESERVE)
         return {
             "method_name": target,
             "callers": callers,
             "count": len(callers),
             # A caller deciding "these are all the callers" has to know whether
             # the enumeration ended or merely stopped.
-            "has_more": has_more,
+            "has_more": has_more or budget_cut,
         }
 
 

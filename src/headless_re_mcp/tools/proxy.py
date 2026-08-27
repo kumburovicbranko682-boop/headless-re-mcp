@@ -63,8 +63,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         row whose request/response body was over the retain cap. The list
         field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;
-        a page that filled the limit is not the whole log. metadata_truncated
-        marks bounded oversized summary fields.
+        a page that filled the limit is not the whole log. count may be below
+        the requested limit when the result-size budget trimmed the page (each
+        url can be 16 KiB), so read count, not limit, and page on has_more.
+        metadata_truncated marks bounded oversized summary fields.
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 

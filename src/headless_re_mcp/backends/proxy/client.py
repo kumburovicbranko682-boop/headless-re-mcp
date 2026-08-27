@@ -22,8 +22,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.json_budget import fit_json_list
+
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
+# Headroom for the flows result's scalar siblings (count/total/offset/has_more/
+# dropped) so the whole encoded reply stays under the budget; the flow window
+# itself gets the rest.
+_LIST_FIELD_RESERVE = 16 * 1024
 _REPLAY_WAIT_S = 15.0
 # The ring is count-capped, but each slot can still hold a multi-megabyte
 # request or response. Two thousand of those is the overnight OOM the count
@@ -550,6 +556,12 @@ class ProxyBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
+        # Bound the page by its JSON-encoded size, not just the row count: each
+        # summary carries a url of up to 16 KiB, so a 1000-row window can run to
+        # megabytes and be discarded whole for a ~16 KiB summary. Trimming before
+        # has_more is computed keeps it honest -- a budget-cut page still reports
+        # more to fetch, so the caller can page past it.
+        window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
         dropped = 0
         if items:
             dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
