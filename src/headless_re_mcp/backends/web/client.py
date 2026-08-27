@@ -65,15 +65,21 @@ def _bound_nav_timeout(timeout: float) -> float:
     The tool schema declares ``0 < timeout <= 120``, but the agent transport
     invokes handlers straight from model arguments with no schema enforcement
     (``CommandCatalog.invoke`` -> ``spec.handler(**arguments)``), the same gap
-    frida guards with ``_bound_timeout``. A non-positive value would reach
+    frida guards with ``_bound_timeout``.     A non-positive value would reach
     ``Future.result(timeout<=0)``, which returns immediately and flips the
     runner to ``_wedged`` -- bricking a healthy session until ``web.close`` --
     while a huge one would park the session thread and a pool worker for as long
     as the page took. Reject the first and cap the second before any work is
     queued, so a stray timeout can never wedge a live browser.
+
+    NaN needs its own guard: ``nan <= 0`` is False and ``min(nan, 120)`` returns
+    nan, so a NaN slips past the non-positive check and ``Future.result(nan)``
+    returns immediately just like ``<= 0`` -- wedging the very session this clamp
+    exists to protect. ``value != value`` is the finite-safe NaN test (the same
+    one ``clamp_cli_timeout`` uses); inf still passes it and is capped by ``min``.
     """
     value = float(timeout)
-    if value <= 0:
+    if value != value or value <= 0:
         raise WebError("invalid_params", "timeout must be positive")
     return min(value, _MAX_NAV_TIMEOUT_S)
 

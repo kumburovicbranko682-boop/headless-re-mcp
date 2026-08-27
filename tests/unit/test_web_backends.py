@@ -284,10 +284,44 @@ class TestWebNavTimeoutIsBounded:
     def test_bound_nav_timeout_rejects_nonpositive_and_caps_the_rest(self) -> None:
         assert _bound_nav_timeout(30.0) == 30.0
         assert _bound_nav_timeout(10**9) == _MAX_NAV_TIMEOUT_S
+        # inf is finite-unsafe but still greater than the ceiling, so it caps
+        # rather than raising -- the "park the thread" case the clamp bounds.
+        assert _bound_nav_timeout(float("inf")) == _MAX_NAV_TIMEOUT_S
         for bad in (0.0, -1.0, -100.0):
             with pytest.raises(WebError) as info:
                 _bound_nav_timeout(bad)
             assert info.value.code == "invalid_params"
+
+    def test_bound_nav_timeout_rejects_nan(self) -> None:
+        # nan <= 0 is False and min(nan, 120) is nan, so a NaN used to sail
+        # through and reach Future.result(nan), which returns at once and wedges
+        # the runner -- the same bricking the non-positive guard prevents.
+        with pytest.raises(WebError) as info:
+            _bound_nav_timeout(float("nan"))
+        assert info.value.code == "invalid_params"
+
+    def test_a_nan_navigate_timeout_does_not_wedge_a_live_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = WebBackend()
+        runner = _Runner("test-nav-nan-runner")
+        try:
+            page = _FakeNavPage()
+            handle = SimpleNamespace(page=page, runner=runner)
+            monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+
+            with pytest.raises(WebError) as info:
+                backend.navigate("s", "https://example/app", timeout=float("nan"))
+            assert info.value.code == "invalid_params"
+            # The doomed wait never reached the runner, so the session lives on.
+            assert runner.wedged is False
+            assert page.goto_timeouts == []
+
+            payload = backend.navigate("s", "https://example/app", timeout=30.0)
+            assert payload["url"] == "https://example/app"
+            assert runner.wedged is False
+        finally:
+            runner.shutdown()
 
     def test_a_negative_navigate_timeout_does_not_wedge_a_live_session(
         self, monkeypatch: pytest.MonkeyPatch
