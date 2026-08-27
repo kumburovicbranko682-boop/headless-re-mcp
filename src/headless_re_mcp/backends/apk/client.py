@@ -375,10 +375,15 @@ class ApkClient:
         offset: int = 0,
         limit: int = 100,
     ) -> JsonObject:
-        parsed = self._parsed(path)
+        # Validate the caller's class_name before the (cache-missing) full DEX
+        # analysis: an empty/whitespace class_name is a cheap local fact and
+        # should fail fast as invalid_params, not after AnalyzeAPK parses the
+        # whole APK, and not be masked by the capability_unavailable that _parsed
+        # raises when androguard is absent. Mirrors jadx.decompile's ordering.
         target = class_name.strip()
         if not target:
             raise ApkError("invalid_params", "class_name is required")
+        parsed = self._parsed(path)
         found = [
             klass
             for klass in parsed.analysis.get_classes()
@@ -436,10 +441,12 @@ class ApkClient:
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
-        parsed = self._parsed(path)
+        # Same fail-fast as methods(): an empty method_name is rejected before
+        # the expensive DEX analysis rather than after it.
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
+        parsed = self._parsed(path)
         _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
         callers: list[JsonObject] = []
         has_more = False

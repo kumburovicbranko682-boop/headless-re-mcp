@@ -110,6 +110,67 @@ def test_apk_xrefs_names_method_name_on_the_payload(
     assert "callers (class and method), method_name" in doc
 
 
+def test_apk_methods_and_xrefs_validate_the_name_before_the_dex_analysis(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An empty class_name / method_name must fail before the full DEX analysis.
+
+    methods() and xrefs() used to call _parsed() -- the expensive AnalyzeAPK that
+    parses the whole APK (tens to hundreds of MB, seconds, on a cache miss) --
+    and only then check that the caller passed a non-empty name. So an empty name
+    on a fresh APK paid for a complete analysis before being rejected, and on a
+    host without androguard was masked by _parsed's capability_unavailable rather
+    than surfacing the invalid_params it was. The name check now runs first,
+    exactly like jadx.decompile: proven by a _parsed spy that stays uncalled for
+    every empty name and fires once per well-formed call.
+    """
+    parsed_calls: list[Path] = []
+
+    class _BothParsed:
+        """A parse fake exposing both faces methods()/xrefs() reach: an empty
+        class list (so a well-formed class_name resolves to not_found) and one
+        method with no callers (so a well-formed method_name returns cleanly)."""
+
+        def __init__(self) -> None:
+            self.analysis = self
+
+        def get_classes(self) -> list[object]:
+            return []
+
+        def get_methods(self) -> list[_FakeMethod]:
+            return [_FakeMethod("onCreate", 0)]
+
+    def _spy(self: ApkClient, path: Path) -> _BothParsed:
+        parsed_calls.append(path)
+        return _BothParsed()
+
+    monkeypatch.setattr(ApkClient, "_parsed", _spy)
+    # Force availability off: the name check must win even here, proving it does
+    # not depend on the backend being present.
+    client = ApkClient()
+    client._available = False
+
+    for bad in ("", "   "):
+        with pytest.raises(ApkError) as methods_err:
+            client.methods(tmp_path / "app.apk", bad)
+        assert methods_err.value.code == "invalid_params"
+        with pytest.raises(ApkError) as xrefs_err:
+            client.xrefs(tmp_path / "app.apk", bad)
+        assert xrefs_err.value.code == "invalid_params"
+    assert parsed_calls == [], "an empty name reached the DEX analysis"
+
+    # A well-formed method_name proceeds to the parse (the spy stands in for it);
+    # a well-formed class_name likewise reaches it and then reports not_found
+    # because the fake tree holds no such class -- proof the reorder did not just
+    # short-circuit every call.
+    result = client.xrefs(tmp_path / "app.apk", "onCreate")
+    assert result["method_name"] == "onCreate"
+    with pytest.raises(ApkError) as absent:
+        client.methods(tmp_path / "app.apk", "com.example.Absent")
+    assert absent.value.code == "not_found"
+    assert len(parsed_calls) == 2, "a well-formed name must reach the parse each time"
+
+
 class _ManifestBody:
     def get_xml(self) -> bytes:
         return b"<manifest/>" * ((_MAX_MANIFEST_CHARS // 10) + 20)
