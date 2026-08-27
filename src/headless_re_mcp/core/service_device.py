@@ -26,11 +26,13 @@ from headless_re_mcp.core.results import _failure, _success
 
 JsonObject = dict[str, Any]
 
-# device.screenshot / device.pull write under artifact_root/device/ and never
-# register the file: those tools key by serial, and the artifact table needs a
-# session_id. Retention therefore never sees them. Measured: 80 screenshots of
-# 256 KiB left 20.0 MiB that nothing could reclaim.
-_MAX_DEVICE_ARTIFACTS = 32
+# device.screenshot / device.pull write under artifact_root/device/ keyed by
+# serial, and the artifact table needs a session_id, so retention never sees
+# these files and cannot reclaim them (measured: 80 shots of 256 KiB left
+# 20.0 MiB stranded). The directory is bounded directly instead, by the shared
+# UNREGISTERED_CAPTURE_* caps that prune_capped_dir enforces below. That is the
+# one definition of the bound; a device-local copy of the count would silently
+# disagree the first time either side was tuned.
 
 
 def _safe_pull_suffix(remote_path: str) -> str:
@@ -47,37 +49,16 @@ def _safe_pull_suffix(remote_path: str) -> str:
     return ".bin"
 
 
-def prune_device_artifacts(directory: Path, *, keep: int = _MAX_DEVICE_ARTIFACTS) -> None:
-    """Drop the oldest device captures once the directory is full."""
-    try:
-        files = [path for path in directory.iterdir() if path.is_file()]
-    except OSError:
-        return
-    extra = len(files) - max(0, keep)
-    if extra <= 0:
-        return
-
-    def _mtime(path: Path) -> int:
-        try:
-            return path.stat().st_mtime_ns
-        except OSError:
-            return 0
-
-    files.sort(key=_mtime)
-    for stale in files[:extra]:
-        with suppress(OSError):
-            stale.unlink()
-
-
 def refuse_oversized_device_file(
     path: Path, *, limit: int = MAX_MODULE_DUMP_BYTES
 ) -> Result[JsonObject] | None:
     """Delete a capture that is larger than one module dump and say so.
 
-    The directory bound is a count. 32 unbounded pulls is still unbounded
-    bytes. The transfer itself cannot be stopped mid-stream -- adbutils
-    writes the whole file -- so this is after the fact: the bytes hit disk,
-    then they are removed and the caller is told.
+    prune_capped_dir bounds the device directory by count and bytes but always
+    keeps the newest entry, even one that alone blows the byte budget -- so a
+    single huge pull survives the directory cap. The transfer itself cannot be
+    stopped mid-stream (adbutils writes the whole file), so this is after the
+    fact: the bytes hit disk, then they are removed and the caller is told.
     """
     try:
         size = path.stat().st_size

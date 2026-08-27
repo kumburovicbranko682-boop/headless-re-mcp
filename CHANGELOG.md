@@ -829,6 +829,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `(serial, local)`，`close_all` 时按记录拆除。
 - **设备截图 / pull 和 jsre unpack 目录不进产物表**。它们按 serial 或一次性 uuid 落盘，
   回收器看不见，目录随调用次数单调增长。写入后按条数和字节量淘汰最旧的，刚写入的那份保留。
+- **设备捕获目录的条数上限被定义了两遍**。`device.screenshot` / `device.pull` 落盘后实际走
+  `prune_capped_dir`，用共享的 `UNREGISTERED_CAPTURE_MAX_ENTRIES` / `_BYTES`（条数＋字节双重
+  封顶）淘汰；但 `service_device` 里还留着一份只按条数淘汰、从未接进生产路径的
+  `prune_device_artifacts` 与 `_MAX_DEVICE_ARTIFACTS = 32`。两个 32 眼下相等，却正是 `limits.py`
+  存在的意义所要消除的「同一上限自己和自己悄悄对不上」——有人去调其中一个，另一个纹丝不动。
+  删掉这份影子副本，设备目录的上限只在共享处定义一次；淘汰「留最新、按条数与字节」的行为本就
+  有 `prune_capped_dir` 直测覆盖，随之把 `test_device_artifacts` 的循环断言钉到生产真正用的
+  `UNREGISTERED_CAPTURE_MAX_ENTRIES` 上。
 - **Scylla / XVLKC / VMP dumper / de4dot / NETReactorSlayer 的 doctor 探针仍走 `subprocess.run`**。
   Scylla 在超时后把「启动过」当成可用，却不杀进程，GUI 探针会把窗口留在机器上；其余超时在
   Windows 上可能让 `communicate()` 永不返回。全部改走同一个有界执行器。
