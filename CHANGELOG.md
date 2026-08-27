@@ -18,6 +18,8 @@ CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服�
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
+修复浏览器 Agent 工作台冒烟 Gate（`tests/integration/test_agent_browser_smoke.py`）在非 Windows 主机上一直硬失败的两处陈旧:一是用写死的 `C:\Program Files\...\chrome.exe` 启动 Chromium(缺该路径即抛异常而非 skip),二是仍在断言早期英文 SPA 的文案与 `RunProgress` 事件字面量,而工作台早已整体本地化为中文、`RunProgress` 也不再渲染这些事件串,故此测试实际上在任何机器都跑不过。现改为:用与 Web 后端一致的方式启动 Playwright 自带 Chromium(依次尝试 `HEADLESS_RE_TEST_CHROME` 覆盖、自带 Chromium、系统 Chrome `chrome` 通道,全不可用则带原因 skip 而非失败);全部选择器改指当前中文 UI(落地标题、消息输入框、发送/设置按钮、供应商字段、批准/拒绝按钮),并把“本轮完成”标记限定到可见的 `.transcript`,不再误锁检查器里隐藏的 `message.delta` `<pre>`;审批路径改用 `patches.apply`(FILE_WRITE + STATE_CHANGE,在默认策略排除名单内,故即便加壳分析预设也会停下等待,而裸 `state_change` 会被自动批准);重载持久化改为断言恢复流从持久化游标续读(`after=<seq>`)且批准/拒绝会清掉审批卡,不再依赖重载后的消息回填。口令与令牌脱敏这组核心断言保持不变,现能对真实 headless Chromium 在 Linux 上端到端跑通。
+
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
 
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
