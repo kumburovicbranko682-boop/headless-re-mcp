@@ -123,6 +123,32 @@ def _merge_fill(existing: Any, incoming: Any) -> dict[str, str]:
     return out
 
 
+def _record_response(entry: JsonObject, resp: JsonObject) -> None:
+    """Fold a CDP response object into a captured request entry.
+
+    Shared by the responseReceived handler and the redirect finaliser: a
+    redirect's prior response arrives as ``requestWillBeSent.redirectResponse``,
+    which is the same shape, so both fill status/mime and the HAR response meta
+    identically.
+    """
+    mime_type, mime_truncated = _bounded_metadata(resp.get("mimeType"), _MAX_METADATA_BYTES)
+    entry["status"] = resp.get("status")
+    entry["mimeType"] = mime_type
+    if mime_truncated:
+        entry["metadata_truncated"] = True
+    har_meta = entry.setdefault("_har", {})
+    # Fill, don't overwrite: responseReceivedExtraInfo (with Set-Cookie) tends to
+    # arrive before responseReceived, and its raw headers must survive.
+    har_meta["response_headers"] = _merge_fill(
+        har_meta.get("response_headers"), resp.get("headers")
+    )
+    har_meta["http_version"] = _bounded_metadata(resp.get("protocol"), _MAX_METADATA_BYTES)[0]
+    har_meta["status_text"] = _bounded_metadata(resp.get("statusText"), _MAX_METADATA_BYTES)[0]
+    timing = resp.get("timing")
+    if isinstance(timing, dict):
+        har_meta["timing"] = timing
+
+
 def _map_header(headers: Any, name: str) -> str:
     """Case-insensitive lookup in a CDP header map (plain ``{name: value}``)."""
     if not isinstance(headers, dict):
@@ -685,38 +711,31 @@ class WebBackend:
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            request_id = str(params.get("requestId"))
+            redirect = params.get("redirectResponse")
             with handle.lock:
-                handle.requests[str(params.get("requestId"))] = entry
+                # A redirect reuses the requestId: CDP hands the prior hop's
+                # response here as redirectResponse. Finalise that hop under its
+                # own key so the chain survives instead of being overwritten by
+                # the request to the redirect target.
+                if isinstance(redirect, dict):
+                    prev = handle.requests.pop(request_id, None)
+                    if prev is not None:
+                        _record_response(prev, redirect)
+                        hop_key = f"{request_id}#redirect-{uuid4().hex[:8]}"
+                        prev["requestId"] = hop_key
+                        handle.requests[hop_key] = prev
+                handle.requests[request_id] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
                     handle.requests.popitem(last=False)
                     handle.requests_dropped += 1
 
         def on_response(params: JsonObject) -> None:
             resp = params.get("response") or {}
-            mime_type, mime_truncated = _bounded_metadata(
-                resp.get("mimeType"), _MAX_METADATA_BYTES
-            )
-            protocol = _bounded_metadata(resp.get("protocol"), _MAX_METADATA_BYTES)[0]
-            status_text = _bounded_metadata(resp.get("statusText"), _MAX_METADATA_BYTES)[0]
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
-                    entry["status"] = resp.get("status")
-                    entry["mimeType"] = mime_type
-                    if mime_truncated:
-                        entry["metadata_truncated"] = True
-                    har_meta = entry.setdefault("_har", {})
-                    # Fill, don't overwrite: responseReceivedExtraInfo (with
-                    # Set-Cookie) tends to arrive first, and its raw headers must
-                    # survive the base event that follows.
-                    har_meta["response_headers"] = _merge_fill(
-                        har_meta.get("response_headers"), resp.get("headers")
-                    )
-                    har_meta["http_version"] = protocol
-                    har_meta["status_text"] = status_text
-                    timing = resp.get("timing")
-                    if isinstance(timing, dict):
-                        har_meta["timing"] = timing
+                    _record_response(entry, resp)
 
         def on_loading_finished(params: JsonObject) -> None:
             # Network.loadingFinished carries the final byte count and the finish

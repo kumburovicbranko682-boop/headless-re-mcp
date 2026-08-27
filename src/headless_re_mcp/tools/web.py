@@ -185,7 +185,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         every Set-Cookie response header are merged in from CDP's ExtraInfo
         events, and request/response cookies are parsed into the HAR cookies
         arrays. Form request bodies (URL-encoded and multipart) are parsed into
-        postData.params. Response bodies are not inlined (fetch them with
+        postData.params. Each hop of a redirect chain is kept as its own entry
+        (the prior response is not overwritten by the redirect target).
+        Response bodies are not inlined (fetch them with
         web.network.get); a field CDP never reported stays -1 (not observed)
         rather than invented.
         """

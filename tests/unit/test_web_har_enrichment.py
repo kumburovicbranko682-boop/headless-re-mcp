@@ -323,6 +323,74 @@ class TestPostDataParams:
         assert form == {"user": "alice", "pw": "s3cret"}
 
 
+class TestRedirectChain:
+    def test_redirect_hop_is_kept_as_its_own_entry(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        # CDP reuses one requestId across a redirect, delivering the prior hop's
+        # response as redirectResponse on the next requestWillBeSent. The hop must
+        # survive as its own HAR entry, not be overwritten by the redirect target.
+        handle = _Handle()
+        backend = WebBackend()
+        backend._wire_events(handle)  # type: ignore[arg-type]
+        h = handle.cdp.handlers
+        h["Network.requestWillBeSent"](
+            {
+                "requestId": "r5",
+                "wallTime": 1_700_000_000.0,
+                "timestamp": 100.0,
+                "type": "Document",
+                "request": {"url": "https://site.test/a", "method": "GET", "headers": {}},
+            }
+        )
+        h["Network.requestWillBeSent"](
+            {
+                "requestId": "r5",
+                "wallTime": 1_700_000_000.1,
+                "timestamp": 100.1,
+                "type": "Document",
+                "request": {"url": "https://site.test/b", "method": "GET", "headers": {}},
+                "redirectResponse": {
+                    "status": 302,
+                    "statusText": "Found",
+                    "headers": {"Location": "https://site.test/b"},
+                    "mimeType": "",
+                },
+            }
+        )
+        h["Network.responseReceived"](
+            {
+                "requestId": "r5",
+                "response": {
+                    "status": 200,
+                    "statusText": "OK",
+                    "mimeType": "text/html",
+                    "protocol": "h2",
+                    "headers": {"Content-Type": "text/html"},
+                },
+            }
+        )
+        h["Network.loadingFinished"](
+            {"requestId": "r5", "timestamp": 100.2, "encodedDataLength": 10}
+        )
+
+        monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+        out = tmp_path / "redir.har"
+        backend.har_export("s", out)
+        log = json.loads(out.read_text(encoding="utf-8"))["log"]
+
+        pairs = [(e["request"]["url"], e["response"]["status"]) for e in log["entries"]]
+        assert ("https://site.test/a", 302) in pairs, pairs
+        assert ("https://site.test/b", 200) in pairs, pairs
+        hop = next(e for e in log["entries"] if e["request"]["url"].endswith("/a"))
+        assert hop["response"]["redirectURL"] == "https://site.test/b", hop["response"]
+
+        # network.list shows both hops, each with a distinct request id.
+        listed = backend.network_list("s")
+        ids = [r["requestId"] for r in listed["requests"]]
+        assert len(ids) == len(set(ids)) == 2, ids
+
+
 class TestHarExportIsRichAndListStaysLean:
     def test_export_is_rich_but_network_list_hides_internal_har(
         self, tmp_path: Path, monkeypatch: Any
