@@ -5,6 +5,19 @@ from headless_re_mcp.backends.jsre.client import (
     JsReError,
     WasmClient,
 )
-from headless_re_mcp.backends.jsre.wasm_summary import summarize_wasm, summarize_wasm_bytes
+from headless_re_mcp.backends.jsre.wasm_summary import (
+    extract_wasm_strings,
+    extract_wasm_strings_bytes,
+    summarize_wasm,
+    summarize_wasm_bytes,
+)
 
-__all__ = ["JsClient", "WasmClient", "JsReError", "summarize_wasm", "summarize_wasm_bytes"]
+__all__ = [
+    "JsClient",
+    "WasmClient",
+    "JsReError",
+    "summarize_wasm",
+    "summarize_wasm_bytes",
+    "extract_wasm_strings",
+    "extract_wasm_strings_bytes",
+]

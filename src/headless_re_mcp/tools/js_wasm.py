@@ -114,4 +114,34 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_summary(path))
 
+    @tools.tool(name="wasm.strings")
+    def wasm_strings(
+        path: str,
+        min_length: Annotated[int, Field(ge=1, le=256)] = 4,
+        contains: str | None = None,
+    ) -> dict[str, Any]:
+        """Printable strings a .wasm module embeds in its data segments.
+
+        Compiled WebAssembly keeps its string literals -- URLs, host names,
+        api_key/token markers, error and format strings -- in the data section
+        that initializes linear memory. This parses that section directly in
+        pure Python (no wabt needed, so it answers even when wasm2wat/
+        wasm-objdump are absent) and scans each segment for printable ASCII
+        runs. Answers with strings, each carrying string, segment (the data
+        segment index) and addr (its linear-memory address, present only when
+        the segment's offset is a literal constant); plus count, total,
+        data_segments (how many segments the module has), min_length, and
+        scan_capped (true when more strings exist beyond the 4096 cap).
+
+        min_length is the shortest run to keep (default 4) -- raise it to cut
+        noise, lower it to catch short markers. Pass contains to keep only
+        strings containing a case-insensitive substring (a host, a key marker);
+        the filter runs during the scan so the 4096 cap bounds matches, and the
+        reply then also carries filtered true and query. Only the data section
+        is read; an input over 16 MiB is refused as too_large and a non-module
+        as invalid_params. This is wasm.summary's companion: summary is the
+        import/export surface, this is the embedded string surface.
+        """
+        return _dump(analysis.wasm_strings(path, min_length=min_length, contains=contains))
+
     return tools.bindings

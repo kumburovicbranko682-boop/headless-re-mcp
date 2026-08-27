@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **275（156 只读 / 119 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **276（157 只读 / 119 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -442,6 +442,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   信封（纯 Python，不依赖外部工具，总会跑）；另有一条在装了 wat2wasm 时把 WAT 现编成真模块交叉校验宿主导入/命名导出/内存/
   start（缺 wabt 时 skip≠pass）。单测手工构造模块字节覆盖导入/导出/内存/计数解析、导出表按上限截断、坏 magic、截断
   section 与超长 LEB128 的拒绝。该工具计入读效果，工具面因此 272→273。
+- **WASM 线读得出导入/导出结构，却读不出模块自带的字符串**。编译出来的 WebAssembly 把字符串字面量（URL、主机名、
+  api_key/token 标记、错误与格式串）放在初始化线性内存的 data 段里，而此前除了 `wasm.wat`/`wasm.info` 那两坨要装 wabt 的
+  文本大块，没有工具能把这些串单独捞出来。新增只读的 `wasm.strings`，作为 `wasm.summary` 的姊妹：**纯 Python** 直接解析
+  data 段（wabt 缺席也能出结果），逐段扫可打印 ASCII 串。回 `strings`，每条带 `string`、`segment`（data 段下标）与 `addr`
+  （线性内存地址，仅当段偏移是字面常量时给出，好让分析者据此 pivot）；另回 `count`、`total`、`data_segments`（模块共几个
+  data 段）、`min_length`、`scan_capped`（超过 4096 上限还有更多时为真）。`min_length` 是保留的最短串长（默认 4），可调高
+  去噪、调低捕捉短标记；`contains` 做大小写不敏感子串过滤，且在扫描当中施加，故 4096 上限约束的是命中数，设了时另回
+  `filtered`/`query`。只读 data 段，输入超 16 MiB 按 `too_large`、非模块按 `invalid_params` 拒绝而非硬猜。活体门手工搭一个
+  data 段里埋了 C2 URL 与密钥标记的模块，走完整 `AnalysisService.wasm_strings` 信封断言两串连同 `addr` 都被捞回、`contains`
+  收窄到命中、非模块回 `invalid_params`（纯 Python，总会跑）；另一条在装了 wat2wasm 时把带 `(data (i32.const 1024) …)` 的
+  WAT 现编成真模块交叉校验串内容与 `addr==1024`（缺 wabt 时 skip≠pass）。单测手工构造模块字节覆盖串/段/addr 提取、
+  `min_length` 抬高地板、`contains` 过滤、无 data 段、4096 截断、坏 magic 与截断 data 段的拒绝。该工具计入读效果，工具面
+  因此 275→276。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

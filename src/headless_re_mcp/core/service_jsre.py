@@ -178,3 +178,16 @@ class JsReAnalysisMixin:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+
+    def wasm_strings(
+        self, path: str, *, min_length: int = 4, contains: str | None = None
+    ) -> Result[JsonObject]:
+        try:
+            data = WasmClient(getattr(self.settings, "wabt", None)).strings(
+                Path(path), min_length=min_length, contains=contains
+            )
+            return _success(data, backend="wasm_strings")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)

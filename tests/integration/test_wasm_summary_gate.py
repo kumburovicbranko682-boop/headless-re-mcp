@@ -66,6 +66,27 @@ def _module_with_surface() -> bytes:
     return magic + type_sec + import_sec + func_sec + mem_sec + export_sec
 
 
+def _sleb128(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if (value == 0 and not byte & 0x40) or (value == -1 and byte & 0x40):
+            out.append(byte)
+            return bytes(out)
+        out.append(byte | 0x80)
+
+
+def _active_data_segment(base: int, payload: bytes) -> bytes:
+    """A flags=0 data segment: i32.const base ; end ; vec(byte) payload."""
+    offset_expr = b"\x41" + _sleb128(base) + b"\x0b"
+    return _leb128(0) + offset_expr + _leb128(len(payload)) + payload
+
+
+def _module_with_data(base: int, payload: bytes) -> bytes:
+    return b"\x00asm\x01\x00\x00\x00" + _section(11, _vec([_active_data_segment(base, payload)]))
+
+
 def _find(items: list[dict], **fields: object) -> dict | None:
     for item in items:
         if all(item.get(key) == value for key, value in fields.items()):
@@ -100,6 +121,93 @@ def test_wasm_summary_drives_the_service_end_to_end(tmp_path: Path) -> None:
         assert failed.ok is False
         assert failed.error is not None
         assert failed.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_strings_drives_the_service_end_to_end(tmp_path: Path) -> None:
+    """wasm.strings must recover data-segment strings through the real service.
+
+    Build a module whose data section holds a C2 URL and a key marker around
+    non-printable padding, then drive AnalysisService.wasm_strings end to end:
+    the success envelope must carry both strings with their linear-memory addr,
+    a contains filter must narrow to matches, and a non-module must come back as
+    an invalid_params envelope rather than an internal error.
+    """
+    base = 2048
+    url = b"https://c2.example/beacon"
+    key = b"API_KEY=hunter2"
+    payload = url + b"\x00\x01\x02" + key + b"\x00"
+    module = tmp_path / "strings.wasm"
+    module.write_bytes(_module_with_data(base, payload))
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_strings(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        found = {item["string"]: item for item in data["strings"]}
+        assert url.decode() in found
+        assert key.decode() in found
+        assert found[url.decode()]["addr"] == base
+        assert found[key.decode()]["addr"] == base + payload.index(key)
+        assert data["data_segments"] == 1
+
+        filtered = service.wasm_strings(str(module), contains="c2.example")
+        assert filtered.ok, filtered.error
+        assert [item["string"] for item in filtered.data["strings"]] == [url.decode()]
+        assert filtered.data["filtered"] is True
+
+        bogus = tmp_path / "not.wasm"
+        bogus.write_bytes(b"PK\x03\x04 this is a zip, not wasm")
+        failed = service.wasm_strings(str(bogus))
+        assert failed.ok is False
+        assert failed.error is not None
+        assert failed.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_strings_reads_a_wat2wasm_built_module(tmp_path: Path) -> None:
+    """Cross-check the string scanner against a toolchain-built data segment."""
+    wat2wasm = shutil.which("wat2wasm")
+    if wat2wasm is None:
+        pytest.skip("wat2wasm (wabt) not installed — toolchain gate not run (skip != pass)")
+    wat = tmp_path / "strs.wat"
+    wat.write_text(
+        "(module\n"
+        "  (memory 1)\n"
+        '  (data (i32.const 1024) "https://payload.example/x\\00SECRET_TOKEN_9\\00"))\n',
+        encoding="utf-8",
+    )
+    module = tmp_path / "strs.wasm"
+    built = subprocess.run(  # noqa: S603 - fixed argv, tool discovered on PATH
+        [wat2wasm, str(wat), "-o", str(module)],
+        capture_output=True,
+        timeout=60,
+    )
+    if built.returncode != 0 or not module.is_file():
+        detail = built.stderr.decode("utf-8", "replace")[:200]
+        pytest.skip(f"wat2wasm could not build the fixture ({detail}) — skip != pass")
+
+    service = AnalysisService()
+    try:
+        result = service.wasm_strings(str(module))
+        assert result.ok, result.error
+        data = result.data
+        assert data is not None
+        strings = {item["string"] for item in data["strings"]}
+        assert "https://payload.example/x" in strings
+        assert "SECRET_TOKEN_9" in strings
+        # The first string sits at the segment's declared base; wat2wasm may add
+        # its own data segments, so assert the URL's addr is the 1024 we placed.
+        url_item = next(
+            item for item in data["strings"] if item["string"] == "https://payload.example/x"
+        )
+        assert url_item["addr"] == 1024
     finally:
         service.close_all()
 

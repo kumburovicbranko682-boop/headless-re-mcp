@@ -36,6 +36,11 @@ _MAX_ITEMS = 4096
 # indices at most 10. Ten 7-bit groups (70 bits) is a generous ceiling that
 # still refuses a maliciously padded run of 0x80 bytes.
 _MAX_LEB_GROUPS = 10
+# wasm.strings defaults: a 4-char floor drops the 1-3 byte noise a raw scan of
+# packed memory throws off, and each string is clipped so one giant blob (a
+# base64 payload, an embedded file) cannot dominate the reply.
+_MIN_STRING_DEFAULT = 4
+_MAX_STRING_LEN = 8192
 
 
 class _Cursor:
@@ -78,6 +83,22 @@ class _Cursor:
             if groups >= _MAX_LEB_GROUPS:
                 raise JsReError("invalid_params", "wasm LEB128 integer too long")
             shift += 7
+
+    def sleb(self) -> int:
+        result = 0
+        shift = 0
+        groups = 0
+        while True:
+            byte = self.byte()
+            result |= (byte & 0x7F) << shift
+            shift += 7
+            groups += 1
+            if not byte & 0x80:
+                if byte & 0x40:  # sign bit set: the value is negative
+                    result |= -(1 << shift)
+                return result
+            if groups >= _MAX_LEB_GROUPS:
+                raise JsReError("invalid_params", "wasm LEB128 integer too long")
 
     def name(self) -> str:
         length = self.uleb()
@@ -226,3 +247,144 @@ def summarize_wasm(path: Path) -> JsonObject:
     except OSError as exc:
         raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
     return summarize_wasm_bytes(data)
+
+
+def _skip_const_expr(cursor: _Cursor) -> int | None:
+    """Consume a constant init-expr, returning its base offset when it is one.
+
+    A data segment's offset is a constant expression -- in every real module a
+    single ``i32.const N`` (or ``i64.const`` on memory64, or ``global.get`` for
+    a relocatable base) followed by the ``end`` opcode 0x0B. The literal base is
+    returned so a recovered string can be given its linear-memory address; a
+    global-relative or empty expr yields None. Anything unexpected is skipped by
+    reading to the end marker rather than desyncing the parse.
+    """
+    opcode = cursor.byte()
+    base: int | None = None
+    if opcode in (0x41, 0x42):  # i32.const / i64.const
+        base = cursor.sleb()
+    elif opcode == 0x23:  # global.get
+        cursor.uleb()
+    elif opcode == 0x0B:  # empty expr (defensive: not valid, but do not crash)
+        return None
+    end = cursor.byte()
+    if end != 0x0B:
+        # An unexpected multi-instruction expr: read to the end marker so the
+        # cursor stays aligned for the segment bytes that follow.
+        while cursor.byte() != 0x0B:
+            pass
+    return base
+
+
+def _parse_data_segments(body: _Cursor) -> list[tuple[int | None, bytes]]:
+    """Data section (id 11): a list of (base_offset_or_None, raw_bytes) segments."""
+    count = body.uleb()
+    segments: list[tuple[int | None, bytes]] = []
+    for _ in range(count):
+        flags = body.uleb()
+        if flags == 0:  # active, memory 0, offset expr
+            base = _skip_const_expr(body)
+            segments.append((base, body.take(body.uleb())))
+        elif flags == 1:  # passive: no memory, no offset
+            segments.append((None, body.take(body.uleb())))
+        elif flags == 2:  # active, explicit memory index, offset expr
+            body.uleb()  # memory index
+            base = _skip_const_expr(body)
+            segments.append((base, body.take(body.uleb())))
+        else:
+            raise JsReError("invalid_params", "wasm data segment has an unknown flag")
+    return segments
+
+
+def _scan_printable(raw: bytes, min_length: int, max_len: int) -> list[tuple[int, str]]:
+    """Maximal runs of printable ASCII (0x20..0x7E) of at least ``min_length``."""
+    out: list[tuple[int, str]] = []
+    start: int | None = None
+    run = bytearray()
+    for index, byte in enumerate(raw):
+        if 0x20 <= byte <= 0x7E:
+            if start is None:
+                start = index
+            run.append(byte)
+            if len(run) >= max_len:
+                out.append((start, run.decode("ascii")))
+                start = None
+                run = bytearray()
+        else:
+            if start is not None and len(run) >= min_length:
+                out.append((start, run.decode("ascii")))
+            start = None
+            run = bytearray()
+    if start is not None and len(run) >= min_length:
+        out.append((start, run.decode("ascii")))
+    return out
+
+
+def extract_wasm_strings_bytes(
+    data: bytes, *, min_length: int = _MIN_STRING_DEFAULT, contains: str | None = None
+) -> JsonObject:
+    """Extract printable strings from a module's data segments.
+
+    Compiled WASM keeps its string literals (URLs, keys, messages, format
+    strings) in the data section that initializes linear memory. This walks the
+    data segments -- pure Python, no wabt -- and scans each for printable ASCII
+    runs, giving each a segment index and, when the segment's offset is a literal
+    constant, its linear-memory address. Only the data section is read; code and
+    everything else is skipped by length.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module: bad magic")
+    floor = max(1, int(min_length))
+    needle = contains.casefold() if contains else None
+    cursor = _Cursor(data)
+    cursor.pos = 8
+
+    segments: list[tuple[int | None, bytes]] = []
+    while not cursor.eof:
+        section_id = cursor.byte()
+        section_len = cursor.uleb()
+        body = _Cursor(cursor.take(section_len))
+        if section_id == 11:  # data
+            segments = _parse_data_segments(body)
+        # Every other section is skipped by its declared length.
+
+    collected: list[JsonObject] = []
+    total = 0
+    scan_capped = False
+    for seg_index, (base, seg_bytes) in enumerate(segments):
+        for pos, text in _scan_printable(seg_bytes, floor, _MAX_STRING_LEN):
+            if needle is not None and needle not in text.casefold():
+                continue
+            total += 1
+            if len(collected) >= _MAX_ITEMS:
+                scan_capped = True
+                continue
+            item: JsonObject = {"string": text, "segment": seg_index}
+            if base is not None:
+                item["addr"] = base + pos
+            collected.append(item)
+
+    result: JsonObject = {
+        "strings": collected,
+        "count": len(collected),
+        "total": total,
+        "data_segments": len(segments),
+        "min_length": floor,
+        "scan_capped": scan_capped,
+    }
+    if needle is not None:
+        result["filtered"] = True
+        result["query"] = contains
+    return result
+
+
+def extract_wasm_strings(
+    path: Path, *, min_length: int = _MIN_STRING_DEFAULT, contains: str | None = None
+) -> JsonObject:
+    """Extract data-segment strings from the module at ``path`` (16 MiB cap)."""
+    resolved = _require_existing_file(path, missing="wasm file not found")
+    try:
+        data = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"wasm unreadable: {exc}", path=str(resolved)) from exc
+    return extract_wasm_strings_bytes(data, min_length=min_length, contains=contains)

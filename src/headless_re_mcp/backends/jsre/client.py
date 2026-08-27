@@ -254,6 +254,20 @@ class WasmClient:
 
         return summarize_wasm(path)
 
+    def strings(
+        self, path: Path, *, min_length: int = 4, contains: str | None = None
+    ) -> JsonObject:
+        """Printable strings from the module's data segments (pure Python).
+
+        Needs no wabt tool: the data section that initializes linear memory --
+        where compiled WASM keeps its string literals -- is parsed directly, so
+        the URLs/keys/messages a module embeds are recoverable even when
+        wasm2wat/wasm-objdump are not configured.
+        """
+        from headless_re_mcp.backends.jsre.wasm_summary import extract_wasm_strings
+
+        return extract_wasm_strings(path, min_length=min_length, contains=contains)
+
     def info(
         self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
     ) -> JsonObject:
