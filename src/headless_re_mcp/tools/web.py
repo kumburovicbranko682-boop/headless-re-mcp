@@ -136,6 +136,22 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_cookies(session_id))
 
+    @tools.tool(name="web.storage")
+    def web_storage(session_id: str) -> dict[str, Any]:
+        """Read the page origin's localStorage and sessionStorage.
+
+        Answers with origin and two str->str maps, local_storage and
+        session_storage, read over CDP DOMStorage (no page script is run, so an
+        httpOnly-style trust boundary is not needed) -- the client-side token
+        store a cookie read misses: JWTs, refresh tokens, and feature state
+        commonly live here. Values are capped and each map is bounded by size;
+        local_storage_truncated / session_storage_truncated flag a capped value
+        or a trimmed map. origin is empty and both maps are empty for an opaque
+        origin (about:blank or a data: URL has no origin-keyed storage). There
+        is no storage or items field.
+        """
+        return _dump(analysis.web_storage(session_id))
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,

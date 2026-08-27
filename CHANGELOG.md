@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **267（150 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1278,6 +1278,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   工具描述补齐三项 `<application>` 安全标志加 `network_security_config` 的语义与各自默认值。单测(`test_apk_fields.py`)在既有两条清单标志用例上扩断言:显式 cleartext=true+NSC
   引用取回、未声明时两者皆 null。实机 gate(`test_m11_android_apk_live_gate.py`)对真实夹具断言两者皆 null——夹具既未声明 usesCleartextTraffic 也无 NSC,证明走的是真实
   `get_attribute_value`(缺失返回 None)而非 mock。
+
+- **Web 域能读 cookie 却读不到 DOM 存储,而 localStorage/sessionStorage 恰是 cookie 读不到的那半个客户端凭据库——JWT、刷新令牌、会话态常存于此。** 接上一条 `web.cookies`,
+  新增只读工具 `web.storage`:经 CDP `DOMStorage.getDOMStorageItems` 读取当前页面安全源的 localStorage 与 sessionStorage(不跑任何页面脚本,因而无需 `web.evaluate` 那类
+  任意 JS——与本项目「不开放任意 JS 求值」的立场一致)。返回 `origin` 加两个 str->str 映射 `local_storage`/`session_storage`;安全源由页面 URL 推出(`scheme://host[:port]`),
+  opaque 源(`about:blank`/`data:` URL)无按源存储,回空 `origin` 且两映射为空、不去打扰 CDP。每个值按 8KiB 上限封顶(足够容下 JWT/令牌),每张映射按 JSON 编码体积各自设 96KiB 上限,
+  两张加总不超 262144 结果预算;被封顶的值或被裁的映射置 `local_storage_truncated`/`session_storage_truncated`。工具计入只读面(267,150 只读 / 117 写);catalog 计数不变式、
+  README 三处工具算术、`test_tool_catalog_agent`/`test_workspace_profiles`/`test_mcp_server` 的工具集与计数断言同步更新。单测(`test_web_storage_fields.py`)用假 CDP 覆盖:
+  local/session 分别取回、opaque 源回空且不触碰 CDP、大值封顶+flag、大量条目按预算裁剪且不超 262144、`_security_origin` 抽取与 `_bounded_storage` 归一化/跳过畸形对、描述点名两库。
+  实机 gate(`test_web_re_gate.py`)让 app.js 在真实 http 源写入 localStorage/sessionStorage,经真实 chromium 用 `web.storage` 读回两枚令牌并按 http 源归类——opaque 源的 data: URL
+  永远做不到,以此证明走的是真实 DOMStorage 路径。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

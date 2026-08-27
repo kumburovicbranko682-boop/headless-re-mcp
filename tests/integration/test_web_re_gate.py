@@ -67,7 +67,11 @@ class _FixtureHandler(http.server.BaseHTTPRequestHandler):
         b"<html><head><title>net-gate</title></head>"
         b'<body><script src="/app.js"></script></body></html>'
     )
-    _APP = b"/* NETWORK_GATE_MARKER */ globalThis.__loaded = true;"
+    _APP = (
+        b"/* NETWORK_GATE_MARKER */ globalThis.__loaded = true;"
+        b"localStorage.setItem('gate_token','jwtABC');"
+        b"sessionStorage.setItem('gate_csrf','xyz');"
+    )
 
     def do_GET(self) -> None:  # noqa: N802 - http.server API name
         cookie: str | None = None
@@ -229,6 +233,23 @@ def test_web_cdp_captures_network_and_reads_a_body() -> None:
             assert cookie["value"] == "abc123", cookie
             assert cookie["http_only"] is True, cookie
             assert cookie["domain"], cookie
+
+            # web.storage reads localStorage/sessionStorage over CDP DOMStorage.
+            # app.js set a token in each; a working read returns both keyed by the
+            # real http origin -- something the opaque-origin data: URL gate could
+            # never exercise, and a broken getDOMStorageItems could not fake.
+            def _storage_ready() -> dict[str, Any] | None:
+                res = service.web_storage(session_id)
+                assert res.ok, res.error
+                if res.data["local_storage"].get("gate_token") == "jwtABC":
+                    return res.data
+                return None
+
+            storage = _wait_for_value(_storage_ready)
+            assert storage is not None, service.web_storage(session_id).data
+            assert storage["origin"].startswith("http://127.0.0.1"), storage
+            assert storage["local_storage"]["gate_token"] == "jwtABC", storage
+            assert storage["session_storage"]["gate_csrf"] == "xyz", storage
         finally:
             service.web_close(session_id)
     finally:

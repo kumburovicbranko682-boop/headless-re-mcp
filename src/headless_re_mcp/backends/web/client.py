@@ -23,6 +23,7 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.json_budget import fit_json_list, fit_json_text
@@ -45,6 +46,12 @@ _MAX_METADATA_BYTES = 1024
 # the result budget (mirrors the proxy.flow_get header discipline).
 _MAX_HEADER_VALUE_BYTES = 4 * 1024
 _MAX_HEADERS_ENCODED = 16 * 1024
+# DOM storage is page-controlled and can hold megabytes (a cache blob, a big
+# token). Cap each value generously enough for a JWT/session token to survive
+# intact, then bound each of the two maps (local + session) by encoded size so
+# two storage reads together cannot overrun the result budget.
+_MAX_STORAGE_VALUE_BYTES = 8 * 1024
+_MAX_STORAGE_ENCODED = 96 * 1024
 # Headroom fit_json_text leaves for a web result's other fields when it bounds an
 # inline body/source/html by encoded size: the largest is a url capped at
 # _MAX_URL_BYTES (16 KiB); the rest are small scalars. Smaller than the shared
@@ -126,6 +133,45 @@ def _normalize_cookie(raw: JsonObject) -> JsonObject:
     if name_cut or value_cut:
         cookie["value_truncated"] = True
     return cookie
+
+
+def _security_origin(url: object) -> str | None:
+    """``scheme://host[:port]`` for a real web origin, or ``None`` for an opaque one.
+
+    DOM storage is keyed by security origin, which CDP wants as this exact string.
+    A page on ``about:blank`` or a ``data:`` URL has an opaque origin with no
+    storage to read, so returning ``None`` lets the caller answer "empty" instead
+    of sending CDP an origin it will reject.
+    """
+    text = url if isinstance(url, str) else ""
+    parts = urlsplit(text)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _bounded_storage(entries: object) -> tuple[dict[str, str], bool]:
+    """Coerce CDP ``DOMStorage`` entries to a JSON-safe, size-bounded ``str->str`` map.
+
+    ``getDOMStorageItems`` returns ``entries`` as ``[key, value]`` pairs whose
+    contents are page-controlled. Cap each value at ``_MAX_STORAGE_VALUE_BYTES``
+    and bound the whole map by its JSON-encoded size, the same discipline the
+    response-header map uses, so one storage read cannot push the reply past the
+    result budget. Returns ``(items, truncated)``; ``truncated`` covers both a
+    capped value and a map trimmed to fit.
+    """
+    pairs: list[list[str]] = []
+    truncated = False
+    seq = entries if isinstance(entries, list) else []
+    for pair in seq:
+        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+            continue
+        key = _coerce_header(pair[0])
+        value, value_cut = _bounded_metadata(_coerce_header(pair[1]), _MAX_STORAGE_VALUE_BYTES)
+        truncated = truncated or value_cut
+        pairs.append([key, value])
+    kept, _dropped, list_cut = fit_json_list(pairs, budget=_MAX_STORAGE_ENCODED, reserve=0)
+    return {k: v for k, v in kept}, truncated or list_cut
 
 
 def _bounded_headers(raw: object) -> tuple[dict[str, str], bool]:
@@ -809,6 +855,54 @@ class WebBackend:
             "count": len(window),
             "total": total,
             "has_more": len(window) < total,
+        }
+
+    def storage(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+        try:
+            url = self._runner(handle).call(lambda: handle.page.url)
+        except WebError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - reading page url may race a teardown
+            raise WebError("backend_error", f"could not read page url: {exc}") from exc
+        empty: JsonObject = {
+            "origin": "",
+            "local_storage": {},
+            "local_storage_truncated": False,
+            "session_storage": {},
+            "session_storage_truncated": False,
+        }
+        origin = _security_origin(url)
+        if origin is None:
+            # about:blank / data: URL: opaque origin, no origin-keyed storage.
+            return empty
+
+        def _read(is_local: bool) -> object:
+            return self._runner(handle).call(
+                lambda: handle.cdp.send(
+                    "DOMStorage.getDOMStorageItems",
+                    {"storageId": {"securityOrigin": origin, "isLocalStorage": is_local}},
+                )
+            )
+
+        try:
+            self._runner(handle).call(lambda: handle.cdp.send("DOMStorage.enable"))
+            local_raw = _read(True)
+            session_raw = _read(False)
+        except WebError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - CDP may reject an unloaded origin
+            raise WebError("backend_error", f"could not read storage: {exc}") from exc
+        local_entries = local_raw.get("entries") if isinstance(local_raw, dict) else None
+        session_entries = session_raw.get("entries") if isinstance(session_raw, dict) else None
+        local, local_cut = _bounded_storage(local_entries)
+        session, session_cut = _bounded_storage(session_entries)
+        return {
+            "origin": origin,
+            "local_storage": local,
+            "local_storage_truncated": local_cut,
+            "session_storage": session,
+            "session_storage_truncated": session_cut,
         }
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
