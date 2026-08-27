@@ -62,11 +62,13 @@ def _sse(chunks: list[dict[str, Any]]) -> bytes:
 
 
 class _FakeOpenAI:
-    """A loopback chat-completions server: one tool call, then a final answer.
+    """A loopback chat-completions server driven by the conversation itself.
 
-    Request one streams a ``session.create`` tool call for the fixture; every
-    later request (the loop's next turn, after the tool result is fed back)
-    streams a plain final answer with no tools, ending the run.
+    A turn whose messages carry no tool result yet streams a ``session.create``
+    tool call for the fixture; once a tool result is present (the loop fed one
+    back, or a human approved one) it streams a plain final answer with no
+    tools, ending the run. Being message-driven rather than counter-driven lets
+    several independent runs each begin with a tool call.
     """
 
     def __init__(self, binary: str) -> None:
@@ -81,12 +83,17 @@ class _FakeOpenAI:
 
             def do_POST(self) -> None:  # noqa: N802 - stdlib name
                 length = int(self.headers.get("Content-Length", "0"))
-                if length:
-                    self.rfile.read(length)
+                raw = self.rfile.read(length) if length else b""
+                try:
+                    messages = json.loads(raw).get("messages", [])
+                except (json.JSONDecodeError, AttributeError):
+                    messages = []
+                tool_result_seen = any(
+                    isinstance(item, dict) and item.get("role") == "tool" for item in messages
+                )
                 with server_self._lock:
                     server_self.calls += 1
-                    first = server_self.calls == 1
-                if first:
+                if not tool_result_seen:
                     payload = _sse(
                         [
                             {"choices": [{"index": 0, "delta": {"role": "assistant"}}]},
@@ -223,6 +230,19 @@ def _serve_web(tmp_root: Path, provider_base_url: str) -> Iterator[str]:
             process.wait(timeout=15.0)
 
 
+def _parse_frame(event_type: str | None, seq: int | None, data: str) -> dict[str, Any] | None:
+    if event_type in {None, "heartbeat"}:
+        return None
+    dumped = json.loads(data)
+    # The SSE data frame is the whole event.dump(); the event's own payload is
+    # its inner "data" field.
+    return {
+        "seq": dumped.get("seq", seq),
+        "type": event_type or dumped.get("type"),
+        "data": dumped.get("data", {}),
+    }
+
+
 def _consume_sse(client: httpx.Client, path: str, *, timeout: float = 40.0) -> list[dict[str, Any]]:
     """Read one run's SSE stream to its close, returning parsed events in order."""
     events: list[dict[str, Any]] = []
@@ -240,20 +260,66 @@ def _consume_sse(client: httpx.Client, path: str, *, timeout: float = 40.0) -> l
             elif line.startswith("event:"):
                 event_type = line[6:].strip()
             elif line.startswith("data:"):
-                data = line[5:].strip()
-                if event_type in {None, "heartbeat"}:
-                    continue
-                dumped = json.loads(data)
-                # The SSE data frame is the whole event.dump(); the event's own
-                # payload is its inner "data" field.
-                events.append(
-                    {
-                        "seq": dumped.get("seq", seq),
-                        "type": event_type or dumped.get("type"),
-                        "data": dumped.get("data", {}),
-                    }
-                )
+                parsed = _parse_frame(event_type, seq, line[5:].strip())
+                if parsed is not None:
+                    events.append(parsed)
     return events
+
+
+class _SseCollector:
+    """Consume a run's SSE stream on a background thread while the test acts.
+
+    A parked run does not close its stream, so a human-in-the-loop test has to
+    read events and approve at the same time. The collected list is exposed
+    under a lock; the thread ends when the stream closes at run terminal.
+    """
+
+    def __init__(self, base_url: str, path: str) -> None:
+        self._base_url = base_url
+        self._path = path
+        self._events: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        with (
+            httpx.Client(
+                base_url=self._base_url, headers={"Authorization": f"Bearer {_TOKEN}"}
+            ) as client,
+            client.stream("GET", self._path, timeout=40.0) as response,
+        ):
+            event_type: str | None = None
+            seq: int | None = None
+            for line in response.iter_lines():
+                if line.startswith("id:"):
+                    seq = int(line[3:].strip())
+                elif line.startswith("event:"):
+                    event_type = line[6:].strip()
+                elif line.startswith("data:"):
+                    parsed = _parse_frame(event_type, seq, line[5:].strip())
+                    if parsed is not None:
+                        with self._lock:
+                            self._events.append(parsed)
+
+    def __enter__(self) -> _SseCollector:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._thread.join(timeout=15.0)
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._events)
+
+    def wait_for(self, event_type: str, *, timeout: float = 30.0) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for event in self.snapshot():
+                if event["type"] == event_type:
+                    return event
+            time.sleep(0.05)
+        raise AssertionError(f"never saw {event_type}; saw {[e['type'] for e in self.snapshot()]}")
 
 
 @pytest.mark.integration
@@ -315,3 +381,76 @@ def test_agent_run_streams_real_tool_dispatch_over_sse(tmp_path: Path) -> None:
             # The non-streaming history endpoint agrees with the live stream.
             history = http.get(f"/api/agent/runs/{run_id}/events/history").json()
             assert [event["type"] for event in history["events"]][-1] == "run.completed"
+
+
+@pytest.mark.integration
+@pytest.mark.headless
+def test_agent_write_parks_for_human_approval_over_http(tmp_path: Path) -> None:
+    """Fail-closed mode: a write parks over SSE, and a human decides via HTTP."""
+    assert _PE_FIXTURE.is_file()
+    with _FakeOpenAI(str(_PE_FIXTURE)) as fake:
+        provider_base_url = f"http://127.0.0.1:{fake.port}"
+        # Start full-access so serve-web boots, then switch to request mode over
+        # the very endpoint an operator uses -- proving that switch is live.
+        with (
+            _serve_web(tmp_path, provider_base_url) as base_url,
+            httpx.Client(base_url=base_url, headers={"Authorization": f"Bearer {_TOKEN}"}) as http,
+        ):
+            switched = http.put("/api/agent/autonomy", json={"mode": "request"})
+            assert switched.status_code == 200, switched.text
+            assert switched.json()["mode"] == "request"
+            assert http.get("/api/agent/autonomy").json()["mode"] == "request"
+
+            thread_id = http.post("/api/agent/threads", json={"title": "approve"}).json()["thread"][
+                "id"
+            ]
+
+            # Run one: approve the parked write and watch it proceed to completion.
+            approved_run = http.post(
+                "/api/agent/runs", json={"thread_id": thread_id, "message": "Open it."}
+            ).json()["run_id"]
+            with _SseCollector(base_url, f"/api/agent/runs/{approved_run}/events") as collector:
+                required = collector.wait_for("approval.required")
+                assert required["data"]["name"] == "session.create"
+                args_sha256 = required["data"]["args_sha256"]
+                call_id = required["data"]["tool_call_id"]
+                # The run is genuinely parked, not merely slow.
+                assert http.get(f"/api/agent/runs/{approved_run}").json()["run"]["status"] == (
+                    "awaiting_approval"
+                )
+                decision = http.post(
+                    f"/api/agent/runs/{approved_run}/tool-calls/{call_id}/approve",
+                    json={"args_sha256": args_sha256},
+                )
+                assert decision.status_code == 200, decision.text
+                completed = collector.wait_for("run.completed")
+                assert completed["data"]["status"] == "completed"
+            events = collector.snapshot()
+            order = [event["type"] for event in events]
+            assert order.index("approval.required") < order.index("tool.completed")
+            assert any(
+                event["type"] == "tool.completed"
+                and event["data"]["name"] == "session.create"
+                and event["data"].get("ok")
+                for event in events
+            )
+            assert len(http.get("/api/sessions").json()["data"]["sessions"]) == 1
+
+            # Run two, on a fresh thread so the model proposes the write again:
+            # reject the parked write; the run stops and opens nothing new.
+            reject_thread = http.post("/api/agent/threads", json={"title": "reject"}).json()[
+                "thread"
+            ]["id"]
+            rejected_run = http.post(
+                "/api/agent/runs", json={"thread_id": reject_thread, "message": "Open it again."}
+            ).json()["run_id"]
+            with _SseCollector(base_url, f"/api/agent/runs/{rejected_run}/events") as collector:
+                required = collector.wait_for("approval.required")
+                http.post(
+                    f"/api/agent/runs/{rejected_run}/tool-calls/{required['data']['tool_call_id']}/reject",
+                    json={"args_sha256": required["data"]["args_sha256"]},
+                ).raise_for_status()
+                collector.wait_for("run.rejected")
+            assert http.get(f"/api/agent/runs/{rejected_run}").json()["run"]["status"] == "rejected"
+            # Still exactly the one session the approved run opened.
+            assert len(http.get("/api/sessions").json()["data"]["sessions"]) == 1

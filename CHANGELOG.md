@@ -37,6 +37,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   事件流依次出现 `tool.proposed` / `approval.auto` / `tool.completed(ok=True)` 并以 `run.completed`
   收尾;`GET /api/sessions` 事后确有该 run 打开的那个 PE 会话;非流式 history 端点与实时流一致。
   "LLM" 是测试掌控的本机 socket,不打开任何分析后端。
+- 同一 Gate 也钉住人审控制面:经 `PUT /api/agent/autonomy` 现场切回 fail-closed 的 request 档
+  (并可读回),写工具真挂起(run 状态 `awaiting_approval`,SSE 发出带 `args_sha256` 的
+  `approval.required`);`POST .../approve` 后工具才执行、run 完成、会话真开出来;另一个 run
+  `POST .../reject` 则以 `run.rejected` 终止且不再多开会话——批准先于执行,拒绝即无副作用。
 
 ### 新增（监控台工作台）
 
