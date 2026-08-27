@@ -70,6 +70,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（unpack.score_oep 自动采集只看一页内存区域,却不说区域图被截断）
+
+- `unpack.score_oep` 在未传 observations 时自动从运行时快照采集:`_collect_oep_observations_from_runtime`
+  只读一页 `memory.regions`(offset 0、limit 512),再把这份区域图当「全部」拿去 diff 求观测。`memory.regions`
+  本身是分页的、会回 `has_more`/`total`(其文档串还专门写「填满 limit 的一页不等于整张图」),但这里完全无视
+  `has_more`:一旦进程映射的区域超过 512,超出那页的可执行/保护位变化——甚至 RIP 所在的那块区域——就压根没
+  被看到,`find_region_at` 找不到便不发 `rip_in_main_module_code`,而回包只给 `region_count`,读的人会以为观测
+  (乃至「没有候选」这个结论)是基于完整区域图得出的。缓存给下一轮 diff 的保护位基线同样只有这半张图。
+- 现在采集处读取 `has_more`/`total`,当被截断时在结果里带 `regions_truncated`、`region_limit`(512)与
+  `region_total`,并在 `note` 追加「区域快照在 512 处截断,观测——包括其缺失——可能不完整」的告诫;
+  `unpack.score_oep` 仅在自动采集且确被截断时把这三项透传进回包(显式传 observations 时不涉及、不出现)。
+  工具描述同步点名这三个字段。未截断则一概不加。
+- 新增回归:截断的区域快照使回包带 `regions_truncated`/`region_limit`/`region_total` 且 note 含 truncated、
+  未截断不误标、显式传 observations 时不带区域截断字段。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
