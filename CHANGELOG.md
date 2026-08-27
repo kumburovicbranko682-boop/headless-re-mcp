@@ -969,6 +969,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`apk.strings` 会为了给出 total 把 DEX 里每一条字符串都装进一个集合再排序**。加壳
   样本可以有上百万条，一次调用就能把进程打满。采集上限 5000 条唯一值，超出回
   `has_more`，不再为了计数去物化全集。
+- 新增回归（`apk.manifest` 截断边界、解码失败与替换解码）：`manifest` 把二进制 AXML 解码为
+  文本后按 `manifest_xml = xml[:_MAX_MANIFEST_CHARS]`、`truncated = len(xml) > _MAX_MANIFEST_CHARS`
+  收敛，解码抛错则包成 `ApkError("backend_error", "failed to decode manifest: …")`。既有两处
+  `manifest` 测试（字段名测试与资源上限测试）都喂同一超限体，于是只观察到截断分支：`truncated`
+  恒为真、文本恒被切到上限。四条对超限夹具惰性的行为补齐：小于上限的常见清单必须原样返回且
+  `truncated=False`（否则硬编码 `truncated=True` 可蒙混）；恰好等于上限的清单因严格大于号仍算完整
+  （`>` 而非 `>=`，边界唯在等于上限与上限+1 处可见）；`get_android_manifest_axml` 或 `get_xml`
+  抛错时须包成命名了缘由的 `backend_error` 而非让 androguard 原始异常逃逸；夹带非 UTF-8 字节时
+  `decode(..., "replace")` 产出 U+FFFD 并照常成功，而非被严格解码推入错误路径。以变异逐一验证
+  （`>` 改 `>=`、硬编码 `truncated=True`、去掉 try/except、`decode` 去掉 `"replace"`）均被新用例
+  捕获（边界一例中既有超限测试仍绿，佐证其无法捕获）。
 - **拆转发失败后就把记录扔掉**。`release_forwards` 先清空再逐条拆除；设备当时掉线，
   adb server 上的转发还在，而本进程已经忘了，以后的 `close_all` 再也不会去拆。失败
   的项重新挂回跟踪列表。
