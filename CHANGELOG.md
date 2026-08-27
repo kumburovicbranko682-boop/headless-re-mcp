@@ -82,6 +82,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 新增回归（`js.unpack_bundle` 递归列举嵌套解包树，由真实嵌套目录直测固定）
+
+- `js.unpack_bundle` 把输出目录交给 `_capped_file_listing`,后者递归遍历、跳过非普通文件、
+  并按相对根目录的路径列出每个文件:`for path in root.rglob("*"): if not path.is_file(): continue;
+  … names.append(str(path.relative_to(root)))`;`names.sort()`。webcrack 从不写扁平目录:一次真解包会
+  在顶层留 `deobfuscated.js`,再加一棵常常深好几层的 `unpacked/` 模块树和若干中间目录。三处行为要紧,
+  而既有 `unpack_bundle` 测试全部只写顶层扁平文件(`out_dir / f"mod-{i}.js"`),一处都不覆盖:一是
+  **遍历要递归**——`rglob` 才够到 `unpacked/…` 下的模块;换成非递归 `glob`,顶层以下全从列表与计数里
+  消失,`file_count` 于是把一棵深树读成近乎空的 bundle。二是**目录不是文件**——`rglob("*")` 连中间目录
+  一起吐出来,`is_file()` 守卫把它们挡在列表和计数之外;删掉它,每个 `unpacked/`、`vendor/`(以及任何
+  空目录)都被当成模块计数、还以裸目录名混进 `files`。三是**名字相对根目录**——`relative_to(root)` 保住
+  树形(`unpacked/vendor/lib.js`);塌成 `path.name`,两个不同目录里同基名的模块会并成一个名字,调用方也
+  拿不到回读文件所需的路径。扁平夹具区分不了这三者和它们的坏形:没有子目录,`rglob` 与 `glob` 返回同一集合、
+  没有目录可跳、`relative_to` 恰等于 `name`。新增三例用一棵真实嵌套树(顶层文件 + `unpacked/0.js` +
+  `unpacked/vendor/lib.js` + 一个空目录)分别钉住:嵌套模块按相对路径列出、目录既不计数也不入列、列表有序。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
