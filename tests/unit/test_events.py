@@ -265,6 +265,63 @@ def test_cursor_refuses_batch_from_another_stream_position() -> None:
         cursor.advance(batch)
 
 
+def test_a_batch_that_is_not_an_object_is_rejected() -> None:
+    with pytest.raises(DebugEventProtocolError, match="must be an object"):
+        _parse(["not", "an", "object"])
+
+
+def test_a_cursor_ahead_of_latest_sequence_is_rejected() -> None:
+    # The plugin can never have handed out a cursor beyond what it produced,
+    # so a batch acknowledging one is lying about the stream.
+    payload = _batch(cursor=5, latest=2)
+
+    with pytest.raises(DebugEventProtocolError, match="ahead of latest_sequence"):
+        _parse(payload, cursor=5)
+
+
+def test_a_batch_shorter_than_the_available_window_is_rejected() -> None:
+    # Three events are available and the limit allows them all; a batch that
+    # returns only two silently withholds history from the consumer.
+    payload = _batch(latest=3, events=[_event(1), _event(2)])
+
+    with pytest.raises(DebugEventProtocolError, match="expected sequence window"):
+        _parse(payload)
+
+
+def test_an_event_that_is_not_an_object_is_rejected() -> None:
+    payload = _batch(latest=1, events=[_event(1)])
+    payload["events"] = ["not an event object"]
+
+    with pytest.raises(DebugEventProtocolError, match="event must be an object"):
+        _parse(payload)
+
+
+def test_an_out_of_range_integer_data_field_is_rejected() -> None:
+    payload = _batch(latest=1, events=[_event(1, "module.loaded", {"base": -5, "size": 16})])
+
+    with pytest.raises(DebugEventProtocolError, match="base must be a non-negative"):
+        _parse(payload)
+
+
+def test_a_non_string_text_data_field_is_rejected() -> None:
+    payload = _batch(
+        latest=1,
+        events=[_event(1, "module.loaded", {"base": 1, "size": 16, "name": 123})],
+    )
+
+    with pytest.raises(DebugEventProtocolError, match="name is invalid"):
+        _parse(payload)
+
+
+def test_a_valid_boolean_data_field_is_kept() -> None:
+    data = {"code": 0xC0000005, "address": 0x1000, "first_chance": True}
+    payload = _batch(latest=1, events=[_event(1, "exception", data)])
+
+    batch = _parse(payload)
+
+    assert batch.events[0].data["first_chance"] is True
+
+
 def test_persistent_log_replays_after_consumer_lag(tmp_path: Path) -> None:
     from headless_re_mcp.core.event_log import PersistentDebugEventLog
     from headless_re_mcp.core.events import DebugEvent
