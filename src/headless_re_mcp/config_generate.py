@@ -19,6 +19,11 @@ JsonObject = dict[str, Any]
 # the vocabulary agent/redaction treats as a credential so a doctor detail this
 # stripper misses is not one the rest of the system would have hidden. Both the
 # underscore and no-separator spellings are listed, as with api_key/apikey.
+# ``providerApiKeys`` (the agent's provider->key map) casefolds to
+# ``providerapikeys``; the substring redactor masks it via its own literal and
+# via the ``apikey`` it contains, but an exact-key rule only hides it when the
+# spelling is listed here -- so it is, or that map would survive a bundle the
+# redaction module would have masked everywhere else.
 _SECRET_KEYS = frozenset(
     {
         "token",
@@ -30,6 +35,8 @@ _SECRET_KEYS = frozenset(
         "secret",
         "api_key",
         "apikey",
+        "provider_api_keys",
+        "providerapikeys",
         "authorization",
         "credential",
         "private_key",

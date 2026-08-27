@@ -112,6 +112,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（MCP 配置包脱敏漏掉 providerApiKeys，与结构化脱敏词表不一致）
+
+- `config_generate._strip_secrets` 给要复制粘贴的 MCP 配置包与 doctor 报告做兜底脱敏，其
+  `_SECRET_KEYS` 按注释本应"与 agent/redaction 视为凭据的词表保持一致"。但它用的是**精确键**
+  （casefold）匹配、而结构化脱敏用的是**子串**正则,于是结构化脱敏认定为凭据的 `providerApiKeys`
+  （agent 的 provider→key 映射,结构化侧既有同名字面量、又因含 `apikey` 子串而命中)在这里漏网——
+  精确匹配下 `providerapikeys` 不等于 `apikey`。这违反了该模块声明的不变量("本处漏掉的键,不该是
+  系统其它地方会隐藏的")，也正是既有测试 `test_strip_secrets_covers_the_full_credential_vocabulary`
+  自称覆盖却遗漏的一项。当前 doctor/env 清单不携带该键（故非当前可达泄漏，属纵深防御的对齐缺口），
+  但配置面一旦演进出携带它的探针即会泄漏。现把 `providerapikeys` / `provider_api_keys` 两种拼写补入
+  `_SECRET_KEYS`；测试扩充为把结构化脱敏的全部凭据词（含 `providerApiKeys`）逐一送入并断言全部剥除,
+  并先用 `is_secret_key` 校验前提,把这条单向不变量（结构化⊆本处）钉成回归。IDA 许可证等本处多剥的项
+  不受影响（允许比结构化脱敏剥得更多）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
