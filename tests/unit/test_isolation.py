@@ -164,6 +164,77 @@ def test_settings_load_splits_an_env_command_as_argv(tmp_path, monkeypatch) -> N
     )
 
 
+def test_a_command_that_does_not_lex_is_kept_as_one_token() -> None:
+    """An unbalanced quote or a dangling escape must not raise out of the split.
+
+    Both are one-keystroke config typos, and the split runs inside
+    ``Settings.load()``. Whitespace-only stays "not configured": there is no
+    step to preserve in a blank line.
+    """
+    from headless_re_mcp.core.isolation import _split_command
+
+    assert _split_command('revert.ps1 "clean snapshot') == ('revert.ps1 "clean snapshot',)
+    assert _split_command("revert.sh \\") == ("revert.sh \\",)
+    assert _split_command("   ") == ()
+
+
+def test_a_command_that_does_not_lex_is_kept_as_one_token_on_windows(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The Windows branch protects backslashes but still lexes quotes."""
+    from headless_re_mcp.core import isolation as isolation_mod
+
+    monkeypatch.setattr(isolation_mod, "is_windows_host", lambda: True)
+
+    assert isolation_mod._split_command(r'revert.ps1 "C:\vm\clean') == (
+        r'revert.ps1 "C:\vm\clean',
+    )
+
+
+def test_a_command_that_does_not_lex_does_not_crash_settings_load(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A missing closing quote used to take down every entry point.
+
+    The split runs inside ``Settings.load()``, so the ``ValueError`` shlex
+    raises for the typo crashed serve and doctor alike with a bare "No closing
+    quotation" that named no setting -- leaving the operator nothing that
+    could even print which key to fix.
+    """
+    from headless_re_mcp.config import Settings
+
+    monkeypatch.setenv("HEADLESS_RE_ISOLATION_COMMAND", 'pwsh -File "C:/vm/revert.ps1')
+    monkeypatch.delenv("HEADLESS_RE_ISOLATION_REQUIRED", raising=False)
+
+    settings = Settings.load()
+
+    assert settings.isolation_command == ('pwsh -File "C:/vm/revert.ps1',)
+
+
+def test_a_command_that_does_not_lex_stays_configured_and_fails_closed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The typo must not silently disable a step the deployment asked for.
+
+    Falling back to an empty argv would read as "not configured", the
+    scheduler would skip rotation, and every sample after the first would run
+    on a dirty machine without a word. One unresolvable argv token keeps the
+    step configured and the failure loud: the exec fails, and the default
+    required policy stops the run instead of proceeding un-isolated.
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+
+    base = replace(Settings.load(), artifact_root=tmp_path)
+    policy = IsolationPolicy.from_settings(
+        replace(base, isolation_command='revert.ps1 "clean snapshot')
+    )
+
+    assert policy.configured is True
+    assert policy.command == ('revert.ps1 "clean snapshot',)
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError(command[0])
+
+    with pytest.raises(IsolationError):
+        IsolationRunner(policy, run=run).rotate()
+
+
 def test_policy_defaults_to_not_configured_and_fail_closed(tmp_path) -> None:  # type: ignore[no-untyped-def]
     from dataclasses import replace
 

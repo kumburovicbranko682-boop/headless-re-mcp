@@ -39,12 +39,31 @@ def _split_command(raw: str) -> tuple[str, ...]:
     becomes ``C:vmrevert.ps1``. Windows ``shlex`` (posix=False) keeps the
     quote characters. Protect backslashes, split the POSIX way so quotes
     still group arguments, then put the slashes back.
+
+    A line that does not lex -- an unbalanced quote, a dangling escape: the
+    kind of typo an operator makes in a config file -- must not raise out of
+    here. This runs inside ``Settings.load()``, so the ``ValueError`` shlex
+    throws used to take down every entry point, doctor included, with a bare
+    "No closing quotation" that named no setting. Falling back to an empty
+    argv would be worse: a deployment that asked for isolation would silently
+    run every sample on a dirty machine. The whole line is kept as one argv
+    token instead -- something no exec can resolve -- so the service starts,
+    the runner fails the step loudly, and the default required policy stops
+    the run closed instead of proceeding un-isolated.
     """
-    if not is_windows_host():
-        return tuple(shlex.split(raw))
-    if _NUL in raw:
-        raise ValueError("isolation command must not contain NUL")
-    return tuple(part.replace(_NUL, "\\") for part in shlex.split(raw.replace("\\", _NUL)))
+    stripped = raw.strip()
+    if not stripped:
+        return ()
+    try:
+        if not is_windows_host():
+            return tuple(shlex.split(raw))
+        if _NUL in raw:
+            raise ValueError("isolation command must not contain NUL")
+        return tuple(
+            part.replace(_NUL, "\\") for part in shlex.split(raw.replace("\\", _NUL))
+        )
+    except ValueError:
+        return (stripped,)
 
 
 @dataclass(frozen=True, slots=True)
