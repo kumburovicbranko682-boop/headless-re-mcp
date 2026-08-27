@@ -886,6 +886,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
+- **`frida.modules` 报了 `total` 和 `has_more` 却没有 `offset`，第一页之后的模块够不着**。
+  和 `apk.xrefs`（修复前）、`device.list`（修复前）一样：`has_more` 说「还有」，却没有翻页的
+  入口，模块多于一页（上限 256）的进程只能看到前 256 个。这个探针不同于 java/exports 那几个
+  为省去在设备上数大集合而用的 `limit+1` 试探——它本就枚举并数清了全部模块，因此可以像其余
+  列表读取器一样按 `offset` 翻页。脚本改为切 `[offset, offset+limit)` 窗口，后端回
+  `offset` 并按位置算 `has_more`；`offset` 在工具 schema 与后端都钉在非负（负值会从尾部切窗）。
 
 ### 新增（项目文档）
 

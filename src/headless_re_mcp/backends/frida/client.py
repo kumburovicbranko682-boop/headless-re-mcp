@@ -93,15 +93,16 @@ rpc.exports = { ping: function () { return 'root_bypass_loaded'; } };
 
 _ENUM_SCRIPT = """
 rpc.exports = {
-  modules: function (limit) {
+  modules: function (offset, limit) {
     var all = Process.enumerateModules();
     var items = [];
+    var start = Math.max(0, offset);
     var cap = Math.max(0, limit);
-    for (var i = 0; i < all.length && items.length < cap; i++) {
+    for (var i = start; i < all.length && items.length < cap; i++) {
       var m = all[i];
       items.push({name: m.name, base: m.base.toString(), size: m.size, path: m.path});
     }
-    return {modules: items, total: all.length};
+    return {modules: items, total: all.length, offset: start};
   },
   exports: function (moduleName, limit) {
     var mod = Process.findModuleByName(moduleName);
@@ -320,20 +321,33 @@ class FridaClient:
             with contextlib.suppress(Exception):
                 session.detach()
 
-    def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
+    def modules(
+        self, pid: int, *, allowed_pid: int, offset: int = 0, limit: int = 64
+    ) -> JsonObject:
         self._require(pid, allowed_pid)
+        # Floored here as well as at the tool schema: a negative offset would
+        # slice from the tail of the module list and hand back the wrong window.
+        if type(offset) is not int or offset < 0:
+            raise FridaError("invalid_params", "offset must be a non-negative integer")
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             capped = max(1, min(int(limit), 256))
-            raw = script.exports_sync.modules(capped)
+            start = max(0, int(offset))
+            raw = script.exports_sync.modules(start, capped)
             if isinstance(raw, dict):
+                # The script already sliced [start, start+capped) on-device, so
+                # its total is the whole module count and the page needs no
+                # further offsetting -- just a defensive cap on length.
                 held = list(raw.get("modules") or [])
-                total = int(raw.get("total") or len(held))
+                total = int(raw.get("total") or (start + len(held)))
+                window = held[:capped]
             else:
+                # Legacy shape: a bare list of every module, offset here instead.
                 held = list(raw or [])
                 total = len(held)
+                window = held[start : start + capped]
             items = [
                 {
                     "name": str(item.get("name", "")),
@@ -341,14 +355,17 @@ class FridaClient:
                     "size": int(item.get("size", 0) or 0),
                     "path": str(item.get("path", "")),
                 }
-                for item in held[:capped]
+                for item in window
                 if isinstance(item, dict)
             ]
             return {
                 "modules": items,
                 "count": len(items),
                 "total": total,
-                "has_more": total > len(items),
+                "offset": start,
+                # A page past the collected total means the earlier pages, not a
+                # short read, so key off position rather than count alone.
+                "has_more": start + len(items) < total,
             }
         finally:
             with contextlib.suppress(Exception):
