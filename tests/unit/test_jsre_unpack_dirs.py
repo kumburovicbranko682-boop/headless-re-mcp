@@ -113,6 +113,41 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     assert set(page["files"]) & set(tail["files"]) == set()
 
 
+def test_unpack_forces_overwrite_of_the_precreated_output_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """webcrack aborts on an existing -o dir; the service pre-creates one.
+
+    The client pre-creates a unique per-run tree so retention can reclaim it,
+    which means webcrack must be told to overwrite it (--force) or it exits with
+    "output directory already exists". This asserts the flag is passed without
+    needing webcrack installed, so CI catches a regression a live gate would not.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+        del timeout
+        seen.append(cmd)
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        (out_dir / "deobfuscated.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()  # the service pre-creates the tree; mimic that here
+
+    client = JsClient(executable=Path("/bin/true"))
+    result = client.unpack_bundle(bundle, out_dir)
+
+    assert result["file_count"] == 1
+    assert any(flag in {"-f", "--force"} for flag in seen[0])
+
+
 @pytest.mark.parametrize(
     ("files_written", "listing_truncated"),
     [(5, False), (6, True)],

@@ -85,6 +85,25 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present() -> None:
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS Gate not run (skip != pass)")
+    assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(_JS_FIXTURE))
+        # webcrack owns the output directory: the service pre-creates a unique
+        # tree for retention, so unpack has to pass --force or webcrack aborts
+        # with "output directory already exists". A green here proves the whole
+        # write path, not just deobfuscation to stdout.
+        assert result.ok, result.error
+        assert result.data["file_count"] >= 1
+        assert result.data["files"], "webcrack produced no files"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_wat_when_wabt_present() -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")

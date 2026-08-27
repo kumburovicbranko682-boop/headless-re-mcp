@@ -147,8 +147,13 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack refuses to write into a directory that already exists unless
+        # --force is given, and the caller pre-creates ``out_dir`` (a unique
+        # per-run tree) so retention pruning has a stable path to reclaim. Pass
+        # -f so the pre-created directory is the one webcrack overwrites instead
+        # of aborting with "output directory already exists".
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
+            [str(self.executable), str(resolved), "-o", str(out_dir), "-f"], timeout=timeout
         )
         files, file_count, listed_more = _capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)
         if code != 0 and not files:
