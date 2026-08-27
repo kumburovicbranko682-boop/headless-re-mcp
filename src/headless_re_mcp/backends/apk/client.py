@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -28,6 +27,13 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# Page ceilings, kept equal to the apk.* tool schema maxima so the MCP path
+# (schema-validated) and the agent/OpenAI paths (clamped here) agree on the
+# largest page. test_apk_offset_schema.py pins them against the schema.
+_MAX_CLASSES_PAGE = 1000
+_MAX_METHODS_PAGE = 1000
+_MAX_STRINGS_PAGE = 2000
+_MAX_XREFS_PAGE = 1000
 
 
 class ApkError(RuntimeError):
@@ -48,6 +54,23 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
+    """Clamp a page window at the source, not only at the tool schema.
+
+    The apk.* schemas bound ``offset >= 0`` and ``limit`` within range, but the
+    agent and OpenAI-bridge transports call the handler directly and never run
+    that pydantic validation -- only the MCP path does. A negative offset then
+    becomes a tail slice (``names[-1:-1+limit]`` returned an empty page that
+    still reported ``has_more``), and a negative limit an all-but-the-tail slice
+    (``names[0:-5]``), so page zero silently misread the DEX. Clamp here so the
+    contract holds on every path, the way the web, proxy and jsre list backends
+    already do; ``xrefs`` already clamped its limit and now shares the ceiling.
+    """
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), max_limit))
+    return start, cap
 
 
 class _ParsedApk:
@@ -168,41 +191,30 @@ class ApkClient:
 
     def open(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-
-        def _safe(getter: Callable[[], Any], default: Any = None) -> Any:
-            """Degrade a manifest getter that androguard cannot answer.
-
-            androguard is inconsistent on a manifest it failed to parse (which
-            it constructs an APK for anyway, logging an error rather than
-            raising): get_min_sdk_version / get_main_activity return None, but
-            get_androidversion_name / get_androidversion_code raise
-            KeyError('Name' / 'Code'). A malformed-but-zippable APK -- an
-            entirely plausible hostile input -- therefore made apk.open leak a
-            raw KeyError, which the service files as an internal_error with a
-            logged incident, casting a bad manifest as a tool bug. Every sibling
-            (permissions / components / certificates) already degrades to empty
-            on exactly this input; open now does the same, reporting what parses
-            and a default for what does not, so it stays a structured overview
-            and never a crash.
-            """
-            try:
-                return getter()
-            except Exception:  # noqa: BLE001 - androguard raises many types
-                return default
-
+        package = apk.get_package()
+        # Measured: get_package() returning None still answered
+        # {opened: True, package: None}, so an unattended agent treated a zip
+        # that is not an APK as an opened package.
+        if not package:
+            raise ApkError(
+                "backend_error",
+                "failed to read package name",
+                opened=False,
+                package=None,
+            )
         return {
             "opened": True,
-            "package": _safe(apk.get_package, ""),
-            "version_name": _safe(apk.get_androidversion_name),
-            "version_code": _safe(apk.get_androidversion_code),
-            "min_sdk": _safe(apk.get_min_sdk_version),
-            "target_sdk": _safe(apk.get_target_sdk_version),
-            "main_activity": _safe(apk.get_main_activity),
-            "permission_count": len(_safe(apk.get_permissions, []) or []),
+            "package": package,
+            "version_name": apk.get_androidversion_name(),
+            "version_code": apk.get_androidversion_code(),
+            "min_sdk": apk.get_min_sdk_version(),
+            "target_sdk": apk.get_target_sdk_version(),
+            "main_activity": apk.get_main_activity(),
+            "permission_count": len(apk.get_permissions()),
             "native_abis": sorted(
                 {
                     name.split("/")[1]
-                    for name in (_safe(apk.get_files, []) or [])
+                    for name in apk.get_files()
                     if name.startswith("lib/") and len(name.split("/")) >= 3
                 }
             ),
@@ -326,13 +338,14 @@ class ApkClient:
                 break
             names.append(klass.name)
         names.sort()
-        window = names[offset : offset + limit]
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_CLASSES_PAGE)
+        window = names[start : start + cap]
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
-            "offset": offset,
-            "has_more": offset + len(window) < len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
             "scan_capped": scan_more,
         }
 
@@ -371,14 +384,15 @@ class ApkClient:
                 )
             if scan_more:
                 break
-        window = methods[offset : offset + limit]
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_METHODS_PAGE)
+        window = methods[start : start + cap]
         return {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
             "total": len(methods),
-            "offset": offset,
-            "has_more": offset + len(window) < len(methods),
+            "offset": start,
+            "has_more": start + len(window) < len(methods),
             "scan_capped": scan_more,
         }
 
@@ -392,13 +406,14 @@ class ApkClient:
                 break
             seen.add(str(item.get_value())[:_MAX_STRING_LEN])
         values = sorted(seen)
-        window = values[offset : offset + limit]
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_STRINGS_PAGE)
+        window = values[start : start + cap]
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
-            "offset": offset,
-            "has_more": offset + len(window) < len(values),
+            "offset": start,
+            "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
         }
 
@@ -407,7 +422,7 @@ class ApkClient:
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
-        cap = max(1, int(limit))
+        _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
         callers: list[JsonObject] = []
         has_more = False
         for method in parsed.analysis.get_methods():

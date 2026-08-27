@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
-import inspect
 import logging
 import os
 import socket
@@ -22,9 +21,13 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.har import har_entry, serialize_har
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
+
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
 _REPLAY_WAIT_S = 15.0
+_SERVER_STOP_WAIT_S = 10.0
 # The ring is count-capped, but each slot can still hold a multi-megabyte
 # request or response. Two thousand of those is the overnight OOM the count
 # cap was supposed to prevent.
@@ -32,6 +35,17 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A body at or under this stays inline as text; anything larger, or anything
+# that is not valid UTF-8, spills to a file so the caller never receives a
+# lossy decode masquerading as the real bytes.
+_MAX_INLINE_BODY = 200_000
+# flow.get returns headers inline. The body is already spilled/capped, but the
+# header map was dumped whole, so a chatty or hostile server (thousands of
+# headers, a multi-kilobyte Set-Cookie) could return an unbounded blob into the
+# tool response. Bound it in count, per-value and total size like the rest.
+_MAX_FLOW_HEADERS = 100
+_MAX_HEADER_VALUE_BYTES = 4 * 1024
+_MAX_FLOW_HEADERS_TOTAL_BYTES = 64 * 1024
 _OMITTED_BODY = object()
 
 
@@ -118,6 +132,30 @@ def _uninstall_master_logging(
                 root.removeHandler(candidate)
 
 
+def _drain_proxy_servers(master: Any, loop: asyncio.AbstractEventLoop) -> None:
+    """Close mitmproxy's listening servers, and wait until they are down.
+
+    ``Master.done()`` stopped tearing down the proxyserver's listeners on the
+    road to mitmproxy 12 -- mitmdump never noticed because the whole process
+    exits right after ``run()`` returns. Embedded in a long-lived service,
+    ``shutdown()`` alone therefore leaves the OS socket accepting forever:
+    stop() reports "stopped" and joins a thread that exits cleanly, yet the
+    port stays bound until the process dies, so no later capture can ever bind
+    it again. Draining ``Servers.update([])`` on the proxy loop is the
+    documented way to stop every listener, and it awaits their close.
+    """
+    try:
+        addon = master.addons.get("proxyserver")
+        update = getattr(getattr(addon, "servers", None), "update", None)
+        if update is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(update([]), loop)
+    except Exception:  # noqa: BLE001 - the addon surface varies across versions
+        return
+    with contextlib.suppress(Exception):
+        future.result(timeout=_SERVER_STOP_WAIT_S)
+
+
 def _content_len(part: Any) -> int:
     if part is None:
         return 0
@@ -177,6 +215,91 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
+def _raw_body(part: Any) -> bytes:
+    """The raw bytes of a request/response, or empty when there is no body.
+
+    mitmproxy decodes ``raw_content`` lazily and can raise while doing so; a
+    failure there is not a reason to fail the whole fetch, so it reads as an
+    empty body the same way a bodyless message does.
+    """
+    if part is None:
+        return b""
+    try:
+        content = part.raw_content
+    except Exception:  # noqa: BLE001 - a decode failure is an empty body here
+        return b""
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    return b""
+
+
+def _emit_body(raw: bytes, artifact_dir: Path) -> JsonObject:
+    """Describe one message body without ever handing back a lossy decode.
+
+    Text within the inline cap comes back as ``body``; a larger body, or one
+    that is not valid UTF-8, spills to a ``.bin`` artifact and comes back as
+    ``body_path`` with ``spill_reason`` so a caller can tell "too big to inline"
+    from "not text" and never mistakes replacement characters for real bytes.
+    """
+    out: JsonObject = {"size": len(raw)}
+    if not raw:
+        out["body"] = ""
+        return out
+    too_large = len(raw) > _MAX_INLINE_BODY
+    if not too_large:
+        try:
+            out["body"] = raw.decode("utf-8")
+            return out
+        except UnicodeDecodeError:
+            pass
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    dest = artifact_dir / f"flow-{uuid4().hex}.bin"
+    dest.write_bytes(raw)
+    out["body_path"] = str(dest)
+    out["spill_reason"] = "too_large" if too_large else "binary"
+    return out
+
+
+def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
+    """Header map for flow.get, bounded in count, per-value and total size.
+
+    mitmproxy keeps whole headers on the retained flow, so a hostile or chatty
+    server could otherwise put megabytes of them inline in the tool response.
+    Duplicate names collapse to the last value, matching the previous
+    ``dict(headers)``; the returned flag says when anything was dropped so a
+    reader does not mistake a bounded map for the whole header set.
+    """
+    headers = getattr(part, "headers", None)
+    if headers is None:
+        return {}, False
+    try:
+        try:
+            items = list(headers.items(multi=True))
+        except TypeError:
+            items = list(headers.items())
+    except Exception:  # noqa: BLE001
+        return {}, True
+    out: dict[str, str] = {}
+    truncated = False
+    total = 0
+    for key, value in items:
+        name = str(key)
+        if name not in out and len(out) >= _MAX_FLOW_HEADERS:
+            truncated = True
+            break
+        text, cut = _bounded_metadata(value, _MAX_HEADER_VALUE_BYTES)
+        truncated = truncated or cut
+        entry_bytes = len(name.encode("utf-8", errors="replace")) + len(
+            text.encode("utf-8", errors="replace")
+        )
+        if total + entry_bytes > _MAX_FLOW_HEADERS_TOTAL_BYTES:
+            truncated = True
+            break
+        total += entry_bytes
+        out[name] = text
+    return out, truncated
+
+
 class _FlowRecorder:
     """A mitmproxy addon that snapshots finished flows into a ring buffer.
 
@@ -208,17 +331,45 @@ class _FlowRecorder:
                 break
 
     def response(self, flow: Any) -> None:  # mitmproxy calls this on each response
-        req = flow.request
-        resp = flow.response
+        self._record(flow)
+
+    def error(self, flow: Any) -> None:  # mitmproxy calls this when a flow errors
+        # A flow that never produced a response -- TLS handshake refused,
+        # upstream unreachable, connection reset mid-request -- otherwise
+        # vanishes: only `response` was wired, so the capture silently dropped
+        # every failed request. That is the opposite of what an RE session
+        # wants, where "this host refused the handshake" is often the finding.
+        # Record it, marked with error/error_msg, so it is captured like any
+        # other flow but stays distinguishable from a completed one (which
+        # always carries a numeric status; an errored flow's status is null).
+        err = getattr(flow, "error", None)
+        message = str(getattr(err, "msg", None) or err or "flow error")
+        self._record(flow, error_msg=message)
+
+    def _record(self, flow: Any, *, error_msg: str | None = None) -> None:
+        req = getattr(flow, "request", None)
+        resp = getattr(flow, "response", None)
         stored_bytes = _flow_stored_bytes(flow)
         omitted = stored_bytes > _MAX_STORED_BODY
-        method, method_truncated = _bounded_metadata(req.method, _MAX_METADATA_BYTES)
-        url, url_truncated = _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)
-        host, host_truncated = _bounded_metadata(req.host, _MAX_METADATA_BYTES)
+        method, method_truncated = _bounded_metadata(
+            getattr(req, "method", ""), _MAX_METADATA_BYTES
+        )
+        url, url_truncated = _bounded_metadata(
+            getattr(req, "pretty_url", ""), _MAX_URL_BYTES
+        )
+        host, host_truncated = _bounded_metadata(
+            getattr(req, "host", ""), _MAX_METADATA_BYTES
+        )
         content_type, type_truncated = _bounded_metadata(
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
+        # The decoded response body length is known here, before the flow may be
+        # dropped from the retain ring, so the summary keeps it even for a flow
+        # whose body was not retained -- and the HAR export can report a real
+        # content size instead of the -1 "unknown" sentinel.
+        response_size = _content_len(resp)
+        error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
@@ -248,10 +399,20 @@ class _FlowRecorder:
                 "host": host,
                 "status": getattr(resp, "status_code", None),
                 "content_type": content_type,
+                "response_size": response_size,
             }
             if omitted:
                 entry["body_omitted"] = True
-            if method_truncated or url_truncated or host_truncated or type_truncated:
+            if error_msg is not None:
+                entry["error"] = True
+                entry["error_msg"] = error_text
+            if (
+                method_truncated
+                or url_truncated
+                or host_truncated
+                or type_truncated
+                or error_truncated
+            ):
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
 
@@ -349,61 +510,26 @@ class _ProxyInstance:
             # Closing the loop outright abandons mitmproxy's still-pending
             # accept task, which leaves the listening socket open at the OS
             # level: stop() would appear to work while the port stayed bound
-            # and the next capture could never start. Close the proxy servers,
-            # then unwind the remaining tasks. This is a backstop for an
-            # abnormal exit that stop() never drove; on the normal path the
-            # servers are already stopped, so is_running skips them here.
+            # and the next capture could never start. Unwind the tasks first.
             if loop is not None:
-                master = self._master
-                if master is not None and not loop.is_closed():
-                    with contextlib.suppress(Exception):
-                        loop.run_until_complete(self._astop_servers(master))
                 with contextlib.suppress(Exception):
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
 
-    @staticmethod
-    async def _astop_servers(master: Any) -> None:
-        """Close the proxyserver addon's listening sockets.
-
-        ``master.shutdown()`` stops the run loop but, as of mitmproxy 12.x, does
-        not close the proxy's listening sockets: the run thread exits and the
-        loop closes with the socket still bound, so the port stays in LISTEN and
-        the next capture cannot rebind it -- ``stop()`` looked like it worked
-        while the port never came back. Each proxyserver instance owns that
-        socket and exposes an async ``stop()``; awaiting it before shutdown is
-        what actually frees the port. Version-defensive: a missing addon or
-        attribute, and a server already stopped (``is_running`` is False, and
-        a redundant ``stop()`` asserts rather than no-ops), are skipped.
-        """
-        addons = getattr(master, "addons", None)
-        getter = getattr(addons, "get", None)
-        proxyserver = getter("proxyserver") if getter is not None else None
-        for server in list(getattr(proxyserver, "servers", None) or []):
-            stop = getattr(server, "stop", None)
-            if stop is None or not getattr(server, "is_running", True):
-                continue
-            with contextlib.suppress(Exception):
-                result = stop()
-                if inspect.isawaitable(result):
-                    await result
-
     def stop(self) -> None:
         master = self._master
         loop = self._loop
+        thread = self._thread
         if master is not None and loop is not None:
-            # Close the listening sockets on the loop while it is still running;
-            # master.shutdown() alone leaves them bound on mitmproxy 12.x.
-            if loop.is_running():
-                with contextlib.suppress(Exception):
-                    future = asyncio.run_coroutine_threadsafe(
-                        self._astop_servers(master), loop
-                    )
-                    future.result(timeout=10.0)
+            # Draining needs a loop that is still serving; a dead thread means
+            # the servers are already unwinding (or leaked beyond reach), and
+            # waiting on its loop would stall stop() for the whole timeout.
+            if thread is not None and thread.is_alive():
+                _drain_proxy_servers(master, loop)
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(master.shutdown)
-        if self._thread is not None:
-            self._thread.join(timeout=10.0)
+        if thread is not None:
+            thread.join(timeout=10.0)
         # Also here, not only in the thread's own unwind: a thread that is wedged
         # never runs its finally, and a stale handler is the one piece of a dead
         # proxy that keeps costing the whole process something.
@@ -535,32 +661,25 @@ class ProxyBackend:
             )
         req = flow.request
         resp = flow.response
-        body = b""
-        try:
-            body = resp.raw_content or b"" if resp else b""
-        except Exception:  # noqa: BLE001
-            body = b""
-        result: JsonObject = {
-            "id": flow_id,
-            "request": {
-                "method": req.method,
-                "url": req.pretty_url,
-                "headers": dict(req.headers),
-            },
-            "response": {
-                "status": getattr(resp, "status_code", None),
-                "headers": dict(resp.headers) if resp else {},
-                "size": len(body),
-            },
+        method, method_cut = _bounded_metadata(req.method, _MAX_METADATA_BYTES)
+        url, url_cut = _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)
+        req_headers, req_headers_cut = _bounded_headers(req)
+        resp_headers, resp_headers_cut = _bounded_headers(resp) if resp else ({}, False)
+        request: JsonObject = {"method": method, "url": url, "headers": req_headers}
+        if method_cut or url_cut or req_headers_cut:
+            request["metadata_truncated"] = True
+        # The request body is what an agent reverse-engineering an API most
+        # wants to see -- what was actually POSTed -- and used to be dropped
+        # entirely, leaving only the response.
+        request.update(_emit_body(_raw_body(req), artifact_dir))
+        response: JsonObject = {
+            "status": getattr(resp, "status_code", None),
+            "headers": resp_headers,
         }
-        if len(body) > 200_000:
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            out = artifact_dir / f"flow-{uuid4().hex}.bin"
-            out.write_bytes(body)
-            result["response"]["body_path"] = str(out)
-        else:
-            result["response"]["body"] = body.decode("utf-8", errors="replace")
-        return result
+        if resp_headers_cut:
+            response["metadata_truncated"] = True
+        response.update(_emit_body(_raw_body(resp), artifact_dir))
+        return {"id": flow_id, "request": request, "response": response}
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)
@@ -604,24 +723,35 @@ class ProxyBackend:
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
         inst = self._get(session_id)
-        import json
-
         entries = [
-            {
-                "request": {"method": f.get("method"), "url": f.get("url")},
-                "response": {
-                    "status": f.get("status") or 0,
-                    "content": {"mimeType": f.get("content_type") or ""},
-                },
-            }
+            har_entry(
+                method=f.get("method"),
+                url=f.get("url"),
+                status=f.get("status"),
+                mime_type=f.get("content_type") or "",
+                response_body_size=f.get("response_size"),
+            )
             for f in inst.recorder.snapshot()
         ]
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
+        # Bounded like web.har.export: the flow ring holds up to 2000 rows whose
+        # URLs alone can be 16 KiB each, so an unbounded write would drop a
+        # multi-megabyte artifact the retention walker never budgeted for.
+        serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
+        if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise ProxyError(
+                "too_large",
+                "HAR export exceeds capture cap",
+                size=serialized.size,
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        out_path.write_text(serialized.text, encoding="utf-8")
+        return {
+            "path": str(out_path),
+            "entry_count": serialized.entry_count,
+            "truncated": serialized.truncated,
+            "size": serialized.size,
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):

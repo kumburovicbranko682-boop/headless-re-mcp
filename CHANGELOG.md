@@ -49,321 +49,234 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
-### 新增（apktool 重打包后端首次拿到真机 gate：decode↔build 往返一枚真 APK）
+### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
-- **apktool 适配器此前完全没有真后端覆盖**。`decode` / `build`、会话制品树的接线(`_repack_dir`、
-  `_require_session_path`)、超大树防护(`_refuse_oversized_tree`)、以及 build 对「退出 0 却产出空/非 zip」的
-  检测,全都只在单元层对着打桩子进程跑过。关键顾虑一直是:apktool 3.x 用 aapt2 编译 manifest,而 aapt2 要靠
-  AOSP framework 才能解析 `android:` 命名空间属性——听起来要拖进整个 Android SDK。实测发现 apktool 自带默认
-  framework 并在首次 build 时自动装到 `~/.local/share/apktool/framework/1.apk`,于是**一个不含任何 `android:`
-  属性的 manifest 只靠 apktool + JRE 就能编译**,不需要外部 SDK。新增 `test_android_repack_gate.py`:先用 apktool
-  自己的 build 把一份极小的文本 manifest(`package=com.gate.repack`,空 `<application/>`)编成真 APK(充当夹具,
-  一如用 gcc 现场编 ELF 夹具),再经 service 跑 `apk.decode`→`apk.repack` 往返,并断言包名穿过二进制 AXML 往返
-  仍在:decode 回出的文本 manifest 含 `com.gate.repack`,repack 产出的 APK 是合法 zip 且标记 unsigned,把它再
-  decode 一次包名依旧完好。build 的 unsigned/非空 zip 契约、decode 的 manifest 存在性检查都在真 apktool 上跑过。
-  apktool 未配置时明确 skip(skip != pass)。CI 侧复用给 jadx 加的 temurin JDK 21,补上带缓存的 apktool 3.0.3
-  jar 下载与包装脚本,并把 `HEADLESS_RE_APKTOOL` 指向它,该 gate 在 CI 上真跑。Android 重打包路径(decode/build)
-  自此有了真后端回归护栏。
+- `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
+  三态——null 表示复核跑不起来。但 `_pm_path` 只找 `package:` 行，没做其余 adb 读取（getprop /
+  pm list）都会做的 `_is_host_error_output` 判定：adbutils 的 `shell` 有时把 adb 主机端自己的
+  `error:` / `adb:` 消息当 stdout 返回而不抛异常（例如设备在改动与复核之间掉线）。这种主机错误
+  被读成“没有 package: 行”，于是真装上的包报成 `installed=false`（假阴性），真卸掉的复核报成
+  `uninstalled=true`（假阳性）——正是三态里 null 分支要避免的误报。现让 `_pm_path` 对主机错误
+  输出抛 `AdbError`，两个调用方已有的 `except AdbError` 分支即把结果如实报成 null + “could not
+  verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
+  新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
-### 修复（frida.memory.read 在 frida ≥17 上必崩：仍在用被移除的 Memory.readByteArray 全局）
+### 修复（工作方向隐藏了 Android 共用的抓包）
 
-- **`frida.memory.read` 对任何 frida ≥17 运行时都直接抛 `TypeError: not a function`**。注入脚本里的 `read`
-  用的是 `Memory.readByteArray(ptr(address), size)`——frida 17 把 `Memory.read*` 这组自由函数全删了(实测
-  frida 17.17.0 上 `typeof Memory.readByteArray` 为 `undefined`),于是每次内存读都在 JS 侧「not a function」,
-  经 RPC 冒泡成 `backend_error`。改用自 frida 12 起就存在的指针方法 `ptr(address).readByteArray(size)`,
-  在 android extra 所钉的整个 `>=16.5` 区间(含 16.x 与 17.x)都可用。实测:修复前对本地进程 `memory.read`
-  必崩,修复后读回目标 ELF 头 `7f454c46`。这个 bug 正是下面新增的 frida 本地实测 gate 复现出来的——此前 frida
-  后端只有 `frida.devices` 一个信封断言,attach/modules/exports/**memory.read**/hook 的成功路径无任何真后端覆盖,
-  所以一个在现代 frida 上必崩的内存读悄无声息。
+- `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
+  `_WEB_PREFIXES` 里，而 `android` 隐藏的正是这组前缀。可抓包（mitmproxy）在能力概览与
+  `service_proxy` 文档里都写明「Web 与 Android 共用」，其中 `proxy.ca.install_android` 更是
+  Android 专用工具——结果它在为 Android 工作准备的方向里反而不可见，Android 逆向拿不到
+  拦截代理与装 CA 的入口。现把 `proxy.` 拆到独立的 `_SHARED_ANDROID_WEB_PREFIXES`，只在
+  `pe` 方向（隐藏一切非核心面）里藏，`android`/`web` 都保留。原先把该行为写死的两个 profile
+  测试同步更正，并新增一条直测：`proxy.start/flows/ca.install_android` 在 `android`/`web` 可见、
+  在 `pe` 不可见。
 
-### 新增（frida 本地 attach 实测 gate：attach/modules/exports/memory.read/hook + 授权拒绝）
+### 修复（`web.console` 补齐 total 与其余读取器对齐）
 
-- **frida 后端此前几乎没有真后端覆盖**:只有 `frida.devices` 的信封检查,而 attach、modules、exports、
-  memory.read、hook 模板注入的成功路径,以及「pid 不在会话授权集内必须拒绝」的授权闸,全都没跑过真 frida。
-  frida 在 Linux 上能 attach 本地进程(对自己派生的子进程,即便 `ptrace_scope=1` 也放行),所以新增
-  `test_frida_live_gate.py`:spawn 一个本地 python 子进程,经 `FridaClient` attach 它,枚举 modules 与某模块
-  exports、从模块基址 `memory.read` 出真实字节(断言正是 ELF 魔数 `\x7fELF`——这条断言逮住了上面的
-  frida-17 bug)、加载 `noop` hook 模板并断言其 `persisted=False`(detach 即销毁的诚实披露),最后断言 attach
-  一个不等于 allowed_pid 的 pid 必得 `permission_denied`。frida 缺席或本机 ptrace 不允许 attach 时明确
-  skip(skip != pass)。CI 侧 frida 已在 `[android]` extra 里,该 gate 在 linux-integration 上真跑。
+- `web.console` 是唯一不回 `total` 的分页读取器——`network.list`、`scripts`、`wasm.list`、
+  `proxy.flows`、`apk.*`、frida `modules`/`applications`、`js.unpack_bundle` 全都回。它的文档串
+  本就承诺「填满 limit 的一页不等于整个缓冲」,但只给了布尔 `has_more`:调用方知道「还有」,
+  却不知道「还有多少」,无法据此决定下次用多大的 limit 一次取完。现补上 `total`(缓冲里的
+  消息条数),与其余读取器口径一致;仍回最新的尾部,且因 limit 上限等于环容量、一次即可取完
+  整个缓冲,故不需要 offset。文档串同步说明,并扩展回归测试断言 `total`。
 
-### 新增（frida 设备路径实测 gate：enumerate_devices、_authorize 授权集闸、本地设备 hook）
+### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
-- **上面那条 gate 只覆盖本地单 pid 路径(`_require`),而真实 Android 用的是设备路径**：
-  `java_enumerate` / `hook_template_device` 走的是另一套授权闸 `_authorize`(接收会话级 pid **集合**)与
-  `_resolve_device`,此前没有真 frida 覆盖。新增 `test_frida_device_path_authorization_and_local_hook`:
-  断言 `enumerate_devices` 至少含 `local` 设备;`noop` 模板不需要 ART,遂用 `local` 设备当替身把
-  `hook_template_device("local", pid, "noop", allowed_pids={pid})` 真加载出来,驱动 `_resolve_device('local')`、
-  真 `device.attach` 与脚本加载,并断言 `persisted=False`。授权集边界与模板校验都在任何 attach **之前**
-  裁决,因而与 ptrace 是否放行无关:pid 不在集合内、集合为空都必得 `permission_denied`,未知模板名必得
-  `invalid_params`。frida 缺席或本机不允许 attach 时明确 skip(skip != pass)。
+### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
 
-### 新增（apksigner 签名路径拿到真机 gate：签名重打包 APK 并独立验签，Android 面自此全覆盖）
+- `apk.sign`（apksigner）与 `apk.decode`（apktool `d`）此前只检查输入路径存在（`is_file`）就把它
+  交给 JVM。APK 本质是 zip：一个被截断的下载、指错的路径，或某个漏过自身校验的构建产物一旦不是
+  zip，apksigner/apktool 仍会先拉起一个 JVM、再吐出一段晦涩的 Java 错误才失败——白白付出 JVM 启动
+  开销，还把「参数错」报成 `backend_error`。现两条路径在开进程前先用 `zipfile.is_zipfile` 判定输入
+  确是 zip（只读归档尾部、不解压，故校验本身没有 zip 炸弹暴露面），不是就回精确的 `invalid_params`，
+  与 `apk.repack` 已经校验自己的产物是有效 zip、以及 wasm 工具在启 wabt 前先查 `\0asm` 魔数属同一快速
+  失败范式。直接调后端的 apk.decode / apk.sign 单测相应改用真实（极小）zip 作输入，并新增直测钉住
+  非 zip 输入在开进程前即被拒、有效 zip 仍照常交给工具。
 
-- **`apk.sign` 的 apksigner 路径此前也没有真后端覆盖**。它最要紧的一环——密码经环境变量交给 apksigner
-  (`env:APKSIGNER_KS_PASS`,而非 argv,好让密钥库口令在签名 JVM 存活期间不出现在全局可读的进程表里)、客户端在
-  宣告成功前自己再跑一遍 `apksigner verify`、以及 debug keystore 默认逻辑——全都只在打桩子进程上跑过。原以为这需要
-  整套 Android SDK build-tools,实测发现 Debian/Ubuntu 有独立的 `apksigner` 包(不含全套 SDK),且 JDK 自带的
-  `keytool` 能生成客户端默认认的那把 `~/.android/debug.keystore`(别名 `androiddebugkey`、口令 `android`)。
-  新增第二条 gate `test_apktool_sign_produces_a_verifiable_apk`:build→repack 出真 APK 后,经 service 用默认
-  debug keystore 签名(不传 keystore 参数,正好走「debug 默认」分支——注意 `apk.sign` 对**自定义** keystore 会用
-  `_require_session_path` 限制在会话制品树内,故只有 debug 默认这条能不往会话目录里塞文件),并给出独立于工具自述的
-  确凿证据:v1 签名会把 `<ALIAS>.(RSA|DSA|EC)` 与 `MANIFEST.MF` 写进 zip 的 META-INF(未签名的 repack 产物没有),
-  再另起一个 `apksigner verify` 进程(不是客户端内部那次)必须接受该签名。apktool / apksigner / debug keystore 任一
-  缺席即明确 skip(skip != pass)。CI 侧用 apt 装独立 `apksigner`(自动上 PATH,`shutil.which` 即可解析),并用
-  `keytool` 现场生成标准 debug keystore,该 gate 在 CI 上真跑。**至此 Android 目标域四个后端
-  (androguard / jadx / apktool / apksigner)全部有真后端集成护栏,与 PE 线看齐。**
+### 修复（apk.repack 不再把空/损坏产物报成重打包成功）
 
-### 新增（jadx 反编译后端首次拿到真机 gate：用同一手工 DEX 跑通 export_sources 与 decompile）
+- `apk.repack`（apktool `b`）过去只要退出码为零且输出文件存在就报成功并回填 `size`；但 apktool
+  可能退出 0 却留下一个零字节或被截断的文件（构建在创建产物后中止、磁盘写满）。APK 本质是 zip，
+  这类空/非 zip 产物其实是一次失败的重打包，原样报成功会把不可用文件送进 `apk.sign` / 安装，直到
+  签名那步才暴露。现要求产物非空且能通过 `zipfile.is_zipfile` 校验，否则在重打包这步就报
+  `backend_error`（附 `size` 与 stderr 摘录）。
 
-- **jadx 适配器此前完全没有真后端覆盖**。`export_sources` / `decompile`、`_class_to_java_path` 的
-  smali→路径映射、sources 根目录的逃逸防护、`_capped_java_listing` 的树摘要,全都只在单元层对着一个被打桩的
-  子进程跑过。jadx 是个真正的 Java 反编译器,能把上面那枚手工组装的 DEX 变回 Java,所以新增
-  `test_android_jadx_decompiles_the_real_dex` 经 service 驱动两个操作:`apk.export_sources` 必须摘要出一棵
-  含 `com/gate/Sample.java` 的树(`java_file_count>=1`、`sources_dir` 非空),`apk.decompile("Lcom/gate/Sample;")`
-  必须回出含 `class Sample` 及 `secret` / `caller` 两个方法的源码(实测 jadx 1.5.6 把那条 invoke-static 还原成
-  `caller()` 里对 `secret()` 的调用),且 `path` 以 `Sample.java` 结尾、`truncated` 为 False。jadx 未配置时明确
-  skip(skip != pass)。CI 侧给 linux-integration 的快 gate job 补上 temurin JDK 21 与带缓存的 jadx 1.5.6 下载,
-  并把 `HEADLESS_RE_JADX` 指向解出的启动脚本,该 gate 在 CI 上真跑。Android 线的 jadx 反编译路径自此有了真后端
-  回归护栏,与 androguard 的 DEX 内容操作互补。
 
-### 新增（Android DEX 内容操作首次拿到真机 gate：手工组装最小合法 classes.dex）
+### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
 
-- **`apk.classes` / `apk.methods` / `apk.strings` / `apk.xrefs` 的成功路径此前从未跑过真 androguard**。
-  其余 Android 测试用的合成 APK 里 `classes.dex` 是占位垃圾，`AnalyzeAPK` 直接拒收——于是这四个操作
-  在集成层只走过 `backend_error` 分支，成功路径（`get_classes` 的 external 过滤、`get_methods` 的
-  descriptor/access 渲染、`get_strings`、按方法名扫 xref）只在单元层对着假对象跑。androguard 不需要
-  外部工具，只要一个结构合法的 `.dex`,所以照 WASM 模块手工组装、ELF 夹具现场编译的同一思路,在测试里
-  逐字节组装出最小的真 DEX:一个类 `Lcom/gate/Sample;`(继承 Object)带两个 `public static` 方法——
-  `secret()V` 的方法体是 `const-string v0, "gate-secret"; return-void`,`caller()V` 的方法体是
-  `invoke-static {} secret; return-void`——刚好够 androguard 建出真实对象图(非 external 的
-  ClassAnalysis、带 descriptor 与 access 的 EncodedMethod、被引用的 StringAnalysis,以及经由那条
-  invoke-static 得到的**非空 xref 表**,让 xrefs 的 caller 渲染循环也吃到真数据,而不只是「找到但没人调用」
-  的空答案分支)。遵守 DEX 规则:string_ids 按内容排序、type_ids 按 string 索引排序、method_ids 按
-  (class, name) 排序、adler32 校验和(bytes[12:])与 SHA-1 签名(bytes[32:])。新 gate
-  `test_android_dex_operations_parse_a_real_dex` 经 service 层驱动全部四个操作并断言:classes 恰为该类、
-  methods 恰为 `caller` 与 `secret`(均 `()V public static`)、strings 含 `gate-secret`、
-  `xrefs("secret")` 回真实调用者 `{class: Lcom/gate/Sample;, method: caller}`,而 `xrefs("caller")`
-  回诚实的空 callers(真实的空答案,不是错误信封)。androguard 缺席时明确 skip(skip != pass);
-  linux-integration CI 装了 `[android]`,该 gate 在 CI 上真跑。Android 线自此四条 DEX 内容操作
-  (含 xref 渲染路径)全部有真后端回归护栏。
+- `ghidra.decompile` 过去在给定地址不落在任何函数内时返回 `decompiled: ""`，与“确实反编译出空
+  函数体”无从区分，无人值守的一遍会把空串当成函数体。postScript 只有在 `getFunctionContaining`
+  命中时才写 `function`/`entry`。现由脚本显式写出 `found` 布尔，客户端在解析这份跨解释器 JSON 时
+  也会在缺字段时按 `function` 是否存在补齐 `found`：`found=false` 明确表示“该地址没有函数”，此时
+  空的 `decompiled` 是这个原因而非空函数体。
 
-### 修复（浏览器 smoke 的 eager import 让整个 tests/integration 收集直接崩，绕过了自己写的 skip != pass 护栏）
 
-- **`test_agent_browser_smoke.py` 顶层 `import uvicorn` 与 `from headless_re_mcp.web.app import create_app`
-  坐在 playwright 的 `importorskip` 护栏之上**,于是在缺 web extra(uvicorn/fastapi)的机器上,模块导入先炸,
-  `pytest tests/integration` 整个目录的收集被一条 ImportError 打断——这恰恰是该文件注释明明白白警告并声称已经
-  用 importorskip 解决掉的那种「一个 gate 缺依赖就拖垮整目录」。实测在没装 web extra 的环境里复现:收集报
-  `ImportError ... web.app`。修复把这套 gate 需要的每个可选依赖(playwright,以及 web 栈的 uvicorn 与
-  `headless_re_mcp.web.app`)统统改走 `importorskip`,`uvicorn` / `create_app` 都在函数体里才用、放到护栏之下
-  绑定即可。改完 `tests/integration` 在部分安装的机器上干净收齐(该模块单独 skip、给出明确原因),不再一条裸
-  导入错误让整目录收集中断——把注释写下的契约真正落到实处。
+- `error_boundary` 的行内脱敏(异常消息、事故日志、HTTP 500 体、CLI stderr 信封走的同一条
+  正则)只覆盖 `api_key`/`token`/`secret`/`password` 与 `Authorization: Bearer`,而
+  `redaction.py` 的结构化脱敏还把 `private_key`/`access_key`/`passwd`/`credential` 当作机密键。
+  于是一个在负载里会被抹掉的值,一旦出现在异常消息里(如 `access_key=AKIA…`、`private_key=…`)
+  就会明文落进事故日志与 500 响应——正是 SECURITY.md 列为漏洞的那类泄露。现补齐这四个关键字;
+  仍用严格的 `[:=]` 边界(不加尾随 `\w*`),避免把 `tokenized=false` 这类诊断文本误抹。回归矩阵
+  相应增加 `private_key`/`private-key`/`access_key`/`passwd`/`credential` 五种形态。
 
-- **`apk.open` 对一个 zip 合法、`AndroidManifest.xml` 却是垃圾的 APK 会崩**。实测 androguard 4.1.4 对解析不了的
-  manifest 是**容忍**的——它照样构造出 APK 对象、只在日志里报错而不抛;但它的版本 getter 在这种情况下自相矛盾:
-  `get_min_sdk_version` / `get_main_activity` 返回 `None`,而 `get_androidversion_name` / `get_androidversion_code`
-  抛 `KeyError('Name' / 'Code')`。`apk.open` 把这些 getter 直接展开进返回 dict、毫无包裹,于是一个畸形但可解压的
-  APK(完全是合理的敌意输入)会让 open 泄漏一个原始 `KeyError`,而 service 层的 `_failure` 对非 `ApkError` 的裸异常
-  一路落到 `internal_error` 并**记一条 incident**——把「manifest 坏了」误判成「工具有 bug」,正是这套代码在别处反复
-  避免的错判。旁边的 `permissions` / `components` / `certificates` 对同一输入早就优雅退化成空;现在 `open` 也照此办理:
-  用一个 `_safe(getter, default)` 包裹各 manifest getter,能读到的照报、读不到的给默认值(版本给 `None`、package 给 `""`),
-  而 zip 派生的 `native_abis` 原样保留——于是 open 始终是一份结构化概览,绝不再崩。补回归:单元层用真 androguard
-  (importorskip,桩无法复现该 KeyError)对畸形 manifest 断言 open 不抛且 `native_abis` 完整、版本为 `None`;并把
-  `test_android_re_gate` 里那条本就跑在这枚合成 APK 上的 `apk.open` 断言从「ok 或有 error」收紧为——装了 androguard
-  时必须 ok 且 `native_abis=={arm64-v8a,x86_64}`、版本为 `None`,没装时是干净的 `capability_unavailable`。
-- 顺带钉住会话入口的同类契约(实测确认其本就健壮、并非 bug):`classify_target` 先认 `.apk` 扩展名再看字节,于是一个根本
-  不是 zip、或虽是 zip 却没有 `AndroidManifest.xml` 的 `.apk`,仍会走 APK 路径让 `describe_apk` 抛 `ValueError`。
-  `create_session` 必须把它映射成结构化的 `invalid_request`(与上面 open 的修复同一规则),而不是让裸异常落进
-  `internal_error` 事故。新增两条纯 stdlib(不依赖 androguard、处处可跑)的回归钉住这条:非 zip 的 `.apk` 与无 manifest 的
-  `.apk` 都回 `invalid_request` 且绝非 `internal_error`——APK 分析的必经入口自此有了防敌意输入的回归护栏。
+### 修复（CLI 适配器超时在后端边界夹取越界输入）
 
-### 修复（浏览器 smoke 测试破坏整套集成收集且选择器漂移）
+- **apk（jadx/apktool）、web（webcrack/wabt）与 r2（radare2）几条 CLI 适配器把调用方的 `timeout`
+  直接塞进 `run_bounded`**，而 frida 早已用 `_bound_timeout` 在后端边界拒非正、封上限。MCP schema
+  虽声明 `0 < timeout <= 上限`，但 Agent 传输是拿模型给的参数**不经 schema 校验**直接调处理器
+  （`CommandCatalog.invoke` → `spec.handler(**arguments)`）——一个非正 `timeout` 会让
+  `run_bounded` 先把 JVM/node/r2 拉起来、再在循环第一圈就整树杀掉，然后报一个把「参数错」说成
+  「超时」的误导性错误；一个巨大 `timeout` 则让在恶意样本上卡死的工具占着 worker 直到调用方
+  给的秒数耗尽。新增共享的 `clamp_cli_timeout`（拒非正/NaN、按上限封顶）并让各适配器按自己的
+  schema 上限（apk/jadx=1800、js/wasm=600、js.unpack_bundle=1200、r2=120）在开进程前先夹取，越界即回
+  `invalid_params`。补回归测试钉住夹取函数本身，以及各适配器的非正超时在开进程前被拒（含 r2 在
+  能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
+  验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
-- `tests/integration/test_agent_browser_smoke.py` 在模块顶层 `from playwright.sync_api import ...`，
-  未装 playwright 的机器上这会让 **整个 `tests/integration` 目录收集失败**（是 error 而非 skip），
-  比其它后端一贯的「skip != pass」还糟——Linux 上没有 playwright 时连非 PE 的 r2/proxy/android Gate
-  都无法收集。改用 `pytest.importorskip` 让缺 playwright 干净地跳过本模块。
-- 浏览器启动此前写死 `C:\Program Files\Google\Chrome\...` 绝对路径，等于这条 Web/agent E2E 只能在
-  装了该路径 Chrome 的 Windows 上跑；因而它长期没被执行，SPA 早已改版而选择器全线漂移。改为像
-  `WebBackend.open` 一样用 Playwright 自带 Chromium（缺浏览器则如实 skip），并把选择器对齐当前
-  SPA（工作方向落地页「开始一段分析」、以 `消息` 输入框识别工作台、`设置` 打开「模型与设置」对话框、
-  `接口地址`/`模型`/`API 密钥`/`保存模型`、保存后对话框不再自动关闭需显式关）。据此在 Linux + Chromium
-  下实测通过：一次读工具的完整 SSE→run→工具执行→二轮往返，以及 provider 密钥不回流到
-  `/api/providers`、DOM、storage 与任何响应体。原先靠 `workflow.cancel` 触发审批卡的分支已删除——
-  当前默认 autonomy 会自动放行该 `state_change`，审批卡不再出现；审批 UI 由 webui 组件测试覆盖。
+### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
-### 新增（radare2 ELF 实测 Gate 与可移植 ELF 夹具）
+- Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
+  正常返回，于是导航到一个错误页与真正命中回的信封一模一样，无人值守的一遍会把错误页当成
+  成功。现在把 `goto` 的响应状态取出来，`web.open`（给了 URL 时）与 `web.navigate` 在产生了
+  HTTP 响应时附带 `status`，调用方据此区分错误页与命中；`about:blank`、同文档导航等没有响应的
+  情况不回 `status`（缺省即诚实，编个 200 反而不实），与 `proxy.flows` / `web.network.list`
+  早已回报的状态口径一致。
 
-- 跨平台静态那条线此前只有 PE 夹具的 r2 实测 Gate，Linux/ELF 目标走的 `enrich_r2_payload`
-  非 PE 分支（无 PE 头可读首选基址，地址只映射为 `va`、不重定位成 `rva`/`module`）只有单元桩
-  覆盖、从无真机验证。新增 `fixtures/native/elf_fixture.c`（无害算术 + 一次打印，含具名 helper
-  与调用方供交叉引用），由 `tests/integration/conftest.py` 的 `elf_fixture` 会话夹具在测试时用
-  首个可用的 `cc`/`gcc`/`clang` 现编（无编译器则如实 skip，仓库不落二进制），并加
-  `test_m11_r2_live_elf_address_mapping`：对 ELF 跑 `aa`/`aflj`，断言 `parsed`、函数计数、
-  不报 `image_base`、函数地址为 `va` 且不含 `rva`。原 PE Gate 在 Windows 继续覆盖重定位分支。
-- 再补两条实测 Gate,覆盖 `parse_r2_json` / `_item_va` 在真机输出上此前只有单元桩验证的路径。
-  其一 `test_m11_r2_live_elf_disassembly_parses_despite_bracket_operands`:对 -O0 的具名 helper 跑 `pdj`
-  反汇编——其局部变量留在栈上,反汇编必然带 `[rbp - 4]` 这类方括号内存操作数,正是当年 `rfind("[")`
-  从操作数里的方括号切起、错过根数组、报 `parsed` 却零 item 的那种病态输入;断言 raw 里确有 `[`、
-  仍解析出带 `va` 地址的操作码 item。其二 `test_m11_r2_live_elf_strings_map_to_addresses`:对 ELF 跑 `izj`,
-  断言字符串走 `vaddr` 分支映射出 `va` 地址(与函数 `offset` 分支不同的 key 路径),并核对夹具里那条
-  printf 字面量确被 `izj` 找到。r2/rizin 缺失时如实 skip,skip≠pass。
+### 修复（Web 导航超时在后端边界夹取越界输入）
 
-### 修复（Ghidra 后端在 Linux 与现代 Ghidra 上都跑不起来）
+- **`web.open` / `web.navigate` 把调用方的 `timeout` 直接算进 `Future.result(timeout=…)`**，
+  而 frida 早已用 `_bound_timeout` 在后端边界拒非正、封上限。MCP schema 虽声明
+  `0 < timeout <= 120`，但 Agent 传输是拿模型给的参数**不经 schema 校验**直接调处理器
+  （`CommandCatalog.invoke` → `spec.handler(**arguments)`）——一个非正 `timeout` 会让
+  `Future.result` 立刻返回并把 runner 置为 `_wedged`，于是**一次越界取值就把本来健康的活会话
+  拍死**，直到 `web.close` 才能恢复；一个巨大 `timeout` 则反过来让会话线程和线程池 worker 陪着
+  页面一直卡住。现新增 `_bound_nav_timeout`（与 frida 同款）在排入任何工作前先夹取：非正回
+  `invalid_params`、超限封到 schema 上限（120s）。补回归测试钉住负超时被干净拒绝且不 wedge 活
+  会话（随后正常导航仍可用）、巨大超时被封到上限。
 
-- 跨平台静态的另一半——Ghidra——此前只有 mock 掉 `analyzeHeadless` 的单元测试，真机从未跑通，
-  掩盖了两个叠加的致命问题。其一，启动器发现顺序在所有平台都先挑 `analyzeHeadless.bat`：每个
-  发行版都同时带 Windows 的 `.bat` 与 POSIX 的无扩展名脚本，而 `.bat` 在 Linux 上没有可执行位，
-  于是每次调用都以 `Permission denied` 告终——Ghidra 后端实际是 Windows 专属。改为按 `os.name`
-  只解析本平台能执行的那个启动器（Windows 取 `.bat`，POSIX 取无扩展名），缺失时如实报
-  `capability_unavailable` 而非在错误脚本上启动失败；新增单元回归钉住两个分支的取舍。
-- 其二，导出用的 postScript 是 Jython 的 `ExportJson.py`，而 Ghidra 11.3 起移除了内置 Jython，
-  现代发行版跑 `.py` 会直接报 `Ghidra was not started with PyGhidra`——`functions`/`symbols`/
-  `xrefs`/`decompile` 在任何 11.3+（Windows 也一样）都彻底不可用，只剩不带 postScript 的
-  `analyze` 能跑。改用 Gson 写的 Java GhidraScript `ExportJson.java`（沿用官方
-  `ExportFunctionInfoScript` 的范式）：Java 脚本由 Ghidra 自带脚本引擎在任意版本、任意平台即时
-  编译，无需 Jython/PyGhidra、不引入新依赖、不改动 `analyzeHeadless` 启动方式（Windows 路径不受影响
-  只是修好了 `.bat` 发现）。载荷形状与目录承诺保持一致（functions 带 name/entry/body_size、symbols
-  带 name/address/type、xrefs 带 from/to/type、decompile 带 function/entry/decompiled/truncated），
-  列表截断标 `has_more`、超长反编译标 `truncated` 的契约由源级单元测试改测 Java 等价物守住。真机
-  Ghidra 12.1.3 实测：对 ELF 夹具正确列出含 `elf_fixture_transform`/`main` 的函数与符号，并反编译出
-  与源码一致的 C。
+### 修复（`frida.hook.template` 在设备会话关闭后仍会注入钩子）
 
-### 新增（Ghidra 真机实测 Gate 与 Linux CI 集成）
+- close 只翻状态、不清 `frida_authorized` 元数据，已关闭会话仍可解析；其它设备 frida 操作都经
+  `_frida_auth` 的开放态检查把关，唯独 hook.template 直接从元数据取 pid，于是一次迟到的调用会
+  把脚本注入一个已消失会话的设备进程。现在设备分支也拒绝 CLOSING/CLOSED/FAILED 状态（本地 PE
+  分支本就被 `_require_debuggee_pid` 挡住）。
 
-- 新增 `tests/integration/test_ghidra_live_gate.py`：复用可移植 ELF 夹具，对真实 `analyzeHeadless`
-  跑 `functions`/`symbols`/`decompile`，断言列出含 `elf_fixture_transform`/`main` 的函数（带
-  entry/body_size）、符号表含该函数、以及按发现地址反编译出非空且未截断、含函数名的 C。未配置
-  Ghidra/JDK 时如实 skip（点名缺哪个），skip != pass。`linux-integration.yml` 增设独立
-  `ghidra-gate` job：Ghidra 是 ~570MB 的 JVM 下载，单独成 job 便与那些快 Gate 并行、带自己的 JDK 21、
-  并缓存下载；只收集 Ghidra 一个 Gate 文件，因此无需装 Web/Android/抓包后端。Ghidra 版本固定为本地
-  实测通过的 12.1.3。
+### 修复（jadx 部分反编译失败不再伪装成完整源码树）
 
-### 新增（抓包实测 Gate：一条真流量经代理捕获、取回、导出 HAR、重放）
+- `apk.export_sources` / `apk.decompile` 走 jadx，而 jadx 常在某几个类反编译失败时以非零退出收场，
+  却仍为其余类写出可用的源码树——后端因此保留输出而非直接失败(只有磁盘上一个 `.java` 都没落时才抛)。
+  但此前回包与一次整包成功长得一模一样:既无退出码也无 stderr,调用者无从区分「jadx 反编译了整个 APK」
+  与「jadx 呛了若干类、这些只是幸存下来的」。无人值守的 agent 会把缺类的树读成完整反编译。
+- 现在只要 jadx 非零退出但仍写出了树,`apk.export_sources` 的回包附带 `exit_code`、`tool_failed=true`
+  与截断到 8000 字节的 `stderr`;`apk.decompile`(内部先跑整包 export)把这三个字段一并透传到单类结果上——
+  所点名的类可能自身反编译干净,但整包判决要让调用者看到,免得把部分树当成完整的。`tool_failed` 与源码的
+  `truncated` 语义分明:后者只表示「Java 在内联上限处被截」,前者表示「jadx 自己报了失败,树可能因某个
+  这里看不到的原因缺类」。退出码为 0 时这些字段一概不出现;「非零退出且磁盘无源码」仍照旧抛 `backend_error`。
+- 新增回归:非零退出带部分树时各字段齐备并经 export→decompile 透传、干净退出无失败字段、非零且无输出仍抛错、
+  surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及两个工具的描述都点名 `exit_code` / `tool_failed`。
 
-- 拦截那条线此前只有生命周期 Gate（`test_proxy_lifecycle_gate.py`：起/停/端口占用/释放），**从未有一个
-  字节真正穿过代理**——于是 `_FlowRecorder.response` 记录钩子，以及 `proxy.flows` / `proxy.flow_get` /
-  `proxy.export_har` / `proxy.replay` 这几条读取与重放路径，都只有拿假 flow 对象打桩的单元覆盖，真机上
-  是否真能记下并取回一条流从未被验证过（正是当初藏住 `js.unpack_bundle` bug 的那类「只 mock、没真跑」缺口）。
-  新增 `tests/integration/test_proxy_capture_gate.py`：用 stdlib `http.server` 在本机起一个回定长 body 的
-  源站，`ProxyBackend` 起真代理，再用 `urllib` 的 `ProxyHandler` 把一条 HTTP GET 经代理打到源站（明文 HTTP
-  正向代理，无需 CA 证书），然后断言——`flows()` 记下该流且 URL/method/status 对得上、`flow_get()` 把小 body
-  内联取回且字节一致、`export_har()` 落一份含该 URL 的 HAR。第二条用例验重放：`replay.client` 会拷贝该 flow
-  （新 id）再打一次，故断言 `replayed=True` 且随后必然出现第二条流，证明重放真打到了源站、而非只是命令返回。
-  未装 mitmproxy 时如实 skip，skip != pass。CI 的 `gates` job 已装 mitmproxy 故真机执行；本机 mitmproxy
-  12.2.3 上两用例均过。
+### 修复（frida 设备解析卡死不再永占 worker）
 
-### 新增（Web 抓网实测 Gate：真机 Chromium 记下一条子资源并经 CDP 取回其响应体）
+- **`_resolve_device` 与 `add_remote_device` 里对 frida 的设备查找此前不带可由本侧兜底的截止时间。**
+  `frida.get_local_device()`、`get_usb_device(timeout=5)`、`get_device(..., timeout=5)`、
+  device manager 的 `get_device(..., timeout=1)` 与 `add_remote_device(...)` 都被直接调用——实测
+  一个睡 8s 的查找即便带 `timeout=5` 也要到 8.000s 才返回，frida 的 `timeout=` 形参并不是本侧能
+  强制的截止时间。`spawn` / `applications` / `java.*` 都在各自 deadline 起算之前先解析设备，于是一个
+  永不返回的 USB 或 host:port 查找会把 worker 一直占住，直到进程被杀。
+- 现在每个查找都像枚举那几个操作(`enumerate_devices` 等)一样跑在守护线程上并共用 `_PROBE_TIMEOUT_S`
+  (30s)截止：卡死的查找抛 `timeout`，worker 立即释放，仍在后台的守护线程不会阻止进程退出。remote
+  路径上「先复用已注册设备」的最佳努力查找若超时/报错，照旧退化到 `add_remote_device`(同样有界)。
+- 新增回归：卡死的 USB 解析与卡死的 host:port `add_remote_device` 都在截止时间内抛 `timeout`
+  而非空等(把 `_PROBE_TIMEOUT_S` 打小后计时断言)。
 
-- Web CDP 那条线此前的实测 Gate（`test_web_cdp_open_and_inspect`）走的是一个 `data:` URL——它**不产生任何网络
-  请求**，于是 `web.network_list` / `web.network_get` 这两条抓网路径在真机 Chromium 上从未被跑过，只有拿假
-  runner 打桩的单元覆盖。这尤其要命,因为 `network_get` 上一轮刚修过一个真 bug（会话卡死的 `WebError` 被当成
-  单请求 `body_error` 吞掉,现改为原样上抛以给无人值守调用方「浏览器无响应,请 `web.close`」信号）——修完却只有
-  mock 覆盖,健康路径（真取回一条响应体）从未在真浏览器上验过。新增
-  `tests/integration/test_web_cdp_network_capture_and_body`:用 stdlib `http.server` 起一个回 `index.html`(内含
-  `<script src="app.js">`)与定长 `app.js` 的源站,开一个真 web 会话导航过去,轮询 `network_list` 找到那条 `app.js`
-  子资源(断言 `status==200`),再 `network_get` 经真 `Network.getResponseBody` 取回并断言响应体含已知内容、且走的是
-  正常路径而非 `body_error` 退化分支。未装 playwright/Chromium 时如实 skip(浏览器起不来也照 `web.open` 那套干净
-  skip),skip != pass。CI 的 `gates` job 已装 Playwright Chromium 故真机执行;本机 Chromium 151 上与
-  `test_web_cdp_open_and_inspect` 一并验过。
+### 修复（js/wasm 工具非零退出不再伪装成干净结果）
 
-### 新增（Web 实测 Gate 再补 wasm.list：页面真的实例化一个 WASM 模块并经 CDP 列出）
+- `js.deobfuscate` / `js.beautify` / `js.unpack_bundle` / `wasm.wat` / `wasm.info` 走的是「工具死了也把
+  已产出的东西交回去」这一路径——webcrack 对半途去混淆常以非零退出收场却仍吐出可用代码,wasm-objdump
+  也可能先打印若干段再在后面某段翻车。但此前只要有任何输出,非零退出码与 stderr 就被**整段吞掉**:回包
+  与一次干净成功长得一模一样,无人值守的 agent 会把「因为工具中途挂了而被截断」的结果读成成品。
+- 现在只要子进程非零退出且仍有输出,回包附带 `exit_code`、`tool_failed=true` 与截断到 8000 字节的
+  `stderr`。`tool_failed` 与既有的 `truncated` 语义分明:`truncated` 只表示「我们在内联上限处截了文本」,
+  `tool_failed` 表示「子进程自己报了失败,输出可能因某个我们看不到的原因不完整」。退出码为 0 时这些字段
+  一概不出现,干净路径不添噪声;「非零退出且毫无输出」仍照旧抛 `backend_error`(带 `exit_code`)。
+- 新增回归:非零退出带部分代码/文件/文本时各字段齐备、干净退出无失败字段、非零且无输出仍抛错、
+  surfaced 的 stderr 受 `_MAX_STDERR` 约束,以及五个工具的描述都点名 `exit_code` / `tool_failed`。
 
-- 至此 Web CDP 面只剩 `web.wasm.list` 没被真机跑过:它把已解析脚本缓冲按 `language == WebAssembly` 过滤,而此前所有 CDP
-  Gate 都只加载 HTML/JS,页面从不实例化 WASM,于是这条过滤永远无物可返、其真机行为无从验证。新增
-  `test_web_cdp_lists_an_instantiated_wasm_module`:本机 `http.server` 以 `application/wasm` 回那枚最小合法模块(与 wabt 的
-  wat/info Gate 同一份字节:一个 `() -> i32` 返 42、导出为 `add`),页面 `fetch` 后 `WebAssembly.instantiate` 之,轮询
-  `wasm.list` 直到 CDP 把它作为 WebAssembly 脚本报上来,断言列表非空且每条 `language` 都是 WebAssembly——正是这条工具的
-  承诺,也是 wabt 那两条 Gate 的浏览器侧对照。未装 playwright/Chromium 时如实 skip,skip != pass。CI 的 `gates` job
-  已装 Playwright Chromium 故真机执行;本机 Chromium 151 上验过。至此 `web.*` 的读侧全部有真机实测覆盖
-  (open/navigate/scripts/script.source/console/dom.snapshot/network.list/network.get/screenshot/har.export/wasm.list)。
+### 修复（apk 列表分页越界）
 
-### 新增（Web 实测 Gate 再补 script.source / screenshot / har.export / navigate 四条真机路径）
+- **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
+  schema**。这三个工具的 schema 已声明 `offset >= 0` 与有界 `limit`(见
+  `test_apk_offset_schema.py`),但只有 MCP 传输会跑那层 pydantic 校验;Agent 与 OpenAI 桥接
+  经 `CommandCatalog.invoke` 直接 `spec.handler(**arguments)` 调用,越界页会原样抵达后端。
+  实测越界前:十个类时 `classes(offset=-1, limit=10)` 变成 `names[-1:9]`——一个**空页却仍报
+  `has_more=True`**;`limit=-5` 变成 `names[0:-5]`,十个类被当成五个读。现新增 `_clamp_page`
+  把 `offset` 钳到 `>=0`、`limit` 钳到 `1..schema 上限`,与 web / proxy / jsre 列表后端既有做法
+  一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
+  漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
 
-- 上一条 Gate 补齐了抓网,但 Web CDP 面里还有四条工具在真机 Chromium 上从未被跑过:`web.script.source`（`test_web_cdp_open_and_inspect`
-  只 `list` 脚本、从不取源码）、`web.screenshot`、`web.har.export`、`web.navigate`——全都只有单元桩。其中 `script.source` 尤其
-  要紧:它正是 `network_get` 对齐的那个兄弟(两者都对卡死会话原样上抛 `WebError`),但它的健康路径(真 `Debugger.getScriptSource`)
-  从未在真浏览器上验过。新增 `test_web_cdp_source_screenshot_har_and_navigate`:在同一张已加载页上一次跑完四条——从 `web.scripts`
-  里认出外链 `app.js`、经 `getScriptSource` 取回源码并断言含已知内容且未截断;`screenshot` 落一个真 PNG(按 `\x89PNG` 魔数与
-  `size>0` 断言),不是零字节文件;`har.export` 导出含 `app.js` 那条请求的 HAR;`navigate` 跳到第二个文档并断言标题随之变成
-  `page-two`。未装 playwright/Chromium 时如实 skip(浏览器起不来也照 `web.open` 那套干净 skip),skip != pass。CI 的 `gates` job
-  已装 Playwright Chromium 故真机执行;本机 Chromium 151 上三条 Web CDP Gate 一并验过。
+### 修复（签名口令上进程表）
 
-### 新增（WASM 反汇编 Gate 用真实模块，并补上 wasm-objdump 那条从未被实测的路径）
+- `apk.sign` 过去以 `--ks-pass pass:<口令>` 把 keystore 口令明文放进 apksigner 的命令行。
+  argv 对本机所有进程可见（Linux `/proc/<pid>/cmdline`、Windows 进程列表），签名 JVM 跑多久
+  就暴露多久——SECURITY.md 把签名口令进入任何可观测通道列为漏洞。现改走 apksigner 原生的
+  `env:` 口令源：口令放进仅子进程可见的复制环境，argv 里只剩变量名；stderr 抹除照旧保留作
+  纵深防御。回归测试断言 sign 与 verify 两次调用的每个参数都不含口令、口令只出现在注入的
+  环境里。
+### 修复（mitmproxy 12 停止代理后监听端口不再泄漏）
 
-- Web 反混淆那条线的 WASM 侧此前只对「magic+version、无任何 section」的空模块跑 `wasm2wat`，只断言输出里
-  有 `module`——工具能起、但从未证明它真的反汇编出内容；而 `wasm.info`（`wasm-objdump -h -x`，列 section
-  头与导出细节）**完全没有实测覆盖**，其 `-h -x` 拼参与输出处理烂了也无人知晓。改为在 Gate 里手搓一个
-  最小但非空的合法模块（36 字节字节串，含一个 `() -> i32` 返回 42、导出为 `add` 的函数；无需任何 WASM
-  工具链即可生成，源码内按 section 逐段注释可核对）：`wasm2wat` 断言 wat 里出现 `(module`、`func`、
-  `export "add"`、`i32`（真的走了 type/function/export/code 段），并新增 `test_wasm_info_when_wabt_present`
-  对 `wasm-objdump` 断言 Type/Function/Export/Code 四个 section 头与导出名 `add` 都在。wabt 缺失时按工具分别
-  如实 skip（wasm2wat 与 wasm-objdump 各判各的），skip != pass。
-### 修复（js.unpack_bundle 对现代 webcrack 完全跑不通）
+- **`proxy.stop` 只发 `master.shutdown()`，在 mitmproxy 12 上端口停不下来。**
+  mitmproxy 在走向 12.x 的路上让 `Master.done()` 不再收拾 proxyserver 的监听 server——
+  mitmdump 从没察觉，因为 `run()` 一返回整个进程就退了。而本服务是长驻进程内嵌：stop()
+  报 "stopped"、线程干净退出，OS 监听 socket 却一直 accept 到进程死，端口再也绑不回来，
+  现场 gate（`test_proxy_start_means_listening_and_stop_releases_the_port` /
+  `test_close_all_releases_every_running_capture`）在真 mitmproxy 12.2.3 上双双失败。
+  现 stop() 在发 shutdown 前先在代理 loop 上 drain `Servers.update([])`（官方停监听方式，
+  会 await 每个 listener 关闭）；线程已死时跳过 drain 不空等。补 fake 单测钉住
+  drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
+  mitmproxy 的机器上验证端口确实释放。
 
-- `js.unpack_bundle` 在真机上必然失败:客户端先 `out_dir.mkdir(parents=True, exist_ok=True)` 建好输出目录再调
-  webcrack,而 webcrack 2.x 见 `-o` 目录已存在就报「output directory already exists」并以 exit 1 退出——于是
-  每次 unpack 都被后端映射成 `backend_error`。这条 JS 唯一会落盘的操作此前只有 mock 掉 `_run` 的单元桩,真机
-  从未跑过,bug 就一直藏着。改为只确保父目录存在、把一个尚不存在的路径交给 webcrack 自己创建(实测 webcrack
-  会新建目录并写出 `deobfuscated.js`)。同时补上实测 Gate `test_js_unpack_bundle_when_webcrack_present`:对现有
-  `obfuscated_sample.js` 跑真机 unpack,断言 `file_count>=1`、`total==file_count`、窗口非空且 `count==len(files)`、
-  `has_more` 与「窗口是否覆盖全部」一致、`output_dir` 落地——正是这条 Gate 抓出了上面的 bug。CI 的 `gates` job
-  已装 webcrack 故真机执行;本机无 webcrack 时如实 skip,skip != pass。
+### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
-### 新增（JS/WASM 输入体积上限的单元回归）
+- `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
+  长分支(`br`/`brfalse`/`brtrue`)与 `ldc.i4` 常量却按无符号解码。按 ECMA-335 这些都是
+  有符号 int32,于是一次向后跳转 `-10` 打成 `4294967286`、`ldc.i4 -1` 打成 `4294967295`——
+  agent 读来判断循环走向的正是这个补码位型而非真实偏移。现把有符号操作数集中到
+  `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
+  无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
 
-- `js.deobfuscate` / `wasm.wat` 的 16 MiB 输入上限（`_MAX_INPUT_BYTES`，防止无人值守把抓到的大 bundle
-  原样喂给 node/wasm2wat、绑死一个核直到超时）此前没有任何测试钉住——删掉该检查整个套件照样全绿。
-  新增两个单元回归（webcrack 与 wasm2wat 各一）：把上限 monkeypatch 到 4 字节后断言超限输入以
-  `too_large`（细节含 `max_file_size`）拒绝，并把 `_run` 换成必失败桩证明超限文件从未到达子进程。
+### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
 
-### 修复（web.network_get 把浏览器卡死误报成「该请求没有 body」）
+- **`frida.memory.read` 的注入脚本用 `Memory.readByteArray(ptr(address), size)` 读内存。**
+  frida 17 删掉了 `Memory.read*` 这批全局自由函数，于是这句在现代 runtime 上抛
+  `TypeError: not a function`，`frida.memory.read` 在整条动态分析线上直接坏掉——真机复现：
+  frida 17.17 attach 本地进程，`attach` / `modules` / `exports` 都正常，唯独 `memory.read`
+  报错。改用 NativePointer 方法 `ptr(address).readByteArray(size)`（frida 12 起就有，覆盖
+  `android` extra 声明的 `>=16.5` 全区间）。真机验证：修复后读模块基址前 4 字节返回 ELF 魔数
+  `7f454c46`。frida 原生 runtime 在 CI 跑不了，故按仓库既有做法（见 hook-template schema 测试）
+  以源码静态断言钉住脚本用的是指针方法、不再出现被删的全局名。
 
-- `web.network_get` 用一个 `try` 兜住取响应体的 CDP 调用,失败就折成 `body_error` 注记、其余请求记录照常返回——
-  这对「本来就没有 body」的请求(重定向、已被 CDP 逐出缓存的条目)是对的。但同一个 `except Exception` 连
-  `WebError` 一起吞了:当 runner 线程卡死或超时(`.call` 抛 `WebError("timeout"/"backend_error")`)时,会话级
-  的健康故障被包装成 200 形态的 `body_error`,读起来像「这一个请求没有 body」,无人值守的调用方拿不到
-  「浏览器无响应、请 `web.close`」这个本该据以恢复的信号。`script_source` 早就 `except WebError: raise`;现在
-  `network_get` 对齐同一规则:`WebError` 上抛,只有单请求的 CDP 取体失败才降级为 `body_error`。新增回归覆盖
-  两条分支(卡死会话上抛 `timeout`;单请求取体失败仍返回带 `body_error` 的完整记录)。
+### 修复（PE 扫描每次读取都吃满 256 MiB 预算）
 
-### 新增（APK 解析缓存并发安全的回归）
+- `scan_pe` 的 `_read_pe_bytes` 过去以 `stream.read(max_file_size + 1)` 一次性把整份输入读进
+  内存。这一步刻意不信 `stat()`（文件可能在检查与读取之间变大）并把读取封顶在预算内，但
+  Python 带缓冲的 `read(n)` 会先按 `n` 预分配再收缩——于是默认 256 MiB 上限下，**每一次扫描
+  无论文件多大都瞬时吃掉 256 MiB 堆**（实测一个 4 KiB 文件峰值 256 MiB）。scan_pe 在每个二进制、
+  每个会话上都跑，`inspect_dotnet` 与 `.NET` 枚举里的 `_load_metadata_context` 还会各自再读一遍，
+  并发会话下这类瞬时尖峰是真实的 OOM/RSS 风险。现改为分块读到 `max_file_size + 1`：常规文件
+  短读即 EOF，仍是一次「读满预算」的 `read`（I/O 边界不变，超限照样拒绝、文件增长照样封顶），
+  只有大到填满一个分块的文件才多读，且绝不超过实际存在的字节。实测同一个 4 KiB 文件峰值降到
+  约 1 MiB。回归测试断言小文件在默认 256 MiB 上限下的分配与文件大小成比例，而非与上限成比例。
 
-- `ApkClient` 的解析缓存是类级、被多线程同时访问（工具调用在线程池上跑，会话关闭又在同一批 dict 上调
-  `release()`）。客户端注释记录了当时复现出的两个故障：`release()` 遍历缓存时另一线程插入触发
-  「OrderedDict mutated during iteration」，`move_to_end` 与逐出竞争成 `KeyError`、再被结果映射误报为
-  `session_not_found`；修复是一把 RLock 罩住所有变更。但此前没有任何测试钉住它——把锁去掉只会在生产的
-  高负载下才炸。新增一个并发回归：用桩替掉 androguard，让真实的加锁缓存路径（插入 / `move_to_end` /
-  到 `_CACHE_LIMIT` 后逐出，以及 `release` 同时扫描两个 dict）在把线程切换间隔压到 1e-6 的条件下由多线程
-  同时跑（正是注释复现所用的条件），断言全程无异常且无线程挂起；顺带兜住把 RLock 误改成会自死锁的普通锁。
+### 修复（内存版仓库时间线无界增长）
 
-### 修复（抓包停止后端口不释放）
-
-- `proxy.stop` / `proxy.close_all` 及关闭 Web 会话时，mitmproxy 12.x 下监听端口**停不掉**：
-  `master.shutdown()` 会让运行线程退出、事件循环关闭，但 proxyserver 的监听 socket 仍然绑定，
-  端口停在 LISTEN。于是 `stop` 看起来成功、`status` 报 `running:false`，下一次 `proxy.start`
-  却因端口占用而失败——无人值守里表现为一次抓包之后再也起不来。此前的兜底只取消挂起任务再关闭
-  loop，并不会关掉 proxyserver 持有的 socket（依赖版本行为，mitmproxy 11 恰好清掉、12 不清）。
-  现在停止时先在仍在运行的 loop 上逐个 `await` proxyserver 实例的 `stop()` 真正关闭监听 socket，
-  再 `master.shutdown()`；线程 finally 里保留同样的关闭作为异常退出的兜底。按 `is_running` 跳过
-  已停实例（mitmproxy 的 `stop()` 二次调用是断言失败而非空操作），并对缺 addon / 缺属性做防御。
-  端口释放由 `test_proxy_lifecycle_gate` 用真实 mitmproxy 验证；另加不依赖 mitmproxy 的单元回归
-  钉住「先关 socket 再 shutdown」的顺序与幂等跳过，使该性质在纯单元 CI 也能守住。
-
-### 新增（非 PE 各线的 Linux 真机集成 CI）
-
-- 此前真实后端的集成 Gate 只在 `windows-integration.yml` 跑，而那需要装了 IDA/x64dbg 的自建
-  runner、只能手动触发；Web/抓包/Android/跨平台静态这几条线尽管所需后端全是开源、可在托管
-  runner 直接安装，却从未在 CI 上被真实执行过——它们的成熟度只能靠人工本地验证背书。新增
-  `.github/workflows/linux-integration.yml`：在 `ubuntu-latest`、Python 3.11 与 3.12 上按需装齐
-  radare2、wabt、webcrack、mitmproxy、androguard（含 frida/adbutils）与 Playwright 自带 Chromium，
-  随每次 push / PR 跑 `tests/integration`。沿用 conftest 的按名跳过（Windows-only 与未配置 IDA/de4dot
-  的 Gate）并加 `-rs`，让「skip != pass」在托管 CI 上继续成立；跑整目录而非硬编码子集，新的可移植
-  Gate 落地当天即被覆盖。每个用例独立限时，卡住的浏览器/抓包探针会在 job 截止前自证失败。job 末尾
-  再做一次进程残留检查：Gate 结束后仍存活的 ms-playwright Chromium 进程即判为会话未关闭的泄漏
-  （mitmproxy 以线程在进程内运行，无独立进程可泄漏，其端口释放已在 Gate 内断言）。装 proxy 后依赖
-  求解会收敛到 pydantic 2.11 + typing-extensions 4.14（同时满足 mitmproxy 12.x 的 `<=4.14` 上界），
-  是一致解，故 `pip check` 干净通过。
+- `InMemoryAnalysisRepository`（与 SQLite 端口同契约、供自定义组合使用的生产模块）的
+  审计日志裁到 `AUDIT_RETAINED_ROWS`、知识表裁到 `KNOWLEDGE_RETAINED_PER_SESSION`、
+  关闭会话裁到 `CLOSED_SESSION_RETAINED`，唯独时间线只 `append` 不裁：每个生命周期
+  事件与工具备注都往该会话的 Python list 里加一条，长驻进程用这个端口跑一夜就攒一夜。
+  文件版时间线自身有 10,000 行 / 8 MB 的裁剪上限，现新增
+  `TIMELINE_RETAINED_PER_SESSION`（10,000，与文件版行数上限一致）在 `append_timeline`
+  里同样只留最新条目。新增回归：把保留数调小后断言旧条目被裁、无关会话不受影响。
 
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
@@ -372,10 +285,89 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `pgrp` 逐个击杀,避免组长 pid 复用误伤）。该行为随「Reap helpers after successful CLI
   launches」引入,但在与 `_capture_process` 读者自闭管道范式收敛的合并中被覆盖丢失,
   只有 de4dot 保留了等效逻辑;本次按现行 process_tree API 重建并接回三处。
+- 上述清扫在 Linux 上现在**确定性**收尾:进程启动即启用 `PR_SET_CHILD_SUBREAPER`
+  收养启动器遗弃的孤儿,清扫返回前用有界 `waitpid` 轮询把每个被杀 pid 真正回收
+  (`ECHILD` 时按 `/proc` 存在性区分「已被收尸」与「尚未过继」,已结束的 pid 不再
+  空转到截止)。此前 helper 死没死取决于内核处理 SIGKILL 的时机——测试在快机器上
+  碰巧能过,这正是上次合并把回收链整个丢掉却没有一个测试变红的原因。新增 Linux
+  专用测试直接钉住机制本身(subreaper 标志已设、被杀子进程不留僵尸、清扫返回时
+  孤儿的 `/proc` 条目已消失),机制再被丢弃必然变红,不再靠调度运气。
 - `ui.screenshot` / `ui.ocr` 对路径穿越型 session id 现在在**任何平台**都返回
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（`proxy.flow.get` 头部无界回传）
+
+- `proxy.flow.get` 一直把响应体按 200000 字节内联/溢写严格设界,却用 `dict(req.headers)` /
+  `dict(resp.headers)` 把头部整包倒进返回——而 mitmproxy 在保留的 flow 上留着完整头部,一个
+  多话或恶意的服务端(成千上万个头、几 KB 的 `Set-Cookie`)因此能把一坨无界数据塞进工具返回,
+  与本后端其余处处设界的作风相悖。现新增 `_bounded_headers`,按条数(100)、单值(4 KiB)与总量
+  (64 KiB)三重设界(重复名沿用旧的 `dict` 语义折叠为最后一个),被裁时在对应 `request` /
+  `response` 上打 `metadata_truncated`;`url`、`method` 也一并按既有上限设界。文档串同步说明,
+  并新增单值/条数/总量三种裁剪与正常放行的回归测试。
+### 修复（`web.network.get` 取不到响应体时仍保持形状）
+
+- `web.network.get` 的文档串承诺回 `body`、`base64_encoded`、`body_truncated`,但当 CDP
+  对某个请求没有响应体时(重定向,或响应体已被其缓存淘汰,`Network.getResponseBody` 抛
+  「No resource with given identifier found」),失败分支只回 `{**entry, body_error}`——恰恰在
+  这条路径上把承诺的三个字段全丢了,读 `result["body"]` 的调用方直接缺键。现失败分支补齐
+  `body=""`、`base64_encoded=false`、`body_truncated=false` 与 `body_error`(说明原因),成功
+  与失败两条路径形状一致;空体不落盘。文档串补上 `body_error`,并新增该失败路径的回归测试。
+### 修复（mitmproxy 出错的流不再被整条丢弃）
+
+- proxy 会话此前只挂了 mitmproxy 的 `response` 钩子,没挂 `error`:一条 mitmproxy 无法完成的流
+  (TLS 握手被拒、上游不可达、请求中途连接重置)于是根本不进抓包——而逆向一个 app 时,「这个域拒绝了
+  握手」往往正是结论本身,却被静默扔掉。
+- 现在挂上 `error` 钩子:出错的流像正常流一样被记录,条目标记 `error=true` 与 `error_msg`(如
+  `net::ERR_CONNECTION_REFUSED`),`status` 为 `null`——完成的流一定带数字 `status` 且无 `error` 字段,
+  据此区分。`error_msg` 与既有 url/method 一样先经 `_bounded_metadata` 收进上限,超限置 `metadata_truncated`;
+  mitmproxy 没给消息时回退成 `flow error`。出错流照样存进 raw 存储(与摘要环严格同步),
+  故 `proxy.flow.get` 不会 404 一条列表已登记的流。
+- 实现上把 `response` 主体抽成共享的 `_record`,`response` 与 `error` 都走它,保证保留字节记账、
+  溢出省略与环淘汰逻辑对两条路径完全一致;顺带把请求字段取值改为 `getattr` 兜底,请求缺失也不炸。
+- 新增回归:出错流被捕获并标记、与完成流可区分、错误消息受上限约束、无消息时回退、出错流可经 raw 取回
+  (环不变量成立)、完成响应路径不带 error 字段,以及 `proxy.flows` 描述点名 `error` / `error_msg`。
+### 修复（device.install 先验证输入是有效 APK（zip），再向设备推送）
+
+- `device.install`（adb install）此前只检查本地路径存在（`is_file`）就把文件交给 adbutils 推送到设备
+  再跑 `pm install`。APK 本质是 zip：一个被截断的下载、指错的路径，或某个被当成重打包产物的解码资源
+  一旦不是 zip，只能在整份传输之后失败，而 `pm` 报的是一段晦涩的设备错误，而非其实是「参数错」。现在
+  在推送前先用 `zipfile.is_zipfile` 判定输入确是 zip（只读归档尾部、不解压，故校验本身没有 zip 炸弹
+  暴露面），不是就回精确的 `invalid_params`，设备侧一次都不碰——与 `apk.decode` / `apk.sign` 在开 JVM
+  前先验证输入是 zip 属同一快速失败范式。相应新增直测：非 APK 输入在设备传输前即被拒；`_apk_package_name`
+  被打桩的两条 install 单测改用真实（极小）zip 作输入。
+
+### 修复（device.pull 写不出文件时不再报成 size 0 的成功）
+
+- `device.pull` 过去在 adb sync“干净返回却没写出本地文件”时（远端路径不存在，较旧 adbutils 不抛异常，
+  前置 stat 探测又是尽力而为）会走到 `capped_file_size`——它对不存在的文件返回 0——于是回一个
+  `size: 0` 的成功，调用方会当成一个可打开的空文件。现在拉取后若本地文件确实不存在，即报
+  `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
+  空的合法远端文件仍会作为 0 字节正常返回。
+
+### 修复（`frida.java.methods` 分不清「类没加载」与「类无自有方法」)
+
+- `frida.java.methods` 此前只回一个方法名数组。脚本里 `Java.use(className)` 对未加载的类会抛异常,
+  异常冒出 `Java.perform` 后被 Python 的通用 `except` 兜成 `backend_error`;而**加载了但没有自有方法**
+  (方法全继承自父类)的类则正常回空数组。于是「类名写错/没加载」既可能变成一条泛化后端错误、
+  也可能——取决于版本与时序——与「类在、但自有方法为空」的空数组无从分辨。无人值守的 agent 据此
+  会把一个根本没加载的类读成「这个类没有方法」。
+- 现在与兄弟接口 `frida.exports` 的 `found` 一致:脚本侧 `methods` 改为回 `{found, methods}`,
+  `Java.use` 失败即 `found=false`、`methods=[]`;成功则 `found=true`。据此,`found=false`+空列表明确
+  读作「类未加载/类名不解析」,`found=true`+空列表读作「类在,但不声明自有方法」。分页 `has_more` 行为不变。
+- Python 侧解析与 `modules` 同款:优先按 `{found, methods}` 字典解读,同时容忍旧的裸数组形状
+  (裸数组按 `found=true` 处理),脚本与 Python 版本错配时不炸。
+- 新增回归:未加载类回 `found=false`/空列表、已加载有方法类 `found=true` 且满页 `has_more=true`、
+  已加载无自有方法类 `found=true`+空列表,以及裸数组形状仍被容忍并报 `found=true`。
+  `frida.java.methods` 描述点名 `found`。
+
+### 修复（WASM 输入校验）
+
+- `wasm.wat` / `wasm.info` 现在在派生 `wasm2wat` / `wasm-objdump` 之前先核对四字节
+  `\0asm` 魔数:非 WASM 文件（误传的 PE、文本、抓包下来的 HTML 响应等）过去会把子进程
+  拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
+  `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
+  `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
@@ -406,6 +398,33 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   fail-closed:解析后若逃出 `sessions` 根即抛 `ValueError`(经信封映射为 `invalid_request`),
   合法 uuid 与根内嵌套 id(从不逃根)照常;清理逻辑加同款单组件守卫,uuid 之外的 id 直接跳过。
   回归测试端到端验证越根读取被拒且不泄露文件内容、清理不会删根外文件,并参数化钉住多种穿越形态。
+
+### 修复（`proxy.flow.get` 返回请求体，二进制体不再糊成文本）
+
+- `proxy.flow.get` 此前只回响应体、丢掉请求体：逆向一个 API 最想看的恰是「实际 POST 了什么」，
+  而调用者拿不到。现在请求与响应对称返回各自的 `size` 与体：文本(≤200000 字节、可按 UTF-8 严格
+  解码)走 `body`，其余走 `body_path`。
+- 小体此前用 `decode("utf-8", errors="replace")` 强解：一张 200KB 以内的 PNG、一段 protobuf 会被
+  替换字符糊成看似文本的乱码 `body` 交回，agent 无从分辨真伪。现在严格解码，失败即判定二进制并
+  落盘成 `.bin` 制品、回 `body_path` 并附 `spill_reason`（`too_large` 或 `binary`），与既有的
+  >200KB 溢出路径同款，绝不再把乱码当文本。请求侧同样处理。
+- 溢出的请求/响应体各自登记为制品（`proxy_flow_request_body` / `proxy_flow_response_body`），
+  `artifact_id` 挂在所属的 `request`/`response` 下而非顶层，两者的 id 不会互相覆盖，落盘体也像其它
+  capture 一样可被保留清理回收、可经 `artifacts.describe`/`artifacts.read` 重新读回。
+- 补齐后端与 service 两层回归：请求体文本、请求体二进制落盘、响应体二进制落盘（校验字节完全一致、
+  请求与响应溢出落在不同文件），以及 service 层把溢出体登记为制品且 id 挂在对应侧。
+
+### 修复（`web.network.get` 的二进制响应体不再以 base64 文本落盘）
+
+- CDP `Network.getResponseBody` 对二进制体(图片、字体、wasm 等)返回 `base64Encoded=true`、
+  `body` 为 base64 字符串。此前代码把这段 base64 **文本**直接喂给面向文本的溢出逻辑：大体积二进制
+  于是把 base64 文本写进 `.bin` 制品——打开 `body_path` 拿到的并不是调用者以为的原始字节；且容量上限
+  按比真实字节大约 33% 的 base64 长度来判定,一个解码后本可放下的体可能被误判 `too_large`。
+- 现在二进制体先解码一次:容量上限按真实字节数判定,原始字节写入 `body_path`(`.bin` 名副其实)。
+  二进制体不再内联、也不再把 base64 当文本写盘——`body` 为空、`body_truncated` 为 `false`、
+  `body_bytes` 是解码后大小、`base64_encoded` 标记源为二进制。文本体(`base64Encoded=false`)行为不变。
+- 标记为 base64 却无法解码的体不再被当作字节静默落盘,而是回 `body_error`。
+- 新增回归:二进制体解码后字节与落盘文件逐字节一致、返回字段齐备,以及非法 base64 走 `body_error`。
 
 ### 修复（损坏的 web token 文件不再卡死启动）
 
@@ -443,6 +462,29 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的递归与大小写直测,以及 `_SETTINGS_ENV_MAP` 只引用真实 `Settings` 字段的漂移护栏(否则改名
   会让某个 `HEADLESS_RE_*` 路径从生成配置里悄悄消失)。
 
+### 修复（adb forward 端口越界未在边界拦截）
+
+- `device.forward` 的 local/remote 端点校验用 `tcp:\d{1,5}` 匹配，会放过 `tcp:70000` 这类五位数
+  “端口”——而 `connect` 早已拒绝 1..65535 之外的端口。这类越界值原样交给 adb，只能换回一条含糊的
+  `backend_error`。现抽出 `_check_forward_spec` 统一校验：tcp 端口须在 1..65535，越界即报
+  `invalid_params` 并把越界值放进 details；`localabstract:` 与仅限 remote 侧的 `jdwp:` 原样保留。
+  `tcp:0` 在两侧都被拒绝：local 侧 adb 会自动分配空闲端口，但 adbutils 丢弃了应答里带回的端口号，
+  调用方只能拿到 `{"local": "tcp:0"}`、无从得知该连哪里；而 `release_forwards` 按请求时的 spec 删除，
+  永远匹配不上 adb 实际以真实端口注册的监听——每次 `tcp:0` 都泄漏一个 adb server 监听，且删除失败
+  会把追踪槽重新钉回，32 次后 forward 上限在进程生命期内永久锁死。remote 侧的 0 则根本不可连接。
+  校验在解析设备之前完成,坏参数不占用任何 forward 槽。新增回归测试覆盖
+  越界端口(local/remote)、`tcp:0` 两侧拒绝、边界 `1`/`65535`、`localabstract`/`jdwp`、jdwp 只在 remote 有效、以及
+  畸形规格一律拒绝。
+
+### 修复（apk 包名读取会整体解压 manifest）
+
+- `device.install` 回读 APK 包名做校验时,`_apk_package_name` 用
+  `archive.read("AndroidManifest.xml")[:65536]`——`read()` 会把整条 manifest 条目解压进内存后才切片。
+  一份压缩炸弹式的 AndroidManifest.xml(盘上几 KiB、解压后数 GiB)因此会在切片前吃满内存。现改为
+  `archive.open(name).read(_MAX_MANIFEST_BYTES)` 流式读取,只解压所需的前 64 KiB;对正常 manifest
+  结果完全一致。新增回归测试用 tracemalloc 证明:面对解压后 32 MiB 的 manifest,峰值内存 <8 MiB
+  (旧写法实测约 77 MiB),包名仍被正确解析;并覆盖前缀边界与缺失 manifest 的情形。
+
 ### 修复（托管质量门）
 
 - 单测挂起不再吞掉全部日志：Windows quality job 曾在单测步骤挂满 30 分钟作业上限，
@@ -451,7 +493,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   照常上传），Linux 步骤补齐 `--timeout=120` 逐测试上限，并在 pytest 配置里加
   `faulthandler_timeout = 300` + `faulthandler_exit_on_timeout`：pytest-timeout 的
   thread 模式需要 GIL，卡死在 C 调用里的测试它拦不住，而 faulthandler 的 C 层看门狗
-  会先转储所有线程栈、点名卡住的测试再退出。
+  会先转储所有线程栈、点名卡住的测试再退出。`faulthandler_exit_on_timeout` 是
+  pytest 9.0 才有的选项，test extra 的 pytest 下限随之从 8.3 抬到 9.0——在 8.x 上
+  它只是一条 unknown-option 警告，退出兜底会静默失效。
+- 关闭挂起的最后一个盲区：pytest-timeout 与 faulthandler 兜底都按测试武装、测试后
+  解除，谁都不覆盖**最后一个测试结束之后**的解释器关闭阶段。多个并发压力测试用非
+  守护线程驱动产品代码（Windows 共享冲突下的时间线并发追加、artifact 探针、proxy/web
+  后端启动、workflow 导航），其中数处 join 带超时且不查存活——线程一旦卡住，套件照常
+  通过、摘要照常打印，然后 `threading._shutdown` 永久等待，正是挂满 30 分钟、无输出
+  可查的形态。测试工作线程现全部为守护线程，原先无存活断言的定时 join 补上断言，
+  卡住的工作线程在自己的测试里具名失败，而不是在套件通过后拖垮整个 job。
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
   `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。
   监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。
@@ -491,6 +542,32 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **抓包**：`proxy.*` 8 个工具，mitmproxy 以 addon 形式跑在独立线程，Web 与 Android 共用，
   含 `proxy.ca.install_android`。
 
+### 修复（HAR 导出规范与边界）
+
+- `web.har.export` 与 `proxy.export_har` 过去各自手搓一份 `{"request":{method,url},
+  "response":{status,content:{mimeType}}}` 结构，缺了 HAR 1.2 规定每条 entry 必带的
+  `startedDateTime`、`time`、若干 request/response 成员、`cache` 与 `timings`，所以标准
+  消费端（Chrome DevTools「导入 HAR」、Firefox、har-validator）一律拒绝加载——抓下来的
+  东西只有本项目自己读得懂。现在两者统一走新的 `backends/common/har.py`：产出可被上述工具
+  直接打开的合规 HAR 1.2（未采集的头/体/分段耗时按规范以空数组、`-1`、未知 timings 占位，
+  entry 上以 `comment` 如实说明），并带 `creator.version`。
+- `proxy.export_har` 此前**完全没有大小上限**：flow 环最多 2000 条、单条 URL 可达 16 KiB，
+  一夜无人值守的抓包会把一份多兆字节的产物直接写进会话目录，而 retention 从未为它预留额度。
+  现与 `web.har.export` 一样按采集上限 `UNREGISTERED_CAPTURE_MAX_BYTES` 逐步丢弃**最旧** entry
+  直到落在阈值内，超限即 `truncated=true`；连空 HAR 都放不下时按 `too_large` 拒绝。两个工具
+  的返回都新增 `truncated`（并保留 `size`），文档串同步说明。
+- HAR 超限截断方向改为丢最旧、保最新。此前 `serialize_har` 从**最新**一端丢弃，与两个采集环
+  的淘汰方向（满了淘汰最旧、保留最新）相反：一旦 HAR 超出字节上限，留下的反而是最老的 flow，
+  而分析者在某个操作后打开 HAR 想看的正是最近的请求。现从最旧一端丢弃，保留放得下的最新
+  条目，与采集环一致；`entry_count`/`truncated`/`size` 语义不变。
+- HAR entry 从占位向真数据补齐：`request.queryString` 现由 URL 直接解析（`parse_qsl`
+  保留重复键与空值，上限 256 个参数防单条膨胀），HAR 查看器的「Query String Parameters」
+  面板因此不再空白，也不必依赖消费端自己再切一遍 URL。`proxy` 侧还在 `response()` 落表时
+  记下解码后的响应体字节数（此时 flow 尚未因保留额度被丢体，故 body 被省略的 flow 也留得住
+  这个数），导出时填进 HAR 的 `content.size` 与 `response.bodySize`，取代 `-1`；该数值同时
+  作为 `response_size` 出现在 `proxy.flows` 每行（无响应体记 0）。`web` 侧采集阶段拿不到响应体
+  长度，仍如实以 `-1` 占位。
+
 ### 新增（工作方向）
 
 - `workspace_profile`（`full|pe|android|web`）把工具面裁剪到单一场景，默认 `full` 不裁剪。
@@ -509,6 +586,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 上面这批新后端是长生命周期的，下列缺陷都只在连续跑数小时后才显形，因此单独列出。
 
+- **`js.unpack_bundle` 的分页 offset 是工具面里唯一漏标下界的**。仓库早先统一把「负数 offset
+  在 schema 层就拒绝」铺到所有分页工具（apk.*/web.*/proxy.flows 的 offset 都带 `minimum: 0`），
+  唯独这一个 webcrack 拆包工具漏了。webcrack 客户端用 `start = max(0, int(offset))` 兜底、再把钳
+  过的 start 原样回填，于是 `offset=-1` 被悄悄当成第 0 页作答、请求被低报——要负页的调用方以为
+  翻到了别处，其实是又读了一遍首屏模块。现在与其余分页工具一致，在 schema 上标 `minimum: 0`，
+  负数在边界即被拒绝。
 - **抓包停不掉，端口永不释放**。`proxy.stop()` 会立刻返回且线程确实退出，但事件循环是在
   mitmproxy 的 accept 任务仍挂起时被直接关闭的，监听 socket 因此从未关闭：端口一直被占，
   下一次抓包再也起不来。现在先取消并等待所有挂起任务、再 `shutdown_asyncgens`，最后才关闭
@@ -539,6 +622,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `C:\Program Files\vm\revert.ps1` 整行变成一个参数。现在按命令行拆并保住路径。
 - **jadx / apktool / ghidra 写入后 prune 共享父目录会删掉其它会话**。关闭时只清自己的
   工作树。Ghidra 的 `export_*.json` 已登记为产物，关会话不再一并 `rmtree`。
+- **`doctor` 的 radare2 探针只看 PATH，无视配置的 `HEADLESS_RE_R2`**。它用的是只查
+  `shutil.which` 的 `probe_command`，而 `r2.*` 工具跑的是 `R2Client(settings.r2)`，直接用
+  配置路径。于是操作者把 `HEADLESS_RE_R2` 指到不在 PATH 上的 r2 时，doctor 报 radare2
+  缺失、工具却能用——与 webcrack 解析修复同一类 doctor/工具不一致（这次是 doctor 假阴性）。
+  改用 `probe_optional_tool("radare2", …, "r2", ("r2","rizin"))`，与 adb / jadx / apktool /
+  webcrack / wabt 一致：先认配置路径，再回落 PATH。
+- **Ghidra headless 会把操作者的 `JAVA_TOOL_OPTIONS` 直接覆盖掉**。`_run_headless`
+  过去 `env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"`，把操作者为代理、编码或 JDK 17+
+  Ghidra 所需的 `--add-opens` 设的值整个抹掉，在那些机器上悄悄让 analyzeHeadless 跑不起来。
+  现在把 `-Xmx` 前置拼进已有值：堆上限作为默认仍生效，而操作者显式的 `-Xmx`（JVM 取最后一个）
+  仍然胜出，其余选项一并保留。未设置该变量时结果与之前完全相同（`-Xmx2G`）。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
@@ -576,6 +670,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `cancel_requested`，超时等待也会去取消那条 asyncio 任务。
 - **超长 objective 先建空 inbox 再拒绝**。空 thread 不会被 trim，重试会把库撑大。
   现在先 `validate_mission`，过了才建 thread。
+- **完成一条较旧的 mission/run 会把它自己删掉再崩**。终态保留裁剪按 `created_at DESC`
+  只留每线程最新 N 条；当同线程里较新的先完成、较旧的后完成时，那条刚完成的旧记录恰是
+  「最旧的终态行」而被裁掉——可 `set_mission_status` / `cancel_mission` / `transition`
+  紧接着 `get_mission` / `get_run` 读回并 `assert ... is not None`,于是操作本身以
+  `AssertionError` 崩溃(对无人值守调用者表现为 `internal_error`),而不是返回它刚写下的
+  状态。裁剪改按 `updated_at DESC`(即完成时间)排序:刚完成的记录必是最新的一条,永远落在
+  保留窗口内,保留条数仍恰为 N。新增三条回归测试(mission 完成 / mission 取消 / run 转终态,
+  均为「旧记录后完成」)以严格递增时钟钉住顺序。
 - **压缩后的请求仍会超过自己报的预算**。8,000 字符上限选出的尾巴，再加上系统提示
   和压缩通知，线上变成 8,115。现在先给这两条留位置再选尾巴。
 - **`cdb -c` 只看第一个 token**。`lm; !process` 和 `k\n.shell` 能穿过白名单。
@@ -605,6 +707,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **Scylla 探针超时仍报 READY**。GUI 起得来但从不退出，doctor 会把可选工具
   标成可用。超时现在是 `timeout_after_start` 且 `ok=False`。
 - **`proxy.ca.install_android` 在会话关闭后仍会 push 证书**。开关会话前后都检查状态。
+- **`frida.spawn` 在会话关闭到一半时仍报成功并写回 pid**。`frida.device.connect` 与
+  `frida.server.ensure` 触碰设备后都会复查会话状态，唯独 spawn 少了这一步：一次 spawn 中途
+  关闭会话，仍会把刚 spawn 出来的 pid 写进（已关闭的）会话元数据并返回 ok=True，让一个已死
+  会话被记成持有一个活着的设备进程。现在 spawn/resume 之后也复查状态，关闭时改报 invalid_state
+  且不落 `frida_authorized`（设备侧进程无论如何已经起来，这里只保证不把它记到死会话名下）。
 
 同一轮审计在核心侧（与本次新后端无关，早已存在）查出三处同类问题：
 
@@ -817,6 +924,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **APK 组件/权限列表和 manifest 截断不说话**。加壳样本可以塞进几千个空组件；manifest
   超过 200k 字符时只切一刀、回包仍像完整 XML。组件与权限封顶并回 `has_more`，manifest
   回 `truncated`。
+- **`apk.open` 对读不出包名的 zip 仍回 `{opened: True, package: None}`**。一个不是 APK
+  的普通 zip（androguard 的 `get_package()` 返回 None）会被无人值守的 agent 当成已打开的
+  包继续分析。现在空包名记为 `backend_error`（`opened: False`），而不是一个没有身份的
+  成功结果。
 - **jadx 导出源码列表和 webcrack unpack 文件列表同样切到 2000 条却不说**。旁边虽有
   `java_file_count` / `file_count` 是全量，只看列表的调用方仍会当成完整目录。补上
   `has_more`。
@@ -824,6 +935,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   之后看起来就像「页面只打了这些日志」。回 `has_more`。证书列表同样封顶并披露。
 - **Ghidra 导出的函数/符号/xref 列表停在 limit 上不说话**，反编译 C 超过 200k 字符也只
   切一刀。脚本补上 `has_more` / `truncated`。
+- **`analyzeHeadless` 退出非零却留下空 `{}` 时被当成空成功**。脚本失败后遗留的空导出会让
+  `ghidra.functions/symbols/xrefs` 回 `items=[]`、`ghidra.decompile` 回空 C，无人值守的
+  导出据此把失败的运行读成「这个二进制没有函数」。现在非零退出且导出无内容记为
+  `backend_error`；`analyzeHeadless` 常在真正写出 postScript 结果后仍退出 1，这种带内容的
+  非零退出仍算成功。
 - **`proxy.ca.install_android` 和 `frida.server.ensure` 每次新建一个 AdbBackend**。
   那个实例记不住本进程建过的转发，`close_all` 拆不掉它们。改为走服务持有的那一个。
 - **`frida.applications` / `frida.modules` 以及 apk 的 classes/methods/strings 分页
@@ -838,6 +954,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`frida.server.ensure` 在 su 命令返回后就报 `running: True`**，并不再看 ps。启动器
   成功而 frida-server 立刻退出时，调用方会以为钩子已经能连上。启动后再查一次进程表，
   看不见就如实回 `running: False`。
+- **`frida.server.ensure` 把 frida-server 绑到 `0.0.0.0`**，于是每次启动都把这条 root 级
+  控制通道（无鉴权）暴露给设备能路由到的所有接口——同网段任何主机都能连上做插桩。改为
+  默认绑回环 `127.0.0.1`：USB/adb 传输与 `adb forward` 照常可达（本机模拟器、USB 真机就是
+  这么驱动的），仅靠网络路由到设备的主机则连不上。确需按设备 IP 远程连接时显式传
+  `bind_host="0.0.0.0"` 才放开。该值会进入 `su -c '…'` 命令行，写进去前按严格主机字符集
+  校验，带冒号、空格或 shell 元字符一律拒绝而不是照跑。
 - **并发的 `proxy.start` / `web.open` 会各起一份实例**。检查「已经有了」和写入跟踪表
   不在同一把锁里，两个工作线程会各自绑定端口或拉起 Chromium，后写入的那份把先起来的
   弄丢，泄漏到进程退出。现在先在表里占位再启动，失败或中途被关则清掉占位并回收。
@@ -859,6 +981,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`device.install` / `uninstall` / `force_stop` 同样把 adb 返回当成成功**。装包不查
   `pm path`、卸包不看包是否还在、强停不看 pidof，无人值守循环会以为应用已经装上、卸掉或
   停掉。现在对照设备侧状态回 `installed` / `uninstalled` / `stopped`（核不上就 `null`）。
+- **`device.current_activity` 在 `app_current()` 返回 None 时仍回 `{package: None,
+  activity: None}`**。dumpsys 读失败被无人值守的 agent 当成「前台没有应用」这一事实，而不是
+  一次失败的读取。现在读不出包名记为 `backend_error`，真实的包名/activity 组合行为不变。
 - **`device.list` 对每个设备再调一次 `get_state`**。adbutils 的 `open_transport` 默认等
   600 秒，假死的 adb server 会把工作线程占满十分钟；而且 `device_list()` 只回在线设备，
   offline 看起来像「没有这台设备」。改为一次 `host:devices`（带 socket 超时），offline 也
@@ -868,6 +993,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`device.pull` 会把整棵目录拷到宿主机**。adbutils 在远端是目录时递归拉取，没有体积上限；
   一次 `/sdcard` 就能把磁盘写满，而产物表看不见这些文件。目录和超过捕获上限的文件在拷贝前
   拒绝。`device.push` 同样拒绝超过上限的本地文件。
+- **`device.install` / `device.push` 先连设备、后查本地文件**。「文件在不在、多大」是廉价的本地
+  事实，也是最常见的手误，而 `_device` 要够到 adb server。把本地检查排在后面，意味着写错的路径
+  要白搭一次设备往返，而当 adb server 恰好连不上时，真正的问题（文件不存在/超限）还会被设备
+  错误盖掉。改为先判本地文件：路径不存在回 `not_found`、`push` 的超限文件回 `too_large`，都在
+  连设备之前当场返回，合法输入才去连设备（与 `frida.spawn` 先判包名同一处理）。
 - **`proxy.replay` 把命令排进代理线程就算成功**。循环已死或命令稍后失败时，调用方仍拿到
   `replayed: True`。现在等到 mitmproxy 真正执行完（15 秒上限）才回成功。
 - **`frida.java.classes` 会在设备上把已加载类全部列一遍**。`enumerateLoadedClassesSync`
@@ -1046,6 +1176,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   摘要按 `max_bytes//2` 截断、以及那枚 untrusted 标记)从未钉住。补直测:小 dict 原样透传、
   非 dict 包成 `{"value": …}`、超限→带 `untrusted_tool_output=True`/`original_bytes`/摘要且再编码不超预算、
   等长不截断、超一字节即截断。
+- **超限成功的工具结果被 `bounded_tool_result` 截断后当成失败**。每条工具结果都是 `{"ok": bool, …}`
+  信封,但截断摘要丢掉了 `ok`;orchestrator 用 `bounded.get("ok", False)` 读判定,于是一次**成功**
+  但体积超预算的调用(如大反编译、大字符串导出)在监控台和审计里显示成失败的工具调用——只因为它大。
+  两个 transport(Agent 的 orchestrator 与 MCP 的 `apply_result_budget`)都经它。现在摘要保留信封原本的
+  `ok`(单个 bool,不撑破预算):截断的成功仍报成功、截断的失败仍报失败。补测:截断的成功/失败各自保留
+  `ok`、非信封负载不无中生有出 `ok`、orchestrator 的 `tool.completed` 对超限成功记 `ok=True`,并把 MCP
+  预算测里那条精确字节断言更新到 16494。
 - **Cursor 下划线别名解析 + 全表面无碰撞**：Cursor 以 `static_functions` 调用而 catalog 注册的是
   `static.functions`,`install_cursor_underscore_aliases` 在 `get_tool` 处解析且不新增 ListTools 项。
   它用普通 dict 建下划线→点名映射,两个折叠成同一下划线形的点名会互相静默覆盖(OpenAI 桥接对这类

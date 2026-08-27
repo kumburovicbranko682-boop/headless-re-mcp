@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -78,6 +79,43 @@ class TestAdbArgumentValidation:
         with pytest.raises(AdbError) as info:
             backend.list_devices()
         assert info.value.code == "capability_unavailable"
+
+
+class TestDevicePullSaysWhenNothingLanded:
+    """adb sync can report a clean pull yet write no file for a missing remote."""
+
+    def _backend(self, monkeypatch: pytest.MonkeyPatch, *, write: bool) -> AdbBackend:
+        backend = AdbBackend()
+
+        class _Sync:
+            def stat(self, remote: str, **_: Any) -> Any:
+                return SimpleNamespace(mode=0o100644, size=4)
+
+            def pull(self, remote: str, local: str, **_: Any) -> None:
+                if write:
+                    Path(local).write_bytes(b"data")
+
+        fake = SimpleNamespace(sync=_Sync())
+        monkeypatch.setattr(backend, "_device", lambda serial: fake)
+        return backend
+
+    def test_a_pull_that_wrote_no_file_is_reported_not_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = self._backend(monkeypatch, write=False)
+        with pytest.raises(AdbError) as info:
+            backend.pull("emulator-5554", "/sdcard/missing.bin", tmp_path / "out.bin")
+        assert info.value.code == "not_found"
+        assert not (tmp_path / "out.bin").exists()
+
+    def test_a_pull_that_wrote_a_file_returns_its_size(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = self._backend(monkeypatch, write=True)
+        payload = backend.pull("emulator-5554", "/sdcard/report.bin", tmp_path / "out.bin")
+        assert payload["size"] == 4
+        assert payload["remote"] == "/sdcard/report.bin"
+        assert Path(payload["local"]).is_file()
 
 
 class TestFridaTargetAuthorization:
@@ -658,3 +696,100 @@ class TestPeOnlyToolsRefuseApkSessions:
             assert signed.error.code == "invalid_params"
         finally:
             service.close_all()
+
+
+def _adb_with_shell(output: str) -> AdbBackend:
+    """An AdbBackend whose device shell always returns ``output``.
+
+    adbutils' shell can hand back the adb host's own error text as stdout
+    rather than raising, which is exactly the leak these tests pin.
+    """
+
+    class _Dev:
+        def shell(self, cmd: object, timeout: float | None = None) -> str:
+            del cmd, timeout
+            return output
+
+    backend = AdbBackend()
+    backend._available = True
+    backend._adbutils = object()
+    backend._device = lambda serial: _Dev()  # type: ignore[method-assign]
+    return backend
+
+
+class TestPropertiesDoesNotInventAnEmptyDevice:
+    """A host error line used to look like a device with no properties.
+
+    Measured: a device whose getprop printed ``error: device offline`` still
+    answered ``{'properties': {}, 'count': 0}``. An unattended agent then
+    treats a dead device as having an empty property set.
+    """
+
+    def test_an_adb_error_line_is_not_an_empty_property_set(self) -> None:
+        with pytest.raises(AdbError) as info:
+            _adb_with_shell("error: device offline").properties("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert "getprop failed" in info.value.message
+        assert "offline" in str(info.value.details.get("output", ""))
+
+    def test_no_prop_lines_is_empty(self) -> None:
+        result = _adb_with_shell("").properties("emulator-5554")
+        assert result["properties"] == {}
+        assert result["count"] == 0
+
+    def test_prop_lines_are_listed(self) -> None:
+        result = _adb_with_shell("[ro.build.version.sdk]: [34]").properties("emulator-5554")
+        assert result["properties"] == {"ro.build.version.sdk": "34"}
+        assert result["count"] == 1
+
+
+class TestPackagesDoesNotInventAnEmptyDevice:
+    """A host error line used to look like a device with no apps.
+
+    Measured: a device whose pm list printed ``error: device offline`` still
+    answered ``{'packages': [], 'count': 0}``. An unattended agent then treats
+    a dead device as having no apps.
+    """
+
+    def test_an_adb_error_line_is_not_an_empty_device(self) -> None:
+        with pytest.raises(AdbError) as info:
+            _adb_with_shell("adb: device 'emulator-5554' not found").packages("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert "pm list failed" in info.value.message
+        assert "not found" in str(info.value.details.get("output", ""))
+
+    def test_no_package_lines_is_empty(self) -> None:
+        result = _adb_with_shell("").packages("emulator-5554")
+        assert result["packages"] == []
+        assert result["count"] == 0
+
+    def test_package_lines_are_listed_sorted(self) -> None:
+        raw = "package:com.other.app\npackage:com.example.app\n"
+        result = _adb_with_shell(raw).packages("emulator-5554")
+        assert result["packages"] == ["com.example.app", "com.other.app"]
+        assert result["count"] == 2
+
+
+class TestLogcatDoesNotInventASnapshot:
+    """A host error line used to look like a one-line log snapshot.
+
+    Measured: a device whose logcat printed ``error: device offline`` still
+    answered ``{'lines': ['error: device offline']}``. An unattended agent
+    then treats a dead device as a one-line log.
+    """
+
+    def test_an_adb_error_line_is_not_a_snapshot(self) -> None:
+        with pytest.raises(AdbError) as info:
+            _adb_with_shell("error: device offline").logcat("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert "logcat failed" in info.value.message
+        assert "offline" in str(info.value.details.get("output", ""))
+
+    def test_a_real_log_line_that_mentions_error_is_still_a_snapshot(self) -> None:
+        raw = "10-10 10:00:00.000  W System: recovered from error: boom"
+        result = _adb_with_shell(raw).logcat("emulator-5554")
+        assert result["lines"] == [raw]
+
+    def test_an_empty_log_is_a_snapshot_not_a_failure(self) -> None:
+        result = _adb_with_shell("").logcat("emulator-5554")
+        assert result["lines"] == []
