@@ -152,6 +152,60 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-apktool:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          # apktool runs on the JVM; javac/keytool build and sign the fixture.
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install build-tools and a platform
+        run: sdkmanager "build-tools;34.0.0" "platforms;android-34"
+
+      - name: Install apktool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apktool
+          apktool --version
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: apktool round-trip gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_apktool_live_gate.py \
+            -rs --tb=short --junitxml=apktool-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("apktool-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # apktool, a JDK and the SDK were all just installed, so a skip here
+          # means the gate could not reach them -- the false-green "skip != pass"
+          # warns about.
+          if not cases:
+              sys.exit("no apktool gate was collected")
+          if skipped:
+              sys.exit(f"apktool gate skipped despite installed apktool/SDK: {skipped}")
+          print(f"apktool gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

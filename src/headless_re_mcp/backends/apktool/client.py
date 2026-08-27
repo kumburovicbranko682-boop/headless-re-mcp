@@ -112,8 +112,14 @@ class ApktoolClient:
                 path=str(decoded_dir),
             )
         out_apk.parent.mkdir(parents=True, exist_ok=True)
+        # --use-aapt2: apktool's legacy default is aapt v1, which aborts with
+        # "First type is not attr!" (exit 134) on resource tables produced by
+        # any modern aapt2, so a rebuild of a normally-built APK fails outright.
+        # aapt2 is the current standard (and apktool's own default since 2.9);
+        # the official jar bundles it and Debian's build falls back to aapt2 on
+        # PATH, so this is strictly better wherever a rebuild could work at all.
         _, stderr, code = _run(
-            [str(self.apktool), "b", str(decoded_dir), "-o", str(out_apk)],
+            [str(self.apktool), "b", "--use-aapt2", str(decoded_dir), "-o", str(out_apk)],
             timeout=timeout,
         )
         if code != 0 or not out_apk.is_file():

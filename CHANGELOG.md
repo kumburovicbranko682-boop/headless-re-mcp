@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+apktool 改包线（apk.decode / apk.repack / apk.sign）首次有了真实的往返执行覆盖，并顺带
+修掉一个只有真跑才会暴露的 bug。`ApktoolClient.build` 过去用 apktool 的老默认后端 aapt
+(v1)，它在任何现代 aapt2 产出的资源表上都会崩（`First type is not attr!`，exit 134），
+也就是说"把一个正常构建的 APK 重新打包"直接失败；改为传 `--use-aapt2`（apktool 2.9 起本就
+是默认，官方 jar 自带、Debian 版回退到 PATH 上的 aapt2）。新增
+`tests/integration/test_apktool_live_gate.py`：用 Android SDK 造真实 APK（含一个真实资源，
+否则 aapt2 产出零 package 的 arsc，apktool 会拒绝解码），再驱动 `ApktoolClient` 走完整往返
+——decode 到 smali+资源、从该树 rebuild、用 apksigner 重签且验签通过。新增 `linux-apktool`
+CI job：装 Temurin 21 + Android SDK + apktool，跑该 gate 并解析 junitxml，工具已装却 skip
+时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
