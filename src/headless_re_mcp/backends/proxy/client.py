@@ -340,7 +340,7 @@ class _ProxyInstance:
             master.addons.add(self.recorder)
             self._master = master
             self._started.set()
-            loop.run_until_complete(master.run())
+            loop.run_until_complete(self._serve(master))
         except BaseException as exc:  # noqa: BLE001 - report to the starting thread
             self._error = exc
             self._started.set()
@@ -353,6 +353,45 @@ class _ProxyInstance:
                 with contextlib.suppress(Exception):
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
+
+    async def _serve(self, master: Any) -> None:
+        """Run the master, then free its listeners before the loop is torn down.
+
+        ``master.run()`` returns once :meth:`stop` sets ``should_exit``. On
+        mitmproxy 12 the proxy servers are Rust-backed sockets held by the
+        proxyserver addon, and ``master.done()`` does not stop them, so the port
+        would stay bound after the loop closed and the next capture on it would
+        fail its readiness probe. Stop the addon's server instances explicitly,
+        on this loop, while it can still await their teardown.
+        """
+        try:
+            await master.run()
+        finally:
+            with contextlib.suppress(Exception):
+                await self._stop_servers(master)
+
+    @staticmethod
+    async def _stop_servers(master: Any) -> None:
+        proxyserver = None
+        with contextlib.suppress(Exception):
+            proxyserver = master.addons.get("proxyserver")
+        servers = getattr(proxyserver, "servers", None)
+        if servers is None:
+            return
+        # ``Servers.update([])`` is the supported "reconfigure to no modes" path
+        # and stops every running instance, but it reads mitmproxy's context
+        # options, which are not bound outside an addon hook. Fall back to
+        # stopping each instance directly (which is what update() does anyway).
+        try:
+            await servers.update([])
+            return
+        except Exception:  # noqa: BLE001 - context not bound here; stop directly
+            pass
+        for instance in list(getattr(servers, "_instances", {}).values()):
+            with contextlib.suppress(Exception):
+                await instance.stop()
+        with contextlib.suppress(Exception):
+            servers._instances = {}
 
     def stop(self) -> None:
         master = self._master

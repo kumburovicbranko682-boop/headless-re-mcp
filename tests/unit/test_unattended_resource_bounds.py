@@ -281,12 +281,19 @@ class TestProxyStartHonesty:
 
         from headless_re_mcp.backends.proxy import client as proxy_client
 
-        source = inspect.getsource(proxy_client._ProxyInstance._run)
-        # The narrow retry wraps the constructor only; run() is outside it.
-        assert "except TypeError:" in source
-        constructor_retry = source.index("except TypeError:")
-        run_call = source.index("master.run()")
-        assert run_call > constructor_retry
+        run_source = inspect.getsource(proxy_client._ProxyInstance._run)
+        # The narrow retry in _run wraps the DumpMaster constructor only.
+        assert "except TypeError:" in run_source
+        constructor_retry = run_source.index("except TypeError:")
+        # run() itself lives in _serve, invoked after (outside) the constructor
+        # retry, so a TypeError raised while the proxy is running cannot be
+        # mistaken for a constructor signature mismatch and start a second master.
+        assert "master.run()" not in run_source
+        serve_call = run_source.index("self._serve(master)")
+        assert serve_call > constructor_retry
+        serve_source = inspect.getsource(proxy_client._ProxyInstance._serve)
+        assert "master.run()" in serve_source
+        assert "except TypeError:" not in serve_source
         assert not hasattr(proxy_client._ProxyInstance, "_run_fallback")
 
 
