@@ -26,7 +26,10 @@ from headless_re_mcp.core.models import BackendKind, ModuleSelector, Result, Rpc
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _register_capture, _timeline_append
 from headless_re_mcp.core.service_static import _FATAL_WORKER_ERRORS
-from headless_re_mcp.core.service_trace import normalize_stack_signedness
+from headless_re_mcp.core.service_trace import (
+    normalize_register_signedness,
+    normalize_stack_signedness,
+)
 from headless_re_mcp.core.session import file_sha256
 from headless_re_mcp.unpack.pe_rebuild import PeRebuildError, parse_runtime_headers
 from headless_re_mcp.unpack.stage_labels import STAGE_DUMPED
@@ -259,12 +262,15 @@ class DynamicInspectMixin:
                 ok=False,
                 error=RpcError(code="invalid_params", message="tid must be a positive integer"),
             )
-        return self._dynamic_request(
+        result = self._dynamic_request(
             session_id,
             "threads.context.read",
             {"tid": tid},
             timeout=timeout,
         )
+        if result.ok and result.data is not None:
+            normalize_register_signedness(result.data)
+        return result
     def threads_context_write(
         self,
         session_id: str,

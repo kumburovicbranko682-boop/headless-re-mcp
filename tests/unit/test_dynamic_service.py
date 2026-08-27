@@ -707,6 +707,49 @@ class _HighBitStackWorker(FakeDynamicWorker):
         return super().request(command, params, timeout=timeout)
 
 
+class _HighBitThreadContextWorker(FakeDynamicWorker):
+    """threads.context.read returns the same nested registers shape, wire-signed."""
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        return super().capabilities | {"threads.context.read"}
+
+    def request(
+        self,
+        command: str,
+        params: JsonObject | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> JsonObject:
+        if command == "threads.context.read":
+            self.requests.append((command, params or {}))
+            return {
+                "registers": {"rip": 0x140001000, "rax": -1},
+                "tid": (params or {}).get("tid", 0),
+                "restored_tid": 0x1000,
+            }
+        return super().request(command, params, timeout=timeout)
+
+
+def test_threads_context_read_reinterprets_high_bit_registers_as_unsigned(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = _HighBitThreadContextWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    assert service.dynamic_launch(session_id).ok
+
+    context = service.threads_context_read(session_id, 0x2000)
+
+    assert context.ok and context.data is not None
+    assert context.data["registers"]["rax"] == 0xFFFFFFFFFFFFFFFF
+    assert context.data["registers"]["rip"] == 0x140001000
+    assert context.data["tid"] == 0x2000
+
+
 def test_stack_read_reinterprets_high_bit_words_as_unsigned(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)

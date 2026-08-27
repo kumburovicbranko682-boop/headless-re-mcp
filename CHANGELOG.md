@@ -49,6 +49,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（高位线程上下文寄存器读回按无符号呈现)
+
+- `threads.context.read` 在原生侧就是切到目标线程调用 `ReadRegisters()` 再补 `tid`/
+  `restored_tid`,回的是与 `registers.read` 完全一样的嵌套 `registers` 结构,因此同一有符号
+  线格式问题一并存在。现复用 `normalize_register_signedness` 在其落地点还原;`tid`/
+  `restored_tid` 是 DWORD 线程号恒非负,不动。新增服务级测试覆盖。
+
 ### 修复（高位栈字读回按无符号呈现,不再显示成负数)
 
 - 与上面的寄存器同根:`stack.read` 每个条目的 `value` 是直接从被调试程序栈上拷来的
