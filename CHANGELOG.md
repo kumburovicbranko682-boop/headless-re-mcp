@@ -177,7 +177,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `env:` 口令源：口令放进仅子进程可见的复制环境，argv 里只剩变量名；stderr 抹除照旧保留作
   纵深防御。回归测试断言 sign 与 verify 两次调用的每个参数都不含口令、口令只出现在注入的
   环境里。
-### 修复（mitmproxy 12 停止代理后监听端口不再泄漏）
+
+### 修复（`web.open` / `web.navigate` 落到错误页不再谎报成功）
+
+- **导航到 4xx/5xx 错误页与真正命中报同样的成功。**
+  Playwright 的 `page.goto` 只在传输层失败（DNS、连接被拒、超时）时抛异常；主文档返回
+  404/500 时它正常 resolve，本服务却把返回的 `Response` 丢掉，`web.open` 只回 `opened: True`、
+  `web.navigate` 只回 `url`/`title`，调用方无从分辨落地的是错误页还是目标页。现在捕获 goto 的
+  响应，产生 HTTP 响应时在结果里带上 `status`（`about:blank`、同文档导航无响应，则如实省略
+  `status` 而非当作失败）。新增 `_response_status` 辅助只认整型 `status`、读取属性抛错时退化为
+  无状态；补单测钉住错误状态被上报、无响应导航不带 `status`、以及辅助的各边界。
 
 - **`proxy.stop` 只发 `master.shutdown()`，在 mitmproxy 12 上端口停不下来。**
   mitmproxy 在走向 12.x 的路上让 `Master.done()` 不再收拾 proxyserver 的监听 server——
