@@ -134,7 +134,7 @@ def test_apk_decode_rejects_an_empty_manifest_even_when_apktool_exits_zero(
     fake_tool = tmp_path / "apktool.bat"
     fake_tool.write_text("@echo off\n", encoding="utf-8")
     apk = tmp_path / "app.apk"
-    apk.write_bytes(b"PK")
+    _write_minimal_apk(apk)
     out_dir = tmp_path / "decoded"
 
     def fake_run(*_args: Any, **_kwargs: Any) -> tuple[str, str, int]:
@@ -157,7 +157,7 @@ def test_apk_decode_accepts_a_nonempty_manifest(
     fake_tool = tmp_path / "apktool.bat"
     fake_tool.write_text("@echo off\n", encoding="utf-8")
     apk = tmp_path / "app.apk"
-    apk.write_bytes(b"PK")
+    _write_minimal_apk(apk)
     out_dir = tmp_path / "decoded"
 
     def fake_run(*_args: Any, **_kwargs: Any) -> tuple[str, str, int]:
