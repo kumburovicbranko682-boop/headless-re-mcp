@@ -215,6 +215,60 @@ def test_runtime_module_catalog_requires_explicit_unique_selection() -> None:
     assert exc_info.value.details["bases"] == [0x180000000, 0x190000000]
 
 
+def test_win32_long_path_prefix_does_not_hide_a_path_match() -> None:
+    # x64dbg can report module paths in the Win32 long-path form; the plain
+    # spelling must still select the module, exactly like the NT \??\ form.
+    catalog = RuntimeModuleCatalog.from_result(
+        _modules(
+            {
+                "base": 0x180000000,
+                "size": 0x5000,
+                "name": "shared.dll",
+                "path": "\\\\?\\C:\\first\\shared.dll",
+            }
+        )
+    )
+    by_plain, basis = catalog.select(ModuleSelector(path=r"C:\first\shared.dll"))
+    assert by_plain.base == 0x180000000
+    assert basis == "path"
+
+    # And a selector carrying the prefix must match a plain runtime path.
+    plain_catalog = RuntimeModuleCatalog.from_result(
+        _modules(
+            {
+                "base": 0x190000000,
+                "size": 0x5000,
+                "name": "shared.dll",
+                "path": r"C:\first\shared.dll",
+            }
+        )
+    )
+    by_prefixed, _ = plain_catalog.select(
+        ModuleSelector(path="\\\\?\\C:\\first\\shared.dll")
+    )
+    assert by_prefixed.base == 0x190000000
+
+
+def test_main_module_path_match_survives_the_long_path_prefix() -> None:
+    mapping = build_main_module_mapping(
+        _session(),
+        {"image_base": 0x140000000},
+        _modules(
+            {
+                "base": 0x7FF700000000,
+                "size": 0x6000,
+                "name": "fixture.exe",
+                "path": "\\\\?\\C:\\sample\\fixtures\\fixture.exe",
+            }
+        ),
+        _runtime_metadata(),
+    )
+
+    # Before the prefix was stripped this silently degraded to the weaker
+    # name match; the path identity must survive the long-path spelling.
+    assert mapping.match_basis == "path"
+
+
 @pytest.mark.parametrize(
     "payload",
     [
