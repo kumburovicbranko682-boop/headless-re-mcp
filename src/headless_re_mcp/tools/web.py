@@ -34,6 +34,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Launch a Chrome browser for the session and open a URL via CDP.
 
+        The url is limited to http://, https:// and data:; file://, chrome:// and
+        other schemes are refused with invalid_params so the browser cannot be
+        turned into a local-file reader. An empty url opens a blank browser.
+
         Answers with opened, url, title and headless. There is no session,
         browser, ok or page field.
         """
@@ -46,6 +50,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
         """Navigate the session's browser to a new URL.
+
+        Like web.open, the url is limited to http://, https:// and data:; other
+        schemes are refused with invalid_params.
 
         Answers with url and title. There is no navigated, ok or page field.
         """

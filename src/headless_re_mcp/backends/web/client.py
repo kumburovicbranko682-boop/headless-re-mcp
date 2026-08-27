@@ -81,6 +81,36 @@ def _bounded_nav_timeout(timeout: float) -> float:
     return min(value, _MAX_NAV_TIMEOUT_S)
 
 
+_NAVIGABLE_SCHEMES = ("http://", "https://", "data:")
+
+
+def _require_navigable_scheme(url: str) -> None:
+    """Refuse to point the browser at a local-file or browser-internals scheme.
+
+    ``web.open`` / ``web.navigate`` drive a real Chromium, so an unrestricted
+    navigation target is a read primitive: ``file:///etc/passwd`` serves
+    arbitrary disk contents, ``chrome://`` / ``view-source:`` / ``filesystem:``
+    expose browser internals, and the agent could then lift any of it back out
+    through ``web.dom.snapshot`` or ``web.script.source``. This surface
+    deliberately omits an arbitrary-JS ``evaluate`` for the same class of reason.
+
+    Allowed are the schemes a web target actually speaks -- ``http://`` and
+    ``https://`` -- plus ``data:``, which is inline caller-supplied content on an
+    opaque origin with no path to the local disk or a privileged page (and which
+    the hermetic browser tests use so they need no network). Everything else
+    (``file:``, ``chrome:``, ``about:``, ``javascript:``, a bare path with no
+    scheme) is refused before it reaches ``page.goto``. The check runs on the
+    agent-supplied string directly because the transport calls handlers with no
+    pydantic validation.
+    """
+    if not url.strip().lower().startswith(_NAVIGABLE_SCHEMES):
+        raise WebError(
+            "invalid_params",
+            "web navigation is limited to http://, https:// and data: URLs",
+            url=url,
+        )
+
+
 def _looks_like_missing_browser(exc: BaseException) -> bool:
     """Whether a launch failure is really "no browser installed", not a crash.
 
@@ -405,6 +435,11 @@ class WebBackend:
     ) -> JsonObject:
         self._check_available()
         timeout = _bounded_nav_timeout(timeout)
+        # An empty url means "open a blank browser"; only a real destination is
+        # held to the scheme allowlist, and it is checked before a browser is
+        # ever launched so a refused target costs nothing.
+        if url:
+            _require_navigable_scheme(url)
 
         with self._lock:
             if session_id in self._sessions:
@@ -644,6 +679,7 @@ class WebBackend:
         cdp.on("Runtime.exceptionThrown", on_exception)
 
     def navigate(self, session_id: str, url: str, *, timeout: float = 30.0) -> JsonObject:
+        _require_navigable_scheme(url)
         handle = self._get(session_id)
         timeout = _bounded_nav_timeout(timeout)
 
