@@ -16,6 +16,7 @@ only when apktool is not installed.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import zipfile
@@ -80,6 +81,20 @@ def test_android_apktool_decode_and_repack() -> None:
         assert decoded.data["smali_dirs"], "apktool produced no smali directory"
         decoded_dir = Path(decoded.data["decoded_dir"])
         assert (decoded_dir / "AndroidManifest.xml").is_file()
+
+        # The tool-free AXML reader surfaced android:debuggable at session
+        # creation; apktool's own decode of the same manifest must agree. This
+        # cross-checks the security-posture reader against an independent AXML
+        # decoder -- the Android analogue of the native gate cross-checking
+        # nx/relro against radare2 and the .NET gate against monodis.
+        reader_flags = created.data["session"]["metadata"]["apk"]["manifest"]
+        assert reader_flags["debuggable"] is True
+        manifest_xml = (decoded_dir / "AndroidManifest.xml").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        apktool_debuggable = re.search(r'android:debuggable="(true|false)"', manifest_xml)
+        assert apktool_debuggable, manifest_xml
+        assert (apktool_debuggable.group(1) == "true") is reader_flags["debuggable"]
 
         # apktool's own baksmali must have disassembled the fixture's class: the
         # method and the string it returns have to survive DEX -> smali.

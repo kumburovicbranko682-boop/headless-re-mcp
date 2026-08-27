@@ -533,6 +533,14 @@ _AXML_ATTR_BY_RES_ID = {
     0x0101020C: "minSdkVersion",
     0x01010270: "targetSdkVersion",
     0x01010003: "name",
+    # The security-posture flags on <application>: whether the build ships
+    # debuggable (a critical release finding) and whether it is test-only. The
+    # ids are the framework resource ids aapt2 uses (frameworks/base
+    # tools/aapt2/dump/DumpManifest.cpp), so they resolve even when aapt2 drops
+    # the android:* name strings and leaves only the resource map -- the mobile
+    # analogue of the native checksec facts.
+    0x0101000F: "debuggable",
+    0x01010272: "testOnly",
 }
 
 # A DEX file opens with a fixed 0x70-byte header whose counts (classes, methods,
@@ -1053,6 +1061,8 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
     min_sdk: int | None = None
     target_sdk: int | None = None
     permissions: list[str] = []
+    debuggable: bool | None = None
+    test_only: bool | None = None
     pos = 8
     chunks = 0
     while pos + 8 <= limit and chunks < _AXML_MAX_CHUNKS:
@@ -1079,8 +1089,13 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
                 perm = _axml_str(attrs, "name")
                 if perm:
                     permissions.append(perm)
+            elif name == "application":
+                if debuggable is None:
+                    debuggable = _axml_bool(attrs, "debuggable")
+                if test_only is None:
+                    test_only = _axml_bool(attrs, "testOnly")
         pos += csize
-    return {
+    facts: dict[str, Any] = {
         "package": package,
         "version_code": version_code,
         "version_name": version_name,
@@ -1088,6 +1103,14 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
         "target_sdk": target_sdk,
         "permissions": sorted(set(permissions)),
     }
+    # Security-posture flags are reported only when the manifest declares them:
+    # their framework defaults are version-dependent, so an explicit value is a
+    # fact while absence is not something to guess at.
+    if debuggable is not None:
+        facts["debuggable"] = debuggable
+    if test_only is not None:
+        facts["test_only"] = test_only
+    return facts
 
 
 def _axml_string_pool(chunk: bytes) -> list[str]:
@@ -1176,6 +1199,31 @@ def _axml_str(attrs: list[tuple[str, int, Any]], name: str) -> str | None:
     for attr_name, data_type, value in attrs:
         if attr_name == name and data_type == _AXML_TYPE_STRING and isinstance(value, str):
             return value
+    return None
+
+
+def _axml_bool(attrs: list[tuple[str, int, Any]], name: str) -> bool | None:
+    """A manifest boolean attribute, or None when it is not declared.
+
+    aapt encodes ``android:debuggable="true"`` as TYPE_INT_BOOLEAN whose data is
+    0xFFFFFFFF (true) or 0 (false), so any non-zero int reads True; a manifest
+    that was recompiled from text may carry the literal string instead, which is
+    accepted too. Absence returns None so the caller omits the fact rather than
+    inventing a default.
+    """
+    for attr_name, _data_type, value in attrs:
+        if attr_name != name:
+            continue
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return value != 0
+        if isinstance(value, str):
+            low = value.strip().lower()
+            if low in {"true", "1"}:
+                return True
+            if low in {"false", "0", ""}:
+                return False
     return None
 
 

@@ -130,6 +130,66 @@ def _axml_utf8_manifest() -> bytes:
     return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
 
 
+def _axml_flag_manifest(app_attrs: list[tuple[int, int, int]]) -> bytes:
+    """A compiled manifest ``<manifest package><application ATTRS>``.
+
+    ``app_attrs`` are ``(name_index, data_type, data)`` triples for the
+    <application> element. A boolean flag (data_type 0x12) can be placed by name
+    -- index 5 is ``debuggable``, 6 is ``testOnly`` -- or, with name index 0 (the
+    empty string) whose resource-map slot carries the debuggable id, by resource
+    id, exactly how aapt2 leaves a stripped android:* attribute.
+    """
+    strings = [
+        "",  # 0: stripped-name slot; its resource-map entry names debuggable
+        "manifest",  # 1
+        "application",  # 2
+        "package",  # 3
+        "com.example.flags",  # 4
+        "debuggable",  # 5
+        "testOnly",  # 6
+    ]
+    data = bytearray()
+    offsets: list[int] = []
+    for text in strings:
+        offsets.append(len(data))
+        raw = text.encode("utf-8")
+        data += bytes([len(raw), len(raw)]) + raw + b"\x00"
+    while len(data) % 4:
+        data += b"\x00"
+    strings_start = 28 + len(strings) * 4
+    pool = struct.pack(
+        "<HHIIIIII", 0x0001, 28, strings_start + len(data), len(strings), 0, 1 << 8,
+        strings_start, 0,
+    )
+    pool += b"".join(struct.pack("<I", off) for off in offsets) + bytes(data)
+    res_ids = [0x0101000F, 0, 0, 0, 0, 0, 0]  # index 0 resolves to android:debuggable
+    resmap = struct.pack("<HHI", 0x0180, 8, 8 + 4 * len(res_ids))
+    resmap += b"".join(struct.pack("<I", rid) for rid in res_ids)
+
+    def start(name_idx: int, attrs: list[tuple[int, int, int]]) -> bytes:
+        body = bytearray()
+        for name_index, data_type, value in attrs:
+            raw = value if data_type == 0x03 else -1
+            body += struct.pack("<iiiHBBI", -1, name_index, raw, 8, 0, data_type, value)
+        ext = struct.pack(
+            "<IIiIHHHHHH", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx, 20, 20, len(attrs), 0, 0, 0
+        )
+        chunk = ext + bytes(body)
+        return struct.pack("<HHI", 0x0102, 16, 8 + len(chunk)) + chunk
+
+    def end(name_idx: int) -> bytes:
+        body = struct.pack("<IIiI", 0xFFFFFFFF, 0xFFFFFFFF, -1, name_idx)
+        return struct.pack("<HHI", 0x0103, 16, 8 + len(body)) + body
+
+    body = bytearray(resmap)
+    body += start(1, [(3, 0x03, 4)])  # <manifest package="com.example.flags">
+    body += start(2, app_attrs)  # <application ...flags...>
+    body += end(2)
+    body += end(1)
+    payload = pool + bytes(body)
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
+
+
 class TestManifestFactsWithoutAndroguard:
     """describe_apk reads the compiled AndroidManifest stdlib-only.
 
@@ -148,6 +208,11 @@ class TestManifestFactsWithoutAndroguard:
         assert manifest["min_sdk"] == 21
         assert manifest["target_sdk"] == 33
         assert manifest["permissions"] == ["android.permission.INTERNET"]
+        # The fixture's <application> declares android:debuggable="true"; the
+        # apktool gate cross-checks this same fact against apktool's decode.
+        assert manifest["debuggable"] is True
+        # testOnly is not declared, so the fact is omitted rather than guessed.
+        assert "test_only" not in manifest
 
     def test_reads_a_utf8_pool_and_resolves_stripped_names_by_resource_id(
         self, tmp_path: Path
@@ -160,6 +225,46 @@ class TestManifestFactsWithoutAndroguard:
         assert manifest["package"] == "com.example.utf8"
         # The android:name was resolved through the resource map, not a name string.
         assert manifest["permissions"] == ["android.permission.CAMERA"]
+
+    def _apk_with_manifest(self, tmp_path: Path, name: str, manifest: bytes) -> Path:
+        path = tmp_path / name
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", manifest)
+            archive.writestr("classes.dex", b"dex\n035\x00")
+        return path
+
+    def test_reads_application_debuggable_and_test_only_by_name(self, tmp_path: Path) -> None:
+        # Both flags are read as their real boolean, not merely detected: a false
+        # value must come back False, a true value True -- and the second flag
+        # proves it is not just the first attribute being reported twice.
+        manifest_bytes = _axml_flag_manifest([(5, 0x12, 0), (6, 0x12, 0xFFFFFFFF)])
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "flags.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["debuggable"] is False
+        assert manifest["test_only"] is True
+
+    def test_resolves_debuggable_by_resource_id_when_name_is_stripped(
+        self, tmp_path: Path
+    ) -> None:
+        # aapt2 can drop the android:debuggable name string, leaving only its
+        # framework resource id; the reader must still resolve the flag via the
+        # resource map, the same fallback it uses for versionCode and name.
+        manifest_bytes = _axml_flag_manifest([(0, 0x12, 0xFFFFFFFF)])
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "stripped.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["debuggable"] is True
+        assert "test_only" not in manifest
+
+    def test_security_flags_absent_when_application_declares_none(self, tmp_path: Path) -> None:
+        # An <application> that declares neither flag leaves both facts out,
+        # rather than inventing a version-dependent default.
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "none.apk", _axml_flag_manifest([]))
+        )["apk"]["manifest"]
+        assert "debuggable" not in manifest
+        assert "test_only" not in manifest
 
     def test_manifest_is_present_but_empty_on_a_garbage_axml(self, tmp_path: Path) -> None:
         # _apk() writes a RES_XML header with no real chunks behind it; the walk

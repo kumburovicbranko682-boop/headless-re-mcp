@@ -46,6 +46,7 @@ RES_XML_RESOURCE_MAP_TYPE = 0x0180
 
 TYPE_STRING = 0x03
 TYPE_INT_DEC = 0x10
+TYPE_INT_BOOLEAN = 0x12
 
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 PACKAGE = "com.example.headless"
@@ -62,6 +63,7 @@ ATTR_RES_IDS = {
     "targetSdkVersion": 0x01010270,
     "name": 0x01010003,
     "label": 0x01010001,
+    "debuggable": 0x0101000F,
 }
 ATTR_NAMES = list(ATTR_RES_IDS)
 
@@ -109,12 +111,19 @@ class StringPool:
 
 class Attr:
     def __init__(
-        self, ns: str | None, name: str, value: str | int, *, is_int: bool = False
+        self,
+        ns: str | None,
+        name: str,
+        value: str | int | bool,
+        *,
+        is_int: bool = False,
+        is_bool: bool = False,
     ) -> None:
         self.ns = ns
         self.name = name
         self.value = value
         self.is_int = is_int
+        self.is_bool = is_bool
 
 
 def _resource_map() -> bytes:
@@ -133,7 +142,9 @@ def _start_element(pool: StringPool, name: str, attrs: list[Attr]) -> bytes:
     attr_bytes = bytearray()
     for attr in attrs:
         ns = pool.index(attr.ns) if attr.ns else -1
-        if attr.is_int:
+        if attr.is_bool:
+            raw, data_type, data = -1, TYPE_INT_BOOLEAN, (0xFFFFFFFF if attr.value else 0)
+        elif attr.is_int:
             raw, data_type, data = -1, TYPE_INT_DEC, int(attr.value) & 0xFFFFFFFF
         else:
             raw = data = pool.index(str(attr.value))
@@ -204,7 +215,12 @@ def build_manifest() -> bytes:
     body += _end_element(pool, "uses-sdk")
     body += _start_element(pool, "uses-permission", [Attr(ANDROID_NS, "name", PERMISSION)])
     body += _end_element(pool, "uses-permission")
-    body += _start_element(pool, "application", [Attr(ANDROID_NS, "label", "Headless")])
+    body += _start_element(pool, "application", [
+        Attr(ANDROID_NS, "label", "Headless"),
+        # A declared security-posture flag the stdlib AXML reader surfaces and
+        # the apktool gate cross-checks against apktool's decoded manifest.
+        Attr(ANDROID_NS, "debuggable", True, is_bool=True),
+    ])
     body += _start_element(pool, "activity", [Attr(ANDROID_NS, "name", MAIN_ACTIVITY)])
     body += _start_element(pool, "intent-filter", [])
     body += _start_element(pool, "action", [Attr(ANDROID_NS, "name", "android.intent.action.MAIN")])
