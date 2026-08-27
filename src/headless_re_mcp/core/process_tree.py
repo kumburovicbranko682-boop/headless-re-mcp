@@ -223,6 +223,18 @@ def collect_process_group(pgid: int) -> list[int]:
     return members
 
 
+def collect_process_tree(parent_pid: int) -> list[int]:
+    """Known descendants plus isolated-group members whose launcher exited.
+
+    The ppid walk sees children the launcher still parents; the group scan sees
+    POSIX orphans that kept the launcher's session group after the kernel
+    reparented them to init. Together they cover a helper detached either way.
+    """
+    found = collect_descendants(parent_pid)
+    found.extend(collect_process_group(parent_pid))
+    return list(dict.fromkeys(pid for pid in found if pid != parent_pid))
+
+
 def terminate_process_group(pgid: int) -> list[int]:
     """POSIX: kill every live member of process group ``pgid``. [] on Windows.
 
@@ -311,6 +323,31 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
         with suppress(Exception):
             os.killpg(pid, 9)
     return killed
+
+
+def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+    """Terminate children left behind after a launcher reported completion.
+
+    A CLI wrapper that exits 0 can still have detached a helper -- measured
+    with die/exeinfope/upx launch scripts, that helper outlives the tool call
+    and holds the sample open. Checked and swept only when something is
+    actually left, so the common clean exit stays a single /proc (or Toolhelp)
+    scan. Never raises: this runs on the success path.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    with suppress(Exception):
+        if not collect_process_tree(pid):
+            return []
+        killed = terminate_process_tree(process, wait_s=wait_s)
+        # An orphan reparented to init keeps the group id but not the parent
+        # link, so the descendant walk above cannot see it; the per-member
+        # group sweep can, and it matches on pgrp so a recycled leader pid
+        # cannot make it hit an unrelated group.
+        killed.extend(terminate_process_group(pid))
+        return list(dict.fromkeys(killed))
+    return []
 
 
 def terminate_pid_tree(pid: int) -> list[int]:

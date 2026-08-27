@@ -472,6 +472,11 @@ def _capture_process(
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
         monitor_thread.join(timeout=1.0)
+        # A clean exit can still leave the GUI wrapper's detached helper
+        # behind; sweep survivors so a successful call never leaks a process.
+        from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
+
+        terminate_leftover_process_tree(process, wait_s=1.0)
         # The readers close their own pipes; only close here when the reader has
         # finished, so a reader still blocked on a survivor's pipe never wedges
         # this thread on close().
