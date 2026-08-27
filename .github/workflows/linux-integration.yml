@@ -1,0 +1,79 @@
+# Linux portable-backend gates — the non-PE lines' "skip != pass" made real.
+#
+# Manual trigger only, mirroring windows-integration.yml. The every-commit CI
+# (ci.yml) runs only unit tests, so the Android / Web / portable-static gates
+# never execute there and "skip != pass" stays a promise rather than a check.
+# Unlike the Windows job this needs no self-hosted runner: every backend the
+# non-PE lines depend on installs on a stock GitHub-hosted Ubuntu image
+# (radare2 + a C compiler for r2, wabt + webcrack for the JS/WASM statics,
+# Playwright's Chromium for the web driver, mitmproxy for the interception
+# proxy), so the portable gates run for real on the platform the project now
+# calls a first-class core.
+name: linux-integration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install portable backends
+        run: |
+          # radare2 (portable-static) and wabt (wasm2wat / wasm-objdump for the
+          # WASM static) come from apt; the C compiler for the r2 ELF fixture is
+          # already on the image. webcrack (JS deobfuscation) is a Node CLI.
+          sudo apt-get update
+          sudo apt-get install -y radare2 wabt
+          npm install -g webcrack
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          # Every non-PE line's optional deps: web (js/wasm services + FastAPI),
+          # android (androguard/adbutils/frida), browser (Playwright), proxy
+          # (mitmproxy). Missing any of these turns a gate into a skip.
+          python -m pip install -e ".[test,dev,web,android,browser,proxy]"
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Backend sanity
+        run: |
+          # Name what actually resolved before the gates run, so a gate that
+          # skips can be told apart from a backend that failed to install.
+          r2 -v | head -n 1
+          wasm2wat --version || true
+          webcrack --version || true
+          python -c "import androguard, adbutils; print('androguard+adbutils ok')"
+          python -c "import mitmproxy; print('mitmproxy', mitmproxy.__version__)"
+
+      - name: Non-PE portable gates
+        run: |
+          # Scoped to the non-PE lines rather than the whole suite: the PE
+          # pipeline's gates want IDA / x64dbg / a Windows fixture and would only
+          # skip here. -rs prints each skip reason so a skip never reads as pass.
+          export PYTHONPATH=src
+          python -m pytest \
+            tests/integration/test_android_re_gate.py \
+            tests/integration/test_web_re_gate.py \
+            tests/integration/test_web_lifecycle_gate.py \
+            tests/integration/test_proxy_lifecycle_gate.py \
+            tests/integration/test_m11_r2_live_gate.py \
+            tests/integration/test_agent_browser_smoke.py \
+            -rs --tb=short --timeout=300

@@ -88,6 +88,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   跑 `aflj`/`pdj`/`axj`,断言函数/反汇编/xref 都解析成功且地址是纯 va(显式断言 ELF 上不出现 rva/module)。
   没有 r2 或没有编译器时如实 skip(skip 不等于 pass),不落任何提交产物。
 
+### 新增（Linux 便携后端 Gate 的 CI 通路）
+
+- **每次提交的 CI（`ci.yml`）只跑单测,Android/Web/portable-static 的实测 Gate 从不在 CI 执行**,于是
+  「skip 不等于 pass」只是承诺而非检查。新增 `.github/workflows/linux-integration.yml`(手动触发,对齐
+  `windows-integration.yml` 的形态),但无需自托管 runner:非 PE 那几条线依赖的后端都能在 GitHub 自带的
+  Ubuntu 镜像上装齐——apt 装 radare2 与 wabt、镜像自带 C 编译器供 r2 ELF 夹具、npm 装 webcrack、
+  Playwright 装 Chromium、pip 装 mitmproxy。装完先打印各后端版本(装失败与 Gate 跳过可区分),再按非 PE
+  范围跑 `test_android_re_gate` / `test_web_re_gate` / `test_web_lifecycle_gate` / `test_proxy_lifecycle_gate` /
+  `test_m11_r2_live_gate` / `test_agent_browser_smoke`,`-rs` 打印每条跳过原因。PE 流水线的 Gate 需要
+  IDA/x64dbg/Windows 夹具,不纳入本 job。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
