@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`ui.process_tree` 把两处有界列表当成完整）
+
+- `ui.process_tree` 是只读的"该操作哪个 pid/窗口"探测,为控制成本对两处列表做了有界处理,但都
+  静默截断:直接子进程列表按 `_MAX_CHILD_PIDS`(16)封顶——旧代码用默认上限调
+  `enumerate_direct_children` 并返回裸列表,于是有 17 个直接子进程的调试目标回来只有 16 个、
+  没有任何"还有更多"的信号,对着 Chromium 式进程树找承载真实窗口的子进程时,想要的那个恰好被
+  甩在末尾也无从得知;每个子进程的 `top_level_windows` 又按 16 封顶,某子进程窗口多于上限时只
+  给切片、行看着却像完整。现改为多枚举一个以区分"正好 16 个"与"16+ 被切片",回包加
+  `children_count` / `children_truncated`,每个子进程行加 `top_level_windows_total` 与
+  `top_level_windows_truncated`。把建行逻辑抽成模块级 `_ui_child_process_rows`(外层调用路径是
+  Windows 专属,这层诚实性值得在任意平台上直测),`ui.process_tree` 工具说明同步列出这些字段。
+  新增两条行为直测:子进程数超上限时报 `children_truncated=True`、正好等于上限时为 False;某子
+  进程窗口超上限时该行 `top_level_windows_total` 为真实数且 `_truncated=True`、窗口少的子进程
+  不带截断标记。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
