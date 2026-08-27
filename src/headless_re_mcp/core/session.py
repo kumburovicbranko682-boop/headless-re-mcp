@@ -591,6 +591,18 @@ _CS_MAX_SIG_BYTES = 4 * 1024 * 1024
 _CS_HASH_TYPES = {1: "sha1", 2: "sha256", 3: "sha256_truncated", 4: "sha384"}
 _MACHO_MAX_LOAD_CMDS = 4096
 _MACHO_MAX_DYLIBS = 64
+# The exported symbols of a Mach-O image: LC_SYMTAB's nlist entries whose type
+# is N_SECT (defined in a section here, not an N_UNDF import) with the N_EXT
+# (external) bit set. This is the Mach-O half of the native export surface --
+# the pair to LC_LOAD_DYLIB imports and the counterpart to the ELF .dynsym
+# exports -- the same defined-external set llvm-nm --defined-only --extern-only
+# lists. N_TYPE masks the type field of n_type; the scan and reported list are
+# bounded so a symbol-heavy image cannot force a large read or an unbounded fact.
+_N_EXT = 0x01
+_N_TYPE = 0x0E
+_N_SECT = 0x0E
+_MACHO_MAX_NSYMS_SCAN = 200_000
+_MACHO_MAX_EXPORTS = 8192
 # The header window read for identity facts is small, but a real image's load
 # commands can run past it, so the command region is read in full from the file
 # (bounded) rather than truncated at the window, the way the ELF reader seeks.
@@ -3169,6 +3181,12 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         canary = _macho_canary(stream, lc["symtab"])
         if canary is not None:
             facts["canary"] = canary
+        # The exported symbols -- the image's public API surface, read off
+        # LC_SYMTAB the way llvm-nm does; the Mach-O half of the native export
+        # facts. Present only when the image actually exports something.
+        exports = _macho_exported_symbols(stream, lc["symtab"], bits, order)
+        if exports:
+            facts["exported_symbols"] = exports
     return facts
 
 
@@ -3242,7 +3260,7 @@ def _macho_cs_string(cd: bytes, offset: int) -> str | None:
     return raw.decode("utf-8", errors="replace") or None
 
 
-def _macho_canary(stream: BinaryIO, symtab: tuple[int, int] | None) -> bool | None:
+def _macho_canary(stream: BinaryIO, symtab: tuple[int, int, int, int] | None) -> bool | None:
     """Whether the symbol string table names a stack-protector guard.
 
     A clang ``-fstack-protector`` build imports ``___stack_chk_guard`` /
@@ -3254,7 +3272,7 @@ def _macho_canary(stream: BinaryIO, symtab: tuple[int, int] | None) -> bool | No
     """
     if symtab is None:
         return None
-    stroff, strsize = symtab
+    _symoff, _nsyms, stroff, strsize = symtab
     if stroff <= 0 or strsize <= 0:
         return None
     try:
@@ -3265,6 +3283,62 @@ def _macho_canary(stream: BinaryIO, symtab: tuple[int, int] | None) -> bool | No
     if not blob:
         return None
     return any(sym in blob for sym in _ELF_CANARY_SYMBOLS)
+
+
+def _macho_exported_symbols(
+    stream: BinaryIO, symtab: tuple[int, int, int, int] | None, bits: int, order: str
+) -> list[str]:
+    """The names of the defined, externally visible symbols the image exports.
+
+    Walks LC_SYMTAB's nlist entries and keeps those with the N_EXT bit set
+    whose type is N_SECT -- defined in one of this image's sections rather than
+    an N_UNDF import -- reading each name (leading underscore and all, exactly
+    as llvm-nm prints it) out of the string table. This is the Mach-O export
+    surface, the counterpart to the ELF .dynsym exports; sorted for
+    determinism. Every step is bounded (symbol scan, string read, result size)
+    so a hostile or symbol-heavy image degrades to a shorter list, and any
+    structural surprise yields an empty list.
+    """
+    if symtab is None:
+        return []
+    symoff, nsyms, stroff, strsize = symtab
+    if symoff <= 0 or nsyms <= 0 or stroff <= 0 or strsize <= 0:
+        return []
+    stride = 16 if bits == 64 else 12
+    count = min(nsyms, _MACHO_MAX_NSYMS_SCAN)
+    try:
+        stream.seek(stroff)
+        strblob = stream.read(min(strsize, _ELF_MAX_STRTAB))
+        stream.seek(symoff)
+        syms = stream.read(stride * count)
+    except OSError:
+        return []
+
+    def name_at(offset: int) -> str | None:
+        if 0 < offset < len(strblob):
+            end = strblob.find(b"\x00", offset)
+            if end == -1:
+                end = len(strblob)
+            return strblob[offset:end].decode("utf-8", errors="replace") or None
+        return None
+
+    exports: set[str] = set()
+    for i in range(count):
+        rec = syms[i * stride : i * stride + stride]
+        if len(rec) < stride:
+            break
+        n_strx = int.from_bytes(rec[0:4], order)  # type: ignore[arg-type]
+        n_type = rec[4]
+        # Externally visible and defined in a section here (an export), not an
+        # undefined import (N_UNDF) or a debug/absolute entry.
+        if not (n_type & _N_EXT) or (n_type & _N_TYPE) != _N_SECT:
+            continue
+        name = name_at(n_strx)
+        if name:
+            exports.add(name)
+        if len(exports) >= _MACHO_MAX_EXPORTS:
+            break
+    return sorted(exports)
 
 
 def _macho_read_load_commands(
@@ -3321,9 +3395,10 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     the command count is out of range), ``interpreter`` (LC_LOAD_DYLINKER),
     ``install_name`` (LC_ID_DYLIB, a dylib's own name -- the DT_SONAME analogue),
     ``uuid`` (LC_UUID, the build id), ``entryoff`` (LC_MAIN's file offset of
-    main, or None), ``segments`` ((vmaddr, fileoff, filesize) per LC_SEGMENT
+    main, or None),     ``segments`` ((vmaddr, fileoff, filesize) per LC_SEGMENT
     / LC_SEGMENT_64, for mapping that offset to an address), ``symtab``
-    (LC_SYMTAB's (stroff, strsize), for the canary scan), ``cryptid``
+    (LC_SYMTAB's (symoff, nsyms, stroff, strsize), for the exported-symbol
+    walk and the canary scan), ``cryptid``
     (LC_ENCRYPTION_INFO's crypt id, or None when the image carries none),
     ``code_signature`` (LC_CODE_SIGNATURE's (dataoff, datasize) locating the
     embedded signature SuperBlob, or None when unsigned),
@@ -3404,9 +3479,12 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         elif cmd == _LC_MAIN and result["entryoff"] is None and cmdsize >= 24:
             result["entryoff"] = int.from_bytes(cmds[pos + 8 : pos + 16], order)  # type: ignore[arg-type]
         elif cmd == _LC_SYMTAB and result["symtab"] is None and cmdsize >= 24:
-            # symoff/nsyms then stroff/strsize; only the string table matters
-            # here -- the canary scan greps it for the stack-guard imports.
+            # symoff, nsyms, stroff, strsize: the symbol table locates the
+            # exported symbols and the string table both names them and is what
+            # the canary scan greps for the stack-guard imports.
             result["symtab"] = (
+                int.from_bytes(cmds[pos + 8 : pos + 12], order),  # type: ignore[arg-type]
+                int.from_bytes(cmds[pos + 12 : pos + 16], order),  # type: ignore[arg-type]
                 int.from_bytes(cmds[pos + 16 : pos + 20], order),  # type: ignore[arg-type]
                 int.from_bytes(cmds[pos + 20 : pos + 24], order),  # type: ignore[arg-type]
             )

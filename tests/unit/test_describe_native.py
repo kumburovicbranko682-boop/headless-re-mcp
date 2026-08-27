@@ -154,15 +154,53 @@ def _lc_uuid() -> bytes:
     return _lc_uuid_bytes(b"\x00" * 16)
 
 
-def _lc_symtab(stroff: int, strsize: int) -> bytes:
-    # LC_SYMTAB: symoff/nsyms (unused by the reader) then stroff/strsize.
+def _lc_symtab(stroff: int, strsize: int, *, symoff: int = 0, nsyms: int = 0) -> bytes:
+    # LC_SYMTAB: symoff/nsyms (the symbol table) then stroff/strsize (its names).
     return (
         (0x02).to_bytes(4, "little")
         + (24).to_bytes(4, "little")
-        + (0).to_bytes(4, "little")
-        + (0).to_bytes(4, "little")
+        + symoff.to_bytes(4, "little")
+        + nsyms.to_bytes(4, "little")
         + stroff.to_bytes(4, "little")
         + strsize.to_bytes(4, "little")
+    )
+
+
+# Mach-O nlist n_type bits: N_EXT marks an external symbol; the type nibble is
+# N_SECT for one defined in a section here and N_UNDF for an import.
+_N_EXT, _N_SECT, _N_UNDF = 0x01, 0x0E, 0x00
+
+
+def _macho64_with_symbols(
+    symbols: list[tuple[str, int, int]], *, nsyms: int | None = None
+) -> bytes:
+    """A 64-bit Mach-O carrying an LC_SYMTAB of the given nlist entries.
+
+    Each symbol is ``(name, n_type, n_sect)``; the reader exports those that are
+    external (N_EXT) and defined in a section (N_SECT). An empty name forces a
+    zero n_strx (a real "no name" symbol). The nlist array and string table are
+    laid out right after the single load command, so symoff/stroff address them
+    directly. ``nsyms`` overrides the declared symbol count for the lying-count
+    case.
+    """
+    strtab = bytearray(b"\x00")
+    nlists = bytearray()
+    for name, n_type, n_sect in symbols:
+        if name == "":
+            strx = 0
+        else:
+            strx = len(strtab)
+            strtab += name.encode() + b"\x00"
+        nlists += struct.pack("<IBBHQ", strx, n_type, n_sect, 0, 0)
+    cmds_len = 24  # one LC_SYMTAB command
+    symoff = 32 + cmds_len
+    stroff = symoff + len(nlists)
+    declared = nsyms if nsyms is not None else len(symbols)
+    cmds = _lc_symtab(stroff, len(strtab), symoff=symoff, nsyms=declared)
+    return (
+        _macho64_full(filetype=6, flags=0x4, load_cmds=cmds, ncmds=1)
+        + bytes(nlists)
+        + bytes(strtab)
     )
 
 
@@ -1375,6 +1413,64 @@ def test_macho_without_a_symtab_has_no_canary_fact(tmp_path: Path) -> None:
     assert "canary" not in describe_native(_write(tmp_path, "a.bin", data))["native"]
 
 
+def test_macho_exported_symbols_lists_defined_externals(tmp_path: Path) -> None:
+    # The Mach-O export surface: external symbols defined in a section here.
+    # An undefined external is an import (LC_LOAD_DYLIB's job) and a defined
+    # local is internal; neither is exported. llvm-nm selects the same set.
+    data = _macho64_with_symbols(
+        [
+            ("_exported_fn", _N_SECT | _N_EXT, 1),
+            ("_exported_var", _N_SECT | _N_EXT, 2),
+            ("_imported_puts", _N_UNDF | _N_EXT, 0),
+            ("_local_helper", _N_SECT, 1),
+        ]
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["exported_symbols"] == ["_exported_fn", "_exported_var"]
+
+
+def test_macho_without_a_symtab_has_no_export_fact(tmp_path: Path) -> None:
+    # No LC_SYMTAB means nothing to enumerate; the fact is omitted rather than
+    # reported as an empty list.
+    data = _macho64_full(filetype=2, flags=0x4, load_cmds=_lc_uuid(), ncmds=1)
+    assert "exported_symbols" not in describe_native(_write(tmp_path, "a.bin", data))["native"]
+
+
+def test_macho_only_imports_export_nothing(tmp_path: Path) -> None:
+    # A symbol table of nothing but undefined externals (pure imports) has no
+    # export surface, so the fact stays out.
+    data = _macho64_with_symbols(
+        [
+            ("_dyld_stub_binder", _N_UNDF | _N_EXT, 0),
+            ("_printf", _N_UNDF | _N_EXT, 0),
+        ]
+    )
+    assert "exported_symbols" not in describe_native(_write(tmp_path, "a.bin", data))["native"]
+
+
+def test_macho_nameless_export_is_skipped(tmp_path: Path) -> None:
+    # A defined external whose n_strx is zero names nothing; the reader skips
+    # it rather than reporting an empty symbol, while still reading its sibling.
+    data = _macho64_with_symbols(
+        [
+            ("", _N_SECT | _N_EXT, 1),
+            ("_named", _N_SECT | _N_EXT, 1),
+        ]
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["exported_symbols"] == ["_named"]
+
+
+def test_macho_lying_nsyms_stays_bounded(tmp_path: Path) -> None:
+    # A hostile nsyms far larger than the file cannot force a huge read: the
+    # scan stops at the first short record, keeping the symbols that parsed.
+    data = _macho64_with_symbols(
+        [("_exported_fn", _N_SECT | _N_EXT, 1)], nsyms=10_000_000
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["exported_symbols"] == ["_exported_fn"]
+
+
 def _lc_code_signature(dataoff: int, datasize: int) -> bytes:
     # linkedit_data_command: dataoff/datasize locate the signature SuperBlob.
     return (
@@ -1514,6 +1610,10 @@ def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     assert facts["nx"] is True
     assert facts["canary"] is True
     assert facts["encrypted"] is False
+    # The one symbol the fixture defines externally (_main); the stack_chk pair
+    # are undefined imports, not exports. The toolchain gate cross-checks this
+    # same set against llvm-nm.
+    assert facts["exported_symbols"] == ["_main"]
     # The committed fixture ships unsigned (the codesign gate signs a copy
     # with rcodesign and cross-checks the signature facts on that).
     assert facts["signed"] is False

@@ -24,10 +24,13 @@ Two triage themes the other native gates cannot cover from system binaries:
   A library linked with a version script carries the Verdef chain readelf -V
   renders as its "Version definition section", which the reader must match node
   for node (BASE flag and inherited parents included).
-- Exported symbols (ELF .dynsym) -- the object's public API surface, the pair
-  to DT_NEEDED imports and the raw-symbol complement to DT_VERDEF. A plain
-  shared library's default-visibility globals become dynamic symbols readelf
-  --dyn-syms lists, which the reader must select name for name.
+- Exported symbols (ELF .dynsym, Mach-O LC_SYMTAB) -- the object's public API
+  surface, the pair to DT_NEEDED / LC_LOAD_DYLIB imports and the raw-symbol
+  complement to DT_VERDEF. A plain shared library's default-visibility globals
+  become dynamic symbols readelf --dyn-syms lists, which the reader must select
+  name for name; the Mach-O fixture's defined-external nlist entries are what
+  llvm-nm --defined-only --extern-only prints (GNU nm cannot read Mach-O), and
+  the reader must select the same set with the undefined imports left out.
 
 skip != pass when a tool is missing; gcc/readelf ship with the CI runner and
 llvm is installed on the Linux lane.
@@ -514,6 +517,44 @@ def test_macho_build_version_agrees_with_llvm_objdump() -> None:
         assert native["platform"] == llvm_platform == "macos"
         assert native["min_os"] == llvm_minos == "13.0"
         assert native["sdk"] == llvm_sdk == "14.2"
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_macho_exported_symbols_agree_with_llvm_nm() -> None:
+    nm = shutil.which("llvm-nm")
+    if nm is None:
+        pytest.skip("llvm-nm not installed — Mach-O exports gate not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    # llvm-nm --defined-only --extern-only lists exactly the exported symbols
+    # (defined here, externally visible), one "<addr> <type> <name>" per line;
+    # GNU nm cannot read Mach-O at all, so llvm's is the independent decoder.
+    result = subprocess.run(
+        [nm, "--defined-only", "--extern-only", str(_MACHO_FIXTURE)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    llvm_exports = {
+        line.split()[-1]
+        for line in result.stdout.splitlines()
+        if line.strip() and not line.rstrip().endswith(":")
+    }
+    assert llvm_exports, result.stdout
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, _MACHO_FIXTURE)
+        # The tool-free LC_SYMTAB walk and llvm-nm select the same exported
+        # symbols, name for name -- here the one function the fixture defines,
+        # with its undefined stack_chk imports correctly left out.
+        assert set(native["exported_symbols"]) == llvm_exports == {"_main"}
     finally:
         if session_id is not None:
             service.close_session(session_id)

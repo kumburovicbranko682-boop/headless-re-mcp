@@ -234,8 +234,10 @@ jobs:
         # monodis (an independent ECMA-335 parser the metadata gate cross-checks
         # the pure-Python reader against) and pedump (which decodes the CLI
         # header, so the corflags gate cross-checks il_only/32-bit/strong-name).
-        # llvm supplies llvm-objdump, the independent (and strict) Mach-O
-        # decoder the toolchain gate cross-checks the LC_RPATH fact against.
+        # llvm supplies llvm-objdump and llvm-nm, the independent (and strict)
+        # Mach-O decoders the toolchain gate cross-checks the LC_RPATH,
+        # LC_BUILD_VERSION and exported-symbol facts against (GNU binutils
+        # cannot read Mach-O at all).
         run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils llvm
 
       - name: Install rcodesign for the Mach-O code-signature gate
