@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（web.console 补上来源位置，一眼看出这行日志出自哪个脚本哪一行）
+
+- `web.console` 一直只回 `type` 与 `text`——可 `console.log` / `console.warn` 到达时并不带位置
+  （不像未捕获错误，浏览器会把出处拼进文本），于是逆向一个页面时看到一行日志却无从知道它出自哪个
+  脚本、哪一行。其实 CDP 的 `Runtime.consoleAPICalled` 事件带着调用栈（`stackTrace.callFrames`），
+  栈顶帧正是发起这次 `console.*` 调用的脚本与行号。现 `on_console` 用新的 `_console_source` 取栈顶帧
+  的 `url` 与 `lineNumber`，拼成 `script:line` 记到条目的 `source` 上（CDP 的行号是 0 基，按
+  DevTools 与 `script:line` 惯例呈现为 1 基）；事件没有可用栈时（原生调用、GC 期回调，栈为空）如实
+  省略该字段而非伪造。`source` 按 `_MAX_URL_BYTES` 上限夹取、命中即置 `metadata_truncated`。
+  `web.console` 工具文档串同步列出 `source`。\
+  新增四条直测：带调用栈时算出 `script:line`（0 基 41 → 1 基 42）、无栈或空栈时省略 `source`、超长
+  url 被夹取且置 `metadata_truncated`、文档串点名 `source`。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

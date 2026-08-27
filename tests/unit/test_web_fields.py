@@ -92,6 +92,87 @@ def test_web_console_puts_messages_in_console_and_says_when_it_stopped(
     assert "text_truncated" in doc
 
 
+class _RecordingCdp:
+    def __init__(self) -> None:
+        self.handlers: dict[str, Any] = {}
+
+    def send(self, method: str) -> None:
+        del method
+
+    def on(self, event: str, handler: Any) -> None:
+        self.handlers[event] = handler
+
+
+def _wired_console_handle() -> tuple[_FakeHandle, _RecordingCdp]:
+    cdp = _RecordingCdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+    return handle, cdp
+
+
+def test_web_console_captures_the_source_location_from_the_call_stack() -> None:
+    """A console.* message carries where it was logged from.
+
+    consoleAPICalled's top stack frame names the script and line of the call.
+    A console.log/warn otherwise arrives with no location -- unlike an error,
+    whose text the browser annotates -- so an analyst cannot tell which script
+    emitted it. The line is CDP's 0-based number shown 1-based like DevTools.
+    """
+    handle, cdp = _wired_console_handle()
+    cdp.handlers["Runtime.consoleAPICalled"](
+        {
+            "type": "log",
+            "args": [{"value": "hi"}],
+            "stackTrace": {
+                "callFrames": [
+                    {"url": "https://example.com/app.js", "lineNumber": 41},
+                    {"url": "https://example.com/vendor.js", "lineNumber": 7},
+                ]
+            },
+        }
+    )
+    entry = handle.console[-1]
+    assert entry["text"] == "hi"
+    assert entry["source"] == "https://example.com/app.js:42"
+    assert "metadata_truncated" not in entry
+
+
+def test_web_console_omits_source_when_the_event_carries_no_stack() -> None:
+    """A native or stack-less console event just has no source field."""
+    handle, cdp = _wired_console_handle()
+    cdp.handlers["Runtime.consoleAPICalled"](
+        {"type": "warning", "args": [{"value": "no stack"}]}
+    )
+    cdp.handlers["Runtime.consoleAPICalled"](
+        {"type": "log", "args": [{"value": "empty frames"}], "stackTrace": {"callFrames": []}}
+    )
+    for entry in handle.console:
+        assert "source" not in entry
+
+
+def test_web_console_source_is_bounded_and_flags_truncation() -> None:
+    """An oversized source url is clipped and marked, like every other field."""
+    handle, cdp = _wired_console_handle()
+    huge = "https://example.com/" + "a" * (_MAX_URL_BYTES + 100)
+    cdp.handlers["Runtime.consoleAPICalled"](
+        {
+            "type": "error",
+            "args": [{"value": "boom"}],
+            "stackTrace": {"callFrames": [{"url": huge, "lineNumber": 0}]},
+        }
+    )
+    entry = handle.console[-1]
+    assert len(str(entry["source"]).encode()) <= _MAX_URL_BYTES
+    assert entry["metadata_truncated"] is True
+
+
+def test_web_console_docstring_names_the_source_field() -> None:
+    doc = _tool_docstring("web.console")
+    assert "source" in doc
+    assert "metadata_truncated" in doc
+
+
 def test_web_network_list_puts_the_page_in_requests_not_type(
     monkeypatch: Any,
 ) -> None:

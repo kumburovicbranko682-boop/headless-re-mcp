@@ -126,6 +126,36 @@ def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     return " ".join(parts), truncated
 
 
+def _console_source(params: JsonObject) -> tuple[str | None, bool]:
+    """The ``script:line`` a console call came from, or None when CDP gave none.
+
+    ``Runtime.consoleAPICalled`` carries the JS call stack; its top frame names
+    the script and line that made the ``console.*`` call. A ``console.log`` /
+    ``console.warn`` message otherwise arrives with no location -- unlike an
+    error, whose text the browser already annotates -- so an analyst cannot tell
+    which of a page's scripts emitted it. The line is CDP's 0-based number
+    presented 1-based to match what DevTools and the ``script:line`` convention
+    show. Absent when the event carried no usable stack (a native or GC-time
+    call has empty frames).
+    """
+    stack = params.get("stackTrace")
+    frames = stack.get("callFrames") if isinstance(stack, dict) else None
+    if not isinstance(frames, list) or not frames:
+        return None, False
+    top = frames[0]
+    if not isinstance(top, dict):
+        return None, False
+    url = top.get("url")
+    if not isinstance(url, str) or not url:
+        return None, False
+    line = top.get("lineNumber")
+    if isinstance(line, int) and not isinstance(line, bool) and line >= 0:
+        location = f"{url}:{line + 1}"
+    else:
+        location = url
+    return _bounded_metadata(location, _MAX_URL_BYTES)
+
+
 def _spill_text(
     text: str,
     *,
@@ -514,12 +544,17 @@ class WebBackend:
 
         def on_console(params: JsonObject) -> None:
             text, text_truncated = _clip_console_text(params)
+            source, source_truncated = _console_source(params)
             entry: JsonObject = {
                 "type": str(params.get("type") or "log"),
                 "text": text,
             }
             if text_truncated:
                 entry["text_truncated"] = True
+            if source:
+                entry["source"] = source
+            if source_truncated:
+                entry["metadata_truncated"] = True
             with handle.lock:
                 if (
                     handle.console.maxlen is not None
