@@ -61,6 +61,8 @@ def test_describe_wasm_reads_a_real_add_module(tmp_path: Path) -> None:
     assert info["export_count"] == 1
     assert set(info["section_counts"]) == {"type", "function", "export", "code"}
     assert info["has_start"] is False
+    # No start section means no entry point to name -- None, not a guess.
+    assert info["start_function"] is None
     # The one export is surfaced by name and kind, not just counted.
     assert info["exports"] == [{"name": "add", "kind": "func"}]
     assert info["imports"] == []
@@ -162,6 +164,61 @@ def test_a_truncated_memory_limit_stops_the_walk(tmp_path: Path) -> None:
     path.write_bytes(module)
     info = describe_wasm(path)["wasm"]
     assert info["memories"] == []
+
+
+def test_start_function_reports_the_entry_index(tmp_path: Path) -> None:
+    # The start section names the function run automatically at instantiation
+    # -- the WASM entry point, e_entry's analogue. With no name section only
+    # the index (the one identity the binary format guarantees) is reported.
+    module = _module([_section(8, _leb(2))])
+    path = tmp_path / "start.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["has_start"] is True
+    assert info["start_function"] == {"index": 2}
+
+
+def test_start_function_resolves_its_debug_name(tmp_path: Path) -> None:
+    # An unstripped module names its functions; the entry point picks up its
+    # source-level name from the same map wasm2wat renders as (start $name).
+    # Two names in the map prove the resolution matches on index, not position.
+    module = _module(
+        [
+            _section(8, _leb(1)),
+            _name_section([_name_subsec(1, _func_name_map([(0, "init"), (1, "wasm_ctor")]))]),
+        ]
+    )
+    path = tmp_path / "named_start.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["start_function"] == {"index": 1, "name": "wasm_ctor"}
+
+
+def test_a_start_index_outside_the_name_map_stays_nameless(tmp_path: Path) -> None:
+    # The name map names other functions but not the entry point; the index is
+    # still a fact, a name is not invented from the wrong entry.
+    module = _module(
+        [
+            _section(8, _leb(7)),
+            _name_section([_name_subsec(1, _func_name_map([(0, "init")]))]),
+        ]
+    )
+    path = tmp_path / "unnamed_start.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["start_function"] == {"index": 7}
+
+
+def test_an_empty_start_section_keeps_only_its_presence(tmp_path: Path) -> None:
+    # A start section with no body is malformed for this one fact: the section
+    # exists (has_start) but the index read must not cross into the next
+    # section's bytes, so no entry point is reported.
+    module = _module([_section(8, b""), _section(1, _leb(0))])
+    path = tmp_path / "empty_start.wasm"
+    path.write_bytes(module)
+    info = describe_wasm(path)["wasm"]
+    assert info["has_start"] is True
+    assert info["start_function"] is None
 
 
 def test_describe_wasm_surfaces_every_vector_count_and_custom_name(tmp_path: Path) -> None:

@@ -1448,9 +1448,10 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     binary format -- to report the version, which sections are present, the
     vector counts (types, imports, functions, exports, ...), the import and
     export names that identify what the module needs and exposes, the linear
-    memory footprint (min/max pages, imported or defined), and the debug names
-    (module / function) an unstripped build carries, the same way describe_apk
-    does for a package.
+    memory footprint (min/max pages, imported or defined), the start function
+    (the entry point run at instantiation), and the debug names (module /
+    function) an unstripped build carries, the same way describe_apk does for
+    a package.
 
     Fail-closed and bounded: a non-WASM or unreadable file returns ``{}``; a
     malformed tail stops the walk and is reported via ``well_formed`` rather
@@ -1474,6 +1475,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     producers: dict[str, list[str]] | None = None
     name_facts: dict[str, Any] = {}
     has_start = False
+    start_index: int | None = None
     well_formed = True
     pos = 8
     walked = 0
@@ -1503,6 +1505,12 @@ def describe_wasm(path: Path) -> dict[str, Any]:
                 defined_memories = _wasm_memories(data, body_start, body_end)
         elif section_id == 8:
             has_start = True
+            # The section body is one LEB128 function index. A truncated or
+            # empty body keeps has_start (the section exists) but names no
+            # function -- the index read must not cross into the next section.
+            index, idx_end, ok_start = _read_leb_u32(data, body_start)
+            if ok_start and idx_end <= body_end and start_index is None:
+                start_index = index
         elif section_id == 0:
             name_len, name_pos, named = _read_leb_u32(data, body_start)
             if named and name_pos + name_len <= body_end:
@@ -1536,6 +1544,24 @@ def describe_wasm(path: Path) -> dict[str, Any]:
         if imp["kind"] == "memory"
     ]
     memories += defined_memories
+    # The start function: the module's entry point, run automatically at
+    # instantiation before any export is callable -- the WASM analogue of an
+    # ELF e_entry or a .NET entry-point token. Reported by index (the only
+    # identity the binary format guarantees; the space counts imported
+    # functions first) plus the debug name when the name section carries one.
+    start_function: dict[str, Any] | None = None
+    if start_index is not None:
+        start_function = {"index": start_index}
+        start_name = next(
+            (
+                entry["name"]
+                for entry in name_facts.get("function_names", [])
+                if entry["index"] == start_index
+            ),
+            None,
+        )
+        if start_name:
+            start_function["name"] = start_name
     return {
         "wasm": {
             "version": version,
@@ -1548,6 +1574,7 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             "table_count": vector_counts.get("table_count"),
             "memory_count": vector_counts.get("memory_count"),
             "has_start": has_start,
+            "start_function": start_function,
             "memories": memories,
             "custom_sections": custom_sections,
             "producers": producers,

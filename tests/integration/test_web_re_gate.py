@@ -268,7 +268,13 @@ def test_wasm_tool_free_facts_agree_with_wabt(tmp_path: Path) -> None:
         assert wasm["export_count"] == 3
         assert wasm["global_count"] == 1
         assert wasm["has_start"] is True
-        assert re.search(r"\(start\b", wat), wat
+        # The entry point, index for index: the reader reports func 0 (the
+        # imported env.log, which is what runs at instantiation) and wabt's
+        # (start N) must name the same function.
+        assert wasm["start_function"] == {"index": 0}
+        start_match = re.search(r"\(start (\d+)\)", wat)
+        assert start_match, wat
+        assert int(start_match.group(1)) == wasm["start_function"]["index"]
 
         # The memory footprint: the module imports one memory of min 1 page and
         # no maximum. wabt decodes the same limits from the same bytes, so the
@@ -328,6 +334,11 @@ def test_wasm_debug_names_agree_with_wabt(tmp_path: Path) -> None:
         assert reader_names == expected
         assert wabt_names == expected
         assert wasm["function_name_count"] == 2
+        # The entry point picks up its debug name from the same map: the
+        # reader resolves start -> host_log and wasm2wat renders the identical
+        # resolution as (start $host_log).
+        assert wasm["start_function"] == {"index": 0, "name": "host_log"}
+        assert re.search(r"\(start \$host_log\)", wat), wat
     finally:
         service.close_all()
 
