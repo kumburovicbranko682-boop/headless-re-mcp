@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 frida.spawn 的失败分类与“绝不泄漏被挂起进程”的清理契约，不依赖 frida）
+
+- `frida.spawn` 先挂起启动一个 Android 包再 resume 它;其成功路径、包名 fail-fast 与 resume 卡死的\
+  超时清理已被钉住,但其余失败面此前未测。新增 `test_frida_spawn_lifecycle.py`,以可按需在 spawn/resume\
+  抛错的假设备与一个 kill 记录器补齐:`device.spawn` 自身抛错时(原始异常/超时)映射为 `backend_error` /\
+  `timeout` 且无 pid 可清理(kill 不被调用);`device.resume` 在成功 spawn **之后** 抛错时必须先 kill 掉已\
+  spawn 的 pid 再上抛——否则每次失败的启动都会在设备上泄漏一个被挂起的进程。分类被保留:已分类的\
+  `FridaError`(如 `permission_denied`)原样重抛、code 不被压平,原始异常变为消息含“was killed”的\
+  `backend_error`,同步超时变为 `timeout`,三条都先杀进程。frida/client.py 的 spawn 失败/清理支\
+  (729-744)由此覆盖(其余未覆盖行为为 device 会话真实 frida 路径或防御性外层分支)。(纯测试补充,无行为变更。)
+
 ### 测试（钉住 ensure_frida_server 的 root push/launch 降级诚实与 forward 已分类错误的回滚，不依赖 adbutils）
 
 - `ensure_frida_server` 是最高权限的设备变更(以 su 推送并启动 frida-server),但其 push/launch/verify\
