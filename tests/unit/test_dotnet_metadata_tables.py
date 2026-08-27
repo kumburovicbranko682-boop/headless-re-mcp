@@ -19,6 +19,7 @@ import pytest
 
 from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, inspect_dotnet
 from headless_re_mcp.dotnet.metadata_enum import (
+    _disassemble_il,
     disassemble_method_il,
     enumerate_metadata,
     list_memberref_xrefs,
@@ -226,6 +227,35 @@ def test_disassemble_fat_method_body(tmp_path: Path) -> None:
     assert result["header"]["local_var_sig_tok"] == 0
     assert [insn["mnemonic"] for insn in result["instructions"]] == ["ldc.i4.0", "ret"]
     assert result["partial"] is False
+
+
+def test_disassemble_il_marks_incomplete_decodes_partial() -> None:
+    """The disassembler must not present an incomplete decode as complete.
+
+    An agent acts on whether the listing is whole, so a two-byte-opcode
+    prefix, an operand that runs off the end, and hitting the instruction cap
+    each have to set partial; an unknown single byte is emitted opaquely
+    instead of guessed at.
+    """
+    # 0xFE is the two-byte-opcode prefix: recorded opaquely and flagged partial.
+    insns, partial = _disassemble_il(bytes([0xFE, 0x1D]), max_insns=16)
+    assert insns[0]["mnemonic"] == "prefix.fe"
+    assert partial is True
+
+    # Unknown single-byte opcode: emitted as op_<hex>, not guessed, no crash.
+    insns, partial = _disassemble_il(bytes([0xFD]), max_insns=16)
+    assert insns[0]["mnemonic"] == "op_fd"
+
+    # ldc.i4 (0x20) needs a 4-byte operand; only two are present -> partial,
+    # and no bogus instruction is emitted from the short tail.
+    insns, partial = _disassemble_il(bytes([0x20, 0x01, 0x02]), max_insns=16)
+    assert insns == []
+    assert partial is True
+
+    # More instructions than the cap allows -> partial with exactly the cap.
+    insns, partial = _disassemble_il(bytes([0x00, 0x00, 0x00]), max_insns=2)
+    assert len(insns) == 2
+    assert partial is True
 
 
 def test_memberref_xrefs_from_real_tables(tmp_path: Path) -> None:
