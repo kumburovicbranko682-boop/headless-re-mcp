@@ -366,6 +366,12 @@ def _load_metadata_context(path: Path) -> _MetaCtx:
                 break
             row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
             cursor += 4
+    # Uncompressed "#-" streams (ENC deltas / some obfuscators) set HeapSizes
+    # bit 0x40 to place a 4-byte ExtraData field after the row counts and
+    # before the first table row. Skip it or every table_start_offset is four
+    # bytes early and the whole enumeration reads shifted rows.
+    if heap_sizes & 0x40:
+        cursor += 4
     return _MetaCtx(
         path=path,
         pe_data=data,

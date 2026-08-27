@@ -340,6 +340,13 @@ def _parse_tables_and_names(
                 return None, None, None
             row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
             cursor += 4
+    # Uncompressed "#-" streams (ENC deltas, and obfuscators that pick them to
+    # trip naive parsers) set HeapSizes bit 0x40 to wedge a 4-byte ExtraData
+    # field between the row-count array and the first table row. Without this
+    # every table sat four bytes early, so Module/Assembly names came back as
+    # garbage indices -- confident but wrong.
+    if heap_sizes & 0x40:
+        cursor += 4
 
     stats = MetadataStats(
         type_count=row_counts.get(0x02),

@@ -9,7 +9,12 @@ import pytest
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, DotnetKind, inspect_dotnet
+from headless_re_mcp.dotnet.clr_inspect import (
+    DotnetInspectError,
+    DotnetKind,
+    _parse_metadata_root,
+    inspect_dotnet,
+)
 
 
 def _write_native_pe(path: Path) -> None:
@@ -80,6 +85,61 @@ def _write_verified_clr_pe(path: Path) -> None:
     cursor = meta_off + 16 + len(version_padded)
     struct.pack_into("<HH", image, cursor, 0, 0)  # flags + 0 streams
     path.write_bytes(image)
+
+
+def _uncompressed_metadata_with_module() -> bytes:
+    """#- (uncompressed) metadata whose HeapSizes sets the ExtraData bit."""
+    strings_heap = b"\0REAL.dll\0DECOY\0"
+    real_name_idx = 1
+    decoy_idx = 10  # "DECOY", where a 4-byte-early read of the Name lands
+
+    tables = bytearray()
+    # reserved, ver 2.0, HeapSizes=ExtraData(0x40), reserved.
+    tables += struct.pack("<IBBBB", 0, 2, 0, 0x40, 1)
+    tables += struct.pack("<QQ", 1 << 0x00, 0)  # Valid=Module, Sorted
+    tables += struct.pack("<I", 1)  # Module row count
+    # ExtraData: the buggy parser reads Name from its high half -> decoy index.
+    tables += struct.pack("<HH", 0, decoy_idx)
+    # Module row: Generation + Name + Mvid + EncId + EncBaseId.
+    tables += struct.pack("<HHHHH", 0, real_name_idx, 0, 0, 0)
+
+    version = b"v4.0.30319\0\0"  # 4-byte aligned
+    root = bytearray()
+    root += b"BSJB"
+    root += struct.pack("<HHI", 1, 1, 0)
+    root += struct.pack("<I", len(version))
+    root += version
+    root += struct.pack("<HH", 0, 2)  # flags, stream count
+    headers_at = len(root)
+    root += b"\0" * (8 + 4)  # "#-" header: offset + size + name padded to 4
+    root += b"\0" * (8 + 12)  # "#Strings" header: offset + size + name padded to 12
+    tables_off = len(root)
+    root += tables
+    strings_off = len(root)
+    root += strings_heap
+    struct.pack_into("<II", root, headers_at, tables_off, len(tables))
+    root[headers_at + 8 : headers_at + 11] = b"#-\0"
+    struct.pack_into("<II", root, headers_at + 12, strings_off, len(strings_heap))
+    root[headers_at + 20 : headers_at + 29] = b"#Strings\0"
+    return bytes(root)
+
+
+def test_uncompressed_stream_extradata_offsets_the_table_rows() -> None:
+    """A #- stream with the ExtraData bit set must skip its 4-byte field.
+
+    ENC deltas and some obfuscators use the uncompressed #- tables stream and
+    set HeapSizes bit 0x40, which wedges a 4-byte ExtraData field between the
+    row counts and the first row. Without skipping it the Module row is read
+    four bytes early -- here that lands on a decoy string index, so the buggy
+    parser would confidently report "DECOY" as the module name.
+    """
+    version, streams, module_name, assembly_name, stats = _parse_metadata_root(
+        _uncompressed_metadata_with_module()
+    )
+    assert version == "v4.0.30319"
+    assert streams == ["#-", "#Strings"]
+    assert module_name == "REAL.dll"
+    assert assembly_name is None
 
 
 def test_inspect_native_pe(tmp_path: Path) -> None:
