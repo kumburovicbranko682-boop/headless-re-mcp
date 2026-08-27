@@ -156,6 +156,49 @@ def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     return " ".join(parts), truncated
 
 
+def _location_fields(source: JsonObject) -> JsonObject:
+    """Structured origin (url/line/column/function) of a console line or error.
+
+    Chromium hands both ``Runtime.consoleAPICalled`` and
+    ``Runtime.exceptionThrown`` a ``stackTrace`` whose first ``callFrame`` is the
+    call site; an exception additionally carries ``url``/``lineNumber`` at the
+    top of ``exceptionDetails``. Without this an analyst sees the message text
+    but not *where* it came from -- useless for locating the offending script.
+
+    CDP line/column numbers are 0-based; report 1-based to match what DevTools
+    and a printed stack trace show. Strings are bounded like every other piece
+    of page-controlled metadata so a hostile page cannot bloat the ring.
+    """
+    url = ""
+    line: object = None
+    column: object = None
+    function = ""
+    frames = ((source.get("stackTrace") or {}).get("callFrames")) or []
+    if frames and isinstance(frames[0], dict):
+        top = frames[0]
+        url = str(top.get("url") or "")
+        line = top.get("lineNumber")
+        column = top.get("columnNumber")
+        function = str(top.get("functionName") or "")
+    # An exceptionDetails record pins the throw site even when no frame is set.
+    if not url:
+        url = str(source.get("url") or "")
+    if not isinstance(line, int):
+        line = source.get("lineNumber")
+    if not isinstance(column, int):
+        column = source.get("columnNumber")
+    out: JsonObject = {}
+    if url:
+        out["url"] = _bounded_metadata(url, _MAX_URL_BYTES)[0]
+    if isinstance(line, int) and line >= 0:
+        out["line"] = line + 1
+    if isinstance(column, int) and column >= 0:
+        out["column"] = column + 1
+    if function:
+        out["function"] = _bounded_metadata(function, _MAX_METADATA_BYTES)[0]
+    return out
+
+
 def _spill_text(
     text: str,
     *,
@@ -609,6 +652,7 @@ class WebBackend:
             }
             if text_truncated:
                 entry["text_truncated"] = True
+            entry.update(_location_fields(params))
             _append_console(entry)
 
         def on_exception(params: JsonObject) -> None:
@@ -628,6 +672,7 @@ class WebBackend:
             entry: JsonObject = {"type": "error", "text": text, "source": "exception"}
             if text_truncated:
                 entry["text_truncated"] = True
+            entry.update(_location_fields(details))
             _append_console(entry)
 
         cdp.on("Network.requestWillBeSent", on_request)

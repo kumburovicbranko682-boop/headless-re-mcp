@@ -311,6 +311,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「已 bind 但从不 listen」的回环端口（内核直接拒连）发一次请求，断言该 flow 被标 `failed`、带非空 `error`、
   `status` 为 null、且 `flow.get` 如实回报失败（缺 mitmproxy 时 skip≠pass）；单测直接驱动 `error`，覆盖新建失败行、
   `flow.get` 透出失败、以及「响应后再报错只标注不重复建行」。
+- **`web.console` 只留消息文本，丢掉了它从哪儿来**。控制台捕获只记 `type` 与 `text`——CDP 明明在
+  `Runtime.consoleAPICalled` 与 `Runtime.exceptionThrown` 里随每条消息带了 `stackTrace`（首帧即调用点：
+  url/lineNumber/columnNumber/functionName），异常还在 `exceptionDetails` 顶层另钉了 url/行号——过去全被丢弃，
+  分析者看得到「报了个错」却定位不到是哪份脚本的哪一行，未捕获异常尤其如此。现在 `on_console` / `on_exception`
+  统一抽取来源信息并并入条目：`url`、`line`、`column`（都转成 1 基，与 DevTools 及打印出的堆栈一致）、`function`；
+  字符串沿用与其它页面元数据相同的有界处理，防止恶意页面借堆栈撑大环。没有 `stackTrace` 的普通 `console.log`
+  不会凭空多出这些字段。活体门驱动一个顶层 `throw` 的页面，断言捕获到的异常条目 `url` 指回被测页面、`line` 为
+  正整数（缺浏览器时 skip≠pass）；单测分别驱动带堆栈的 console、无堆栈的 console、带顶层 url/行号的异常，校验
+  1 基转换、字段有无与函数名。
 - **`web.network.*` 从不记录响应大小，HAR 里 `content.size` 恒为 0**。CDP 只订阅了 requestWillBeSent/
   responseReceived/loadingFailed，漏掉 `Network.dataReceived`（分块传来的响应体，`dataLength` 为解压后字节、
   `encodedDataLength` 为在线字节）与 `Network.loadingFinished`（总传输字节、完成标志）。于是 `web.network.list`

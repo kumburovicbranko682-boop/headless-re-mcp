@@ -124,6 +124,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Uncaught page exceptions are captured too, as entries with type
         error and source exception (they never arrive as console.* calls),
         so an unhandled error and its stack are not silently lost.
+
+        Each entry also carries its source location when the browser reports
+        one: url, line, column (all 1-based, matching DevTools), and the
+        enclosing function. This pins a log line or exception to the exact
+        script site instead of leaving only the message text.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 

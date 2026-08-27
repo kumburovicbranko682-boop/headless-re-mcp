@@ -399,6 +399,85 @@ def test_web_uncaught_exception_lands_in_the_console_ring() -> None:
     assert "exception" in doc
 
 
+def test_web_console_and_exception_carry_their_source_location() -> None:
+    """A console line or error is worthless for triage without its script site.
+
+    CDP hands both events a stackTrace whose first callFrame is the call site
+    (an exception also pins url/lineNumber at the top of exceptionDetails).
+    Fire each the way Chromium does and assert the entry gains url, 1-based
+    line/column, and function; a bare console.log with no stackTrace must not
+    invent any of those fields.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    cdp.handlers["Runtime.consoleAPICalled"](
+        {
+            "type": "log",
+            "args": [{"value": "hello"}],
+            "stackTrace": {
+                "callFrames": [
+                    {
+                        "functionName": "doThing",
+                        "url": "http://x/app.js",
+                        "lineNumber": 41,  # 0-based -> reported as 42
+                        "columnNumber": 7,  # 0-based -> reported as 8
+                    }
+                ]
+            },
+        }
+    )
+    cdp.handlers["Runtime.consoleAPICalled"](
+        {"type": "log", "args": [{"value": "bare"}]}  # no stackTrace
+    )
+    cdp.handlers["Runtime.exceptionThrown"](
+        {
+            "exceptionDetails": {
+                "text": "Uncaught",
+                "url": "http://x/boom.js",
+                "lineNumber": 9,  # 0-based -> reported as 10
+                "columnNumber": 2,  # 0-based -> reported as 3
+                "exception": {"description": "Error: boom"},
+            }
+        }
+    )
+
+    captured = list(handle.console)
+    assert len(captured) == 3
+    logged, bare, thrown = captured
+
+    assert logged["url"] == "http://x/app.js"
+    assert logged["line"] == 42
+    assert logged["column"] == 8
+    assert logged["function"] == "doThing"
+
+    assert "url" not in bare
+    assert "line" not in bare
+    assert "column" not in bare
+    assert "function" not in bare
+
+    assert thrown["url"] == "http://x/boom.js"
+    assert thrown["line"] == 10
+    assert thrown["column"] == 3
+
+    doc = _tool_docstring("web.console")
+    assert "line" in doc
+    assert "column" in doc
+
+
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     monkeypatch: Any,
 ) -> None:

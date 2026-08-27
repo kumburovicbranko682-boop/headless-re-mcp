@@ -620,6 +620,11 @@ def test_web_cdp_captures_uncaught_exceptions() -> None:
             assert entry is not None, "the uncaught exception was never captured"
             assert entry["type"] == "error"
             assert "gate-uncaught-boom" in str(entry["text"])
+            # The stack site pins the throw to the page's own script, not just
+            # the message text: url points back at the served page, line is the
+            # 1-based location Chromium reports.
+            assert "127.0.0.1" in str(entry.get("url", "")), entry
+            assert isinstance(entry.get("line"), int) and entry["line"] >= 1, entry
 
             texts = [
                 str(e.get("text", ""))
