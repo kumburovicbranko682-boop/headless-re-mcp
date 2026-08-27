@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`apk.components` 的 has_more 说不清是哪一类被截断）
+
+- `apk.components` 分别枚举 activities / services / receivers / providers 四类组件,每类各按
+  `_MAX_COMPONENT_NAMES`(256)独立封顶,但回包只给一个合并的 `has_more`(四者取或)。于是
+  `has_more=true` 时调用方无从判断到底是哪一类不完整——审计某个导出的 receiver 时,即便
+  receivers 列表其实完整,也可能被"因 activities 超限而为真"的同一个 `has_more` 带得以为
+  receivers 也被截断了(反之亦然,某类被截断却被误以为完整)。对导出组件这种安全相关面,这种
+  含糊会让人得出错误结论。现每类各带 `activities_truncated` / `services_truncated` /
+  `receivers_truncated` / `providers_truncated`,明确指出是哪一类触顶;合并的 `has_more` 保留
+  为四者之或,供只看总标志的调用方。`apk.components` 工具说明同步列出四个分项标志。既有
+  fields 测试(300 个 activity、其余各 1)扩加断言:`activities_truncated=True`、其余三类为
+  False,且 `has_more` 恰为四者之或。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
