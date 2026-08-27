@@ -5,9 +5,18 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.dotnet.metadata_enum import CAPABILITY, _disassemble_il, enumerate_metadata
+from headless_re_mcp.dotnet import metadata_enum
+from headless_re_mcp.dotnet.metadata_enum import (
+    CAPABILITY,
+    _collect_strings_heap,
+    _disassemble_il,
+    _MetaCtx,
+    enumerate_metadata,
+)
 
 
 def _write_minimal_clr(path: Path) -> None:
@@ -49,6 +58,64 @@ def _write_minimal_clr(path: Path) -> None:
     cursor = meta_off + 16 + len(version_padded)
     struct.pack_into("<HH", image, cursor, 0, 0)
     path.write_bytes(image)
+
+
+def _ctx_with_strings(blob: bytes) -> _MetaCtx:
+    return _MetaCtx(
+        path=Path("x.dll"),
+        pe_data=b"",
+        layout=None,
+        meta=b"",
+        stream_map={},
+        tables=b"",
+        strings=blob,
+        heap_sizes=0,
+        string_index_size=2,
+        blob_index_size=2,
+        guid_index_size=2,
+        row_counts={},
+        table_data_offset=0,
+    )
+
+
+def _strings_blob(count: int) -> bytes:
+    return b"\0" + b"".join(f"s{n}\0".encode() for n in range(count))
+
+
+def test_strings_heap_over_cap_reports_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metadata_enum, "MAX_STRING_ENTRIES", 3)
+    items, capped = _collect_strings_heap(_ctx_with_strings(_strings_blob(5)))
+    assert [item["value"] for item in items] == ["s0", "s1", "s2"]
+    assert capped is True
+
+
+def test_strings_heap_at_or_under_cap_not_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metadata_enum, "MAX_STRING_ENTRIES", 4)
+    items, capped = _collect_strings_heap(_ctx_with_strings(_strings_blob(4)))
+    assert [item["value"] for item in items] == ["s0", "s1", "s2", "s3"]
+    assert capped is False
+
+
+def test_enumerate_strings_discloses_capped_heap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capped heap must page truncated and say so, not claim completeness.
+
+    Even when the returned window reaches ``total``, strings past the cap
+    exist but are unreachable here, so the page is truncated and the note
+    discloses the cap instead of implying the listing is exhaustive.
+    """
+    binary = tmp_path / "capped.exe"
+    _write_minimal_clr(binary)
+    monkeypatch.setattr(
+        metadata_enum,
+        "_collect_strings_heap",
+        lambda meta: ([{"index": 1, "value": "a"}], True),
+    )
+    page = enumerate_metadata(binary, "strings", limit=10)
+    assert page.total == 1
+    assert page.truncated is True
+    assert "capped" in page.note
 
 
 def test_enumerate_empty_tables_is_ok(tmp_path: Path) -> None:
