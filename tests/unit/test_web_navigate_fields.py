@@ -60,6 +60,9 @@ def test_web_navigate_puts_the_result_in_url_and_title(monkeypatch: Any) -> None
     assert "page" not in payload
     assert payload["url"] == "https://example/app"
     assert payload["title"] == "Example"
+    # goto returned no response here, so status is null rather than absent.
+    assert payload["status"] is None
     doc = _tool_docstring("web.navigate")
     assert "Answers with url" in doc
     assert "title" in doc
+    assert "status" in doc
