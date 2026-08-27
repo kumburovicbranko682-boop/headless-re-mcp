@@ -315,6 +315,25 @@ def register_agent_routes(
             "auto_executable_write_count": len(unattended),
         }
 
+    def _persist_then_apply(policy: AutonomyPolicy) -> None:
+        """Persist the policy, and only then make it live.
+
+        ``update_config_values`` raises OSError (unwritable config dir, disk
+        full) or ValueError (hand-corrupted config.json). Applying the policy
+        first meant a failed persist returned an opaque 500 while the process
+        kept running the new policy: after request -> full_access the server
+        was auto-approving every write while the client, seeing the failure,
+        showed the switch back on "request". Persist first so a failure has
+        no side effects at all.
+        """
+        try:
+            _persist_autonomy(policy)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=500, detail=f"autonomy_persist_failed: {exc}"
+            ) from exc
+        orchestrator.autonomy = policy
+
     def _remember_approval(run_id: str, tool_call_id: str, remember: str) -> AutonomyPolicy:
         call = store.get_tool_call(run_id, tool_call_id)
         name = str(call["name"])
@@ -327,8 +346,7 @@ def register_agent_routes(
             )
         else:
             raise ValueError("remember must be 'tool' or 'effect'")
-        orchestrator.autonomy = policy
-        _persist_autonomy(policy)
+        _persist_then_apply(policy)
         return policy
 
     async def _decision(run_id: str, tool_call_id: str, body: JsonObject, approved: bool) -> JSONResponse:
@@ -338,11 +356,8 @@ def register_agent_routes(
         remember = body.get("remember")
         if remember not in (None, "", "tool", "effect"):
             raise HTTPException(status_code=400, detail="remember_invalid")
-        policy = None
         try:
             decision = await orchestrator.decide(run_id, tool_call_id, value, approved=approved)
-            if approved and remember in {"tool", "effect"}:
-                policy = _remember_approval(run_id, tool_call_id, str(remember)).describe()
         except KeyError as exc:
             # decide() raises KeyError(run_id) for a run that does not exist and
             # decide_tool_call raises KeyError(tool_call_id) for a missing call;
@@ -354,9 +369,26 @@ def register_agent_routes(
             raise HTTPException(status_code=404, detail=detail) from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        policy = None
+        remember_error: str | None = None
+        if approved and remember in {"tool", "effect"}:
+            try:
+                policy = _remember_approval(run_id, tool_call_id, str(remember)).describe()
+            except HTTPException as exc:
+                # The decision above succeeded and cannot be re-sent (a retry
+                # would 409 on "already decided"), so a persist failure in the
+                # secondary remember step must not fail the whole request.
+                # Fail-closed: the broader grant was neither persisted nor
+                # applied, so nothing runs unattended that the operator did
+                # not just approve by hand.
+                remember_error = str(exc.detail)
+            except (KeyError, ValueError) as exc:
+                remember_error = str(exc) or "remember_failed"
         payload: dict[str, object] = {"ok": True, "tool_call": decision}
         if policy is not None:
             payload["policy"] = policy
+        if remember_error is not None:
+            payload["remember_error"] = remember_error
         return JSONResponse(payload)
 
     @app.post("/api/agent/runs/{run_id}/tool-calls/{tool_call_id}/approve")
@@ -539,8 +571,7 @@ def register_agent_routes(
                 policy = orchestrator.autonomy.with_mode(str(body["mode"]))
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            orchestrator.autonomy = policy
-            _persist_autonomy(policy)
+            _persist_then_apply(policy)
             return JSONResponse(_autonomy_body(policy))
         add_tools = body.get("add_tools") or []
         add_effects = body.get("add_effects") or []
@@ -556,8 +587,7 @@ def register_agent_routes(
                 policy = policy.revoke_tools(str(item) for item in remove_tools)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        orchestrator.autonomy = policy
-        _persist_autonomy(policy)
+        _persist_then_apply(policy)
         return JSONResponse(_autonomy_body(policy))
 
     @app.get("/api/providers")

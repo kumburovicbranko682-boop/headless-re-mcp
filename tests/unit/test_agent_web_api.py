@@ -396,3 +396,98 @@ def test_a_granted_autonomy_survives_a_restart_through_the_config_file(
     # The explicit empty effects list persisted by the grant stays fail-closed
     # on reload, rather than being repopulated by the packed-analysis preset.
     assert reloaded.auto_approve_effects == frozenset()
+
+
+def _broken_update(updates, *, config_path=None):  # type: ignore[no-untyped-def]
+    raise OSError("config directory is read-only")
+
+
+def test_autonomy_change_is_not_applied_when_persist_fails(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """PUT /api/agent/autonomy must not leave a policy live that failed to persist.
+
+    ``update_config_values`` raises OSError when the config dir is unwritable
+    and ValueError when config.json was hand-corrupted. The route used to apply
+    the policy to the running orchestrator first and persist second, so a
+    failed persist returned an opaque 500 while the process kept the new
+    policy: after request -> full_access every write was auto-approved while
+    the client, seeing the failure, showed the switch back on "request".
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    monkeypatch.setattr("headless_re_mcp.web.routes.agent.update_config_values", _broken_update)
+    settings = replace(
+        Settings.load(),
+        artifact_root=tmp_path / "artifacts",
+        agent_auto_approve_tools=(),
+        agent_auto_approve_effects=(),
+    )
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        before = client.get("/api/agent/autonomy", headers=headers).json()
+        assert before["mode"] == "request"
+
+        denied = client.put("/api/agent/autonomy", headers=headers, json={"mode": "full_access"})
+        assert denied.status_code == 500
+        assert "autonomy_persist_failed" in denied.json()["detail"]
+
+        listed = client.get("/api/agent/autonomy", headers=headers).json()
+        assert listed["mode"] == "request"
+        assert listed["policy"]["auto_approve_effects"] == []
+        assert listed["auto_executable_write_count"] == 0
+
+        granted = client.put(
+            "/api/agent/autonomy", headers=headers, json={"add_tools": ["dynamic.open"]}
+        )
+        assert granted.status_code == 500
+        assert "autonomy_persist_failed" in granted.json()["detail"]
+        listed = client.get("/api/agent/autonomy", headers=headers).json()
+        assert "dynamic.open" not in listed["policy"]["auto_approve_tools"]
+
+
+def test_remember_approval_persist_failure_keeps_decision_and_grants_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """A failed remember-persist reports itself without undoing the approval.
+
+    The decision cannot be re-sent (a retry answers 409 "already decided"), so
+    the route must not turn the whole request into a 500 after the approval
+    already went through. And fail-closed: the broader grant is neither
+    persisted nor applied in memory.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    monkeypatch.setattr("headless_re_mcp.web.routes.agent.update_config_values", _broken_update)
+    settings = replace(
+        Settings.load(),
+        artifact_root=tmp_path / "artifacts",
+        agent_auto_approve_tools=(),
+        agent_auto_approve_effects=(),
+    )
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+
+    with TestClient(app) as client:
+        created = client.post("/api/agent/threads", headers=headers, json={"title": "T"})
+        thread_id = created.json()["thread"]["id"]
+        store = app.state.agent_store
+        run = store.create_run(thread_id, provider_profile="default", model="fake", deadline_seconds=30)
+        call = store.propose_tool_call(
+            run.id, "call-1", "dynamic.open", {"path": "C:/sample.exe"}, ["state_change"]
+        )
+
+        decided = client.post(
+            f"/api/agent/runs/{run.id}/tool-calls/call-1/approve",
+            headers=headers,
+            json={"args_sha256": call["args_sha256"], "remember": "tool"},
+        )
+        assert decided.status_code == 200
+        body = decided.json()
+        assert body["ok"] is True
+        assert body["tool_call"]["status"] == "approved"
+        assert "policy" not in body
+        assert "autonomy_persist_failed" in body["remember_error"]
+
+        listed = client.get("/api/agent/autonomy", headers=headers).json()
+        assert "dynamic.open" not in listed["policy"]["auto_approve_tools"]

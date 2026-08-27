@@ -189,11 +189,12 @@ def test_approve_rejects_an_unknown_remember_mode(app_client: Any) -> None:
     assert reply.json()["detail"] == "remember_invalid"
 
 
-def test_reject_on_a_missing_run_is_a_409(app_client: Any) -> None:
-    """decide() finds no run, calls it terminal-or-missing, which is a conflict."""
+def test_reject_on_a_missing_run_is_a_404(app_client: Any) -> None:
+    """decide() distinguishes a missing run (404 run_not_found) from a terminal one (409)."""
     client, _ = app_client
     reply = client.post("/api/agent/runs/nope/tool-calls/t/reject", json={"args_sha256": "a" * 64})
-    assert reply.status_code == 409
+    assert reply.status_code == 404
+    assert reply.json()["detail"] == "run_not_found"
 
 
 def test_approve_on_a_live_run_with_an_unknown_tool_call_is_a_404(app_client: Any) -> None:
