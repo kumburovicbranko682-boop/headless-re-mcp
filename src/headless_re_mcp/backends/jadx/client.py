@@ -8,8 +8,10 @@ disk. jadx needs a JRE on PATH; when either is missing the tool degrades to
 
 from __future__ import annotations
 
+import heapq
 import os
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -23,23 +25,33 @@ _MAX_COUNTED_FILES = 50_000
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
-    names: list[str] = []
-    total = 0
-    has_more = False
+    """Return the alphabetically-first ``cap`` .java paths, the total, and has_more.
+
+    The ranking has to span the whole tree, not the page: truncating the walk to
+    ``cap`` and sorting that slice returned a sorted view of whichever files the
+    directory walk happened to yield first -- not the alphabetically-first
+    ``cap`` -- so the listing was both nondeterministic (walk order is not
+    alphabetical) and misleading (it looked authoritative). A bounded heap ranks
+    every counted file while holding only ``cap`` names at once.
+    """
     if not root.is_dir():
         return [], 0, False
-    for path in root.rglob("*.java"):
-        if not path.is_file():
-            continue
-        total += 1
-        if len(names) < cap:
-            names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
-        if total >= _MAX_COUNTED_FILES:
-            has_more = True
-            break
-    names.sort()
+    total = 0
+    hit_count_cap = False
+
+    def _relatives() -> Iterator[str]:
+        nonlocal total, hit_count_cap
+        for path in root.rglob("*.java"):
+            if not path.is_file():
+                continue
+            if total >= _MAX_COUNTED_FILES:
+                hit_count_cap = True
+                break
+            total += 1
+            yield str(path.relative_to(root))
+
+    names = heapq.nsmallest(max(0, cap), _relatives())
+    has_more = hit_count_cap or total > len(names)
     return names, total, has_more
 
 

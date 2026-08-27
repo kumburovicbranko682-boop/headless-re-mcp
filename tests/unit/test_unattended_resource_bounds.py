@@ -3392,6 +3392,38 @@ class TestExportedFileListsDiscloseTruncation:
         assert len(result["java_files"]) == 4
         assert result["has_more"] is True
 
+    def test_jadx_listing_is_the_alphabetical_prefix_not_a_walk_order_slice(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """A capped listing must be the alphabetically-first cap, deterministically.
+
+        The old code appended the first cap files the directory walk yielded and
+        sorted only those, so the page was a sorted view of an arbitrary subset --
+        not the alphabetically-first cap -- and it changed with walk order. Force a
+        non-alphabetical walk order and require the alphabetical prefix regardless.
+        """
+        from headless_re_mcp.backends.jadx import client as mod
+
+        root = tmp_path / "out"
+        relatives = ["z/y.java", "a/b.java", "m/n.java", "a/c.java", "b/a.java"]
+        for rel in relatives:
+            target = root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("class X {}", encoding="utf-8")
+        walk_order = [
+            root / "z/y.java",
+            root / "m/n.java",
+            root / "b/a.java",
+            root / "a/c.java",
+            root / "a/b.java",
+        ]
+        monkeypatch.setattr(mod.Path, "rglob", lambda self, pattern: iter(walk_order))
+
+        names, total, has_more = mod._capped_java_listing(root, cap=3)
+        assert total == 5
+        assert has_more is True
+        assert names == sorted(relatives)[:3]
+
     def test_jadx_decompile_does_not_return_a_homonym_class(self, tmp_path: Any) -> None:
         from headless_re_mcp.backends.jadx import client as mod
         from headless_re_mcp.backends.jadx.client import JadxError
