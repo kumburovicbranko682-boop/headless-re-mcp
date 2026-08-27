@@ -259,11 +259,17 @@ def build_detect_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Suggest a non-authoritative unpack route without executing it.
 
-        Answers with recommendation, candidates, pe_vm_like, force_route, and
-        authoritative false. The route is inside recommendation, not a top-level
-        route field. recommendation.stealth_profile is the hide whitelist id to
-        apply before dynamic.open/launch; suggested_tools start with
-        dynamic.stealth.set when a profile was mapped.
+        Answers with recommendation, candidates, pe_vm_like, force_route,
+        authoritative false, and the detection verdict it rests on:
+        detection_conclusion, signature_scan_completed, detection_inconclusive,
+        and scanners. The route is inside recommendation, not a top-level route
+        field. When detection_inconclusive is true a note is added: the
+        signature scanner did not complete, so route "none" means the absence
+        of candidates, not a confirmed absence of packing -- read it as
+        "unknown" and re-run with DIE configured or set force_route.
+        recommendation.stealth_profile is the hide whitelist id to apply before
+        dynamic.open/launch; suggested_tools start with dynamic.stealth.set when
+        a profile was mapped.
         """
         return _dump(
             analysis.unpack_recommend(
