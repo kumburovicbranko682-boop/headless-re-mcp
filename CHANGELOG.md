@@ -24,6 +24,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（apk.methods 的 descriptor 回标准 Dalvik 描述符，不再带 androguard 的参数间空格）
+
+- androguard 的 `EncodedMethod.get_descriptor()` 自己文档写明输出是 `(A A A ...)R`——每个参数类型之间夹一个
+  空格，于是两个 int 的方法回 `(I I)I`、带对象参数的回 `(Ljava/lang/String; I)V`。可这**不是** dex-format
+  规范定义、且 baksmali / dexdump / jadx / Frida 的 `Java` overload 全都在用的标准 Dalvik 类型描述符
+  （`(II)I`、`(Ljava/lang/String;I)V`——参数描述符首尾相接、无分隔符）。逆向的人把 `apk.methods` 里那串带空格的
+  描述符粘进上述任一工具都会静默对不上。所有 apk.methods 单测都 mock 掉解析器、假证书的 descriptor 又都是无参
+  的 `()V`，所以这套「androguard 特有拼写」从没在真机上现过形。现抽出 `_dalvik_descriptor` 把参数间空格去掉
+  （任何合法 Dalvik 描述符都不含空格，故只去空格既得标准形、又不碰类名里的 `/` 与 `;`）并用在 `methods()`；
+  `apk.methods` 文档串说明 descriptor 是标准 Dalvik 描述符。单测新增 `_dalvik_descriptor` 的规范化断言
+  （`(I I)I→(II)I`、`(Ljava/lang/String; I)V→(Ljava/lang/String;I)V`、`([I [J)Z→([I[J)Z`、无参不变、类名不受损）
+  与一条走 `methods()` 的规范化断言。新增 live gate（`test_apk_method_descriptor_live_gate.py`）内嵌一枚真 DEX
+  （javac+D8 编出的 `com.example.Widget`，含 `addNumbers(int,int)`），先断言 androguard 自己确实回 `(I I)I`
+  （守卫这条守卫，避免 androguard 改了拼写后测试空过），再断言 `apk.methods` 回的是无空格的 `(II)I`、`greeting`
+  回 `()Ljava/lang/String;`、且 `access` 仍非空（钉住那个版本敏感、一改名就会静默变空的 MethodAnalysis 属性）。
+  CI 新增 `linux-apk-method-descriptor` job 装 androguard 跑该 gate，skip≠pass 守卫在 androguard 已装却仍 skip
+  时判失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

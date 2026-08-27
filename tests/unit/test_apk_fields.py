@@ -8,7 +8,12 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient, ApkError
+from headless_re_mcp.backends.apk.client import (
+    _MAX_MANIFEST_CHARS,
+    ApkClient,
+    ApkError,
+    _dalvik_descriptor,
+)
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -83,9 +88,7 @@ def test_apk_xrefs_puts_the_list_in_callers_and_says_when_it_stopped(
     assert "has_more" in doc
 
 
-def test_apk_xrefs_names_method_name_on_the_payload(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_apk_xrefs_names_method_name_on_the_payload(tmp_path: Path, monkeypatch: Any) -> None:
     """The catalog named callers and never named the method the page is for.
 
     Measured: xrefs(..., 'decrypt', limit=10) -> method_name decrypt, 10
@@ -140,6 +143,7 @@ def test_apk_manifest_names_manifest_xml_and_says_when_it_was_cut(
     assert "manifest_xml" in doc
     assert "truncated" in doc
 
+
 class _FakeClass:
     def __init__(self, name: str, *, external: bool = False) -> None:
         self.name = name
@@ -172,9 +176,7 @@ def test_apk_classes_puts_the_list_in_classes_and_says_when_it_stopped(
     monkeypatch.setattr(
         ApkClient,
         "_parsed",
-        lambda self, path: _FakeClassParsed(
-            [_FakeClass(f"L{index};") for index in range(25)]
-        ),
+        lambda self, path: _FakeClassParsed([_FakeClass(f"L{index};") for index in range(25)]),
     )
     payload = client.classes(tmp_path / "app.apk", offset=0, limit=10)
     assert "class_list" not in payload
@@ -186,6 +188,7 @@ def test_apk_classes_puts_the_list_in_classes_and_says_when_it_stopped(
     doc = _tool_docstring("apk.classes")
     assert "Answers with classes" in doc
     assert "has_more" in doc
+
 
 class _FakeApkMethod:
     def __init__(self, index: int) -> None:
@@ -235,6 +238,62 @@ def test_apk_methods_puts_the_list_in_methods_and_says_when_it_stopped(
     assert "Answers with methods" in doc
     assert "has_more" in doc
 
+
+def test_dalvik_descriptor_drops_androguards_inter_argument_spaces() -> None:
+    """androguard emits ``(A A ...)R``; the canonical Dalvik descriptor has none.
+
+    Every entry on the left is exactly androguard's documented
+    get_descriptor() spacing; the right is what baksmali/dexdump/jadx/Frida use.
+    """
+    assert _dalvik_descriptor("(I I)I") == "(II)I"
+    assert _dalvik_descriptor("(Ljava/lang/String; I)V") == "(Ljava/lang/String;I)V"
+    assert _dalvik_descriptor("([I [J)Z") == "([I[J)Z"
+    # No-argument and single-argument forms have no spaces to begin with.
+    assert _dalvik_descriptor("()V") == "()V"
+    assert _dalvik_descriptor("(I)I") == "(I)I"
+    # Class-name slashes and the trailing ; are untouched.
+    assert _dalvik_descriptor("()Ljava/lang/String;") == "()Ljava/lang/String;"
+    assert _dalvik_descriptor(None) == ""
+
+
+class _FakeSpacedMethod:
+    """A method whose descriptor carries androguard's real inter-arg spaces."""
+
+    def __init__(self) -> None:
+        self.name = "addNumbers"
+        self.descriptor = "(I I)I"
+        self.access = "public"
+
+
+class _FakeSpacedClass:
+    def __init__(self) -> None:
+        self.name = "Lcom/example/Foo;"
+
+    def get_methods(self) -> list[_FakeSpacedMethod]:
+        return [_FakeSpacedMethod()]
+
+
+class _FakeSpacedParsed:
+    def __init__(self) -> None:
+        self.analysis = self
+
+    def get_classes(self) -> list[_FakeSpacedClass]:
+        return [_FakeSpacedClass()]
+
+
+def test_apk_methods_returns_canonical_descriptor_not_androguard_spacing(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeSpacedParsed())
+    payload = client.methods(tmp_path / "app.apk", "com.example.Foo")
+    method = payload["methods"][0]
+    assert method["descriptor"] == "(II)I"
+    assert " " not in method["descriptor"]
+    flat = " ".join(_tool_docstring("apk.methods").split())
+    assert "canonical Dalvik type descriptor" in flat
+
+
 def test_apk_decompile_names_source_and_says_when_it_was_cut(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -265,6 +324,7 @@ def test_apk_decompile_names_source_and_says_when_it_was_cut(
     doc = _tool_docstring("apk.decompile")
     assert "source" in doc
     assert "truncated" in doc
+
 
 def test_apk_export_sources_says_when_the_java_list_was_cut(
     tmp_path: Path, monkeypatch: Any
@@ -302,9 +362,7 @@ class _PackagelessApk:
         return None
 
 
-def test_apk_open_rejects_a_zip_with_no_package_name(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_apk_open_rejects_a_zip_with_no_package_name(tmp_path: Path, monkeypatch: Any) -> None:
     """The catalog said opened; a zip that is not an APK answered opened True.
 
     Measured: get_package() returning None still answered

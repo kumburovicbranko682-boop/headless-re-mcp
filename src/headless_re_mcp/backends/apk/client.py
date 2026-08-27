@@ -56,6 +56,22 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _dalvik_descriptor(raw: Any) -> str:
+    """Canonical Dalvik method type descriptor from androguard's spaced form.
+
+    androguard's ``EncodedMethod.get_descriptor()`` documents its output as
+    ``(A A A ...)R`` -- a single space between each argument type, e.g.
+    ``(I I)I`` or ``(Ljava/lang/String; I)V``. That is not the canonical Dalvik
+    type descriptor: the dex-format spec, and every tool that speaks it
+    (baksmali, dexdump, jadx, Frida's ``Java`` overloads), concatenates argument
+    descriptors with no separator -- ``(II)I``, ``(Ljava/lang/String;I)V``. A
+    caller pasting the spaced form into any of those is silently wrong. No valid
+    Dalvik descriptor contains a space, so dropping them yields the canonical
+    form without touching class names (whose slashes and ``;`` are unaffected).
+    """
+    return str(raw or "").replace(" ", "")
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -378,7 +394,7 @@ class ApkClient:
                 methods.append(
                     {
                         "name": method.name,
-                        "descriptor": str(getattr(method, "descriptor", "")),
+                        "descriptor": _dalvik_descriptor(getattr(method, "descriptor", "")),
                         "access": str(getattr(method, "access", "")),
                     }
                 )

@@ -108,9 +108,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with methods (name, descriptor, access), class_name, count,
         total, offset, and has_more so a page that filled the limit is not
-        read as the whole collected class. total is the number collected,
-        capped at 2000; scan_capped is true when more methods may exist.
-        has_more only means a larger offset still has collected rows.
+        read as the whole collected class. descriptor is the canonical Dalvik
+        type descriptor (e.g. (II)I, (Ljava/lang/String;I)V) that baksmali,
+        dexdump, jadx and Frida overloads use -- not androguard's space-padded
+        form. total is the number collected, capped at 2000; scan_capped is
+        true when more methods may exist. has_more only means a larger offset
+        still has collected rows.
         """
         return _dump(
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
