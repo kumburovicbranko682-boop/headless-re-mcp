@@ -20,6 +20,7 @@ from headless_re_mcp.backends.adb.client import (
     _check_package,
     _check_serial,
 )
+from headless_re_mcp.backends.apk.client import ApkClient, ApkError
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.core.models import TargetKind
@@ -198,6 +199,39 @@ class TestFridaTargetAuthorization:
             client.hook_template_device("usb", 5, "arbitrary-script", allowed_pids=[5])
         assert info.value.code == "invalid_params"
         assert "android_ssl_unpin" in info.value.details["allowed"]
+
+
+class TestApkNameValidationPrecedesParse:
+    """apk.methods/xrefs judge their required name before parsing the APK.
+
+    ``_parsed`` runs the androguard capability gate and then a full-APK DEX
+    analysis. A missing class_name/method_name is a property of the request, so
+    it must be settled first: otherwise an empty name answers
+    capability_unavailable on a host without androguard, and pays for an entire
+    DEX analysis before rejecting a request malformed on its face. The tripwire
+    ``_parsed`` proves neither reaches the parse.
+    """
+
+    def _tripwire_client(self) -> ApkClient:
+        client = ApkClient()
+
+        def _parsed(_path: Any) -> Any:
+            raise AssertionError("the APK must not be parsed for a malformed request")
+
+        client._parsed = _parsed  # type: ignore[method-assign]
+        return client
+
+    @pytest.mark.parametrize("class_name", ["", "   "])
+    def test_methods_requires_class_name_before_the_parse(self, class_name: str) -> None:
+        with pytest.raises(ApkError) as info:
+            self._tripwire_client().methods(Path("app.apk"), class_name)
+        assert info.value.code == "invalid_params"
+
+    @pytest.mark.parametrize("method_name", ["", "   "])
+    def test_xrefs_requires_method_name_before_the_parse(self, method_name: str) -> None:
+        with pytest.raises(ApkError) as info:
+            self._tripwire_client().xrefs(Path("app.apk"), method_name)
+        assert info.value.code == "invalid_params"
 
 
 class TestFridaJavaEnumerateInputContract:

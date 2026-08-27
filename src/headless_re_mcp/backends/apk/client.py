@@ -339,10 +339,17 @@ class ApkClient:
         offset: int = 0,
         limit: int = 100,
     ) -> JsonObject:
-        parsed = self._parsed(path)
+        # Validate class_name before the parse. _parsed() runs the capability
+        # gate (androguard installed?) and then a full-APK DEX analysis (tens to
+        # hundreds of MB, seconds). Left after it, an empty class_name answered
+        # capability_unavailable on a host without androguard -- a different
+        # verdict for the same bad input -- and, where androguard is present,
+        # paid for an entire DEX analysis before rejecting a request malformed on
+        # its face. jadx.decompile already checks its class_name first.
         target = class_name.strip()
         if not target:
             raise ApkError("invalid_params", "class_name is required")
+        parsed = self._parsed(path)
         found = [
             klass
             for klass in parsed.analysis.get_classes()
@@ -400,10 +407,13 @@ class ApkClient:
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
-        parsed = self._parsed(path)
+        # Same ordering as methods(): the required name is a property of the
+        # request, judged before the capability gate and the expensive DEX
+        # analysis that _parsed() performs.
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
+        parsed = self._parsed(path)
         cap = max(1, int(limit))
         callers: list[JsonObject] = []
         has_more = False

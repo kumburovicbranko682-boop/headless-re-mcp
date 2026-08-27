@@ -62,6 +62,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（apk.methods/xrefs 的必填名校验移到 androguard 解析之前）
+
+- `ApkClient.methods`/`xrefs` 把 `class_name`/`method_name` 的必填校验放在 `self._parsed(path)` **之后**，
+  而 `_parsed` 先过 androguard 能力门、再做整包 DEX 分析（几十到几百 MB、数秒）。于是空名请求：没装
+  androguard 的机器上得到 `capability_unavailable` 而非 `invalid_params`（同一个坏输入不同机器不同结论），
+  装了 androguard 的机器上会先把整个 APK 的 DEX 分析跑完、再拒绝一个本就畸形的请求，白烧一次昂贵解析。
+  兄弟方法 `jadx.decompile` 早已先校验 `class_name` 再动工。现把两处必填名校验前移到 `_parsed` 之前：
+  空名（含纯空白）在碰能力门、碰解析之前回 `invalid_params`，且从不解析 APK。与 `java_enumerate` 的
+  mode/class_name、`hook_template_device` 的 template、`frida.server.ensure` 的 port、`proxy.start` 的 port
+  同属 "输入先于门" 的一致处理。回归用探针 `_parsed` 钉住：空 class_name/method_name 都在解析之前定论。
+
 ### 修复（frida.java.classes/methods 的 mode/class_name 校验移到能力门与 attach 之前）
 
 - 设备维度的 `java_enumerate` 把 `mode`（classes/methods）与 methods 模式下必填的 `class_name` 校验
