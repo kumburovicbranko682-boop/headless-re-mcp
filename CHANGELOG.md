@@ -101,6 +101,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dotnet.il` 未命名操作数令反汇编错位并凭空捏造 call_tokens）
+
+- `_disassemble_il` 只为一小撮命名操作码(`_OPCODES`)登记了操作数宽度,遇到不在表里的
+  单字节操作码时只前进 1 字节且**不置 partial**。可这些操作码里有一大票是带操作数的
+  (`ldc.i8`/`ldc.r8` 8 字节、`ldc.i4.s`/短分支/`leave.s` 1 字节、`castclass`/`ldtoken`/`calli`/
+  `jmp`/长分支/各种 token 4 字节),于是操作数字节被当成后续指令解码。一旦某个操作数里
+  恰好出现 0x28/0x6f/0x73 字节,就被读成真的 `call`/`callvirt`/`newobj`,其“操作数”(其实是别的
+  IL)作为元数据 call token 进了 `call_tokens`——而 `partial=False` 还宣称反汇编是完整的。这正是
+  本项目反复修的“凭空编造且谎报已列全”:实测一条 `ldc.i8 <常量>; ret`(根本不调用任何东西)
+  被报成调用了 token `0x44332211`。`switch`(0x45,变长:uint32 计数 + 计数×int32 跳转表)与整个
+  `0xFE` 双字节操作码空间同样会令解码器脱轨。现按 ECMA-335 III 为所有单字节带操作数码补齐
+  `_UNNAMED_OPERAND_SIZE`、为 `0xFE` 补齐 `_FE_OPERAND_SIZE`/名字、并特判 `switch`:即便不命名也
+  按正确宽度跳过操作数,始终对齐;`partial` 只在真正越界(操作数/跳转表跑出字节流,或触及指令
+  上限)时才置。新增直测:未命名操作数码(`ldc.i8`)不再捏造 call、真实 `call` 仍被采集、`switch`
+  跳转表被整体跨过、`0xFE ldftn` 跳过其 token、操作数越界与 switch 计数越界如实报 `partial`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

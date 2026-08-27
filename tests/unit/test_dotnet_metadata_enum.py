@@ -148,6 +148,103 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
     assert partial is False
 
 
+def _call_tokens(instructions: list[dict[str, object]]) -> list[int]:
+    return [
+        insn["operand"]
+        for insn in instructions
+        if insn.get("mnemonic") in {"call", "callvirt", "newobj"}
+        and isinstance(insn.get("operand"), int)
+    ]
+
+
+def test_il_unnamed_operand_opcode_does_not_fabricate_a_call() -> None:
+    """A single-byte opcode absent from the named subset must still skip its
+    operand.
+
+    ``ldc.i8`` (0x21) is not named, but it carries an eight-byte constant. The
+    old decoder stepped a single byte, so the constant was read as instructions,
+    and a 0x28 (``call``) byte inside it was reported as a real metadata call
+    token -- with ``partial`` still False, claiming the disassembly was complete.
+    The method here only pushes a constant and returns; it calls nothing.
+    """
+    il = (
+        bytes([0x21])
+        + bytes([0x00, 0x28, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00])  # ldc.i8 constant
+        + bytes([0x2A])  # ret
+    )
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    assert [insn["mnemonic"] for insn in instructions] == ["op_21", "ret"]
+    assert _call_tokens(instructions) == []
+    assert partial is False
+
+
+def test_il_switch_table_is_stepped_over_not_decoded() -> None:
+    """``switch`` carries a uint32 count then count*int32 targets.
+
+    Those target bytes are not instructions; letting them decode turned a 0x6f
+    byte in the table into a phantom ``callvirt``. The real ``callvirt`` after
+    the table must be the only harvested call, and the count is reported.
+    """
+    il = (
+        bytes([0x45])
+        + (2).to_bytes(4, "little")  # switch, 2 targets
+        + bytes([0x28, 0, 0, 0, 0x6F, 0, 0, 0])  # jump table: bytes look like call/callvirt
+        + bytes([0x6F])
+        + (0x0A000009).to_bytes(4, "little")  # callvirt <token>
+        + bytes([0x2A])  # ret
+    )
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    assert [insn["mnemonic"] for insn in instructions] == ["switch", "callvirt", "ret"]
+    assert instructions[0]["operand"] == 2
+    assert _call_tokens(instructions) == [0x0A000009]
+    assert partial is False
+
+
+def test_il_two_byte_fe_opcode_skips_its_operand() -> None:
+    """``0xFE`` opcodes are two bytes plus an operand; skip the whole thing.
+
+    ``ldftn`` (0xFE 0x06) takes a four-byte method token. The old decoder
+    stepped one byte past the 0xFE and read the second byte and token as further
+    instructions, so a 0x28 inside the token became a phantom ``call``.
+    """
+    il = (
+        bytes([0xFE, 0x06])
+        + bytes([0x28, 0x11, 0x22, 0x33])  # ldftn token containing a call byte
+        + bytes([0x2A])  # ret
+    )
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    assert [insn["mnemonic"] for insn in instructions] == ["ldftn", "ret"]
+    assert _call_tokens(instructions) == []
+    assert partial is False
+
+
+def test_il_truncated_operand_reports_partial() -> None:
+    """A real opcode whose operand runs off the end is genuine truncation."""
+    il = bytes([0x28, 0x01, 0x02])  # call with only two of four token bytes
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    assert instructions == []
+    assert partial is True
+
+
+def test_il_switch_count_past_end_is_partial_not_fabricated() -> None:
+    """A switch count that overruns the body truncates honestly, invents nothing."""
+    il = bytes([0x45]) + (0xFFFFFFFF).to_bytes(4, "little") + bytes([0x28, 0, 0, 0])
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    assert instructions == []
+    assert partial is True
+    assert _call_tokens(instructions) == []
+
+
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     binary = tmp_path / "empty_tables.exe"
     _write_minimal_clr(binary)
