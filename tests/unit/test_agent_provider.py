@@ -506,6 +506,162 @@ async def test_a_chunk_that_is_not_json_is_blamed_on_the_provider(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_a_too_deep_stream_chunk_is_blamed_on_the_provider() -> None:
+    """json.loads raises RecursionError, not JSONDecodeError, on deep nesting.
+
+    "[" * 20_000 is 20 KB -- far under the SSE line cap -- and syntactically
+    valid JSON, so the old ``except json.JSONDecodeError`` missed it and the
+    run died on an opaque interpreter RecursionError instead of an error that
+    names the provider.
+    """
+
+    def too_deep(request: httpx.Request) -> httpx.Response:
+        data = "[" * 20_000 + "]" * 20_000
+        return httpx.Response(200, text=f"data: {data}\n\ndata: [DONE]\n\n")
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(too_deep),
+    )
+
+    with pytest.raises(ValueError, match="not JSON"):
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_too_deep_assembled_tool_arguments_are_blamed_on_the_provider() -> None:
+    """Streamed argument fragments can assemble into JSON too deep to decode.
+
+    Each fragment is an innocuous run of brackets well inside the buffer cap;
+    only the assembled whole trips the recursion limit, at the final
+    json.loads. That raise happened outside the JSONDecodeError catch.
+    """
+
+    def deep_arguments(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-a",
+                                    "function": {
+                                        "name": "session.get",
+                                        "arguments": "[" * 20_000,
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": "]" * 20_000}}
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+        body = "".join(
+            f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" for chunk in chunks
+        ) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(deep_arguments),
+    )
+
+    with pytest.raises(ValueError, match="invalid tool arguments at index 0"):
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_deep_content_part_nesting_is_ignored_rather_than_fatal() -> None:
+    """_plain_text recursed twice per list level; the parser recursed once.
+
+    A content value nested ~600 lists deep therefore survives json.loads
+    (600 recursion units) but needed ~1,200 frames to flatten, so the old
+    unbounded recursion died with RecursionError after a chunk that parsed
+    cleanly. Depth past the cap is garbage, not text: it is dropped and the
+    stream carries on.
+    """
+
+    def deep_content(request: httpx.Request) -> httpx.Response:
+        nested = "[" * 600 + '"buried"' + "]" * 600
+        body = (
+            f'data: {{"choices":[{{"delta":{{"content":{nested}}}}}]}}\n\n'
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(deep_content),
+    )
+
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+
+    assert [event.text for event in events if event.type == "text_delta"] == ["ok"]
+    assert events[-1].type == "completed"
+
+
+def test_tool_argument_fragment_refuses_a_value_too_deep_to_serialize() -> None:
+    """A snapshot arguments object can be parseable yet unserializable.
+
+    The C encoder recurses per container level from a few frames deeper than
+    the parser that built the value, so json.dumps can raise RecursionError.
+    Swallowing it would assemble a wrong tool call; it must refuse instead.
+    """
+    value: object = "x"
+    for _ in range(30_000):
+        value = [value]
+
+    with pytest.raises(ValueError, match="nested too deeply"):
+        openai_compatible._tool_argument_fragment(value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [b"{not json at all", b"[" * 20_000 + b"]" * 20_000],
+    ids=["malformed", "too-deep"],
+)
+async def test_models_response_that_is_not_json_is_blamed_on_the_provider(
+    body: bytes,
+) -> None:
+    """list_models parsed the body bare; probe_models shows exc type and text.
+
+    A raw JSONDecodeError or RecursionError in that 502 detail points at this
+    code rather than at the endpoint that sent the body.
+    """
+
+    def models(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(models),
+    )
+
+    with pytest.raises(ValueError, match="models response is not JSON"):
+        await provider.list_models()
+
+
+@pytest.mark.asyncio
 async def test_stream_stops_reading_an_oversized_sse_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
