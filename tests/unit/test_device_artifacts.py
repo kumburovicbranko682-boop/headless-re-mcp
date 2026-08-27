@@ -2,38 +2,17 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_ENTRIES
 from headless_re_mcp.core.results import _success
 from headless_re_mcp.core.service_device import (
-    _MAX_DEVICE_ARTIFACTS,
     DeviceAnalysisMixin,
-    prune_device_artifacts,
     refuse_oversized_device_file,
 )
-
-
-def test_prune_keeps_only_the_newest_captures(tmp_path: Path) -> None:
-    directory = tmp_path / "device"
-    directory.mkdir()
-    for index in range(80):
-        path = directory / f"screenshot-{index:03d}.png"
-        path.write_bytes(b"x" * 256 * 1024)
-        # Distinct mtimes so "newest" is the highest index, not a tie.
-        os.utime(path, (index + 1, index + 1))
-
-    prune_device_artifacts(directory, keep=32)
-
-    left = sorted(path.name for path in directory.iterdir())
-    assert len(left) == 32
-    assert left[0] == "screenshot-048.png"
-    assert left[-1] == "screenshot-079.png"
-    total = sum(path.stat().st_size for path in directory.iterdir())
-    assert total == 32 * 256 * 1024
 
 
 class _Harness(DeviceAnalysisMixin):
@@ -61,9 +40,9 @@ def test_a_screenshot_loop_cannot_grow_the_device_directory_without_bound(
 
     directory = tmp_path / "device"
     files = list(directory.iterdir())
-    assert len(files) == _MAX_DEVICE_ARTIFACTS
+    assert len(files) == UNREGISTERED_CAPTURE_MAX_ENTRIES
     total = sum(path.stat().st_size for path in files)
-    assert total == _MAX_DEVICE_ARTIFACTS * 256 * 1024
+    assert total == UNREGISTERED_CAPTURE_MAX_ENTRIES * 256 * 1024
 
 
 @pytest.mark.parametrize(
@@ -109,7 +88,8 @@ def test_device_capture_descriptions_do_not_call_the_file_an_artifact() -> None:
 
 
 def test_a_device_file_over_the_byte_cap_is_deleted_and_refused(tmp_path: Path) -> None:
-    """The count cap left each file unbounded. 32 huge pulls is still unbounded bytes."""
+    """prune_capped_dir keeps the newest entry even over budget, so the just-written
+    file needs its own refusal; the directory cap alone would let one huge pull stay."""
     path = tmp_path / "pull.bin"
     path.write_bytes(b"x" * 2048)
     refused = refuse_oversized_device_file(path, limit=1024)
