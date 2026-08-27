@@ -313,6 +313,39 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
     return killed
 
 
+def collect_process_tree(parent_pid: int) -> list[int]:
+    """Descendants plus isolated-group survivors whose launcher already exited.
+
+    ``collect_descendants`` walks parent/child links, which a reparented orphan
+    has already lost; ``collect_process_group`` finds that orphan by the session
+    group its launcher led. The union catches both without counting the launcher.
+    """
+    found = collect_descendants(parent_pid)
+    found.extend(collect_process_group(parent_pid))
+    return list(dict.fromkeys(pid for pid in found if pid != parent_pid))
+
+
+def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+    """Reap a helper a CLI detached and left running after reporting success.
+
+    Runs on the clean-exit path, once the launcher is already gone. A helper it
+    spawned and detached is now an init-adopted orphan: the ppid walk from the
+    reaped launcher sees nothing, but the orphan still carries the launcher's
+    process group. Reap by that group -- each member killed on its own pgrp, so a
+    recycled leader pid cannot misfire -- together with any still-linked
+    descendants, and only when something is actually there so a well-behaved
+    tool's exit stays a no-op.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    if not collect_process_tree(pid):
+        return []
+    killed = terminate_process_tree(process, wait_s=wait_s, kill_group=os.name != "nt")
+    killed.extend(terminate_process_group(pid))
+    return list(dict.fromkeys(killed))
+
+
 def terminate_pid_tree(pid: int) -> list[int]:
     """Kill ``pid`` and its descendants when there is no Popen handle left.
 

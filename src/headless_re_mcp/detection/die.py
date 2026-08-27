@@ -360,6 +360,12 @@ def _capture_process(
         # truncate a short-lived process's final JSON bytes.
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
+        # diec is the executable itself, but an operator-supplied path may be a
+        # wrapper that detaches a helper and exits 0; reap that leftover so a
+        # clean scan cannot quietly leave a process behind.
+        from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
+
+        terminate_leftover_process_tree(process, wait_s=1.0)
         # The readers close their own pipes; only close here when the reader has
         # already finished, so a reader still blocked on a survivor's pipe never
         # wedges this thread on close().
