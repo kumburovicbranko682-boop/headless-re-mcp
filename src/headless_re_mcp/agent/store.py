@@ -321,8 +321,16 @@ class AgentStore:
         return AgentThread(thread_id, title[:200], session_id, now, now)
 
     def list_threads(self, *, limit: int = 100) -> list[AgentThread]:
+        # ``id DESC`` breaks ties the same way every other listing in this store
+        # does. Without it the order among threads sharing an ``updated_at`` is
+        # whatever SQLite's scan happens to yield -- rowid order today, but the
+        # spec leaves it undefined, so an index added later or a VACUUM can flip
+        # it. Ties are not exotic: a coarse-resolution clock (the Windows default
+        # is ~15ms) stamps a burst of thread touches identically, and a restart
+        # that rewrites rows does the same. At the ``limit`` boundary that
+        # decided *which* threads the workbench sidebar showed at all.
         with self._reading() as con:
-            rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
+            rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC, id DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
         return [AgentThread(**dict(row)) for row in rows]
 
     def get_thread(self, thread_id: str) -> AgentThread | None:

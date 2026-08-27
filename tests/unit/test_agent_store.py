@@ -308,6 +308,39 @@ def test_every_capped_list_keeps_the_end_it_says_it_keeps(tmp_path: Path) -> Non
     second_page = store.list_events(run.id, after=first_page[-1].seq, limit=5)
     assert second_page[0].seq > first_page[-1].seq, "a cursor page must not repeat itself"
 
+
+def test_list_threads_orders_ties_deterministically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Threads sharing an ``updated_at`` must come back in a defined order.
+
+    A coarse-resolution clock (the Windows default is ~15ms) stamps a burst of
+    thread touches with the same ``updated_at``, and a restart that rewrites
+    rows does the same. ``ORDER BY updated_at DESC`` alone leaves the order
+    within that tie to SQLite -- rowid order for a plain scan, but the spec
+    calls it undefined, so it can flip once an index or a VACUUM changes the
+    layout. At the ``limit`` boundary that undefined order decides *which*
+    threads the workbench sidebar shows at all. The rest of this store already
+    breaks ties on ``id``; this listing was the one that did not.
+    """
+    from headless_re_mcp.agent import store as store_module
+
+    monkeypatch.setattr(store_module, "utc_now", lambda: "2026-01-01T00:00:00+00:00")
+    store = AgentStore(tmp_path / "thread-ties.db")
+
+    ids = [store.create_thread(title=f"t{index}").id for index in range(6)]
+
+    # The contract the rest of the store keeps: newest updated_at first, ties
+    # broken by id descending. Every thread here shares the instant, so the
+    # whole result is decided by the tiebreaker.
+    expected = sorted(ids, reverse=True)
+    assert [thread.id for thread in store.list_threads()] == expected
+
+    # And the same order must survive a cap, so the boundary is deterministic
+    # rather than "whichever three the scan happened to reach first".
+    assert [thread.id for thread in store.list_threads(limit=3)] == expected[:3]
+
+
 def test_a_failed_transaction_reports_what_failed_not_the_cleanup(tmp_path: Path) -> None:
     """The rollback must not become the error report.
 

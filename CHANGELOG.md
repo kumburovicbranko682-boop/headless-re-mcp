@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`list_threads` 平局排序未定，工作台侧栏在 limit 边界不稳定）
+
+- `AgentStore.list_threads` 只按 `updated_at DESC` 排序，缺了本仓库其余每个列表查询都带的
+  `id` 平局键。`updated_at` 相同并不罕见：粗分辨率时钟（Windows 默认 ~15ms）会把一串线程
+  改动打上同一时间戳，重启改写行也一样。SQLite 对 `ORDER BY` 平局内的顺序不作保证——当前是
+  rowid（插入）顺序，但一旦后续加索引或做 VACUUM 就可能翻转。在 `limit` 边界上，这个未定顺序
+  决定了工作台侧栏到底显示哪些线程。现补上 `updated_at DESC, id DESC`，与 `list_messages` /
+  `list_missions` / 按任务活跃度排线程等同 store 里的兄弟查询一致，跨查询稳定可复现。
+  新增回归测试：多线程同一 `updated_at` 时，整表与 `limit` 截断都按 `id` 降序确定返回。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
