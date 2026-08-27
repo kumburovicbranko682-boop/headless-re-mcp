@@ -9,6 +9,7 @@ reported as a running capture.
 from __future__ import annotations
 
 import socket
+import threading
 import time
 
 import pytest
@@ -99,6 +100,60 @@ def test_two_sessions_cannot_silently_share_one_port() -> None:
         assert backend.status("second") == {"running": False}
     finally:
         backend.close_all()
+
+
+@pytest.mark.integration
+def test_concurrent_starts_do_not_cross_the_mitmproxy_global_ctx() -> None:
+    """Several proxies starting at once must all come up cleanly.
+
+    mitmproxy keeps its addon context in process-global module attributes, so a
+    second master under construction repoints the global that a first master's
+    startup ``running`` hook reads; the resulting AttributeError is logged and
+    then escalated by mitmproxy's errorcheck into a fatal "mitmproxy failed to
+    start". Before the startup lock this failed a large fraction of overlapping
+    starts (~9 of 24 in a 4-wide barrier stress); now every concurrent start
+    must succeed. A barrier maximises the overlap the lock has to absorb.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy lifecycle Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    rounds, width = 5, 4
+    failures: list[str] = []
+    try:
+        for rnd in range(rounds):
+            ports = [_free_port() for _ in range(width)]
+            barrier = threading.Barrier(width)
+            errors: dict[str, str] = {}
+            errors_lock = threading.Lock()
+
+            def worker(
+                index: int,
+                port: int,
+                rnd: int = rnd,
+                barrier: threading.Barrier = barrier,
+                errors: dict[str, str] = errors,
+                errors_lock: threading.Lock = errors_lock,  # noqa: F821
+            ) -> None:
+                session = f"round{rnd}-{index}"
+                try:
+                    barrier.wait(timeout=10.0)
+                    backend.start(session, host="127.0.0.1", port=port)
+                except Exception as exc:  # noqa: BLE001 - record any start failure
+                    with errors_lock:
+                        errors[session] = f"{type(exc).__name__}: {exc}"
+
+            threads = [
+                threading.Thread(target=worker, args=(i, ports[i])) for i in range(width)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30.0)
+            failures.extend(f"{name}: {reason}" for name, reason in errors.items())
+            backend.close_all()
+    finally:
+        backend.close_all()
+    assert not failures, "concurrent proxy starts failed:\n" + "\n".join(failures)
 
 
 @pytest.mark.integration
