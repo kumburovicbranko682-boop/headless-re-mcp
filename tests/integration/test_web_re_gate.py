@@ -83,6 +83,31 @@ class _WasmPageHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(_WASM_PAGE_HTML)
 
+
+# Two distinct pages so a navigate can be seen to change what the DOM snapshot
+# and status report; each carries a unique title and a unique body marker.
+_PAGE_ONE = (
+    b"<html><head><title>gate-page-one</title></head>"
+    b"<body><div id='marker'>PAGE_ONE_MARKER</div></body></html>"
+)
+_PAGE_TWO = (
+    b"<html><head><title>gate-page-two</title></head>"
+    b"<body><div id='marker'>PAGE_TWO_MARKER</div></body></html>"
+)
+
+
+class _TwoPageHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *_args: object) -> None:
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+        body = _PAGE_TWO if self.path.rstrip("/") == "/two" else _PAGE_ONE
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
 _DATA_URL = (
     "data:text/html,"
     "<html><head><title>gate</title>"
@@ -147,6 +172,78 @@ def test_web_cdp_open_and_inspect() -> None:
             service.web_close(session_id)
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_web_navigate_dom_snapshot_and_status_over_http() -> None:
+    """Navigate an open session to a second page and see the DOM/status follow.
+
+    web.navigate had only a mocked unit test and web.status none at all, while
+    web.dom_snapshot was asserted on title alone -- so page.goto within a live
+    session, and the outerHTML the snapshot returns, never ran on a real browser.
+    Serve two pages with distinct titles and body markers, open the first, then
+    navigate to the second and assert the snapshot's HTML and the status both
+    switch from the first page's marker to the second's. A navigate that silently
+    stayed put, or a snapshot that returned a stale document, fails here.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web navigate Gate not run (skip != pass)")
+
+    origin = socketserver.TCPServer(("127.0.0.1", 0), _TwoPageHandler)
+    port = int(origin.server_address[1])
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(f"{base}/", target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                f"chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            # First page: the snapshot returns the real outerHTML, not just a
+            # title, and status agrees on url and title.
+            dom_one = service.web_dom_snapshot(session_id)
+            assert dom_one.ok, dom_one.error
+            assert dom_one.data["title"] == "gate-page-one"
+            assert "PAGE_ONE_MARKER" in dom_one.data["html"]
+
+            status_one = service.web_status(session_id)
+            assert status_one.ok, status_one.error
+            assert status_one.data["open"] is True
+            assert status_one.data["url"].rstrip("/") == base
+            assert status_one.data["title"] == "gate-page-one"
+
+            # Navigate to the second page; the result carries the new identity.
+            nav = service.web_navigate(session_id, f"{base}/two", timeout=30.0)
+            assert nav.ok, nav.error
+            assert nav.data["url"].endswith("/two")
+            assert nav.data["title"] == "gate-page-two"
+
+            # The snapshot and status must now reflect the second page -- proof
+            # the navigation took effect, not a cached first-page document.
+            dom_two = service.web_dom_snapshot(session_id)
+            assert dom_two.ok, dom_two.error
+            assert dom_two.data["title"] == "gate-page-two"
+            assert "PAGE_TWO_MARKER" in dom_two.data["html"]
+            assert "PAGE_ONE_MARKER" not in dom_two.data["html"]
+
+            status_two = service.web_status(session_id)
+            assert status_two.ok, status_two.error
+            assert status_two.data["url"].endswith("/two")
+            assert status_two.data["title"] == "gate-page-two"
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+        origin.shutdown()
+        origin.server_close()
 
 
 @pytest.mark.integration
