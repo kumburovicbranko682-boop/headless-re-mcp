@@ -372,8 +372,15 @@ def _capture_process(
             break
         sleep(min(0.05, remaining))
 
-    stdout_thread.join(timeout=2.0)
-    stderr_thread.join(timeout=2.0)
+    # One shared budget for every cleanup join. A reader wedged on a pipe that
+    # an orphaned grandchild still holds open must not extend the caller's
+    # deadline a full join at a time: four independent 2s joins turned one hung
+    # grandchild into eight seconds past the process deadline, one stream at a
+    # time. A single deadline caps the whole drain, the way the DIE / UPX /
+    # Exeinfo / x64dbg capture paths already bound theirs.
+    drain_deadline = monotonic() + 2.0
+    stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+    stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
     if exited:
         # The runner ended on its own; make sure it left nothing behind. On
         # Windows the job object and the Toolhelp walk cover this. On POSIX the
@@ -398,8 +405,8 @@ def _capture_process(
                 from headless_re_mcp.core.process_tree import terminate_process_group
 
                 terminate_process_group(group_id)
-            stdout_thread.join(timeout=2.0)
-            stderr_thread.join(timeout=2.0)
+            stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+            stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
     # The readers close their own pipes; only close here when the reader has
     # finished, so a reader still blocked on a survivor's pipe never wedges this
     # thread on close().
