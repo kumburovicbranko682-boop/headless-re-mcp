@@ -185,6 +185,73 @@ def test_apk_classes_puts_the_list_in_classes_and_says_when_it_stopped(
     assert "Answers with classes" in doc
     assert "has_more" in doc
 
+
+def test_apk_classes_contains_filters_to_matches(tmp_path: Path, monkeypatch: Any) -> None:
+    """A substring filter must narrow the class list, case-insensitively.
+
+    Finding one package (crypto, payment) in a real app means not paging every
+    class. Assert contains keeps only the matching names, folds case, and
+    reports filtered/query so a small result is read as "few matches", not
+    "few classes".
+    """
+    names = [
+        "Lcom/app/crypto/AesCipher;",
+        "Lcom/app/crypto/RsaKey;",
+        "Lcom/app/ui/MainActivity;",
+        "Lcom/app/net/HttpClient;",
+        "La/a/a;",
+    ]
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeClassParsed([_FakeClass(name) for name in names]),
+    )
+
+    hits = client.classes(tmp_path / "app.apk", contains="CRYPTO")
+    assert hits["classes"] == ["Lcom/app/crypto/AesCipher;", "Lcom/app/crypto/RsaKey;"]
+    assert hits["filtered"] is True
+    assert hits["query"] == "CRYPTO"
+    assert hits["total"] == 2
+
+    plain = client.classes(tmp_path / "app.apk")
+    assert "filtered" not in plain
+    assert "query" not in plain
+    assert plain["total"] == len(names)
+
+    doc = _tool_docstring("apk.classes")
+    assert "contains" in doc
+    assert "filtered" in doc
+    assert "query" in doc
+
+
+def test_apk_classes_contains_finds_a_match_past_the_collection_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The filter is applied during the scan, so the cap bounds matches.
+
+    An unfiltered scan stops at the 10000-class cap and never sees a class
+    beyond it. Bury one target after more than that many non-matching classes
+    and assert a contains filter still finds it -- proving the cap bounds
+    matches, not scan position (an after-the-fact filter would miss it).
+    """
+    from headless_re_mcp.backends.apk.client import _MAX_CLASSES_COLLECT
+
+    names = [f"Lcom/pad/Filler{index};" for index in range(_MAX_CLASSES_COLLECT + 500)]
+    names.append("Lcom/secret/HiddenPayload;")
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeClassParsed([_FakeClass(name) for name in names]),
+    )
+
+    hits = client.classes(tmp_path / "app.apk", contains="hiddenpayload")
+    assert hits["classes"] == ["Lcom/secret/HiddenPayload;"]
+    assert hits["total"] == 1
+    assert hits["scan_capped"] is False
+
+
 class _FakeApkMethod:
     def __init__(self, index: int) -> None:
         self.name = f"m{index}"

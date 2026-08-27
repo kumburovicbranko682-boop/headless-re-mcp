@@ -786,8 +786,16 @@ class ApkClient:
         }
 
     @_guard_androguard
-    def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    def classes(
+        self, path: Path, *, offset: int = 0, limit: int = 100, contains: str | None = None
+    ) -> JsonObject:
         parsed = self._parsed(path)
+        # A substring filter is applied during the scan, not after, so the
+        # collection cap bounds *matches*: hunting one class (a crypto package,
+        # an Activity, an obfuscated name) in an app with far more than
+        # _MAX_CLASSES_COLLECT classes would otherwise never reach it, because
+        # the unfiltered scan stops at the cap first.
+        needle = contains.casefold() if contains else None
         names: list[str] = []
         scan_more = False
         for klass in parsed.analysis.get_classes():
@@ -796,10 +804,13 @@ class ApkClient:
             if len(names) >= _MAX_CLASSES_COLLECT:
                 scan_more = True
                 break
-            names.append(klass.name)
+            name = klass.name
+            if needle is not None and needle not in name.casefold():
+                continue
+            names.append(name)
         names.sort()
         window = names[offset : offset + limit]
-        return {
+        result: JsonObject = {
             "classes": window,
             "count": len(window),
             "total": len(names),
@@ -807,6 +818,12 @@ class ApkClient:
             "has_more": offset + len(window) < len(names),
             "scan_capped": scan_more,
         }
+        if needle is not None:
+            # total already counts only matches; name the filter so a small
+            # result is read as "few matches", not "few classes in the DEX".
+            result["filtered"] = True
+            result["query"] = contains
+        return result
 
     @_guard_androguard
     def methods(

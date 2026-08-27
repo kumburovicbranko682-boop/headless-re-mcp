@@ -159,6 +159,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        contains: str | None = None,
     ) -> dict[str, Any]:
         """List internal (non-external) DEX classes with pagination.
 
@@ -167,8 +168,20 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         total is the number collected, capped at 10000; scan_capped is true
         when the real class count may be higher. has_more only means a
         larger offset still has collected rows.
+
+        Pass contains to hunt a substring (case-insensitive) across the class
+        names -- a package fragment (crypto, payment), an Activity/Service name,
+        or an obfuscated marker. The filter is applied during the scan, so the
+        10000 cap bounds matches, not the pre-filter set: a rare class is still
+        found in an app with far more classes than the cap, where an unfiltered
+        page would never reach it. When set the reply also carries filtered true
+        and query (the term), and total/count/has_more describe the matched
+        subset; scan_capped true then means still more matches may exist beyond
+        the cap. Names are in Lsmali/form (dotted a.b.C maps to La/b/C).
         """
-        return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
+        return _dump(
+            analysis.apk_classes(session_id, offset=offset, limit=limit, contains=contains)
+        )
 
     @tools.tool(name="apk.methods")
     def apk_methods(

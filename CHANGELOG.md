@@ -397,6 +397,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不变。活体门在自建 APK 上按 `contains="DECRYPT"` 断言只回含该子串的 DEX 字符串（大小写折叠）、带 `filtered`/`query`、
   且不含无关类名，另断言无命中查询回 `total` 为 0（缺 androguard 时 skip≠pass）；单测覆盖大小写折叠过滤、无过滤器不多出
   字段、以及一条埋在超过 5000 条非命中之后的字符串仍被找到（证明上限约束的是命中而非扫描位置）。
+- **`apk.classes` 同样只能整页翻，找一个包/Activity 要在几万个类名里逐页扒**。类列表此前只有分页；要在一个大 app 里
+  定位某个包（crypto、payment）、某个 Activity/Service、或某个混淆标记类，只能一页页翻，而收集上限是 10000 个类——
+  真正想找的那个类可能就在这上限之外，无过滤扫描到上限就停了，永远够不着。给 `apk.classes` 加可选 `contains`（大小写
+  不敏感子串），与 `apk.strings` 同一范式：过滤在扫描**当中**施加，故 10000 上限约束的是**命中数**而非过滤前的集合，藏在
+  远超上限之后的那个稀有类照样能被找到。设了 `contains` 时，`total`/`count`/`has_more` 描述命中子集，另回 `filtered` 为真
+  与 `query`（查询词），`scan_capped` 为真则表示上限之外可能还有更多命中。名字为 `Lsmali/` 形（点号 `a.b.C` 对应 `La/b/C`）。
+  无 `contains` 时行为与字段完全不变，工具计数与读写归类不变。活体门在自建 APK 上按 `contains="SECRET"` 断言只回含该子串
+  的类（大小写折叠）、带 `filtered`/`query`，另断言无命中查询回 `total` 为 0（缺 androguard 时 skip≠pass）；单测覆盖大小写
+  折叠过滤、无过滤器不多出字段、以及一条埋在超过 10000 个非命中之后的类仍被找到（证明上限约束的是命中而非扫描位置）。
 - **看不清 APK 里到底装了什么——只能看见 `.so`**。`apk.native_libs` 只列 `lib/*.so`，其余归档内容（有几个 dex、
   有没有 `assets/` 目录——藏 bundled dex/JS 载荷或配置的常见地方、资源表、META-INF 签名文件）此前没有任何工具能看到，
   想枚举只能 `apk.decode` 整包 apktool 解一遍。新增只读的 `apk.files`：先经 androguard 解析做门禁与校验（确是可解析

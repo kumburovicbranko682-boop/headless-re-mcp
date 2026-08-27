@@ -508,6 +508,20 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert _DEX_CLASS in classes.data["classes"]
         assert classes.data["scan_capped"] is False
 
+        # The contains filter must narrow the real class list to matches only,
+        # case-insensitively, and report filtered/query -- so finding one
+        # package in a real app does not mean paging every class.
+        klass_hit = service.apk_classes(session_id, contains="SECRET")
+        assert klass_hit.ok, klass_hit.error
+        assert klass_hit.data["filtered"] is True
+        assert klass_hit.data["query"] == "SECRET"
+        assert _DEX_CLASS in klass_hit.data["classes"]
+        assert klass_hit.data["total"] == 1
+        klass_miss = service.apk_classes(session_id, contains="no-such-class-zzz")
+        assert klass_miss.ok, klass_miss.error
+        assert klass_miss.data["total"] == 0
+        assert klass_miss.data["classes"] == []
+
         # A dotted class name must resolve to the smali descriptor internally.
         methods = service.apk_methods(session_id, "com.example.headlessre.Secret")
         assert methods.ok, methods.error
