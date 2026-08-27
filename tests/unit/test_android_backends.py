@@ -268,6 +268,50 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["has_more"] is False
 
 
+class _HostileApk:
+    """Stands in for an androguard APK whose every accessor raises.
+
+    ``APK(path)`` logs and swallows a broken AndroidManifest.xml rather than
+    raising, so the object exists but its accessors then raise raw KeyError /
+    AttributeError from deep in the library. This reproduces that shape without
+    needing a crafted binary on disk.
+    """
+
+    def __getattr__(self, _name: str) -> Any:
+        def raiser(*_args: Any, **_kwargs: Any) -> Any:
+            raise KeyError("Name")
+
+        return raiser
+
+
+class TestApkManifestReadersMapFaultsCleanly:
+    """A corrupt APK whose accessors raise must degrade to backend_error.
+
+    Left unwrapped, an accessor KeyError reaches the service's BaseException
+    branch and is filed as internal_error -- the leaked-exception bucket that
+    also mints an incident -- for what is really an unparseable input. Every
+    manifest-level reader routes through ``_read_manifest`` so it maps such a
+    fault to a clean, actionable backend_error instead. Asserting this at the
+    client keeps the contract testable without androguard emitting a specific
+    exception type for a specific corruption, which varies across versions.
+    """
+
+    @pytest.mark.parametrize(
+        "op",
+        ["open", "manifest", "permissions", "certificates", "components", "native_libs"],
+    )
+    def test_reader_maps_accessor_fault_to_backend_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, op: str
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import ApkClient, ApkError
+
+        monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _HostileApk())
+        client = ApkClient()
+        with pytest.raises(ApkError) as info:
+            getattr(client, op)(tmp_path / "app.apk")
+        assert info.value.code == "backend_error"
+
+
 class TestFridaEnumerationsSayWhenTheyStopped:
     """`count` alone cannot distinguish "that is all" from "that is your page"."""
 

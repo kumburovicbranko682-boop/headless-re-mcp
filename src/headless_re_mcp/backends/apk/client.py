@@ -165,131 +165,162 @@ class ApkClient:
                 self._full_cache.popitem(last=False)
         return parsed
 
-    def open(self, path: Path) -> JsonObject:
+    def _read_manifest(self, path: Path, build: Any) -> JsonObject:
+        """Run a manifest-level accessor block, mapping androguard faults cleanly.
+
+        ``APK(path)`` logs and swallows a broken AndroidManifest.xml rather than
+        raising, so the object exists but its accessors then raise raw KeyError /
+        AttributeError from deep in androguard. Left unwrapped those escape the
+        service's ApkError branch and surface as ``internal_error`` -- the
+        leaked-exception bucket -- for what is really an unparseable input. Wrap
+        them as ``backend_error`` so a corrupt APK degrades the same way across
+        open/permissions/components/certificates/native_libs.
+        """
         apk = self._apk(path)
-        return {
-            "opened": True,
-            "package": apk.get_package(),
-            "version_name": apk.get_androidversion_name(),
-            "version_code": apk.get_androidversion_code(),
-            "min_sdk": apk.get_min_sdk_version(),
-            "target_sdk": apk.get_target_sdk_version(),
-            "main_activity": apk.get_main_activity(),
-            "permission_count": len(apk.get_permissions()),
-            "native_abis": sorted(
-                {
-                    name.split("/")[1]
-                    for name in apk.get_files()
-                    if name.startswith("lib/") and len(name.split("/")) >= 3
-                }
-            ),
-        }
+        try:
+            return build(apk)
+        except ApkError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to read APK metadata: {exc}") from exc
+
+    def open(self, path: Path) -> JsonObject:
+        def build(apk: Any) -> JsonObject:
+            return {
+                "opened": True,
+                "package": apk.get_package(),
+                "version_name": apk.get_androidversion_name(),
+                "version_code": apk.get_androidversion_code(),
+                "min_sdk": apk.get_min_sdk_version(),
+                "target_sdk": apk.get_target_sdk_version(),
+                "main_activity": apk.get_main_activity(),
+                "permission_count": len(apk.get_permissions()),
+                "native_abis": sorted(
+                    {
+                        name.split("/")[1]
+                        for name in apk.get_files()
+                        if name.startswith("lib/") and len(name.split("/")) >= 3
+                    }
+                ),
+            }
+
+        return self._read_manifest(path, build)
 
     def manifest(self, path: Path) -> JsonObject:
-        apk = self._apk(path)
-        try:
-            xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
-        except Exception as exc:  # noqa: BLE001
-            raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
-        return {
-            "package": apk.get_package(),
-            "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
-            "truncated": len(xml) > _MAX_MANIFEST_CHARS,
-        }
+        def build(apk: Any) -> JsonObject:
+            try:
+                xml = apk.get_android_manifest_axml().get_xml().decode("utf-8", "replace")
+            except Exception as exc:  # noqa: BLE001
+                raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
+            return {
+                "package": apk.get_package(),
+                "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
+                "truncated": len(xml) > _MAX_MANIFEST_CHARS,
+            }
+
+        return self._read_manifest(path, build)
 
     def permissions(self, path: Path) -> JsonObject:
-        apk = self._apk(path)
-        declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
-        try:
-            requested, requested_more = _cap_names(
-                apk.get_requested_permissions(), _MAX_PERMISSIONS
-            )
-        except Exception:  # noqa: BLE001 - older androguard lacks this
-            requested, requested_more = declared, declared_more
-        return {
-            "permissions": declared,
-            "requested_permissions": requested,
-            "count": len(declared),
-            "has_more": declared_more or requested_more,
-        }
+        def build(apk: Any) -> JsonObject:
+            declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
+            try:
+                requested, requested_more = _cap_names(
+                    apk.get_requested_permissions(), _MAX_PERMISSIONS
+                )
+            except Exception:  # noqa: BLE001 - older androguard lacks this
+                requested, requested_more = declared, declared_more
+            return {
+                "permissions": declared,
+                "requested_permissions": requested,
+                "count": len(declared),
+                "has_more": declared_more or requested_more,
+            }
+
+        return self._read_manifest(path, build)
 
     def certificates(self, path: Path) -> JsonObject:
-        apk = self._apk(path)
-        items: list[JsonObject] = []
-        try:
-            names = apk.get_signature_names()
-        except Exception:  # noqa: BLE001
-            names = []
-        sig_files: list[str] = []
-        files_more = False
-        for name in names or []:
-            if len(sig_files) >= _MAX_CERTIFICATES:
-                files_more = True
-                break
-            sig_files.append(str(name))
-        certs_more = False
-        for cert in apk.get_certificates():
-            if len(items) >= _MAX_CERTIFICATES:
-                certs_more = True
-                break
+        def build(apk: Any) -> JsonObject:
+            items: list[JsonObject] = []
             try:
-                items.append(
-                    {
-                        "subject": str(getattr(cert, "subject", "")),
-                        "issuer": str(getattr(cert, "issuer", "")),
-                        "serial": str(getattr(cert, "serial_number", "")),
-                        "sha256": cert.sha256_fingerprint
-                        if hasattr(cert, "sha256_fingerprint")
-                        else "",
-                    }
-                )
-            except Exception:  # noqa: BLE001 - certificate objects vary by version
-                continue
-        return {
-            "signature_files": sig_files,
-            "certificates": items,
-            "v1_signed": bool(names),
-            "has_more": certs_more or files_more,
-        }
+                names = apk.get_signature_names()
+            except Exception:  # noqa: BLE001
+                names = []
+            sig_files: list[str] = []
+            files_more = False
+            for name in names or []:
+                if len(sig_files) >= _MAX_CERTIFICATES:
+                    files_more = True
+                    break
+                sig_files.append(str(name))
+            certs_more = False
+            for cert in apk.get_certificates():
+                if len(items) >= _MAX_CERTIFICATES:
+                    certs_more = True
+                    break
+                try:
+                    items.append(
+                        {
+                            "subject": str(getattr(cert, "subject", "")),
+                            "issuer": str(getattr(cert, "issuer", "")),
+                            "serial": str(getattr(cert, "serial_number", "")),
+                            "sha256": cert.sha256_fingerprint
+                            if hasattr(cert, "sha256_fingerprint")
+                            else "",
+                        }
+                    )
+                except Exception:  # noqa: BLE001 - certificate objects vary by version
+                    continue
+            return {
+                "signature_files": sig_files,
+                "certificates": items,
+                "v1_signed": bool(names),
+                "has_more": certs_more or files_more,
+            }
+
+        return self._read_manifest(path, build)
 
     def components(self, path: Path) -> JsonObject:
-        apk = self._apk(path)
-        activities, a_more = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
-        services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
-        receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
-        providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
-        return {
-            "activities": activities,
-            "services": services,
-            "receivers": receivers,
-            "providers": providers,
-            "main_activity": apk.get_main_activity(),
-            "has_more": a_more or s_more or r_more or p_more,
-        }
+        def build(apk: Any) -> JsonObject:
+            activities, a_more = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
+            services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
+            receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
+            providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
+            return {
+                "activities": activities,
+                "services": services,
+                "receivers": receivers,
+                "providers": providers,
+                "main_activity": apk.get_main_activity(),
+                "has_more": a_more or s_more or r_more or p_more,
+            }
+
+        return self._read_manifest(path, build)
 
     def native_libs(self, path: Path) -> JsonObject:
-        apk = self._apk(path)
-        libs: list[str] = []
-        abis: set[str] = set()
-        has_more = False
-        for name in apk.get_files() or []:
-            text = str(name)
-            if not text.startswith("lib/"):
-                continue
-            parts = text.split("/")
-            if len(parts) >= 3:
-                abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
-                has_more = True
-                continue
-            libs.append(text)
-        libs.sort()
-        return {
-            "native_libs": libs,
-            "abis": sorted(abis),
-            "count": len(libs),
-            "has_more": has_more,
-        }
+        def build(apk: Any) -> JsonObject:
+            libs: list[str] = []
+            abis: set[str] = set()
+            has_more = False
+            for name in apk.get_files() or []:
+                text = str(name)
+                if not text.startswith("lib/"):
+                    continue
+                parts = text.split("/")
+                if len(parts) >= 3:
+                    abis.add(parts[1])
+                if len(libs) >= _MAX_NATIVE_LIBS:
+                    has_more = True
+                    continue
+                libs.append(text)
+            libs.sort()
+            return {
+                "native_libs": libs,
+                "abis": sorted(abis),
+                "count": len(libs),
+                "has_more": has_more,
+            }
+
+        return self._read_manifest(path, build)
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)

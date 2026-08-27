@@ -50,11 +50,17 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
         session_id = session["id"]
 
-        # androguard opens a real APK; on the synthetic archive it must still
-        # answer with a structured envelope rather than raising.
+        # androguard opens a real APK; on the synthetic archive its manifest is
+        # not valid AXML, so open() must answer with a structured envelope rather
+        # than raising. When it fails it has to be the clean, actionable
+        # backend_error -- not internal_error, which would mean a raw androguard
+        # KeyError leaked past the service's ApkError branch and minted an
+        # incident for what is really an unparseable input.
         opened = service.apk_open(session_id)
         assert isinstance(opened.ok, bool)
-        assert opened.ok or opened.error is not None
+        if not opened.ok:
+            assert opened.error is not None
+            assert opened.error.code == "backend_error", opened.error
 
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()
@@ -64,6 +70,50 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
         # Frida device enumeration returns an envelope (frida may be present).
         devices = service.frida_devices()
         assert isinstance(devices.ok, bool)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_manifest_readers_never_leak_internal_error(tmp_path: Path) -> None:
+    """Every manifest-level APK reader keeps its fault contract on hostile input.
+
+    The synthetic APK carries a manifest that is not valid AXML, so androguard
+    parses the archive but its accessors then raise deep inside the library. A
+    reader that lets that escape reports internal_error (with an incident) for a
+    plainly unparseable file, telling an unattended caller the tool broke rather
+    than the input. Each reader must instead return either a real answer or a
+    clean, actionable code. Runs on a bare machine: without androguard every
+    reader degrades to capability_unavailable, which is also clean.
+    """
+    apk = _build_synthetic_apk(tmp_path / "sample.apk")
+    service = AnalysisService()
+    clean_codes = {
+        "backend_error",
+        "capability_unavailable",
+        "not_found",
+        "invalid_params",
+        "target_mismatch",
+    }
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+        readers = {
+            "apk_open": service.apk_open,
+            "apk_manifest": service.apk_manifest,
+            "apk_permissions": service.apk_permissions,
+            "apk_certificates": service.apk_certificates,
+            "apk_components": service.apk_components,
+            "apk_native_libs": service.apk_native_libs,
+        }
+        for name, call in readers.items():
+            result = call(session_id)
+            assert isinstance(result.ok, bool), name
+            if not result.ok:
+                assert result.error is not None, name
+                assert result.error.code != "internal_error", (name, result.error)
+                assert result.error.code in clean_codes, (name, result.error)
     finally:
         service.close_all()
 
