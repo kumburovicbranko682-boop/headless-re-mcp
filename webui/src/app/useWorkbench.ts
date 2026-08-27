@@ -286,6 +286,8 @@ export function useWorkbench() {
   };
 
   const changeSession = async (next: string) => {
+    const previousSession = sessionIdRef.current;
+    const previousLost = lostRef.current;
     setLost(null);
     lostRef.current = null;
     setSessionId(next);
@@ -293,6 +295,15 @@ export function useWorkbench() {
       try {
         await bindSession(state.selectedThread, next);
       } catch (reason) {
+        // The PATCH failed, so the server still has the old binding and the
+        // agent's tools keep operating it. Keeping the optimistic value would
+        // point the header/inspector at `next` instead — roll back to what the
+        // server actually has, unless the user already picked something newer.
+        setSessionId((current) => (current === next ? previousSession : current));
+        if (previousLost && lostRef.current === null) {
+          setLost(previousLost);
+          lostRef.current = previousLost;
+        }
         dispatch({ type: "error", message: String(reason) });
       }
     }
