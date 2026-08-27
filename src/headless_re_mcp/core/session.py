@@ -580,6 +580,8 @@ _ZIP64_SENTINEL = 0xFFFFFFFF
 # Real signing blocks are a few kilobytes even with many signers; this only
 # refuses a pathological size before allocating for it.
 _APK_SIG_BLOCK_MAX = 8 * 1024 * 1024
+# The platform itself accepts at most ten v2/v3 signers per APK.
+_APK_MAX_SIGNERS = 10
 
 # AndroidManifest.xml ships as compiled binary XML (AXML), not text, so the
 # package name, versions, SDK levels and permissions -- the facts every triage
@@ -779,7 +781,7 @@ def describe_apk(path: Path) -> dict[str, Any]:
             if name.startswith("lib/") and len(parts := name.split("/")) >= 3 and parts[1]
         }
     )
-    signed_v2, signed_v3 = _apk_signature_schemes(path)
+    signed_v2, signed_v3, signers = _apk_signature_schemes(path)
     return {
         "apk": {
             "format": "apk",
@@ -792,6 +794,9 @@ def describe_apk(path: Path) -> dict[str, Any]:
             ),
             "signed_v2": signed_v2,
             "signed_v3": signed_v3,
+            # Who signed it, not just that someone did: the SHA-256 of each
+            # signer's certificate, per scheme -- the identity Android pins.
+            "signers": signers,
             "manifest": _apk_manifest_facts_from_apk(path),
             "dex": _apk_dex_facts(path),
         }
@@ -1062,13 +1067,19 @@ def _apk_manifest_facts_from_apk(path: Path) -> dict[str, Any]:
     return _apk_manifest_facts(data)
 
 
-def _apk_signature_schemes(path: Path) -> tuple[bool, bool]:
-    """Return ``(signed_v2, signed_v3)`` from the APK Signing Block.
+def _apk_signature_schemes(path: Path) -> tuple[bool, bool, list[dict[str, Any]]]:
+    """Return ``(signed_v2, signed_v3, signers)`` from the APK Signing Block.
+
+    ``signers`` answers *who* signed the package, not just that someone did:
+    one entry per signer per scheme, carrying the SHA-256 of the signing
+    certificate's DER bytes -- the same digest ``apksigner verify
+    --print-certs`` prints, and the identity Android pins for updates.
 
     Fail-closed: any structural surprise (a comment, ZIP64, a truncated or
-    oversized block) yields ``(False, False)`` so this cheap identity fact never
-    raises on a hostile or unusual archive.
+    oversized block) yields ``(False, False, [])`` so this cheap identity fact
+    never raises on a hostile or unusual archive.
     """
+    unsigned: tuple[bool, bool, list[dict[str, Any]]] = (False, False, [])
     try:
         size = path.stat().st_size
         with path.open("rb") as handle:
@@ -1077,38 +1088,49 @@ def _apk_signature_schemes(path: Path) -> tuple[bool, bool]:
             tail = handle.read(tail_len)
             eocd = tail.rfind(_ZIP_EOCD_SIGNATURE)
             if eocd < 0 or eocd + _ZIP_EOCD_MIN > len(tail):
-                return (False, False)
+                return unsigned
             comment_len = int.from_bytes(tail[eocd + 20 : eocd + 22], "little")
             if eocd + _ZIP_EOCD_MIN + comment_len != len(tail):
                 # The record does not end the file where its comment length
                 # says: not the real EOCD (or an archive shape we do not read).
-                return (False, False)
+                return unsigned
             cd_size = int.from_bytes(tail[eocd + 12 : eocd + 16], "little")
             cd_offset = int.from_bytes(tail[eocd + 16 : eocd + 20], "little")
             if _ZIP64_SENTINEL in (cd_size, cd_offset):
-                return (False, False)
+                return unsigned
             if cd_offset < 24 or cd_offset > size:
-                return (False, False)
+                return unsigned
             handle.seek(cd_offset - 16)
             if handle.read(16) != _APK_SIG_BLOCK_MAGIC:
-                return (False, False)
+                return unsigned
             handle.seek(cd_offset - 24)
             block_size = int.from_bytes(handle.read(8), "little")
             if not 24 <= block_size <= _APK_SIG_BLOCK_MAX:
-                return (False, False)
+                return unsigned
             block_start = cd_offset - 8 - block_size
             if block_start < 0:
-                return (False, False)
+                return unsigned
             handle.seek(block_start)
             block = handle.read(block_size + 8)
     except OSError:
-        return (False, False)
-    return _apk_signing_block_ids(block)
+        return unsigned
+    pairs = _apk_signing_block_pairs(block)
+    signed_v2 = _APK_SIG_SCHEME_V2_ID in pairs
+    signed_v3 = _APK_SIG_SCHEME_V3_ID in pairs or _APK_SIG_SCHEME_V3_1_ID in pairs
+    signers: list[dict[str, Any]] = []
+    for scheme, block_id in (("v2", _APK_SIG_SCHEME_V2_ID), ("v3", _APK_SIG_SCHEME_V3_ID)):
+        value = pairs.get(block_id)
+        if value is not None:
+            signers += [
+                {"scheme": scheme, "cert_sha256": digest}
+                for digest in _apk_signer_cert_digests(value)
+            ]
+    return (signed_v2, signed_v3, signers)
 
 
-def _apk_signing_block_ids(block: bytes) -> tuple[bool, bool]:
-    """Walk the ID-value pairs of a read APK Signing Block for scheme IDs."""
-    signed_v2 = signed_v3 = False
+def _apk_signing_block_pairs(block: bytes) -> dict[int, bytes]:
+    """Walk the ID-value pairs of a read APK Signing Block, first ID wins."""
+    pairs: dict[int, bytes] = {}
     # block = [uint64 size][pairs...][uint64 size][16-byte magic]; the trailing
     # size + magic are the last 24 bytes and the leading size is the first 8.
     cursor = 8
@@ -1117,13 +1139,62 @@ def _apk_signing_block_ids(block: bytes) -> tuple[bool, bool]:
         pair_len = int.from_bytes(block[cursor : cursor + 8], "little")
         if pair_len < 4 or cursor + 8 + 4 > len(block):
             break
-        scheme_id = int.from_bytes(block[cursor + 8 : cursor + 12], "little")
-        if scheme_id == _APK_SIG_SCHEME_V2_ID:
-            signed_v2 = True
-        elif scheme_id in (_APK_SIG_SCHEME_V3_ID, _APK_SIG_SCHEME_V3_1_ID):
-            signed_v3 = True
+        pair_id = int.from_bytes(block[cursor + 8 : cursor + 12], "little")
+        value_end = min(cursor + 8 + pair_len, end)
+        pairs.setdefault(pair_id, block[cursor + 12 : value_end])
         cursor += 8 + pair_len
-    return (signed_v2, signed_v3)
+    return pairs
+
+
+def _apk_signer_cert_digests(value: bytes) -> list[str]:
+    """SHA-256 of each signer's signing certificate in a v2/v3 scheme block.
+
+    Both schemes share the layout down to the certificates (every length a
+    uint32-LE): the value is a length-prefixed sequence of signers; a signer
+    opens with its signed-data, which opens with the digests sequence and then
+    the certificates sequence (v3 appends SDK bounds after both, which this
+    walk never reaches). The first certificate is the signing certificate --
+    the rest are its chain -- and apksigner's printed SHA-256 digest is over
+    exactly these DER bytes, so the two views compare hex for hex.
+
+    Fail-closed and bounded: a truncated or lying length keeps the digests
+    already read, and no more than the platform's own signer cap is walked.
+    """
+
+    def u32(at: int, limit: int) -> int | None:
+        if at + 4 > limit:
+            return None
+        return int.from_bytes(value[at : at + 4], "little")
+
+    digests: list[str] = []
+    signers_len = u32(0, len(value))
+    if signers_len is None:
+        return digests
+    signers_end = min(4 + signers_len, len(value))
+    pos = 4
+    while pos + 4 <= signers_end and len(digests) < _APK_MAX_SIGNERS:
+        signer_len = u32(pos, signers_end)
+        if signer_len is None or signer_len <= 0:
+            break
+        signer_end = min(pos + 4 + signer_len, signers_end)
+        # signer -> signed_data -> (digests, certificates, ...).
+        signed_data_len = u32(pos + 4, signer_end)
+        if signed_data_len is None:
+            break
+        signed_data_end = min(pos + 8 + signed_data_len, signer_end)
+        digests_len = u32(pos + 8, signed_data_end)
+        if digests_len is None:
+            break
+        certs_at = pos + 12 + digests_len
+        certs_len = u32(certs_at, signed_data_end)
+        if certs_len is not None:
+            certs_end = min(certs_at + 4 + certs_len, signed_data_end)
+            cert_len = u32(certs_at + 4, certs_end)
+            if cert_len is not None and certs_at + 8 + cert_len <= certs_end:
+                cert = value[certs_at + 8 : certs_at + 8 + cert_len]
+                digests.append(hashlib.sha256(cert).hexdigest())
+        pos += 4 + signer_len
+    return digests
 
 
 def _apk_manifest_facts(data: bytes) -> dict[str, Any]:

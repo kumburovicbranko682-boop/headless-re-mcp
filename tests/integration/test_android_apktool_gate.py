@@ -220,9 +220,10 @@ def test_android_apktool_repack_and_sign() -> None:
     debug-keystore default would pass CI unseen. This gate rebuilds the fixture
     unsigned, then signs it with the zero-config debug keystore and confirms the
     result really verifies -- once via the backend's own apksigner verify (which
-    gates signed=True) and again independently here. It needs apktool (to
-    rebuild), apksigner (to sign) and the debug keystore; it skips, naming which
-    is missing, rather than pass silently.
+    gates signed=True) and again independently here -- and that the tool-free
+    reader recovers the signer's certificate SHA-256 identical to the digest
+    apksigner prints. It needs apktool (to rebuild), apksigner (to sign) and the
+    debug keystore; it skips, naming which is missing, rather than pass silently.
     """
     if not _FIXTURE.is_file():
         pytest.skip(f"fixture missing: {_FIXTURE}")
@@ -284,5 +285,21 @@ def test_android_apktool_repack_and_sign() -> None:
         # stdlib AXML reader handles real aapt output (an 8-bit string pool),
         # not just the committed fixture's hand-written UTF-16 one.
         assert signed_meta["manifest"]["package"] == "com.example.headless"
+
+        # Who signed it, cross-validated: apksigner prints the SHA-256 of the
+        # signing certificate it just used, and the tool-free reader digests
+        # the DER certificate straight out of the v2 block's signer sequence.
+        # Same bytes, same hash -- or one of the two parsers is wrong.
+        certs = subprocess.run(
+            [str(settings.apksigner), "verify", "--print-certs", str(out_apk)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert certs.returncode == 0, certs.stderr or certs.stdout
+        printed = re.search(r"certificate SHA-256 digest: ([0-9a-f]{64})", certs.stdout)
+        assert printed, certs.stdout
+        reader_v2 = [s["cert_sha256"] for s in signed_meta["signers"] if s["scheme"] == "v2"]
+        assert reader_v2 == [printed.group(1)]
     finally:
         service.close_all()

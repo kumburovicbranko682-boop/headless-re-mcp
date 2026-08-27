@@ -33,12 +33,15 @@ def _apk(path: Path) -> Path:
     return path
 
 
-def _apk_with_signing_block(path: Path, scheme_ids: list[int]) -> Path:
+def _apk_with_signing_block(
+    path: Path, scheme_ids: list[int], values: dict[int, bytes] | None = None
+) -> Path:
     """Write an APK whose Signing Block advertises ``scheme_ids``.
 
     The block is spliced in just before the central directory -- exactly where
     a real signer puts it -- and the End Of Central Directory offset is fixed up
-    so the archive still parses as a valid ZIP.
+    so the archive still parses as a valid ZIP. ``values`` supplies a scheme's
+    block value (e.g. a real signer sequence); absent ones get filler bytes.
     """
     base = path.with_suffix(".base.apk")
     with zipfile.ZipFile(base, "w") as archive:
@@ -50,7 +53,7 @@ def _apk_with_signing_block(path: Path, scheme_ids: list[int]) -> Path:
     cd_offset = int.from_bytes(raw[eocd + 16 : eocd + 20], "little")
     pairs = b""
     for scheme_id in scheme_ids:
-        value = b"\x00" * 8
+        value = (values or {}).get(scheme_id, b"\x00" * 8)
         pairs += struct.pack("<Q", 4 + len(value)) + struct.pack("<I", scheme_id) + value
     block_size = len(pairs) + 8 + 16
     block = (
@@ -67,6 +70,33 @@ def _apk_with_signing_block(path: Path, scheme_ids: list[int]) -> Path:
     path.write_bytes(local + block + central + bytes(trailer))
     base.unlink()
     return path
+
+
+def _v2_signer_value(cert_chains: list[list[bytes]]) -> bytes:
+    """A well-formed v2/v3 ``signers`` value, one signer per certificate chain.
+
+    Mirrors the real layout down to the certificates: signers sequence ->
+    signer -> signed-data -> (digests, certificates, attributes), every length
+    a uint32-LE. The digests sequence is left empty -- the reader must skip it
+    by its declared length, not assume content.
+    """
+    entries = b""
+    for chain in cert_chains:
+        certs_seq = b"".join(struct.pack("<I", len(cert)) + cert for cert in chain)
+        signed_data = (
+            struct.pack("<I", 0)  # digests sequence (empty)
+            + struct.pack("<I", len(certs_seq))
+            + certs_seq
+            + struct.pack("<I", 0)  # additional attributes
+        )
+        signer = (
+            struct.pack("<I", len(signed_data))
+            + signed_data
+            + struct.pack("<I", 0)  # signatures
+            + struct.pack("<I", 0)  # public key
+        )
+        entries += struct.pack("<I", len(signer)) + signer
+    return struct.pack("<I", len(entries)) + entries
 
 
 _APK_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "android" / "minimal.apk"
@@ -1120,6 +1150,80 @@ class TestApkClassification:
         info = describe_apk(_apk_with_signing_block(tmp_path / "u.apk", [0x11223344]))["apk"]
         assert info["signed_v2"] is False
         assert info["signed_v3"] is False
+        assert info["signers"] == []
+
+
+class TestApkSignerIdentity:
+    """The signers fact answers *who* signed the APK, not just that someone did.
+
+    The SHA-256 of the signing certificate's DER bytes is the identity Android
+    pins for updates and the digest apksigner prints; the reader digests the
+    certificate straight out of the v2/v3 block's signer sequence.
+    """
+
+    def test_signers_report_the_certificate_sha256(self, tmp_path: Path) -> None:
+        cert = b"fake-der-signing-cert"
+        value = _v2_signer_value([[cert]])
+        path = _apk_with_signing_block(tmp_path / "s.apk", [0x7109871A], {0x7109871A: value})
+        info = describe_apk(path)["apk"]
+        assert info["signers"] == [
+            {"scheme": "v2", "cert_sha256": hashlib.sha256(cert).hexdigest()}
+        ]
+
+    def test_only_the_signing_certificate_is_digested(self, tmp_path: Path) -> None:
+        # The chain's later certificates (intermediates, the root) are not the
+        # signer's identity; only the first one is, exactly as apksigner prints.
+        value = _v2_signer_value([[b"leaf-cert", b"intermediate", b"root"]])
+        path = _apk_with_signing_block(tmp_path / "c.apk", [0x7109871A], {0x7109871A: value})
+        info = describe_apk(path)["apk"]
+        assert info["signers"] == [
+            {"scheme": "v2", "cert_sha256": hashlib.sha256(b"leaf-cert").hexdigest()}
+        ]
+
+    def test_each_signer_of_a_multi_signer_apk_is_reported(self, tmp_path: Path) -> None:
+        value = _v2_signer_value([[b"first-signer"], [b"second-signer"]])
+        path = _apk_with_signing_block(tmp_path / "m.apk", [0x7109871A], {0x7109871A: value})
+        info = describe_apk(path)["apk"]
+        assert [s["cert_sha256"] for s in info["signers"]] == [
+            hashlib.sha256(b"first-signer").hexdigest(),
+            hashlib.sha256(b"second-signer").hexdigest(),
+        ]
+
+    def test_v2_and_v3_blocks_each_carry_their_signer(self, tmp_path: Path) -> None:
+        # A rotated key ships different certificates per scheme; each block's
+        # signer is reported under its own scheme so the difference is visible.
+        # (v3's extra SDK-bound fields sit after the certificates, so the same
+        # walk reads both layouts.)
+        old, new = _v2_signer_value([[b"old-key"]]), _v2_signer_value([[b"new-key"]])
+        path = _apk_with_signing_block(
+            tmp_path / "b.apk",
+            [0x7109871A, 0xF05368C0],
+            {0x7109871A: old, 0xF05368C0: new},
+        )
+        info = describe_apk(path)["apk"]
+        assert info["signers"] == [
+            {"scheme": "v2", "cert_sha256": hashlib.sha256(b"old-key").hexdigest()},
+            {"scheme": "v3", "cert_sha256": hashlib.sha256(b"new-key").hexdigest()},
+        ]
+
+    def test_a_lying_certificate_length_yields_no_digest(self, tmp_path: Path) -> None:
+        # The certificate claims more bytes than its sequence holds: nothing is
+        # digested from out-of-bounds memory, and the scheme flag still stands.
+        value = _v2_signer_value([[b"real-cert"]])
+        certs_at = value.index(b"real-cert") - 4
+        lying = value[:certs_at] + struct.pack("<I", 0x7FFFFFFF) + value[certs_at + 4 :]
+        path = _apk_with_signing_block(tmp_path / "l.apk", [0x7109871A], {0x7109871A: lying})
+        info = describe_apk(path)["apk"]
+        assert info["signed_v2"] is True
+        assert info["signers"] == []
+
+    def test_a_dummy_block_value_names_no_signer(self, tmp_path: Path) -> None:
+        # A block advertising the scheme with no parseable signer sequence
+        # (the filler value) proves signed_v2 and signers are independent.
+        path = _apk_with_signing_block(tmp_path / "d.apk", [0x7109871A])
+        info = describe_apk(path)["apk"]
+        assert info["signed_v2"] is True
+        assert info["signers"] == []
 
     def test_describe_apk_rejects_archive_without_manifest(self, tmp_path: Path) -> None:
         plain = tmp_path / "archive.zip"
