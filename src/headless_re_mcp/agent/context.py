@@ -72,7 +72,55 @@ def _omission_notice(omitted: int) -> JsonObject:
     }
 
 
+def _drop_orphan_tool_results(messages: list[JsonObject]) -> list[JsonObject]:
+    """Remove role="tool" messages that no surviving ``tool_calls`` turn claims.
+
+    An OpenAI-compatible API 400s on a tool message whose ``tool_call_id`` is
+    not offered by the assistant turn it follows. The conversation rebuilt from
+    the store always contains such orphans: the store persists an assistant
+    turn's visible text but not its ``tool_calls`` (and persists nothing at all
+    for a turn that only called tools), so on the next run of that thread every
+    stored tool result answers a call the request no longer makes. The guard in
+    the compaction tail below never sees them -- it only runs once the thread
+    has outgrown its budget, and only strips the tail's front -- so a short
+    thread with one tool call behind it failed on its second run, and the
+    scheduler filed the mission as failed over a malformed request.
+
+    A tool message is kept while the ids opened by the nearest earlier
+    assistant ``tool_calls`` turn are still current, i.e. no non-tool message
+    has intervened; that is the shape one assistant turn answering several
+    calls legitimately produces.
+    """
+    kept: list[JsonObject] = []
+    open_calls: set[str] = set()
+    for item in messages:
+        role = item.get("role")
+        if role == "tool":
+            call_id = item.get("tool_call_id")
+            if call_id is not None and str(call_id) in open_calls:
+                kept.append(item)
+            continue
+        if role == "assistant":
+            calls = item.get("tool_calls")
+            if isinstance(calls, list):
+                open_calls = {
+                    str(call.get("id"))
+                    for call in calls
+                    if isinstance(call, dict) and call.get("id")
+                }
+            else:
+                open_calls = set()
+        else:
+            open_calls = set()
+        kept.append(item)
+    return kept
+
+
 def compact_messages(messages: list[JsonObject], *, threshold_percent: int, max_chars: int = 120_000) -> list[JsonObject]:
+    # Before any budget math, because the early return below is also a wire
+    # path: a conversation small enough to skip compaction still reaches the
+    # provider, and an orphaned tool result in it is still a 400.
+    messages = _drop_orphan_tool_results(messages)
     budget = max(8_000, int(max_chars * max(10, min(threshold_percent, 95)) / 100))
     total = sum(_message_size(item) for item in messages)
     if total <= budget:
