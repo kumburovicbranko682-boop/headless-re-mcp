@@ -82,6 +82,91 @@ def _write_verified_clr_pe(path: Path) -> None:
     path.write_bytes(image)
 
 
+def _write_clr_with_strings_past_64k(path: Path) -> None:
+    """Verified CLR whose #Strings heap starts past the old 64 KiB metadata cap.
+
+    Real assemblies carry more than 64 KiB of metadata, so the module name in
+    #Strings sits beyond a 64 KiB slice. The #~ tables stream stays near the
+    front (its Module row is readable), but the name it points at only resolves
+    when the reader maps enough of the heap.
+    """
+    strings_rel = 0x10004  # just past 0x10000
+    strings_heap = b"\0BigAsm.dll\0"
+
+    meta = bytearray(strings_rel + len(strings_heap))
+    meta[0:4] = b"BSJB"
+    struct.pack_into("<HHI", meta, 4, 1, 1, 0)
+    version = b"v4.0.30319\0"
+    version_padded = version + b"\0" * ((4 - (len(version) % 4)) % 4)
+    struct.pack_into("<I", meta, 12, len(version))
+    meta[16 : 16 + len(version_padded)] = version_padded
+    cur = 16 + len(version_padded)
+    struct.pack_into("<HH", meta, cur, 0, 2)  # flags, stream count
+    cur += 4
+
+    tilde = bytearray(24)
+    tilde[4] = 2  # MajorVersion
+    struct.pack_into("<Q", tilde, 8, 1 << 0x00)  # Valid: Module only
+    tilde += struct.pack("<I", 1)  # one row
+    tilde += struct.pack("<HHHHH", 0, 1, 0, 0, 0)  # Module: gen, name=1, mvid, encid, encbase
+    tilde_rel = 0x40
+    struct.pack_into("<II", meta, cur, tilde_rel, len(tilde))
+    meta[cur + 8 : cur + 11] = b"#~\0"
+    cur += 12
+    struct.pack_into("<II", meta, cur, strings_rel, len(strings_heap))
+    meta[cur + 8 : cur + 17] = b"#Strings\0"
+    cur += 20
+    assert cur <= tilde_rel
+    meta[tilde_rel : tilde_rel + len(tilde)] = tilde
+    meta[strings_rel : strings_rel + len(strings_heap)] = strings_heap
+
+    raw_size = 0x10400
+    image = bytearray(0x200 + raw_size)
+    pe_offset = 0x80
+    image[:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3C, pe_offset)
+    image[pe_offset : pe_offset + 4] = b"PE\0\0"
+    file_header = pe_offset + 4
+    struct.pack_into("<HHIIIHH", image, file_header, 0x8664, 1, 0, 0, 0, 0xF0, 0x2022)
+    optional = file_header + 20
+    struct.pack_into("<HBB", image, optional, 0x20B, 14, 0)
+    struct.pack_into("<I", image, optional + 16, 0x1000)
+    struct.pack_into("<Q", image, optional + 24, 0x140000000)
+    struct.pack_into("<II", image, optional + 32, 0x1000, 0x200)
+    struct.pack_into("<II", image, optional + 56, 0x11400, 0x200)
+    struct.pack_into("<HH", image, optional + 68, 3, 0x8160)
+    struct.pack_into("<I", image, optional + 108, 16)
+    dir_base = optional + 112
+    struct.pack_into("<II", image, dir_base + 14 * 8, 0x1100, 72)
+    section = optional + 0xF0
+    image[section : section + 8] = b".text\0\0\0"
+    struct.pack_into("<IIII", image, section + 8, raw_size, 0x1000, raw_size, 0x200)
+    struct.pack_into("<I", image, section + 36, 0x60000020)
+
+    cor_off = 0x300
+    struct.pack_into("<I", image, cor_off, 72)
+    struct.pack_into("<HH", image, cor_off + 4, 2, 5)
+    struct.pack_into("<II", image, cor_off + 8, 0x1200, len(meta))
+    struct.pack_into("<I", image, cor_off + 16, 0x1)
+    struct.pack_into("<I", image, cor_off + 20, 0x06000001)
+    image[0x400 : 0x400 + len(meta)] = meta
+    path.write_bytes(image)
+
+
+def test_inspect_reads_metadata_past_64k(tmp_path: Path) -> None:
+    """Module name in #Strings past 64 KiB must still resolve, not read null.
+
+    inspect_dotnet capped the mapped metadata at 64 KiB while the enumerator
+    used 2 MiB, so a large assembly's names came back null from inspect but
+    fine from enumerate. Both now share one cap.
+    """
+    path = tmp_path / "big_metadata.exe"
+    _write_clr_with_strings_past_64k(path)
+    report = inspect_dotnet(path)
+    assert report.verified_clr is True
+    assert report.module_name == "BigAsm.dll"
+
+
 def test_inspect_native_pe(tmp_path: Path) -> None:
     path = tmp_path / "native.exe"
     _write_native_pe(path)
