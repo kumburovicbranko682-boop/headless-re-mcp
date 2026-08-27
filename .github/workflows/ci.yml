@@ -166,6 +166,22 @@ jobs:
           python -c "import mitmproxy; print('mitmproxy', mitmproxy.__version__)"
           python -m pytest tests/integration/test_proxy_lifecycle_gate.py -q -rs --tb=short
 
+      - name: Android static-analysis gate (androguard)
+        # androguard is pure-pip, so the APK static line can be enforced with no
+        # device or JVM tools. Install just androguard (not the whole android
+        # extra, which pulls frida's heavy native wheel) and run the Android gate
+        # against the committed hello_world.apk fixture: classification, the
+        # PE-tool rejection, and the full androguard happy path (manifest,
+        # components, classes, methods, strings) all run. The jadx/apktool cases
+        # skip honestly because those need a JRE toolchain not installed here,
+        # and the adb/frida calls degrade to capability_unavailable envelopes.
+        # Verifying the import first keeps a failed install from passing as a
+        # green skip.
+        run: |
+          python -m pip install androguard
+          python -c "import androguard; print('androguard', androguard.__version__)"
+          python -m pytest tests/integration/test_android_re_gate.py -q -rs --tb=short
+
       - name: Doctor and core service smoke
         run: |
           python -m headless_re_mcp doctor --json --strict

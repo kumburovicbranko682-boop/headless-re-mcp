@@ -272,6 +272,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   再加一步:`pip install -e ".[proxy]"` 后整跑 `test_proxy_lifecycle_gate.py`(起停/端口释放/占用拒绝/
   多会话/抓包-读取-重放-导出)。这条尤其值得进 CI:上面那个 `No such option: rfile` 竞态只有在同一进程
   里起多个代理时才现形,单测替代不了;把整条 gate 钉进每次 PR,正好守住这次修复不回归。
+- **Android 静态分析线(androguard)也进 CI 真跑**。androguard 是纯 pip 依赖,APK 静态线无需设备或
+  JVM 工具即可强制。`linux-quality` 加一步:只装 `androguard`(不装整个 `android` extra——它会拉进
+  frida 的重型原生 wheel),对提交的 `hello_world.apk` 夹具跑 Android gate:会话分类、PE 工具拒绝 APK
+  会话、以及 androguard 完整成功路径(清单/组件/类/方法/字符串)都真跑;jadx/apktool 两条因无 JRE
+  工具链诚实跳过,adb/frida 调用则降级为 `capability_unavailable` 信封(已验证 adbutils/frida 缺席时不
+  抛异常)。跑前先 import 验证 androguard 装成功,不让"装失败=看着绿"混过。jadx/apktool 不在发行版
+  仓库里、需下载且版本敏感,故暂不进 CI,保持 skip 门。
 - **同一条"探针别谎报就绪"的规矩接着补到启动器类工具:jadx / apktool / apksigner / webcrack**。
   这四个都不是自带运行时的原生二进制——jadx、apktool、apksigner 是启动 JVM 的脚本,webcrack 跑在
   node 上。可 `probe_optional_tool` 之前只看启动器本身在不在 PATH(或配置路径)上,于是一台装了 jadx
