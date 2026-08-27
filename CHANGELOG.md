@@ -102,6 +102,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   消息条数),与其余读取器口径一致;仍回最新的尾部,且因 limit 上限等于环容量、一次即可取完
   整个缓冲,故不需要 offset。文档串同步说明,并扩展回归测试断言 `total`。
 
+### 新增回归（HAR `har_entry` 区分「已知空体」与「未知」并夹取 query 参数,直测固定）
+
+- `har_entry` 用抓包记下的解码体长度填 `content.size` / `response.bodySize`,守卫是 `>= 0`:
+  `if isinstance(response_body_size, int) and response_body_size >= 0: content_size = response_body_size
+  else: content_size = _UNKNOWN_SIZE`(-1);`_query_string` 则把解析出的参数表夹到 `pairs[:_MAX_QUERY_PARAMS]`。
+  既有 HAR spec 测试只验*正*体长(1234)与*缺失*(None→-1),以及远低于上限的 query,故这几个守卫存在的边界从没被走过:
+  一是**体长恰为零是真长度、不是「未知」**——204、HEAD、空 200 的体是零字节、抓包是知道的,`>= 0` 把它留成 `0`,
+  HAR 查看器显示「0 B」而非「大小未知」;把守卫收成 `> 0`,每个空响应都悄悄变成 -1,和从没测过长度的流再也分不清。
+  二是**负数才是「未知」哨兵的活、必须映射到 -1**——文档串写「缺失或负」,却只测了缺失;一个漏算出的负 int 不能被
+  当成 `content.size = -5` 透传。三是**query 表要夹取**——参数病态多的 URL 不得把单条 entry 撑过 `_MAX_QUERY_PARAMS`;
+  删掉切片,一个精心构造的 URL 就冲破上游 16 KiB URL 上限只挡住一半的那个界。新增五例直测 `har_entry`/`_query_string`
+  (体长 0 记为 0、负数落到 -1、缺失仍 -1、超量 query 夹到上限且保留前导若干、未超量则每个参数含重复与空值全保留);
+  守卫改 `> 0`、去掉负数守卫、删 query 切片三处变异各被相应用例逮到,既有 HAR 用例全绿。
+
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
