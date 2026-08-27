@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（CLI 适配器超时在后端边界夹取越界输入）
+
+- **apk（jadx/apktool）与 web（webcrack/wabt）几条 CLI 适配器把调用方的 `timeout` 直接塞进
+  `run_bounded`**，而 frida 早已用 `_bound_timeout` 在后端边界拒非正、封上限。MCP schema 虽声明
+  `0 < timeout <= 上限`，但 Agent 传输是拿模型给的参数**不经 schema 校验**直接调处理器
+  （`CommandCatalog.invoke` → `spec.handler(**arguments)`）——一个非正 `timeout` 会让
+  `run_bounded` 先把 JVM/node 拉起来、再在循环第一圈就整树杀掉，然后报一个把「参数错」说成
+  「超时」的误导性错误；一个巨大 `timeout` 则让在恶意样本上卡死的工具占着 worker 直到调用方
+  给的秒数耗尽。新增共享的 `clamp_cli_timeout`（拒非正/NaN、按上限封顶）并让三条适配器各按自己
+  的 schema 上限（apk/jadx=1800、js/wasm=600、js.unpack_bundle=1200）在开进程前先夹取，越界即回
+  `invalid_params`。补回归测试钉住夹取函数本身，以及三条适配器的非正超时在开进程前被拒、巨大超时
+  被封到各自上限。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

@@ -13,10 +13,19 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 _MAX_INLINE = 400_000
+# Per the tool schema: js.deobfuscate / js.beautify / wasm.* declare le=600,
+# js.unpack_bundle le=1200. Each caller passes its own ceiling into _run.
+_MAX_TIMEOUT_S = 600.0
+_MAX_UNPACK_TIMEOUT_S = 1200.0
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
@@ -78,7 +87,13 @@ def _require_existing_file(path: Path, *, missing: str) -> Path:
     return resolved
 
 
-def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+def _run(
+    cmd: list[str], *, timeout: float, maximum: float = _MAX_TIMEOUT_S
+) -> tuple[str, str, int]:
+    try:
+        timeout = clamp_cli_timeout(timeout, maximum=maximum)
+    except InvalidTimeout as exc:
+        raise JsReError("invalid_params", str(exc)) from exc
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
@@ -125,7 +140,9 @@ class JsClient:
 
     def deobfuscate(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path)
-        stdout, stderr, code = _run([str(self.executable), str(resolved)], timeout=timeout)
+        stdout, stderr, code = _run(
+            [str(self.executable), str(resolved)], timeout=timeout, maximum=_MAX_TIMEOUT_S
+        )
         if code != 0 and not stdout:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
@@ -148,7 +165,9 @@ class JsClient:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
         stdout, stderr, code = _run(
-            [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
+            [str(self.executable), str(resolved), "-o", str(out_dir)],
+            timeout=timeout,
+            maximum=_MAX_UNPACK_TIMEOUT_S,
         )
         files, file_count, listed_more = _capped_file_listing(out_dir, cap=_MAX_COUNTED_FILES)
         if code != 0 and not files:
