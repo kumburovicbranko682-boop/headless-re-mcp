@@ -555,6 +555,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   Ghidra 所需的 `--add-opens` 设的值整个抹掉，在那些机器上悄悄让 analyzeHeadless 跑不起来。
   现在把 `-Xmx` 前置拼进已有值：堆上限作为默认仍生效，而操作者显式的 `-Xmx`（JVM 取最后一个）
   仍然胜出，其余选项一并保留。未设置该变量时结果与之前完全相同（`-Xmx2G`）。
+- **能力目录把 `apk.sign` 挂在 apktool 探针下，就绪状态报错**。`ApktoolClient.sign()` 只用
+  `self.apksigner`、根本不碰 apktool，但目录把 `apk.decode/repack/sign` 一起挂在 `apktool`
+  探针上：只装了 apktool 时 `apk.sign` 被报成 ready 却会 `capability_unavailable`，只装了
+  apksigner 时又被藏起来。现拆出独立能力 `apk.apksigner`（挂 `apksigner` 探针）承载
+  `apk.sign`，`apk.apktool` 只保留 `decode`/`repack`——与 doctor/webcrack 那批修复同属
+  "就绪要如实反映真实依赖"。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。

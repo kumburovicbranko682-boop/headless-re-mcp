@@ -116,8 +116,20 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "apk.apktool",
         "backend": "apk",
         "status_probe": "apktool",
-        "tools": ["apk.decode", "apk.repack", "apk.sign"],
-        "summary": "apktool decode/rebuild plus apksigner re-signing (requires a JRE)",
+        "tools": ["apk.decode", "apk.repack"],
+        "summary": "apktool decode/rebuild (requires a JRE)",
+        "optional": True,
+    },
+    {
+        # apk.sign runs apksigner and never apktool, so its readiness has to
+        # follow the apksigner probe. Grouping it with the apktool tools reported
+        # it ready when only apktool was installed and hid it when only apksigner
+        # was -- the same false readiness the doctor/webcrack fixes removed.
+        "id": "apk.apksigner",
+        "backend": "apk",
+        "status_probe": "apksigner",
+        "tools": ["apk.sign"],
+        "summary": "apksigner re-signing (defaults to the Android debug keystore; requires a JRE)",
         "optional": True,
     },
     {

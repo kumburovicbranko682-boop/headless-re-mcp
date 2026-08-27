@@ -60,6 +60,23 @@ def test_each_capability_has_the_required_shape_and_a_unique_id() -> None:
         assert "status_probe" in cap, cid
 
 
+def test_apk_sign_is_gated_on_apksigner_not_apktool() -> None:
+    """apk.sign runs apksigner only, so its readiness must follow the apksigner probe.
+
+    ApktoolClient.sign() touches self.apksigner and never apktool, so grouping
+    apk.sign under the apktool-gated capability reported it ready when only
+    apktool was installed and hid it when only apksigner was -- the same false
+    readiness the doctor/webcrack resolver fixes removed.
+    """
+    by_id = {cap["id"]: cap for cap in _CORE_CAPABILITIES}
+    apktool = by_id["apk.apktool"]
+    assert "apk.sign" not in apktool["tools"]
+    assert apktool["status_probe"] == "apktool"
+    signer = by_id["apk.apksigner"]
+    assert signer["tools"] == ["apk.sign"]
+    assert signer["status_probe"] == "apksigner"
+
+
 def _stub_report() -> DoctorReport:
     return DoctorReport(
         probes=(
