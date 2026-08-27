@@ -423,16 +423,27 @@ def rebuild_imports(
                 ordinal = int(name.split("_", 1)[1])
             except (IndexError, ValueError):
                 ordinal = 0
+        by_ordinal = bool(
+            isinstance(ordinal, int)
+            and ordinal > 0
+            and (not name or name.startswith("ordinal_"))
+        )
+        # A named import is written into the Hint/Name table, which the PE
+        # format defines as ASCII. A non-ASCII name would fault _encode_name's
+        # strict encode mid-rebuild (a bare UnicodeEncodeError escaping as an
+        # internal error); the module name a few lines down already uses a total
+        # encode. Treat it like any other unresolvable entry -- reported, not
+        # silently mangled into a bogus import -- so only real names are placed.
+        if not by_ordinal and not name.isascii():
+            unresolved += 1
+            report.unfixed.append(f"api entry {module}: non-ASCII import name {name!r}")
+            continue
         by_module.setdefault(module.lower(), []).append(
             {
                 "module": module,
                 "name": name,
                 "ordinal": int(ordinal) if isinstance(ordinal, int) else 0,
-                "by_ordinal": bool(
-                    isinstance(ordinal, int)
-                    and ordinal > 0
-                    and (not name or name.startswith("ordinal_"))
-                ),
+                "by_ordinal": by_ordinal,
             }
         )
 
