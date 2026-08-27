@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`wasm.info` 与兄弟接口一致地交回 `bytes`）
+
+- `wasm.wat` 与 `js.deobfuscate` 都回 `bytes`(整份输出的字节数)供调用方判断被 `truncated` 切掉多少,
+  唯独 `wasm.info`(wasm-objdump 的 `-h -x` 转储)不回——它只有 `objdump` 文本与一个 `truncated` 布尔。
+  大模块(段多、函数多)的 objdump 转储足以超过内联上限;此时调用方看到 `truncated=true` 却无从知道
+  完整转储有多大,与两个兄弟接口的表现不一致。
+- 现在 `wasm.info` 也回 `bytes`(整份 objdump 输出的 UTF-8 字节数):`objdump` 是前缀,`bytes` 是全量
+  大小,`truncated` 为真时二者之差即被切掉的量。未超上限时行为不变。
+- 新增回归:小转储回 `bytes` 等于全量且 `truncated=false`、超内联上限的转储回全量 `bytes` 且 `objdump`
+  只留定长前缀,以及 `wasm.info` 描述点名 `bytes`。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的

@@ -209,7 +209,9 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "objdump", include_bytes=False)
+        # bytes like wat/deobfuscate: a large module's objdump can exceed the
+        # inline cap, and truncated alone does not say how much was dropped.
+        return _bounded_output(stdout, "objdump", include_bytes=True)
 
 
 def _discover_webcrack() -> Path | None:
