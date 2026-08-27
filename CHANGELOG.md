@@ -250,6 +250,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (deobfuscate 与 webpack 拆包)。跑之前先 `webcrack --version`:装失败就让这步变红,而不是静悄悄
   跳过、假装通过。CDP 与 wasm 两类用例不在本次选择内(无浏览器 / 无 wabt),照旧在各自环境里跑。
   该 gate 模块对 playwright 是惰性导入,所以 CI 不装 `browser` extra 也能干净收集。
+- **wabt 的 WASM 逆向线同样进 CI 真跑**。`linux-quality` 再加一步:`apt-get install -y wabt`
+  (它把 `wasm2wat` / `wasm-objdump` 作为原生二进制装到 `/usr/bin`,没有 webcrack 那种"启动器还需
+  运行时"的问题),然后按 `-k wasm` 跑那两条 gate——对提交的 `sample_module.wasm` 夹具做 wasm2wat
+  反汇编与 wasm-objdump 段枚举。同样先 `wasm2wat --version`:装失败就变红,不让"跳过=看着绿"混过去。
+  本机用 wabt 1.0.34 对齐 CI(Ubuntu noble universe 里就是这个版本)验证两条 gate 均通过。
 - **同一条"探针别谎报就绪"的规矩接着补到启动器类工具:jadx / apktool / apksigner / webcrack**。
   这四个都不是自带运行时的原生二进制——jadx、apktool、apksigner 是启动 JVM 的脚本,webcrack 跑在
   node 上。可 `probe_optional_tool` 之前只看启动器本身在不在 PATH(或配置路径)上,于是一台装了 jadx
