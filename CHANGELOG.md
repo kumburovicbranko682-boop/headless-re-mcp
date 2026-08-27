@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（Ghidra 启动器失败须映射为结构化错误，而非事故/无踪超时）
+
+- `_run_headless` 是所有 Ghidra 工具的唯一必经点——`analyze_binary` 直接调用它，
+  `functions`/`symbols`/`xrefs`/`decompile` 经 `_export` 到达它。它包住 `run_bounded`，把后者的两类
+  失败转成结构化 `GhidraError`：`TimedOut` → `timeout` 且带 `killed_pids`（analyzeHeadless 是启动 JVM 的
+  脚本，超时后启动器会按整棵进程树击杀，回包必须说清杀了谁，而不是对仍在分析的 JVM 报一句干巴巴的
+  「超时」）；`OSError` → `backend_error`（启动器在但不可执行、或在发现与 spawn 之间消失，都会让 Popen 抛
+  `OSError`，适配器特意在此映射并注释了与 jadx/apktool/jsre/windbg 的一致性——若不接住，它会冒成
+  `internal_error` 事故被记录/告警，把「Ghidra 装歪了」误判成工具 bug）。两条映射此前都无测试：既有
+  Ghidra 测试只喂 `run_bounded` 的返回值（退出码与写好的 JSON），从不让它抛异常。于是去掉 `except OSError`
+  或改写超时分支，会静默地把装歪的环境退回成 internal_error 事故、或把超时报成没有被杀 pid 线索的挂起。
+  新增回归让 `run_bounded` 分别抛这两种失败，并在两个入口（直连的 `analyze_binary` 与经 `_export` 的
+  `functions`）上都钉住映射。两处定向变异各自独立证明：删掉 `killed_pids` 只让超时两条失败；把 `except
+  OSError` 改成不匹配则原始 `PermissionError` 泄漏、只让 OSError 两条失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
