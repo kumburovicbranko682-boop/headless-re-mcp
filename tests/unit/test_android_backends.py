@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import struct
 import zipfile
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -215,6 +216,33 @@ class TestDexFactsWithoutAndroguard:
         assert dex["signatures"] == [
             {"dex": "classes.dex", "sha1": "08b2b62009d67cfd8301354fbc30bfe0c84d5b64"}
         ]
+
+    def test_committed_dex_fingerprint_is_the_real_spec_hash(self) -> None:
+        """The reported signature must be the DEX's own content hash, per spec.
+
+        The assertion above pins a constant, but a constant proves nothing about
+        whether the fixture is a valid DEX or whether the reader reads the right
+        20 bytes. Recompute both header integrity fields straight from the
+        classes.dex bytes -- signature = SHA-1 over everything past byte 32,
+        checksum = adler32 over everything past byte 12 -- and require that they
+        match the bytes the fixture actually stores *and* the fact the reader
+        surfaces. This is the DEX analogue of the monodis .NET cross-check: an
+        independent computation, not a self-referential echo, and it needs no
+        tool so it always runs.
+        """
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        with zipfile.ZipFile(_APK_FIXTURE) as archive:
+            raw = archive.read("classes.dex")
+        # The fixture is a real, self-consistent DEX: its stored signature and
+        # checksum equal a fresh recomputation of its own body.
+        recomputed_sha1 = hashlib.sha1(raw[32:]).hexdigest()
+        assert raw[12:32].hex() == recomputed_sha1
+        assert struct.unpack_from("<I", raw, 8)[0] == zlib.adler32(raw[12:]) & 0xFFFFFFFF
+        # And the reader's fingerprint fact is that same hash, not merely the
+        # constant pinned above.
+        dex = describe_apk(_APK_FIXTURE)["apk"]["dex"]
+        assert dex["signatures"][0]["sha1"] == recomputed_sha1
 
     def test_class_names_are_empty_when_only_the_header_is_present(self, tmp_path: Path) -> None:
         # _dex_header carries no id tables, so the class-name walk finds nothing
