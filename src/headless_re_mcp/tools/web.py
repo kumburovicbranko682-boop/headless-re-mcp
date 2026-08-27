@@ -160,6 +160,24 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_wasm_list(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="web.storage")
+    def web_storage(session_id: str) -> dict[str, Any]:
+        """Read the current page's localStorage and sessionStorage.
+
+        SPAs stash JWTs, feature flags, and app state here, so this is where
+        web triage looks after cookies. Reads the top frame's origin storage
+        with a fixed script (no arbitrary eval is exposed). Answers with
+        local_storage and session_storage (each a list of key, value, with
+        value_truncated when a value was cut at the per-item cap), plus
+        local_storage_total / session_storage_total and
+        local_storage_has_more / session_storage_has_more so a capped list is
+        not read as the whole store. local_storage_unavailable /
+        session_storage_unavailable mark a store that could not be read (an
+        opaque origin or disabled storage), which is not the same as empty.
+        There is no storage or items field.
+        """
+        return _dump(analysis.web_storage(session_id))
+
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
         """Return the current page HTML, URL, and title.

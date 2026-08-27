@@ -41,6 +41,10 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Web storage values have no per-item browser cap (a page can stash megabytes),
+# so bound each value and the entry count, and report totals so the cut is honest.
+_MAX_STORAGE_VALUE_BYTES = 8 * 1024
+_MAX_STORAGE_ENTRIES = 500
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -747,6 +751,93 @@ class WebBackend:
         }
         if spill is not None:
             result["source_path"] = str(spill)
+        return result
+
+    def storage(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                dumped = handle.page.evaluate(
+                    """([cap, maxEntries]) => {
+                        const dump = (store) => {
+                          let total = 0;
+                          try { total = store.length; }
+                          catch (e) { return {entries: [], total: 0, unavailable: true}; }
+                          const entries = [];
+                          const n = Math.min(total, maxEntries);
+                          for (let i = 0; i < n; i++) {
+                            const key = store.key(i);
+                            let value = "";
+                            try { value = store.getItem(key); } catch (e) { value = ""; }
+                            const text = typeof value === "string" ? value : "";
+                            const cut = text.length > cap;
+                            entries.push({
+                              key: String(key).slice(0, 1024),
+                              value: cut ? text.slice(0, cap) : text,
+                              truncated: cut
+                            });
+                          }
+                          return {entries: entries, total: total};
+                        };
+                        let local, session;
+                        try { local = dump(window.localStorage); }
+                        catch (e) { local = {entries: [], total: 0, unavailable: true}; }
+                        try { session = dump(window.sessionStorage); }
+                        catch (e) { session = {entries: [], total: 0, unavailable: true}; }
+                        return {local: local, session: session};
+                    }""",
+                    [_MAX_STORAGE_VALUE_BYTES, _MAX_STORAGE_ENTRIES],
+                )
+            except Exception as exc:  # noqa: BLE001 - driver may be gone
+                raise WebError("backend_error", f"storage read failed: {exc}") from exc
+            if not isinstance(dumped, dict):
+                raise WebError("backend_error", "storage read returned no object")
+            return {
+                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
+                "local": dumped.get("local"),
+                "session": dumped.get("session"),
+            }
+
+        dumped = self._runner(handle).call(work)
+
+        def _norm(store: Any) -> tuple[list[JsonObject], int, bool, bool]:
+            # A store that threw (SecurityError on an opaque origin, storage
+            # disabled) is reported unavailable, which is not the same as an
+            # empty store -- an analyst must not read "could not read" as "empty".
+            if not isinstance(store, dict):
+                return [], 0, False, True
+            total = int(store.get("total") or 0)
+            unavailable = bool(store.get("unavailable"))
+            entries: list[JsonObject] = []
+            for item in (store.get("entries") or [])[:_MAX_STORAGE_ENTRIES]:
+                if not isinstance(item, dict):
+                    continue
+                key, _ = _bounded_metadata(item.get("key"), _MAX_METADATA_BYTES)
+                value, cut = _bounded_metadata(item.get("value"), _MAX_STORAGE_VALUE_BYTES)
+                entry: JsonObject = {"key": key, "value": value}
+                if cut or bool(item.get("truncated")):
+                    entry["value_truncated"] = True
+                entries.append(entry)
+            return entries, total, total > len(entries), unavailable
+
+        local_entries, local_total, local_more, local_unavailable = _norm(dumped.get("local"))
+        session_entries, session_total, session_more, session_unavailable = _norm(
+            dumped.get("session")
+        )
+        result: JsonObject = {
+            "url": dumped.get("url", ""),
+            "local_storage": local_entries,
+            "local_storage_total": local_total,
+            "local_storage_has_more": local_more,
+            "session_storage": session_entries,
+            "session_storage_total": session_total,
+            "session_storage_has_more": session_more,
+        }
+        if local_unavailable:
+            result["local_storage_unavailable"] = True
+        if session_unavailable:
+            result["session_storage_unavailable"] = True
         return result
 
     def dom_snapshot(self, session_id: str) -> JsonObject:

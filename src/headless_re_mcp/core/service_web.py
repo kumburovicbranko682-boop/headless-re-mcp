@@ -202,6 +202,9 @@ class WebAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def web_storage(self, session_id: str) -> Result[JsonObject]:
+        return self._web_wrap(session_id, "storage", session_id)
+
     def web_dom_snapshot(self, session_id: str) -> Result[JsonObject]:
         return self._web_wrap(session_id, "dom_snapshot", session_id)
 

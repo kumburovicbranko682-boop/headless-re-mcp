@@ -307,6 +307,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "web.console",
         "web.scripts",
         "web.script.source",
+        "web.storage",
         "web.wasm.list",
         "web.dom.snapshot",
         "web.screenshot",
