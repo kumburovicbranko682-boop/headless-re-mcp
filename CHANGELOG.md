@@ -218,6 +218,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`web.console` 把对象/数组参数塌缩成 "Object"，丢掉了记录的载荷**。`console.log({id, token})` 经
+  `Runtime.consoleAPICalled` 送来的是没有 primitive `value` 的 RemoteObject，旧逻辑退到 `description`（就是
+  "Object"/"Array(3)"），于是逆向最关心的被记录的配置、token 全丢了。CDP 其实在 `preview.properties` 里带着
+  成员，现在新增 `_render_console_preview` 把它们折回 DevTools 风格的 `{k: v}` / `[v, ...]`（字符串成员加引号、
+  溢出以省略号收尾、成员数上限 50），`_clip_console_text` 的取值顺序变为 value → preview → description → type；
+  仍走同一条 per-message 截断，超大对象照样被裁。没有 preview 的对象（如 Promise）退回 description 不变。
 - **`frida.memory.read` 只界定了 `size`，`address` 不设防**。`size` 在后端严格校验（1..262144），但
   `address` 直接透传给注入 JS 的 `ptr(address)`；MCP schema 虽标注 int，Agent 传输不跑 pydantic，于是
   负值/浮点/字符串都能到达，非数字还会以 `ValueError` 冒泡成 `internal_error`。现在后端在 attach 之前

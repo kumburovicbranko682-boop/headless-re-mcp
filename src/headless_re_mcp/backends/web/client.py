@@ -37,6 +37,8 @@ _MAX_CONSOLE = 2000
 _MAX_SCRIPTS = 2000
 _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
+# CDP caps console previews at a handful of members; bound our own render too.
+_MAX_PREVIEW_PROPS = 50
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
 # Response/request headers are kept per ring entry; bound the count, each field
@@ -177,6 +179,36 @@ def _looks_like_nav_timeout(exc: BaseException) -> bool:
     return "timeout" in text and "exceeded" in text
 
 
+def _render_console_preview(preview: JsonObject) -> str:
+    """Render a CDP ObjectPreview as a compact ``{k: v}`` / ``[v, ...]`` string.
+
+    ``console.log({id: 42, token: "x"})`` arrives as a RemoteObject with no
+    primitive ``value`` -- only ``type: "object"`` and a ``description`` of
+    "Object", which on its own throws away the logged payload (config, tokens)
+    an analyst is reading the console for. CDP does ship the members in
+    ``preview.properties``; fold them back into the DevTools-style rendering so
+    the values survive. String members are quoted to keep them distinct from
+    numbers, and an overflowed preview ends in an ellipsis.
+    """
+    props = preview.get("properties")
+    if not isinstance(props, list):
+        return str(preview.get("description") or preview.get("type") or "")
+    is_array = preview.get("subtype") == "array"
+    parts: list[str] = []
+    for prop in props[:_MAX_PREVIEW_PROPS]:
+        if not isinstance(prop, dict):
+            continue
+        value = prop.get("value", "")
+        text = value if isinstance(value, str) else str(value)
+        if prop.get("type") == "string":
+            text = f'"{text}"'
+        parts.append(text if is_array else f"{prop.get('name', '')}: {text}")
+    if preview.get("overflow"):
+        parts.append("…")
+    body = ", ".join(parts)
+    return f"[{body}]" if is_array else f"{{{body}}}"
+
+
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     """Join console args, stopping at ``_MAX_CONSOLE_TEXT``.
 
@@ -195,6 +227,8 @@ def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
             continue
         if "value" in argument:
             raw = argument["value"]
+        elif isinstance(argument.get("preview"), dict):
+            raw = _render_console_preview(argument["preview"])
         elif argument.get("description"):
             raw = argument["description"]
         else:

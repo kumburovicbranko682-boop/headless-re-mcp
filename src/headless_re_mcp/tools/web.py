@@ -116,10 +116,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with console, count, has_more, and dropped so a page that
         filled the limit is not read as the whole buffer, and ring
         eviction is visible. A line longer than the per-message cap is
-        cut and marked text_truncated. Uncaught errors and unhandled
-        promise rejections -- which never reach console.* -- are folded
-        into the same buffer as error entries flagged uncaught, with the
-        throw site url/line when the engine reported one.
+        cut and marked text_truncated. Object and array arguments are
+        rendered from their members ({k: v}, [v, ...]) rather than a bare
+        "Object", so a logged config or token survives. Uncaught errors and
+        unhandled promise rejections -- which never reach console.* -- are
+        folded into the same buffer as error entries flagged uncaught, with
+        the throw site url/line when the engine reported one.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 

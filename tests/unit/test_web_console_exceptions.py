@@ -17,6 +17,7 @@ from headless_re_mcp.backends.web.client import (
     _MAX_CONSOLE,
     _MAX_CONSOLE_TEXT,
     WebBackend,
+    _clip_console_text,
     _clip_exception_text,
 )
 
@@ -110,6 +111,68 @@ def test_console_api_calls_still_record_after_the_refactor() -> None:
     assert entry["type"] == "warning"
     assert entry["text"] == "hi"
     assert "uncaught" not in entry
+
+
+def test_console_object_argument_renders_its_members() -> None:
+    """A logged object used to collapse to "Object", dropping its payload.
+
+    CDP hands the members over in preview.properties; render them {k: v} so a
+    logged config or token survives instead of a bare type name. A leading
+    string arg is joined ahead of it the way DevTools shows the line.
+    """
+    text, truncated = _clip_console_text(
+        {
+            "type": "log",
+            "args": [
+                {"type": "string", "value": "user"},
+                {
+                    "type": "object",
+                    "description": "Object",
+                    "preview": {
+                        "type": "object",
+                        "properties": [
+                            {"name": "id", "type": "number", "value": "42"},
+                            {"name": "token", "type": "string", "value": "abc"},
+                        ],
+                    },
+                },
+            ],
+        }
+    )
+    assert truncated is False
+    assert text == 'user {id: 42, token: "abc"}'
+
+
+def test_console_array_argument_renders_bracketed_with_overflow() -> None:
+    text, _ = _clip_console_text(
+        {
+            "type": "log",
+            "args": [
+                {
+                    "type": "object",
+                    "subtype": "array",
+                    "description": "Array(3)",
+                    "preview": {
+                        "type": "object",
+                        "subtype": "array",
+                        "overflow": True,
+                        "properties": [
+                            {"name": "0", "type": "number", "value": "1"},
+                            {"name": "1", "type": "number", "value": "2"},
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+    assert text == "[1, 2, …]"
+
+
+def test_console_object_without_a_preview_falls_back_to_description() -> None:
+    text, _ = _clip_console_text(
+        {"type": "log", "args": [{"type": "object", "description": "Promise"}]}
+    )
+    assert text == "Promise"
 
 
 def test_unhandled_rejection_header_is_preserved() -> None:
