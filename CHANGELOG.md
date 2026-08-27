@@ -61,6 +61,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（device.info 把主机错误行当成设备属性）
+
+- `device.info` 用五条 `getprop` 拼出设备摘要（model/device/sdk/release/abi），却没做
+  `device.properties`/`packages`/`logcat` 已加的 `_is_host_error_output` 判定。adbutils 的 `shell`
+  会把 adb 主机端自己的 `error:` / `adb:` 消息当 stdout 返回而不抛异常,于是掉线/离线设备答成
+  `{"model": "error: device offline", "device": "error: device offline", ...}` 且报成成功——无人值守
+  的一遍会把一台死设备读成型号就叫「error: device offline」的活设备。这与 properties/packages/logcat
+  是同一个泄漏、同一个根因,只因 `info` 读的是单值 getprop 而非带方括号的整表转储而被漏掉。现对
+  五条 getprop 逐条做主机错误判定,命中即抛 `backend_error`（附出错的 `property` 与输出摘录）,与其余
+  读取器一致;健康设备的返回结构不变。新增两条直测:getprop 返回 `error: device offline` /
+  `adb: device ... not found` 时 `info` 抛 `backend_error`,而非把错误串当型号。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

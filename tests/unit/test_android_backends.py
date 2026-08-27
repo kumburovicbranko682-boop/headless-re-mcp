@@ -513,6 +513,10 @@ def _adb_with_shell(output: str) -> AdbBackend:
     """
 
     class _Dev:
+        def get_state(self, timeout: float | None = None) -> str:
+            del timeout
+            return "offline"
+
         def shell(self, cmd: object, timeout: float | None = None) -> str:
             del cmd, timeout
             return output
@@ -575,6 +579,31 @@ class TestPackagesDoesNotInventAnEmptyDevice:
         result = _adb_with_shell(raw).packages("emulator-5554")
         assert result["packages"] == ["com.example.app", "com.other.app"]
         assert result["count"] == 2
+
+
+class TestInfoDoesNotInventADeadDevice:
+    """A host error line used to look like a device whose model is the error.
+
+    device.info builds its summary from five getprop reads. adbutils hands the
+    adb host's own ``error:`` / ``adb:`` line back as stdout instead of raising,
+    so a dead or offline device answered ``{"model": "error: device offline",
+    ...}`` as a successful read -- the same leak properties / packages / logcat
+    already refuse, missed here because info reads single-value getprops rather
+    than the bracketed dump.
+    """
+
+    def test_a_getprop_error_line_is_not_a_device_named_error(self) -> None:
+        with pytest.raises(AdbError) as info:
+            _adb_with_shell("error: device offline").info("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert "getprop failed" in info.value.message
+        assert "offline" in str(info.value.details.get("output", ""))
+
+    def test_an_adb_host_not_found_line_is_not_a_device(self) -> None:
+        with pytest.raises(AdbError) as info:
+            _adb_with_shell("adb: device 'emulator-5554' not found").info("emulator-5554")
+        assert info.value.code == "backend_error"
+        assert "getprop failed" in info.value.message
 
 
 class TestLogcatDoesNotInventASnapshot:
