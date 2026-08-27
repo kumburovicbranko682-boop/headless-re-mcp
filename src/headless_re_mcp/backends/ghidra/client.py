@@ -12,7 +12,10 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
-_EXPORT_SCRIPT = "ExportJson.py"
+# A Java GhidraScript, not Python: Ghidra dropped bundled Jython in 11.0, so a
+# .py postScript is refused under analyzeHeadless unless the whole tool was
+# started with PyGhidra. Java scripts compile and run on every version.
+_EXPORT_SCRIPT = "ExportJson.java"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
@@ -192,7 +195,7 @@ class GhidraClient:
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         if not (_SCRIPT_DIR / _EXPORT_SCRIPT).is_file():
-            raise GhidraError("backend_error", "ExportJson.py missing from package")
+            raise GhidraError("backend_error", "ExportJson.java missing from package")
         project_dir.mkdir(parents=True, exist_ok=True)
         out_path = project_dir / f"export_{mode}.json"
         if out_path.exists():
