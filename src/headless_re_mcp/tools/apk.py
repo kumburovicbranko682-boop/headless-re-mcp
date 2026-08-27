@@ -169,8 +169,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Decode the APK to smali and resources with apktool (editable tree).
 
-        Answers with decoded_dir, manifest, smali_dirs, and has_resources.
-        There is no output, path or tree field.
+        Answers with decoded_dir, manifest, smali_dirs, resources_decoded and
+        has_resources. There is no output, path or tree field. no_resources
+        passes apktool's -r (skip resource decoding), so has_resources is then
+        False no matter what the APK holds; resources_decoded (false when
+        no_resources was set) says decoding was skipped, so has_resources:
+        False is read as "resources not decoded" rather than "APK has none".
         """
         return _dump(analysis.apk_decode(session_id, timeout=timeout, no_resources=no_resources))
 

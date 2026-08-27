@@ -116,7 +116,16 @@ class ApktoolClient:
         timeout: float = 600.0,
         no_resources: bool = False,
     ) -> JsonObject:
-        """Decode an APK into smali + resources for editing."""
+        """Decode an APK into smali + resources for editing.
+
+        Answers with decoded_dir, manifest, smali_dirs, resources_decoded and
+        has_resources. ``no_resources`` passes apktool's ``-r`` (do not decode
+        resources), so ``res/`` is never written and ``has_resources`` is False
+        regardless of what the APK holds. ``resources_decoded`` (``not
+        no_resources``) says whether decoding was even attempted, so a caller
+        reads ``has_resources: False`` as "resources were skipped" rather than
+        "the APK has no resources".
+        """
         if not self.available or self.apktool is None:
             raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
         if not apk.is_file():
@@ -140,6 +149,13 @@ class ApktoolClient:
             "decoded_dir": str(out_dir),
             "manifest": str(manifest) if manifest.is_file() else None,
             "smali_dirs": smali_dirs,
+            # has_resources reports whether a res/ tree was emitted. With
+            # no_resources (-r) apktool is told to skip resource decoding, so
+            # res/ is absent no matter what the APK actually contains --
+            # reporting has_resources: False there would claim the APK has no
+            # resources when they were merely not decoded. resources_decoded
+            # says whether decoding was attempted, so the two are told apart.
+            "resources_decoded": not no_resources,
             "has_resources": (out_dir / "res").is_dir(),
         }
 
