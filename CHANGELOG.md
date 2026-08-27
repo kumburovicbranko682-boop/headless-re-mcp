@@ -236,21 +236,6 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
-### 修复（`dotnet.il` switch 跳转表令其后整段反汇编错位）
-
-- `switch`（0x45）是 CIL 里唯一变长操作数的指令：`uint32 count` 后跟 `count` 个
-  `int32` 分支目标，因此无法放进定长的 `_OPCODES` 表。它于是落到未知操作码分支——
-  只前进 1 字节，然后把 `4 + 4*count` 字节的操作数当成后续操作码逐一解码。跳转表本身
-  被解成垃圾指令，更糟的是线性扫描此后一直错位：switch 之后的 `ret`、agent 用来跟踪
-  控制流的 `call` 全部按操作数宽度整体偏移，而 `partial` 仍是 false，读者毫无信号——
-  正是上面有符号修复所针对的"反汇编本就是拿来看控制流"的同型问题、且更严重。
-- 现在 `_disassemble_il` 单独识别 `switch`：读出 `count`、整体跳过 `4 + 4*count` 字节的
-  跳转表让扫描重新对齐，并按 ECMA-335 以有符号 int32 解出目标放进 `targets`。跳转表
-  越过方法体（含 `count` 字本身被截断）按既有截断口径记为 `partial` 并停下，不再把
-  残缺表当短表继续。新增四条直测：两臂 switch 后 `ret` 落在正确 ip、空 switch 也跨过
-  count 字、目标数超过剩余字节判 partial、count 字被截断判 partial。已做变异验证：去掉
-  该分支后四条中的失配即触发。
-
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
 - `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
@@ -259,6 +244,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   agent 读来判断循环走向的正是这个补码位型而非真实偏移。现把有符号操作数集中到
   `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
   无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
+
+### 修复（`dotnet.il` switch 跳转表令其后整段反汇编错位）
+
+- 与上面的有符号操作数同属控制流解码：`switch`（0x45）是 CIL 里唯一变长操作数的指令，
+  `uint32 count` 后跟 `count` 个 `int32` 分支目标，因此无法放进定长的 `_OPCODES` 表。
+  它于是落到未知操作码分支——只前进 1 字节，然后把 `4 + 4*count` 字节的操作数当成后续
+  操作码逐一解码。跳转表本身被解成垃圾指令，更糟的是线性扫描此后一直错位：switch 之后
+  的 `ret`、agent 用来跟踪控制流的 `call` 全部按操作数宽度整体偏移，而 `partial` 仍是
+  false，读者毫无信号。
+- 现在 `_disassemble_il` 单独识别 `switch`：读出 `count`、整体跳过 `4 + 4*count` 字节的
+  跳转表让扫描重新对齐，并按 ECMA-335 以有符号 int32 解出目标放进 `targets`。跳转表
+  越过方法体（含 `count` 字本身被截断）按既有截断口径记为 `partial` 并停下，不再把
+  残缺表当短表继续。新增四条直测：两臂 switch 后 `ret` 落在正确 ip、空 switch 也跨过
+  count 字、目标数超过剩余字节判 partial、count 字被截断判 partial。已做变异验证：去掉
+  该分支后四条中的失配即触发。
 
 ### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
 
