@@ -52,24 +52,31 @@ def _backend_with_client(client: Any) -> AdbBackend:
 
 
 def test_attribute_style_rows_are_shaped() -> None:
-    """Objects with serial/state flatten to those two fields."""
+    """Objects with serial/state flatten to those two fields.
+
+    The page is sorted by serial (adb does not promise a stable order), so
+    ``abc123`` precedes ``emulator-5554`` regardless of input order.
+    """
     client = _ListClient([_Info("emulator-5554", "device"), _Info("abc123", "unauthorized")])
     payload = _backend_with_client(client).list_devices()
     assert payload["devices"] == [
-        {"serial": "emulator-5554", "state": "device"},
         {"serial": "abc123", "state": "unauthorized"},
+        {"serial": "emulator-5554", "state": "device"},
     ]
     assert payload["count"] == 2
     assert payload["has_more"] is False
 
 
 def test_tuple_style_rows_are_shaped() -> None:
-    """(serial, state) tuples flatten the same way as objects."""
+    """(serial, state) tuples flatten the same way as objects.
+
+    Sorted by serial, ``192.168.0.2:5555`` precedes ``emulator-5554``.
+    """
     client = _ListClient([("emulator-5554", "device"), ("192.168.0.2:5555", "offline")])
     payload = _backend_with_client(client).list_devices()
     assert payload["devices"] == [
-        {"serial": "emulator-5554", "state": "device"},
         {"serial": "192.168.0.2:5555", "state": "offline"},
+        {"serial": "emulator-5554", "state": "device"},
     ]
 
 
