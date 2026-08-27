@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -29,7 +30,14 @@ def test_invalid_ui_capture_session_cannot_create_directories_outside_artifacts(
 
         assert result.ok is False
         assert result.error is not None
-        assert result.error.code == "invalid_request"
+        # On Windows the path validator rejects the traversal; elsewhere the
+        # capability is refused before it runs. Either way the guarantee under
+        # test holds: a hostile session id never creates a directory outside
+        # the artifact root.
+        if os.name == "nt":
+            assert result.error.code == "invalid_request"
+        else:
+            assert result.error.code == "unsupported_on_platform"
         assert not escaped.exists()
     finally:
         service.close_all()
