@@ -1558,8 +1558,16 @@ class TestPerSessionStateDiesWithTheSession:
             service._web_backend = _ExplodingWeb()  # type: ignore[assignment]
 
             closed = service.close_session(session_id)
-            assert closed.ok, closed.error
+            # The debugger worker still closes even though browser teardown
+            # threw: web cleanup runs before the worker-close loop and cannot
+            # skip it. The throw is now disclosed rather than suppressed, so the
+            # session reports the failure but still reaches CLOSED.
             assert worker.closed is True
+            assert closed.ok is False
+            assert closed.error is not None
+            assert closed.error.code == "web_cleanup_failed"
+            assert closed.error.details["backend"] == "web"
+            assert service.registry.get(session_id).state.value == "closed"
         finally:
             service.close_all()
 
