@@ -350,29 +350,28 @@ class TestCreateSessionRefusesHostileApkInputs:
             service.close_all()
 
 
-class TestApkOpenDegradesOnUnparseableManifest:
-    """apk.open must not leak a raw exception on a malformed-but-zippable APK.
+class TestApkOpenRejectsUnparseableManifestStructurally:
+    """apk.open must turn a malformed-but-zippable APK into a *structured* error.
 
     androguard tolerates a manifest it cannot parse -- it constructs the APK and
-    logs an error rather than raising -- but its version getters are inconsistent
-    there: get_min_sdk_version returns None while get_androidversion_name /
-    get_androidversion_code raise KeyError('Name' / 'Code'). apk.open called them
-    unguarded, so a hostile APK with a valid zip and a junk AndroidManifest.xml
-    made open leak a raw KeyError, which the service files as an internal_error
-    with a logged incident -- a bad manifest miscast as a tool bug. The sibling
-    ops (permissions / components / certificates) already degrade to empty on the
-    same input; this pins open to the same rule: a structured overview with the
-    zip-derived native_abis intact and None for the manifest fields androguard
-    could not read. It needs the real library, since a stub would not reproduce
-    the KeyError; it skips honestly when androguard is absent (skip != pass).
+    logs an error rather than raising -- so a hostile APK with a valid zip and a
+    junk AndroidManifest.xml still yields an APK object whose get_package()
+    returns falsy. open refuses that (rather than answering {opened: True} for a
+    zip that is not really an APK, or leaking a raw KeyError from the version
+    getters, either of which the service would file as a worse outcome -- a fake
+    success or an internal_error incident). This pins that the failure stays an
+    ApkError with a real code, never a bare Python exception. It needs the real
+    library, since a stub would not reproduce androguard's tolerance; it skips
+    honestly when androguard is absent (skip != pass).
     """
 
-    def test_open_returns_a_degraded_overview_instead_of_raising(self, tmp_path: Path) -> None:
+    def test_open_raises_a_structured_error_not_a_bare_exception(self, tmp_path: Path) -> None:
         pytest.importorskip(
             "androguard",
-            reason="androguard not installed — apk.open degrade regression needs it (skip != pass)",
+            reason="androguard not installed — apk.open hostile-input guard needs it (skip != pass)",
         )
         from headless_re_mcp.backends.apk import ApkClient
+        from headless_re_mcp.backends.apk.client import ApkError
 
         apk = tmp_path / "malformed.apk"
         with zipfile.ZipFile(apk, "w") as archive:
@@ -384,16 +383,11 @@ class TestApkOpenDegradesOnUnparseableManifest:
         client = ApkClient()
         assert client.available  # importorskip above guarantees androguard is present
 
-        result = client.open(apk)  # the bug made this raise KeyError('Name')
-
-        assert result["opened"] is True
-        # zip-derived, so it survives the unparseable manifest -- the useful part.
-        assert set(result["native_abis"]) == {"arm64-v8a", "x86_64"}
-        # the getters that used to KeyError now degrade to None, not a crash.
-        assert result["version_name"] is None
-        assert result["version_code"] is None
-        assert result["package"] == ""
-        assert result["permission_count"] == 0
+        with pytest.raises(ApkError) as caught:
+            client.open(apk)  # the old bug made this leak a raw KeyError('Name')
+        # A real, catalogued code -- not a bare KeyError the service logs as an
+        # internal_error incident.
+        assert caught.value.code == "backend_error"
 
 
 class TestFridaEnumerationsSayWhenTheyStopped:
