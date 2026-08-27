@@ -108,7 +108,9 @@ _MANIFEST_XML = """<?xml version="1.0" encoding="utf-8"?>
     <activity android:name="com.x.Internal"/>
     <activity android:name="com.x.ForcedOff" android:exported="false">
       <intent-filter>
-        <action android:name="com.x.ACTION"/>
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="myapp" android:host="open"/>
       </intent-filter>
     </activity>
     <service android:name="com.x.Svc" android:exported="true"
@@ -172,6 +174,21 @@ def test_apk_components_reports_effective_export_state() -> None:
     assert forced_off["exported_explicit"] is False
     assert forced_off["has_intent_filter"] is True
 
+    # Even a locked-down (exported=false) component's intent-filters are worth
+    # surfacing: they are the deep-link shape an attacker probes for.
+    main_filters = main["intent_filters"]
+    assert main_filters == [
+        {
+            "actions": ["android.intent.action.MAIN"],
+            "categories": ["android.intent.category.LAUNCHER"],
+        }
+    ]
+    deeplink = forced_off["intent_filters"][0]
+    assert deeplink["actions"] == ["android.intent.action.VIEW"]
+    assert deeplink["categories"] == ["android.intent.category.BROWSABLE"]
+    assert deeplink["data"] == [{"scheme": "myapp", "host": "open"}]
+    assert "intent_filters" not in internal
+
     svc = _detail(payload, "services", "com.x.Svc")
     assert svc["exported"] is True
     assert svc["exported_explicit"] is True
@@ -188,3 +205,4 @@ def test_apk_components_reports_effective_export_state() -> None:
     doc = _tool_docstring("apk.components")
     assert "exported" in doc
     assert "has_intent_filter" in doc
+    assert "intent_filters" in doc

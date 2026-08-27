@@ -323,6 +323,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   解析（畸形或老版本缺该 getter）时逐组件降级为「未暴露/未设」，绝不谎报可达，也不因此让整次调用失败。活体门在
   真实 APK 上断言带 LAUNCHER intent-filter 的启动 Activity 读作 `exported`、其余三类不暴露、`exported` 映射只含
   该 Activity；单测另覆盖显式 `exported="false"` 压过 intent-filter、`permission` 透出、以及清单不可解析时的降级。
+- **`apk.components` 光有 `has_intent_filter` 布尔，却不给 intent-filter 里到底是什么**。判断深链攻击面要看
+  具体的 action/category/data——自定义 URL scheme、host、path 模式、MIME 类型才是隐式 Intent 的真正入口，只知道
+  「有没有 filter」远远不够。现在组件声明了 intent-filter 时，其 `details` 记录附带 `intent_filters`：每个元素为
+  `{actions, categories, data}`，`data` 收集 `scheme/host/port/path*/mimeType`（空组省略，只声明 action 的
+  filter 不会拖三个空数组）；逐组件封顶 32 个 filter、每类条目封顶 64，畸形/混淆清单也不至于撑爆。即便组件
+  `exported=false` 也照样透出其 filter——那正是攻击者会去探的深链形状。活体门断言真实二进制清单里启动 Activity 的
+  `MAIN`/`LAUNCHER` 能原样还原；单测另覆盖 `VIEW`+`BROWSABLE`+自定义 scheme 的深链 filter 与无 filter 组件不带该字段。
 - **`r2.xrefs` 完全忽略传入地址，永远返回整个二进制的全部交叉引用**。用的命令是 `axj @ addr`——可 `axj`
   是「列出全部 refs」，`@ addr` 的 seek 对它毫无作用（实测某 ELF 上 `axj @ 任意地址` 与不带 seek 的 `axj` 都回
   相同的 20 条、`/bin/ls` 上都回 820 条）。于是 `r2.xrefs(某函数)` 拿到的是全程序 refs、而非该地址的引用者，

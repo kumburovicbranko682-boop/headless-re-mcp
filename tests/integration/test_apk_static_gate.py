@@ -403,6 +403,14 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert main_detail["exported"] is True
         assert main_detail["exported_explicit"] is None
         assert main_detail["has_intent_filter"] is True
+        # The launcher filter's action/category must round-trip out of the real
+        # binary manifest, not just the has_intent_filter boolean.
+        assert main_detail["intent_filters"] == [
+            {
+                "actions": ["android.intent.action.MAIN"],
+                "categories": ["android.intent.category.LAUNCHER"],
+            }
+        ]
         svc_detail = details["services"][0]
         assert svc_detail["exported"] is False
         assert svc_detail["has_intent_filter"] is False

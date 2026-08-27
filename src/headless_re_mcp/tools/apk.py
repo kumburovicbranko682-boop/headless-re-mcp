@@ -78,8 +78,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         presence of an intent-filter), exported_explicit (the raw attribute,
         or null when unset so an inferred value is distinguishable from a
         declared one), has_intent_filter, and permission when the component
-        is guarded by one. exported is a convenience map of each kind to just
-        the names that are reachable from other apps.
+        is guarded by one. When a component declares intent-filters, the
+        record also carries intent_filters: a list of {actions, categories,
+        data} where data holds the deep-link specs (scheme, host, port, path*,
+        mimeType) -- the implicit-intent entry points reachable from other
+        apps. exported is a convenience map of each kind to just the names
+        that are reachable from other apps.
         """
         return _dump(analysis.apk_components(session_id))
 

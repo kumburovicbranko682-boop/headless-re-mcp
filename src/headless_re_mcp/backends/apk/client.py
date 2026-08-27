@@ -40,6 +40,21 @@ _COMPONENT_TAGS: tuple[tuple[str, str], ...] = (
     ("receivers", "receiver"),
     ("providers", "provider"),
 )
+# Intent-filters define implicit-intent and deep-link entry points; a benign
+# app has a handful per component, so these caps only ever bite pathological
+# or obfuscated manifests.
+_MAX_INTENT_FILTERS = 32
+_MAX_FILTER_ENTRIES = 64
+# The data-element attributes that shape a deep link, in URI order.
+_FILTER_DATA_ATTRS: tuple[str, ...] = (
+    "scheme",
+    "host",
+    "port",
+    "path",
+    "pathPrefix",
+    "pathPattern",
+    "mimeType",
+)
 
 
 def _android_attr(element: Any, name: str) -> str | None:
@@ -53,6 +68,20 @@ def _android_bool(value: str | None) -> bool | None:
     if value is None:
         return None
     return value.strip().lower() == "true"
+
+
+def _collect_named(parent: Any, tag: str) -> list[str]:
+    """Collect the ``android:name`` of each ``tag`` child, bounded and de-duped."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for node in parent.findall(tag):
+        if len(names) >= _MAX_FILTER_ENTRIES:
+            break
+        value = _android_attr(node, "name")
+        if value and value not in seen:
+            seen.add(value)
+            names.append(value)
+    return names
 
 
 class ApkError(RuntimeError):
@@ -358,6 +387,43 @@ class ApkClient:
             return {}
         return elements
 
+    @staticmethod
+    def _intent_filters(element: Any) -> list[JsonObject]:
+        """Extract each ``<intent-filter>``'s actions, categories, and data.
+
+        These are the implicit-intent and deep-link entry points an attacker
+        can reach: the action strings, the categories that gate them, and the
+        data specs (custom URL schemes, hosts, path patterns, MIME types).
+        Empty groups are dropped so a filter that only declares actions does
+        not carry three empty arrays.
+        """
+        filters: list[JsonObject] = []
+        try:
+            raw_filters = element.findall("intent-filter")
+        except Exception:  # noqa: BLE001 - defensive against non-lxml stand-ins
+            return filters
+        for raw in raw_filters[:_MAX_INTENT_FILTERS]:
+            actions = _collect_named(raw, "action")
+            categories = _collect_named(raw, "category")
+            data: list[JsonObject] = []
+            for node in raw.findall("data")[:_MAX_FILTER_ENTRIES]:
+                spec = {
+                    attr: _android_attr(node, attr)
+                    for attr in _FILTER_DATA_ATTRS
+                    if _android_attr(node, attr)
+                }
+                if spec:
+                    data.append(spec)
+            entry: JsonObject = {}
+            if actions:
+                entry["actions"] = actions
+            if categories:
+                entry["categories"] = categories
+            if data:
+                entry["data"] = data
+            filters.append(entry)
+        return filters
+
     def _component_details(
         self, apk: Any, plural: str, tag: str, names: list[str]
     ) -> tuple[list[JsonObject], list[str]]:
@@ -378,15 +444,13 @@ class ApkClient:
             element = elements.get(name)
             if element is not None:
                 explicit = _android_bool(_android_attr(element, "exported"))
-                try:
-                    has_filter = len(element.findall("intent-filter")) > 0
-                except Exception:  # noqa: BLE001 - defensive against odd trees
-                    has_filter = False
+                filters = self._intent_filters(element)
                 permission = _android_attr(element, "permission")
             else:
                 explicit = None
-                has_filter = False
+                filters = []
                 permission = None
+            has_filter = bool(filters)
             effective = explicit if explicit is not None else has_filter
             entry: JsonObject = {
                 "name": name,
@@ -394,6 +458,8 @@ class ApkClient:
                 "exported_explicit": explicit,
                 "has_intent_filter": has_filter,
             }
+            if filters:
+                entry["intent_filters"] = filters
             if permission:
                 entry["permission"] = permission
             details.append(entry)
