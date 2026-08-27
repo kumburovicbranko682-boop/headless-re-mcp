@@ -101,6 +101,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（r2 JSON 提取:括号洪泛、NaN/Infinity 注入与无上限扫描）
+
+- `backends/r2/mapping.py::parse_r2_json` 从 r2 -q0 的原始输出里为每个 `[`/`{` 位置尝试
+  `raw_decode`,该文本受被分析二进制影响:根文档一旦解析失败(1 MB 截断司空见惯),
+  扫描就会走进 JSON 字符串字面量内部、直接来自样本的括号串。三处问题一并修复:
+  深括号让 `raw_decode` 抛 `RecursionError`(上一轮排查按 `json.loads` 匹配,漏掉了
+  `raw_decode` 这个变体),原 except 只捕 `JSONDecodeError` 接不住;Python 的 json 默认
+  接受 `NaN`/`Infinity` 并产出浮点,下游严格消费方(Starlette `JSONResponse` 以
+  `allow_nan=False` 渲染、agent store 的规范化哈希)遇之即 500/报错,现同 `detection/die.py`
+  一样经 `parse_constant` 拒绝;扫描尝试次数补上 `_MAX_JSON_SCAN_ATTEMPTS`(256,同
+  die.py 的 `_MAX_JSON_OBJECT_SCANS`),否则捕获 RecursionError 之后百万级括号位点
+  乘以每次万层下降会把有界捕获变成平方级挂起。三条回归测试未修复时全部失败。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
