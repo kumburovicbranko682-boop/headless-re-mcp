@@ -428,6 +428,18 @@ class _FlowRecorder:
         with self._lock:
             return len(self.flows)
 
+    def dropped(self) -> int:
+        """Flows evicted from the ring since capture began.
+
+        count() reports only what is currently retained, so a caller polling
+        status (without fetching the flow list) reads a flow_count plateaued at
+        the ring capacity as the total ever seen. _seq counts every flow
+        recorded, so the difference is how many the ring has already discarded
+        -- the same number proxy.flows derives from the newest retained seq.
+        """
+        with self._lock:
+            return max(0, self._seq - len(self.flows))
+
     def retained_bytes(self) -> int:
         with self._lock:
             return self._retained_bytes
@@ -622,6 +634,11 @@ class ProxyBackend:
             "port": inst.port,
             "flow_count": inst.recorder.count(),
             "retained_max": _MAX_FLOWS,
+            # dropped so a flow_count sitting at retained_max is not read as the
+            # total ever captured: a long run evicts the oldest flows, and a
+            # caller polling only status (never fetching the list) would
+            # otherwise never learn the capture was lossy.
+            "dropped": inst.recorder.dropped(),
             "retained_bytes": inst.recorder.retained_bytes(),
             "retained_bytes_max": _MAX_RETAINED_BYTES,
         }

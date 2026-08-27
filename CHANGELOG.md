@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`proxy.status` 交代已被环形缓冲逐出的 flow 数）
+
+- `proxy.status` 回 `flow_count`(当前保留)与 `retained_max`(环容量),却从不说已经逐出了
+  多少条。长时间抓包会不断淘汰最旧的 flow,一个只轮询 `status`、不去拉 `proxy.flows` 列表的
+  调用方,看到 `flow_count` 卡在 `retained_max` 上,会把它当成"总共就抓到这么多",而实际可能
+  已丢弃上千条。`proxy.flows` 一直回 `dropped`,`status` 却没有。现给 `_FlowRecorder` 加
+  `dropped()`(`_seq` 记录过的总数减去当前保留数,与 `proxy.flows` 由最新 seq 推出的口径一致),
+  并在 `status` 回 `dropped`,于是抓包是否有损在这个轻量健康检查里就能看出来。文档串同步说明,
+  既有直测补上 `dropped == 0`,另加一条:容量 2、录 5 条 → `flow_count` 2、`dropped` 3。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
