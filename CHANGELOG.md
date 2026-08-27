@@ -43,6 +43,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 测试（APK DEX 分析：补上只测降级、从不测真 DEX 的空白）
+
+- **`apk.classes` / `methods` / `strings` / `xrefs` 从没在**合法 DEX** 上被驱动过。**
+  Android RE gate 造的合成 APK 里 `classes.dex` 是占位符，androguard 根本解析不了，
+  于是整套 DEX 分析只被断言「优雅降级不崩」，四个工具的成功路径无人跑——这正是
+  androguard API 漂移会藏身的盲区：某个方法被改名/删除（frida 17 那类破坏，如
+  `Analysis.get_classes` / `MethodAnalysis.get_xref_from` / `StringAnalysis.get_value`）
+  只在对真 DEX 跑时才在运行期炸。新增 `fixtures/android/classes.dex`（用 smali 2.5.2 从
+  同目录 `Hello.smali` 汇编出的 660 字节真 DEX）和 `test_apk_dex_analysis_gate.py`：把真
+  DEX 打进 APK，经 `AnalysisService` 全栈跑四个工具，钉住 `classes=[LHello;]`（外部
+  `Ljava/lang/Object;` 被过滤）、`methods` 含 `<init>/decryptSecret/main`、`strings` 含
+  `s3cr3t-flag-value`、`xrefs decryptSecret` 解出调用者 `LHello;->main`（正是
+  `get_xref_from()` 元组解包那条会随 API 漂移悄悄坏掉的路径）。androguard 4.1.4 上全栈实测
+  通过；缺 `android` extra 时明确 skip（skip≠pass）。同时以 API 内省确认客户端所用的
+  androguard 全部方法在 4.1.4 上仍在（唯一缺失的 `APK.get_requested_permissions` 早已被
+  `permissions` 的 try/except 回退兜住）。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
