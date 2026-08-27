@@ -115,6 +115,36 @@ def test_proxy_flows_names_has_more_and_dropped(monkeypatch: Any) -> None:
     assert "dropped" in doc
 
 
+def test_proxy_flows_flags_a_request_that_carried_a_body(monkeypatch: Any) -> None:
+    """A scan of the list should reveal which flows have a request payload.
+
+    Measured: a GET summary has no has_request_body key, while a flow whose
+    request carried raw_content is flagged has_request_body True. Without the
+    flag, finding the POST worth fetching means opening every flow in turn.
+    """
+    recorder = _FlowRecorder(capacity=10)
+    get_req = SimpleNamespace(method="GET", pretty_url="http://x/get", host="x")
+    post_req = SimpleNamespace(
+        method="POST",
+        pretty_url="http://x/login",
+        host="x",
+        raw_content=b'{"user":"alice"}',
+    )
+    response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+    recorder.response(SimpleNamespace(id="g", request=get_req, response=response))
+    recorder.response(SimpleNamespace(id="p", request=post_req, response=response))
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder)
+    )
+    rows = {row["id"]: row for row in backend.flows("s")["flows"]}
+    assert "has_request_body" not in rows["g"]
+    assert rows["p"]["has_request_body"] is True
+    doc = _tool_docstring("proxy.flows")
+    assert "has_request_body" in doc
+
+
 def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypatch: Any) -> None:
     """The catalog said headers and body, never where a spill actually lands.
 

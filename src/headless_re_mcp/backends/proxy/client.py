@@ -366,6 +366,11 @@ class _FlowRecorder:
                 "status": getattr(resp, "status_code", None),
                 "content_type": content_type,
             }
+            # Flag flows that carried a request payload so a scan of the list
+            # can point flow_get at the ones whose request body is the target,
+            # mirroring the web line's has_request_body hint.
+            if _content_len(req) > 0:
+                entry["has_request_body"] = True
             if omitted:
                 entry["body_omitted"] = True
             if method_truncated or url_truncated or host_truncated or type_truncated:

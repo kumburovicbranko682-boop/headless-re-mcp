@@ -59,7 +59,9 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List captured HTTP flows (method, url, status, content type).
 
         Answers with flows (id, seq, method, url, host, status, content_type),
-        count, total, offset, has_more, and dropped. body_omitted is set on a
+        count, total, offset, has_more, and dropped. A row that carried a
+        request payload is flagged has_request_body, so flow.get can be pointed
+        at the ones whose request body is the target. body_omitted is set on a
         row whose request/response body was over the retain cap. The list
         field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;

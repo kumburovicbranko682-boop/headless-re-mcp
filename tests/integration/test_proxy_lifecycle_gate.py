@@ -176,6 +176,7 @@ def test_proxy_actually_intercepts_and_records_a_request() -> None:
             post_flow = _poll(_captured_post)
             assert post_flow is not None, "the POST through the proxy was never recorded"
             assert post_flow["method"] == "POST"
+            assert post_flow.get("has_request_body") is True
             post_detail = backend.flow_get(
                 "gate-capture", post_flow["id"], Path(tempfile.mkdtemp())
             )

@@ -233,6 +233,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `web.network.get` 在 `requestWillBeSent` 标记带体请求、按需取回 `request_body`（含
   `request_body_truncated` / `request_body_path`，浏览器已不留载荷时回 `request_body_error`）。
   溢出的请求体也登记为可下载产物。活体门各加一条 POST 断言（本地 origin 回读发出的 JSON 载荷）。
+  两条摘要列表也各加 `has_request_body` 提示：`proxy.flows` 按 `request.raw_content` 是否非空标记，
+  `web.network.list` 沿用 CDP 的 `requestWillBeSent`——扫一眼列表即可把 `flow.get`/`network.get` 指向
+  真正带请求体的那几条，不必逐个打开。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
