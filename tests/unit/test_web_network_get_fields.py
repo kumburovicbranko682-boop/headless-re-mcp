@@ -81,6 +81,11 @@ def test_web_network_get_names_body_truncated_not_truncated(
     doc = _tool_docstring("web.network.get")
     assert "body_truncated" in doc
     assert "body_path" in doc
+    # The spilled body is registered as an artifact by the service layer, so
+    # the description must name the retrieval handle -- otherwise body_path
+    # reads as a dead end an unattended agent cannot reopen.
+    assert "artifact_id" in doc
+    assert "artifacts.read" in doc
 
 
 def test_web_network_get_keeps_the_documented_shape_when_the_body_is_missing(

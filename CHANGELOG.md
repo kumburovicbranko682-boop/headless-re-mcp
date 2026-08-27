@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.network.get` 已回 `artifact_id` 却漏在描述里,溢写的响应体看着只剩死路径）
+
+- `web.network.get` 的响应体超过内联上限、或是二进制体时会溢写到磁盘,后端回 `body_path`,服务层
+  (`service_web.web_network_get`)再用 `_register_capture` 把该文件登记成制品(kind=`web_response_body`)、
+  把 `artifact_id` 并进结果——完整体本就能用 `artifacts.read(artifact_id)` 按 `offset` 翻页取回。可**工具描述
+  只字未提 `artifact_id`**,只列了 `body_path`。裸路径在工具面上没有任何工具能打开,于是照描述办事的无人值守
+  agent 看到一个溢写体、只见 `body_path`,便以为截掉/未内联的部分取不回——而真正的取回把手 `artifact_id` 就在
+  同一份结果里,白白错过。这正是姊妹工具 `web.script.source`(已修)与 `proxy.flow.get`(已在描述里点名
+  `artifact_id`)的同一约定,唯独 `web.network.get` 自己的描述没兑现。
+- 现在 `web.network.get` 描述点明「只要体溢写就同时回 `body_path` 与 `artifact_id`」,并说明完整体用
+  `artifacts.read` 就着 `artifact_id` 翻页取回,而非守着打不开的 `body_path`。纯文档订正,行为不变。
+- 回归:补一条服务层端到端测试——伪后端把二进制体溢写成 `.bin`,`web_network_get` 经服务层回 `artifact_id`、
+  登记出 `web_response_body` 制品、`artifacts_read` 据此读回的字节以 PNG 魔数开头;并在既有字段测试里补断言,
+  描述必须点名 `artifact_id` 与 `artifacts.read`。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

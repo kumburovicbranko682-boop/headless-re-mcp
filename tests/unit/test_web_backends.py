@@ -132,6 +132,20 @@ class _FakeWebBackend:
         spill.write_text("var a=1;" * 100, encoding="utf-8")
         return {"scriptId": script_id, "source_path": str(spill), "truncated": True}
 
+    def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> dict:  # type: ignore[type-arg]
+        # A binary response body spills to a .bin the way the real backend does.
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        spill = artifact_dir / f"body-{request_id}.bin"
+        spill.write_bytes(b"\x89PNG\r\n\x1a\n" + b"9" * 64)
+        return {
+            "requestId": request_id,
+            "body": "",
+            "base64_encoded": True,
+            "body_truncated": False,
+            "body_bytes": spill.stat().st_size,
+            "body_path": str(spill),
+        }
+
     def close(self, session_id: str) -> dict:  # type: ignore[type-arg]
         return {"closed": False}
 
@@ -182,6 +196,37 @@ class TestCapturesAreReachableAndReclaimable:
 
             # Reachable: the id resolves to bytes the agent can actually read.
             read = service.artifacts_read(str(shot.data["artifact_id"]), offset=0, limit=8)
+            assert read.ok and read.data is not None
+            assert read.data["data"].startswith("89504e47")
+        finally:
+            service.close_all()
+
+    def test_spilled_network_body_is_registered_and_readable(self, tmp_path: Path) -> None:
+        """A spilled response body must come back with a reachable artifact_id.
+
+        The description promises a spilled body is retrievable with
+        artifacts.read; that only holds if the service registers body_path and
+        hangs artifact_id off the reply. Without it, body_path is a bare path
+        nothing on the tool surface opens.
+        """
+        service = self._service(tmp_path)
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+
+            got = service.web_network_get(session_id, "r1")
+            assert got.ok, got.error
+            assert got.data is not None
+            assert "artifact_error" not in got.data
+            assert got.data["artifact_id"]
+            assert got.data["body_path"]
+
+            kinds = {
+                item["kind"] for item in service.repository.list_artifacts(session_id)["artifacts"]
+            }
+            assert "web_response_body" in kinds
+
+            read = service.artifacts_read(str(got.data["artifact_id"]), offset=0, limit=8)
             assert read.ok and read.data is not None
             assert read.data["data"].startswith("89504e47")
         finally:
