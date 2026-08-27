@@ -350,6 +350,10 @@ class FridaClient:
                 "total": total,
                 "has_more": total > len(items),
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - frida raises many runtime errors
+            raise self._script_fault(exc) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -393,6 +397,10 @@ class FridaClient:
                 "count": len(items),
                 "has_more": has_more,
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - frida raises many runtime errors
+            raise self._script_fault(exc) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -414,6 +422,10 @@ class FridaClient:
                 "encoding": "hex",
                 "data": data.hex(),
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - frida raises many runtime errors
+            raise self._script_fault(exc) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -454,10 +466,10 @@ class FridaClient:
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001
+            _detach_all(sessions)
             if _is_timeout(exc):
-                _detach_all(sessions)
                 raise _timeout_error(deadline) from exc
-            raise
+            raise FridaError("backend_error", f"hook template failed: {exc}") from exc
 
     def _attach_local(self, pid: int, *, timeout: float = _PROBE_TIMEOUT_S) -> Any:
         deadline = _bound_timeout(timeout)
@@ -485,6 +497,24 @@ class FridaClient:
             raise FridaError("permission_denied", "pid not allowed", pid=pid)
         if not self._available or self._frida is None:
             raise FridaError("capability_unavailable", "frida Python module is not installed")
+
+    def _script_fault(self, exc: Exception) -> FridaError:
+        """Map a raw frida script/RPC error to a structured backend fault.
+
+        ``_attach_local`` already maps its own failures, but the
+        ``create_script`` / ``load`` / ``exports_sync`` calls that follow ran in
+        a bare try/finally on the local path. A frida fault there escaped raw --
+        and an unmapped ``memory.read`` address is the everyday one, because
+        probing memory that is not mapped is a normal outcome of the tool, not a
+        server defect. Uncaught, it reached the service envelope's
+        ``except BaseException`` and was filed as an internal_error with a logged
+        incident, casting a backend result as a server bug (the same miscasting
+        the r2 launch path and the bounded cancel/timeout envelope each grew a
+        fix for). The device paths already remap here; the local ones did not.
+        """
+        if _is_timeout(exc):
+            return _timeout_error(_PROBE_TIMEOUT_S)
+        return FridaError("backend_error", f"frida script failed: {exc}")
 
     # ------------------------------------------------------------------
     # Device-aware operations (USB / emulator / remote). The single-pid

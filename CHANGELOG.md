@@ -24,6 +24,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（frida 本地脚本异常被误报成 internal_error 事故）
+
+- `frida.memory.read` / `frida.modules` / `frida.exports` / 本地 `frida.hook.template` 里，
+  `_attach_local` 已把 attach 失败映射成 `FridaError`，但其后的 `create_script` / `load` /
+  `exports_sync` 调用是在裸 `try/finally`（只 detach，无 except）里跑的。frida 抛出的运行时
+  错误从这里原样逃逸，被服务层信封的 `except BaseException` 接住，经 `_failure` 落到
+  `record_exception`——铸出一个事故 id、往事故日志写一条 traceback，并回 `internal_error`
+  （不可重试、无可操作码）。而读未映射地址恰恰是最常见的一种：探测没有映射的内存本就是这
+  工具的正常结果、不是服务缺陷，NativePointer read 修好之后这条失败路径变得随手可达，每次读
+  坏地址都刷一条假事故。这正是 r2 启动路径、bounded 取消/超时信封等处一直在收敛的“把后端结
+  果误报成服务器 bug”反模式；device 侧的 `java_enumerate` / `spawn` / `hook_template_device`
+  早已把通用异常映射成 `backend_error`，本地三个读取方法与本地 hook 却没有。现新增
+  `_script_fault` 把脚本层异常统一映射：名字或消息含 timeout 的归 `timeout`，其余归
+  `backend_error`；四处都在 `finally` 前补 `except FridaError: raise` / `except Exception` 两支
+  （`exports` 的“非 dict 载荷”FridaError 因此原样透传，不被重包）。回归测试覆盖读未映射地址、
+  frida RPC 超时、modules/exports 枚举失败、本地 hook 脚本加载失败，逐一断言得到结构化
+  `backend_error`/`timeout` 且会话已 detach。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
