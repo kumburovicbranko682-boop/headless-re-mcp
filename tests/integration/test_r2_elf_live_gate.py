@@ -229,6 +229,50 @@ def test_r2_sections_map_on_a_real_elf(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_r2_symbols_list_the_whole_table_on_a_real_elf(tmp_path: Path) -> None:
+    """The full symbol table (isj) had no live ELF coverage.
+
+    r2.symbols is a separate service tool; nothing else drives isj. Prove it
+    returns parsed items with the unified Address mapping on a real binary: the
+    functions we wrote must all appear as FUNC symbols with usable VAs, and the
+    table must be a superset of the export list -- it is where local symbols and
+    the FUNC entries that never made the export table are read.
+    """
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live gate not run (skip != pass)")
+    binary = _compile_elf(tmp_path)
+
+    symbols = client.run(binary, ["isj"], timeout=60.0)
+    assert symbols["parsed"] is True
+    assert symbols.get("count", 0) >= 1
+
+    for want in ("helper", "compute", "main"):
+        found = _named(symbols["items"], want)
+        assert found is not None, (
+            f"radare2 did not report {want} in the symbol table: "
+            f"{[s.get('name') for s in symbols['items']]}"
+        )
+        address = found.get("address")
+        assert isinstance(address, dict) and isinstance(address.get("va"), int)
+        assert address["va"] > 0
+        assert "rva" not in address, "ELF symbols must not fabricate a PE RVA"
+        # These are our own functions, so radare2 must type them as FUNC and not
+        # flag them imported -- that is what separates them from libc thunks.
+        assert str(found.get("type", "")).upper() == "FUNC"
+        assert found.get("is_imported") is not True
+
+    # The symbol table is the superset r2.exports slices: every export must also
+    # be a symbol, so isj cannot report fewer entries than iEj.
+    exports = client.run(binary, ["iEj"], timeout=60.0)
+    assert exports["parsed"] is True
+    assert symbols["count"] >= exports.get("count", 0), (
+        "isj must be a superset of iEj; a symbol table smaller than the export "
+        "list means isj was not the full table"
+    )
+
+
+@pytest.mark.integration
 def test_r2_rejects_a_command_off_the_whitelist_even_live(tmp_path: Path) -> None:
     client = R2Client()
     if not client.available:

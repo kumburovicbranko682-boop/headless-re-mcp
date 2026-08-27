@@ -118,6 +118,24 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_sections(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.symbols")
+    def r2_symbols(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Full symbol table radare2 reads from the binary.
+
+        Runs ``isj``. Answers with items, each carrying name, realname, type
+        (FUNC/OBJ/SECTION/FILE...), bind (GLOBAL/LOCAL/WEAK), size, vaddr,
+        paddr and is_imported, plus address (va/rva/module) built from vaddr,
+        and count. This is the superset r2.imports and r2.exports each slice:
+        it lists local and static symbols too, so it is where a stripped-vs-not
+        judgement and the FUNC entries that never made the export table live.
+        There is no integer address field. Read items_truncated, items_total
+        and items_limit when the list filled the cap (4096). There is no
+        symbols, truncated or has_more field.
+        """
+        return _dump(analysis.r2_symbols(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,

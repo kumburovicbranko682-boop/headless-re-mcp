@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **271（152 只读 / 119 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **272（153 只读 / 119 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -376,6 +376,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   断言落盘字节与打包内容逐字节相等、`size`/`sha256`/`category` 正确、有 `artifact_id`，且抽一个未列出的路径按 `not_found`
   拒绝（缺 androguard 时 skip≠pass）；单测覆盖真实字节落盘、路径压平（嵌套条目落成扁平名、不越界）、未列出/空条目的拒绝、
   以及结果不夹带内联字节。该工具计入写效果，工具面因此 270→271。
+- **radare2 线只回报导入和导出，看不到完整符号表**。r2 线能列函数（`aflj`）、导入（`iij`）、导出（`iEj`），
+  却没有工具回报 `is` 符号表：导入是外部引用、导出是对外可见项，各只切一片，而本地/静态符号、没进导出表的 `FUNC`、
+  以及「这文件到底 strip 没 strip」的判断都落在完整符号表里，分析者只能靠 r2.functions 侧面猜。新增只读的
+  `r2.symbols`：跑 `isj`，回 `items`，每条带 `name`、`realname`、`type`（FUNC/OBJ/SECTION/FILE…）、`bind`
+  （GLOBAL/LOCAL/WEAK）、`size`、`vaddr`、`paddr`、`is_imported`，并由 `vaddr` 走与其它列表工具相同的统一 Address
+  富化给出 `address`（va/rva/module）、`count`；列表填满 4096 上限时标 `items_truncated`/`items_total`/`items_limit`，
+  不另造 `symbols`/`truncated`/`has_more` 字段。活体门用系统 C 编译器现编一个 `-no-pie` ELF，断言 `r2.symbols` 取回
+  我们写的 `helper`/`compute`/`main` 三个 `FUNC` 符号、其 `address.va` 为正、ELF 不伪造 PE 的 `rva`，且符号表是导出表的
+  超集（缺 r2 或缺编译器时 skip≠pass）；单测覆盖 `isj` 条目到 Address 的映射、`is_imported`/`bind`/`type` 原样透传、
+  列表截断标注、以及工具描述如实点名 `isj`/`is_imported`/`items_truncated`。该工具计入读效果，工具面因此 271→272。
 - **JS/WASM 输出超过 400 KB 就被截断且无从取回**。`js.deobfuscate`/`js.beautify`（webcrack）、`wasm.wat`
   （wasm2wat）、`wasm.info`（wasm-objdump）都只把结果内联返回、超 400 KB 直接切掉——而一份反混淆后的打包脚本常有
   几 MB，一个非平凡 WASM 模块的 WAT 反汇编动辄上兆，于是分析者拿到的是残缺的前 400 KB、且没有任何办法读到其余部分
