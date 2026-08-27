@@ -7,6 +7,7 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -52,12 +53,28 @@ def test_web_cdp_open_and_inspect() -> None:
                 f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
             )
         try:
+            # The page parses an inline script and logs a line during load.
+            # Both arrive over CDP events that the recorder buffers, so this
+            # asserts capture actually happened, not merely that the read call
+            # returned -- a silent stop in recording (a renamed CDP event on a
+            # browser bump) would otherwise pass while capturing nothing.
             scripts = service.web_scripts(session_id)
             assert scripts.ok, scripts.error
             assert isinstance(scripts.data["scripts"], list)
+            assert scripts.data["count"] >= 1, "no parsed script was captured"
 
-            console = service.web_console(session_id)
-            assert console.ok, console.error
+            # consoleAPICalled is dispatched asynchronously on the CDP session,
+            # so it can trail domcontentloaded by a moment; poll briefly.
+            logged = ""
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                console = service.web_console(session_id)
+                assert console.ok, console.error
+                logged = " ".join(str(item.get("text", "")) for item in console.data["console"])
+                if "gate-ready" in logged:
+                    break
+                time.sleep(0.1)
+            assert "gate-ready" in logged, f"console capture missed the page log: {logged!r}"
 
             dom = service.web_dom_snapshot(session_id)
             assert dom.ok, dom.error
