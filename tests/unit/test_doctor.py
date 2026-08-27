@@ -101,6 +101,62 @@ def test_radare2_probe_falls_back_to_path(
     assert probe.status == ProbeStatus.DETECTED
 
 
+def test_radare2_probe_detects_the_radare2_binary_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host with only the ``radare2`` binary must not read as MISSING.
+
+    R2Client._discover accepts r2/rizin/radare2, so a machine that installed the
+    long-named ``radare2`` binary (with no ``r2``/``rizin`` alias on PATH) runs
+    every r2.* tool. The doctor probe consulted only ("r2", "rizin"), so it
+    reported the backend missing and the r2.pipe capability permanently
+    unavailable while the tools worked -- the same doctor/tool split the
+    configured-path fix closed, one binary name later.
+    """
+    on_path = tmp_path / "radare2"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(on_path) if cmd == "radare2" else None,
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
+
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == "radare2")
+    assert probe.status == ProbeStatus.DETECTED
+
+
+def test_radare2_probe_candidates_cover_every_name_the_client_discovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """doctor and R2Client must agree on which binary names count as radare2.
+
+    Each name the client will launch is fed one at a time as the only thing on
+    PATH; the doctor probe has to report DETECTED for all of them, or a host
+    with just that binary sees the split above. Pins the two name lists together
+    so a future rename on either side cannot drift silently.
+    """
+    import headless_re_mcp.backends.r2.client as r2_client
+
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
+
+    def only(name: str) -> object:
+        binary = tmp_path / name
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        return lambda cmd: str(tmp_path / cmd) if cmd == name else None
+
+    for candidate in ("r2", "rizin", "radare2"):
+        which = only(candidate)
+        monkeypatch.setattr(doctor_module.shutil, "which", which)
+        monkeypatch.setattr(r2_client.shutil, "which", which)
+
+        probe = next(p for p in run_doctor(settings).probes if p.name == "radare2")
+        assert probe.status == ProbeStatus.DETECTED, candidate
+        assert r2_client.R2Client().available, candidate
+
+
 def test_radare2_probe_missing_when_neither_configured_nor_on_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

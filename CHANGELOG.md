@@ -543,6 +543,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   缺失、工具却能用——与 webcrack 解析修复同一类 doctor/工具不一致（这次是 doctor 假阴性）。
   改用 `probe_optional_tool("radare2", …, "r2", ("r2","rizin"))`，与 adb / jadx / apktool /
   webcrack / wabt 一致：先认配置路径，再回落 PATH。
+- **同一 radare2 探针的 PATH 回落漏了 `radare2` 这个二进制名**。`R2Client._discover` 认
+  `("r2", "rizin", "radare2")` 三个名字，只装了全名 `radare2`（PATH 上没有 `r2`/`rizin`
+  别名）的机器 r2.* 工具全部能跑，可探针只查 `("r2", "rizin")`，于是 doctor 报 radare2
+  缺失、`r2.pipe` 能力永远 `missing`，工具却是好的——正是上一条 doctor/工具不一致，换了个
+  二进制名再犯一次。探针候选补齐为 `("r2", "rizin", "radare2")`，与客户端发现名字对齐；新增
+  回归把两侧名字列表逐个钉在一起，任一侧改名都会当场失败。
 - **Ghidra headless 会把操作者的 `JAVA_TOOL_OPTIONS` 直接覆盖掉**。`_run_headless`
   过去 `env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"`，把操作者为代理、编码或 JDK 17+
   Ghidra 所需的 `--add-opens` 设的值整个抹掉，在那些机器上悄悄让 analyzeHeadless 跑不起来。

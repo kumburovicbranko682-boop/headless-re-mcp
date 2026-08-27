@@ -186,7 +186,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
             if on_windows
             else windows_only("scylla", "Scylla dump/IAT adapter requires Windows")
         ),
-        probe_optional_tool("radare2", current, "r2", ("r2", "rizin")),
+        probe_optional_tool("radare2", current, "r2", ("r2", "rizin", "radare2")),
         probe_ghidra(current),
         probe_python_module("frida", "frida"),
         probe_command("java", ("java",)),
