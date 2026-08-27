@@ -762,7 +762,8 @@ class WebBackend:
                         const text = typeof html === "string" ? html : "";
                         return {
                           html: text.length > cap ? text.slice(0, cap) : text,
-                          truncated: text.length > cap
+                          truncated: text.length > cap,
+                          childFrames: document.querySelectorAll("iframe,frame").length
                         };
                     }""",
                     _MAX_INLINE_BODY,
@@ -773,11 +774,23 @@ class WebBackend:
                 raise WebError("backend_error", "dom snapshot returned no document")
             html = clipped.get("html")
             text = html if isinstance(html, str) else ""
+            # outerHTML of the top document carries the <iframe>/<frame> tags but
+            # not their separate contentDocuments, so a page that renders inside a
+            # frame returns near-empty HTML that reads as "the page has almost no
+            # DOM". Report how many top-level frames the snapshot did not descend
+            # into, so their omitted content is visible rather than silent.
+            raw_frames = clipped.get("childFrames")
+            child_frames = (
+                int(raw_frames)
+                if isinstance(raw_frames, (int, float)) and not isinstance(raw_frames, bool)
+                else 0
+            )
             return {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
                 "html": text[:_MAX_INLINE_BODY],
                 "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
+                "child_frames": child_frames,
             }
 
         return self._runner(handle).call(work)

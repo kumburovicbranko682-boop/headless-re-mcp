@@ -60,6 +60,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（`web.dom.snapshot` 交代没进去的子框架,空 DOM 不再冒充完整）
+
+- `web.dom.snapshot` 回的 `html` 取的是顶层文档的 `outerHTML`,里面带着 `<iframe>`/`<frame>`
+  标签,却不含它们各自独立的 `contentDocument`。一个把真正内容都渲染在 iframe 里的页面
+  (嵌入式应用很常见),顶层 HTML 因此小得几乎为空,还配着 `truncated: false`——读起来就像
+  "这页几乎没有 DOM",而内容其实全在没被抓进来的子框架里。现快照顺带数出顶层文档里的
+  iframe/frame 元素个数,以 `child_frames` 回出(未进入这些框架的独立文档),于是小 HTML 会被
+  理解成"内容在未抓取的框架中"而非"页面没有 DOM";无框架时为 0。文档串同步说明,并把既有
+  直测补上 `child_frames == 0` 与文档断言,另加一条:三个子框架、顶层 HTML 极小、`truncated`
+  为假时 `child_frames` 为 3。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
