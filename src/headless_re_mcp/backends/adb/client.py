@@ -10,6 +10,7 @@ package name or serial can never smuggle extra arguments.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import stat
@@ -245,6 +246,34 @@ def _bind_open_transport(dev: Any, timeout: float) -> Any:
     return dev
 
 
+def _adb_server_endpoint() -> tuple[str, int]:
+    """The adb host server address, honoring the standard adb env overrides.
+
+    ``adb`` itself, Android Studio, and adbutils all read
+    ``ANDROID_ADB_SERVER_HOST`` / ``ANDROID_ADB_SERVER_PORT``; hardcoding
+    127.0.0.1:5037 here meant an operator whose server listens elsewhere --
+    multiple emulator setups and containerised CI commonly move the port --
+    could drive it with every adb tool except device.*. An unusable port
+    value is refused with the variable's name rather than silently ignored:
+    the operator set it on purpose, and falling back to 5037 would aim
+    commands at a server they explicitly moved away from.
+    """
+    host = (os.environ.get("ANDROID_ADB_SERVER_HOST") or "").strip() or "127.0.0.1"
+    raw_port = (os.environ.get("ANDROID_ADB_SERVER_PORT") or "").strip()
+    if not raw_port:
+        return host, 5037
+    try:
+        port = int(raw_port)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise AdbError(
+            "invalid_params",
+            f"ANDROID_ADB_SERVER_PORT must be a TCP port (1..65535), got {raw_port!r}",
+        )
+    return host, port
+
+
 def _device_info_row(info: Any) -> JsonObject:
     serial = str(getattr(info, "serial", "") or "")
     state = str(getattr(info, "state", "") or "")
@@ -376,16 +405,13 @@ class AdbBackend:
         if self._adb_path is not None:
             # adbutils honours this env var to find the adb executable and to
             # auto-spawn a server if one is not already running.
-            import os
-
             os.environ.setdefault("ADBUTILS_ADB_PATH", str(self._adb_path))
+        host, port = _adb_server_endpoint()
         try:
             try:
-                return self._adbutils.AdbClient(
-                    host="127.0.0.1", port=5037, socket_timeout=socket_timeout
-                )
+                return self._adbutils.AdbClient(host=host, port=port, socket_timeout=socket_timeout)
             except TypeError:
-                return self._adbutils.AdbClient(host="127.0.0.1", port=5037)
+                return self._adbutils.AdbClient(host=host, port=port)
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001 - adbutils raises broad types

@@ -155,8 +155,8 @@ jobs:
   linux-integration:
     # The self-hosted Windows runner (windows-integration.yml) is the only place
     # tests/integration ran, so every portable non-PE gate -- Android/androguard,
-    # Frida, radare2, Ghidra, UPX unpack, wabt, mitmproxy, the web console -- was
-    # only ever exercised on Windows. This job tells the Linux half of that story on a
+    # Frida, radare2, Ghidra, UPX unpack, wabt, mitmproxy, the adb device line,
+    # the web console -- was only ever exercised on Windows. This job tells the Linux half of that story on a
     # stock GitHub runner using none but FOSS backends, matching this workflow's
     # "no proprietary backends required" promise. Gates run for real where their
     # backend installs and skip honestly (-rs prints why; skip != pass) where it
@@ -178,9 +178,11 @@ jobs:
           java-version: "21"
 
       - name: Install FOSS analysis backends
+        # adb is the host server the device.* gate talks to; it needs no
+        # attached device (the gate starts a private server on a free port).
         run: |
           sudo apt-get update
-          sudo apt-get install -y radare2 upx-ucl wabt apktool apksigner
+          sudo apt-get install -y radare2 upx-ucl wabt apktool apksigner adb
 
       - name: Create an Android debug keystore for the apk.sign gate
         # apk.sign defaults to the standard Android debug keystore; keytool ships

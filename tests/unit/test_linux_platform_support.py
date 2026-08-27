@@ -182,7 +182,7 @@ def test_linux_installer_backend_provisioning_is_opt_in_and_mirrors_ci(
     install_args = lines[1].split()
     assert install_args[:2] == ["install", "-y"]
     packages = set(install_args[2:])
-    assert {"radare2", "upx-ucl", "wabt", "apktool", "apksigner"} <= packages
+    assert {"radare2", "upx-ucl", "wabt", "apktool", "apksigner", "adb"} <= packages
 
     repo_root = Path(__file__).resolve().parents[2]
     ci_text = (repo_root / ".github" / "workflows" / "ci.yml").read_text(

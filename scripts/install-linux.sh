@@ -48,12 +48,12 @@ if [[ "${HEADLESS_RE_INSTALL_BACKENDS:-0}" == "1" ]]; then
     if [[ "$(id -u)" != "0" ]]; then
       apt=(sudo apt-get)
     fi
-    if ! { "${apt[@]}" update && "${apt[@]}" install -y radare2 upx-ucl wabt apktool apksigner; }; then
+    if ! { "${apt[@]}" update && "${apt[@]}" install -y radare2 upx-ucl wabt apktool apksigner adb; }; then
       echo "WARN: some FOSS backends failed to install; doctor will show which." >&2
     fi
   else
     echo "HEADLESS_RE_INSTALL_BACKENDS=1 needs apt-get; install radare2, wabt," >&2
-    echo "UPX, apktool and apksigner with your distribution's package manager." >&2
+    echo "UPX, apktool, apksigner and adb with your distribution's package manager." >&2
   fi
 fi
 
