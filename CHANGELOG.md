@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **281（161 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **282（162 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -523,6 +523,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   wat2wasm 时把带 import/func/memory/data 的 WAT 现编成真模块，交叉校验 type/import/function/memory/export/code/data 各段都在
   布局里且偏移+大小不越界（缺 wabt 时 skip≠pass）。单测手工构造模块字节覆盖 id/name/size/offset 布局（含手算偏移）、custom
   段的 `custom_name`/`payload_size`、未知 id 记名、4096 截断、坏 magic 与谎报长度的拒绝。该工具计入读效果，工具面因此 280→281。
+- **radare2 线能列符号、导入、导出、重定位，却没有「这东西链接了什么」——依赖库清单本身**。`r2.imports` 列的是被拉进来的
+  单个符号，但没有工具回报二进制依赖的共享库清单：ELF 的 `DT_NEEDED`（`libc.so.6`…）、PE 的导入 DLL（`KERNEL32.dll`…）。
+  这是比导入高一层的分诊视角——先看它链接了谁，再看那些库提供了哪些符号。新增只读的 `r2.libraries`，跑 `ilj`。`ilj` 回的是
+  一个 JSON *字符串* 数组（不是共享 enrich 路径会整形的对象数组，那条路径只把对象数组变成带 Address 的 items），因此在后端
+  单独解析该字符串清单。回 `libraries`（库名字符串列表）与 `count`；静态链接的二进制回空列表——空本身就是结论（装载期不解析
+  任何东西）。另回 `total`；库数超过 4096（恶意堆一堆）时标 `libraries_truncated`/`libraries_total`/`libraries_limit`。没有
+  `address`/`items`/`has_more` 字段：库名不是地址。为兼容将来把每个库包成对象的 r2 版本，对象条目按 `name`/`library` 字段取名。
+  `ilj` 也纳入后端命令白名单。活体门在真 ELF 上跑：动态链接件的依赖清单里必有 `libc`、`module` 等于文件名；同一份源码用
+  `-static` 现编（缺静态工具链时该分支 skip≠pass），依赖清单必为空。单测 mock `R2Client.run` 喂入 `ilj` 原始输出，钉住字符串
+  清单整形、静态空列表、对象包裹格式的兼容、4096 截断、`ilj` 过白名单、docstring 形状。该工具计入读效果，工具面因此 281→282。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

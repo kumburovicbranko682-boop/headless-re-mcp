@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
-from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.backends.r2.mapping import enrich_r2_payload, parse_r2_json
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
+# The same 4096 bound the enrich path uses for object lists; a real dependency
+# list is a handful of names, so anything near this is a hostile fan-out.
+_MAX_LIBRARIES = 4096
 _ALLOWED = frozenset(
     {
         "i",
@@ -28,6 +31,7 @@ _ALLOWED = frozenset(
         "iSj",
         "isj",
         "irj",
+        "ilj",
         "pdj",
         "axj",
         "aa",
@@ -115,6 +119,52 @@ class R2Client:
         data = dict(data)
         data["address"] = address
         return enrich_r2_payload(data, binary=binary)
+
+    def libraries(self, binary: Path, *, timeout: float = 30.0) -> JsonObject:
+        """Linked shared libraries the binary depends on (``ilj``).
+
+        ELF: the ``DT_NEEDED`` list (``libc.so.6`` ...). PE: the imported DLLs.
+        This is the "what does it link against" view, distinct from r2.imports
+        which lists the individual symbols pulled in. ``ilj`` is a JSON array of
+        library-name strings, so the shared enrich path (which shapes arrays of
+        objects into addressed items) leaves it empty; the string list is parsed
+        here instead. A statically linked binary answers with an empty list.
+        """
+        data = self.run(binary, ["ilj"], timeout=timeout)
+        parsed = parse_r2_json(str(data.get("raw") or ""))
+        names: list[str] = []
+        total = 0
+        truncated = False
+        if isinstance(parsed, list):
+            for entry in parsed:
+                if isinstance(entry, str):
+                    name = entry
+                elif isinstance(entry, dict):
+                    # Newer r2 builds may wrap each library in an object; take a
+                    # name/library field so the tool survives that format shift.
+                    candidate = entry.get("name") or entry.get("library")
+                    name = str(candidate) if candidate else ""
+                else:
+                    name = ""
+                if not name:
+                    continue
+                total += 1
+                if len(names) >= _MAX_LIBRARIES:
+                    truncated = True
+                    continue
+                names.append(name)
+        result: JsonObject = {
+            "libraries": names,
+            "count": len(names),
+            "total": total,
+            "module": binary.name,
+            "commands": ["ilj"],
+        }
+        if truncated:
+            result["libraries_truncated"] = True
+            result["libraries_total"] = total
+            result["libraries_limit"] = _MAX_LIBRARIES
+        return result
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
         if not self.available or self.executable is None:

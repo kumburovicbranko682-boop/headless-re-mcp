@@ -170,6 +170,25 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_relocations(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.libraries")
+    def r2_libraries(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Shared libraries the binary is linked against.
+
+        Runs ``ilj``. Answers with libraries (a list of library-name strings:
+        the ELF ``DT_NEEDED`` list such as ``libc.so.6``, or the imported DLLs
+        of a PE such as ``KERNEL32.dll``) and count. This is the "what does it
+        link against" view -- the dependency list, one level up from r2.imports,
+        which names the individual symbols those libraries provide. A statically
+        linked binary answers with an empty list, which is itself the finding
+        (nothing is resolved at load time). Also total; libraries_truncated with
+        libraries_total/libraries_limit mark a hostile fan-out over the cap
+        (4096). There is no address, items or has_more field: a library name is
+        not an address.
+        """
+        return _dump(analysis.r2_libraries(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,

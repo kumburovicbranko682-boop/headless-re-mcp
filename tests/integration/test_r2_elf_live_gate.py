@@ -398,6 +398,47 @@ def test_r2_relocations_list_the_fixup_table_on_a_real_elf(tmp_path: Path) -> No
 
 
 @pytest.mark.integration
+def test_r2_libraries_list_the_linked_dependencies_on_a_real_elf(tmp_path: Path) -> None:
+    """The linked-library list (ilj) had no live ELF coverage.
+
+    r2.libraries parses ilj's JSON string array itself (the shared enrich path
+    only shapes object arrays), so exercise that parsing on a real binary: a
+    dynamically linked ELF must name libc.so.6 in its DT_NEEDED list, and the
+    same fixture built ``-static`` must come back with an empty list -- the
+    finding that nothing is resolved at load time.
+    """
+    client = R2Client()
+    if not client.available:
+        pytest.skip("radare2/rizin not installed — live gate not run (skip != pass)")
+    binary = _compile_elf(tmp_path)
+
+    dynamic = client.libraries(binary, timeout=60.0)
+    assert dynamic["count"] >= 1, "a dynamically linked ELF must list dependencies"
+    assert dynamic["module"] == binary.name
+    assert any("libc" in name for name in dynamic["libraries"]), (
+        f"expected libc in the dependency list: {dynamic['libraries']}"
+    )
+
+    # The static counterpart resolves libc at link time, so ilj is empty. The
+    # -static toolchain is not always installed; a build failure is a skip, not
+    # a false assertion.
+    compiler = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    assert compiler is not None  # _compile_elf would have skipped otherwise
+    static_bin = tmp_path / "r2demo_static"
+    built = subprocess.run(  # noqa: S603 - fixed argv, compiler discovered on PATH
+        [compiler, "-O0", "-no-pie", "-static", "-o", str(static_bin), str(tmp_path / "r2demo.c")],
+        capture_output=True,
+        timeout=120,
+    )
+    if built.returncode == 0 and static_bin.is_file():
+        static = client.libraries(static_bin, timeout=60.0)
+        assert static["libraries"] == [], (
+            f"a static binary links nothing at load: {static['libraries']}"
+        )
+        assert static["count"] == 0
+
+
+@pytest.mark.integration
 def test_r2_rejects_a_command_off_the_whitelist_even_live(tmp_path: Path) -> None:
     client = R2Client()
     if not client.available:
