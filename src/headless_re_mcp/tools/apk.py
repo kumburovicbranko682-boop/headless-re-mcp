@@ -97,6 +97,23 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.class_info")
+    def apk_class_info(session_id: str, class_name: str) -> dict[str, Any]:
+        """Report one class's hierarchy and shape (dotted or Lsmali/form).
+
+        Where apk.classes lists names and apk.class_fields / apk.methods list
+        members, this answers "what is this class" in one call: superclass (the
+        smali name it extends -- the fastest way to spot an Activity, Service or
+        a custom base), interfaces (implemented interface names -- callback and
+        IPC contracts), access (the flag string), is_external (declared
+        elsewhere and only referenced here), is_android_api (androguard's guess
+        that it is a framework class), num_methods and num_fields. Class names
+        are unique in the DEX, so this describes exactly one class or answers
+        not_found. interfaces is sorted and capped with interfaces_truncated;
+        interfaces_count is the true total.
+        """
+        return _dump(analysis.apk_class_info(session_id, class_name))
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,

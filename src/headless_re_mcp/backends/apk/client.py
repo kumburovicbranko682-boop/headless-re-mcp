@@ -349,6 +349,50 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def class_info(self, path: Path, class_name: str) -> JsonObject:
+        """Report one class's hierarchy and shape.
+
+        apk.classes lists names and apk.class_fields / apk.methods list members;
+        this answers "what is this class" in one call: superclass (the smali name
+        it extends, the fastest way to recognise an Activity, Service or a custom
+        base), interfaces (implemented interface names -- callback and IPC
+        contracts), access (the flag string, "public final" etc.), is_external
+        (declared elsewhere and only referenced, so members are not in this APK),
+        is_android_api (androguard's guess that it is a framework class),
+        num_methods and num_fields. Accepts the dotted or Lsmali/form name.
+        Class names are unique in the DEX, so this describes exactly one class or
+        answers not_found. interfaces is sorted and capped with
+        interfaces_truncated; interfaces_count is the true total.
+        """
+        parsed = self._parsed(path)
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        found = None
+        for klass in parsed.analysis.get_classes():
+            if klass.name == target or klass.name == _dotted_to_smali(target):
+                found = klass
+                break
+        if found is None:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        interfaces = sorted(str(name) for name in (found.implements or []))
+        try:
+            access = str(found.get_vm_class().get_access_flags_string())
+        except Exception:  # noqa: BLE001 - external classes have no flag string
+            access = ""
+        return {
+            "class_name": str(found.name),
+            "superclass": str(found.extends),
+            "interfaces": interfaces[:_MAX_COMPONENT_NAMES],
+            "interfaces_count": len(interfaces),
+            "interfaces_truncated": len(interfaces) > _MAX_COMPONENT_NAMES,
+            "access": access,
+            "is_external": bool(found.is_external()),
+            "is_android_api": bool(found.is_android_api()),
+            "num_methods": int(found.get_nb_methods()),
+            "num_fields": len(found.get_fields()),
+        }
+
     def methods(
         self,
         path: Path,
