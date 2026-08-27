@@ -41,6 +41,10 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A browser caps a single cookie near 4 KiB; bound the value at that so one
+# hostile cookie cannot balloon the reply, and flag when it was cut.
+_MAX_COOKIE_VALUE_BYTES = 4 * 1024
+_MAX_COOKIES_PAGE = 500
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -748,6 +752,66 @@ class WebBackend:
         if spill is not None:
             result["source_path"] = str(spill)
         return result
+
+    def cookies(self, session_id: str, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> list[Any]:
+            try:
+                raw = handle.context.cookies()
+            except Exception as exc:  # noqa: BLE001 - driver may be gone
+                raise WebError("backend_error", f"cookie read failed: {exc}") from exc
+            return list(raw) if raw else []
+
+        cookies = self._runner(handle).call(work)
+
+        # A cookie jar has no guaranteed order; sort so a page is stable across
+        # calls the way every other paginated web reader is.
+        def _key(cookie: Any) -> tuple[str, str, str]:
+            if not isinstance(cookie, dict):
+                return ("", "", "")
+            return (
+                str(cookie.get("domain", "")),
+                str(cookie.get("path", "")),
+                str(cookie.get("name", "")),
+            )
+
+        cookies.sort(key=_key)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_COOKIES_PAGE))
+        window = cookies[start : start + cap]
+        entries: list[JsonObject] = []
+        for cookie in window:
+            if not isinstance(cookie, dict):
+                continue
+            name, _ = _bounded_metadata(cookie.get("name"), _MAX_METADATA_BYTES)
+            value, value_truncated = _bounded_metadata(cookie.get("value"), _MAX_COOKIE_VALUE_BYTES)
+            domain, _ = _bounded_metadata(cookie.get("domain"), _MAX_METADATA_BYTES)
+            path, _ = _bounded_metadata(cookie.get("path"), _MAX_METADATA_BYTES)
+            same_site, _ = _bounded_metadata(cookie.get("sameSite"), _MAX_METADATA_BYTES)
+            expires = cookie.get("expires")
+            entry: JsonObject = {
+                "name": name,
+                "value": value,
+                "domain": domain,
+                "path": path,
+                "expires": expires if isinstance(expires, (int, float)) else None,
+                # http_only cookies are invisible to document.cookie; reading
+                # them here is the reason this beats a JS eval for session tokens.
+                "http_only": bool(cookie.get("httpOnly")),
+                "secure": bool(cookie.get("secure")),
+                "same_site": same_site,
+            }
+            if value_truncated:
+                entry["value_truncated"] = True
+            entries.append(entry)
+        return {
+            "cookies": entries,
+            "count": len(entries),
+            "total": len(cookies),
+            "offset": start,
+            "has_more": start + len(window) < len(cookies),
+        }
 
     def dom_snapshot(self, session_id: str) -> JsonObject:
         handle = self._get(session_id)

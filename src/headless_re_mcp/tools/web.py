@@ -160,6 +160,25 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_wasm_list(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="web.cookies")
+    def web_cookies(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=500)] = 200,
+    ) -> dict[str, Any]:
+        """List the browser context's cookies, one page at a time.
+
+        Reads the context cookie jar, which includes http_only cookies that
+        document.cookie cannot see -- the session and auth tokens web triage
+        cares about -- so this answers what a JS eval could not. Each entry
+        has name, value, domain, path, expires, http_only, secure, and
+        same_site; value_truncated marks a value cut at the per-cookie cap.
+        Answers with cookies, count, total, offset, and has_more so a page
+        that filled the limit is not read as the whole jar. There is no
+        jar or storage field, and localStorage is not included.
+        """
+        return _dump(analysis.web_cookies(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
         """Return the current page HTML, URL, and title.
