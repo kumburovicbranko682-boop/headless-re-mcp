@@ -37,6 +37,47 @@ def test_every_advertised_tool_name_is_a_real_catalog_tool() -> None:
     assert not stale, f"capability catalog names tools that no longer exist: {stale}"
 
 
+def test_nonpe_optional_backends_advertise_their_whole_tool_surface() -> None:
+    """Every non-PE optional backend tool must be advertised by a capability.
+
+    ``test_every_advertised_tool_name_is_a_real_catalog_tool`` only guards one
+    direction -- it rejects a capability naming a tool that does not exist. It
+    never noticed a real tool that no capability advertises, which is how the
+    Android/Web surfaces drifted: ``web.console`` / ``web.dom.snapshot`` /
+    ``web.har.export`` / ``web.wasm.list`` / ``web.close``, ``proxy.stop`` /
+    ``proxy.status``, ``frida.server.ensure`` / ``frida.applications`` and nine
+    ``device.*`` tools were registered but left out of their capabilities, so
+    ``capabilities.list`` / ``.describe`` never mentioned them and an operator
+    could not learn they belong to (and go missing with) that backend.
+
+    Each of these backends owns its dotted namespace end to end, so the whole
+    prefix must be covered by the union of that backend's capabilities. PE
+    backends (x64dbg, etc.) deliberately list a representative subset of a much
+    larger surface and are out of scope here; ``apk.*`` completeness is pinned by
+    its own capability test above.
+    """
+    real = _real_tool_names()
+    by_id = {cap["id"]: cap for cap in _CORE_CAPABILITIES}
+    prefix_to_capabilities = {
+        "device.": {"device.adb"},
+        "web.": {"web.cdp"},
+        "proxy.": {"proxy.mitmproxy"},
+        "frida.": {"frida.session", "frida.device"},
+        "js.": {"jsre.webcrack"},
+        "wasm.": {"wasm.wabt"},
+    }
+    gaps: dict[str, list[str]] = {}
+    for prefix, capability_ids in prefix_to_capabilities.items():
+        advertised: set[str] = set()
+        for cid in capability_ids:
+            advertised |= set(by_id[cid]["tools"])
+        registered = {name for name in real if name.startswith(prefix)}
+        missing = registered - advertised
+        if missing:
+            gaps[prefix] = sorted(missing)
+    assert not gaps, f"capabilities omit real backend tools: {gaps}"
+
+
 def test_every_status_probe_matches_a_real_doctor_probe() -> None:
     probe_names = {probe.name for probe in run_doctor(None).probes}
     stale = {

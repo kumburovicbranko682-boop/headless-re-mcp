@@ -1110,6 +1110,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   报成 `missing` 且不报错。新增契约断言每个宣传的工具名都是真实 MCP 工具、每个 `status_probe`
   都是真实 doctor 探针、id 唯一且形状完整,并用打桩 doctor 验证状态映射(ready/missing、无探针恒
   ready、缺失探针回退 missing)与 backend/status 两个过滤器。
+- **非 PE 可选后端的能力目录漏列了自己命名空间下的真实工具**：上面那条只挡「宣传了不存在的
+  工具名」这一个方向,反方向——真实工具没被任何能力宣传——没人挡,于是 Android/Web 面随着新增工具
+  而漂移:`web.close` / `web.console` / `web.dom.snapshot` / `web.wasm.list` / `web.har.export`、
+  `proxy.stop` / `proxy.status`、`frida.server.ensure` / `frida.applications` 以及九个 `device.*`
+  都已注册却不在各自能力里,`capabilities.list` / `.describe` 从不提它们,运维查就绪时看不到它们属于
+  该后端、也不知道后端缺失时它们会一并消失。这些后端各自独占一个点名前缀,补齐后新增反方向契约:
+  `device.` / `web.` / `proxy.` / `frida.` / `js.` / `wasm.` 前缀下的每个真实 MCP 工具都必须被对应
+  能力(的并集)宣传。PE 后端(x64dbg 等)有意只列庞大工具面的代表性子集,不在此约束内。
 - **asyncio 异常钩子首次落测**：进程/线程/unraisable 三个钩子早有测试,唯独 asyncio 的
   没有——没人 await 的任务失败经 loop 异常处理器上报,我们的处理器必须把事故写进 incident 日志
   (走同一个脱敏器,`api_key=...` 不落盘)、loop 交来无异常对象的上下文(回调错误就是这样)时
