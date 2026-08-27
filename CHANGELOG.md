@@ -60,6 +60,28 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（设备/浏览器操作 honesty）
+
+- **`device.push` 现在核对文件是否真的落到设备上**：过去 `dev.sync.push` 一返回就答
+  `{local, remote, size}`——但 adb 返回不等于文件落地（只读分区、空间不足、断连都能让一次
+  返回的调用背后没有文件）。现在推送后 `stat` 远端路径：常规文件按字节比对源大小（adb sync
+  是逐字节拷贝、无换行转换，大小一致即为真实落地信号），推送到目录时按 `<dir>/<basename>`
+  复核落地文件。回包新增 `pushed`（真/假，或无法核实时为 null）与 `remote_size`，`pushed`
+  非真时附 `note`，对齐 `install`/`uninstall` 已有的「adb 返回不等于成功」范式。
+- **`device.forward` 现在核对转发是否真的在 adb 转发表里**：`dev.forward(...)` 返回不等于 adb
+  持有该转发。现在读 `forward_list` 核对本地端点是否在表中，回包新增 `listed`（真/假，或转发表
+  读不到时为 null，并附 `note`）。为便于 `close_all` 后续清理，`listed` 为假也保留本进程的转发
+  预留。
+- **`device.screenshot` / `web.screenshot` / `web.preview` 空截图不再被当成成功**：截图后若留下
+  0 字节文件（ADB image.save 或 Playwright page.screenshot 返回却写空、页面已分离、整页截零高
+  文档等），过去会答 `size:0` 的成功包，把调用方引向一张空 PNG（web 侧还会注册成 capture 制品）。
+  现在删除该文件并报 `backend_error`。
+- **`proxy.ca.install_android` 透传 CA 是否真的落到设备 tmp**：它委托的 push 现在会核实落地，
+  据此回包新增 `landed`（真/假，或无法核实时为 null）与 `remote_size`；未落地时 `note` 明确
+  指出「adb 返回但设备 tmp 看不到该 CA、很可能没落地」，不再仅凭 adb 返回就宣称 PEM 已在设备上。
+- 以上均补齐不依赖真实 adb / 浏览器的契约单测（push 落地/未落地/短写/无法核实/推送到目录、
+  forward 在表/不在表/读不到、device 与 web 空截图删除并拒绝、CA 落地/未落地/无法核实）。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
