@@ -49,6 +49,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（共享凭据脱敏器：按键名遮蔽、数值元数据可见、Bearer 全域清洗）
+
+- `redaction.redact` 给服务端每一份落盘与对外载荷（事故日志、审计行、`/providers` 面）做凭据脱敏，
+  却没有任何测试直接 import 这个模块——它只经某条仓储审计路径被间接带到过。而它的契约相当特别，
+  一次善意改动就能把它悄悄变成一次凭据泄漏：按**键名**而非按值遮蔽（因为逆向结果里合法地含有从
+  目标里抠出来的、长得像凭据的字符串，按值遮蔽会把分析师致盲），所以 `{"note":"the key is sk-..."}`
+  原样保留而 `{"api_key":"sk-..."}` 被遮蔽；secret 键下的**数值**保持可见（是计数/ID 这类元数据，
+  不是密钥）；字符串里任何位置出现的 `Bearer <token>` 一律清洗（这个形状无论挂在哪个键下都是凭据）；
+  递归有深度上限且失败取安全默认（越限整体替换、secret 键下无法判定的值一律当作可能含凭据）。
+  新增 `tests/unit/test_redaction.py` 把这些逐条钉死：`is_secret_key` 认得各分隔符/大小写/子串形态与
+  `providerApiKeys`、拒绝普通键与非字符串键；`redact` 对 secret 键下的字符串遮蔽、数值放行、
+  结构值整体遮蔽、纯数字列表放行、经普通容器下探到嵌套 secret 键、对任意字符串（含裸列表串）里的
+  Bearer 清洗、对普通键下「像凭据的 RE 数据」原样保留、自定义掩码、基本类型透传、不修改入参、
+  越 `MAX_DEPTH` 落到标记；`_could_hold_a_credential` 只对纯数字/数字列表判否、深度越限取安全的「是」；
+  `masked_secret` 对 None/空返回 None、≤8 字符全星号、更长只露首尾两位。该测试单独即可把 `redaction.py`
+  覆盖到 100%；43 条用例、`ruff` 通过，纯测试新增、无产品行为变更。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
