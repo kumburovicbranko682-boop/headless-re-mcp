@@ -17,6 +17,7 @@ from headless_re_mcp.doctor import (
     Probe,
     ProbeStatus,
     format_report,
+    probe_config_keys,
     probe_die,
     probe_exeinfope,
     probe_optional_tool,
@@ -60,6 +61,34 @@ def _settings(
         x64dbg_headless_x86=x86,
         artifact_root=artifacts,
     )
+
+
+def test_config_keys_probe_names_the_ignored_keys(tmp_path: Path) -> None:
+    """A typo'd config key must be named where an operator will see it.
+
+    Settings.load ignores keys it does not read, so "ghidra_hom" silently
+    disabled what it was meant to configure and the tool probe said "missing"
+    as if nothing had been set. The probe is advisory (never in the required
+    set), so it cannot flip readiness -- it exists purely to name the keys.
+    """
+    settings = replace(
+        _settings(None, tmp_path),
+        unknown_config_keys=("ghidra_hom", "x64dgb_source"),
+    )
+
+    probe = probe_config_keys(settings)
+
+    assert probe.status is ProbeStatus.DETECTED
+    assert "ghidra_hom" in probe.summary
+    assert probe.details["unknown_keys"] == ["ghidra_hom", "x64dgb_source"]
+    assert probe.remediation is not None
+
+
+def test_config_keys_probe_is_ready_when_every_key_was_read(tmp_path: Path) -> None:
+    probe = probe_config_keys(_settings(None, tmp_path))
+
+    assert probe.status is ProbeStatus.READY
+    assert probe.details["unknown_keys"] == []
 
 
 def test_radare2_probe_honors_a_configured_off_path_binary(
