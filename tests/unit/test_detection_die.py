@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -401,3 +401,230 @@ def test_no_shell_and_no_window_options_are_explicit() -> None:
     assert options["text"] is False
     if os.name == "nt":
         assert options["creationflags"] & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
+def _exe_and_sample(tmp_path: Path) -> tuple[Path, Path]:
+    executable = tmp_path / "fake-diec.exe"
+    executable.write_bytes(b"fake")
+    sample = tmp_path / "sample.bin"
+    sample.write_bytes(b"MZ")
+    return executable, sample
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"mode": "bogus-mode"},
+        {"timeout": 0},
+        {"timeout": "soon"},
+        {"timeout": float("inf")},
+        {"max_file_size": 0},
+        {"max_output_size": 0},
+    ],
+)
+def test_invalid_scan_arguments_are_refused_before_spawning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kwargs: dict[str, Any],
+) -> None:
+    """Every argument gate raises invalid_argument, and none reaches a process.
+
+    mode, timeout, max_file_size, and max_output_size are validated up front, so
+    an unsupported mode, a non-positive or non-finite timeout, or a non-positive
+    byte budget tells the caller exactly what was wrong -- with diec never
+    started.
+    """
+    executable, sample = _exe_and_sample(tmp_path)
+
+    def must_not_spawn(*args: Any, **kw: Any) -> Any:
+        raise AssertionError("diec must not start when an argument is invalid")
+
+    monkeypatch.setattr(die_adapter, "_capture_process", must_not_spawn)
+    with pytest.raises(die_adapter.DieScanError) as caught:
+        scan_with_die(executable, sample, **kwargs)
+    assert caught.value.code == DieErrorCode.INVALID_ARGUMENT
+
+
+def test_missing_or_nonfile_executable_and_input_are_rejected(tmp_path: Path) -> None:
+    """The executable and the input must each resolve to an existing file.
+
+    A missing or non-file executable (here a directory) is
+    executable_not_found; a missing or non-file input is input_not_found. The
+    input check runs only after the executable resolves, so a valid executable
+    is supplied for the input cases, and the directory case carries the explicit
+    "regular file" message.
+    """
+    executable, sample = _exe_and_sample(tmp_path)
+
+    with pytest.raises(die_adapter.DieExecutableNotFoundError):
+        scan_with_die(tmp_path / "absent-diec", sample)
+    with pytest.raises(die_adapter.DieExecutableNotFoundError):
+        scan_with_die(tmp_path, sample)
+
+    with pytest.raises(die_adapter.DieInputNotFoundError):
+        scan_with_die(executable, tmp_path / "absent.bin")
+    with pytest.raises(die_adapter.DieInputNotFoundError) as caught:
+        scan_with_die(executable, tmp_path)
+    assert "regular file" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("type_name", "expected"),
+    [
+        ("packer", FindingCategory.PACKER),
+        ("Compression", FindingCategory.PACKER),
+        ("compiler", FindingCategory.COMPILER),
+        ("linker", FindingCategory.LINKER),
+        ("installer", FindingCategory.INSTALLER),
+        ("setup", FindingCategory.INSTALLER),
+        ("obfuscator", FindingCategory.OBFUSCATOR),
+        ("protector", FindingCategory.PROTECTOR),
+        ("runtime", FindingCategory.RUNTIME),
+        ("Virtual Machine", FindingCategory.RUNTIME),
+        ("file format", FindingCategory.FILE_FORMAT),
+        ("Binary format", FindingCategory.FILE_FORMAT),
+        ("brand new bucket", FindingCategory.ANOMALY),
+    ],
+)
+def test_die_type_names_map_to_finding_categories(
+    type_name: str,
+    expected: FindingCategory,
+) -> None:
+    """DIE's free-form ``type`` strings normalize into fixed categories.
+
+    The mapping is case- and separator-insensitive, and an unmapped or novel
+    string must fall through to ANOMALY rather than be dropped -- so a category
+    diec adds later still surfaces as a finding.
+    """
+    assert die_adapter._category_for(type_name) is expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        (
+            {"detects": [{"filetype": "PE", "values": []}] * (die_adapter._MAX_DETECTS + 1)},
+            "too many detect records",
+        ),
+        ({"detects": [{"filetype": "   ", "values": []}]}, "must not be blank"),
+        (
+            {
+                "detects": [
+                    {
+                        "filetype": "PE",
+                        "values": [
+                            {"type": "packer", "name": "x", "string": "", "info": "", "version": ""}
+                        ]
+                        * (die_adapter._MAX_VALUES_PER_DETECT + 1),
+                    }
+                ]
+            },
+            "too many records",
+        ),
+        (
+            {
+                "detects": [
+                    {
+                        "filetype": "PE",
+                        "values": [
+                            {"type": "packer", "name": 123, "string": "", "info": "", "version": ""}
+                        ],
+                    }
+                ]
+            },
+            "must be a string",
+        ),
+        (
+            {
+                "detects": [
+                    {
+                        "filetype": "PE",
+                        "values": [
+                            {
+                                "type": "packer",
+                                "name": "x" * (die_adapter._MAX_TEXT + 1),
+                                "string": "",
+                                "info": "",
+                                "version": "",
+                            }
+                        ],
+                    }
+                ]
+            },
+            "is too long",
+        ),
+    ],
+)
+def test_normalize_rejects_hostile_json_shapes(payload: dict[str, Any], match: str) -> None:
+    """DIE JSON is untrusted, so oversized or ill-typed shapes are bounded.
+
+    The detect and value counts are capped so a hostile reply cannot balloon
+    the finding list, a blank filetype is refused, and every text field must be
+    a bounded string rather than a number or a megabyte of characters.
+    """
+    with pytest.raises(DieProtocolError, match=match):
+        die_adapter._normalize_json(payload)
+
+
+def test_parse_json_rejects_empty_output_and_nonstandard_constants() -> None:
+    """Empty stdout and JSON with NaN/Infinity are both protocol errors.
+
+    diec must emit a JSON document; blank stdout is refused outright, and the
+    decoder rejects the non-standard constants that would otherwise parse into
+    values the model never expects, so such a reply reads as invalid JSON
+    rather than a silent NaN.
+    """
+    with pytest.raises(DieProtocolError, match="no JSON"):
+        die_adapter._parse_json("   ")
+    with pytest.raises(DieProtocolError, match="invalid JSON"):
+        die_adapter._parse_json('{"score": NaN}')
+
+
+def test_die_cli_adapter_delegates_with_its_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The adapter is a thin, configured wrapper around scan_with_die.
+
+    Its stored executable and the three bounds are forwarded unchanged and the
+    per-call mode passed through, so configuring an adapter once behaves exactly
+    like calling the function with those arguments.
+    """
+    executable, sample = _exe_and_sample(tmp_path)
+    seen: dict[str, Any] = {}
+
+    def fake_scan(
+        exe: Path,
+        path: Path,
+        *,
+        mode: Any,
+        timeout: float,
+        max_file_size: int,
+        max_output_size: int,
+    ) -> str:
+        seen.update(
+            executable=exe,
+            path=path,
+            mode=mode,
+            timeout=timeout,
+            max_file_size=max_file_size,
+            max_output_size=max_output_size,
+        )
+        return "sentinel"
+
+    monkeypatch.setattr(die_adapter, "scan_with_die", fake_scan)
+    adapter = die_adapter.DieCliAdapter(
+        executable, timeout=12.0, max_file_size=99, max_output_size=77
+    )
+
+    result = adapter.scan(sample, mode=ScanMode.DEEP)
+
+    # scan is typed to return DieScanResult; the fake returns a sentinel to
+    # prove the return value is forwarded verbatim, so widen for the compare.
+    assert cast(object, result) == "sentinel"
+    assert seen["executable"] == executable
+    assert seen["path"] == sample
+    assert seen["mode"] is ScanMode.DEEP
+    assert seen["timeout"] == 12.0
+    assert seen["max_file_size"] == 99
+    assert seen["max_output_size"] == 77
