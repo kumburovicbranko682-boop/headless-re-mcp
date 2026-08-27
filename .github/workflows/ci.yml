@@ -177,6 +177,10 @@ jobs:
           # mitmproxy's downgrade.
           python -m pip install "mitmproxy>=11"
           python -m pip install -U "typing-extensions>=4.15"
+          # psutil is not a project dependency, but the web lifecycle gate uses
+          # it to prove a talkative page does not leak file descriptors. Install
+          # it explicitly so that check runs for real here instead of skipping.
+          python -m pip install psutil
           python -m playwright install --with-deps chromium
           sudo apt-get update
           sudo apt-get install -y wabt radare2 upx-ucl mingw-w64 cmake
@@ -211,6 +215,7 @@ jobs:
           import androguard  # noqa: F401
           import frida  # noqa: F401
           import mitmproxy  # noqa: F401
+          import psutil  # noqa: F401
           from playwright.sync_api import sync_playwright
 
           for tool in ("webcrack", "wasm2wat", "wasm-objdump", "r2", "upx"):
@@ -222,10 +227,11 @@ jobs:
           PY
 
       - name: Portable integration gates
-        # -rs prints every skip reason; the expected skips on Linux are the
-        # Windows-only handle-count check in the web lifecycle gate and the
-        # IDA-backed gates, which must degrade to a skip -- never an error --
-        # on a machine that has the fixtures but not IDA.
+        # -rs prints every skip reason; the only expected skips on Linux here are
+        # the IDA-backed gates, which must degrade to a skip -- never an error --
+        # on a machine that has the fixtures but not IDA. The web lifecycle
+        # handle-leak check runs for real on this lane (psutil is installed
+        # above, and it counts file descriptors on POSIX).
         run: >-
           python -m pytest
           tests/integration/test_android_re_gate.py
