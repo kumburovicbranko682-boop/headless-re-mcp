@@ -325,6 +325,17 @@ class AgentStore:
             rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
         return [AgentThread(**dict(row)) for row in rows]
 
+    def count_threads(self) -> int:
+        """How many threads exist, past the list's newest-first page cap.
+
+        list_threads returns at most 500; a long-lived server retains far more.
+        This is the total the thread list is a page of, so the sidebar can say
+        it is showing only the newest slice rather than the whole history.
+        """
+        with self._reading() as con:
+            row = con.execute("SELECT COUNT(*) AS c FROM threads").fetchone()
+        return int(row["c"]) if row is not None else 0
+
     def get_thread(self, thread_id: str) -> AgentThread | None:
         with self._reading() as con:
             row = con.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()

@@ -126,9 +126,26 @@ def register_agent_routes(
             raise HTTPException(status_code=401, detail="unauthorized")
 
     @app.get("/api/agent/threads")
-    def list_threads(authorization: str | None = Header(default=None)) -> JSONResponse:
+    def list_threads(
+        limit: int = Query(default=100, ge=1, le=500),
+        authorization: str | None = Header(default=None),
+    ) -> JSONResponse:
         authorize(authorization)
-        return JSONResponse({"ok": True, "threads": [item.dump() for item in store.list_threads()]})
+        items = [item.dump() for item in store.list_threads(limit=limit)]
+        # The list is the newest-first page of a store that retains thousands
+        # of threads. Report the true total and whether this is only part of
+        # it -- and let a caller raise the limit -- rather than returning a
+        # capped page that reads as every thread there is.
+        total = store.count_threads()
+        return JSONResponse(
+            {
+                "ok": True,
+                "threads": items,
+                "count": len(items),
+                "total": total,
+                "truncated": total > len(items),
+            }
+        )
 
     @app.post("/api/agent/threads", status_code=201)
     def create_thread(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
