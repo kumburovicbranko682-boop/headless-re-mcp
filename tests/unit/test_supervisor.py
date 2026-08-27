@@ -376,11 +376,22 @@ def test_child_argv_reuses_this_interpreter_and_carries_the_config() -> None:
     assert argv[5] == "serve-web"
     assert "--host" in argv and "127.0.0.1" in argv
     assert "--port" in argv and "9001" in argv
+    # Default keeps auto-port on, so this argv does not force a fixed bind.
+    assert "--no-auto-port" not in argv
+
+
+def test_child_argv_pins_the_port_when_auto_port_is_off() -> None:
+    argv = build_child_argv("serve-web", host="127.0.0.1", port=9001, auto_port=False)
+    # The supervisor probes a fixed port, so the child must bind that one or
+    # fail rather than sliding to the next free port the probe cannot see.
+    assert "--no-auto-port" in argv
 
 
 def test_stdio_child_argv_has_no_http_flags() -> None:
-    argv = build_child_argv("serve", host="127.0.0.1", port=9001)
+    argv = build_child_argv("serve", host="127.0.0.1", port=9001, auto_port=False)
+    # auto_port only shapes the web child; stdio has no bind to pin.
     assert "--host" not in argv and "--port" not in argv
+    assert "--no-auto-port" not in argv
 
 def test_a_child_that_refuses_to_start_is_not_restarted(tmp_path: Path) -> None:
     """A refusal is not a crash, and a retry cannot change it.

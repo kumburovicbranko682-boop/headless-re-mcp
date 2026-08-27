@@ -49,7 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
-### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
+### 修复（supervise serve-web 遇端口占用时会无限杀死健康的控制台）
+
+- `supervise --target serve-web` 会用固定的 `http://host:port/readyz` 探活，但子进程走的是
+  `run_web` 的默认 `auto_port`：当首选端口（默认 8765）被占用时，它会静默改绑下一个空闲端口，
+  于是控制台其实健康地跑在别处，而探针始终打在原端口上——三次探活失败后监督进程判其“不健康”
+  并杀掉它。因为“不健康重启”不计入 crash-loop 上限（见 `supervisor.py` 的设计说明），这会无人值守地
+  每个周期重复，永远杀掉一个健康的服务，正是该模块声称要避免的“看着像在运行的崩溃循环”。
+  现修复两点：其一，`serve-web` 新增 `--no-auto-port`，让 `run_web` 在端口被占用时直接退出（退出码 3，
+  被监督进程按崩溃退避重试）而不是改绑；其二，`_run_supervisor` 在启用探活时给子进程传入解析后的
+  host/port 并置 `--no-auto-port`，使子进程要么绑定被探测的那个端口、要么诚实失败退避。`--no-readiness`
+  分支不受影响：没有探针要对齐，子进程仍保留 auto-port，与不受监督的控制台行为一致。交互式
+  `serve-web` 默认仍开启 auto-port。
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
   `sys.platform` 强制成 `linux` 后再 monkeypatch `os.sysconf`，但 Windows 的 `os` 模块

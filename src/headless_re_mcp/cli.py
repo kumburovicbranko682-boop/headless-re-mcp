@@ -81,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_web.add_argument("--host", default=None, help="Must be a loopback address")
     serve_web.add_argument("--port", type=int, default=None)
+    serve_web.add_argument(
+        "--no-auto-port",
+        action="store_true",
+        help="Fail instead of moving to the next free port when the chosen port is busy",
+    )
 
     supervise = subcommands.add_parser(
         "supervise",
@@ -209,17 +214,24 @@ def _run_supervisor(settings: Settings, args: argparse.Namespace) -> int:
     port = args.port if args.port is not None else settings.http_port
     # Readiness only exists on the web target; stdio has no HTTP surface, so
     # supervising it means restarting on exit alone.
-    ready_url = (
-        None
-        if args.no_readiness or args.target != "serve-web"
-        else f"http://{host}:{port}/readyz"
-    )
+    probe_readiness = args.target == "serve-web" and not args.no_readiness
+    ready_url = f"http://{host}:{port}/readyz" if probe_readiness else None
     supervisor = Supervisor(
         build_child_argv(
             args.target,
-            host=args.host,
-            port=args.port,
+            # Hand the child the resolved host/port, not the raw args: the probe
+            # above is built from the resolved values, and letting the child
+            # re-derive its own from settings is only accidentally the same.
+            host=host,
+            port=port,
             config=str(args.config) if args.config else None,
+            # When we will probe a fixed port, the child must bind that exact
+            # port. Auto-port would let it drift to another free one, which the
+            # probe never reaches -- so a healthy console reads as unhealthy and
+            # is killed on a loop the crash-loop bound never stops (an unhealthy
+            # restart does not count toward it). Pinning turns a port conflict
+            # into an honest, backed-off restart instead.
+            auto_port=not probe_readiness,
         ),
         ready_url=ready_url,
         check_interval_s=max(1.0, float(args.check_interval)),
@@ -260,7 +272,12 @@ def _main(argv: Sequence[str] | None = None) -> int:
     if args.command == "serve-web":
         from headless_re_mcp.web.app import run_web
 
-        return run_web(settings, host=args.host, port=args.port)
+        return run_web(
+            settings,
+            host=args.host,
+            port=args.port,
+            auto_port=not args.no_auto_port,
+        )
 
     if args.command == "supervise":
         return _run_supervisor(settings, args)

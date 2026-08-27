@@ -131,15 +131,33 @@ def test_serve_runs_stdio_with_the_service(
 def test_serve_web_forwards_host_and_port(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    def _run_web(settings: Any, *, host: Any, port: Any) -> int:
+    def _run_web(settings: Any, *, host: Any, port: Any, auto_port: bool = True) -> int:
         captured["host"] = host
         captured["port"] = port
+        captured["auto_port"] = auto_port
         return 7
 
     monkeypatch.setattr("headless_re_mcp.web.app.run_web", _run_web)
     code = cli_module._main(["serve-web", "--host", "127.0.0.1", "--port", "9001"])
     assert code == 7
-    assert captured == {"host": "127.0.0.1", "port": 9001}
+    # Auto-port stays on by default so an interactive console still slides off a
+    # busy port; --no-auto-port is the opt-out the supervisor uses.
+    assert captured == {"host": "127.0.0.1", "port": 9001, "auto_port": True}
+
+
+def test_serve_web_no_auto_port_flag_disables_the_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _run_web(settings: Any, *, host: Any, port: Any, auto_port: bool = True) -> int:
+        captured["auto_port"] = auto_port
+        return 0
+
+    monkeypatch.setattr("headless_re_mcp.web.app.run_web", _run_web)
+    code = cli_module._main(["serve-web", "--port", "9001", "--no-auto-port"])
+    assert code == 0
+    assert captured["auto_port"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -166,8 +184,21 @@ def _install_fake_supervisor(
         def run_forever(self) -> _FakeReport:
             return _FakeReport(reason)
 
-    def _build_child_argv(target: str, *, host: Any, port: Any, config: Any) -> list[str]:
-        seen["child"] = {"target": target, "host": host, "port": port, "config": config}
+    def _build_child_argv(
+        target: str,
+        *,
+        host: Any,
+        port: Any,
+        config: Any,
+        auto_port: bool = True,
+    ) -> list[str]:
+        seen["child"] = {
+            "target": target,
+            "host": host,
+            "port": port,
+            "config": config,
+            "auto_port": auto_port,
+        }
         return ["child", target]
 
     monkeypatch.setattr("headless_re_mcp.supervisor.Supervisor", _FakeSupervisor)
@@ -184,6 +215,16 @@ def test_supervise_web_target_builds_a_readiness_url(
     )
     assert code == 0
     assert seen["ready_url"] == "http://127.0.0.1:9100/readyz"
+    # The child is pinned to the exact host/port the probe targets, with
+    # auto-port off so a busy port cannot make it drift out from under the
+    # probe and get killed as "unhealthy" on a loop.
+    assert seen["child"] == {
+        "target": "serve-web",
+        "host": "127.0.0.1",
+        "port": 9100,
+        "config": None,
+        "auto_port": False,
+    }
     assert json.loads(capsys.readouterr().out)["ok"] is True
 
 
@@ -203,6 +244,9 @@ def test_supervise_no_readiness_flag_disables_the_probe(
     code = cli_module._main(["supervise", "--target", "serve-web", "--no-readiness"])
     assert code == 0
     assert seen["ready_url"] is None
+    # No probe means no fixed port to honour, so the child keeps auto-port and
+    # can still slide off a busy port the way an unsupervised console does.
+    assert seen["child"]["auto_port"] is True
 
 
 def test_supervise_reports_nonzero_on_an_unclean_stop(

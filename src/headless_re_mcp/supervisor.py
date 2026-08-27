@@ -360,6 +360,7 @@ def build_child_argv(
     host: str | None = None,
     port: int | None = None,
     config: str | None = None,
+    auto_port: bool = True,
 ) -> list[str]:
     """Re-invoke this interpreter, so the child inherits the same environment."""
     argv = [sys.executable, "-m", "headless_re_mcp"]
@@ -371,4 +372,12 @@ def build_child_argv(
             argv += ["--host", host]
         if port is not None:
             argv += ["--port", str(port)]
+        if not auto_port:
+            # A supervisor that probes a fixed /readyz port needs the child on
+            # exactly that port. serve-web defaults to auto_port, which moves to
+            # the next free port when the preferred one is busy: the child then
+            # serves somewhere the probe never reaches, reads as unhealthy, and
+            # is killed every cycle. --no-auto-port makes it bind the given port
+            # or exit, so a port conflict is an honest restart, not a hidden one.
+            argv.append("--no-auto-port")
     return argv
