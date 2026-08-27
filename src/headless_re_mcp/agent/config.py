@@ -32,6 +32,23 @@ ZEROFALL_IMPORT_FIELDS = frozenset(
 )
 _MAX_PROVIDER_CONFIG_BYTES = 4 * 1024 * 1024
 
+_ENV_OVERRIDABLE_FIELDS = (("api_key", "API_KEY"), ("base_url", "BASE_URL"), ("model", "MODEL"))
+
+
+def _env_pinned_fields(profile_id: str) -> list[str]:
+    """Which of this profile's effective fields the environment supplies.
+
+    Mirrors _profile_from_raw exactly: HEADLESS_RE_PROVIDER_<ID>_* wins, then
+    the global HEADLESS_RE_PROVIDER_*, then the file -- with the same
+    truthiness, so an empty variable falls through just as it does there.
+    """
+    prefix = f"HEADLESS_RE_PROVIDER_{profile_id.upper().replace('-', '_')}_"
+    return [
+        field_name
+        for field_name, suffix in _ENV_OVERRIDABLE_FIELDS
+        if os.getenv(prefix + suffix) or os.getenv(f"HEADLESS_RE_PROVIDER_{suffix}")
+    ]
+
 
 def _windows_acl_principal() -> str:
     try:
@@ -93,7 +110,7 @@ class ProviderProfile:
             raise ValueError("context compression threshold must be 10..95")
 
     def public(self, *, source: str = "file") -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.id,
             "base_url": self.base_url,
             "model": self.model,
@@ -106,6 +123,15 @@ class ProviderProfile:
             "api_key_masked": masked_secret(self.api_key),
             "source": source,
         }
+        pinned = _env_pinned_fields(self.id)
+        if pinned:
+            # The environment beats the file for these fields, but every public
+            # form said source "file" regardless. An operator reading the
+            # console could not tell a value the file supplies from one the
+            # deployment pinned -- and a save that appears to change a pinned
+            # field succeeds while changing nothing effective.
+            payload["env_overrides"] = pinned
+        return payload
 
 
 class ProviderConfigStore:
