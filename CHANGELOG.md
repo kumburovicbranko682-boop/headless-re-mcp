@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **271（154 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **272（155 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1351,6 +1351,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   过滤测试的形制):method 精确/大小写、resource_type 精确/大小写、url 子串、状态区间选错误与精确码、状态区间排除无响应请求、多过滤 AND、空白串忽略、命中集分页与 `dropped` 不受过滤影响。实机 gate
   (`test_web_re_gate.py`)对真实 Chrome 抓到的 `/index.html`(Document)与 `/app.js`(Script):`url_contains="app.js"` 命中子资源且置 `filtered`/`captured`、`resource_type="Script"` 只留脚本请求、
   `method="GET"` 配 2xx 区间仍留住它、无意义子串给出空的已过滤视图(`total` 0)而非整环。
+
+- **新增 `apk.disassemble`:直接从 androguard 读出某方法的 Dalvik 字节码指令,回答 `apk.xrefs` 只能指到而答不出的「这个方法到底做了什么」。** 现有反编译 `apk.decompile`(jadx,需 Java/JRE)与
+  `apk.decode`(apktool 的 baksmali)都依赖外部工具,本机没装就用不了;本工具走 androguard 的 `EncodedMethod.get_instructions`,**不需要 jadx/JRE 或 apktool**,与 WASM 那套无依赖二进制读取同一思路。
+  按 `class_name`+`method_name` 定位(类名接受点分 `com.example.X` 或 smali `Lcom/example/X;` 两种形式);方法名有重载时,`overloads` 列出该名下所有描述符、默认按描述符排序取第一个,传 `descriptor`
+  可指定某一个。每行含 `idx`、`addr`(代码单元偏移,故分支目标可对齐)、`mnemonic`(Dalvik 操作码,如 const-string/invoke-virtual)、`operands`。另回 `class_name`/`method_name`/`descriptor`/`access`/
+  `count`/`total`/`offset`/`has_more`/`scan_capped`/`overloads`:`total` 是收集到的指令数(上限 20000,超出置 `scan_capped`),`count` 可能因结果预算裁剪(单条 const-string 操作数可达 2000 字符)低于
+  `limit`,按 `has_more` 翻页。未知类/方法报 `not_found`,空 `class_name`/`method_name` 报 `invalid_params`。抽象/native 等无代码方法给出空指令列表而非崩溃。工具面 271→**272**(154→**155** 只读,写不变)。
+  单测(`test_apk_fields.py`):callee 的两条指令带正确代码单元偏移与 marker 操作数、点分类名解析到 smali 类、重载列全并由 `descriptor` 选定、未知方法 `not_found`、空参 `invalid_params`、长方法分页。
+  实机 gate(`test_m11_android_apk_live_gate.py`)对真实 dex:`callee` 反汇编含 `const-string` 且操作数带 `APK_GATE_MARKER_STRING`、首指令 `addr` 为 0、`overloads` 恰一条;`caller` 反汇编含 `invoke` 且操作数
+  指向 `callee`——读的是真实 `EncodedMethod.get_instructions` 路径,而非 mock。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
