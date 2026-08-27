@@ -264,6 +264,7 @@ jobs:
             tests/integration/test_web_re_gate.py \
             tests/integration/test_web_lifecycle_gate.py \
             tests/integration/test_web_cdp_gate.py \
+            tests/integration/test_web_cdp_https_gate.py \
             tests/integration/test_web_wasm_gate.py \
             tests/integration/test_m11_r2_live_gate.py \
             tests/integration/test_m11_r2_static_gate.py \
