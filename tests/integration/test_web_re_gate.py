@@ -74,6 +74,40 @@ def _poll(predicate: Callable[[], Any], *, timeout: float = 10.0) -> Any:
         found = predicate()
     return found
 
+
+# A page that compiles and instantiates a minimal WebAssembly module (magic +
+# version, base64 "AGFzbQEAAAA="). Only the browser is needed -- no wabt -- and
+# Chromium reports it over CDP as a wasm:// script.
+_WASM_PAGE = (
+    b"<!doctype html><html><head><title>wasm-gate</title><script>"
+    b"const bytes = Uint8Array.from(atob('AGFzbQEAAAA='), c => c.charCodeAt(0));"
+    b"WebAssembly.instantiate(bytes).then(() => console.log('wasm-ready'));"
+    b"</script></head><body>wasm</body></html>"
+)
+
+
+@contextmanager
+def _wasm_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(_WASM_PAGE)))
+            self.end_headers()
+            self.wfile.write(_WASM_PAGE)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
 _DATA_URL = (
     "data:text/html,"
     "<html><head><title>gate</title>"
@@ -178,6 +212,50 @@ def test_web_cdp_captures_network_and_script_source() -> None:
             body = service.web_network_get(session_id, request["requestId"])
             assert body.ok, body.error
             assert body.data["body"] == _LOCAL_DATA_JSON.decode("utf-8")
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
+def test_web_cdp_lists_a_wasm_module_in_the_page() -> None:
+    """Finding WebAssembly in a page is a core Web RE step with no live coverage.
+
+    Drive a page that compiles a real wasm module and assert web.wasm.list finds
+    it, reports language WebAssembly and a wasm:// url, and that the wasm_only
+    filter actually narrows the full script list (a JS script is present too).
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web WASM list Gate not run (skip != pass)")
+    with _wasm_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            def _wasm_listing() -> dict[str, Any] | None:
+                listing = service.web_wasm_list(session_id)
+                assert listing.ok, listing.error
+                return listing.data if listing.data["total"] >= 1 else None
+
+            listing = _poll(_wasm_listing)
+            assert listing is not None, "no WebAssembly script was ever reported over CDP"
+            wasm_script = listing["scripts"][0]
+            assert str(wasm_script.get("language")).lower() == "webassembly"
+            assert str(wasm_script.get("url", "")).startswith("wasm://")
+
+            # wasm_only must be a real filter: the page also has a JS script, so
+            # the full listing is strictly larger than the wasm-only one.
+            everything = service.web_scripts(session_id)
+            assert everything.ok, everything.error
+            assert everything.data["total"] > listing["total"]
         finally:
             service.close_all()
 
