@@ -756,7 +756,11 @@ def test_web_cdp_captures_websocket_frames() -> None:
                     lambda c: c is not None
                     and int(c.get("frames_sent", 0)) >= 1
                     and int(c.get("frames_received", 0)) >= 2,
-                    tries=80,
+                    # CDP frame events are delivered asynchronously; a warm
+                    # browser settles in ~1s but a cold or loaded one can take
+                    # far longer, so the budget is generous (measured: a cold
+                    # chromium blew past a 20s poll while a warm one passed in 1s).
+                    tries=240,
                 )
                 assert conn is not None, "no /ws connection was captured"
                 assert conn["status"] == 101, conn
