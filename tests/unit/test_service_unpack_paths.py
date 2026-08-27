@@ -27,6 +27,11 @@ from headless_re_mcp.core.service_unpack import (
 )
 from headless_re_mcp.detection.die import DieScanError
 from headless_re_mcp.unpack.pe_rebuild import PeRebuildError
+from headless_re_mcp.unpack.session import (
+    UnpackPhase,
+    create_unpack_session,
+    transition,
+)
 from tests.unit.test_dynamic_service import FakeDynamicWorker, FakeStaticWorker
 
 
@@ -673,3 +678,252 @@ def test_pe_rebuild_rejects_non_list_entries(
     result = service.unpack_pe_rebuild(session_id, str(dump), iat_va=0x140002000, iat_size=0x40)
     assert not result.ok and result.error is not None
     assert result.error.code == "invalid_iat"
+
+
+# ---------------------------------------------------------------------------
+# unpack_score_oep
+# ---------------------------------------------------------------------------
+
+_MODULE_BASE = 0x140000000
+_MODULE_SIZE = 0x4000
+_OBSERVATIONS = [{"kind": "rip", "rva": 0x1000, "in_module_code": True}]
+
+
+def _running_unpack_state(service: AnalysisService, session_id: str) -> None:
+    state = create_unpack_session(session_id, route="bounded_dynamic")
+    state = transition(state, UnpackPhase.RUNNING, event="run", message="run")
+    service._store_unpack_session(state)
+
+
+def test_score_oep_without_a_session_scores_supplied_observations(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_score_oep(
+        session_id,
+        module_base=_MODULE_BASE,
+        module_size=_MODULE_SIZE,
+        observations=_OBSERVATIONS,
+    )
+    assert result.ok and result.data is not None
+    assert result.data["authoritative"] is False
+    assert result.data["auto_collected"] is False
+    assert result.data["unpack"] is None
+
+
+def test_score_oep_transitions_a_running_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    _running_unpack_state(service, session_id)
+    result = service.unpack_score_oep(
+        session_id,
+        module_base=_MODULE_BASE,
+        module_size=_MODULE_SIZE,
+        observations=_OBSERVATIONS,
+        stub_rva_ranges=[(0x2000, 0x100)],
+    )
+    assert result.ok and result.data is not None
+    assert result.data["unpack"]["phase"] == UnpackPhase.OEP_CANDIDATE.value
+    assert "stub_rva_ranges" in result.data
+
+
+def test_score_oep_appends_timeline_for_a_non_running_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.unpack_start(session_id, use_die=False, execute_upx=False).ok
+    result = service.unpack_score_oep(
+        session_id,
+        module_base=_MODULE_BASE,
+        module_size=_MODULE_SIZE,
+        observations=_OBSERVATIONS,
+    )
+    assert result.ok and result.data is not None
+    assert result.data["unpack"] is not None
+
+
+def test_score_oep_auto_collects_from_the_runtime(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    result = service.unpack_score_oep(
+        session_id, module_base=_MODULE_BASE, module_size=_MODULE_SIZE
+    )
+    assert result.ok and result.data is not None
+    assert result.data["auto_collected"] is True
+    assert "note" in result.data
+
+
+def test_score_oep_reports_a_missing_dynamic_backend(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_score_oep(
+        session_id, module_base=_MODULE_BASE, module_size=_MODULE_SIZE
+    )
+    assert not result.ok and result.error is not None
+
+
+def test_score_oep_is_blocked_on_a_terminal_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session_id, _dump = _cancelled_session(service, tmp_path)
+    result = service.unpack_score_oep(
+        session_id, module_base=_MODULE_BASE, module_size=_MODULE_SIZE
+    )
+    assert not result.ok and result.error is not None
+
+
+def test_score_oep_surfaces_a_registers_read_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr(
+        service,
+        "dynamic_registers_read",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="frozen", message="registers frozen")
+        ),
+    )
+    result = service.unpack_score_oep(
+        session_id, module_base=_MODULE_BASE, module_size=_MODULE_SIZE
+    )
+    assert not result.ok and result.error is not None
+    assert result.error.code == "frozen"
+
+
+def test_score_oep_surfaces_a_memory_regions_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr(
+        service,
+        "memory_regions",
+        lambda *a, **k: Result[dict[str, Any]](
+            ok=False, error=RpcError(code="frozen", message="regions frozen")
+        ),
+    )
+    result = service.unpack_score_oep(
+        session_id, module_base=_MODULE_BASE, module_size=_MODULE_SIZE
+    )
+    assert not result.ok and result.error is not None
+    assert result.error.code == "frozen"
+
+
+# ---------------------------------------------------------------------------
+# unpack_confirm_oep
+# ---------------------------------------------------------------------------
+
+
+def test_confirm_oep_rejects_a_negative_rva(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_confirm_oep(session_id, oep_rva=-1)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+def test_confirm_oep_rejects_a_non_boolean_auto_dump(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_confirm_oep(
+        session_id,
+        oep_rva=0x1000,
+        auto_dump="yes",  # type: ignore[arg-type]
+    )
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+def test_confirm_oep_requires_a_started_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_confirm_oep(session_id, oep_rva=0x1000)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "unpack_not_started"
+
+
+def test_confirm_oep_rejects_a_wrong_phase(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.unpack_start(session_id, use_die=False, execute_upx=False).ok
+    result = service.unpack_confirm_oep(session_id, oep_rva=0x1000)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_phase"
+
+
+def test_confirm_oep_accepts_a_running_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    _running_unpack_state(service, session_id)
+    result = service.unpack_confirm_oep(session_id, oep_rva=0x1000, module_base=_MODULE_BASE)
+    assert result.ok and result.data is not None
+    assert result.data["confirmed_oep_rva"] == 0x1000
+    assert result.data["role"] == "confirmed"
+
+
+def test_confirm_oep_accepts_an_oep_candidate_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    state = create_unpack_session(session_id, route="bounded_dynamic")
+    state = transition(state, UnpackPhase.RUNNING, event="run", message="run")
+    state = transition(state, UnpackPhase.OEP_CANDIDATE, event="scored", message="scored")
+    service._store_unpack_session(state)
+    result = service.unpack_confirm_oep(session_id, oep_rva=0x1000, module_base=_MODULE_BASE)
+    assert result.ok and result.data is not None
+    assert result.data["confirmed_oep_rva"] == 0x1000
+
+
+def test_confirm_oep_auto_dump_requires_a_module_base(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    _running_unpack_state(service, session_id)
+    result = service.unpack_confirm_oep(session_id, oep_rva=0x1000, auto_dump=True, module_base=0)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+def test_confirm_oep_auto_dump_runs_the_dump(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    _running_unpack_state(service, session_id)
+    result = service.unpack_confirm_oep(
+        session_id,
+        oep_rva=0x1000,
+        auto_dump=True,
+        module_base=_MODULE_BASE,
+    )
+    assert result.ok and result.data is not None
+    assert result.data["auto_dump"] is True
+    assert result.data["dump"] is not None
