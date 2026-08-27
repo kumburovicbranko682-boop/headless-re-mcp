@@ -429,6 +429,65 @@ def test_proxy_stats_summarizes_a_live_capture() -> None:
 
 
 @pytest.mark.integration
+def test_proxy_search_greps_a_live_capture() -> None:
+    """On a real capture, search must find the flow whose body holds a needle.
+
+    Drive a GET whose response body carries a marker and a POST whose request
+    body carries another, then assert proxy.search finds each flow, names where
+    the needle hit (response_body vs request_body), and that a metadata-only
+    pass (include_bodies=false) does not see a body-only match.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy search Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    with _origin_server() as origin_url:
+        backend.start("gate-search", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            base = origin_url.rsplit("/", 1)[0]  # .../api
+            with opener.open(origin_url, timeout=10) as response:  # GET, body has "origin"
+                assert response.status == 200
+            post = urllib.request.Request(
+                base + "/login",
+                data=b'{"user":"alice"}',  # request body has "alice"
+                headers={"Content-Type": "application/json"},
+            )
+            with opener.open(post, timeout=10) as response:  # POST -> 201
+                assert response.status == 201
+
+            assert _poll(lambda: backend.flows("gate-search")["total"] >= 2), (
+                "both requests through the proxy were never recorded"
+            )
+
+            # The GET response body carries "origin"; search must find that flow
+            # and say the hit was in the response body, not the url.
+            def _origin_search() -> dict[str, Any] | None:
+                result = backend.search("gate-search", "origin")
+                return result if result["total"] >= 1 else None
+
+            origin_hits = _poll(_origin_search)
+            assert origin_hits is not None, "the response-body marker was never found"
+            assert origin_hits["total"] >= 1
+            assert all("response_body" in row["where"] for row in origin_hits["matches"])
+
+            # The POST request body carries "alice"; a full search finds it in the
+            # request body.
+            alice = backend.search("gate-search", "alice")
+            assert alice["total"] >= 1
+            assert any("request_body" in row["where"] for row in alice["matches"])
+
+            # A metadata-only pass must not see a body-only match.
+            meta = backend.search("gate-search", "alice", include_bodies=False)
+            assert meta["total"] == 0
+            assert meta["bodies_scanned"] == 0
+        finally:
+            backend.stop("gate-search")
+
+
+@pytest.mark.integration
 def test_proxy_clear_empties_a_live_capture_without_stopping() -> None:
     """clear must empty the ring while the proxy keeps intercepting.
 

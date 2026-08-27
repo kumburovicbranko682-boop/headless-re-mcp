@@ -104,6 +104,22 @@ class ProxyAnalysisMixin:
     def proxy_stats(self, session_id: str) -> Result[JsonObject]:
         return self._proxy_wrap(session_id, "stats", session_id)
 
+    def proxy_search(
+        self,
+        session_id: str,
+        query: str,
+        limit: int = 100,
+        include_bodies: bool = True,
+    ) -> Result[JsonObject]:
+        return self._proxy_wrap(
+            session_id,
+            "search",
+            session_id,
+            query,
+            limit=limit,
+            include_bodies=include_bodies,
+        )
+
     def proxy_clear(self, session_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.clear(session_id)

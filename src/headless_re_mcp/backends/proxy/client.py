@@ -237,6 +237,23 @@ def _content_encoding(message: Any) -> str:
     return "" if value.lower() in ("", "identity") else value
 
 
+def _headers_contain(message: Any, needle: str) -> bool:
+    """Whether any header ``name: value`` of a mitmproxy message holds the needle.
+
+    ``needle`` is already casefolded. A missing or odd header container yields
+    False rather than raising, so a search over the capture never crashes on one
+    malformed flow.
+    """
+    headers = getattr(message, "headers", None)
+    if headers is None:
+        return False
+    try:
+        items = list(headers.items())
+    except Exception:  # noqa: BLE001 - odd header containers must not break the scan
+        return False
+    return any(needle in f"{key}: {value}".casefold() for key, value in items)
+
+
 def _attach_body(section: JsonObject, body: bytes, artifact_dir: Path, *, prefix: str) -> None:
     """Put a captured body on a flow section, inline when small, spilled when big."""
     if len(body) > _MAX_INLINE_BODY:
@@ -943,6 +960,96 @@ class ProxyBackend:
             "websockets": websockets,
             "with_request_body": with_request_body,
             "no_status": no_status,
+        }
+
+    def search(
+        self,
+        session_id: str,
+        query: str,
+        *,
+        limit: int = 100,
+        include_bodies: bool = True,
+    ) -> JsonObject:
+        """Grep the whole capture for a case-insensitive substring.
+
+        proxy.flows and proxy.stats find a flow by its metadata; neither can
+        answer "which request or response actually contains this token / this
+        endpoint / this error string?" without pulling every flow with flow.get
+        and reading it by hand. This folds that scan into one call: it walks the
+        capture and, per flow, reports where the needle hit -- url,
+        request_headers, response_headers, request_body, response_body, or
+        websocket. Bodies are the content-encoding-decoded payloads (the same
+        bytes flow.get returns, so a gzip'd JSON response is searched decoded,
+        not compressed); a body that was not retained (over the cap, or evicted)
+        is simply skipped, and include_bodies=false restricts the scan to
+        url/headers/frames for a cheaper metadata-only pass.
+        """
+        if not query or not query.strip():
+            raise ProxyError("invalid_params", "query is required")
+        needle = query.casefold()
+        inst = self._get(session_id)
+        summaries = inst.recorder.snapshot()
+        dropped = 0
+        if summaries:
+            dropped = max(0, int(summaries[-1].get("seq") or 0) - len(summaries))
+        cap = max(1, min(int(limit), 1000))
+        matches: list[JsonObject] = []
+        total = 0
+        bodies_scanned = 0
+        bodies_omitted = 0
+        for summary in summaries:
+            flow_id = str(summary.get("id"))
+            where: list[str] = []
+            if needle in str(summary.get("url", "")).casefold():
+                where.append("url")
+            raw = inst.recorder.raw(flow_id)
+            if raw is _OMITTED_BODY:
+                bodies_omitted += 1
+            elif raw is not None:
+                req = getattr(raw, "request", None)
+                resp = getattr(raw, "response", None)
+                if _headers_contain(req, needle):
+                    where.append("request_headers")
+                if _headers_contain(resp, needle):
+                    where.append("response_headers")
+                if include_bodies:
+                    bodies_scanned += 1
+                    if needle in _message_body(req).decode("utf-8", "replace").casefold():
+                        where.append("request_body")
+                    if needle in _message_body(resp).decode("utf-8", "replace").casefold():
+                        where.append("response_body")
+            websocket = inst.recorder.websocket(flow_id)
+            if websocket is not None and any(
+                needle in str(msg.get("text", "")).casefold()
+                for msg in websocket.get("messages", [])
+            ):
+                where.append("websocket")
+            if not where:
+                continue
+            total += 1
+            if len(matches) < cap:
+                matches.append(
+                    {
+                        "id": flow_id,
+                        "seq": summary.get("seq"),
+                        "method": summary.get("method"),
+                        "url": summary.get("url"),
+                        "host": summary.get("host"),
+                        "status": summary.get("status"),
+                        "where": where,
+                    }
+                )
+        return {
+            "query": query,
+            "matches": matches,
+            "count": len(matches),
+            "total": total,
+            "scanned": len(summaries),
+            "bodies_scanned": bodies_scanned,
+            "bodies_omitted": bodies_omitted,
+            "include_bodies": include_bodies,
+            "truncated": total > len(matches),
+            "dropped": dropped,
         }
 
     def flows(

@@ -98,6 +98,44 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_stats(session_id))
 
+    @tools.tool(name="proxy.search")
+    def proxy_search(
+        session_id: str,
+        query: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        include_bodies: bool = True,
+    ) -> dict[str, Any]:
+        """Search the whole capture for a case-insensitive substring.
+
+        proxy.flows and proxy.stats find a flow by its metadata; neither answers
+        "which request or response actually contains this token / endpoint /
+        error string?" without pulling every flow with proxy.flow.get and
+        reading it by hand. This greps the capture in one call and, per matching
+        flow, says where the needle hit.
+
+        Answers with matches, each carrying id, seq, method, url, host, status
+        and where -- a list drawn from url, request_headers, response_headers,
+        request_body, response_body and websocket naming every place the query
+        was found in that flow. Also count (matches returned), total (all
+        matching flows), scanned (flows examined), bodies_scanned,
+        bodies_omitted (flows whose body was over the retain cap or evicted, so
+        their bodies could not be searched), include_bodies, truncated (more
+        matches exist beyond the limit) and dropped (ring evictions), so a
+        partial result is never read as the whole answer.
+
+        Bodies are the content-encoding-decoded payloads -- the same bytes
+        proxy.flow.get returns, so a gzip/br/deflate/zstd response is searched
+        decoded, not compressed. Pass a flow_id from a match to proxy.flow.get to
+        read the surrounding request/response. Set include_bodies=false to scan
+        only url/headers/WebSocket frames for a cheaper metadata pass. An empty
+        query is rejected as invalid_params.
+        """
+        return _dump(
+            analysis.proxy_search(
+                session_id, query, limit=limit, include_bodies=include_bodies
+            )
+        )
+
     @tools.tool(name="proxy.flows")
     def proxy_flows(
         session_id: str,
