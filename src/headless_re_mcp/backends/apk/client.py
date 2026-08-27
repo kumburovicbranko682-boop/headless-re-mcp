@@ -293,6 +293,12 @@ class ApkClient:
         services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
         receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
         providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
+        # has_more OR's all four lists, so a caller seeing it true could not tell
+        # which of activities/services/receivers/providers hit the cap -- the
+        # docstring promised a filled list is not read as every component, but a
+        # single flag only half delivers that with four independent lists. The
+        # per-list flags say exactly which one was truncated; has_more stays as
+        # the OR for backward compatibility.
         return {
             "activities": activities,
             "services": services,
@@ -300,6 +306,10 @@ class ApkClient:
             "providers": providers,
             "main_activity": apk.get_main_activity(),
             "has_more": a_more or s_more or r_more or p_more,
+            "activities_has_more": a_more,
+            "services_has_more": s_more,
+            "receivers_has_more": r_more,
+            "providers_has_more": p_more,
         }
 
     def native_libs(self, path: Path) -> JsonObject:

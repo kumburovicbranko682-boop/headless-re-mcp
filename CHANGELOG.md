@@ -60,6 +60,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且 source 必须已存在才走到这里，故 differ 守卫在 Windows 上本就不可达。断言改为接受任一
   拒绝消息（`differ` 或 `must not already exist`），并注明跨平台差异；Linux 仍照常覆盖 differ 分支。
 
+### 修复（`apk.components` 的单个 `has_more` 分不清四列里是哪一列触顶，补逐列 `has_more`）
+
+- `apk.components` 一次回四列——activities / services / receivers / providers——各自独立按 `_MAX_COMPONENT_NAMES=256`
+  封顶,但只回一个 `has_more = a_more or s_more or r_more or p_more`。于是一旦为真,调用方无从知晓到底是哪一列被截断:
+  三列齐全、唯独 activities 触顶(生成代码、大型应用的活动列表确有上百个),与四列都触顶,回来长得一模一样。这与工具文档
+  “a list that filled the cap is not read as every component”的承诺相悖——单个标志对四条独立列表只兑现了一半。现补
+  逐列 `activities_has_more` / `services_has_more` / `receivers_has_more` / `providers_has_more`,精确指明哪一列被截;
+  合并 `has_more` 维持四列之或、向后兼容。工具文档串补记逐列标志。`test_apk_components_fields.py` 新增两条:把
+  `_MAX_COMPONENT_NAMES` 压到 2、只让 receivers 越界,断言 `receivers_has_more` 为真而另三列为假、合并 `has_more` 为真;
+  再以四列都不越界断言合并与四个逐列标志全为假。去掉 Python 侧修复后两条均以 `KeyError: 'activities_has_more'` 失败,
+  正是调用方会撞上的缺键。(接续上一处 `apk.permissions` 的逐列 `has_more` 修复,补齐 apk 清单读取器家族的逐列诚实度。)
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
