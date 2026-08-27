@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（proxy.start 空 host 会静默绑定所有网卡，把 MITM 暴露到全网）
+
+- `proxy.start` 的 host 默认回环，但空串/纯空白会原样交给 mitmproxy 的 `listen_host`，
+  而 mitmproxy 把 `""` 解读为 bind-all（`0.0.0.0` + `::`）：一个能签发并向设备安装 CA 的
+  在途 HTTPS MITM 就此监听到每一张可路由的网卡上，凡能路由到本机者皆可经它转发流量。
+  工具文档写明默认回环，缺省或空白值不该反把默认变成 bind-all。现在后端 `start` 先把
+  host 归一为 `(host or "").strip() or "127.0.0.1"`：空/空白落回回环，显式地址（含为物理
+  设备拦截而刻意绑定的可路由网卡）保持调用方的选择不动，只纠正空这一种情形。
+  `tests/unit/test_proxy_start_host_bind.py` 用假监听器钉住空/空白/None 均绑定回环、
+  首尾空白被裁剪、显式 `0.0.0.0` 原样保留——断言的是交给监听器的 host，而非报告字段。
+
 ### 修复（device.install 读取清单的探针会把整份 AndroidManifest 解压进内存）
 
 - `device.install` 装完后用 `_apk_package_name` 回读 `AndroidManifest.xml` 报告包名，用的是

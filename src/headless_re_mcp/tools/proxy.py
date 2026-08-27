@@ -30,7 +30,11 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Start an HTTP(S) interception proxy bound to this session.
 
         Answers with running, host, port and endpoint. There is no ok,
-        started or url field.
+        started or url field. host defaults to loopback; a blank or
+        whitespace host is treated as that default rather than as bind-all,
+        so the proxy is never silently exposed on every interface. Pass an
+        explicit address to bind a routable interface (e.g. to point a
+        physical device at it).
         """
         return _dump(analysis.proxy_start(session_id, host=host, port=port))
 

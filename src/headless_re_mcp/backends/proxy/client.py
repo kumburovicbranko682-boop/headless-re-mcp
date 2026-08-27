@@ -400,21 +400,30 @@ class ProxyBackend:
         self._check_available()
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
+        # A blank host is not "no preference": mitmproxy reads listen_host="" as
+        # bind-all (0.0.0.0 + ::), which would put an active HTTPS MITM -- and the
+        # CA it can install onto a device -- on every interface, reachable by
+        # anything that can route to this host. The tool's default is loopback, so
+        # a missing or whitespace value falls back to that default rather than
+        # silently exposing the proxy. An explicit address is left as the caller's
+        # deliberate choice (binding a routable interface is how a physical device
+        # is pointed at the proxy), so only the empty case is corrected here.
+        listen_host = (host or "").strip() or "127.0.0.1"
         with self._lock:
             if session_id in self._instances:
                 raise ProxyError("invalid_state", "proxy already running for this session")
             for owner, existing in self._instances.items():
-                if existing.host == host and existing.port == port:
+                if existing.host == listen_host and existing.port == port:
                     raise ProxyError(
                         "invalid_state",
                         "port is already reserved by another session",
-                        host=host,
+                        host=listen_host,
                         port=port,
                         owner_session_id=owner,
                     )
             # Reserve before listen: two workers racing start() used to each
             # bind a port, and only the last write to this dict was tracked.
-            inst = _ProxyInstance(host, port)
+            inst = _ProxyInstance(listen_host, port)
             self._instances[session_id] = inst
         try:
             inst.start()
@@ -429,9 +438,9 @@ class ProxyBackend:
             if self._instances.get(session_id) is inst:
                 return {
                     "running": True,
-                    "host": host,
+                    "host": listen_host,
                     "port": port,
-                    "endpoint": f"{host}:{port}",
+                    "endpoint": f"{listen_host}:{port}",
                 }
         with contextlib.suppress(Exception):
             inst.stop()
