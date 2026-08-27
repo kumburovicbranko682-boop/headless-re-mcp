@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（JS 反混淆 Gate：证明 webcrack 真解码，且 js.beautify 别名真落到后端）
+
+- 既有 Web RE Gate 跑 `js.deobfuscate` 只断言 `bytes > 0`——webcrack 回一段错误横幅、或把
+  输入原样吐回，都能满足；`js.beautify`（面向格式化的别名）更是全无实测。提交的混淆夹具把
+  字符串 `H3adl3ss` 以 `\x48\x33...` 转义藏起，源码里不含该字面量。新增
+  `tests/integration/test_js_deobfuscate_gate.py`：先断言源码里确实没有明文 `H3adl3ss`
+  （前置条件——秘密确被藏住），再证明 `js.deobfuscate` 的输出里出现了**解码后**的 `H3adl3ss`
+  （即 webcrack 真的求值了转义序列，而不只是跑通），并对 `js.beautify` 别名做同样的断言，
+  确认它真落到 webcrack、产出同样的解码结果而非桩。webcrack 缺席时按 skip != pass 明确跳过。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
