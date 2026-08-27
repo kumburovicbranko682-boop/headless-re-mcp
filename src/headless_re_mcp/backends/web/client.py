@@ -405,8 +405,11 @@ class WebBackend:
                 handle = _WebSession(pw, browser, context, page, cdp)
                 handle.driver_pid = pid
                 self._wire_events(handle)
+                response = None
                 if url:
-                    page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                    response = page.goto(
+                        url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
+                    )
                 # Summarised here rather than by a second call: between the two,
                 # a browser exists that no session yet refers to, and a failure
                 # in that window would leave it with nothing able to close it.
@@ -415,6 +418,7 @@ class WebBackend:
                     "url": _bounded_metadata(page.url, _MAX_URL_BYTES)[0],
                     "title": _safe_title(page),
                     "headless": headless,
+                    "status": _response_status(response),
                 }
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
@@ -538,12 +542,15 @@ class WebBackend:
 
         def work() -> JsonObject:
             try:
-                handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                response = handle.page.goto(
+                    url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
+                )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
             return {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
+                "status": _response_status(response),
             }
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)
@@ -834,6 +841,25 @@ def _safe_title(page: Any) -> str:
         return _bounded_metadata(page.title(), _MAX_METADATA_BYTES)[0]
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _response_status(response: Any) -> int | None:
+    """HTTP status of a navigation's main document, or None when there is none.
+
+    ``page.goto`` returns the main-resource response, but None for a
+    same-document navigation and a handful of wait conditions. Playwright only
+    raises on network-level failure (DNS, refused, timeout): a page that
+    answered 403/404/500 is a successful goto. Discarding the response reported
+    that landing as a clean load; surfacing ``status`` is how an unattended
+    agent tells an error page from a real one.
+    """
+    if response is None:
+        return None
+    status = getattr(response, "status", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _playwright_driver_pid(playwright: Any) -> int | None:

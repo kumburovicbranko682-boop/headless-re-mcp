@@ -192,6 +192,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
   无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
 
+### 修复（`web.navigate` / `web.open` 现在交回主文档的 HTTP 状态码）
+
+- Playwright 的 `page.goto` 只在网络层失败(DNS、拒绝连接、超时)时抛异常;一个返回
+  403/404/500 的页面是一次**成功**的 goto,`goto` 照常返回一个带状态码的 Response。旧代码把这个
+  Response 丢弃,于是导航到一个错误落地页与干净加载逐字节一致:回包只有 `url`/`title`,无人值守的
+  agent 据此把 404/500 读成正常打开,基于错误页面继续操作。
+- 现在 `web.navigate` 回包新增 `status`(主文档的 HTTP 状态码),`web.open` 的摘要同样带上 `status`。
+  `page.goto` 对同文档跳转等情形返回 None——此时 `status` 为显式的 null(而非省略键),读作「导航发生
+  但没有 HTTP 响应」,与「拿到一个状态码」区分开。状态码经 `int()` 归一,拿不到时回 null,绝不因驱动
+  回了意外形状而崩。
+- 新增回归:导航到 404 页面回 `status=404`、200 回 200、无响应回显式 null、字符串状态码被归一成 int、
+  Response 缺 `status` 属性时安全回 null,以及 `web.open` 摘要字面量带 `status`、两个工具描述都点名
+  `status`。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
