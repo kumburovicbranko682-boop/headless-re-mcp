@@ -114,12 +114,19 @@ def _build_macho_fixture(tmp_path: Path) -> Path:
     out = tmp_path / "re_mcp_probe_macho"
     commands: list[list[str]] = []
     zig = shutil.which("zig")
+    # -dead_strip: zig statically links a large macOS runtime (~900 functions),
+    # which both slows Ghidra's analysis and pushes the named function past any
+    # reasonable list window. Dropping unreachable code keeps the fixture lean
+    # and the reachable re_mcp_triple findable.
     if zig is not None:
-        commands.append([zig, "cc", "-target", "x86_64-macos", "-O0", "-o", str(out), str(source)])
+        commands.append(
+            [zig, "cc", "-target", "x86_64-macos", "-O0", "-Wl,-dead_strip",
+             "-o", str(out), str(source)]
+        )
     if sys.platform == "darwin":
         host = shutil.which("cc") or shutil.which("clang")
         if host is not None:
-            commands.append([host, "-O0", "-o", str(out), str(source)])
+            commands.append([host, "-O0", "-Wl,-dead_strip", "-o", str(out), str(source)])
     if not commands:
         pytest.skip("no Mach-O cross toolchain (zig / darwin cc) — skip != pass")
     last = ""
@@ -324,7 +331,9 @@ def test_ghidra_analyzes_a_native_macho_end_to_end(tmp_path: Path) -> None:
     client = _client()
     macho = _build_macho_fixture(tmp_path)
 
-    funcs = client.functions(macho, tmp_path / "fn", limit=256, timeout=_TIMEOUT)
+    # A cross-linked Mach-O carries the whole static runtime, so raise the list
+    # window to the client's cap to guarantee the named function is included.
+    funcs = client.functions(macho, tmp_path / "fn", limit=1024, timeout=_TIMEOUT)
     assert funcs.get("count", 0) >= 1
     by_name = {item["name"]: item for item in funcs.get("items", [])}
     # Mach-O symbols carry a leading underscore; match re_mcp_triple by substring.
@@ -363,7 +372,9 @@ def test_ghidra_analyzes_a_native_macho_through_the_service(tmp_path: Path) -> N
     assert session.get("metadata", {}).get("native", {}).get("format") == "macho"
     session_id = str(session["id"])
     try:
-        funcs = service.ghidra_functions(session_id, timeout=_TIMEOUT)
+        # Raise the window past the static runtime the cross-link pulls in so the
+        # named function is in the page (see the client Mach-O gate).
+        funcs = service.ghidra_functions(session_id, limit=1024, timeout=_TIMEOUT)
         assert funcs.ok and funcs.data is not None, funcs.error
         names = {item.get("name") for item in funcs.data.get("items", [])}
         assert any("re_mcp_triple" in (n or "") for n in names), sorted(names)
