@@ -326,7 +326,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (64 KiB)三重设界(重复名沿用旧的 `dict` 语义折叠为最后一个),被裁时在对应 `request` /
   `response` 上打 `metadata_truncated`;`url`、`method` 也一并按既有上限设界。文档串同步说明,
   并新增单值/条数/总量三种裁剪与正常放行的回归测试。
-### 修复（`web.network.get` 取不到响应体时仍保持形状）
+- 新增回归（web `_bounded_metadata` 直测：`<=` 边界、类型强制、多字节按字节裁剪）：网络的
+  method/resourceType/mimeType/scriptLanguage 与页面标题都经这一个 helper 收界，此前只经 CDP
+  捕获处理器间接、且总以超限 ASCII 触达，于是「超限 ASCII 被裁并置位」之外的契约全然惰性。
+  直测补齐四条：恰好等于上限的值不算截断（`len(payload) <= max_bytes`，`<` 会误裁最后一个合法
+  字节并把完整字段标成被裁）；非字符串被强制转换且 `None` 变 `""` 而非字面量 `"None"`（缺失的
+  CDP 字段不得显示成 "None"）；小于上限的多字节值原样逐字节返回（走 `return text` 分支，不被重新
+  编码）；超限多字节值按 payload 的**字节**边界裁剪且以 `errors="ignore"` 丢弃悬空半字符——结果
+  仍在字节上限内且不含 U+FFFD（字符切片会超字节预算，`errors="replace"` 会留下替换符）。以变异
+  逐一验证（`<=` 改 `<`、去掉 `None -> ""`、解码 `ignore` 改 `replace`、字节切片改字符切片）均被
+  新用例捕获。
 
 - `web.network.get` 的文档串承诺回 `body`、`base64_encoded`、`body_truncated`,但当 CDP
   对某个请求没有响应体时(重定向,或响应体已被其缓存淘汰,`Network.getResponseBody` 抛
