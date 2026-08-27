@@ -68,3 +68,16 @@ def test_web_script_source_names_source_and_says_when_it_was_cut(
     assert "source" in doc
     assert "truncated" in doc
     assert "source_path" in doc
+
+
+def test_web_script_source_documents_the_spill_artifact() -> None:
+    """A spilled source is a registered artifact; the description must say so.
+
+    The service wires source_path through _register_capture, so the payload
+    carries artifact_id -- the only handle artifacts.read accepts. This mirrors
+    the web.network.get pin; the registration behaviour itself is pinned in
+    test_web_spill_registration.
+    """
+    doc = _tool_docstring("web.script.source")
+    assert "artifact_id" in doc
+    assert "artifacts.read" in doc

@@ -110,3 +110,17 @@ def test_web_network_get_keeps_the_documented_shape_when_the_body_is_missing(
     assert list(tmp_path.iterdir()) == []
     doc = _tool_docstring("web.network.get")
     assert "body_error" in doc
+
+
+def test_web_network_get_documents_the_spill_artifact() -> None:
+    """A spilled body is a registered artifact; the description must say so.
+
+    The service wires body_path through _register_capture, so the payload
+    carries artifact_id -- the only handle artifacts.read accepts. web.screenshot
+    and web.har.export both document theirs; this one silently produced the field,
+    leaving a bare body_path as the documented dead end. The registration
+    behaviour itself is pinned in test_web_spill_registration.
+    """
+    doc = _tool_docstring("web.network.get")
+    assert "artifact_id" in doc
+    assert "artifacts.read" in doc

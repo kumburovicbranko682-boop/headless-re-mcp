@@ -95,6 +95,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         body already evicted from its cache) body is empty and body_error says
         why, while body, base64_encoded and body_truncated stay present. A
         body over the capture cap is refused rather than written to disk.
+        A spilled body (body_path set) is registered as an artifact and
+        artifact_id names it, so artifacts.read can page the full bytes.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
@@ -141,7 +143,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with scriptId, bytes and source, plus truncated and
         source_path when the text was cut at the buffer. There is no code
         or text field. A source over the capture cap is refused rather
-        than written to disk.
+        than written to disk. A spilled source (source_path set) is
+        registered as an artifact and artifact_id names it, so
+        artifacts.read can page the full text.
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 
