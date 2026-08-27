@@ -498,6 +498,59 @@ def test_pyghidra_launch_translates_analyzeheadless_flags(
     assert not (tmp_path / "project" / "pyghidra_project").exists()
 
 
+def test_pyghidra_analyze_drives_a_probe_script_instead_of_a_bare_repl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ghidra.analyze on a PyGhidra install has no -postScript to translate.
+
+    analyze_binary passes extra=[], so _split_post_script finds no script. A
+    bare ``python -m pyghidra <binary>`` invocation would drop into a REPL and
+    hang forever headless -- the exact hazard the adapter guards by running the
+    export script against a throwaway probe JSON to drive import+analyze, then
+    discarding it. Every other PyGhidra test goes through functions (which has a
+    -postScript), so this analyze-only branch -- and the hang it prevents -- had
+    no coverage. Pin that the launch is a well-formed pyghidra command carrying
+    the probe script, with no analyzeHeadless flags, and the throwaway project
+    cleaned up.
+    """
+    monkeypatch.setattr(ghidra_client.importlib.util, "find_spec", lambda name: object())
+    home = _fake_pyghidra_home(tmp_path)
+    client = ghidra_client.GhidraClient(home=home)
+    client.java = tmp_path / "java"
+    client.java.write_bytes(b"")
+    assert client.uses_pyghidra is True
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        argv = [str(part) for part in cmd]
+        calls.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text('{"items": []}', encoding="utf-8")
+        return Completed(0, b"analyze ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    project = tmp_path / "project"
+    result = client.analyze_binary(_binary(tmp_path), project)
+
+    assert "deleted" in result["note"]
+    cmd = calls[0]
+    assert cmd[0] == sys.executable
+    assert "-m" in cmd and "pyghidra" in cmd
+    # No analyzeHeadless-only flags leak into the PyGhidra command line.
+    assert "-import" not in cmd
+    assert "-deleteProject" not in cmd
+    assert "-postScript" not in cmd
+    # The bare-analyze path still runs the export script against a probe json,
+    # rather than launching pyghidra with no script (which would hang in a REPL).
+    assert any(arg.endswith("ExportJson.py") for arg in cmd)
+    assert any(arg.endswith("_analyze_probe.json") for arg in cmd)
+    # The throwaway pyghidra project is cleaned up after the analyze run.
+    assert not (project / "pyghidra_project").exists()
+
+
 def _run_writing(payload: str, *, exit_code: int) -> Any:
     def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
         del kwargs
