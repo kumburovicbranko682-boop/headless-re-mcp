@@ -33,7 +33,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 PE 后端在 Linux 对真实工具的行为（如 POSIX 启动器路径、套接字回收、编码）无任何持续覆盖。
 - 手动 `workflow_dispatch` + 每周定时，避免每次提交都下载 Chromium/Node；`ubuntu-24.04` 与
   webcrack 版本均按本地验证过的取值钉死，避免上游滚动悄悄改掉 gate 所验证的契约。装完先做工具
-  自检（缺工具直接失败，而非让 gate 静默 skip），`pytest -rs` 打印每条 skip 原因，保持
+  自检（缺工具直接失败，而非让 gate 静默 skip）：除 wabt/webcrack/mitmproxy 的导入自检外，另用
+  `create_session`→`web_open` 的真实路径起一次 Chromium——CDP gate 在浏览器装上却起不来时会
+  第二次 skip，纯导入自检抓不到，这一步让浏览器起不来时 job 直接失败而非静默丢掉 CDP 覆盖。
+  `pytest -rs` 打印每条 skip 原因，保持
   skip≠pass。本地在 ubuntu-24.04 / CPython 3.12 实测：14 通过、1 跳过（仅 Windows 才有的 OS
   句柄泄漏检查，POSIX 下诚实 skip）。r2 与 frida 的现场 gate 依赖 Windows PE 夹具，在 Linux 只会
   skip，故仍留在 Windows job。
