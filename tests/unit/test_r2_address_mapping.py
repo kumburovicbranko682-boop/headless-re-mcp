@@ -332,7 +332,8 @@ def test_function_list_is_items_not_functions(tmp_path: Path) -> None:
             continue
         described = ast.get_docstring(node) or ""
     assert "Answers with items" in described
-    assert "no functions field" in described
+    assert "no" in described and "functions" in described
+    assert "items_truncated" in described
 
 
 def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
