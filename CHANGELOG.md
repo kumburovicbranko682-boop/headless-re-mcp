@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（Agent HTTP/SSE 控制面 Gate）
+
+- 新集成 Gate `tests/integration/test_agent_http_sse_gate.py`（纯 Python,任何平台可跑）补上此前
+  唯一未被端到端覆盖的缝:浏览器真正对话的 Agent 控制面——`POST /api/agent/runs` 与
+  `GET /api/agent/runs/{id}/events` 的 SSE 事件流,且由**真实的** `OpenAICompatibleProvider`
+  发起真实网络调用。测试进程内起一个说 chat-completions 流式 SSE 的假 OpenAI 服务器,真实
+  `serve-web` 子进程经 provider 配置文件指向它;in-process 的编排器单测、进程内 agent 循环
+  gate、以及 serve-web 非 agent 面 gate 都不触及这条 HTTP/SSE 链路。
+- 全程 HTTP 钉住:创建线程、带用户消息起 run、从真实 SSE 端点消费事件——`event:`/`data:` 分帧
+  正确、按 seq 有序;模型流式吐出的 `session.create` 工具调用经真实目录对提交的 PE 夹具分发,
+  事件流依次出现 `tool.proposed` / `approval.auto` / `tool.completed(ok=True)` 并以 `run.completed`
+  收尾;`GET /api/sessions` 事后确有该 run 打开的那个 PE 会话;非流式 history 端点与实时流一致。
+  "LLM" 是测试掌控的本机 socket,不打开任何分析后端。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
