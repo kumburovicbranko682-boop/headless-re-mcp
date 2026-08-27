@@ -23,6 +23,7 @@ from headless_re_mcp.backends.jsre import (
     parse_wasm_imports,
     parse_wasm_names,
     parse_wasm_sections,
+    parse_wasm_strings,
 )
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
@@ -201,6 +202,23 @@ class JsReAnalysisMixin:
     ) -> Result[JsonObject]:
         try:
             data = parse_wasm_functions(Path(path), offset=offset, limit=limit)
+            return _success(data, backend="jsre")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def wasm_strings(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: int = 100,
+        min_length: int = 4,
+    ) -> Result[JsonObject]:
+        try:
+            data = parse_wasm_strings(
+                Path(path), offset=offset, limit=limit, min_length=min_length
+            )
             return _success(data, backend="jsre")
         except JsReError as exc:
             return _failure(_as_rpc(exc))

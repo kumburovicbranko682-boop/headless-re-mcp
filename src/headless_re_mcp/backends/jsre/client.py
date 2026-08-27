@@ -8,6 +8,7 @@ needs Node.js 22 or 24; wabt provides ``wasm2wat`` and ``wasm-objdump``.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -107,6 +108,17 @@ _WASM_VALTYPES = {
 }
 _MAX_WASM_FUNCTIONS_COLLECT = 50000
 _MAX_WASM_FUNCTIONS_PAGE = 1000
+# wasm.strings runs a `strings`-style scan over the data section -- where string
+# literals, URLs, paths and error messages live -- rather than parsing segment
+# offset expressions (whose LEB immediates can hide the 0x0B end byte, so a
+# naive skip misaligns). A printable run is 0x20..0x7e; runs shorter than the
+# caller's min_length are dropped, longer than the char cap are clipped.
+_WASM_DATA_SECTION_ID = 11
+_WASM_DEFAULT_MIN_STRING = 4
+_WASM_MAX_MIN_STRING = 256
+_MAX_WASM_STRINGS_COLLECT = 50000
+_MAX_WASM_STRINGS_PAGE = 1000
+_MAX_WASM_STRING_LEN = 1024
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -875,6 +887,97 @@ def parse_wasm_functions(
         "total": len(rows),
         "offset": start,
         "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _scan_printable_strings(
+    data: bytes, *, min_len: int, collect_cap: int, str_cap: int
+) -> tuple[list[str], bool]:
+    """Extract distinct printable ASCII runs in first-seen order; flag the cap.
+
+    A run is a maximal span of bytes in 0x20..0x7e; runs shorter than min_len
+    are ignored and longer than str_cap are clipped. De-duplicates so the list
+    is "what text is in here", not every occurrence; scan_more is True once
+    collect_cap distinct runs are held and a further new one is seen.
+    """
+    result: dict[str, None] = {}
+    scan_more = False
+    pattern = re.compile(rb"[ -~]{%d,}" % max(1, min_len))
+    for match in pattern.finditer(data):
+        text = match.group()[:str_cap].decode("ascii")
+        if text in result:
+            continue
+        if len(result) >= collect_cap:
+            scan_more = True
+            break
+        result[text] = None
+    return list(result.keys()), scan_more
+
+
+def parse_wasm_strings(
+    path: Path,
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    min_length: int = _WASM_DEFAULT_MIN_STRING,
+) -> JsonObject:
+    """Extract printable strings from a WebAssembly module's data section, wabt-free.
+
+    `strings` for WASM: the data section holds a module's initialized memory --
+    its string literals, URLs, file paths, format strings and error messages --
+    and this surfaces them in pure Python, so unlike wasm.info / wasm.wat it
+    needs no wabt installed. It scans the raw data-section bytes for runs of
+    printable ASCII (0x20..0x7e) rather than parsing each segment's offset
+    expression, whose LEB immediates can contain the 0x0B end byte and defeat a
+    naive skip; the cost is that a few structural bytes between payloads may
+    cling to a string's edge. Runs shorter than min_length (default 4) are
+    dropped and longer than 1024 characters clipped; results are de-duplicated
+    and kept in first-appearance order, which groups strings that sit near each
+    other in memory. Answers with has_data_section (false when the module has
+    none -- then strings is empty and total 0, not an error), data_bytes (the
+    scanned size), min_length, and strings with count, total, offset and
+    has_more so a filled page is not read as every string; total is capped at
+    50000 with scan_capped when more may exist, and truncated is true when the
+    section walk hit a malformed length. A file that is not a WebAssembly module
+    is refused as invalid_params, one over 16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    bodies, truncated = _collect_section_bodies(
+        raw, frozenset({_WASM_DATA_SECTION_ID})
+    )
+    data_body = bodies.get(_WASM_DATA_SECTION_ID, b"")
+    has_data_section = _WASM_DATA_SECTION_ID in bodies
+    min_len = max(1, min(int(min_length), _WASM_MAX_MIN_STRING))
+    found, scan_more = _scan_printable_strings(
+        data_body,
+        min_len=min_len,
+        collect_cap=_MAX_WASM_STRINGS_COLLECT,
+        str_cap=_MAX_WASM_STRING_LEN,
+    )
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_STRINGS_PAGE))
+    window = found[start : start + cap]
+    return {
+        "strings": window,
+        "has_data_section": has_data_section,
+        "data_bytes": len(data_body),
+        "min_length": min_len,
+        "count": len(window),
+        "total": len(found),
+        "offset": start,
+        "has_more": start + len(window) < len(found),
         "scan_capped": scan_more,
         "truncated": truncated,
     }

@@ -302,6 +302,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "wasm.info",
         "wasm.names",
         "wasm.sections",
+        "wasm.strings",
         "wasm.wat",
         # Web dynamic (web.*)
         "web.open",

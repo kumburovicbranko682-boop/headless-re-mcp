@@ -237,4 +237,38 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_sections(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.strings")
+    def wasm_strings(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        min_length: Annotated[int, Field(ge=1, le=256)] = 4,
+    ) -> dict[str, Any]:
+        """Extract printable strings from a .wasm module's data section, wabt-free.
+
+        `strings` for WASM: the data section holds a module's initialized memory
+        -- its string literals, URLs, file paths, format strings and error
+        messages -- and this surfaces them in pure Python, so unlike wasm.info /
+        wasm.wat it needs no wabt installed. It scans the raw data-section bytes
+        for runs of printable ASCII (0x20..0x7e) rather than parsing each
+        segment's offset expression, whose LEB immediates can contain the 0x0B
+        end byte and defeat a naive skip; the cost is that a few structural bytes
+        between payloads may cling to a string's edge. Runs shorter than
+        min_length (default 4) are dropped and longer than 1024 characters
+        clipped; results are de-duplicated and kept in first-appearance order,
+        which groups strings that sit near each other in memory. Answers with
+        has_data_section (false when the module has none -- then strings is empty
+        and total 0, not an error), data_bytes (the scanned size), min_length,
+        and strings with count, total, offset and has_more so a filled page is
+        not read as every string; total is capped at 50000 with scan_capped when
+        more may exist, and truncated is true when the section walk hit a
+        malformed length. A file that is not a WebAssembly module is refused as
+        invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(
+            analysis.wasm_strings(
+                path, offset=offset, limit=limit, min_length=min_length
+            )
+        )
+
     return tools.bindings
