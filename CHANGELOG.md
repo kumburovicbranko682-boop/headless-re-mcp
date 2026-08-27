@@ -819,6 +819,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   descriptor(`()V`)与 access、smali 与点分两种类名都能解析、字符串字面量 `s3cr3t` 在结果里、
   无人调用的方法回结构化空 `callers`（而非 not_found）、不存在的类回 `not_found`。这正是假对象钉不住、
   一旦 androguard 改了 `get_classes`/`get_methods`/`get_strings`/`get_xref_from` 就会露馅的那部分。
+- **`apk.export_sources` / `apk.decompile` 首次有真实 jadx 的端到端覆盖**。jadx 是用户自备的 CLI
+  (需 JRE),故这条 gate 像 webcrack/wabt 一样未配置即 skip(skip≠pass);配了就用真 jadx 反编上面那个
+  手工 DEX,断言:源码树列出该类、按简单类名取回的 Java 里出现方法名、jadx 从未产出的类回 `not_found`
+  而非崩溃或空源码。jadx 会把无包名的类丢进 `defpackage/`,所以点分路径 `Crackme.java` 在源码根不存在、
+  正好命中客户端「同名唯一匹配」的回退分支——这条路径此前也没有集成覆盖。
 
 ### 变更（Android 后端清理）
 
