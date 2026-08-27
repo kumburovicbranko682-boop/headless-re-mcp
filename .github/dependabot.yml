@@ -1,0 +1,40 @@
+# Dependency update automation, scoped to match this repo's gates and
+# conventions rather than maximum churn.
+#
+# Python and npm get security updates only (open-pull-requests-limit: 0
+# disables version updates; security updates stay active). Rationale:
+# - pyproject floors are semantic — they state what the code actually
+#   requires (see "Require pytest 9 so the faulthandler exit backstop
+#   actually exists"), so mechanically raising them to latest would turn
+#   a contract into churn. CI's pip-audit step is a hard gate, though,
+#   so a vulnerable floor needs a fix PR the moment an advisory lands.
+# - webui version bumps change Vite's content-hashed asset names, and CI
+#   asserts the committed SPA in src/headless_re_mcp/web/spa matches
+#   webui/src — every routine bump PR would arrive red until someone
+#   rebuilds and commits the bundle. npm audit --audit-level=high is a
+#   hard gate, so security fixes still must land promptly.
+# Actions get weekly grouped version updates: the workflows deliberately
+# keep all actions on one current major across jobs (the linux-quality
+# job drifting to older pins produced deprecation noise until it was
+# manually realigned), which is exactly the busywork to automate.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: "npm"
+    directory: "/webui"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
