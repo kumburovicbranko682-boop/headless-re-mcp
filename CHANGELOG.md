@@ -47,6 +47,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   末尾之后返回空页,不可被滥用)。两例都断言各后端的已知分页工具确实被扫到,防止枚举失效导致空过。新增分页工具若漏掉
   bound 会在此失败。(纯测试新增,无行为变更。)
 
+### 测试（钉住 close_session 释放 APK 的 DEX 分析缓存，堵住 unattended 内存泄漏）
+
+- `AnalysisService` 以 path+mtime 为键缓存 androguard 的整包分析(apk.methods / xrefs / classes / strings 共用),单份
+  常驻数十到数百 MB,而缓存只按条数上限;`close_session` 在浏览器/代理拆除旁以 best-effort 的
+  `ApkClient.release(session.binary)` 释放该会话对应缓存,让内存随会话结束归还。此前 web/proxy 的关闭释放有
+  `test_close_session_releases_web_and_proxy` 钉住,紧挨着的这条 APK 缓存释放却无测试——一次 refactor 若丢掉它,连开
+  多个 APK 的长跑会一路吃内存,且只有跑上数小时才显形。
+- `tests/unit/test_close_session_releases_apk_cache.py` 新增两例:关闭 APK 会话必须以该会话 binary 恰好调用一次
+  `ApkClient.release`(用 spy 钉住);关闭非 APK(PE)会话则完全不碰该释放(钉住 `target is APK` 的作用域守卫)。
+  (纯测试新增,无行为变更。)
+
 ### 测试（钉住 proxy 服务层对“非 ProxyError 意外故障”的 fail-closed 契约）
 
 - proxy 各服务包装器先 catch `ProxyError`(按 code 映射),再以末尾 `except BaseException` 把*意外*故障(bug、
