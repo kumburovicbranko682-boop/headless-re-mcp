@@ -122,3 +122,36 @@ def test_clip_console_text_handles_no_args() -> None:
     text, truncated = _clip_console_text({"type": "log"})
     assert text == ""
     assert truncated is False
+
+
+def test_web_console_docstring_states_the_javascript_rendering() -> None:
+    """The tool surface must say values render as JS, so the behavior is discoverable.
+
+    An agent reading only the tool description would otherwise not know a boolean
+    reads back as ``true`` rather than ``True``; pin the doc to the behavior so
+    the two cannot drift.
+    """
+    import ast
+    from pathlib import Path
+
+    from headless_re_mcp.tools.web import build_web_tools
+
+    source = Path(build_web_tools.__code__.co_filename).read_text(encoding="utf-8")
+    doc = ""
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            if any(
+                keyword.arg == "name"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value == "web.console"
+                for keyword in decorator.keywords
+            ):
+                doc = ast.get_docstring(node) or ""
+    flat = " ".join(doc.split())
+    assert "true/false" in flat
+    assert "null" in flat
+    assert "True/False/None" in flat
