@@ -20,6 +20,7 @@ from headless_re_mcp.backends.jsre.wasm_format import (
     parse_data_strings,
     parse_exports,
     parse_functions,
+    parse_globals,
     parse_imports,
     parse_names,
     parse_sections,
@@ -320,6 +321,24 @@ class WasmClient:
         return _paged_entries(
             entries, "functions", declared, incomplete, offset=offset, limit=limit
         )
+
+    def globals(
+        self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT
+    ) -> JsonObject:
+        """Structured defined-global table (absolute index/type/mutable/init).
+
+        Reads the Global section directly, so it needs no wabt and cannot drift
+        with a wabt version; an input over 16 MiB is refused as too_large. Each
+        row's init decodes the initializer constant (the literal a stack-pointer
+        or heap-base global is set to) when it is a simple const or reference.
+        Indices are absolute (imported globals counted first).
+        """
+        data = self._read_module(path)
+        try:
+            entries, declared, incomplete = parse_globals(data)
+        except WasmParseError as exc:
+            raise JsReError("backend_error", str(exc), path=str(path)) from exc
+        return _paged_entries(entries, "globals", declared, incomplete, offset=offset, limit=limit)
 
     def imports(
         self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT

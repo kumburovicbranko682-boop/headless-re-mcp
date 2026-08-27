@@ -21,6 +21,8 @@ file that is not a WebAssembly module at all.
 
 from __future__ import annotations
 
+import math
+import struct
 from collections.abc import Iterator
 from contextlib import suppress
 from typing import Any
@@ -151,6 +153,24 @@ class _Reader:
             if not self.byte() & 0x80:
                 return
         raise _Truncated
+
+    def sleb(self, *, max_bits: int = 64) -> int:
+        # Signed LEB128, for i32/i64.const immediates (a global's init value is
+        # the useful part -- a stack-pointer or heap-base constant). Width-capped
+        # like uleb so a padded-continuation-byte run cannot spin, and the final
+        # group's sign bit is extended so a negative constant reads back signed.
+        result = 0
+        shift = 0
+        while True:
+            byte = self.byte()
+            result |= (byte & 0x7F) << shift
+            shift += 7
+            if not byte & 0x80:
+                if byte & 0x40 and shift < 64:
+                    result |= -(1 << shift)
+                return result
+            if shift > max_bits:
+                raise _Truncated
 
     def name(self) -> str:
         length = self.uleb()
@@ -472,6 +492,105 @@ def parse_functions(data: bytes) -> tuple[list[JsonObject], int, bool]:
             name = names.get(absolute)
             if name is not None:
                 entry["name"] = name
+            entries.append(entry)
+    except _Truncated:
+        incomplete = True
+    return entries, declared, incomplete
+
+
+def _count_imported_globals(data: bytes) -> int:
+    """How many globals the Import section declares (the global-index offset)."""
+    entries, _declared, _incomplete = parse_imports(data)
+    return sum(1 for entry in entries if entry.get("kind") == "global")
+
+
+def _float_const(op: str, number: float) -> JsonObject:
+    # A non-finite float (NaN/inf) is not representable in strict JSON, so keep
+    # the op but drop the value rather than emit a token that breaks the encoder.
+    if math.isfinite(number):
+        return {"op": op, "value": number}
+    return {"op": op}
+
+
+def _read_global_init(reader: _Reader) -> JsonObject | None:
+    """Decode a global's init const-expr, consuming it through its ``end``.
+
+    A global's initializer is a constant expression -- in practice a single
+    ``t.const`` (its literal value, the useful part) or ``global.get`` (a
+    reference to an imported global). Returns ``{op, value}`` for those, ``{op}``
+    for a reference-null or a non-finite float we will not put in JSON, or
+    ``None`` for an empty expr. An opcode we cannot decode, or anything after the
+    single expected instruction other than ``end``, means the layout ahead is
+    unknown, so raise ``_Truncated`` and let the caller flag it rather than
+    misread the next global.
+    """
+    op = reader.byte()
+    if op == _END_OP:
+        return None
+    value: JsonObject
+    if op == 0x41:  # i32.const
+        value = {"op": "i32.const", "value": reader.sleb(max_bits=32)}
+    elif op == 0x42:  # i64.const
+        value = {"op": "i64.const", "value": reader.sleb(max_bits=64)}
+    elif op == 0x43:  # f32.const
+        value = _float_const("f32.const", struct.unpack("<f", reader.take(4))[0])
+    elif op == 0x44:  # f64.const
+        value = _float_const("f64.const", struct.unpack("<d", reader.take(8))[0])
+    elif op == 0x23:  # global.get (a reference to an imported global)
+        value = {"op": "global.get", "value": reader.uleb()}
+    elif op == 0xD2:  # ref.func
+        value = {"op": "ref.func", "value": reader.uleb()}
+    elif op == 0xD0:  # ref.null (heap type byte follows)
+        reader.byte()
+        value = {"op": "ref.null"}
+    else:
+        raise _Truncated
+    # A global init is a single instruction followed by end; anything else means
+    # we have misread the operand width, so stop rather than guess.
+    if reader.byte() != _END_OP:
+        raise _Truncated
+    return value
+
+
+def parse_globals(data: bytes) -> tuple[list[JsonObject], int, bool]:
+    """``(entries, declared_count, incomplete)`` for the module's defined globals.
+
+    The Global section (id 6) declares the module's own global variables (the
+    imported globals are wasm.imports, not here). Each entry carries index (the
+    absolute global index -- imported globals counted first, so it matches
+    global.get instructions), value_type (i32/i64/f32/f64/...), mutable, and init
+    -- the initializer as ``{op, value}`` when it is a simple constant (the
+    literal a stack-pointer/heap-base/flag global is set to) or a global.get /
+    ref.func reference. ``incomplete`` is flagged like the sibling parsers when
+    the section was truncated, the declared count exceeded the entry cap, or an
+    init expression could not be decoded.
+    """
+    sections = _walk_sections(data)
+    body = sections.get(6)
+    if not body:
+        return [], 0, False
+    imported = _count_imported_globals(data)
+    reader = _Reader(body)
+    entries: list[JsonObject] = []
+    declared = 0
+    incomplete = False
+    try:
+        declared = reader.uleb()
+        if declared > _MAX_VEC:
+            raise _Truncated
+        limit = min(declared, _MAX_ENTRIES)
+        incomplete = declared > limit
+        for position in range(limit):
+            value_type = _valtype(reader.byte())
+            mutable = reader.byte() == 1
+            init = _read_global_init(reader)
+            entry: JsonObject = {
+                "index": imported + position,
+                "value_type": value_type,
+                "mutable": mutable,
+            }
+            if init is not None:
+                entry["init"] = init
             entries.append(entry)
     except _Truncated:
         incomplete = True

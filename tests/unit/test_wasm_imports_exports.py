@@ -11,6 +11,7 @@ through the WasmClient method that adds the file guard and pagination.
 from __future__ import annotations
 
 import ast
+import struct
 from pathlib import Path
 
 import pytest
@@ -603,6 +604,192 @@ def test_wasm_client_functions_missing_file_is_not_found(tmp_path: Path) -> None
 def test_wasm_functions_docstring_names_its_fields() -> None:
     doc = _tool_docstring("wasm.functions")
     for token in ("functions", "index", "type_index", "declared", "incomplete", "params", "name"):
+        assert token in doc
+
+
+def _sleb128(value: int) -> bytes:
+    """Signed LEB128 encoder, so tests can craft real i32/i64.const immediates."""
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if (value == 0 and not byte & 0x40) or (value == -1 and byte & 0x40):
+            out.append(byte)
+            return bytes(out)
+        out.append(byte | 0x80)
+
+
+def _global(value_type: int, mutable: int, init_expr: bytes) -> bytes:
+    return bytes([value_type, mutable]) + init_expr
+
+
+def _global_section(*globals_: bytes) -> bytes:
+    return _section(6, _vec(list(globals_)))
+
+
+def _i32_const(value: int) -> bytes:
+    return b"\x41" + _sleb128(value) + b"\x0b"
+
+
+def test_parse_globals_reads_type_mutability_and_int_init() -> None:
+    """Each defined global resolves to its index, type, mutability and init value.
+
+    Measured on two i32 globals: a const one initialised to 1048576 (a typical
+    stack-pointer literal) at index 0, and a var one initialised to 0 at index 1;
+    declared 2, not incomplete.
+    """
+    module = _module(
+        _global_section(
+            _global(0x7F, 0, _i32_const(1048576)),
+            _global(0x7F, 1, _i32_const(0)),
+        )
+    )
+    entries, declared, incomplete = wf.parse_globals(module)
+    assert declared == 2
+    assert incomplete is False
+    assert entries == [
+        {
+            "index": 0,
+            "value_type": "i32",
+            "mutable": False,
+            "init": {"op": "i32.const", "value": 1048576},
+        },
+        {
+            "index": 1,
+            "value_type": "i32",
+            "mutable": True,
+            "init": {"op": "i32.const", "value": 0},
+        },
+    ]
+
+
+def test_parse_globals_decodes_a_negative_i32_const() -> None:
+    """A negative init reads back signed (proves the sleb sign extension)."""
+    module = _module(_global_section(_global(0x7F, 0, _i32_const(-7))))
+    entries, _declared, _incomplete = wf.parse_globals(module)
+    assert entries[0]["init"] == {"op": "i32.const", "value": -7}
+
+
+def test_parse_globals_decodes_i64_and_float_consts() -> None:
+    """i64.const past 2^32 and an f64.const literal both decode to their value."""
+    i64_init = b"\x42" + _sleb128(5_000_000_000) + b"\x0b"
+    f64_init = b"\x44" + struct.pack("<d", 3.5) + b"\x0b"
+    module = _module(
+        _global_section(
+            _global(0x7E, 0, i64_init),  # i64
+            _global(0x7C, 1, f64_init),  # f64
+        )
+    )
+    entries, _declared, incomplete = wf.parse_globals(module)
+    assert incomplete is False
+    assert entries[0]["init"] == {"op": "i64.const", "value": 5_000_000_000}
+    assert entries[1]["init"] == {"op": "f64.const", "value": 3.5}
+
+
+def test_parse_globals_non_finite_float_keeps_op_drops_value() -> None:
+    """A NaN/inf float const keeps op but omits value (not JSON-representable)."""
+    f32_inf = b"\x43" + struct.pack("<f", float("inf")) + b"\x0b"
+    module = _module(_global_section(_global(0x7D, 0, f32_inf)))
+    entries, _declared, _incomplete = wf.parse_globals(module)
+    assert entries[0]["init"] == {"op": "f32.const"}
+
+
+def test_parse_globals_offsets_index_past_imported_globals() -> None:
+    """A defined global's index counts imported globals first."""
+    imp_glob = _name("js") + _name("g") + b"\x03" + b"\x7f\x01"  # global i32 mutable
+    module = _module(
+        _import_section(imp_glob),
+        _global_section(_global(0x7F, 0, _i32_const(0))),
+    )
+    entries, _declared, _incomplete = wf.parse_globals(module)
+    assert entries[0]["index"] == 1
+
+
+def test_parse_globals_global_get_init_is_a_reference() -> None:
+    """An init that is global.get reports the referenced index, not a literal."""
+    module = _module(_global_section(_global(0x7F, 0, b"\x23\x00\x0b")))
+    entries, _declared, _incomplete = wf.parse_globals(module)
+    assert entries[0]["init"] == {"op": "global.get", "value": 0}
+
+
+def test_parse_globals_no_global_section_is_empty_not_incomplete() -> None:
+    """A module lacking a Global section yields an empty, complete answer."""
+    assert wf.parse_globals(_module(_TYPE_SECTION)) == ([], 0, False)
+
+
+def test_parse_globals_truncated_section_is_incomplete() -> None:
+    """A section claiming more globals than its bytes hold stops and flags it."""
+    # declares 2, carries one whole global then a dangling value-type byte.
+    body = b"\x02" + _global(0x7F, 0, _i32_const(0)) + b"\x7f"
+    module = _module(_section(6, body))
+    entries, declared, incomplete = wf.parse_globals(module)
+    assert declared == 2
+    assert incomplete is True
+    assert [row["index"] for row in entries] == [0]
+
+
+def test_parse_globals_undecodable_init_is_incomplete() -> None:
+    """An init opcode we cannot decode stops the walk and flags incomplete.
+
+    0x00 (unreachable) is not a constant op, so its operand layout is unknown;
+    the parser must not guess where the next global starts.
+    """
+    module = _module(_global_section(_global(0x7F, 0, b"\x00\x0b")))
+    entries, _declared, incomplete = wf.parse_globals(module)
+    assert entries == []
+    assert incomplete is True
+
+
+def test_parse_globals_rejects_a_non_module() -> None:
+    """Bytes without the wasm magic are not a module at all (hard error)."""
+    for bad in (b"", b"not wasm here", b"\x00asm"):
+        with pytest.raises(wf.WasmParseError):
+            wf.parse_globals(bad)
+
+
+def test_wasm_client_globals_pages_and_needs_no_wabt(tmp_path: Path) -> None:
+    """WasmClient.globals reads a file, pages the table, and works with no wabt.
+
+    Measured: a three-global module through WasmClient(None) -> total 3,
+    declared 3, incomplete False; limit 2 -> count 2, has_more True, list field
+    globals (not items); offset 2 -> the last row, has_more False.
+    """
+    module = _module(
+        _global_section(
+            _global(0x7F, 0, _i32_const(1)),
+            _global(0x7F, 0, _i32_const(2)),
+            _global(0x7F, 0, _i32_const(3)),
+        )
+    )
+    path = tmp_path / "m.wasm"
+    path.write_bytes(module)
+
+    client = WasmClient(None)  # no wabt path; globals must still work
+    first = client.globals(path, limit=2)
+    assert first["total"] == 3
+    assert first["declared"] == 3
+    assert first["incomplete"] is False
+    assert first["count"] == 2
+    assert len(first["globals"]) == 2
+    assert first["has_more"] is True
+    assert "items" not in first
+    second = client.globals(path, offset=2, limit=2)
+    assert second["count"] == 1
+    assert second["offset"] == 2
+    assert second["has_more"] is False
+    assert second["globals"][0]["init"] == {"op": "i32.const", "value": 3}
+
+
+def test_wasm_client_globals_missing_file_is_not_found(tmp_path: Path) -> None:
+    """A missing module is not_found, not a crash or a fabricated empty table."""
+    with pytest.raises(JsReError) as info:
+        WasmClient(None).globals(tmp_path / "nope.wasm")
+    assert info.value.code == "not_found"
+
+
+def test_wasm_globals_docstring_names_its_fields() -> None:
+    doc = _tool_docstring("wasm.globals")
+    for token in ("globals", "value_type", "mutable", "init", "index", "declared", "incomplete"):
         assert token in doc
 
 

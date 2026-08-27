@@ -213,3 +213,46 @@ def test_m11_wasm_strings_read_from_bytes(tmp_path: Path) -> None:
     filtered = client.strings(fixture, contains="marker")  # case-insensitive
     assert filtered["filtered"] is True
     assert filtered["strings"] == ["MARKER_STRING"]
+
+
+@pytest.mark.integration
+def test_m11_wasm_globals_read_from_bytes(tmp_path: Path) -> None:
+    """wasm.globals reads the Global section and decodes init consts, no wabt.
+
+    Builds a module with two i32 globals -- a const one initialised to a
+    stack-pointer-like 66560 and a mutable one initialised to 0 -- and asserts
+    the parser recovers each global's index, type, mutability and decoded init
+    value. The init 66560 is a three-byte LEB128, so this also exercises the
+    signed-LEB decode end to end, all in-process (never skips on a wabt-less
+    host).
+    """
+    magic = bytes.fromhex("0061736d01000000")
+    # Global section (id 6): count 2, then each global as
+    # <valtype><mutability><init const-expr ... end>. i32.const 66560 encodes as
+    # 0x41 80 88 04 0x0b; i32.const 0 as 0x41 00 0x0b.
+    g_const = b"\x7f\x00" + b"\x41\x80\x88\x04\x0b"
+    g_mutable = b"\x7f\x01" + b"\x41\x00\x0b"
+    body = bytes([2]) + g_const + g_mutable
+    module = magic + bytes([6, len(body)]) + body
+
+    fixture = tmp_path / "globals.wasm"
+    fixture.write_bytes(module)
+    client = WasmClient(None)  # deliberately no wabt: globals never needs it
+
+    result = client.globals(fixture)
+    assert result["incomplete"] is False
+    assert result["total"] == 2
+    assert result["globals"] == [
+        {
+            "index": 0,
+            "value_type": "i32",
+            "mutable": False,
+            "init": {"op": "i32.const", "value": 66560},
+        },
+        {
+            "index": 1,
+            "value_type": "i32",
+            "mutable": True,
+            "init": {"op": "i32.const", "value": 0},
+        },
+    ]

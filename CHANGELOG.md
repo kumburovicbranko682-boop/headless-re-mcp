@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **276（159 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **277（160 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1434,6 +1434,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   已定义函数落在绝对索引 1)、name 段补名、未知类型索引只留 index/type_index 而不臆造签名、无 Function 段为空而非报错、段截断置 incomplete、非模块硬报错、WasmClient 无 wabt 也能分页读盘且列表字段名为 functions、
   缺文件报 `not_found`。实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对真实 wat2wasm 产物读回其唯一定义函数(绝对索引 0、类型 0、签名 (i32,i32)->i32),并对带一个 func 导入但无 Function 段的模块确认
   已定义函数数为 0(证明被导入函数不进此表)。
+
+- **新增 `wasm.globals`:列出一个 `.wasm` 模块自己*定义*的全局变量表——每个全局的绝对索引、值类型、可变性,以及解码出的初值常量。** 一枚 WASM 的全局变量装的是它的可变状态与布局常量——
+  Emscripten/Rust 产物里的栈指针、堆基址、特性开关——这些初值直接写在二进制里,是逆向时最值得一眼读到的。此前无一工具解析 Global 段(id 6):没有它,全局只是一堆没有初值的类型标注。新工具直接读该段,
+  故与 `wasm.imports`/`sections`/`functions`/`names` 同为**纯 Python 读二进制、免 wabt、不随其版本漂移**;输入超 16 MiB 按 `too_large` 拒绝。每行含 `index`(绝对全局索引——WASM 的全局索引同样「先导入后定义」,
+  故已定义全局的绝对索引数过被导入全局,和 `global.get` 指令用的编号一致)、`value_type`(i32/i64/f32/f64/v128/funcref/externref,未知类型给十六进制字节)、`mutable`(var 全局为真、const 全局为假),
+  以及 `init`——当初值是简单常量或引用时以 `{op, value}` 给出:`i32.const`/`i64.const`/`f32.const`/`f64.const` 携字面量(i32/i64 走带符号 LEB128,负值读回为负),`global.get`/`ref.func` 携被引用的索引、`ref.null` 无 value;
+  非有限浮点常量(NaN/inf 不可入严格 JSON)保留 `op` 而丢 `value`,无法解码的初值整条省略。**只列已定义全局**——被导入的全局属于 `wasm.imports` 而不进此表。回
+  `globals`/`count`/`total`/`offset`/`declared`/`has_more`/`incomplete`:`total`/`declared` 因截断、触达条目上限或初值无法解码而背离时 `incomplete` 为真,故短列表不被读成完整全局表;预算裁剪落到 `has_more`,可继续翻页。
+  工具面 276→**277**(159→**160** 只读,写不变)。单测(`test_wasm_imports_exports.py`):类型/可变性/整型初值、负 i32 初值(证带符号 LEB128 的符号扩展)、i64 超 2^32 与 f64 字面量、非有限浮点保 op 丢 value、索引在被导入全局之后偏移、
+  `global.get` 初值报被引用索引、无 Global 段为空而非报错、段截断置 incomplete、无法解码的初值(0x00 非常量操作码)置 incomplete 且不臆造下一条起点、非模块硬报错、WasmClient 无 wabt 也能分页读盘且列表字段名为 globals、缺文件报 `not_found`。
+  实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对手工装配、含两枚 i32 全局(一枚 const 初值 66560 即栈指针量级、一枚 mutable 初值 0)的模块读回各自的索引/类型/可变性与解码初值,初值 66560 为三字节 LEB128 故一并端到端验证带符号 LEB 解码。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

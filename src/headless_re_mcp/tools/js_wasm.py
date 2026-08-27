@@ -146,6 +146,39 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_functions(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.globals")
+    def wasm_globals(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List a .wasm module's defined globals (its global-variable table).
+
+        Reads the Global section directly, so it needs no wabt and cannot drift
+        with a wabt version; an input over 16 MiB is refused as too_large. A
+        module's globals hold its mutable state and layout constants -- the stack
+        pointer, heap base, and feature flags an Emscripten/Rust module ships --
+        so their initial values are worth reading straight off the binary.
+        Answers with globals, count, total, offset, declared, has_more and
+        incomplete. Each row has index (the absolute global index, imported
+        globals counted first, so it matches global.get instructions),
+        value_type (i32/i64/f32/f64/v128/funcref/externref, or a hex byte for an
+        unknown type) and mutable (true for a var global, false for a const one).
+        A row also carries init -- the initializer as {op, value} when it is a
+        simple constant (op i32.const/i64.const/f32.const/f64.const with the
+        literal in value) or a reference (op global.get/ref.func with the index
+        in value, or ref.null with no value); a non-finite float const keeps op
+        but drops value, and an init that cannot be decoded is omitted. Only
+        defined globals appear here -- imported globals are wasm.imports, not
+        this list. total is the number parsed and pageable; declared is the count
+        the section header claimed; incomplete is true when they diverge because
+        the module was truncated, the entry cap was hit, or an init expression
+        could not be decoded. count may be below limit when the result-size
+        budget trimmed the page, so read count, not limit, and page on has_more.
+        The list field is globals, not items.
+        """
+        return _dump(analysis.wasm_globals(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.imports")
     def wasm_imports(
         path: str,
