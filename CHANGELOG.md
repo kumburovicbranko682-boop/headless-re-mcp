@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`apk.decompile` 交代被截断的 Java 源到底有多大）
+
+- `apk.decompile` 把 jadx 反编译出的单个类 Java 源切到 40 万字节,只回一个 `truncated` 布尔。于是一个
+  被切的类——不管丢了 1 KB 还是 10 MB——回来长一个样;而被截掉的往往正是长方法体、大 switch、生成代码,
+  逆向者最想看的部分。调用方无从判断自己少看了多少,与已经交回全量大小的 `apk.manifest`、`wasm.info`
+  表现不一致。
+- 现在回包新增 `bytes`(该 `.java` 文件的完整字节数):`source` 是前缀,`bytes` 是全量大小,`truncated`
+  为真时二者之差即被丢弃的量。字节数用 `os.fstat` 就着已打开的句柄读出,与那段前缀原子地一起取,不另开一次
+  可能竞争的 stat。未超上限时行为不变,`bytes` 即等于 `source` 的字节数。
+- 新增回归:小类回 `bytes` 等于全量且 `truncated=false`、超上限的类(把上限压到 10 字节)回全量 `bytes=40`
+  且 `source` 只留 10 字节前缀,以及 `apk.decompile` 描述点名 `bytes`。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

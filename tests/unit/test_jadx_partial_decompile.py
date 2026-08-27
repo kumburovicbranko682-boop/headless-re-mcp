@@ -134,6 +134,54 @@ def test_decompile_clean_run_carries_no_failure_fields(tmp_path: Path) -> None:
     assert "stderr" not in payload
 
 
+def test_decompile_reports_full_bytes_and_is_not_truncated_for_a_small_class(
+    tmp_path: Path,
+) -> None:
+    """bytes is the .java file's full size; a small class is not truncated."""
+    client, apk, out = _jadx(tmp_path)
+    fake_run = _writes_one_class(out, code=0, stderr=b"")
+
+    with patch("headless_re_mcp.backends.jadx.client.run_bounded", fake_run):
+        payload = client.decompile(apk, out, "com.example.Main")
+
+    assert payload["source"] == "class Main {}"
+    assert payload["truncated"] is False
+    assert payload["bytes"] == len(b"class Main {}")
+
+
+def test_decompile_reports_full_bytes_when_the_source_is_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A class larger than the buffer must still say how big it really is.
+
+    Before, decompile returned only truncated, so a class cut at the buffer
+    read the same whether 1 KB or 10 MB was dropped -- unlike apk.manifest and
+    wasm.info, which report the full size alongside the prefix.
+    """
+    from headless_re_mcp.backends.jadx import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_SOURCE_BYTES", 10)
+    client, apk, out = _jadx(tmp_path)
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        srcdir = out / "sources" / "com" / "example"
+        srcdir.mkdir(parents=True, exist_ok=True)
+        (srcdir / "Main.java").write_text("A" * 40, encoding="utf-8")
+        return Completed(0, b"", b"")
+
+    with patch("headless_re_mcp.backends.jadx.client.run_bounded", fake_run):
+        payload = client.decompile(apk, out, "com.example.Main")
+
+    assert payload["truncated"] is True
+    assert payload["bytes"] == 40
+    assert len(payload["source"]) == 10
+
+
+def test_apk_decompile_docstring_names_bytes() -> None:
+    doc = _tool_docstring("apk.decompile")
+    assert "bytes" in doc
+
+
 def test_surfaced_stderr_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from headless_re_mcp.backends.jadx import client as mod
 
