@@ -1048,6 +1048,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的权威零错误门在 Windows；在 Linux/macOS 直接跑 mypy 会报若干 Windows 专属 stdlib 属性
   （`msvcrt`/`ctypes.windll` 等）的假阳性，属环境差异而非真错误。
 
+### 测试（PE r2 服务面实测 Gate：整条 radare2 工具面，不只是 functions）
+
+- 新增 `tests/integration/test_pe_r2_service_gate.py`：既有 M11 gate 只经低层 `R2Client` 验一件事
+  （`r2.functions`），本 gate 走**服务层**对真 64 位 PE 打通 `r2.open/info/functions/strings/
+  imports/exports/disasm/xrefs` 全链——`r2.open` 校验二进制、`r2.info` 透出 x64 身份与真实首选
+  镜像基址及模块名、四个列举工具回 parsed 且带统一 `Address` 映射、`r2.disasm` 在函数入口给出带地址
+  的指令（`offset == va`、真 opcode）、`r2.xrefs` 回带映射端点的增强引用表；越界（负）地址在触达
+  r2 前即被 `invalid_params` 拒。
+- 夹具解析让它两处都能跑：装了参考夹具（`artifacts/fixtures-x64/…`，即配齐的 Windows 机器）时直接用，
+  只做适用于任意非平凡 x64 PE 的格式级断言；否则在有 POSIX mingw-w64 交叉编译器（Linux/CI）时于测试期
+  现编一个极小 PE，并因此追加只有“自己造的二进制”才能下的强断言——具名函数
+  （`gate_add`/`gate_compute`/`main`）、被 `r2.strings` 还原出的植入字符串。radare2 或任一夹具来源缺失
+  时按 “skip != pass” 显式跳过。
+
 ### 测试（契约护栏）
 
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
