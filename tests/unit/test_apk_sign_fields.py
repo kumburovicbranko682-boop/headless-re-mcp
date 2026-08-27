@@ -40,9 +40,7 @@ def _tool_docstring(name: str) -> str:
     return ""
 
 
-def test_apk_sign_names_apk_not_signed_apk(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_apk_sign_names_apk_not_signed_apk(tmp_path: Path, monkeypatch: Any) -> None:
     """The catalog said sign and never named the payload.
 
     Measured: sign keys are apk, debug_keystore, keystore, signed, size.
@@ -110,9 +108,7 @@ def test_a_failed_sign_scrubs_the_keystore_password_from_stderr(
     monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", failing_sign)
     client = ApktoolClient(fake_tool, signer)
     with pytest.raises(ApktoolError) as sign_failure:
-        client.sign(
-            apk, out, keystore=keystore, keystore_password=password, key_alias="release"
-        )
+        client.sign(apk, out, keystore=keystore, keystore_password=password, key_alias="release")
     sign_stderr = str(sign_failure.value.details["stderr"])
     assert password not in sign_stderr
     assert "***" in sign_stderr
@@ -125,12 +121,80 @@ def test_a_failed_sign_scrubs_the_keystore_password_from_stderr(
 
     monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", failing_verify)
     with pytest.raises(ApktoolError) as verify_failure:
-        client.sign(
-            apk, out, keystore=keystore, keystore_password=password, key_alias="release"
-        )
+        client.sign(apk, out, keystore=keystore, keystore_password=password, key_alias="release")
     verify_stderr = str(verify_failure.value.details["stderr"])
     assert password not in verify_stderr
     assert "***" in verify_stderr
+
+
+def test_debug_keystore_password_is_not_scrubbed_from_diagnostics(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The public debug password "android" must stay readable in errors.
+
+    The Android debug keystore password is the documented public constant
+    ``android``, which also occurs verbatim in legitimate apksigner output --
+    the ``com.android.apksig`` package name, SDK paths, ``android:`` attribute
+    names. Redacting it protects nothing (it ships in every SDK) yet turns
+    ``com.android.apksig`` into ``com.***.apksig`` and shreds the very message an
+    analyst needs. The debug-keystore path must leave stderr untouched.
+    """
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    debug_keystore = tmp_path / "debug.keystore"
+    debug_keystore.write_bytes(b"ks")
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._DEBUG_KEYSTORE", debug_keystore)
+    apk = _write_apk(tmp_path / "a.apk")
+    out = tmp_path / "signed.apk"
+    # A real apksigner min-sdk failure: the package name contains "android".
+    real_stderr = (
+        'Exception in thread "main" '
+        "com.android.apksig.apk.MinSdkVersionException: Failed to determine "
+        "APK's minimum supported platform version"
+    )
+
+    def failing_sign(cmd: list[str], **_kwargs: Any) -> tuple[str, str, int]:
+        return "", real_stderr, 1
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", failing_sign)
+    client = ApktoolClient(None, signer)
+    with pytest.raises(ApktoolError) as caught:
+        # keystore=None selects the built-in debug keystore and its public password.
+        client.sign(apk, out)
+    stderr = str(caught.value.details["stderr"])
+    assert stderr == real_stderr
+    assert "com.android.apksig" in stderr
+    assert "***" not in stderr
+
+
+def test_custom_keystore_password_equal_to_debug_constant_is_still_scrubbed(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A caller-supplied password is always redacted, even if it equals "android".
+
+    The carve-out is deliberately narrow: only the built-in debug keystore's own
+    public password is left intact. If a user points at a *custom* keystore whose
+    password happens to be the dictionary word ``android``, it is still their
+    secret and must not reach an error channel -- readability yields to secrecy
+    the moment the caller supplies the password.
+    """
+    signer = tmp_path / "apksigner.bat"
+    signer.write_text("x\n", encoding="utf-8")
+    keystore = tmp_path / "release.keystore"
+    keystore.write_bytes(b"ks")
+    apk = _write_apk(tmp_path / "a.apk")
+    out = tmp_path / "signed.apk"
+
+    def failing_sign(cmd: list[str], **_kwargs: Any) -> tuple[str, str, int]:
+        return "", "apksigner refused (pass:android)", 1
+
+    monkeypatch.setattr("headless_re_mcp.backends.apktool.client._run", failing_sign)
+    client = ApktoolClient(None, signer)
+    with pytest.raises(ApktoolError) as caught:
+        client.sign(apk, out, keystore=keystore, keystore_password="android", key_alias="release")
+    stderr = str(caught.value.details["stderr"])
+    assert "android" not in stderr
+    assert "***" in stderr
 
 
 def test_sign_keeps_the_keystore_password_off_the_command_line(
@@ -184,9 +248,7 @@ def test_sign_keeps_the_keystore_password_off_the_command_line(
     assert verify_env is None
 
 
-def test_apk_sign_does_not_claim_signed_when_verify_fails(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_apk_sign_does_not_claim_signed_when_verify_fails(tmp_path: Path, monkeypatch: Any) -> None:
     fake_tool = tmp_path / "apktool.bat"
     fake_tool.write_text("x\n", encoding="utf-8")
     signer = tmp_path / "apksigner.bat"

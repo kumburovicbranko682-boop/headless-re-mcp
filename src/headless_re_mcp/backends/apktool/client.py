@@ -45,6 +45,22 @@ class ApktoolError(RuntimeError):
         self.details = details
 
 
+def _scrub_secret(text: str, secret: str, *, is_public: bool) -> str:
+    """Redact a caller-supplied keystore password from tool output.
+
+    The built-in Android debug keystore password is the public constant
+    ``"android"`` -- it is documented, ships in every SDK, and occurs verbatim in
+    legitimate apksigner output (the ``com.android.apksig`` package name, SDK
+    paths, ``android:`` attribute names). Redacting it protects nothing yet
+    shreds the diagnostics an analyst needs, turning ``com.android.apksig`` into
+    ``com.***.apksig``. So the public debug password is left intact; any other
+    password is caller-supplied and must never reach an error channel.
+    """
+    if not secret or is_public:
+        return text
+    return text.replace(secret, "***")
+
+
 def _require_apk_zip(apk: Path) -> None:
     """Refuse a non-zip APK before launching the JVM.
 
@@ -215,6 +231,11 @@ class ApktoolClient:
         using_debug = keystore is None
         password = keystore_password or (_DEBUG_PASSWORD if using_debug else "")
         alias = key_alias or (_DEBUG_ALIAS if using_debug else "")
+        # The debug keystore's password is the public constant "android"; scrubbing
+        # it from diagnostics would only corrupt legitimate output (see
+        # _scrub_secret). Any custom password -- even one that happens to equal the
+        # debug constant -- is treated as secret and redacted.
+        password_is_public = using_debug and password == _DEBUG_PASSWORD
         if not password or not alias:
             raise ApktoolError(
                 "invalid_params",
@@ -248,8 +269,10 @@ class ApktoolClient:
         )
         if code != 0 or not out_apk.is_file():
             # argv no longer carries the password, but keep scrubbing stderr as
-            # defense in depth: the tool's own diagnostics must never leak it.
-            scrubbed = stderr.replace(password, "***") if password else stderr
+            # defense in depth: the tool's own diagnostics must never leak a
+            # caller's secret (the public debug password is left intact so the
+            # error stays readable).
+            scrubbed = _scrub_secret(stderr, password, is_public=password_is_public)
             raise ApktoolError(
                 "backend_error",
                 "apksigner failed",
@@ -262,9 +285,7 @@ class ApktoolClient:
             timeout=verify_timeout,
         )
         if verify_code != 0:
-            scrubbed = (
-                verify_stderr.replace(password, "***") if password else verify_stderr
-            )
+            scrubbed = _scrub_secret(verify_stderr, password, is_public=password_is_public)
             raise ApktoolError(
                 "backend_error",
                 "apksigner reported the output is not signed",
