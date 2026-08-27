@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.console` 现在也收未捕获的 JavaScript 异常）
+
+- `web.console` 只监听 `Runtime.consoleAPICalled`,即只收 `console.log/warn/error` 这类显式调用。
+  可未捕获的异常走的是另一条 CDP 通道 `Runtime.exceptionThrown`,从不经 consoleAPICalled——而
+  DevTools 控制台明明会把它标红显示。于是一个页面抛了未捕获的 `TypeError`(解密失败、wasm 实例化
+  崩了、断言不过)时,盯着 `web.console` 的 agent 看到的是「什么都没打印」,据此以为一切正常。
+- 现在同时监听 `Runtime.exceptionThrown`:未捕获异常作为一行 `type=error`、`uncaught=true` 落进同一个
+  控制台环,与 `console.error(...)` 调用区分开(后者无 `uncaught` 标记)。异常文本优先取抛出值的
+  `description`(真正的 Error 带完整堆栈),取不到再退回 `exceptionDetails.text`,并与普通日志一样按
+  每条上限裁剪(超长标 `text_truncated`),一条百万字节的堆栈不会把自己钉在环里占满整场会话。两条通道
+  共用同一个有界环,溢出照旧计入 `dropped`。
+- 新增回归:未捕获异常落成 `type=error`/`uncaught=true` 且文本含堆栈、`console.log` 不带 `uncaught`
+  标记、两条通道共用环且溢出计 `dropped`、`_exception_text` 优先 description 再退 text、缺字段回
+  「uncaught exception」、超长裁剪并标 `text_truncated`、畸形形状不崩,以及 `web.console` 描述点名
+  未捕获异常。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的

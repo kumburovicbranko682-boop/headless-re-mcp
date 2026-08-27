@@ -97,7 +97,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with console, count, has_more, and dropped so a page that
         filled the limit is not read as the whole buffer, and ring
         eviction is visible. A line longer than the per-message cap is
-        cut and marked text_truncated.
+        cut and marked text_truncated. Uncaught JavaScript exceptions are
+        included as rows with type error and uncaught true, since they
+        show in the console but never arrive as a console.* call.
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
