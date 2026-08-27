@@ -273,6 +273,13 @@ class ApkClient:
                         "subject": str(getattr(cert, "subject", "")),
                         "issuer": str(getattr(cert, "issuer", "")),
                         "serial": str(getattr(cert, "serial_number", "")),
+                        # Report both fingerprints. sha256 alone was the field the
+                        # tool exposed, but the SHA-1 of the signing cert is the
+                        # identifier Android threat-intel indexes on (VirusTotal,
+                        # Koodous, AndroZoo, Play App Signing all surface it), so a
+                        # signer-identification tool that omitted it could not be
+                        # cross-referenced against the databases an analyst uses.
+                        "sha1": cert.sha1_fingerprint if hasattr(cert, "sha1_fingerprint") else "",
                         "sha256": cert.sha256_fingerprint
                         if hasattr(cert, "sha256_fingerprint")
                         else "",
