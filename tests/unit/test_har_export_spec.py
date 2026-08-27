@@ -138,6 +138,50 @@ def test_har_entry_reports_a_known_response_body_size() -> None:
     assert unknown["response"]["bodySize"] == -1
 
 
+def test_har_entry_fills_real_timings_and_time_from_supplied_phases() -> None:
+    """Supplied phase millis become the timings block and their sum is time.
+
+    A HAR viewer draws real send/wait/receive bars from these instead of the
+    flat -1 placeholders, and per the spec time equals the sum of the
+    non-negative phases.
+    """
+    entry = har_entry(
+        method="GET",
+        url="https://x/1",
+        status=200,
+        mime_type="text/html",
+        timings={"send": 10.0, "wait": 40.0, "receive": 5.5},
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["timings"] == {"send": 10.0, "wait": 40.0, "receive": 5.5}
+    assert entry["time"] == 55.5
+
+
+def test_har_entry_keeps_a_missing_phase_at_minus_one_and_omits_it_from_time() -> None:
+    """An errored flow that only got as far as sending still times honestly.
+
+    wait/receive have no stamps, so they stay the -1 "not measured" sentinel and
+    time is just the send phase -- never a total that folds in the -1s.
+    """
+    entry = har_entry(
+        method="GET",
+        url="https://x/1",
+        status=None,
+        mime_type="",
+        timings={"send": 12.0, "wait": -1, "receive": -1},
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["timings"] == {"send": 12.0, "wait": -1, "receive": -1}
+    assert entry["time"] == 12.0
+
+
+def test_har_entry_without_timings_keeps_the_unknown_placeholders() -> None:
+    """No timing data means every phase is -1 and time is 0, as the spec allows."""
+    entry = har_entry(method="GET", url="https://x/1", status=200, mime_type="")
+    assert entry["timings"] == {"send": -1, "wait": -1, "receive": -1}
+    assert entry["time"] == 0
+
+
 def test_serialize_har_keeps_the_newest_entries_that_fit_the_cap() -> None:
     """Eviction drops the oldest end, so the surviving entries are the newest.
 
@@ -282,6 +326,87 @@ def test_proxy_export_har_carries_the_captured_response_body_size(tmp_path: Path
     for entry in doc["log"]["entries"]:
         assert entry["response"]["content"]["size"] == 512
         assert entry["response"]["bodySize"] == 512
+
+
+def test_proxy_flow_derives_real_har_timings_from_mitmproxy_stamps(
+    tmp_path: Path,
+) -> None:
+    """mitmproxy's request/response stamps become real send/wait/receive millis.
+
+    Without them every entry's timings were flat -1 and time 0, so a HAR viewer
+    drew no waterfall bars. The recorder now derives the three phases and
+    export_har feeds them to the entry (time is their sum); the same block shows
+    on proxy.flows for per-flow timing in the list.
+    """
+    recorder = _FlowRecorder()
+    request = SimpleNamespace(
+        method="GET",
+        pretty_url="http://x/1",
+        host="x",
+        timestamp_start=1000.0,
+        timestamp_end=1000.02,
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "text/plain"},
+        raw_content=b"body",
+        timestamp_start=1000.05,
+        timestamp_end=1000.06,
+    )
+    recorder.response(SimpleNamespace(id="1", request=request, response=response))
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["timings"] == {"send": 20.0, "wait": 30.0, "receive": 10.0}
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["timings"] == {"send": 20.0, "wait": 30.0, "receive": 10.0}
+    assert entry["time"] == 60.0
+
+
+def test_proxy_errored_flow_times_only_the_phases_it_reached(tmp_path: Path) -> None:
+    """A flow with no response times send and leaves wait/receive at -1.
+
+    The error hook records it with a request stamp but no response, so wait and
+    receive have nothing to subtract; they must stay -1 and time is the send
+    phase alone, not a total that counts the sentinels.
+    """
+    recorder = _FlowRecorder()
+    request = SimpleNamespace(
+        method="GET",
+        pretty_url="http://x/e",
+        host="x",
+        timestamp_start=2000.0,
+        timestamp_end=2000.015,
+    )
+    error = SimpleNamespace(msg="net::ERR_CONNECTION_REFUSED")
+    recorder.error(SimpleNamespace(id="e1", request=request, response=None, error=error))
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["timings"] == {"send": 15.0, "wait": -1, "receive": -1}
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["timings"] == {"send": 15.0, "wait": -1, "receive": -1}
+    assert entry["time"] == 15.0
+
+
+def test_proxy_flow_without_stamps_keeps_unknown_timings(tmp_path: Path) -> None:
+    """A flow mitmproxy never timed keeps timings null and a spec-valid -1 HAR."""
+    backend = _proxy_backend_with_flows(1)
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["timings"] is None
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["timings"] == {"send": -1, "wait": -1, "receive": -1}
+    assert entry["time"] == 0
 
 
 def test_proxy_export_har_is_now_bounded_by_the_capture_cap(

@@ -40,15 +40,44 @@ HAR_CREATOR_NAME = "headless-re-mcp"
 _MAX_QUERY_PARAMS = 256
 
 # HAR wants a millisecond count for each timing phase; -1 is the spec's own
-# "does not apply / was not measured" sentinel. These captures record which
-# flows happened, not how long each phase took, so every phase is reported
-# unknown and ``time`` is 0 -- the sum of the non-negative phases, of which
-# there are none, which is exactly what the spec defines ``time`` to be.
+# "does not apply / was not measured" sentinel. A capture that did not time its
+# phases reports every phase unknown and ``time`` is 0 -- the sum of the
+# non-negative phases, of which there are none, which is exactly what the spec
+# defines ``time`` to be. A capture that *did* time them (the proxy derives
+# them from mitmproxy's request/response timestamps) passes them in instead.
 _UNKNOWN_TIMINGS = {"send": -1, "wait": -1, "receive": -1}
+_TIMING_PHASES = ("send", "wait", "receive")
 # The captures keep no per-request header set or payload length, so every size
 # is the spec's "not available" value rather than a fabricated zero.
 _UNKNOWN_SIZE = -1
 _ENTRY_COMMENT = "per-flow headers, bodies and phase timings were not captured"
+# Used when real phase timings are supplied: only headers and bodies are still
+# absent from the entry, so the comment no longer claims timings are missing.
+_ENTRY_COMMENT_TIMED = "per-flow headers and bodies were not captured"
+
+
+def _har_timings(raw: JsonObject) -> tuple[JsonObject, float | int]:
+    """A spec-valid timings block and its ``time`` total from phase millis.
+
+    HAR requires ``send``/``wait``/``receive`` on every entry and defines
+    ``time`` as the sum of the phases that are not the -1 "not measured"
+    sentinel. A phase the caller could not derive stays -1 and is left out of
+    the total (so an errored flow that only got as far as sending still reports
+    an honest send time and a -1 wait/receive), and ``time`` is 0 when nothing
+    was measured -- never a fabricated duration.
+    """
+    timings: JsonObject = {}
+    total = 0.0
+    measured = False
+    for phase in _TIMING_PHASES:
+        value = raw.get(phase, -1)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            timings[phase] = -1
+        else:
+            timings[phase] = value
+            total += float(value)
+            measured = True
+    return timings, (round(total, 3) if measured else 0)
 
 
 class SerializedHar(NamedTuple):
@@ -89,6 +118,7 @@ def har_entry(
     started_date_time: str | None = None,
     resource_type: str | None = None,
     response_body_size: int | None = None,
+    timings: JsonObject | None = None,
 ) -> JsonObject:
     """One spec-complete HAR 1.2 entry from the fields a summary actually has.
 
@@ -98,8 +128,12 @@ def har_entry(
     absent field. ``queryString`` is parsed from the URL, and when the capture
     knows the decoded response body length (``response_body_size``) it fills
     ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
-    ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
-    browser capture keeps that hint.
+    When the capture timed the request phases (``timings`` with millisecond
+    ``send``/``wait``/``receive`` values) they fill the ``timings`` block and
+    ``time`` becomes their non-negative sum, so a HAR viewer draws real
+    waterfall bars instead of flat placeholders. ``resource_type`` rides along
+    as Chrome's ``_resourceType`` extension so the browser capture keeps that
+    hint.
     """
     status_code = int(status) if isinstance(status, int) else 0
     url_text = str(url or "")
@@ -107,9 +141,15 @@ def har_entry(
         content_size = response_body_size
     else:
         content_size = _UNKNOWN_SIZE
+    if timings:
+        entry_timings, total_time = _har_timings(timings)
+        comment = _ENTRY_COMMENT_TIMED
+    else:
+        entry_timings, total_time = dict(_UNKNOWN_TIMINGS), 0
+        comment = _ENTRY_COMMENT
     entry: JsonObject = {
         "startedDateTime": started_date_time or _iso_now(),
-        "time": 0,
+        "time": total_time,
         "request": {
             "method": str(method or ""),
             "url": url_text,
@@ -132,8 +172,8 @@ def har_entry(
             "bodySize": content_size,
         },
         "cache": {},
-        "timings": dict(_UNKNOWN_TIMINGS),
-        "comment": _ENTRY_COMMENT,
+        "timings": entry_timings,
+        "comment": comment,
     }
     if resource_type:
         entry["_resourceType"] = str(resource_type)
