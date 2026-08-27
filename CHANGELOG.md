@@ -132,6 +132,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   也会在缺字段时按 `function` 是否存在补齐 `found`：`found=false` 明确表示“该地址没有函数”，此时
   空的 `decompiled` 是这个原因而非空函数体。
 
+### 测试（ghidra `_export_unlocked` 的陈旧产物清除与交给 ExportJson 的 argv）
+
+- 现有导出测试都用「fake 写出新 JSON、传字符串地址、用默认 limit」驱动,于是 `_export_unlocked` 在
+  跑分析前后做的三件事从没被验过:
+  - `if out_path.exists(): out_path.unlink()`——先删掉上一轮的 `export_<mode>.json`,这样一次「什么
+    都没写出来」的运行会**报错**而不是把上一个二进制的结果当成本次的交回去。
+  - `addr = "" if address is None else (hex(address) if isinstance(address, int) else str(address))`——
+    整数地址必须以 hex 交给脚本、字符串原样透传、functions/symbols(无地址)送空串。
+  - `capped = max(1, min(int(limit), 1024))`——交给脚本的页大小下限 1、上限 1024。
+  陈旧读取会汇报错的二进制;十进制地址或越界 limit 会让 postScript 看错地方、或多取/少取。新增回归:
+  上一轮遗留的 `export_functions.json` 在本次「零写入」运行下被清除、缺输出报 `backend_error`(而非
+  交回 `0xdead` 陈旧项);整数 `0x401000` 以 `"0x401000"` 而非 `"4198400"` 入 argv;字符串地址原样
+  透传(「一律 hex()」会让字符串抛 TypeError);无地址的 functions 送空串(而非字面量 `"None"`);
+  limit 传 0/-5/1/5000/1024 分别夹到 `"1"`/`"1"`/`"1"`/`"1024"`/`"1024"`。
+- 变异验证:去掉 `unlink`、地址分支改成「一律 str()」/「一律 hex()」、去掉 `None->""` 保护、去掉
+  `max(1,...)` 下限、去掉 `min(...,1024)` 上限,均分别只被对应新测试逮住;源树零改动(仅新增测试与
+  本条目)。
+
 
 - `error_boundary` 的行内脱敏(异常消息、事故日志、HTTP 500 体、CLI stderr 信封走的同一条
   正则)只覆盖 `api_key`/`token`/`secret`/`password` 与 `Authorization: Bearer`,而
