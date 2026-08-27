@@ -97,6 +97,23 @@ def test_count_missions_is_the_unpaged_total_the_list_is_drawn_from(tmp_path: Pa
     assert store.count_missions() == 7
 
 
+def test_count_threads_is_the_unpaged_total_the_list_is_drawn_from(tmp_path: Path) -> None:
+    """The thread list caps at a page; the count is every thread retained.
+
+    Without it the sidebar shows the newest page and reads as the whole
+    history, so a caller cannot tell a small store from the top of a large one.
+    """
+    store = AgentStore(tmp_path / "thread-count.db")
+    for index in range(6):
+        store.create_thread(title=f"thread {index}")
+
+    assert store.count_threads() == 6
+    # The count is the total behind the page, not the page: a limit of 2 still
+    # counts all six.
+    assert len(store.list_threads(limit=2)) == 2
+    assert store.count_threads() == 6
+
+
 def test_list_thread_events_keeps_finished_run_history(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "thread-events.db")
     thread = store.create_thread()
