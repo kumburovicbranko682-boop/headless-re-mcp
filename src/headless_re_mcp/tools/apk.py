@@ -67,7 +67,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with activities, services, receivers, providers,
         main_activity, and has_more so a list that filled the cap is not
-        read as every component. There is no components field.
+        read as every component. has_more is true if any of the four lists
+        filled its cap; activities_has_more, services_has_more,
+        receivers_has_more and providers_has_more say which one did. There is
+        no components field.
         """
         return _dump(analysis.apk_components(session_id))
 
