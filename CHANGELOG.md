@@ -560,6 +560,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **抓包环形缓冲按条数封顶，但每条仍可带着整份报文体**。两千条各几十 MB 的响应照样能把
   内存吃光。超过 2 MB 的请求/响应体不再留在 `_raw` 里，列表上回 `body_omitted`，取正文或
   重放会如实报 `too_large`。
+- **`web.open` / `web.navigate` 落到 4xx/5xx 也只报成功**。Playwright 的 `page.goto`
+  只在传输层失败（DNS/拒绝/超时）时抛错，一张 404/500 页面照常返回，于是导航到错误页与
+  真正命中回的是同一个成功信封，无人值守的 agent 会把错误页当成打开成功继续往下做。现在
+  把主文档响应的 HTTP `status` 一并回出（`goto` 对 about:blank / 同文档导航返回 None 时
+  不加该字段），和 proxy flows、网络列表一样用 `status` 披露。
 - **`web.network.get` / `web.script.source` 会把 CDP 送来的整份正文写进产物目录**。超过
   内联上限就落盘，没有捕获上限；一条媒体响应就能在 retention 跑起来之前把磁盘写满。超过
   捕获上限改为拒绝，不写文件。console 单行同样封顶，超长回 `text_truncated`。
