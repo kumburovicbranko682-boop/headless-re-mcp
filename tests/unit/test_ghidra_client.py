@@ -347,6 +347,10 @@ def test_ghidra_refuses_an_oversized_export_json(
     [
         (b"\xff", "UnicodeDecodeError"),
         (b"{", "JSONDecodeError"),
+        # json.loads raises RecursionError, not a JSONDecodeError, on deep
+        # nesting; it escaped the except tuple as a raw interpreter error
+        # instead of the backend_error this path promises.
+        pytest.param(b"[" * 20_000, "RecursionError", id="deep-nesting"),
     ],
 )
 def test_ghidra_reports_corrupt_export_as_a_backend_error(

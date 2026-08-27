@@ -187,7 +187,17 @@ def ocr_bmp_windows(path: str | Path, *, language: str = "en-US") -> JsonObject:
     lines_out = [ln for ln in (completed.stdout or "").splitlines() if ln.strip()]
     if not lines_out:
         raise UiPidBoundaryError("backend_error", "Windows OCR subprocess produced no output")
-    payload = json.loads(lines_out[-1])
+    try:
+        payload = json.loads(lines_out[-1])
+    except (json.JSONDecodeError, RecursionError) as exc:
+        # Every other failure of this exchange raises UiPidBoundaryError; a
+        # worker whose last line is not parseable JSON was the one exception,
+        # escaping as a raw decode error.
+        raise UiPidBoundaryError(
+            "backend_error",
+            "Windows OCR returned unparseable output",
+            stdout=lines_out[-1][:200],
+        ) from exc
     if not isinstance(payload, dict):
         raise UiPidBoundaryError("backend_error", "Windows OCR returned non-object")
     return payload

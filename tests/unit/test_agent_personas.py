@@ -50,6 +50,20 @@ def test_oversized_optional_seed_is_not_copied_into_the_store(
     }
 
 
+def test_a_deeply_nested_index_falls_back_to_defaults(tmp_path: Path) -> None:
+    """The index is user-editable; unreadable must mean defaults, not a crash.
+
+    _read_index already falls back on OSError and JSONDecodeError, but
+    json.loads raises RecursionError -- not a JSONDecodeError -- on deeply
+    nested input, and 20 KB of brackets is far under the 1 MiB index cap, so
+    a hand-mangled index took down every persona read instead of degrading.
+    """
+    store = PersonaStore(tmp_path / "personas")
+    (tmp_path / "personas" / "index.json").write_text("[" * 20_000, encoding="utf-8")
+    assert store.current_id() == DEFAULT_PERSONA_ID
+    assert store.list_public()["current"] == DEFAULT_PERSONA_ID
+
+
 def test_persona_ids_cannot_escape_store_or_select_unindexed_files(tmp_path: Path) -> None:
     root = tmp_path / "personas"
     store = PersonaStore(root, seed_paths=())

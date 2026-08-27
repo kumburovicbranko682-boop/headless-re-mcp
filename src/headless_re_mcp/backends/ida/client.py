@@ -292,7 +292,11 @@ class IdaWorkerClient(ManagedSubprocessMixin):
                     break
                 try:
                     payload = json.loads(stripped)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError):
+                    # A line nested past the recursion limit raised
+                    # RecursionError out of this reader thread; the finally
+                    # then enqueued the EOF marker and the whole session died
+                    # on one stray line. It is a log line like any other junk.
                     self._stdout_log.append(stripped)
                     continue
                 if isinstance(payload, dict):

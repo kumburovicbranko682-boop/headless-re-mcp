@@ -85,6 +85,22 @@ def test_parse_rejects_a_body_that_is_not_json() -> None:
     assert _parse_healthz_http(raw) is None
 
 
+def test_parse_rejects_a_body_nested_too_deeply_to_decode() -> None:
+    """A deeply nested body must mean "not our service", never a crash.
+
+    Any process can squat the probed port. On Python 3.11 the json decoder's
+    C recursion counts against the interpreter limit (default 1,000), so
+    3,000 bytes of brackets -- inside the 4 KiB healthz cap -- raised
+    RecursionError, which the old ``except ValueError`` let escape the
+    launcher. Python 3.12 gives the C decoder ~10,000 levels, past what the
+    cap can hold, so there this pins the JSONDecodeError path; the 3.11 CI
+    run is where it arbitrates the RecursionError guard.
+    """
+    body = b"[" * 3_000
+    raw = b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+    assert _parse_healthz_http(raw) is None
+
+
 def test_parse_rejects_json_that_is_not_an_object() -> None:
     body = b'["not","an","object"]'
     raw = b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
