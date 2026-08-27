@@ -244,6 +244,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `env:` 口令源：口令放进仅子进程可见的复制环境，argv 里只剩变量名；stderr 抹除照旧保留作
   纵深防御。回归测试断言 sign 与 verify 两次调用的每个参数都不含口令、口令只出现在注入的
   环境里。
+### 测试（代理线现场抓包 gate + CI 真装 mitmproxy 跑起来）
+
+- **代理线的核心能力此前在 CI 里从未真跑过，抓包更是连现场 gate 都没有。** 主干 CI 的
+  `quality`/`linux-quality` 只装 `.[test,dev,web]` 且只跑 `tests/unit`，`tests/integration`
+  一个都不收；唯一的代理集成 gate `test_proxy_lifecycle_gate.py` 又在 mitmproxy 缺席时
+  自我 skip——于是"start 即在听、stop 即释放端口"从没被真验证过，而"把请求经代理转出去、
+  抓到它、取回请求/响应体、导 HAR、重放"这套代理存在的意义，连 gate 都没有，只靠喂假
+  flow 对象的单测覆盖。新增 `test_proxy_capture_gate.py`：起一个本地 origin，把 GET/POST
+  经真代理转出去，断言 recorder 两条都抓到、`flow.get` 取回响应体与真正 POST 出去的请求体、
+  HAR 导出点名每条流、被抓的流能重放、以及打到死上游的请求仍被记为 error/status 为 null 而
+  非静默丢弃。CI 加 `linux-proxy` job 装 `.[test,dev,proxy]` 真跑这两个 gate（`-rs` 暴露任何
+  静默 skip），代理线终于有了持续的现场覆盖而不是"skip 当 pass"。
+
 ### 修复（mitmproxy 12 停止代理后监听端口不再泄漏）
 
 - **`proxy.stop` 只发 `master.shutdown()`，在 mitmproxy 12 上端口停不下来。**
