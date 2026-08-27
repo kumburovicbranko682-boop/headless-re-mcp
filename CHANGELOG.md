@@ -68,6 +68,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   静默吞掉会拼出错误的 tool call，现改为显式拒绝（`ValueError`）。六条回归测试
   （流 chunk / 组装参数 / 深嵌套 content / fragment 序列化 / models 两种畸形体）
   未修复时全部以 RecursionError 失败，修复后通过。
+- 同一终结器还接受 `NaN`/`Infinity`：Python 的 json 默认把它们解析成浮点，模型发出的
+  `{"level": NaN}` 原样进入工具参数，随后 agent store 的规范化哈希以 `allow_nan=False`
+  序列化时抛 `ValueError`，被运行兜底铸成 incident——错误指向本代码库而非 provider。
+  现经 `parse_constant` 在解析处拒绝（同 `detection/die.py` 与 `backends/r2/mapping.py`
+  的约定），归入既有的 "invalid tool arguments" 错误面；回归测试未修复时失败。
 
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 

@@ -587,6 +587,50 @@ async def test_too_deep_assembled_tool_arguments_are_blamed_on_the_provider() ->
 
 
 @pytest.mark.asyncio
+async def test_nan_in_tool_arguments_is_blamed_on_the_provider() -> None:
+    """Python's json accepts NaN/Infinity by default and hands back floats.
+
+    A model emitting {"level": NaN} used to parse cleanly here; the float
+    then reached the agent store, whose canonical hashing serializes with
+    allow_nan=False, and the run died on an incident-labelled ValueError
+    pointing at this codebase instead of the designed error naming the
+    provider.
+    """
+
+    def nan_arguments(request: httpx.Request) -> httpx.Response:
+        chunk = {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-a",
+                                "function": {
+                                    "name": "session.get",
+                                    "arguments": '{"level": NaN}',
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+        body = f"data: {json.dumps(chunk, separators=(',', ':'))}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(nan_arguments),
+    )
+
+    with pytest.raises(ValueError, match="invalid tool arguments at index 0"):
+        async for _ in provider.stream_chat(messages=[], tools=[], model="m"):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_deep_content_part_nesting_is_ignored_rather_than_fatal() -> None:
     """_plain_text recursed twice per list level; the parser recursed once.
 

@@ -80,6 +80,16 @@ def _hidden_texts(delta: dict[str, Any]) -> list[str]:
     return texts
 
 
+def _reject_json_constant(value: str) -> Any:
+    # Python's json accepts NaN/Infinity by default and hands back floats.
+    # In tool arguments those floats reach the agent store, whose canonical
+    # hashing serializes with allow_nan=False: the run then dies on an
+    # incident-labelled ValueError pointing at this codebase instead of the
+    # designed error naming the provider. Reject at the parse, like
+    # detection/die.py and backends/r2/mapping.py do.
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
 def _tool_argument_fragment(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -453,11 +463,15 @@ class OpenAICompatibleProvider:
         calls_out: list[ProviderToolCall] = []
         for index, item in sorted(tool_fragments.items()):
             try:
-                arguments = json.loads(item["arguments"] or "{}")
-            except (json.JSONDecodeError, RecursionError) as exc:
+                arguments = json.loads(
+                    item["arguments"] or "{}", parse_constant=_reject_json_constant
+                )
+            except (ValueError, RecursionError) as exc:
                 # Same trap as the chunk parse above: assembled fragments like
                 # "[" * 1001 are syntactically fine but too deep to decode, and
-                # the resulting RecursionError is not a ValueError.
+                # the resulting RecursionError is not a ValueError. Plain
+                # ValueError joins the tuple because the constant rejection
+                # above raises it and JSONDecodeError is one anyway.
                 raise ValueError(f"provider emitted invalid tool arguments at index {index}") from exc
             if not isinstance(arguments, dict) or not item["name"]:
                 raise ValueError(f"provider emitted incomplete tool call at index {index}")
