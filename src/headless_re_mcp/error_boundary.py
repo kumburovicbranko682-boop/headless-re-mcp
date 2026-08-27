@@ -48,11 +48,23 @@ _SECRET_PATTERNS = (
 )
 
 
+_TRUNCATION_MARKER = "...[truncated]"
+
+
 def _redact_text(value: object, *, limit: int = 1000) -> str:
     text = str(value)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(r"\1[REDACTED]", text)
-    return text[:limit]
+    if len(text) <= limit:
+        return text
+    # The full traceback is in the incident log this envelope points to; the
+    # inline copy is a summary. A silent cut let a long message -- whose
+    # operative detail can sit past the limit -- read as the whole exception.
+    # Mark it, and keep the result within limit so the bound callers relied on
+    # still holds. Redaction ran on the full text first, so a secret past the
+    # cut is already masked or dropped, never leaked by the slice.
+    keep = max(0, limit - len(_TRUNCATION_MARKER))
+    return text[:keep] + _TRUNCATION_MARKER
 
 
 def configure_incident_logging(log_dir: Path | None = None) -> Path:
