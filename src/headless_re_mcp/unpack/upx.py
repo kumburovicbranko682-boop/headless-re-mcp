@@ -8,6 +8,7 @@ under the session artifact tree.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -354,6 +355,42 @@ def _capture_process(
     return capture
 
 
+def _validate_positive_number(value: float, name: str) -> float:
+    """Reject non-finite/non-positive numbers before they reach the run loop.
+
+    A NaN or +inf ``timeout`` would make ``deadline - monotonic()`` never
+    compare ``<= 0``, so ``_capture_process`` would never fire its timeout and
+    the UPX child would run unbounded. Mirrors the DIE adapter so both bounded
+    CLI wrappers validate their own numeric bounds rather than trusting the
+    caller -- these entrypoints are part of the public API.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise UpxScanError(
+            UpxErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive finite number",
+            details={name: repr(value)},
+        )
+    converted = float(value)
+    if not math.isfinite(converted) or converted <= 0:
+        raise UpxScanError(
+            UpxErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive finite number",
+            details={name: converted},
+        )
+    return converted
+
+
+def _validate_positive_integer(value: int, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise UpxScanError(
+            UpxErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive integer",
+            details={name: repr(value)},
+        )
+    return value
+
+
 def _validate_paths(
     executable: Path,
     input_path: Path,
@@ -378,6 +415,8 @@ def probe_upx_version(
     timeout: float = 5.0,
     max_output_size: int = DEFAULT_MAX_OUTPUT_SIZE,
 ) -> str | None:
+    timeout = _validate_positive_number(timeout, "timeout")
+    max_output_size = _validate_positive_integer(max_output_size, "max_output_size")
     exe = executable.expanduser().resolve()
     if not exe.is_file():
         raise UpxExecutableNotFoundError(exe)
@@ -403,6 +442,9 @@ def test_upx(
 
     from headless_re_mcp.core.session import file_sha256
 
+    timeout = _validate_positive_number(timeout, "timeout")
+    max_file_size = _validate_positive_integer(max_file_size, "max_file_size")
+    max_output_size = _validate_positive_integer(max_output_size, "max_output_size")
     exe, path, size = _validate_paths(executable, input_path, max_file_size=max_file_size)
     actual_sha = file_sha256(path)
     if actual_sha != input_sha256:
@@ -476,6 +518,9 @@ def unpack_upx(
 
     from headless_re_mcp.core.session import file_sha256
 
+    timeout = _validate_positive_number(timeout, "timeout")
+    max_file_size = _validate_positive_integer(max_file_size, "max_file_size")
+    max_output_size = _validate_positive_integer(max_output_size, "max_output_size")
     exe, path, size = _validate_paths(executable, input_path, max_file_size=max_file_size)
     actual_sha = file_sha256(path)
     if actual_sha != input_sha256:

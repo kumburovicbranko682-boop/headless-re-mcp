@@ -311,3 +311,66 @@ def test_no_shell_and_no_window_options_are_explicit() -> None:
     assert options["text"] is False
     if os.name == "nt":
         assert options["creationflags"] & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
+@pytest.mark.parametrize("bad_timeout", [float("nan"), float("inf"), 0.0, -1.0, True])
+def test_test_upx_rejects_nonfinite_timeout_before_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad_timeout: float,
+) -> None:
+    # A NaN/inf timeout would defeat _capture_process's deadline check and let
+    # the child run unbounded; it must be refused before anything is spawned or
+    # the input file is even read.
+    executable = tmp_path / "upx.exe"
+    executable.write_bytes(b"fake")
+    sample = _write_sample(tmp_path / "packed.exe")
+
+    def fail_if_spawned(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("upx must not start when timeout is invalid")
+
+    monkeypatch.setattr(upx_adapter, "_capture_process", fail_if_spawned)
+    with pytest.raises(UpxScanError) as caught:
+        run_upx_test(
+            executable,
+            sample,
+            input_sha256=file_sha256(sample),
+            timeout=bad_timeout,
+        )
+    assert caught.value.code == UpxErrorCode.INVALID_ARGUMENT
+    assert "timeout" in caught.value.details
+
+
+@pytest.mark.parametrize("bad_size", [0, -1, True])
+def test_unpack_upx_rejects_nonpositive_bounds_before_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad_size: int,
+) -> None:
+    executable = tmp_path / "upx.exe"
+    executable.write_bytes(b"fake")
+    sample = _write_sample(tmp_path / "packed.exe")
+    output = tmp_path / "unpacked.exe"
+
+    def fail_if_spawned(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("upx must not start when a byte bound is invalid")
+
+    monkeypatch.setattr(upx_adapter, "_capture_process", fail_if_spawned)
+    with pytest.raises(UpxScanError) as caught:
+        unpack_upx(
+            executable,
+            sample,
+            output,
+            input_sha256=file_sha256(sample),
+            max_output_size=bad_size,
+        )
+    assert caught.value.code == UpxErrorCode.INVALID_ARGUMENT
+    assert not output.exists()
+
+
+def test_probe_upx_version_rejects_nonfinite_timeout(tmp_path: Path) -> None:
+    executable = tmp_path / "upx.exe"
+    executable.write_bytes(b"fake")
+    with pytest.raises(UpxScanError) as caught:
+        probe_upx_version(executable, timeout=float("nan"))
+    assert caught.value.code == UpxErrorCode.INVALID_ARGUMENT
