@@ -30,6 +30,9 @@ _R2_CANARY_RE = re.compile(r"^canary\s+(true|false)\s*$", re.MULTILINE)
 # For a Mach-O, r2's crypto line reports LC_ENCRYPTION_INFO's cryptid -- the
 # FairPlay question the stdlib reader answers as "encrypted".
 _R2_CRYPTO_RE = re.compile(r"^crypto\s+(true|false)\s*$", re.MULTILINE)
+# r2 derives a Mach-O's os from LC_BUILD_VERSION's platform, the same command
+# the stdlib reader's platform fact comes from.
+_R2_OS_RE = re.compile(r"^os\s+(\S+)\s*$", re.MULTILINE)
 # r2 spells "no RELRO" as "no"; the stdlib reader spells it "none".
 _R2_RELRO = {"full": "full", "partial": "partial", "no": "none"}
 
@@ -194,7 +197,7 @@ def test_native_macho_opens_and_r2_reads_it() -> None:
         assert native["interpreter"] == "/usr/lib/dyld"
         assert native["dylibs"] == ["/usr/lib/libSystem.B.dylib"]
         # LC_MAIN's offset mapped through __TEXT: the fixture's known entry.
-        assert native["entry"] == 0x100000268
+        assert native["entry"] == 0x100000280
         session_id = str(session["id"])
 
         # Build posture, cross-checked against r2's own decode of the same
@@ -217,6 +220,12 @@ def test_native_macho_opens_and_r2_reads_it() -> None:
         assert native["canary"] is True
         assert crypto_match, iI
         assert native["encrypted"] is (crypto_match.group(1) == "true")
+        # r2 keys its os line on the same LC_BUILD_VERSION the stdlib reader
+        # walks (an image without one reads as plain "darwin"), so the two
+        # platform answers must be the same word.
+        os_match = _R2_OS_RE.search(iI)
+        assert os_match, iI
+        assert native["platform"] == os_match.group(1) == "macos"
 
         opened = service.r2_open(session_id, timeout=60.0)
         assert opened.ok, opened.error

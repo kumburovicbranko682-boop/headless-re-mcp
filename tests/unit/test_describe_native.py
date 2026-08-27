@@ -103,6 +103,27 @@ def _lc_rpath(path: str, *, name_offset: int = 12) -> bytes:
     return bytes(cmd)
 
 
+def _lc_build_version(platform: int, minos: int, sdk: int) -> bytes:
+    # build_version_command with no trailing build_tool_version entries.
+    cmd = bytearray(24)
+    cmd[0:4] = (0x32).to_bytes(4, "little")  # LC_BUILD_VERSION
+    cmd[4:8] = (24).to_bytes(4, "little")
+    cmd[8:12] = platform.to_bytes(4, "little")
+    cmd[12:16] = minos.to_bytes(4, "little")
+    cmd[16:20] = sdk.to_bytes(4, "little")
+    return bytes(cmd)
+
+
+def _lc_version_min(kind: int, version: int, sdk: int) -> bytes:
+    # version_min_command: the command kind itself names the platform.
+    cmd = bytearray(16)
+    cmd[0:4] = kind.to_bytes(4, "little")
+    cmd[4:8] = (16).to_bytes(4, "little")
+    cmd[8:12] = version.to_bytes(4, "little")
+    cmd[12:16] = sdk.to_bytes(4, "little")
+    return bytes(cmd)
+
+
 def _lc_filler(size: int) -> bytes:
     # A load command the reader does not recognise, used to push later commands
     # past the header window so the streamed read is what reaches them.
@@ -759,6 +780,60 @@ def test_macho_rpath_with_a_hostile_string_offset_is_dropped(tmp_path: Path) -> 
     assert facts["rpath"] == ["/usr/lib"]
 
 
+def test_macho_build_version_names_platform_and_versions(tmp_path: Path) -> None:
+    # LC_BUILD_VERSION answers the first Apple-binary question: which platform,
+    # how old. Versions are nibble-packed xxxx.yy.zz; the patch level prints
+    # only when nonzero, matching llvm-objdump's spelling.
+    data = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_build_version(2, 0x000F0401, 0x00110000),  # iOS 15.4.1, SDK 17.0
+        ncmds=1,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["platform"] == "ios"
+    assert facts["min_os"] == "15.4.1"
+    assert facts["sdk"] == "17.0"
+
+
+def test_macho_version_min_command_kind_names_the_platform(tmp_path: Path) -> None:
+    # The pre-LC_BUILD_VERSION encoding: LC_VERSION_MIN_MACOSX (0x24) et al.
+    # carry version+sdk, with the platform implied by the command itself.
+    data = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_version_min(0x24, 0x000A0D00, 0x000A0E00),  # macOS 10.13, SDK 10.14
+        ncmds=1,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["platform"] == "macos"
+    assert facts["min_os"] == "10.13"
+    assert facts["sdk"] == "10.14"
+
+
+def test_macho_without_version_commands_has_no_platform_facts(tmp_path: Path) -> None:
+    data = _macho64_full(filetype=2, flags=0x4, load_cmds=_lc_uuid(), ncmds=1)
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert "platform" not in facts
+    assert "min_os" not in facts
+    assert "sdk" not in facts
+
+
+def test_macho_zero_sdk_and_unknown_platform_degrade_gracefully(tmp_path: Path) -> None:
+    # An sdk of 0 is llvm-objdump's "n/a": no fact rather than "0.0". An
+    # unrecognised platform id is reported by number, not guessed.
+    data = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_build_version(99, 0x000D0000, 0),
+        ncmds=1,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["platform"] == "platform_99"
+    assert facts["min_os"] == "13.0"
+    assert "sdk" not in facts
+
+
 def test_macho_records_uuid_and_install_name(tmp_path: Path) -> None:
     # LC_ID_DYLIB is the Mach-O DT_SONAME and LC_UUID the Mach-O build-id, so a
     # dylib reports both the way an ELF shared object reports soname/build_id.
@@ -879,7 +954,7 @@ def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     if not fixture.is_file():
         pytest.skip(f"fixture missing: {fixture}")
     facts = describe_native(fixture)["native"]
-    assert facts["entry"] == 0x100000268
+    assert facts["entry"] == 0x100000280
     # Its build posture, cross-checked against radare2 by the r2 gate: NX on,
     # stack-protector imports present, no FairPlay encryption.
     assert facts["nx"] is True
@@ -888,6 +963,11 @@ def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     # The @rpath search path baked in by LC_RPATH, which llvm-objdump
     # independently confirms in the toolchain gate.
     assert facts["rpath"] == ["@loader_path/../Frameworks"]
+    # LC_BUILD_VERSION's target identity, which llvm-objdump (platform/minos/
+    # sdk) and radare2 (its os line) independently confirm in the gates.
+    assert facts["platform"] == "macos"
+    assert facts["min_os"] == "13.0"
+    assert facts["sdk"] == "14.2"
 
 
 def test_macho_reads_load_commands_past_the_header_window(tmp_path: Path) -> None:

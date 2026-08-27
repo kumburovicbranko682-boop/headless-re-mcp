@@ -489,6 +489,33 @@ _LC_MAIN = 0x80000028  # entry point as a file offset of main() -- the Mach-O e_
 # Same hijack-triage weight as on ELF: a writable or relative entry lets an
 # attacker plant a dylib that @rpath resolution picks up first.
 _LC_RPATH = 0x8000001C
+# Which Apple platform the image targets and the minimum OS / SDK it was built
+# against -- the first question asked of an Apple binary (macOS or iOS? how
+# old?). Modern linkers emit LC_BUILD_VERSION (platform + minos + sdk); older
+# ones emit one LC_VERSION_MIN_* command whose kind names the platform.
+# llvm-objdump prints the same three values, so the toolchain gate cross-checks
+# them, and radare2 keys its `os` line on the same commands.
+_LC_BUILD_VERSION = 0x32
+_LC_VERSION_MIN_CMDS = {
+    0x24: "macos",  # LC_VERSION_MIN_MACOSX
+    0x25: "ios",  # LC_VERSION_MIN_IPHONEOS
+    0x2F: "tvos",  # LC_VERSION_MIN_TVOS
+    0x30: "watchos",  # LC_VERSION_MIN_WATCHOS
+}
+_MACHO_PLATFORMS = {
+    1: "macos",
+    2: "ios",
+    3: "tvos",
+    4: "watchos",
+    5: "bridgeos",
+    6: "maccatalyst",
+    7: "ios-simulator",
+    8: "tvos-simulator",
+    9: "watchos-simulator",
+    10: "driverkit",
+    11: "visionos",
+    12: "visionos-simulator",
+}
 _LC_SEGMENT = 0x01
 _LC_SEGMENT_64 = 0x19
 _MACHO_MAX_LOAD_CMDS = 4096
@@ -2474,7 +2501,7 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         # LC_RPATH entries, the ELF rpath/runpath analogue; absent stays absent.
         if lc["rpaths"]:
             facts["rpath"] = lc["rpaths"]
-        for key in ("interpreter", "install_name", "uuid"):
+        for key in ("interpreter", "install_name", "uuid", "platform", "min_os", "sdk"):
             if lc[key] is not None:
                 facts[key] = lc[key]
         entry = _macho_entry(lc["entryoff"], lc["segments"])
@@ -2550,6 +2577,17 @@ def _macho_uuid(raw: bytes) -> str:
     return f"{hexed[0:8]}-{hexed[8:12]}-{hexed[12:16]}-{hexed[16:20]}-{hexed[20:32]}"
 
 
+def _macho_version(packed: int) -> str:
+    """Decode an xxxx.yy.zz nibble-packed version, llvm-objdump style.
+
+    The patch level is printed only when nonzero, so 0x000D0000 reads "13.0"
+    and 0x000D0001 reads "13.0.1" -- matching the strings llvm-objdump prints,
+    which the toolchain gate compares against verbatim.
+    """
+    major, minor, patch = packed >> 16, (packed >> 8) & 0xFF, packed & 0xFF
+    return f"{major}.{minor}.{patch}" if patch else f"{major}.{minor}"
+
+
 def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     """Walk the load commands for the image's identity and dependency facts.
 
@@ -2560,10 +2598,12 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     main, or None), ``segments`` ((vmaddr, fileoff, filesize) per LC_SEGMENT
     / LC_SEGMENT_64, for mapping that offset to an address), ``symtab``
     (LC_SYMTAB's (stroff, strsize), for the canary scan), ``cryptid``
-    (LC_ENCRYPTION_INFO's crypt id, or None when the image carries none) and
-    ``rpaths`` (the LC_RPATH search paths, the DT_RPATH/DT_RUNPATH analogue).
-    Bounded by the command count and the region already sized; a command whose
-    body runs past that region stops the walk.
+    (LC_ENCRYPTION_INFO's crypt id, or None when the image carries none),
+    ``rpaths`` (the LC_RPATH search paths, the DT_RPATH/DT_RUNPATH analogue)
+    and ``platform``/``min_os``/``sdk`` (LC_BUILD_VERSION, or the older
+    LC_VERSION_MIN_* whose command kind names the platform). Bounded by the
+    command count and the region already sized; a command whose body runs past
+    that region stops the walk.
     """
     result: dict[str, Any] = {
         "dylibs": None,
@@ -2575,6 +2615,9 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         "symtab": None,
         "cryptid": None,
         "rpaths": [],
+        "platform": None,
+        "min_os": None,
+        "sdk": None,
     }
     if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
         return result
@@ -2596,6 +2639,27 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             name = _macho_lc_str(cmds, pos, cmdsize, order)
             if name:
                 names.append(name)
+        elif cmd == _LC_BUILD_VERSION and result["platform"] is None and cmdsize >= 24:
+            # platform/minos/sdk as u32s after cmd/cmdsize; ntools entries follow
+            # but carry toolchain identity, not target identity.
+            plat = int.from_bytes(cmds[pos + 8 : pos + 12], order)  # type: ignore[arg-type]
+            result["platform"] = _MACHO_PLATFORMS.get(plat, f"platform_{plat}")
+            result["min_os"] = _macho_version(
+                int.from_bytes(cmds[pos + 12 : pos + 16], order)  # type: ignore[arg-type]
+            )
+            sdk = int.from_bytes(cmds[pos + 16 : pos + 20], order)  # type: ignore[arg-type]
+            if sdk:
+                result["sdk"] = _macho_version(sdk)
+        elif cmd in _LC_VERSION_MIN_CMDS and result["platform"] is None and cmdsize >= 16:
+            # version_min_command: version then sdk; the command kind itself
+            # names the platform (the pre-LC_BUILD_VERSION encoding).
+            result["platform"] = _LC_VERSION_MIN_CMDS[cmd]
+            result["min_os"] = _macho_version(
+                int.from_bytes(cmds[pos + 8 : pos + 12], order)  # type: ignore[arg-type]
+            )
+            sdk = int.from_bytes(cmds[pos + 12 : pos + 16], order)  # type: ignore[arg-type]
+            if sdk:
+                result["sdk"] = _macho_version(sdk)
         elif cmd == _LC_RPATH and len(rpaths) < _MACHO_MAX_DYLIBS:
             # rpath_command is an lc_str like the dylinker's; @loader_path /
             # @executable_path tokens stay verbatim -- expansion is dyld's job.

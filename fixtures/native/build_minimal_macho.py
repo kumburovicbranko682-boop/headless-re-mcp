@@ -15,8 +15,11 @@ undefined imports include the ``___stack_chk_guard``/``___stack_chk_fail``
 pair a clang ``-fstack-protector`` build pulls from libSystem -- so the
 canary posture fact has a positive case radare2 independently confirms (r2
 keys its own canary line on that import, reached through the dysymtab's
-indirect-symbol table) -- and an ``LC_RPATH`` so the @rpath search-path fact
-(the ELF rpath/runpath analogue) has a positive case llvm-objdump confirms.
+indirect-symbol table) -- an ``LC_RPATH`` so the @rpath search-path fact
+(the ELF rpath/runpath analogue) has a positive case llvm-objdump confirms,
+and an ``LC_BUILD_VERSION`` naming the target platform and minimum OS / SDK
+versions the way every modern linker does, so the platform facts have a
+positive case both llvm-objdump and radare2 (its ``os`` line) confirm.
 Variable-length load commands are 8-byte aligned: the 64-bit Mach-O spec
 requires it and llvm-objdump rejects the image otherwise (radare2 merely
 tolerates 4-byte alignment, which is how the earlier misalignment went
@@ -63,6 +66,7 @@ _LC_LOAD_DYLINKER = 0x0E
 _LC_UUID = 0x1B
 _LC_MAIN = 0x80000028
 _LC_RPATH = 0x8000001C
+_LC_BUILD_VERSION = 0x32
 _S_CSTRING_LITERALS = 0x00000002
 _S_ATTR_PURE_INSTRUCTIONS_SOME = 0x80000400
 _VM_BASE = 0x100000000
@@ -92,6 +96,12 @@ def _lc_rpath(path: str) -> bytes:
     raw = path.encode() + b"\x00"
     total = _align8(12 + len(raw))  # rpath_command is an lc_str like the dylinker's
     return struct.pack("<III", _LC_RPATH, total, 12) + raw.ljust(total - 12, b"\x00")
+
+
+def _lc_build_version() -> bytes:
+    # platform 1 (macOS), minos 13.0, sdk 14.2 -- versions in xxxx.yy.zz nibble
+    # packing -- and no trailing build_tool_version entries (ntools 0).
+    return struct.pack("<IIIIII", _LC_BUILD_VERSION, 24, 1, 0x000D0000, 0x000E0200, 0)
 
 
 def _seg64(
@@ -145,6 +155,7 @@ def build() -> bytes:
     dylinker = _lc_load_dylinker(DYLINKER)
     dylib = _lc_load_dylib(DYLIB)
     rpath = _lc_rpath(RPATH)
+    buildver = _lc_build_version()
     seg_pagezero = 72
     seg_text = 72 + 80 * 2  # two sections: __text and __cstring
     lc_main = 24
@@ -157,12 +168,13 @@ def build() -> bytes:
         + len(dylinker)
         + len(dylib)
         + len(rpath)
+        + len(buildver)
         + lc_main
         + lc_uuid
         + lc_symtab
         + lc_dysymtab
     )
-    ncmds = 9
+    ncmds = 10
     code_off = 32 + sizeofcmds
     cstr_off = code_off + len(CODE)
     total = cstr_off + len(MARKER)
@@ -210,7 +222,9 @@ def build() -> bytes:
     text = _seg64("__TEXT", _VM_BASE, 0x1000, 0, total, 5, 5, 2, 0) + text_sect + cstr_sect
     main = struct.pack("<IIQQ", _LC_MAIN, 24, code_off, 0)  # entryoff, stacksize
     uuid = struct.pack("<II", _LC_UUID, 24) + bytes(range(16))
-    blob = header + pagezero + text + dylinker + dylib + rpath + main + uuid + symtab + dysymtab
+    blob = (
+        header + pagezero + text + dylinker + dylib + rpath + buildver + main + uuid
+    ) + symtab + dysymtab
     blob += CODE + MARKER
     blob += b"\x00" * padding
     blob += nlists + strtab + indirect

@@ -33,6 +33,16 @@ _MACHO_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "native" / "
 _READELF_RPATH_RE = re.compile(r"\(RPATH\)\s+Library rpath: \[([^\]]*)\]")
 _READELF_RUNPATH_RE = re.compile(r"\(RUNPATH\)\s+Library runpath: \[([^\]]*)\]")
 
+# llvm-objdump --macho --all-headers prints the LC_BUILD_VERSION block as
+# "cmd LC_BUILD_VERSION" followed by platform/sdk/minos lines.
+_LLVM_BUILD_VERSION_RE = re.compile(
+    r"cmd LC_BUILD_VERSION\n"
+    r"\s*cmdsize \d+\n"
+    r"\s*platform (\S+)\n"
+    r"\s*sdk (\S+)\n"
+    r"\s*minos (\S+)"
+)
+
 _PROBE_C = "int main(void) { return 0; }\n"
 # $ORIGIN exercises the loader token passthrough; the reader must not expand it.
 _SEARCH_PATH = "/opt/probe/lib:$ORIGIN/../lib"
@@ -158,6 +168,39 @@ def test_macho_rpath_agrees_with_llvm_objdump() -> None:
         # The tool-free LC_RPATH walk and LLVM's decoder name the same paths,
         # verbatim (no @loader_path expansion) and in the same order.
         assert native["rpath"] == llvm_rpaths == ["@loader_path/../Frameworks"]
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_macho_build_version_agrees_with_llvm_objdump() -> None:
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — Mach-O platform gate not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    result = subprocess.run(
+        [objdump, "--macho", "--all-headers", str(_MACHO_FIXTURE)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    match = _LLVM_BUILD_VERSION_RE.search(result.stdout)
+    assert match, result.stdout
+    llvm_platform, llvm_sdk, llvm_minos = match.groups()
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, _MACHO_FIXTURE)
+        # The tool-free LC_BUILD_VERSION walk and LLVM's decoder answer the
+        # Apple-binary identity questions with the same strings.
+        assert native["platform"] == llvm_platform == "macos"
+        assert native["min_os"] == llvm_minos == "13.0"
+        assert native["sdk"] == llvm_sdk == "14.2"
     finally:
         if session_id is not None:
             service.close_session(session_id)
