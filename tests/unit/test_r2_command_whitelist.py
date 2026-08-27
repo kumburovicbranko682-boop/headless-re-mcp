@@ -129,3 +129,42 @@ def test_r2_xrefs_to_analysis_pass_flows_into_command(
     # ...but only if it is on the allowlist.
     with pytest.raises(R2Error, match="not whitelisted"):
         client.xrefs_to(binary, 0x401150, analysis="aaa;!echo")
+
+
+def test_r2_analysis_pass_flows_through_every_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, binary = _client_and_binary(tmp_path)
+    launched: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        launched.append(cmd)
+        return Completed(0, b"[]", b"")
+
+    monkeypatch.setattr(r2_module, "run_bounded", fake_run)
+
+    # disasm, xrefs and xrefs_from all default to the shallow pass...
+    client.disasm(binary, 0x401150, count=4)
+    assert "aa\npdj 4 @ 4198736\nq" in launched[-1]
+    client.xrefs(binary, 0x401150)
+    assert "aa\naxj @ 4198736\nq" in launched[-1]
+    client.xrefs_from(binary, 0x401150)
+    assert "aa\naxffj @ 4198736\nq" in launched[-1]
+
+    # ...and each threads a deeper allowlisted pass through unchanged.
+    client.disasm(binary, 0x401150, count=4, analysis="aaa")
+    assert "aaa\npdj 4 @ 4198736\nq" in launched[-1]
+    client.xrefs(binary, 0x401150, analysis="aac")
+    assert "aac\naxj @ 4198736\nq" in launched[-1]
+    client.xrefs_from(binary, 0x401150, analysis="aaa")
+    assert "aaa\naxffj @ 4198736\nq" in launched[-1]
+
+    # A non-allowlisted pass is rejected on every path.
+    for call in (
+        lambda: client.disasm(binary, 0x401150, count=4, analysis="o /etc/passwd"),
+        lambda: client.xrefs(binary, 0x401150, analysis="o /etc/passwd"),
+        lambda: client.xrefs_from(binary, 0x401150, analysis="o /etc/passwd"),
+    ):
+        with pytest.raises(R2Error, match="not whitelisted"):
+            call()

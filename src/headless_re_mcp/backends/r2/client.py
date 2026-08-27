@@ -95,6 +95,7 @@ class R2Client:
         address: int,
         *,
         count: int = 32,
+        analysis: str = "aa",
         timeout: float = 30.0,
     ) -> JsonObject:
         if type(address) is not int or address < 0:
@@ -102,7 +103,7 @@ class R2Client:
         if type(count) is not int or not 1 <= count <= 512:
             raise R2Error("invalid_params", "count must be 1..512")
         cmd = f"pdj {count} @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        data = self.run(binary, [analysis, cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address
         data["count"] = count
@@ -113,12 +114,13 @@ class R2Client:
         binary: Path,
         address: int,
         *,
+        analysis: str = "aa",
         timeout: float = 30.0,
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        data = self.run(binary, [analysis, cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address
         return enrich_r2_payload(data, binary=binary)
@@ -160,6 +162,7 @@ class R2Client:
         binary: Path,
         address: int,
         *,
+        analysis: str = "aa",
         timeout: float = 30.0,
     ) -> JsonObject:
         """References made *from* the function containing ``address`` (``axffj``).
@@ -172,11 +175,16 @@ class R2Client:
         target in ``name``/``type`` and carries the referencing site ``at``
         (mapped to ``at_address``) and the target ``ref`` (mapped to
         ``ref_address``, and to the item's ``address``).
+
+        ``analysis`` selects the analysis pass, as on ``xrefs_to``. The default
+        ``aa`` does not analyze functions reachable only through a call, so on a
+        stripped binary ``axffj`` at such a function is empty; a deeper pass
+        (e.g. ``aaa``) recovers the body and thus its outbound references.
         """
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axffj @ {address}"
-        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        data = self.run(binary, [analysis, cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address
         return enrich_r2_payload(data, binary=binary)
