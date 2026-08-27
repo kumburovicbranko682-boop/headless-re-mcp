@@ -1061,6 +1061,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `bounded_tool_result` 后仍带 `body_path`、不被摘要;③`dom.snapshot` 的 `html` 按编码体积裁并置 `truncated`。既有 spill/字段单测
   全绿(原始上限作为第一道界不变)。
 
+- **`apk.export_sources` 与 `js.unpack_bundle` 的文件清单也栽在同一处——单个路径短、整条数组却能顶破预算。** 上两条只兜住了
+  单个大文本字段(`source`/`code`/`wat`、正文 body、`html`),没管**数组**。这两个工具各回一份至多 2000 条的相对路径清单
+  (`java_files` / `files`),每条路径本身很短,但对一个类爆炸的大 APK 或深层 bundle,2000 条深包名路径 JSON 编码后轻松过 200KB
+  ——`java_file_count`/`output_dir`/分页游标全挂在同一条结果里,一旦编码体越过 262144,传输层照旧把**整条**换成约 16KiB 摘要:
+  agent 既拿不到任何一条路径、也拿不到落盘目录去自己遍历。原有的**条数**上限 `_MAX_LISTED_FILES`(2000)防不住这个——顶破预算的是
+  每条路径的**长度**、不是条数。新增 `fit_json_text` 的数组姊妹 `backends/common/json_budget.fit_json_list`:按编码后的**整个数组**
+  体积二分裁出「能过预算」的最长前缀、保序丢弃末尾若干条,并如实回报丢了多少。`export_sources` 用它裁 `java_files`,把丢弃折进
+  既有的 `has_more`(其语义本就是「清单不完整」);`unpack_bundle` 在算 `has_more` **之前**裁 `window`,于是被预算裁过的一页仍报
+  `has_more: true`、调用方可照常翻页取余下部分,`listing_truncated` 也随之置真。两处余量都取默认 64KiB(足够容下 `_note_*` 追加的
+  至多 8000 字符 stderr、`output_dir` 与各计数标量)。清单小的照旧整条原样回(默认 `limit=100` 与典型小 APK 都走快路径、不触裁剪)。
+  `fit_json_list` 有独立单测(裁到编码预算、保序、可把只有一条却超限的数组裁空);另加客户端级单测:把预算调小、喂 60 个文件的
+  mock 树,断言 `export_sources`/`unpack_bundle` 都把清单裁短、`has_more` 置真、裁后数组编码体确实落在预算内(无需真 jadx/webcrack)。
+  顺带修一处上一轮遗留的陈旧单测——`apk.decompile` 早已改用 `fit_json_text`、`_MAX_SOURCE_BYTES` 常量已删,该测仍 import 它并断言
+  硬编码的 400000 上限;现改为按编码预算断言(`source` 短于原文件且 JSON 编码体不超 `RESULT_BUDGET_BYTES`)。r2 的分项清单
+  (`_MAX_ITEMS`=4096 条 dict)是同一类的下一个、且更常触网(真实二进制动辄数千函数/字符串),但它同时挂着一份可能很大的原始
+  `raw` 字段、需要连带处理,留作独立一轮。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
-from headless_re_mcp.backends.common.json_budget import RESULT_BUDGET_BYTES, fit_json_text
+from headless_re_mcp.backends.common.json_budget import (
+    RESULT_BUDGET_BYTES,
+    fit_json_list,
+    fit_json_text,
+)
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
@@ -99,12 +103,19 @@ class JadxClient:
         java_files, java_file_count, has_more = _capped_java_listing(
             out_dir, cap=_MAX_LISTED_FILES
         )
+        # Bound the listing by its JSON-encoded size too, not only the count cap:
+        # 2000 deeply-nested class paths can sum past the result budget on a large
+        # APK, and the transport then discards the whole export result --
+        # output_dir, counts, and all -- for a ~16 KiB summary. fit_json_list drops
+        # trailing paths so the reply survives; has_more already means "the listing
+        # is incomplete", so folding the budget cut into it keeps that honest.
+        java_files, _dropped, budget_cut = fit_json_list(java_files)
         result: JsonObject = {
             "output_dir": str(out_dir),
             "sources_dir": str(sources_root) if sources_root.is_dir() else None,
             "java_file_count": java_file_count,
             "java_files": java_files,
-            "has_more": has_more,
+            "has_more": has_more or budget_cut,
         }
         return _note_partial_decompile(result, code=code, stderr=stderr)
 

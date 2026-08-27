@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
-from headless_re_mcp.backends.common.json_budget import fit_json_text
+from headless_re_mcp.backends.common.json_budget import fit_json_list, fit_json_text
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
@@ -195,6 +195,13 @@ class JsClient:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), _MAX_LISTED_FILES))
         window = files[start : start + cap]
+        # Bound the window by its JSON-encoded size too, not only the count cap: a
+        # caller can ask for up to 2000 paths and a deep bundle's paths can sum
+        # past the result budget, whereupon the transport discards the whole
+        # listing for a ~16 KiB summary. Trimming here shrinks the window before
+        # has_more is computed, so a page that was budget-cut still reports more to
+        # fetch and the caller can advance past it.
+        window, _dropped, budget_cut = fit_json_list(window)
         result: JsonObject = {
             "output_dir": str(out_dir),
             "file_count": file_count,
@@ -203,7 +210,7 @@ class JsClient:
             "total": file_count,
             "offset": start,
             "has_more": start + len(window) < file_count,
-            "listing_truncated": listed_more,
+            "listing_truncated": listed_more or budget_cut,
         }
         return _note_nonzero_exit(result, code=code, stderr=stderr)
 

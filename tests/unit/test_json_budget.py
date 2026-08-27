@@ -7,6 +7,7 @@ import json
 from headless_re_mcp.agent.context import bounded_tool_result
 from headless_re_mcp.backends.common.json_budget import (
     RESULT_BUDGET_BYTES,
+    fit_json_list,
     fit_json_text,
 )
 from headless_re_mcp.backends.jsre.client import _bounded_output
@@ -69,3 +70,39 @@ def test_bounded_output_result_survives_the_transport_budget() -> None:
     assert "summary" not in bounded
     assert "code" in bounded
     assert bounded["truncated"] is True
+
+
+def test_fit_list_returns_all_items_when_they_fit() -> None:
+    items = ["a/b/C.java", "a/b/D.java", "a/e/F.java"]
+    kept, dropped, truncated = fit_json_list(items)
+    assert kept == items
+    assert dropped == 0
+    assert truncated is False
+
+
+def test_fit_list_drops_trailing_items_to_the_encoded_budget() -> None:
+    """A listing that sums past the budget must come back shortened, not nuked.
+
+    Each path is short, but 4000 of them encode well past a small budget; the
+    count cap alone would not catch that. Confirm fit_json_list keeps a leading
+    run whose encoded array fits, drops the rest, and flags it -- so the caller
+    can page past ``kept`` instead of losing the whole listing to a summary.
+    """
+    items = [f"sources/com/example/pkg{i:04d}/GeneratedClass{i:04d}.java" for i in range(4000)]
+    kept, dropped, truncated = fit_json_list(items, budget=4096, reserve=1024)
+    assert truncated is True
+    assert 0 < len(kept) < len(items)
+    assert dropped == len(items) - len(kept)
+    assert kept == items[: len(kept)]  # order preserved, leading run
+    encoded = len(json.dumps(kept, ensure_ascii=False).encode("utf-8"))
+    assert encoded <= 4096 - 1024
+    # One more element would have overflowed the target.
+    over = len(json.dumps(items[: len(kept) + 1], ensure_ascii=False).encode("utf-8"))
+    assert over > 4096 - 1024
+
+
+def test_fit_list_can_drop_everything_when_even_one_item_overflows() -> None:
+    kept, dropped, truncated = fit_json_list(["x" * 5000], budget=512, reserve=256)
+    assert kept == []
+    assert dropped == 1
+    assert truncated is True

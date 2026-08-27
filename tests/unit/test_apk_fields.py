@@ -238,19 +238,23 @@ def test_apk_decompile_names_source_and_says_when_it_was_cut(
 ) -> None:
     """The catalog said Java and never named the payload.
 
-    Measured: truncated True, source 400000 chars (the cap), no java, code
-    or text field. Looking for those after a successful call reads as a
-    missing class, and a 400000-char string with no truncated flag reads
-    as the whole file.
+    Measured: truncated True, a ``source`` bounded to the JSON-encoded transport
+    budget (not a raw byte count), and no java, code or text field. Looking for
+    those after a successful call reads as a missing class; an over-budget string
+    with no truncated flag reads as the whole file -- and would be discarded whole
+    for a ~16 KiB summary in transit rather than returned cleanly cut.
     """
-    from headless_re_mcp.backends.jadx.client import _MAX_SOURCE_BYTES, JadxClient
+    import json as _json
+
+    from headless_re_mcp.backends.common.json_budget import RESULT_BUDGET_BYTES
+    from headless_re_mcp.backends.jadx.client import JadxClient
 
     apk = tmp_path / "app.apk"
     apk.write_bytes(b"PK")
     out = tmp_path / "out"
     src_dir = out / "sources" / "com" / "example"
     src_dir.mkdir(parents=True)
-    (src_dir / "Foo.java").write_text("x" * (_MAX_SOURCE_BYTES + 80), encoding="utf-8")
+    (src_dir / "Foo.java").write_text("x" * (RESULT_BUDGET_BYTES + 80), encoding="utf-8")
     client = JadxClient(tmp_path / "jadx.bat")
     monkeypatch.setattr(client, "export_sources", lambda *args, **kwargs: {"ok": True})
     payload = client.decompile(apk, out, "com.example.Foo")
@@ -259,7 +263,9 @@ def test_apk_decompile_names_source_and_says_when_it_was_cut(
     assert "text" not in payload
     assert payload["truncated"] is True
     assert payload["class_name"] == "com.example.Foo"
-    assert len(payload["source"]) == _MAX_SOURCE_BYTES
+    assert len(payload["source"]) < RESULT_BUDGET_BYTES + 80
+    encoded = len(_json.dumps(payload["source"], ensure_ascii=False).encode("utf-8"))
+    assert encoded <= RESULT_BUDGET_BYTES
     doc = _tool_docstring("apk.decompile")
     assert "source" in doc
     assert "truncated" in doc

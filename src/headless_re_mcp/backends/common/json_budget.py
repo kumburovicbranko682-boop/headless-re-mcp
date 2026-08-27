@@ -16,6 +16,7 @@ intact rather than nuked to a summary.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 # Mirrors ``tools.catalog.ResourcePolicy.max_result_bytes``. Kept as a plain int
 # so this leaf helper does not import the tools layer; ``test_json_budget`` pins
@@ -32,6 +33,11 @@ _FIELD_RESERVE_BYTES = 64 * 1024
 def _encoded_len(text: str) -> int:
     """Bytes ``json.dumps`` would emit for ``text`` as a JSON string value."""
     return len(json.dumps(text, ensure_ascii=False).encode("utf-8"))
+
+
+def _encoded_list_len(items: list[Any]) -> int:
+    """Bytes ``json.dumps`` would emit for ``items`` as a JSON array."""
+    return len(json.dumps(items, ensure_ascii=False).encode("utf-8"))
 
 
 def fit_json_text(
@@ -66,3 +72,42 @@ def fit_json_text(
         else:
             hi = mid - 1
     return text[:lo], original_bytes, lo < len(text)
+
+
+def fit_json_list(
+    items: list[Any],
+    *,
+    budget: int | None = None,
+    reserve: int | None = None,
+) -> tuple[list[Any], int, bool]:
+    """Longest leading run of ``items`` whose JSON-encoded array fits the budget.
+
+    The list sibling of ``fit_json_text``. An array field can itself outgrow the
+    result budget even when every element is short: a jadx/jsre listing of 2000
+    deeply-nested paths encodes well past 200 KiB, and the transport then throws
+    the *whole* result away (output_dir, counts, and all) for a ~16 KiB summary.
+    A count cap alone (``_MAX_LISTED_FILES``) does not prevent that, because the
+    per-element size is what varies. Trim by the encoded array size instead.
+
+    Returns ``(kept, dropped, truncated)``: ``dropped`` is how many trailing
+    elements were removed and ``truncated`` says whether anything was. The order
+    is preserved, so a paginated caller can advance past ``kept`` and fetch the
+    rest. ``budget`` / ``reserve`` default to the module constants, read at call
+    time so a deployment (or a test) can override them.
+    """
+    effective_budget = RESULT_BUDGET_BYTES if budget is None else budget
+    effective_reserve = _FIELD_RESERVE_BYTES if reserve is None else reserve
+    target = max(0, effective_budget - effective_reserve)
+    seq = list(items)
+    total = len(seq)
+    if _encoded_list_len(seq) <= target:
+        return seq, 0, False
+    lo = 0
+    hi = total
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _encoded_list_len(seq[:mid]) <= target:
+            lo = mid
+        else:
+            hi = mid - 1
+    return seq[:lo], total - lo, lo < total
