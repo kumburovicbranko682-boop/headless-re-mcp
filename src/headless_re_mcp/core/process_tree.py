@@ -9,6 +9,7 @@ import subprocess
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -223,19 +224,49 @@ def collect_process_group(pgid: int) -> list[int]:
     return members
 
 
-def terminate_process_group(pgid: int) -> list[int]:
+def _proc_state_dead(pid: int) -> bool:
+    """POSIX: True when ``pid`` is gone or a zombie/dead entry in ``/proc``.
+
+    A zombie counts as dead here: it has been killed and only awaits its
+    parent's reap, which for an orphan is init's job, not ours.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return True
+    close = stat.rfind(")")
+    if close < 0:
+        return True
+    fields = stat[close + 2 :].split()
+    return bool(fields) and fields[0] in {"Z", "X", "x"}
+
+
+def terminate_process_group(pgid: int, *, wait_s: float = 0.0) -> list[int]:
     """POSIX: kill every live member of process group ``pgid``. [] on Windows.
 
     Members are enumerated by their recorded group and killed one by one, rather
     than with ``killpg(pgid)``: once the leader is reaped its pid can be reused,
     and a bare group signal on a recycled pid could hit an unrelated group. A
     per-member kill keyed on the group cannot.
+
+    SIGKILL is asynchronous: the signal call returns before the target leaves
+    the run queue. With ``wait_s`` > 0 the call also waits, bounded by that
+    deadline, until every killed member reads as dead in ``/proc``, so a caller
+    about to report "nothing of the tool survives" states a fact rather than a
+    request.
     """
     killed: list[int] = []
     for pid in collect_process_group(pgid):
         with suppress(Exception):
             _kill_pid(pid)
             killed.append(pid)
+    if wait_s > 0 and killed:
+        deadline = monotonic() + wait_s
+        pending = list(killed)
+        while pending and monotonic() < deadline:
+            pending = [pid for pid in pending if not _proc_state_dead(pid)]
+            if pending:
+                sleep(0.01)
     return killed
 
 

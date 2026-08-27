@@ -238,6 +238,10 @@ def _capture_process(
         pid = getattr(process, "pid", None)
         if pid:
             assign_to_process_group(int(pid))
+        # On POSIX the tool leads its own session (start_new_session in
+        # _creation_options), so its pid doubles as the group id used to reap
+        # leftovers once the tool is done.
+        group_id = int(pid) if os.name != "nt" and pid else 0
     except FileNotFoundError as exc:
         raise UpxExecutableNotFoundError(Path(argv[0])) from exc
     except OSError as exc:
@@ -294,6 +298,18 @@ def _capture_process(
         if process.poll() is not None:
             break
         sleep(min(0.05, remaining))
+
+    # Whatever the exit reason, a child the tool detached gets reparented to
+    # init and stays invisible to _terminate_process's parent/child walk, yet
+    # may keep reading the sample and holding our pipes.  Reap the session
+    # group the tool led, keyed on each member's recorded pgrp -- never a bare
+    # killpg on the leader's possibly-recycled pid.  Doing this before the
+    # joins lets a reader blocked on a survivor's pipe finish normally.
+    if group_id:
+        from headless_re_mcp.core.process_tree import terminate_process_group
+
+        with suppress(Exception):
+            terminate_process_group(group_id, wait_s=1.0)
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
