@@ -79,15 +79,23 @@ def test_frida_local_attach_modules_exports_and_hook() -> None:
         assert mods["total"] >= mods["count"]
         names = [str(m["name"]) for m in mods["modules"]]
         assert all(names), "a module came back with an empty name"
-        # Every dynamically linked ELF maps libc; use it as the export target.
-        libc = next((n for n in names if "libc" in n.lower()), None)
+        # Every dynamically linked ELF maps libc; use it as the export/read target.
+        libc = next((m for m in mods["modules"] if "libc" in str(m["name"]).lower()), None)
         assert libc is not None, f"libc not among frida modules: {names}"
 
-        exports = client.exports(proc.pid, libc, allowed_pid=proc.pid, limit=64)
+        exports = client.exports(proc.pid, str(libc["name"]), allowed_pid=proc.pid, limit=64)
         assert exports.get("found") is True
         assert exports.get("count", 0) >= 1
         assert all(str(e.get("name")) for e in exports["exports"]), "empty export name"
         assert all(str(e.get("address")) for e in exports["exports"]), "empty export address"
+
+        # Reading the module's own base must return real process memory, not a
+        # stub: the first bytes of any mapped ELF are the 0x7f 'E' 'L' 'F' magic,
+        # so this proves Memory.readByteArray reached the target's address space.
+        read = client.memory_read(proc.pid, int(str(libc["base"]), 16), 4, allowed_pid=proc.pid)
+        assert read["encoding"] == "hex"
+        assert read["size"] == 4
+        assert read["data"].lower() == "7f454c46", read["data"]
 
         # The canned "noop" script must compile and load in the target.
         hooked = client.hook_template(proc.pid, "noop", allowed_pid=proc.pid)

@@ -4,9 +4,10 @@
 this drives a real multi-resource page through the rest of the surface a caller
 relies on -- the network list, a response body fetched by request id, a script's
 source fetched by script id, a screenshot on disk, a HAR export, and a
-navigation that changes the URL. Those paths (``Network.getResponseBody`` /
-``Debugger.getScriptSource`` over CDP, the artifact spill, HAR assembly) had no
-live coverage, so a CDP contract drift would have looked like an empty page.
+navigation that changes the URL and the DOM snapshot with it. Those paths
+(``Network.getResponseBody`` / ``Debugger.getScriptSource`` over CDP, the
+artifact spill, HAR assembly, a DOM snapshot that tracks a second document) had
+no live coverage, so a CDP contract drift would have looked like an empty page.
 
 Deterministic: a stdlib HTTP origin, no external network. Ids are used before
 navigating, because a reload retires the pre-navigation request/script ids by
@@ -162,12 +163,25 @@ def test_web_reads_network_body_script_source_screenshot_and_har(
             assert Path(har.data["path"]).is_file()
             assert int(har.data["entry_count"]) >= 1
 
+            # The DOM snapshot must reflect the live document, not the raw HTML:
+            # title and body text come back for page one.
+            dom = service.web_dom_snapshot(session_id)
+            assert dom.ok, dom.error
+            assert dom.data["title"] == "dynamic-gate"
+            assert "page one" in str(dom.data["html"])
+
             # Navigation changes the reported URL (ids above were used first,
             # because a reload retires pre-navigation request/script ids).
             moved = service.web_navigate(session_id, f"{origin}/two.html")
             assert moved.ok, moved.error
             assert moved.data["url"].endswith("/two.html")
             assert "page-two" in moved.data["title"]
+
+            # ...and the snapshot follows the navigation to the new document.
+            dom_two = service.web_dom_snapshot(session_id)
+            assert dom_two.ok, dom_two.error
+            assert dom_two.data["title"] == "page-two"
+            assert "page two" in str(dom_two.data["html"])
         finally:
             service.web_close(session_id)
     finally:

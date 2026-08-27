@@ -142,8 +142,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   于是在 Linux 上整条 Frida 线——本地注入、模块/导出枚举、pid 授权闸、脚本加载——毫无真机覆盖,所有断言都
   只压在单测的 mock 上。新增 `test_frida_local_gate`,对着**现开的子进程**(Python 解释器自己,哪里都在、
   且动态链接 libc)驱动真的 `FridaClient`:先验 pid 授权闸(未授权的 pid 在注入前就被 `permission_denied`
-  挡下),再 attach、枚举模块(断言 libc 在列)、枚举 libc 导出(found 且 count≥1、名字/地址非空)、加载
-  canned `noop` 脚本(loaded 且 persisted=false)。全程无设备、无外网、无夹具可造。缺 frida 模块或非 POSIX
+  挡下),再 attach、枚举模块(断言 libc 在列)、枚举 libc 导出(found 且 count≥1、名字/地址非空)、在 libc 模块基址
+  上 `memory_read` 4 字节并断言拿回的正是 ELF 魔数 `7f454c46`(证明 `Memory.readByteArray` 真读到了目标地址
+  空间、而非返回桩数据)、加载 canned `noop` 脚本(loaded 且 persisted=false)。全程无设备、无外网、无夹具可造。缺 frida 模块或非 POSIX
   时如实 skip(Windows 由 PE Gate 覆盖);沙箱在 OS 层拒绝 ptrace(yama/seccomp/无 CAP_SYS_PTRACE)时按
   frida 自己的措辞识别并诚实 skip,与"契约坏了"的真失败区分开——skip 不等于 pass。
 
@@ -175,7 +176,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   新增 `test_web_dynamic_gate`:stdlib 起本地源站(一页 HTML + 外链 JS),开真 Chromium,轮询网络环直到
   两个资源都入环(CDP 事件落在驱动线程上,晚于 goto 返回是常态),断言按 id 取回的响应体与脚本源码逐字
   等于源站所served、截图文件非空、HAR 至少一条、导航后 URL/标题切换。id 一律在导航前使用——刷新会按
-  设计作废旧 id。缺 Playwright/浏览器时如实 skip(skip 不等于 pass)。
+  设计作废旧 id。另补 `web.dom_snapshot` 的实测:`test_web_re_gate` 只在 `data:` 页上验过标题、从不换页,
+  这里断言快照的标题/正文文本对得上真源站的第一页,导航到第二页后再取一次、断言快照跟着换到了新文档
+  (证明拿到的是活 DOM、不是初始 HTML)。缺 Playwright/浏览器时如实 skip(skip 不等于 pass)。
 
 ### 新增（Linux 便携后端 Gate 的 CI 通路）
 
