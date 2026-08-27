@@ -211,6 +211,65 @@ class TestProxyCaptureIsBounded:
         # Every write incremented the sequence exactly once.
         assert recorder._seq == 4 * 300
 
+    def test_har_export_is_bounded_before_it_lands(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """A full flow ring serialises to tens of MB; the HAR must be capped.
+
+        web.har_export already bounds its artifact against the capture budget;
+        the proxy exporter writes into the same session capture directory, so
+        an unbounded write here is the disk-fill the sibling cap prevents. With
+        the budget lowered, entries drop until the file fits and truncated is
+        disclosed, and the artifact stays valid JSON holding exactly the
+        entries reported.
+        """
+        import json
+
+        from headless_re_mcp.backends.proxy import client as mod
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+        recorder = mod._FlowRecorder(capacity=500)
+        for index in range(500):
+            flow = _FakeFlow(index)
+            flow.request.pretty_url = "https://example.com/" + "u" * 4000
+            recorder.response(flow)
+
+        monkeypatch.setattr(mod, "UNREGISTERED_CAPTURE_MAX_BYTES", 16 * 1024)
+        backend = ProxyBackend()
+        inst = _ProxyInstance("127.0.0.1", 1)
+        inst.recorder = recorder
+        backend._instances["s"] = inst
+
+        out = tmp_path / "capture.har"
+        result = backend.export_har("s", out)
+
+        assert out.stat().st_size <= 16 * 1024
+        assert result["size"] <= 16 * 1024
+        assert result["truncated"] is True
+        assert 0 <= result["entry_count"] < 500
+        parsed = json.loads(out.read_text(encoding="utf-8"))
+        assert len(parsed["log"]["entries"]) == result["entry_count"]
+
+    def test_har_export_of_a_small_capture_is_not_truncated(
+        self, tmp_path: Any
+    ) -> None:
+        """The bound must not fire on a capture that already fits."""
+        from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
+
+        recorder = _FlowRecorder(capacity=10)
+        for index in range(3):
+            recorder.response(_FakeFlow(index))
+        backend = ProxyBackend()
+        inst = _ProxyInstance("127.0.0.1", 1)
+        inst.recorder = recorder
+        backend._instances["s"] = inst
+
+        out = tmp_path / "small.har"
+        result = backend.export_har("s", out)
+
+        assert result["truncated"] is False
+        assert result["entry_count"] == 3
+
 
 class TestProxyStartHonesty:
     def test_port_probe_reports_false_for_a_closed_port(self) -> None:
