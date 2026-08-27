@@ -29,6 +29,9 @@ _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
+# A DEX method tops out around 65535 instructions; collect well under that so a
+# single disassembly cannot pin unbounded memory, and page the collected rows.
+_MAX_INSTRUCTIONS_COLLECT = 20_000
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
@@ -881,6 +884,106 @@ class ApkClient:
             # True when the string scan hit its own cap before the whole DEX was
             # walked, so an empty/short result is not read as "nowhere else".
             "scan_capped": scan_capped,
+        }
+
+    def disassemble(
+        self,
+        path: Path,
+        class_name: str,
+        method_name: str,
+        *,
+        descriptor: str = "",
+        offset: int = 0,
+        limit: int = 200,
+    ) -> JsonObject:
+        parsed = self._parsed(path)
+        target_class = class_name.strip()
+        if not target_class:
+            raise ApkError("invalid_params", "class_name is required")
+        target_method = method_name.strip()
+        if not target_method:
+            raise ApkError("invalid_params", "method_name is required")
+        want_desc = descriptor.strip()
+        smali_class = _dotted_to_smali(target_class)
+        # Reading a method's DEX bytecode straight from androguard needs no jadx
+        # (Java, a JRE) or apktool (baksmali) -- so this works on a host where
+        # those are absent, and answers what the xref tools only point at: what a
+        # method actually does. Collect every non-external method in the class
+        # with this name so overloads are visible, then pick the one to show.
+        overloads: list[str] = []
+        matches: list[Any] = []
+        for method in parsed.analysis.get_methods():
+            if method.is_external():
+                continue
+            if method.class_name not in (target_class, smali_class):
+                continue
+            if method.name != target_method:
+                continue
+            desc = str(method.descriptor)
+            overloads.append(desc)
+            if not want_desc or desc == want_desc:
+                matches.append(method)
+        if not matches:
+            raise ApkError(
+                "not_found",
+                "method not found",
+                class_name=class_name,
+                method_name=method_name,
+                descriptor=descriptor,
+            )
+        # Deterministic choice when a name has overloads and none was pinned:
+        # sort by descriptor and take the first. overloads still lists them all so
+        # the caller can re-ask with a specific descriptor.
+        chosen = sorted(matches, key=lambda m: str(m.descriptor))[0]
+        rows: list[JsonObject] = []
+        scan_more = False
+        addr = 0
+        try:
+            instructions = chosen.get_method().get_instructions()
+        except Exception:  # noqa: BLE001 - abstract/native methods have no code
+            instructions = []
+        for ins in instructions:
+            if len(rows) >= _MAX_INSTRUCTIONS_COLLECT:
+                scan_more = True
+                break
+            try:
+                mnemonic = str(ins.get_name())
+                operands = str(ins.get_output())[:_MAX_STRING_LEN]
+                length = int(ins.get_length())
+            except Exception:  # noqa: BLE001 - odd instruction shapes vary
+                continue
+            rows.append(
+                {
+                    "idx": len(rows),
+                    # DEX addresses are 16-bit code units; report the code-unit
+                    # offset (bytes // 2) so branch targets line up with it.
+                    "addr": addr // 2,
+                    "mnemonic": mnemonic,
+                    "operands": operands,
+                }
+            )
+            addr += length
+        start = max(0, int(offset))
+        window = rows[start : start + max(1, int(limit))]
+        # Bound the page by encoded size too: a const-string operand can be 2000
+        # chars, so a long window can outgrow the budget. See classes().
+        window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
+        return {
+            "class_name": chosen.class_name,
+            "method_name": target_method,
+            "descriptor": str(chosen.descriptor),
+            "access": str(chosen.access),
+            "instructions": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            # True when the instruction scan hit its cap before the method ended,
+            # so a truncated listing is not read as the whole method.
+            "scan_capped": scan_more,
+            # Every descriptor for this method name in the class, sorted, so a
+            # caller can disambiguate an overload with the descriptor parameter.
+            "overloads": sorted(set(overloads)),
         }
 
 

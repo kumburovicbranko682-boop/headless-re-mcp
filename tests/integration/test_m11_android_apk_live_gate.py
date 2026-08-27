@@ -13,7 +13,8 @@ returns the marker string ``APK_GATE_MARKER_STRING``. The manifest declares the
 the whole APK is v1 (JAR) signed with a self-signed ``CN=HeadlessRE Gate`` key,
 so the manifest-side surface has something to find. androguard must list the
 class, its methods, the marker string, resolve the caller->callee xref both
-ways and the methods that reference the marker string, decode
+ways and the methods that reference the marker string, disassemble a method's
+Dalvik bytecode, decode
 the binary manifest (package + main activity), read the declared permission,
 enumerate the native ABI, and read the signing certificate back as a readable
 DN; apktool must decode it back into a manifest plus a smali tree containing that
@@ -136,6 +137,31 @@ def test_m11_androguard_apk_surface() -> None:
         row["method"] == "callee" and "MARKER" in row["string"]
         for row in contains_refs["xrefs"]
     ), contains_refs["xrefs"]
+
+    # Disassembly reads the method's Dalvik bytecode straight from androguard --
+    # no jadx (Java) or apktool (baksmali), which may be absent -- so it exercises
+    # the EncodedMethod.get_instructions path the xref tools never touch. callee
+    # loads the marker with a const-string and returns it; caller invokes callee.
+    # A drifted disassembler that returned nothing (empty instructions) is caught
+    # here against the real dex, not a mock.
+    callee_body = client.disassemble(_APK, _CLASS, "callee")
+    assert callee_body["descriptor"] == "()Ljava/lang/String;", callee_body
+    assert callee_body["count"] >= 2, callee_body
+    mnemonics = [ins["mnemonic"] for ins in callee_body["instructions"]]
+    assert any("const-string" in m for m in mnemonics), callee_body["instructions"]
+    assert any(
+        "APK_GATE_MARKER_STRING" in ins["operands"]
+        for ins in callee_body["instructions"]
+    ), callee_body["instructions"]
+    # addr is the code-unit offset, so the first instruction sits at 0.
+    assert callee_body["instructions"][0]["addr"] == 0, callee_body
+    assert callee_body["overloads"] == ["()Ljava/lang/String;"], callee_body
+
+    caller_body = client.disassemble(_APK, _CLASS, "caller")
+    assert any(
+        "invoke" in ins["mnemonic"] and "callee" in ins["operands"]
+        for ins in caller_body["instructions"]
+    ), caller_body["instructions"]
 
     # Manifest side: these use androguard's APK object (binary AXML decode plus
     # component queries), a different 4.x surface from the DEX analysis above.

@@ -224,6 +224,47 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_string_xrefs(session_id, value, limit=limit, contains=contains)
         )
 
+    @tools.tool(name="apk.disassemble")
+    def apk_disassemble(
+        session_id: str,
+        class_name: str,
+        method_name: str,
+        descriptor: str = "",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=5000)] = 200,
+    ) -> dict[str, Any]:
+        """Disassemble one method's DEX bytecode (no jadx/JRE or apktool needed).
+
+        Reads the method's Dalvik instructions straight from androguard, so it
+        works where apk.decompile (jadx) and apk.decode (apktool) cannot run --
+        and answers what apk.xrefs only points at: what a method actually does.
+        Answers with instructions (each row idx, addr, mnemonic, operands),
+        class_name, method_name, descriptor, access, count, total, offset,
+        has_more, scan_capped, and overloads. addr is the code-unit offset (so
+        branch targets line up); mnemonic/operands are the Dalvik opcode and its
+        arguments (e.g. const-string, invoke-virtual). total is the number of
+        instructions collected, capped at 20000; scan_capped is true when the
+        method was longer. has_more only means a larger offset still has rows --
+        and count may be below the requested limit when the result-size budget
+        trimmed the page (a const-string operand can be 2000 chars), so read
+        count, not limit, and page on has_more. overloads lists every descriptor
+        for this method name in the class; when a name has more than one and no
+        descriptor is given, the first by sorted descriptor is shown -- pass
+        descriptor to pick another. An unknown class/method is not_found; a blank
+        class_name or method_name is invalid_params. There is no smali, code or
+        source field.
+        """
+        return _dump(
+            analysis.apk_disassemble(
+                session_id,
+                class_name,
+                method_name,
+                descriptor=descriptor,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

@@ -304,6 +304,241 @@ def test_apk_string_xrefs_rejects_an_empty_value(
     assert info.value.code == "invalid_params"
 
 
+class _FakeIns:
+    """One Dalvik instruction: mnemonic, operands, and byte length."""
+
+    def __init__(self, name: str, output: str, length: int = 2) -> None:
+        self._name = name
+        self._output = output
+        self._length = length
+
+    def get_name(self) -> str:
+        return self._name
+
+    def get_output(self) -> str:
+        return self._output
+
+    def get_length(self) -> int:
+        return self._length
+
+
+class _FakeEncoded:
+    def __init__(self, instructions: list[_FakeIns]) -> None:
+        self._instructions = instructions
+
+    def get_instructions(self) -> list[_FakeIns]:
+        return list(self._instructions)
+
+
+class _FakeDisasmMethod:
+    """A MethodAnalysis whose get_method() yields a code body to disassemble."""
+
+    def __init__(
+        self,
+        class_name: str,
+        name: str,
+        descriptor: str,
+        access: str,
+        instructions: list[_FakeIns],
+        *,
+        external: bool = False,
+    ) -> None:
+        self.class_name = class_name
+        self.name = name
+        self.descriptor = descriptor
+        self.access = access
+        self._instructions = instructions
+        self._external = external
+
+    def is_external(self) -> bool:
+        return self._external
+
+    def get_method(self) -> _FakeEncoded:
+        return _FakeEncoded(self._instructions)
+
+
+class _FakeDisasmParsed:
+    def __init__(self, methods: list[_FakeDisasmMethod]) -> None:
+        self.analysis = self
+        self._methods = methods
+
+    def get_methods(self) -> list[_FakeDisasmMethod]:
+        return self._methods
+
+
+_CALLEE = _FakeDisasmMethod(
+    "Lcom/example/gate/Sample;",
+    "callee",
+    "()Ljava/lang/String;",
+    "public",
+    [
+        _FakeIns("const-string", 'v0, "APK_GATE_MARKER_STRING"', 4),
+        _FakeIns("return-object", "v0", 2),
+    ],
+)
+
+
+def test_apk_disassemble_lists_instructions_with_code_unit_offsets(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The tool reads DEX bytecode straight from androguard, no jadx/apktool.
+
+    Measured: callee's two instructions come back as {idx, addr, mnemonic,
+    operands} with addr as the code-unit offset (0 then 2, since const-string is
+    4 bytes), the const-string operand carrying the marker; descriptor/access are
+    echoed, total 2, has_more False, and overloads lists the one descriptor.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeDisasmParsed([_CALLEE])
+    )
+    payload = client.disassemble(
+        tmp_path / "app.apk", "Lcom/example/gate/Sample;", "callee"
+    )
+    assert "smali" not in payload
+    assert "source" not in payload
+    assert payload["descriptor"] == "()Ljava/lang/String;"
+    assert payload["access"] == "public"
+    assert payload["total"] == 2
+    assert payload["count"] == 2
+    assert payload["has_more"] is False
+    assert payload["scan_capped"] is False
+    assert payload["overloads"] == ["()Ljava/lang/String;"]
+    rows = payload["instructions"]
+    assert rows[0] == {
+        "idx": 0,
+        "addr": 0,
+        "mnemonic": "const-string",
+        "operands": 'v0, "APK_GATE_MARKER_STRING"',
+    }
+    assert rows[1]["idx"] == 1
+    assert rows[1]["addr"] == 2
+    assert rows[1]["mnemonic"] == "return-object"
+    doc = _tool_docstring("apk.disassemble")
+    assert "instructions" in doc
+    assert "mnemonic" in doc
+    assert "operands" in doc
+    assert "overloads" in doc
+
+
+def test_apk_disassemble_accepts_a_dotted_class_name(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A dotted class resolves to the same smali class the DEX stores.
+
+    Measured: querying com.example.gate.Sample finds the Lcom/...; method, so a
+    caller need not know androguard's internal smali form.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeDisasmParsed([_CALLEE])
+    )
+    payload = client.disassemble(tmp_path / "app.apk", "com.example.gate.Sample", "callee")
+    assert payload["class_name"] == "Lcom/example/gate/Sample;"
+    assert payload["count"] == 2
+
+
+def test_apk_disassemble_lists_overloads_and_descriptor_picks_one(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """With overloads, all descriptors are listed and descriptor picks the body.
+
+    Measured: two run() overloads (()V and (I)V); no descriptor -> the ()V body
+    (first by sorted descriptor) with overloads naming both; descriptor "(I)V"
+    -> the (I)V body instead.
+    """
+    run_void = _FakeDisasmMethod(
+        "Lcom/example/gate/Sample;",
+        "run",
+        "()V",
+        "public",
+        [_FakeIns("return-void", "", 2)],
+    )
+    run_int = _FakeDisasmMethod(
+        "Lcom/example/gate/Sample;",
+        "run",
+        "(I)V",
+        "public",
+        [_FakeIns("nop", "", 2), _FakeIns("return-void", "", 2)],
+    )
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeDisasmParsed([run_int, run_void]),
+    )
+    apk = tmp_path / "app.apk"
+    default = client.disassemble(apk, "Lcom/example/gate/Sample;", "run")
+    assert default["descriptor"] == "()V"
+    assert default["count"] == 1
+    assert default["overloads"] == ["()V", "(I)V"]
+    pinned = client.disassemble(apk, "Lcom/example/gate/Sample;", "run", descriptor="(I)V")
+    assert pinned["descriptor"] == "(I)V"
+    assert pinned["count"] == 2
+
+
+def test_apk_disassemble_unknown_method_is_not_found(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A name that is not in the class is not_found, not an empty listing."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeDisasmParsed([_CALLEE])
+    )
+    with pytest.raises(ApkError) as info:
+        client.disassemble(tmp_path / "app.apk", "Lcom/example/gate/Sample;", "ghost")
+    assert info.value.code == "not_found"
+
+
+def test_apk_disassemble_blank_arguments_are_invalid_params(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A blank class_name or method_name is rejected before any lookup."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeDisasmParsed([_CALLEE])
+    )
+    apk = tmp_path / "app.apk"
+    with pytest.raises(ApkError) as no_class:
+        client.disassemble(apk, "  ", "callee")
+    assert no_class.value.code == "invalid_params"
+    with pytest.raises(ApkError) as no_method:
+        client.disassemble(apk, "Lcom/example/gate/Sample;", "  ")
+    assert no_method.value.code == "invalid_params"
+
+
+def test_apk_disassemble_paginates_a_long_method(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A long method pages by offset/limit and says the listing did not end.
+
+    Measured: 50 nops, limit 10 -> count 10, total 50, has_more True; offset 45
+    -> the last 5, has_more False. addr tracks the code-unit offset per row.
+    """
+    long_method = _FakeDisasmMethod(
+        "Lcom/example/gate/Sample;",
+        "loop",
+        "()V",
+        "public",
+        [_FakeIns("nop", "", 2) for _ in range(50)],
+    )
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeDisasmParsed([long_method])
+    )
+    apk = tmp_path / "app.apk"
+    first = client.disassemble(apk, "Lcom/example/gate/Sample;", "loop", limit=10)
+    assert first["count"] == 10
+    assert first["total"] == 50
+    assert first["has_more"] is True
+    assert first["instructions"][0]["addr"] == 0
+    assert first["instructions"][1]["addr"] == 1
+    tail = client.disassemble(apk, "Lcom/example/gate/Sample;", "loop", offset=45, limit=10)
+    assert tail["count"] == 5
+    assert tail["has_more"] is False
+    assert tail["instructions"][0]["idx"] == 45
+
+
 class _ManifestBody:
     def get_xml(self) -> bytes:
         return b"<manifest/>" * ((_MAX_MANIFEST_CHARS // 10) + 20)
