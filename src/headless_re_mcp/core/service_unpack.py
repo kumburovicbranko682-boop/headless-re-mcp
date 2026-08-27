@@ -1536,6 +1536,9 @@ class UnpackMixin:
             effective_stub = list(stub_rva_ranges or ())
             effective_observations = list(observations or [])
             entry_point_rva: int | None = None
+            regions_truncated = False
+            region_total: int | None = None
+            region_limit: int | None = None
 
             if not effective_observations:
                 auto_collected = True
@@ -1557,6 +1560,11 @@ class UnpackMixin:
                 entry_raw = collected.data.get("entry_point_rva")
                 if type(entry_raw) is int:
                     entry_point_rva = entry_raw
+                regions_truncated = bool(collected.data.get("regions_truncated"))
+                total_raw = collected.data.get("region_total")
+                region_total = int(total_raw) if isinstance(total_raw, int) else None
+                limit_raw = collected.data.get("region_limit")
+                region_limit = int(limit_raw) if isinstance(limit_raw, int) else None
                 collected_note = str(
                     collected.data.get("note")
                     or "observations auto-collected from runtime snapshots"
@@ -1621,6 +1629,15 @@ class UnpackMixin:
             }
             if collected_note is not None:
                 payload["note"] = collected_note
+            if regions_truncated:
+                # Auto-collected observations came off a partial region map, so
+                # the candidate set (and an empty one especially) is not the last
+                # word: say the map was cut, the same way memory.regions does.
+                payload["regions_truncated"] = True
+                if region_limit is not None:
+                    payload["region_limit"] = region_limit
+                if region_total is not None:
+                    payload["region_total"] = region_total
             if entry_point_rva is not None:
                 payload["entry_point_rva"] = entry_point_rva
             if effective_stub:
@@ -1717,6 +1734,15 @@ class UnpackMixin:
             if isinstance(regions_raw, list)
             else []
         )
+        # memory.regions is paged (has_more / total). This pass only reads the
+        # first _OEP_REGION_SNAPSHOT_LIMIT regions, so a process with more mapped
+        # regions than that hands collect_oep_observations a partial map: an
+        # executable/protect change -- or the very region RIP sits in -- beyond
+        # the page is simply not seen, and the "no observations" conclusion that
+        # follows is not conclusive. Carry the cut so the caller is not misled.
+        regions_truncated = bool(regions_result.data.get("has_more"))
+        region_total_raw = regions_result.data.get("total")
+        region_total = int(region_total_raw) if isinstance(region_total_raw, int) else None
 
         effective_stub = list(stub_rva_ranges)
         entry_point_rva: int | None = None
@@ -1761,22 +1787,34 @@ class UnpackMixin:
             ],
         )
 
-        note = "observations auto-collected from runtime snapshots"
-        if not observations:
+        if observations:
+            note = "observations auto-collected from runtime snapshots"
+        else:
             note = (
                 "runtime snapshots collected but yielded no OEP observations "
                 "(need RIP in module code and/or protect diffs vs prior snapshot)"
             )
+        if regions_truncated:
+            note += (
+                f"; memory region snapshot was truncated at {_OEP_REGION_SNAPSHOT_LIMIT} "
+                "regions (has_more), so these observations -- including their absence -- "
+                "may be incomplete"
+            )
+        result_payload: JsonObject = {
+            "observations": observations,
+            "stub_rva_ranges": effective_stub,
+            "entry_point_rva": entry_point_rva,
+            "rip": rip,
+            "region_count": len(regions),
+            "regions_truncated": regions_truncated,
+            "region_limit": _OEP_REGION_SNAPSHOT_LIMIT,
+            "note": note,
+            "authoritative": False,
+        }
+        if region_total is not None:
+            result_payload["region_total"] = region_total
         return _success(
-            {
-                "observations": observations,
-                "stub_rva_ranges": effective_stub,
-                "entry_point_rva": entry_point_rva,
-                "rip": rip,
-                "region_count": len(regions),
-                "note": note,
-                "authoritative": False,
-            },
+            result_payload,
             session_id=session_id,
             backend="unpack",
         )
