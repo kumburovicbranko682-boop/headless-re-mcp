@@ -24,7 +24,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Run Ghidra headless import and analysis, then delete the project.
 
-        Answers with project_dir, stdout_excerpt and note.
+        Answers with project_dir, stdout_excerpt, note, and architecture when the
+        binary header names it (x86/x64/arm/arm64; omitted when it does not).
         There is no functions field and no analysis field. The other ghidra tools
         do not read what this produced. Each of ghidra.functions, ghidra.symbols,
         ghidra.xrefs and ghidra.decompile imports the binary again under
@@ -43,6 +44,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items, each carrying name, entry and body_size, plus count
         and has_more so a page that filled the limit is not read as the whole list.
+        architecture names the binary (x86/x64/arm/arm64) when the header does,
+        so an entry is not read as x86 when the code is arm64.
         A failed export is an error, not a binary with no functions.
         """
         return _dump(analysis.ghidra_functions(session_id, limit=limit, timeout=timeout))
@@ -56,7 +59,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Symbols Ghidra recovered.
 
         Answers with items, each carrying name, address and type, plus count
-        and has_more. The listing does not include a containing scope. A failed
+        and has_more, and architecture (x86/x64/arm/arm64) when the header names
+        it. The listing does not include a containing scope. A failed
         export is an error, not an empty listing.
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
@@ -71,7 +75,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """References to address, as Ghidra resolved them.
 
         Only incoming refs (getReferencesTo). Answers with items carrying from,
-        to and type, plus count and has_more. Outgoing refs are not listed.
+        to and type, plus count and has_more, and architecture (x86/x64/arm/arm64)
+        when the header names it. Outgoing refs are not listed.
         A failed export is an error, not an address with no references.
         """
         return _dump(analysis.ghidra_xrefs(session_id, address, limit=limit, timeout=timeout))
@@ -85,7 +90,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Ghidra's decompilation of the function at address.
 
         Answers with decompiled, truncated when the C was cut at the buffer,
-        and found: found is false when no function contains address, so an
+        found, and architecture (x86/x64/arm/arm64) when the header names it:
+        found is false when no function contains address, so an
         empty decompiled then means "no function here", not an empty body. A
         second reading of code IDA decompiled differently, or of code it could
         not. A failed export is an error, not empty code.

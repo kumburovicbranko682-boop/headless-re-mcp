@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from headless_re_mcp.backends.common.arch import binary_architecture
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
 JsonObject = dict[str, Any]
@@ -70,6 +71,7 @@ class GhidraClient:
                 exit_code=code,
                 stderr=stderr[:4000],
             )
+        arch = binary_architecture(binary)
         return {
             "project_dir": str(project_dir),
             "stdout_excerpt": stdout[-8000:],
@@ -77,6 +79,8 @@ class GhidraClient:
                 "headless import/analyze completed and the project was deleted; "
                 "ghidra.functions/decompile/symbols/xrefs each import the binary again"
             ),
+            # Named from the header (x86/x64/arm/arm64) or omitted, never guessed.
+            **({"architecture": arch.value} if arch is not None else {}),
         }
 
     def functions(
@@ -268,6 +272,14 @@ class GhidraClient:
             )
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
+        # Ghidra disassembled this binary but its ExportJson said nothing about
+        # which architecture -- so functions/decompiled code read as x86 when
+        # they might be x64 or arm64. Name it from the header, the same way the
+        # r2 backend does, and only when a format recognises it (omitted, not
+        # guessed, otherwise). read once here rather than in the foreign script.
+        arch = binary_architecture(binary)
+        if arch is not None:
+            payload["architecture"] = arch.value
         if mode == "decompile":
             # The postScript records `function`/`entry` only when it found one
             # containing the address; an address inside no function comes back

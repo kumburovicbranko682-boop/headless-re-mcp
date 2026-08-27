@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（ghidra 结果标注目标架构）
+
+- `ghidra.analyze/functions/symbols/xrefs/decompile` 的结果新增顶层 `architecture`
+  （`x86`/`x64`/`arm`/`arm64`）：Ghidra 反汇编的是哪种指令集，过去结果里完全没说，
+  arm64 的函数列表读起来和 x86 无从区分。取值直接读二进制头（PE 可选头 magic、
+  ELF `e_machine`、瘦 Mach-O `cputype`，含 ARM/AArch64），由新的共享读头模块
+  `backends/common/arch.py` 提供，只读文件前缀、不额外起 Ghidra；头无法命名时
+  （其它机型、fat Mach-O、无法识别的文件）该字段省略，不猜。`Architecture`
+  枚举补充 `arm`/`arm64` 两个成员，仅用于静态结果标注，不进入 x64dbg 的
+  x86/x64 选择路径。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

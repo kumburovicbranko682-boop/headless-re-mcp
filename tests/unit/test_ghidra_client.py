@@ -227,6 +227,75 @@ def _tool_docstring(name: str) -> str:
     return ""
 
 
+def _aarch64_elf(tmp_path: Path) -> Path:
+    """A minimal AArch64 ELF header -- the shape of an Android arm64-v8a .so."""
+    data = bytearray(64)
+    data[0:4] = b"\x7fELF"
+    data[4] = 2  # 64-bit
+    data[5] = 1  # little-endian
+    data[6] = 1
+    data[16:18] = (2).to_bytes(2, "little")  # ET_EXEC
+    data[18:20] = (183).to_bytes(2, "little")  # EM_AARCH64
+    path = tmp_path / "libnative.so"
+    path.write_bytes(bytes(data))
+    return path
+
+
+def _pe64(tmp_path: Path) -> Path:
+    data = bytearray(0x200)
+    data[0:2] = b"MZ"
+    pe_off = 0x80
+    data[0x3C:0x40] = pe_off.to_bytes(4, "little")
+    data[pe_off : pe_off + 4] = b"PE\0\0"
+    data[pe_off + 20 : pe_off + 22] = (0xF0).to_bytes(2, "little")
+    data[pe_off + 24 : pe_off + 26] = (0x20B).to_bytes(2, "little")  # PE32+ -> x64
+    path = tmp_path / "sample.exe"
+    path.write_bytes(bytes(data))
+    return path
+
+
+def test_ghidra_functions_name_arm64_for_an_aarch64_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ghidra disassembles an arm64-v8a .so; the result must say so, not leave a
+    caller to read arm64 functions as x86."""
+    _capture_run(monkeypatch)
+    client = _client(tmp_path)
+    payload = client.functions(_aarch64_elf(tmp_path), tmp_path / "project", limit=8)
+    assert payload["architecture"] == "arm64"
+
+
+def test_ghidra_decompile_and_analyze_name_the_architecture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "main", "entry": "0x1000",'
+        ' "decompiled": "int main(){}", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_pe64(tmp_path), tmp_path / "project", "0x1000")
+    assert payload["architecture"] == "x64"
+    assert payload["found"] is True
+
+    _capture_run(monkeypatch)
+    analyzed = client.analyze_binary(_pe64(tmp_path), tmp_path / "project2")
+    assert analyzed["architecture"] == "x64"
+
+
+def test_ghidra_omits_architecture_when_the_header_names_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unrecognised header must not invent an architecture -- omit the field,
+    the same way the r2 backend does."""
+    _capture_run(monkeypatch)
+    client = _client(tmp_path)
+    junk = tmp_path / "mystery.bin"
+    junk.write_bytes(b"RISC-V or something the model cannot name")
+    payload = client.functions(junk, tmp_path / "project", limit=8)
+    assert "architecture" not in payload
+
+
 def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     """The catalog said address/size; a 5000-function export had neither.
 
