@@ -152,3 +152,30 @@ def test_device_hook_template_that_fails_to_load_is_backend_error_and_still_deta
     assert caught.value.code == "backend_error"
     assert device.session is not None
     assert device.session.detached is True
+
+
+class _AttachFailsDevice:
+    def attach(self, pid: int, timeout: float | None = None) -> _Session:
+        del pid, timeout
+        raise RuntimeError("target refuses injection")
+
+
+def test_device_hook_template_attach_failure_is_backend_error_naming_the_pid() -> None:
+    """A failed attach is a target outcome, not an internal fault, and leaks nothing.
+
+    Before any session exists, ``device.attach(pid)`` can raise -- the pid exited
+    between authorization and attach, or the process refuses injection. The raw
+    frida exception must be classified as backend_error carrying the pid, not
+    minted as an internal_error incident for a normal device condition. No
+    session was opened, so the finally has nothing to detach and there is no
+    resident probe to leak.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _AttachFailsDevice()  # type: ignore[method-assign]
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device("usb", 4321, "noop", allowed_pids={4321})
+    assert caught.value.code == "backend_error"
+    assert "attach failed" in caught.value.message
+    assert caught.value.details.get("pid") == 4321
