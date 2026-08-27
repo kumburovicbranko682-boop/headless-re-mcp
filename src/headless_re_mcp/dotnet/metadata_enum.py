@@ -43,6 +43,18 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x0B: ("stloc.1", 0),
     0x0C: ("stloc.2", 0),
     0x0D: ("stloc.3", 0),
+    # The short forms sit numerically between the .0-.3 forms above and ldnull
+    # below and are just as common (any method with more than four locals uses
+    # them), but each carries a one-byte operand -- an unsigned slot index, or a
+    # signed byte for ldc.i4.s. Omitting them did not merely skip a name: the
+    # loop advanced a single byte and read the operand byte as the next opcode,
+    # so every instruction after a `ldloc.s 5` came back shifted by one.
+    0x0E: ("ldarg.s", 1),
+    0x0F: ("ldarga.s", 1),
+    0x10: ("starg.s", 1),
+    0x11: ("ldloc.s", 1),
+    0x12: ("ldloca.s", 1),
+    0x13: ("stloc.s", 1),
     0x14: ("ldnull", 0),
     0x16: ("ldc.i4.0", 0),
     0x17: ("ldc.i4.1", 0),
@@ -53,6 +65,7 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
     0x1C: ("ldc.i4.6", 0),
     0x1D: ("ldc.i4.7", 0),
     0x1E: ("ldc.i4.8", 0),
+    0x1F: ("ldc.i4.s", 1),
     0x20: ("ldc.i4", 4),
     0x25: ("dup", 0),
     0x26: ("pop", 0),
@@ -73,13 +86,14 @@ _OPCODES: Final[dict[int, tuple[str, int]]] = {
 }
 
 # Branch targets (both the short 1-byte and long 4-byte forms) and the ldc.i4
-# constant carry signed operands; every other opcode with an operand here
-# carries an unsigned metadata token. Only the short branches were read as
-# signed, so a long backward branch or a negative constant came back as its
-# two's-complement bit pattern -- br -10 printed as 4294967286 -- which misreads
-# the control flow the disassembly exists to show.
+# constants (both ldc.i4 and the one-byte ldc.i4.s) carry signed operands; every
+# other opcode with an operand here carries an unsigned value -- a metadata token
+# or, for the short-form ldarg.s/ldloc.s/etc, an unsigned slot index. Only the
+# short branches were read as signed, so a long backward branch or a negative
+# constant came back as its two's-complement bit pattern -- br -10 printed as
+# 4294967286 -- which misreads the control flow the disassembly exists to show.
 _SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
-    {"br.s", "brfalse.s", "brtrue.s", "br", "brfalse", "brtrue", "ldc.i4"}
+    {"br.s", "brfalse.s", "brtrue.s", "br", "brfalse", "brtrue", "ldc.i4", "ldc.i4.s"}
 )
 
 

@@ -79,3 +79,40 @@ def test_a_truncated_switch_count_word_is_partial() -> None:
 
     assert partial is True
     assert all(insn["mnemonic"] != "switch" for insn in instructions)
+
+
+def test_short_form_locals_carry_a_one_byte_operand_and_do_not_desync() -> None:
+    """ldloc.s / stloc.s consume their slot index; the ret after them survives.
+
+    These short forms sit between the .0-.3 forms and ldnull in the opcode map
+    and appear in any method with more than four locals. Missing from the table,
+    each advanced a single byte and its index byte was decoded as the next
+    opcode -- here stloc.s's index 0x2A would surface a phantom ``ret`` mid
+    stream and the real ret would never be reached in step.
+    """
+    # ldloc.s 4; stloc.s 0x2A; ret  -- the 0x2A index must not read as ret.
+    il = b"\x11\x04\x13\x2a\x2a"
+    instructions, partial = _disassemble_il(il, max_insns=MAX_IL_INSNS)
+
+    assert [insn["mnemonic"] for insn in instructions] == ["ldloc.s", "stloc.s", "ret"]
+    assert instructions[0]["operand"] == 4
+    assert instructions[1]["operand"] == 0x2A
+    assert instructions[2]["ip"] == 4
+    assert partial is False
+
+
+def test_ldc_i4_s_decodes_its_byte_as_signed() -> None:
+    """ldc.i4.s carries a signed int8: 0xFF is -1, not 255, and 0x7F stays 127."""
+    negative, _ = _disassemble_il(b"\x1f\xff", max_insns=MAX_IL_INSNS)
+    assert negative[0]["mnemonic"] == "ldc.i4.s"
+    assert negative[0]["operand"] == -1
+
+    positive, _ = _disassemble_il(b"\x1f\x7f", max_insns=MAX_IL_INSNS)
+    assert positive[0]["operand"] == 127
+
+
+def test_short_form_var_index_stays_unsigned() -> None:
+    """The ldarg.s/ldloc.s slot index is an unsigned byte, so 0xFF is 255."""
+    instructions, _ = _disassemble_il(b"\x0e\xff", max_insns=MAX_IL_INSNS)
+    assert instructions[0]["mnemonic"] == "ldarg.s"
+    assert instructions[0]["operand"] == 255
