@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { setTokenForTests } from "../api/client";
 import { useWorkbench } from "./useWorkbench";
 
@@ -39,13 +39,22 @@ const TRANSCRIPT = [
 
 type RunBody = { thread_id?: string };
 
-function installBootFetch(run: RunBody): ReturnType<typeof vi.fn> {
+function installBootFetch(
+  run: RunBody,
+  { threadActiveRun = null }: { threadActiveRun?: { id: string } | null } = {},
+): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     // Order matters: the more specific run/thread paths are prefixes of the
     // collection paths.
     if (url.includes("/api/agent/threads/t1")) {
-      return json({ ok: true, thread: THREAD, messages: TRANSCRIPT, events: [] });
+      return json({
+        ok: true,
+        thread: THREAD,
+        messages: TRANSCRIPT,
+        events: [],
+        active_run: threadActiveRun,
+      });
     }
     if (url.includes("/api/agent/threads")) return json({ ok: true, threads: [THREAD] });
     if (url.includes("/api/agent/runs/run-1/events/history")) {
@@ -101,5 +110,27 @@ describe("useWorkbench resume on reload", () => {
     await waitFor(() => expect(result.current.state.activeRun).toBe("run-1"));
     await waitFor(() => expect(result.current.state.approvals.map((a) => a.tool_call_id)).toEqual(["tc1"]));
     expect(result.current.state.selectedThread).toBeNull();
+  });
+
+  it("reconnects to a thread's live run when the thread is selected", async () => {
+    // No run id survives in history.state here: the user simply opens the
+    // thread from the sidebar. The thread response itself names its live run,
+    // and selecting it must bring back the pending approval -- previously this
+    // path showed the transcript with no card to act on and no stream.
+    history.replaceState({}, "", "/");
+    installBootFetch({ thread_id: "t1" }, { threadActiveRun: { id: "run-1" } });
+
+    const { result } = renderHook(() => useWorkbench());
+    await waitFor(() => expect(result.current.state.threads.length).toBe(1));
+    expect(result.current.state.activeRun).toBeNull();
+
+    await act(async () => {
+      await result.current.selectThread("t1");
+    });
+
+    expect(result.current.state.selectedThread).toBe("t1");
+    expect(result.current.state.messages.map((m) => m.content)).toContain("tool round finished");
+    await waitFor(() => expect(result.current.state.activeRun).toBe("run-1"));
+    await waitFor(() => expect(result.current.state.approvals.map((a) => a.tool_call_id)).toEqual(["tc1"]));
   });
 });
