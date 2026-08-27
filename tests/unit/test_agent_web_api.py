@@ -174,6 +174,9 @@ def test_missions_are_queued_over_http_and_the_scheduler_runs(tmp_path: Path, mo
 
         listed = client.get("/api/agent/missions", headers=headers).json()
         assert listed["count"] == 1
+        assert listed["total"] == 1
+        assert listed["has_more"] is False
+        assert listed["offset"] == 0
         assert listed["scheduler_running"] is True
 
         fetched = client.get(f"/api/agent/missions/{mission['id']}", headers=headers)

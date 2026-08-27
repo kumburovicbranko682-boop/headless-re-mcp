@@ -821,14 +821,46 @@ class AgentStore:
             row = con.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
         return None if row is None else self._mission_from_row(row)
 
-    def list_missions(self, *, status: MissionStatus | None = None, limit: int = 100) -> list[AgentMission]:
+    def list_missions(
+        self,
+        *,
+        status: MissionStatus | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[AgentMission]:
         bounded = max(1, min(limit, 500))
+        start = max(0, int(offset))
         with self._reading() as con:
             if status is None:
-                rows = con.execute("SELECT * FROM missions ORDER BY created_at DESC, id DESC LIMIT ?", (bounded,)).fetchall()
+                rows = con.execute(
+                    "SELECT * FROM missions ORDER BY created_at DESC, id DESC"
+                    " LIMIT ? OFFSET ?",
+                    (bounded, start),
+                ).fetchall()
             else:
-                rows = con.execute("SELECT * FROM missions WHERE status=? ORDER BY created_at DESC, id DESC LIMIT ?", (status.value, bounded)).fetchall()
+                rows = con.execute(
+                    "SELECT * FROM missions WHERE status=?"
+                    " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                    (status.value, bounded, start),
+                ).fetchall()
         return [self._mission_from_row(row) for row in rows]
+
+    def count_missions(self, *, status: MissionStatus | None = None) -> int:
+        """How many missions exist, so a capped page can report has_more.
+
+        list_missions returns at most 500, and the queue is durable, so a busy
+        deployment outgrows a single page. Without the total, count (the page
+        size) reads as the whole queue and missions past the cap are invisible.
+        """
+        with self._reading() as con:
+            if status is None:
+                row = con.execute("SELECT COUNT(*) AS n FROM missions").fetchone()
+            else:
+                row = con.execute(
+                    "SELECT COUNT(*) AS n FROM missions WHERE status=?",
+                    (status.value,),
+                ).fetchone()
+        return int(row["n"])
 
     def claim_next_mission(self) -> AgentMission | None:
         """Take the oldest pending mission, atomically.

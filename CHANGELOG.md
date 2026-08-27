@@ -818,6 +818,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (一次 `LIMIT 1` 探询,不物化其余),端点改为回 `next_after` 游标与 `has_more`。补测:字节截断的一页
   `has_events_after` 为真、按游标续读能排空到尽头后转假;HTTP 层字节截断首页带 `has_more=True` 与正确
   `next_after`、按游标翻页最终看到全部 50 条事件。
+- **`GET /api/agent/missions` 截断到上限却把页大小当成整个队列**。任务队列是持久的、会超过单页上限
+  (`limit` 默认 100、上限 500),但该端点只回 `count`(=页大小)且既无 `total`、`has_more`,也无 `offset`
+  ——超出上限的任务既看不见也翻不到,而其它分页端点(`web.network.list`、`proxy.flows`、`web.scripts`、
+  刚补的 `/events/history`)早已回 `offset`/`total`/`has_more`。新增 store 的 `count_missions` 与
+  `list_missions(offset=...)`,端点补 `offset`/`total`/`has_more`(`count` 仍是页大小,向后兼容)。补测:
+  store 按 offset 翻页无重叠且覆盖全部、`count_missions` 按状态各自计数;HTTP 单任务用例加断言
+  `total=1`/`has_more=False`/`offset=0`。
 - **Cursor 下划线别名解析 + 全表面无碰撞**：Cursor 以 `static_functions` 调用而 catalog 注册的是
   `static.functions`,`install_cursor_underscore_aliases` 在 `get_tool` 处解析且不新增 ListTools 项。
   它用普通 dict 建下划线→点名映射,两个折叠成同一下划线形的点名会互相静默覆盖(OpenAI 桥接对这类

@@ -70,6 +70,36 @@ def test_list_events_page_cut_by_bytes_is_visible_via_has_events_after(
     assert store.has_events_after(run.id, cursor) is False
 
 
+def test_list_missions_pages_and_reports_the_true_total(tmp_path: Path) -> None:
+    """A capped mission page must expose the total so it is not read as the queue.
+
+    The mission queue is durable and can outgrow a single page. Without a total
+    and an offset, the page size reads as the whole queue and missions past the
+    cap are unreachable.
+    """
+    store = AgentStore(tmp_path / "missions.db")
+    thread = store.create_thread()
+    made = [
+        store.create_mission(thread.id, f"objective {index}", max_runs=2)
+        for index in range(3)
+    ]
+
+    assert store.count_missions() == 3
+
+    first = store.list_missions(limit=2, offset=0)
+    assert len(first) == 2
+    second = store.list_missions(limit=2, offset=2)
+    assert len(second) == 1
+    # No overlap, and every mission is reachable across the two pages.
+    assert {mission.id for mission in (*first, *second)} == {m.id for m in made}
+
+    # A status filter counts within that status only, so has_more stays honest
+    # per filter rather than against the whole queue.
+    store.set_mission_status(made[0].id, MissionStatus.CANCELLED)
+    assert store.count_missions(status=MissionStatus.CANCELLED) == 1
+    assert store.count_missions(status=MissionStatus.PENDING) == 2
+
+
 def test_canonical_args_hash_is_key_order_independent() -> None:
     """The approval gate compares two independently computed hashes.
 
