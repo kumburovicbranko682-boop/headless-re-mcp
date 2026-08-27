@@ -125,6 +125,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   未装 mitmproxy 时如实 skip，skip != pass。CI 的 `gates` job 已装 mitmproxy 故真机执行；本机 mitmproxy
   12.2.3 上两用例均过。
 
+### 新增（Web 抓网实测 Gate：真机 Chromium 记下一条子资源并经 CDP 取回其响应体）
+
+- Web CDP 那条线此前的实测 Gate（`test_web_cdp_open_and_inspect`）走的是一个 `data:` URL——它**不产生任何网络
+  请求**，于是 `web.network_list` / `web.network_get` 这两条抓网路径在真机 Chromium 上从未被跑过，只有拿假
+  runner 打桩的单元覆盖。这尤其要命,因为 `network_get` 上一轮刚修过一个真 bug（会话卡死的 `WebError` 被当成
+  单请求 `body_error` 吞掉,现改为原样上抛以给无人值守调用方「浏览器无响应,请 `web.close`」信号）——修完却只有
+  mock 覆盖,健康路径（真取回一条响应体）从未在真浏览器上验过。新增
+  `tests/integration/test_web_cdp_network_capture_and_body`:用 stdlib `http.server` 起一个回 `index.html`(内含
+  `<script src="app.js">`)与定长 `app.js` 的源站,开一个真 web 会话导航过去,轮询 `network_list` 找到那条 `app.js`
+  子资源(断言 `status==200`),再 `network_get` 经真 `Network.getResponseBody` 取回并断言响应体含已知内容、且走的是
+  正常路径而非 `body_error` 退化分支。未装 playwright/Chromium 时如实 skip(浏览器起不来也照 `web.open` 那套干净
+  skip),skip != pass。CI 的 `gates` job 已装 Playwright Chromium 故真机执行;本机 Chromium 151 上与
+  `test_web_cdp_open_and_inspect` 一并验过。
+
 ### 新增（WASM 反汇编 Gate 用真实模块，并补上 wasm-objdump 那条从未被实测的路径）
 
 - Web 反混淆那条线的 WASM 侧此前只对「magic+version、无任何 section」的空模块跑 `wasm2wat`，只断言输出里
