@@ -169,6 +169,25 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
+    @tools.tool(name="web.storage.cache")
+    def web_storage_cache(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=500)] = 200,
+    ) -> dict[str, Any]:
+        """List Cache Storage (Service Worker / PWA) cache names for the origin.
+
+        Answers with origin, caches (a sorted list of names), count, total,
+        offset, has_more, and scan_capped so a page that filled the limit is not
+        read as every cache. This lists names only -- a triage step showing which
+        Service Worker/PWA caches exist, where offline-first apps precache the
+        app shell, bundles and API responses, separate from IndexedDB and
+        localStorage. origin is the page's origin, "" with a note for an opaque
+        about:blank or data: page that owns no Cache Storage. There is no
+        cacheName, entries or responses field; this does not read cache contents.
+        """
+        return _dump(analysis.web_storage_cache(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

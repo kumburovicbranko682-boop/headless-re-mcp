@@ -25,6 +25,7 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.har import har_entry, serialize_har
@@ -41,6 +42,9 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A Service Worker/PWA rarely registers more than a few Cache Storage buckets;
+# 500 bounds a pathological case without dropping any realistic set of names.
+_MAX_CACHE_NAMES = 500
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -781,6 +785,86 @@ class WebBackend:
             }
 
         return self._runner(handle).call(work)
+
+    def cache_storage(
+        self, session_id: str, *, offset: int = 0, limit: int = 200
+    ) -> JsonObject:
+        """List Cache Storage (Service Worker / PWA) cache names for the origin.
+
+        A Service Worker precaches HTTP responses in the Cache API -- app shell,
+        bundles, and often API responses baked in at install -- which is where an
+        offline-first app or PWA keeps served content, separate from IndexedDB
+        and localStorage, and nothing in the surface showed which caches exist.
+        This asks CDP (CacheStorage.requestCacheNames) for the current page
+        origin's cache names, a cheap triage step before deeper inspection.
+        origin is the page's origin, "" with a note for an opaque about:blank or
+        data: page that owns no Cache Storage. Names are bounded and sorted so
+        paging is stable; scan_capped marks an origin with more than the cap.
+        """
+        handle = self._get(session_id)
+        try:
+            parts = urlsplit(handle.page.url)
+            origin = (
+                f"{parts.scheme}://{parts.netloc}"
+                if parts.scheme in {"http", "https"} and parts.netloc
+                else ""
+            )
+        except ValueError:
+            origin = ""
+        if not origin:
+            return {
+                "origin": "",
+                "caches": [],
+                "count": 0,
+                "total": 0,
+                "offset": max(0, int(offset)),
+                "has_more": False,
+                "scan_capped": False,
+                "note": "page origin is opaque; no Cache Storage",
+            }
+
+        def work() -> list[str]:
+            try:
+                resp = handle.cdp.send(
+                    "CacheStorage.requestCacheNames", {"securityOrigin": origin}
+                )
+            except Exception:  # noqa: BLE001 - newer protocol wants storageKey
+                try:
+                    resp = handle.cdp.send(
+                        "CacheStorage.requestCacheNames", {"storageKey": origin}
+                    )
+                except Exception as exc:  # noqa: BLE001 - playwright raises many types
+                    raise WebError(
+                        "backend_error", f"cannot list cache storage: {exc}"
+                    ) from exc
+            buckets = resp.get("caches") if isinstance(resp, dict) else None
+            names: list[str] = []
+            for bucket in buckets if isinstance(buckets, list) else []:
+                if isinstance(bucket, dict):
+                    names.append(str(bucket.get("cacheName", "")))
+            return names
+
+        raw = self._runner(handle).call(work)
+        collected: list[str] = []
+        scan_capped = False
+        for name in raw:
+            if len(collected) >= _MAX_CACHE_NAMES:
+                scan_capped = True
+                break
+            collected.append(_bounded_metadata(name, _MAX_METADATA_BYTES)[0])
+        collected.sort()
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_CACHE_NAMES))
+        window = collected[start : start + cap]
+        return {
+            "origin": origin,
+            "caches": window,
+            "count": len(window),
+            "total": len(collected),
+            "offset": start,
+            "has_more": start + len(window) < len(collected),
+            "scan_capped": scan_capped,
+        }
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)
