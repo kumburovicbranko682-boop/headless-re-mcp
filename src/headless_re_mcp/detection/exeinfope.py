@@ -476,8 +476,9 @@ def _capture_process(
                     reap_orphaned_session_group,
                 )
 
-                if os.name != "nt" and process.pid:
-                    reap_orphaned_session_group(int(process.pid))
+                exited_pid = getattr(process, "pid", None)
+                if os.name != "nt" and exited_pid:
+                    reap_orphaned_session_group(int(exited_pid))
         stop_monitor.set()
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)

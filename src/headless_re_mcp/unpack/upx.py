@@ -309,13 +309,14 @@ def _capture_process(
         with suppress(OSError):
             stderr_pipe.close()
 
-    if exited and os.name != "nt" and process.pid:
+    exited_pid = getattr(process, "pid", None)
+    if exited and os.name != "nt" and exited_pid:
         # A clean exit still leaves behind anything upx (or a configured wrapper)
         # detached and orphaned to init: the ppid walk cannot see it, but it
         # keeps the session group. Reap the group so unattended runs do not leak.
         from headless_re_mcp.core.process_tree import reap_orphaned_session_group
 
-        reap_orphaned_session_group(int(process.pid))
+        reap_orphaned_session_group(int(exited_pid))
 
     returncode = process.poll()
     if returncode is None:

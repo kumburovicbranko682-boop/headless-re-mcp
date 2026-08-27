@@ -363,8 +363,9 @@ def _capture_process(
                     reap_orphaned_session_group,
                 )
 
-                if os.name != "nt" and process.pid:
-                    reap_orphaned_session_group(int(process.pid))
+                exited_pid = getattr(process, "pid", None)
+                if os.name != "nt" and exited_pid:
+                    reap_orphaned_session_group(int(exited_pid))
         # Once the child has exited, let both readers consume the remaining
         # kernel pipe buffers before closing our handles.  Closing first can
         # truncate a short-lived process's final JSON bytes.
