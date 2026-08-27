@@ -643,6 +643,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   Ghidra 所需的 `--add-opens` 设的值整个抹掉，在那些机器上悄悄让 analyzeHeadless 跑不起来。
   现在把 `-Xmx` 前置拼进已有值：堆上限作为默认仍生效，而操作者显式的 `-Xmx`（JVM 取最后一个）
   仍然胜出，其余选项一并保留。未设置该变量时结果与之前完全相同（`-Xmx2G`）。
+- **配错的 `HEADLESS_RE_WEBCRACK` 会被当成就绪、每次调用都在启动时 `backend_error`**。
+  `JsClient` 过去把任何真值配置路径原样留用，路径不存在（拼错，或装完前就设好了）时
+  `available` 仍报 True，`js.deobfuscate` 每次都在 `Popen` 找不到程序时报 `backend_error`
+  ——与本模块「缺工具就降级成 capability_unavailable」的约定相反，也不像同文件的
+  `WasmClient`（其解析器只返回真实存在的文件）。它还从不回退到 PATH 上的 webcrack，
+  于是可能与 `doctor` 的 `probe_optional_tool`（会回退）判断打架。现在按同一逻辑解析：
+  配置路径只在确为文件时采用，否则回退到 PATH；两者都没有时 `available` 为 False、调用方
+  拿到 `capability_unavailable`。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。

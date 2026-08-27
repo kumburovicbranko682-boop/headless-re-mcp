@@ -159,7 +159,7 @@ class JsClient:
     """webcrack-backed JavaScript deobfuscation and bundle unpacking."""
 
     def __init__(self, executable: Path | None = None) -> None:
-        self.executable = executable or _discover_webcrack()
+        self.executable = _resolve_webcrack(executable)
 
     @property
     def available(self) -> bool:
@@ -284,6 +284,27 @@ class WasmClient:
 def _discover_webcrack() -> Path | None:
     found = shutil.which("webcrack")
     return Path(found) if found else None
+
+
+def _resolve_webcrack(configured: Path | None) -> Path | None:
+    """A webcrack that is actually there, resolved the way doctor resolves it.
+
+    ``__init__`` used to keep any truthy configured path verbatim, so a
+    misconfigured ``HEADLESS_RE_WEBCRACK`` (typo, or set before the install
+    finished) made ``available`` report ready and every call fail at launch with
+    ``backend_error`` -- the opposite of the module's "a missing tool degrades to
+    capability_unavailable" contract, and unlike ``WasmClient``, whose resolver
+    only ever returns files that exist. It also never fell back to a webcrack on
+    PATH, so it could disagree with ``doctor``'s ``probe_optional_tool``, which
+    does. Take the configured path only when it is a file, else fall back to
+    PATH; when neither exists ``available`` is False and callers get
+    ``capability_unavailable``.
+    """
+    if configured is not None:
+        resolved = configured.expanduser()
+        if resolved.is_file():
+            return resolved
+    return _discover_webcrack()
 
 
 def _resolve_wabt_tool(wabt: Path | None, tool: str) -> Path | None:
