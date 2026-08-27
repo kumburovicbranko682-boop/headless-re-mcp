@@ -87,6 +87,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   端口释放由 `test_proxy_lifecycle_gate` 用真实 mitmproxy 验证；另加不依赖 mitmproxy 的单元回归
   钉住「先关 socket 再 shutdown」的顺序与幂等跳过，使该性质在纯单元 CI 也能守住。
 
+### 新增（非 PE 各线的 Linux 真机集成 CI）
+
+- 此前真实后端的集成 Gate 只在 `windows-integration.yml` 跑，而那需要装了 IDA/x64dbg 的自建
+  runner、只能手动触发；Web/抓包/Android/跨平台静态这几条线尽管所需后端全是开源、可在托管
+  runner 直接安装，却从未在 CI 上被真实执行过——它们的成熟度只能靠人工本地验证背书。新增
+  `.github/workflows/linux-integration.yml`：在 `ubuntu-latest`、Python 3.11 与 3.12 上按需装齐
+  radare2、wabt、webcrack、mitmproxy、androguard（含 frida/adbutils）与 Playwright 自带 Chromium，
+  随每次 push / PR 跑 `tests/integration`。沿用 conftest 的按名跳过（Windows-only 与未配置 IDA/de4dot
+  的 Gate）并加 `-rs`，让「skip != pass」在托管 CI 上继续成立；跑整目录而非硬编码子集，新的可移植
+  Gate 落地当天即被覆盖。每个用例独立限时，卡住的浏览器/抓包探针会在 job 截止前自证失败。job 末尾
+  再做一次进程残留检查：Gate 结束后仍存活的 ms-playwright Chromium 进程即判为会话未关闭的泄漏
+  （mitmproxy 以线程在进程内运行，无独立进程可泄漏，其端口释放已在 Gate 内断言）。装 proxy 后依赖
+  求解会收敛到 pydantic 2.11 + typing-extensions 4.14（同时满足 mitmproxy 12.x 的 `<=4.14` 上界），
+  是一致解，故 `pip check` 干净通过。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

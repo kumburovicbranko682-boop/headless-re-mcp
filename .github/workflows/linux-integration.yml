@@ -1,0 +1,105 @@
+# Linux real-backend gates for the portable (non-PE) lines.
+#
+# Everything these gates need is open source and installs on a stock
+# GitHub-hosted runner, so -- unlike windows-integration.yml, which waits on a
+# self-hosted box with IDA and x64dbg -- this runs on every push and pull
+# request. It exercises the chains whose maturity has lagged the PE work:
+#   * Web       -- CDP driving via Playwright's bundled Chromium, webcrack, wabt
+#   * Intercept -- mitmproxy start/stop and port release
+#   * Android   -- androguard APK metadata and safe degradation with no device
+#   * Static    -- radare2 against a locally built ELF (the non-PE mapping path)
+# tests/integration/conftest.py skips the Windows-only gates by name, and -rs
+# prints every remaining skip reason, so a skip here never reads as a pass.
+name: linux-integration
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    # The backend installs dominate; the gates themselves finish in seconds. A
+    # hung browser or proxy probe must name itself and fail well inside this.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # requires-python promises 3.11, so the real backends are exercised on
+        # the floor as well as the current interpreter, not just one of them.
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: System backends
+        run: |
+          # radare2: cross-platform static analysis. wabt: wasm2wat / wasm-objdump.
+          # gcc: builds the portable ELF fixture so the radare2 non-PE gate runs
+          # instead of skipping for want of a compiler.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends radare2 wabt gcc
+
+      - name: JS deobfuscation backend (webcrack)
+        run: |
+          npm install -g webcrack
+          webcrack --version
+
+      - name: Install package with the portable-backend extras
+        run: |
+          python -m pip install -U pip
+          # With proxy present the resolver settles on pydantic 2.11 + typing
+          # extensions 4.14, the newest set that also satisfies mitmproxy 12.x
+          # (which pins typing-extensions<=4.14). It is consistent, so pip check
+          # below is clean; the quality job installs the pydantic 2.13 line.
+          python -m pip install -e ".[test,dev,web,android,browser,proxy]"
+
+      - name: Playwright Chromium
+        # Bundled Chromium with its system libraries -- the same browser
+        # WebBackend launches, so the CDP gates match production.
+        run: python -m playwright install --with-deps chromium
+
+      - name: Dependency check
+        run: python -m pip check
+
+      - name: Portable non-PE integration gates
+        env:
+          PYTHONPATH: src
+        run: |
+          # The whole directory, never a hardcoded subset: conftest skips the
+          # Windows-only and unconfigured (IDA / de4dot) gates, and running
+          # everything means a new portable gate is covered the day it lands.
+          # A stuck backend probe must fail before the job deadline erases its
+          # context, so each test is bounded independently.
+          python -m pytest tests/integration -rs --tb=short --timeout=300
+
+      - name: No browser process leaked
+        if: always()
+        run: |
+          # Playwright's bundled Chromium runs out of the ms-playwright cache, so
+          # any such process still alive after the gates is one a session failed
+          # to close -- the leak the lifecycle gates guard against, checked once
+          # more at the job level. mitmproxy runs in-process (a thread), so it
+          # leaves no process to leak; its port release is asserted in-gate.
+          leaked=$(pgrep -af 'ms-playwright' || true)
+          if [ -n "$leaked" ]; then
+            echo "leaked browser processes:"
+            echo "$leaked"
+            exit 1
+          fi
+          echo "no browser processes leaked"
