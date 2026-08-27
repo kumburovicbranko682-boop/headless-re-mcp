@@ -36,6 +36,16 @@ class _FakeApk:
         return ["R"]
 
 
+class _NoRequestedApk:
+    """Older androguard: get_requested_permissions is not available."""
+
+    def get_permissions(self) -> list[str]:
+        return ["android.permission.INTERNET", "android.permission.CAMERA"]
+
+    def get_requested_permissions(self) -> list[str]:
+        raise AttributeError("get_requested_permissions")
+
+
 def test_apk_permissions_names_permissions_not_declared() -> None:
     """The catalog said declared and requested; the parser has no such fields.
 
@@ -82,3 +92,30 @@ def test_apk_permissions_says_which_list_the_cap_hit() -> None:
     doc = _tool_docstring("apk.permissions")
     assert "permissions_truncated" in doc
     assert "requested_permissions_truncated" in doc
+    # The normal path reports the requested set as available.
+    assert payload["requested_permissions_available"] is True
+
+
+def test_apk_permissions_does_not_pass_declared_off_as_requested() -> None:
+    """When the requested set is unreadable, don't echo declared as requested.
+
+    Older androguard lacks get_requested_permissions. The fallback used to set
+    requested_permissions = declared, so a caller comparing the two lists saw
+    them identical and concluded every declared permission is also requested --
+    a claim about the manifest that was never read. The reply now returns an
+    empty requested list and flags requested_permissions_available False so the
+    unknown is visible rather than fabricated.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _NoRequestedApk()  # type: ignore[method-assign]
+    payload = client.permissions(Path("dummy.apk"))
+
+    assert payload["permissions"] == [
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+    ]
+    assert payload["requested_permissions"] == []
+    assert payload["requested_permissions_available"] is False
+    # The fallback must not resurrect the old declared-as-requested copy.
+    assert payload["requested_permissions"] != payload["permissions"]
+    assert payload["requested_permissions_truncated"] is False

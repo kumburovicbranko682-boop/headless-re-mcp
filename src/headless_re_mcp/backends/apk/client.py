@@ -235,15 +235,23 @@ class ApkClient:
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
         declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
+        requested_available = True
         try:
             requested, requested_more = _cap_names(
                 apk.get_requested_permissions(), _MAX_PERMISSIONS
             )
         except Exception:  # noqa: BLE001 - older androguard lacks this
-            requested, requested_more = declared, declared_more
+            # Do not echo declared as requested: a caller comparing the two
+            # would read identical lists as "every declared permission is
+            # requested" when the requested set is simply unavailable on this
+            # androguard. Report it empty and flag it unavailable rather than
+            # substituting the wrong list as if it were real.
+            requested, requested_more = [], False
+            requested_available = False
         return {
             "permissions": declared,
             "requested_permissions": requested,
+            "requested_permissions_available": requested_available,
             "count": len(declared),
             # The two lists are capped independently; a single combined has_more
             # could not say which one is short, so a caller auditing requested

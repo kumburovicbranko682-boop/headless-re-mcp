@@ -49,8 +49,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         so a list that filled the cap is not read as every permission. The two
         lists are capped on their own, so permissions_truncated and
         requested_permissions_truncated say which one is short rather than
-        leaving the combined has_more ambiguous. There is no declared or
-        requested field.
+        leaving the combined has_more ambiguous. requested_permissions_available
+        is false on older androguard that cannot read the requested set; the
+        list is then empty rather than a copy of the declared permissions.
+        There is no declared or requested field.
         """
         return _dump(analysis.apk_permissions(session_id))
 
