@@ -195,6 +195,28 @@ def _content_len(part: Any) -> int:
         return 0
 
 
+def _request_body(request: Any) -> tuple[bytes | None, str]:
+    """A retained flow request's decoded body and content-type, guarded.
+
+    ``request.content`` decodes the body per its transfer-encoding and can raise
+    on a malformed one; a failure yields (None, "") so the HAR export drops
+    postData for that flow rather than aborting the whole document. The
+    content-type is read straight off the request headers to type the body.
+    """
+    try:
+        content = request.content
+    except Exception:  # noqa: BLE001
+        content = None
+    content_type = ""
+    headers = getattr(request, "headers", None)
+    if headers is not None:
+        try:
+            content_type = str(headers.get("content-type", "") or "")
+        except Exception:  # noqa: BLE001
+            content_type = ""
+    return (content if isinstance(content, bytes) else None), content_type
+
+
 def _encoded_len(value: object) -> int:
     try:
         return len(str(value).encode("utf-8", errors="replace"))
@@ -743,21 +765,27 @@ class ProxyBackend:
             har_document,
             har_entry,
             har_headers,
+            post_data,
         )
 
         entries = []
         for f in inst.recorder.snapshot():
             # The summary carries method/url/status; the retained raw flow still
             # holds the real request/response headers -- the auth tokens,
-            # content types and Set-Cookie lines that make a HAR worth opening.
-            # A flow evicted or body-omitted from the ring has no raw object; its
-            # headers stay empty rather than fabricated.
+            # content types and Set-Cookie lines that make a HAR worth opening --
+            # and the request body, the POST payload an analyst most wants. A
+            # flow evicted or body-omitted from the ring has no raw object; its
+            # headers/body stay empty rather than fabricated.
             raw = inst.recorder.raw(str(f.get("id") or ""))
             req_headers: list[JsonObject] = []
             resp_headers: list[JsonObject] = []
+            req_post: JsonObject | None = None
             if raw is not None and raw is not _OMITTED_BODY:
-                req_headers = har_headers(getattr(getattr(raw, "request", None), "headers", None))
+                request = getattr(raw, "request", None)
+                req_headers = har_headers(getattr(request, "headers", None))
                 resp_headers = har_headers(getattr(getattr(raw, "response", None), "headers", None))
+                if request is not None:
+                    req_post = post_data(*_request_body(request))
             entries.append(
                 har_entry(
                     started_at=f.get("started_at"),
@@ -767,6 +795,7 @@ class ProxyBackend:
                     mime_type=f.get("content_type"),
                     request_headers=req_headers,
                     response_headers=resp_headers,
+                    request_post_data=req_post,
                 )
             )
         har = har_document(entries)

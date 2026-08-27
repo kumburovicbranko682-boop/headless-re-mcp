@@ -108,9 +108,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         The file is a spec-valid HAR 1.2 log standard viewers (Chrome DevTools,
         HAR analyzers) can open; each entry carries the required request,
         response, timings and startedDateTime members, its queryString recovered
-        from the request URL and the request/response headers from the retained
-        flow (empty for a flow the ring already evicted or whose body was
-        omitted), with fields the capture did not retain left empty/`-1` rather
+        from the request URL, the request/response headers and the request body
+        (as request.postData) from the retained flow (empty for a flow the ring
+        already evicted or whose body was omitted), with fields the capture did
+        not retain left empty/`-1` rather
         than omitted. Answers with path and entry_count. There is no har, output
         or artifact field. path is the file; looking for har after a successful
         export reads as a missing capture.

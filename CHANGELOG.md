@@ -218,6 +218,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **HAR 导出丢掉了请求体（`request.postData`）**。`proxy.export_har` 和 `web.har.export` 已经把 method/url/
+  status、queryString、请求/响应头都补齐成 spec-valid 的 HAR 1.2，但 POST 载荷——JSON body、表单凭据、签名 blob，
+  也就是做 API/协议分析时最想看的东西——始终缺失。common `har.py` 新增 `post_data(body, mime_type)` 助手（表单
+  `application/x-www-form-urlencoded` 额外拆成 spec 的 `params` 列表，其它按 `text` 原样带上，字节按 utf-8 宽松解码，
+  统一裁到 256 KiB）和 `header_value()`，`har_entry` 新增 `request_post_data` 参数在有 body 时写出 `request.postData`。
+  web 侧在 `requestWillBeSent` 里把 CDP 对小 body 内联的 `postData` 存一份到 ring（上限 8 KiB，`post_data_truncated`
+  标记裁剪；大 body 仍只置 `has_post_data`，靠 `web.network.get` 按需拉全量），`har.export` 据此按请求自身的
+  content-type 类型化写出；proxy 侧从保留的原始 flow 的 `request.content` 取体、按其 content-type 类型化（body 被
+  omit 或已被 ring 驱逐的 flow 保持为空而非伪造）。
 - **`web.console` 把对象/数组参数塌缩成 "Object"，丢掉了记录的载荷**。`console.log({id, token})` 经
   `Runtime.consoleAPICalled` 送来的是没有 primitive `value` 的 RemoteObject，旧逻辑退到 `description`（就是
   "Object"/"Array(3)"），于是逆向最关心的被记录的配置、token 全丢了。CDP 其实在 `preview.properties` 里带着

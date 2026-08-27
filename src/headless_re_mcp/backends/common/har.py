@@ -9,9 +9,10 @@ method/url/status/mimeType, which Chrome DevTools and other HAR tools reject as
 malformed -- a file that opens nowhere is not an export. These builders fill
 every required field, using the real capture timestamp when one was recorded,
 the request parameters recovered from the URL for ``queryString``, the raw
-request/response headers when the capture retained them, and honest "unknown"
-sentinels (``-1`` sizes, empty arrays) where the capture did not retain that
-detail, so the document loads while never claiming data it does not have.
+request/response headers when the capture retained them, the request body as
+``postData`` when the capture held it, and honest "unknown" sentinels (``-1``
+sizes, empty arrays) where the capture did not retain that detail, so the
+document loads while never claiming data it does not have.
 """
 
 from __future__ import annotations
@@ -32,11 +33,69 @@ _MAX_QUERY_PARAMS = 512
 # name/value so one header-heavy entry cannot dominate the export.
 _MAX_HEADERS = 200
 _MAX_HEADER_LEN = 8 * 1024
+# A request body carried into the export is clipped to this, and a
+# form-urlencoded body's parsed field list is capped, so one large POST cannot
+# bloat a single entry. The web ring already stores a smaller inline slice; this
+# is the outer ceiling that also bounds the proxy's decoded flow content.
+_MAX_POST_TEXT = 256 * 1024
+_MAX_POST_PARAMS = 512
 
 
 def _clip(value: object, limit: int) -> str:
     text = value if isinstance(value, str) else ("" if value is None else str(value))
     return text if len(text) <= limit else text[:limit]
+
+
+def header_value(headers: list[JsonObject] | None, name: str) -> str:
+    """First value of a header (case-insensitive) from a HAR name/value list.
+
+    Lets an exporter recover a single header (e.g. ``content-type``, to type a
+    request body) from the same ``har_headers`` list it already built, without a
+    second pass over the raw capture. Returns "" when absent.
+    """
+    if not headers:
+        return ""
+    target = name.lower()
+    for item in headers:
+        if isinstance(item, dict) and str(item.get("name", "")).lower() == target:
+            return str(item.get("value", ""))
+    return ""
+
+
+def post_data(body: str | bytes | None, mime_type: str | None) -> JsonObject | None:
+    """A HAR ``request.postData`` object from a captured body, or None when empty.
+
+    ``postData`` is the field an API/protocol analyst opens a HAR to read -- the
+    JSON body, the form credentials, the signed blob a page POSTs -- yet it was
+    never emitted even when the capture held the body. ``mimeType`` is a required
+    member when ``postData`` is present, so an unknown content type still yields
+    an empty-string mimeType rather than an invalid object. A form-urlencoded
+    body is additionally split into the spec's ``params`` (name/value) list, the
+    same recovery ``query_string`` does for the URL; any other body is carried
+    verbatim in ``text``. Bytes are decoded leniently so a binary body still
+    signals its presence rather than breaking the export.
+    """
+    if not body:
+        return None
+    if isinstance(body, bytes):
+        text = body[:_MAX_POST_TEXT].decode("utf-8", errors="replace")
+    else:
+        text = _clip(body, _MAX_POST_TEXT)
+    if not text:
+        return None
+    mime = mime_type or ""
+    result: JsonObject = {"mimeType": mime, "text": text}
+    base = mime.split(";", 1)[0].strip().lower()
+    if base == "application/x-www-form-urlencoded":
+        try:
+            pairs = parse_qsl(text, keep_blank_values=True)
+        except ValueError:
+            pairs = []
+        if pairs:
+            result["params"] = [
+                {"name": name, "value": value} for name, value in pairs[:_MAX_POST_PARAMS]
+            ]
+    return result
 
 
 def har_headers(headers: Any) -> list[JsonObject]:
@@ -108,6 +167,7 @@ def har_entry(
     http_version: str = "HTTP/1.1",
     request_headers: list[JsonObject] | None = None,
     response_headers: list[JsonObject] | None = None,
+    request_post_data: JsonObject | None = None,
     extra: JsonObject | None = None,
 ) -> JsonObject:
     """One spec-complete HAR entry from what a capture retained.
@@ -116,26 +176,31 @@ def har_entry(
     ``queryString`` is recovered from the URL (see ``query_string``). A capture
     that also kept the raw headers can pass ``request_headers`` / ``response_
     headers`` (build them with ``har_headers``) so the viewer's Headers tab is
-    populated; a capture that only kept summaries omits them and the lists stay
-    empty. Every remaining required member is emitted with a valid empty/unknown
-    value so the entry is well-formed. ``extra`` carries custom ``_``-prefixed
-    fields (e.g. the web capture's resource type), which HAR permits.
+    populated; a capture that kept the request body can pass ``request_post_
+    data`` (build it with ``post_data``) so the Request payload is shown; a
+    capture that only kept summaries omits them and those members stay empty.
+    Every remaining required member is emitted with a valid empty/unknown value
+    so the entry is well-formed. ``extra`` carries custom ``_``-prefixed fields
+    (e.g. the web capture's resource type), which HAR permits.
     """
+    request: JsonObject = {
+        "method": method or "",
+        "url": url or "",
+        "httpVersion": http_version,
+        "cookies": [],
+        "headers": request_headers or [],
+        "queryString": query_string(url),
+        "headersSize": -1,
+        "bodySize": -1,
+    }
+    if request_post_data is not None:
+        request["postData"] = request_post_data
     entry: JsonObject = {
         "startedDateTime": iso8601(started_at),
         # No per-phase timing was captured; 0 is valid and keeps the invariant
         # that ``time`` equals the sum of the (all-zero) timings below.
         "time": 0.0,
-        "request": {
-            "method": method or "",
-            "url": url or "",
-            "httpVersion": http_version,
-            "cookies": [],
-            "headers": request_headers or [],
-            "queryString": query_string(url),
-            "headersSize": -1,
-            "bodySize": -1,
-        },
+        "request": request,
         "response": {
             "status": int(status or 0),
             "statusText": "",

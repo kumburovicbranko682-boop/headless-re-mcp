@@ -275,6 +275,67 @@ def test_web_flags_a_request_that_carried_a_post_body() -> None:
     assert "has_post_data" not in handle.requests["g1"]
 
 
+def test_web_keeps_the_inline_post_body_cdp_delivered() -> None:
+    """A small POST body is inlined in requestWillBeSent; keep it for har.export.
+
+    CDP hands the body over in request.postData for a small payload, so storing
+    a bounded copy lets the HAR export emit request.postData without a per-row
+    CDP round-trip. A body past the inline cap is clipped and flagged; a row
+    with no body keeps neither key.
+    """
+    from headless_re_mcp.backends.web.client import _MAX_POST_DATA
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "p1",
+            "request": {
+                "url": "https://x/login",
+                "method": "POST",
+                "hasPostData": True,
+                "postData": '{"user":"alice"}',
+            },
+            "type": "XHR",
+        }
+    )
+    big = "a" * (_MAX_POST_DATA + 100)
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "p2",
+            "request": {
+                "url": "https://x/u",
+                "method": "POST",
+                "hasPostData": True,
+                "postData": big,
+            },
+            "type": "XHR",
+        }
+    )
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "g1", "request": {"url": "https://x/", "method": "GET"}, "type": "Document"}
+    )
+
+    assert handle.requests["p1"]["post_data"] == '{"user":"alice"}'
+    assert "post_data_truncated" not in handle.requests["p1"]
+    assert len(handle.requests["p2"]["post_data"]) == _MAX_POST_DATA
+    assert handle.requests["p2"]["post_data_truncated"] is True
+    assert "post_data" not in handle.requests["g1"]
+
+
 def test_cdp_headers_unfolds_repeats_and_is_bounded() -> None:
     """CDP joins repeated names with newlines; each must survive its own entry."""
     out = _cdp_headers({"Set-Cookie": "sid=1\ntoken=2", "Content-Type": "text/html"})

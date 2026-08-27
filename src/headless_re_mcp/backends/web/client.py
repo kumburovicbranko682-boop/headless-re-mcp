@@ -39,6 +39,10 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 # CDP caps console previews at a handful of members; bound our own render too.
 _MAX_PREVIEW_PROPS = 50
+# Inline copy of a request body kept on the ring for har.export. Small on
+# purpose -- the on-demand web.network.get path fetches the full body -- so
+# 3000 retained requests cannot each pin a large payload in memory.
+_MAX_POST_DATA = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
 # Response/request headers are kept per ring entry; bound the count, each field
@@ -622,10 +626,17 @@ class WebBackend:
             # its projection -- and surfaced by network.get / har.export.
             entry["request_headers"] = _cdp_headers(req.get("headers"))
             # The page's POST payload (the request body -- JSON, form creds, a
-            # signed blob) is what an API/protocol analyst most wants, but CDP
-            # does not put it in this event when it is large; it must be pulled
-            # on demand by web.network.get. Flag which rows have one so the
-            # caller knows there is a body to fetch rather than guessing.
+            # signed blob) is what an API/protocol analyst most wants. CDP inlines
+            # it here for a small body, so keep a bounded copy on the ring: it
+            # lets har.export emit request.postData without a per-request CDP
+            # round-trip. A large body is not inlined by CDP (only hasPostData is
+            # set); it must be pulled on demand by web.network.get. Flag which
+            # rows have one either way so the caller knows there is a body.
+            post = req.get("postData")
+            if isinstance(post, str) and post:
+                entry["post_data"] = post[:_MAX_POST_DATA]
+                if len(post) > _MAX_POST_DATA:
+                    entry["post_data_truncated"] = True
             if req.get("hasPostData"):
                 entry["has_post_data"] = True
             with handle.lock:
@@ -1117,7 +1128,12 @@ class WebBackend:
         return self._runner(handle).call(work)
 
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
-        from headless_re_mcp.backends.common.har import har_document, har_entry
+        from headless_re_mcp.backends.common.har import (
+            har_document,
+            har_entry,
+            header_value,
+            post_data,
+        )
 
         handle = self._get(session_id)
         with handle.lock:
@@ -1130,6 +1146,13 @@ class WebBackend:
                     mime_type=e.get("mimeType"),
                     request_headers=e.get("request_headers"),
                     response_headers=e.get("response_headers"),
+                    # The inline body CDP handed us at send time, typed by the
+                    # request's own content-type header, so a viewer shows the
+                    # POST payload instead of an empty Request tab.
+                    request_post_data=post_data(
+                        e.get("post_data"),
+                        header_value(e.get("request_headers"), "content-type"),
+                    ),
                     extra={"_resourceType": e.get("resourceType")},
                 )
                 for e in handle.requests.values()

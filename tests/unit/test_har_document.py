@@ -19,7 +19,9 @@ from headless_re_mcp.backends.common.har import (
     har_document,
     har_entry,
     har_headers,
+    header_value,
     iso8601,
+    post_data,
     query_string,
 )
 from headless_re_mcp.backends.proxy.client import ProxyBackend
@@ -165,6 +167,78 @@ def test_har_entry_populates_headers_when_the_capture_kept_them() -> None:
     assert entry["response"]["headers"] == [{"name": "content-type", "value": "text/html"}]
 
 
+def test_header_value_reads_a_header_case_insensitively() -> None:
+    headers = [{"name": "Content-Type", "value": "application/json"}]
+    assert header_value(headers, "content-type") == "application/json"
+    assert header_value(headers, "missing") == ""
+    assert header_value(None, "content-type") == ""
+
+
+def test_post_data_carries_a_json_body_verbatim() -> None:
+    """The POST payload an analyst opens a HAR for reaches request.postData."""
+    body = '{"user":"alice","pw":"secret"}'
+    assert post_data(body, "application/json") == {
+        "mimeType": "application/json",
+        "text": body,
+    }
+
+
+def test_post_data_splits_a_form_body_into_params() -> None:
+    pd = post_data(
+        "user=alice&pw=s%40cret&flag",
+        "application/x-www-form-urlencoded; charset=utf-8",
+    )
+    assert pd is not None
+    assert pd["mimeType"].startswith("application/x-www-form-urlencoded")
+    assert pd["text"] == "user=alice&pw=s%40cret&flag"
+    assert pd["params"] == [
+        {"name": "user", "value": "alice"},
+        {"name": "pw", "value": "s@cret"},
+        {"name": "flag", "value": ""},
+    ]
+
+
+def test_post_data_decodes_bytes_and_degrades_on_empty() -> None:
+    assert post_data(b"raw-bytes", "application/octet-stream") == {
+        "mimeType": "application/octet-stream",
+        "text": "raw-bytes",
+    }
+    # An absent or empty body yields no postData object at all.
+    assert post_data(None, "application/json") is None
+    assert post_data("", "application/json") is None
+    assert post_data(b"", "application/json") is None
+
+
+def test_post_data_is_clipped() -> None:
+    pd = post_data("a" * (256 * 1024 + 10), "text/plain")
+    assert pd is not None
+    assert len(pd["text"]) == 256 * 1024
+
+
+def test_har_entry_includes_post_data_when_the_capture_kept_a_body() -> None:
+    entry = har_entry(
+        started_at=1_700_000_000.0,
+        method="POST",
+        url="https://x/login",
+        status=200,
+        mime_type="application/json",
+        request_post_data=post_data('{"a":1}', "application/json"),
+    )
+    _assert_entry_is_spec_valid(entry)
+    assert entry["request"]["postData"] == {
+        "mimeType": "application/json",
+        "text": '{"a":1}',
+    }
+
+
+def test_har_entry_omits_post_data_when_absent() -> None:
+    entry = har_entry(
+        started_at=None, method="GET", url="https://x", status=0, mime_type="",
+    )
+    _assert_entry_is_spec_valid(entry)
+    assert "postData" not in entry["request"]
+
+
 def test_har_document_wraps_entries_in_the_log_envelope() -> None:
     doc = har_document([har_entry(
         started_at=None, method="GET", url="https://x", status=0, mime_type="",
@@ -187,6 +261,42 @@ def _proxy_flow(started: float) -> SimpleNamespace:
         status_code=200, headers={"content-type": "text/html"}, raw_content=b"ok"
     )
     return SimpleNamespace(id="f1", request=request, response=response)
+
+
+def _proxy_post_flow(started: float) -> SimpleNamespace:
+    body = b'{"user":"alice"}'
+    request = SimpleNamespace(
+        method="POST",
+        pretty_url="https://x/login",
+        host="x",
+        headers={"content-type": "application/json"},
+        raw_content=body,
+        content=body,
+        timestamp_start=started,
+    )
+    response = SimpleNamespace(
+        status_code=200, headers={"content-type": "application/json"}, raw_content=b"{}"
+    )
+    return SimpleNamespace(id="p1", request=request, response=response)
+
+
+def test_proxy_export_har_includes_the_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """The retained flow's POST body reaches the HAR as request.postData."""
+    from headless_re_mcp.backends.proxy.client import _FlowRecorder
+
+    backend = ProxyBackend()
+    rec = _FlowRecorder()
+    rec.response(_proxy_post_flow(1_700_000_000.0))
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=rec))
+    out = tmp_path / "post.har"
+    backend.export_har("s", out)
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    (entry,) = doc["log"]["entries"]
+    _assert_entry_is_spec_valid(entry)
+    assert entry["request"]["postData"] == {
+        "mimeType": "application/json",
+        "text": '{"user":"alice"}',
+    }
 
 
 def test_proxy_export_har_is_spec_valid(tmp_path: Path, monkeypatch: Any) -> None:
@@ -244,3 +354,37 @@ def test_web_har_export_is_spec_valid(tmp_path: Path, monkeypatch: Any) -> None:
     assert datetime.fromisoformat(entry["startedDateTime"]).year == 2023
     # The response headers the web capture kept reached the HAR too.
     assert {"name": "content-type", "value": "text/plain"} in entry["response"]["headers"]
+
+
+class _WebPostHandle:
+    lock = Lock()
+    requests = {
+        "1": {
+            "method": "POST",
+            "url": "https://x/login",
+            "status": 200,
+            "mimeType": "application/json",
+            "resourceType": "XHR",
+            "started_at": 1_700_000_000.0,
+            "request_headers": [{"name": "content-type", "value": "application/json"}],
+            # The small body CDP inlined at send time and the ring kept.
+            "post_data": '{"user":"alice"}',
+        }
+    }
+
+
+def test_web_har_export_includes_the_inline_request_body(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _WebPostHandle())
+    out = tmp_path / "post.har"
+    backend.har_export("s", out)
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    (entry,) = doc["log"]["entries"]
+    _assert_entry_is_spec_valid(entry)
+    # The inline body, typed by the request's own content-type, reached the HAR.
+    assert entry["request"]["postData"] == {
+        "mimeType": "application/json",
+        "text": '{"user":"alice"}',
+    }
