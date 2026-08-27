@@ -103,6 +103,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `backend_error`（附 `size` 与 stderr 摘录）。
 
 
+### 新增回归（r2 地址富化的字符串地址与逐键兜底由异构条目直测固定）
+
+- 每个 r2 回包都经 `mapping.py` 富化，`_item_va` 按固定键序（`offset`、`vaddr`、`addr`、`from`、`to`、
+  `plt`、`paddr`）逐个取第一个可用地址:`type(value) is int and value >= 0` 直接取整；否则
+  `isinstance(value, str) and value` 时 `int(value, 0)`。两条支路都要紧、且既有 r2 用例（mapping /
+  imports / exports / strings / xrefs 一律喂整数地址 `offset`/`plt`/`vaddr`/`from`）都不覆盖:
+  **字符串支路**按 base 0 解析,`"0x140001000"` 与整数同解——把它改成 `int(value)`(base 10),每个十六进制
+  字符串地址都抛 `ValueError` 被 `except…: continue` 吞掉,条目悄悄丢地址,而 r2 全套照绿;**逐键兜底**
+  会跳过取不出地址的键（空串、解析不了的串、被 `value >= 0` 挡掉的负数哨兵）继续试后面的键——把
+  `continue` 改成 `return None`/`break`,首选键是垃圾但后面键才是真地址的条目就会回空地址。新增用例直接
+  钉两条支路:十六进制/十进制字符串按 base 0 解析、首键为空串/垃圾串/负数时兜底到后面的真地址、全无可用
+  键回 `None`;并直测端到端——`plt` 写成十六进制字符串时 `enrich_r2_payload` 仍把条目映成
+  `{va, rva, module}`,rva 照 PE ImageBase 算出,与整数路径完全一致。
+
+
 ### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
 
 - `ghidra.decompile` 过去在给定地址不落在任何函数内时返回 `decompiled: ""`，与“确实反编译出空
