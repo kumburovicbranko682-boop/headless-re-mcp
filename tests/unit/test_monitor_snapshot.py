@@ -54,10 +54,11 @@ def test_a_console_frame_does_not_eat_the_agents_events(tmp_path: Path) -> None:
     )
     assert snapshot["events"]["error"] is None
     # Five events fit the 24-event window: the frame is the whole stream and
-    # must not claim otherwise.
+    # must not claim otherwise, and the run is contiguous with no hole.
     assert snapshot["events"]["total"] == 5
     assert snapshot["events"]["truncated"] is False
     assert snapshot["events"]["dropped_total"] == 0
+    assert snapshot["events"]["unrecovered_gap"] is False
 
 
 def test_a_frame_for_a_session_with_no_event_log_says_so(tmp_path: Path) -> None:

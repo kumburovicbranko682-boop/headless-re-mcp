@@ -58,6 +58,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （日志高水位 `latest_sequence`）、`truncated`（窗口起点在 sequence 1 之后，即帧外还有
   更早事件）与 `dropped_total`（曾存在但已不被任何介质持有的事件数）；安静会话三者分别为
   真实总量、`false`、`0`，无日志/出错路径保持原有 `error` 语义并回落到 0/false。
+- 追加 `unrecovered_gap`：`_event_tail` 此前只取 `read_after(...).batch`，把 `EventLogRead`
+  上的 `unrecovered_gap` 标志一并丢掉。它与 `truncated` / `dropped_total` 语义不同——后两者说
+  的是「窗口之外还有更早事件」和「整条流累计丢了多少」，而 `unrecovered_gap` 说的是「当前展示的
+  这几条事件之间就有一个补不回来的洞」：drain 拷了 1..97、native ring 覆盖了 98-99、随后是
+  100..103，最新 24 条窗口跨过这个洞时只能展示 100..103，却画得像一段连续序列。三者可互相独立
+  （`dropped_total>0` 而窗口内连续时 `unrecovered_gap=false`；`truncated=false` 而窗口内有洞时
+  `unrecovered_gap=true`），故它是独立信号。帧与快照 `events` 段均带上该布尔，无日志/出错/非 PE
+  路径回落 `false`。新增一条直测：窗口跨越 native-ring 洞时 `unrecovered_gap` 为真且只展示洞后事件。
 
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
