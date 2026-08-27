@@ -842,6 +842,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `permission_denied`、attach 成功、模块枚举里能找到 `libc.so`/`ld` 这类系统库、该库导出非空、`noop`
   模板能加载;并从 `_WINDOWS_ONLY_MODULES` 移除该文件。frida 缺失或 OS 禁止本地 attach
   (Linux 的 ptrace_scope、macOS 未签名解释器)时诚实 skip(skip≠pass),Windows 路径与断言不变。
+- **r2 live gate 改为可移植,在 Linux 上真跑 radare2**。它此前只认 `headless_fixture.exe` 这个 PE
+  夹具、非 Windows 上因夹具缺失而 skip,于是 radare2 这条被点名的可移植后端从没在 Linux 上验证过地址
+  映射。现在 POSIX 上用本机 C 工具链(`cc`/`gcc`/`clang`)现编一个带几个真实函数的小 ELF,跑
+  `open` + `aa`/`aflj`,断言解析出函数且每项都带统一 `Address`。映射对 PIE ELF 诚实降级:没有 PE
+  ImageBase 就没有 module 相对的 RVA,地址保留绝对 VA——正是断言所验证的;PE 仍走 RVA/module 分支。
+  r2 缺失或没有 C 编译器时 skip(skip≠pass)。该 gate 本就未被 conftest 的 `_WINDOWS_ONLY_MODULES`
+  拦截,只是缺夹具而空跑,现补上 Linux 侧的真实覆盖。
 
 ### 变更（Android 后端清理）
 
