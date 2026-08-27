@@ -77,9 +77,10 @@ def test_a_single_long_line_reads_as_minified(tmp_path: Path) -> None:
 def test_ignores_a_non_js_suffix(tmp_path: Path) -> None:
     path = tmp_path / "page.html"
     path.write_bytes(b"<html></html>")
+    # describe_js reads only JavaScript suffixes.
     assert describe_js(path) == {}
-    # The web-asset dispatcher agrees: no facts for a page it has no reader for.
-    assert describe_web_asset(path) == {}
+    # The web-asset dispatcher routes .html to its own reader, not describe_js.
+    assert "html" in describe_web_asset(path)
 
 
 def test_session_over_a_local_js_carries_the_facts(tmp_path: Path) -> None:

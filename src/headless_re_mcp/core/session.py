@@ -7,6 +7,7 @@ import zipfile
 from collections import deque
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol
@@ -969,14 +970,16 @@ def describe_web_asset(path: Path) -> dict[str, Any]:
 
     A ``.wasm`` module gets its section facts; a ``.js``/``.mjs``/``.cjs`` script
     gets its size and source-map facts; a ``.har`` capture gets its traffic
-    shape. Anything else (a ``.html`` page) has no tool-free reader yet and
-    returns ``{}``.
+    shape; a ``.html``/``.htm`` page gets its script and resource shape.
+    Anything else has no tool-free reader yet and returns ``{}``.
     """
     suffix = path.suffix.lower()
     if suffix in _JS_SUFFIXES:
         return describe_js(path)
     if suffix == ".har":
         return describe_har(path)
+    if suffix in _HTML_SUFFIXES:
+        return describe_html(path)
     return describe_wasm(path)
 
 
@@ -1120,6 +1123,112 @@ def describe_har(path: Path) -> dict[str, Any]:
             "has_websocket": has_websocket,
             "total_response_bytes": total_response_bytes,
             "truncated": truncated,
+        }
+    }
+
+
+_HTML_SUFFIXES = frozenset({".html", ".htm"})
+_HTML_MAX_BYTES = 16 * 1024 * 1024
+# Cap the recorded script/host lists (and the title) so a page with thousands
+# of tags cannot make the identity facts large; the totals are always exact.
+_HTML_MAX_ITEMS = 256
+_HTML_MAX_TITLE = 256
+
+
+class _HtmlFactsParser(HTMLParser):
+    """Collect a page's script and resource shape in one lenient pass."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.script_total = 0
+        self.external_script_total = 0
+        self.inline_script_total = 0
+        self.stylesheet_total = 0
+        self.iframe_total = 0
+        self.external_scripts: list[str] = []
+        self.hosts: set[str] = set()
+        self.title: str | None = None
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr = dict(attrs)
+        if tag == "script":
+            self.script_total += 1
+            src = attr.get("src")
+            if src:
+                self.external_script_total += 1
+                if len(self.external_scripts) < _HTML_MAX_ITEMS:
+                    self.external_scripts.append(src)
+                self._add_host(src)
+            else:
+                self.inline_script_total += 1
+        elif tag == "link":
+            if "stylesheet" in (attr.get("rel") or "").lower():
+                self.stylesheet_total += 1
+                self._add_host(attr.get("href"))
+        elif tag == "iframe":
+            self.iframe_total += 1
+            self._add_host(attr.get("src"))
+        elif tag == "title":
+            self._in_title = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title and self.title is None:
+            text = data.strip()
+            if text:
+                self.title = text[:_HTML_MAX_TITLE]
+
+    def _add_host(self, url: str | None) -> None:
+        if not url or len(self.hosts) >= _HTML_MAX_ITEMS:
+            return
+        host = urlsplit(url).hostname
+        if host:
+            self.hosts.add(host)
+
+
+def describe_html(path: Path) -> dict[str, Any]:
+    """Cheap, stdlib-only facts about an HTML page (no browser).
+
+    Where a page loads its code from is the first thing a web reverser maps:
+    how many scripts it pulls, how many are external versus inline, which hosts
+    those and its stylesheets and iframes reach, and the page title. stdlib
+    html.parser reads all of it without launching a browser -- the page-level
+    analogue of the script-level facts describe_js gives.
+
+    Fail-closed and bounded: an unreadable file returns ``{}``, only the first
+    16 MiB is scanned, and a parser hiccup on a hostile page yields the facts
+    gathered so far rather than raising.
+    """
+    if path.suffix.lower() not in _HTML_SUFFIXES:
+        return {}
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            raw = handle.read(_HTML_MAX_BYTES)
+    except OSError:
+        return {}
+    parser = _HtmlFactsParser()
+    try:
+        parser.feed(raw.decode("utf-8", errors="replace"))
+        parser.close()
+    except Exception:  # noqa: BLE001 - a hostile page must not break session creation
+        pass
+    return {
+        "html": {
+            "title": parser.title,
+            "script_count": parser.script_total,
+            "external_script_count": parser.external_script_total,
+            "inline_script_count": parser.inline_script_total,
+            "external_scripts": parser.external_scripts,
+            "stylesheet_count": parser.stylesheet_total,
+            "iframe_count": parser.iframe_total,
+            "external_host_count": len(parser.hosts),
+            "external_hosts": sorted(parser.hosts)[:_HTML_MAX_ITEMS],
+            "truncated": size > _HTML_MAX_BYTES,
         }
     }
 
