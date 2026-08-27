@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（web.open 在非 web 会话上缺少 url 时快速失败，而非把文件路径当作导航目标）
+
+- `web.open` 的目标解析此前对任意会话都回退到 `session.locator`。web 会话的 locator 本就是它创建时的 URL,\
+  回退合理;但非 web 会话(PE/APK)的 locator 是它打开的 .exe/.apk **文件路径**,绝非浏览器可导航的地址。\
+  于是在非 web 会话上不带 url 调用 `web.open` 时,那条本应拦下它的服务层守卫(“a url is required for a\
+  non-web session”)被这个无用的文件路径回退绕过:文件路径被送进浏览器,`page.goto` 以不透明的\
+  `backend_error` 拒绝——更糟的是在未装 Playwright 的机器上,后端的可用性检查更早触发,报出误导性的\
+  `capability_unavailable`,而真正的原因是“请给一个 url”。现在回退只对 web 会话生效:非 web 会话缺少显式\
+  url 时在触碰后端之前就以 `invalid_params` 快速失败,显式 url 一律原样使用(绝不被 locator 悄悄替换),web\
+  会话省略 url 时仍复用其 locator。新增 `test_web_open_target_guard.py` 钉住这四条路径。
+
 ### 测试（钉住 measure_usage 在恶劣条件下仍诚实计量：文件数上限截断为下限、跳过无法 stat 的项）
 
 - artifact GC 在每条线的会话关闭时都会跑(web 会话的 HAR/截图、APK pull、PE dump 一视同仁),并依据\

@@ -87,7 +87,17 @@ class WebAnalysisMixin:
                 raise InvalidStateTransition(
                     f"web.open cannot run in {session.state.value} state"
                 )
-            target = url.strip() or (session.locator or "")
+            # A web session carries its URL as its locator, so an omitted url
+            # reuses it. A non-web session's locator is a file path (the .exe /
+            # .apk it was opened on), never a browsable URL, so the fallback
+            # must not apply to it: without an explicit url it fails fast here as
+            # invalid_params rather than letting a file path reach the browser,
+            # where it surfaces as an opaque backend_error -- or, on a host
+            # without Playwright, as a misleading capability_unavailable, since
+            # that check runs deeper in the backend.
+            target = url.strip()
+            if not target and session.target is TargetKind.WEB:
+                target = session.locator or ""
             if session.target is not TargetKind.WEB and not target:
                 raise WebError("invalid_params", "a url is required for a non-web session")
             data = self._web.open(session_id, target, headless=headless, timeout=timeout)
