@@ -285,6 +285,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   自搓的原始 WebSocket echo server + 原始客户端（不引第三方依赖）经代理跑通一次真正的 `ws://` 双工，断言
   `flow.get` 能按方向取回帧、摘要正确标记；另加不依赖 mitmproxy 的单测直接驱动 `websocket_message`，覆盖截断、
   计数、标记与裁列表。
+- **抓包丢掉上游失败的请求，整条 flow 凭空消失**。`_FlowRecorder` 只实现 `response` 钩子，可上游连不上
+  （拒连、DNS 失败、连接被重置、连 `ssl_insecure` 也救不了的 TLS 握手失败）时 mitmproxy 走的是 `error` 钩子、
+  根本不产生 `response`——于是这条 flow 完全不被记录：明明发起过请求，抓包却是空的，失败原因也无从查起（这正是
+  当初加 `ssl_insecure` 时记录的同一现象的另一半）。现在新增 `error` 钩子，把失败的 flow 按 `failed` + `error`
+  （连接错误信息）、`status` 为 null 记入摘要环，并像 `response` 一样在内存预算内保留该 flow 供 `flow.get` 回读
+  （请求在、响应空）；`error` 若发生在一次正常 `response` 之后，则只在原行上补标 `failed`/`error`、不新增一行。
+  `response` 与 `error` 现共用抽出的 `_retain_raw` 记账，两条入口对内存/淘汰的看法不会分叉。活体门经代理向一个
+  「已 bind 但从不 listen」的回环端口（内核直接拒连）发一次请求，断言该 flow 被标 `failed`、带非空 `error`、
+  `status` 为 null、且 `flow.get` 如实回报失败（缺 mitmproxy 时 skip≠pass）；单测直接驱动 `error`，覆盖新建失败行、
+  `flow.get` 透出失败、以及「响应后再报错只标注不重复建行」。
 - **`r2.xrefs` 完全忽略传入地址，永远返回整个二进制的全部交叉引用**。用的命令是 `axj @ addr`——可 `axj`
   是「列出全部 refs」，`@ addr` 的 seek 对它毫无作用（实测某 ELF 上 `axj @ 任意地址` 与不带 seek 的 `axj` 都回
   相同的 20 条、`/bin/ls` 上都回 820 条）。于是 `r2.xrefs(某函数)` 拿到的是全程序 refs、而非该地址的引用者，

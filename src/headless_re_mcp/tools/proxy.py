@@ -78,6 +78,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         row whose request/response body was over the retain cap. A WebSocket
         upgrade is flagged is_websocket with a websocket_messages count, so
         flow.get can be pointed at the sockets whose frames are the target.
+        A flow whose upstream failed (connection refused, DNS failure, reset,
+        a TLS handshake ssl_insecure cannot save) is flagged failed with an
+        error message and a null status, so an attempted-but-failed request is
+        recorded rather than vanishing from an otherwise-empty capture.
         The list field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;
         a page that filled the limit is not the whole log. metadata_truncated
@@ -100,6 +104,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         (each from_client, size, text, truncated and binary when non-UTF-8),
         returned, message_count and truncated -- the duplex frames that follow
         the 101, which are not in the response body.
+
+        A flow whose upstream failed carries failed and error (the connection
+        error) with an empty response, so flow.get on it reads as "the upstream
+        failed", not "the response was empty".
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

@@ -9,6 +9,7 @@ reported as a running capture.
 from __future__ import annotations
 
 import base64
+import contextlib
 import datetime
 import hashlib
 import ipaddress
@@ -289,6 +290,58 @@ def test_proxy_actually_intercepts_and_records_a_request() -> None:
             assert post_detail["response"]["status"] == 201
         finally:
             backend.stop("gate-capture")
+
+
+@pytest.mark.integration
+def test_proxy_records_a_failed_upstream_flow() -> None:
+    """A request whose upstream fails must be recorded, not vanish.
+
+    mitmproxy delivers a refused/failed upstream through the error hook, never
+    response, so before this the flow was dropped entirely: the capture looked
+    empty even though a request was attempted, and the failure reason was lost.
+    Route a request through the proxy to a loopback port that is bound but never
+    listening (connection refused) and assert the flow is recorded failed with
+    an error message and a null status, and that flow_get surfaces the failure.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy failure Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    port = _free_port()
+    dead = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    dead.bind(("127.0.0.1", 0))
+    dead_port = int(dead.getsockname()[1])  # bound, never listening -> refused
+    try:
+        backend.start("gate-fail", host="127.0.0.1", port=port)
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+            )
+            # The upstream is refused, so the proxy answers 502 / the request
+            # raises; either way the flow must be recorded as failed.
+            with contextlib.suppress(Exception):
+                opener.open(f"http://127.0.0.1:{dead_port}/dead", timeout=10).read()
+
+            def _failed() -> dict[str, Any] | None:
+                for flow in backend.flows("gate-fail")["flows"]:
+                    if str(flow.get("url", "")).endswith("/dead") and flow.get("failed"):
+                        return flow
+                return None
+
+            flow = _poll(_failed, timeout=15.0)
+            assert flow is not None, "the failed request through the proxy was never recorded"
+            assert flow["failed"] is True
+            assert flow["status"] is None
+            assert isinstance(flow.get("error"), str)
+            assert flow["error"], "the failure reason was dropped"
+
+            detail = backend.flow_get("gate-fail", flow["id"], Path(tempfile.mkdtemp()))
+            assert detail["failed"] is True
+            assert detail["error"]
+            assert detail["response"]["status"] is None
+        finally:
+            backend.stop("gate-fail")
+    finally:
+        dead.close()
 
 
 @pytest.mark.integration

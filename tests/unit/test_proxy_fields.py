@@ -368,3 +368,55 @@ def test_proxy_records_websocket_frames_and_flags_the_flow() -> None:
     assert recorder.websocket("missing") is None
     doc = _tool_docstring("proxy.flow.get")
     assert "websocket" in doc
+
+
+def test_proxy_error_records_a_failed_flow_that_never_got_a_response(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A flow whose upstream fails must be recorded, not silently dropped.
+
+    mitmproxy delivers such flows through the error hook, never response, so
+    without it the capture is empty even though a request was attempted. Drive
+    error() and assert the flow is listed failed with the message and a null
+    status, is retrievable, and that an error following a real response only
+    annotates the existing row instead of adding a second.
+    """
+    recorder = _FlowRecorder(capacity=10)
+    request = SimpleNamespace(method="GET", pretty_url="http://x/dead", host="x", headers={})
+    flow = SimpleNamespace(
+        id="e", request=request, response=None, error=SimpleNamespace(msg="connection refused")
+    )
+    recorder.error(flow)
+
+    rows = {row["id"]: row for row in recorder.snapshot()}
+    assert rows["e"]["failed"] is True
+    assert rows["e"]["error"] == "connection refused"
+    assert rows["e"]["status"] is None
+    assert recorder.raw("e") is flow
+
+    # flow.get surfaces the failure with an empty response, not a phantom body.
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder)
+    )
+    fetched = backend.flow_get("s", "e", tmp_path)
+    assert fetched["failed"] is True
+    assert fetched["error"] == "connection refused"
+    assert fetched["response"]["status"] is None
+    assert fetched["response"]["size"] == 0
+
+    # An error arriving after a real response annotates that row, not a new one.
+    response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+    good = SimpleNamespace(id="g", request=request, response=response)
+    recorder.response(good)
+    recorder.error(
+        SimpleNamespace(id="g", request=request, response=response,
+                        error=SimpleNamespace(msg="reset"))
+    )
+    g_rows = [row for row in recorder.snapshot() if row["id"] == "g"]
+    assert len(g_rows) == 1
+    assert g_rows[0]["failed"] is True
+    assert g_rows[0]["error"] == "reset"
+    assert g_rows[0]["status"] == 200
+    doc = _tool_docstring("proxy.flows")
+    assert "failed" in doc
