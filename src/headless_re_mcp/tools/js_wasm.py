@@ -118,6 +118,34 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_sections(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.functions")
+    def wasm_functions(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List a .wasm module's defined functions (the internal function table).
+
+        Reads the Function section directly and resolves each entry against the
+        Type, Import and custom name sections, so it needs no wabt and cannot
+        drift with a wabt version; an input over 16 MiB is refused as too_large.
+        This is the function table a reverse engineer navigates -- without it
+        internal functions are only indices with no signature or name. Answers
+        with functions, count, total, offset, declared, has_more and incomplete.
+        Each row has index (the absolute function index, imported functions
+        counted first, so it matches the name section and call instructions),
+        type_index and, when the Type section resolves it, params and results
+        (valtype names); a row also carries name when the custom name section
+        names that index. Only defined functions appear here -- imported
+        functions are wasm.imports, not this list. total is the number parsed
+        and pageable; declared is the count the section header claimed;
+        incomplete is true when they diverge because the module was truncated or
+        the entry cap was hit. count may be below limit when the result-size
+        budget trimmed the page, so read count, not limit, and page on has_more.
+        The list field is functions, not items.
+        """
+        return _dump(analysis.wasm_functions(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.imports")
     def wasm_imports(
         path: str,

@@ -477,6 +477,135 @@ def test_wasm_sections_docstring_names_its_fields() -> None:
         assert token in doc
 
 
+def _function_section(*type_indices: int) -> bytes:
+    # Function section (id 3): a vector of one type index per defined function.
+    return _section(3, _vec([bytes([index]) for index in type_indices]))
+
+
+def test_parse_functions_lists_defined_functions_with_signatures() -> None:
+    """Each defined function resolves to its absolute index and signature.
+
+    Measured on a module with one func type (i32,i32)->i32 and a Function
+    section of two functions both of type 0, no imports: two rows at absolute
+    index 0 and 1, each with params [i32,i32] results [i32], declared 2, not
+    incomplete.
+    """
+    module = _module(_TYPE_SECTION, _function_section(0, 0))
+    entries, declared, incomplete = wf.parse_functions(module)
+    assert declared == 2
+    assert incomplete is False
+    assert entries == [
+        {"index": 0, "type_index": 0, "params": ["i32", "i32"], "results": ["i32"]},
+        {"index": 1, "type_index": 0, "params": ["i32", "i32"], "results": ["i32"]},
+    ]
+
+
+def test_parse_functions_offsets_indices_past_imported_functions() -> None:
+    """A defined function's index counts imported functions first.
+
+    One func import (env.log) plus one memory import, then a single defined
+    function: only the func import shifts the index space, so the defined
+    function is absolute index 1, not 0 or 2.
+    """
+    imp_func = _name("env") + _name("log") + b"\x00" + b"\x00"
+    imp_mem = _name("env") + _name("memory") + b"\x02" + b"\x00\x01"
+    module = _module(
+        _TYPE_SECTION,
+        _import_section(imp_func, imp_mem),
+        _function_section(0),
+    )
+    entries, _declared, incomplete = wf.parse_functions(module)
+    assert incomplete is False
+    assert entries == [
+        {"index": 1, "type_index": 0, "params": ["i32", "i32"], "results": ["i32"]},
+    ]
+
+
+def test_parse_functions_resolves_names_from_the_name_section() -> None:
+    """A named module carries each defined function's debug name on its row."""
+    module = _module(
+        _TYPE_SECTION,
+        _function_section(0, 0),
+        _name_section("m", [(0, "init"), (1, "run")]),
+    )
+    entries, _declared, _incomplete = wf.parse_functions(module)
+    assert entries[0]["name"] == "init"
+    assert entries[1]["name"] == "run"
+
+
+def test_parse_functions_unknown_type_index_omits_signature() -> None:
+    """A type index the Type section does not hold leaves the row without a sig.
+
+    The row still reports its index and type_index -- an unresolved/future type
+    is visible rather than dropped -- but carries no params/results to invent.
+    """
+    module = _module(_TYPE_SECTION, _function_section(9))
+    entries, _declared, _incomplete = wf.parse_functions(module)
+    assert entries == [{"index": 0, "type_index": 9}]
+
+
+def test_parse_functions_no_function_section_is_empty_not_incomplete() -> None:
+    """A module lacking a Function section yields an empty, complete answer."""
+    assert wf.parse_functions(_module(_TYPE_SECTION)) == ([], 0, False)
+
+
+def test_parse_functions_truncated_section_is_incomplete() -> None:
+    """A section claiming more functions than its bytes hold stops and flags it."""
+    # declares 3 type indices but carries only two.
+    module = _module(_TYPE_SECTION, _section(3, b"\x03\x00\x00"))
+    entries, declared, incomplete = wf.parse_functions(module)
+    assert declared == 3
+    assert incomplete is True
+    assert [row["index"] for row in entries] == [0, 1]
+
+
+def test_parse_functions_rejects_a_non_module() -> None:
+    """Bytes without the wasm magic are not a module at all (hard error)."""
+    for bad in (b"", b"not wasm here", b"\x00asm"):
+        with pytest.raises(wf.WasmParseError):
+            wf.parse_functions(bad)
+
+
+def test_wasm_client_functions_pages_and_needs_no_wabt(tmp_path: Path) -> None:
+    """WasmClient.functions reads a file, pages the table, and works with no wabt.
+
+    Measured: a three-function module through WasmClient(None) -> total 3,
+    declared 3, incomplete False; limit 2 -> count 2, has_more True, list field
+    functions (not items); offset 2 -> the last row, has_more False.
+    """
+    module = _module(_TYPE_SECTION, _function_section(0, 0, 0))
+    path = tmp_path / "m.wasm"
+    path.write_bytes(module)
+
+    client = WasmClient(None)  # no wabt path; functions must still work
+    first = client.functions(path, limit=2)
+    assert first["total"] == 3
+    assert first["declared"] == 3
+    assert first["incomplete"] is False
+    assert first["count"] == 2
+    assert len(first["functions"]) == 2
+    assert first["has_more"] is True
+    assert "items" not in first
+    second = client.functions(path, offset=2, limit=2)
+    assert second["count"] == 1
+    assert second["offset"] == 2
+    assert second["has_more"] is False
+    assert second["functions"][0]["index"] == 2
+
+
+def test_wasm_client_functions_missing_file_is_not_found(tmp_path: Path) -> None:
+    """A missing module is not_found, not a crash or a fabricated empty table."""
+    with pytest.raises(JsReError) as info:
+        WasmClient(None).functions(tmp_path / "nope.wasm")
+    assert info.value.code == "not_found"
+
+
+def test_wasm_functions_docstring_names_its_fields() -> None:
+    doc = _tool_docstring("wasm.functions")
+    for token in ("functions", "index", "type_index", "declared", "incomplete", "params", "name"):
+        assert token in doc
+
+
 def _bytevec(payload: bytes) -> bytes:
     # A WASM byte vector: a LEB length prefix (single byte for len < 128) then
     # the raw bytes. All data-segment payloads here stay under that.

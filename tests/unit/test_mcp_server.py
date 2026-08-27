@@ -301,6 +301,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "js.unpack_bundle",
         "wasm.info",
         "wasm.wat",
+        "wasm.functions",
         "wasm.imports",
         "wasm.exports",
         "wasm.names",

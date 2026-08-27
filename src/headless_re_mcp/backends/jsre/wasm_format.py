@@ -3,9 +3,10 @@
 ``wasm.imports`` / ``wasm.exports`` answer the two questions a WASM reverse
 engineer asks first -- what host functions/globals/memories/tables the module
 depends on, and what it exposes back to the host -- while ``wasm.sections`` maps
-the module's layout, ``wasm.names`` symbolises it from the custom name section,
-and ``wasm.strings`` pulls the Data-section literal pool. All read the module's
-binary sections directly. Reading the bytes (the format is a stable spec)
+the module's layout, ``wasm.functions`` lists the defined-function table with
+resolved signatures and names, ``wasm.names`` symbolises it from the custom name
+section, and ``wasm.strings`` pulls the Data-section literal pool. All read the
+module's binary sections directly. Reading the bytes (the format is a stable spec)
 instead of scraping ``wasm-objdump`` text means these work with no wabt install
 and cannot drift with a wabt version.
 
@@ -409,6 +410,72 @@ def parse_names(data: bytes) -> tuple[bool, str | None, list[JsonObject], bool]:
         incomplete = True
     function_names.sort(key=lambda row: row["index"])
     return True, module_name, function_names, incomplete
+
+
+def _count_imported_functions(data: bytes) -> int:
+    """How many functions the Import section declares (the func-index offset).
+
+    Function indices are imported-functions-first, so a defined function's
+    absolute index is this count plus its position in the Function section.
+    Reuses :func:`parse_imports` so the count matches what wasm.imports reports.
+    """
+    entries, _declared, _incomplete = parse_imports(data)
+    return sum(1 for entry in entries if entry.get("kind") == "func")
+
+
+def _function_name_map(data: bytes) -> dict[int, str]:
+    """funcidx -> debug name from the custom name section, empty when stripped."""
+    _present, _module_name, function_names, _incomplete = parse_names(data)
+    return {int(row["index"]): str(row["name"]) for row in function_names}
+
+
+def parse_functions(data: bytes) -> tuple[list[JsonObject], int, bool]:
+    """``(entries, declared_count, incomplete)`` for the module's defined functions.
+
+    The Function section (id 3) lists one type index per function the module
+    *defines*; imported functions are not repeated there. Function indices are
+    imported-functions-first, so a defined function's absolute index is
+    imported_func_count + its position here -- and that absolute index is what
+    the name section and call instructions use, so it is what this reports.
+    Each entry carries index (absolute) and type_index, plus params/results when
+    the Type section resolves that index, and name when the custom name section
+    names it. This is the function table a reverse engineer navigates: without
+    it internal functions are only indices with no signature or name.
+    ``incomplete`` is flagged like the sibling parsers when the section was
+    truncated or the declared count exceeded the entry cap.
+    """
+    sections = _walk_sections(data)
+    types = _parse_types(sections.get(1))
+    body = sections.get(3)
+    if not body:
+        return [], 0, False
+    imported = _count_imported_functions(data)
+    names = _function_name_map(data)
+    reader = _Reader(body)
+    entries: list[JsonObject] = []
+    declared = 0
+    incomplete = False
+    try:
+        declared = reader.uleb()
+        if declared > _MAX_VEC:
+            raise _Truncated
+        limit = min(declared, _MAX_ENTRIES)
+        incomplete = declared > limit
+        for position in range(limit):
+            type_index = reader.uleb()
+            absolute = imported + position
+            entry: JsonObject = {"index": absolute, "type_index": type_index}
+            if 0 <= type_index < len(types):
+                params, results = types[type_index]
+                entry["params"] = params
+                entry["results"] = results
+            name = names.get(absolute)
+            if name is not None:
+                entry["name"] = name
+            entries.append(entry)
+    except _Truncated:
+        incomplete = True
+    return entries, declared, incomplete
 
 
 def parse_sections(data: bytes) -> tuple[list[JsonObject], bool]:

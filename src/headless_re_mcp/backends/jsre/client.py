@@ -19,6 +19,7 @@ from headless_re_mcp.backends.jsre.wasm_format import (
     WasmParseError,
     parse_data_strings,
     parse_exports,
+    parse_functions,
     parse_imports,
     parse_names,
     parse_sections,
@@ -299,6 +300,26 @@ class WasmClient:
             "has_more": start + len(window) < len(entries),
             "incomplete": incomplete,
         }
+
+    def functions(
+        self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT
+    ) -> JsonObject:
+        """Structured defined-function table (absolute index/type/signature/name).
+
+        Reads the Function section directly and resolves each entry against the
+        Type, Import and custom name sections, so it needs no wabt and cannot
+        drift with a wabt version; an input over 16 MiB is refused as too_large.
+        Indices are absolute (imported functions counted first), matching the
+        name section and call instructions.
+        """
+        data = self._read_module(path)
+        try:
+            entries, declared, incomplete = parse_functions(data)
+        except WasmParseError as exc:
+            raise JsReError("backend_error", str(exc), path=str(path)) from exc
+        return _paged_entries(
+            entries, "functions", declared, incomplete, offset=offset, limit=limit
+        )
 
     def imports(
         self, path: Path, *, offset: int = 0, limit: int = _WASM_ENTRY_DEFAULT

@@ -120,6 +120,16 @@ def test_m11_wasm_imports_exports_read_from_bytes(tmp_path: Path) -> None:
     assert offsets == sorted(offsets)  # sections map in ascending file order
     assert all(r["offset"] + r["size"] <= len(_WASM) for r in smap["sections"])
 
+    # wasm.functions: the same real module defines one function (add), at
+    # absolute index 0 (no imports), resolved to its (i32,i32)->i32 signature
+    # from the Type section -- the defined-function table, read with no wabt.
+    functions = client.functions(export_only)
+    assert functions["incomplete"] is False
+    assert functions["total"] == 1
+    assert functions["functions"] == [
+        {"index": 0, "type_index": 0, "params": ["i32", "i32"], "results": ["i32"]},
+    ]
+
     with_imports = tmp_path / "imports.wasm"
     with_imports.write_bytes(_WASM_WITH_IMPORTS)
     imports = client.imports(with_imports)
@@ -138,6 +148,9 @@ def test_m11_wasm_imports_exports_read_from_bytes(tmp_path: Path) -> None:
     assert by_name["g"]["mutable"] is True
     # This module's export is run (func); prove the export path too.
     assert {row["name"] for row in client.exports(with_imports)["exports"]} == {"run"}
+    # It has an imported function but no Function section, so it *defines* none:
+    # wasm.functions lists only defined functions, never the imported ones.
+    assert client.functions(with_imports)["total"] == 0
 
     # wasm.names: a module with a custom "name" section symbolises to the debug
     # names it carries; a stripped module (no name section) reports present False

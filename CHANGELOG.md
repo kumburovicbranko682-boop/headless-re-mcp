@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **275（158 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **276（159 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1423,6 +1423,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   向量长度误读成数据。工具面 274→**275**(157→**158** 只读,写不变)。单测(`test_wasm_imports_exports.py`):可打印 run 抽取与 min_len 下限、单串切分不超上限、去重触顶置 incomplete、active/passive/带 memidx 三种段
   flag 均解、global.get 的 offset 表达式可跳过、未知 offset opcode 停并置 incomplete、段越界置 incomplete、无 Data 段为空而非报错、非模块硬报错、WasmClient 无 wabt 也能过滤分页读盘且 `min_length` 下限被夹到 1、
   缺文件报 `not_found`。实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对含内存+一 active 数据段的真实模块读回两个字面串、按 `min_length` 抬高下限筛除短串、按大小写不敏感子串过滤。
+
+- **新增 `wasm.functions`:列出一个 `.wasm` 模块自己*定义*的函数表——每个函数的绝对索引、类型索引、解析出的签名与(带 name 段时的)调试名。** 此前 `wasm.imports`/`exports` 给的是宿主边界、`wasm.names` 给的是
+  名字映射,但「这个模块定义了哪些函数、各是什么签名」——逆向一枚 WASM 时用来导航的函数表——没有一个工具直接给出;没有它,内部函数只是一串没有签名也没有名字的索引。新工具直接读 Function 段(id 3,
+  每个已定义函数一个类型索引),并就地对齐 Type 段(解析 `params`/`results`)、Import 段(数出被导入的函数数,作为索引偏移)与自定义 name 段(补 `name`),故与 `wasm.imports`/`sections`/`names` 同为**纯 Python
+  读二进制、免 wabt、不随其版本漂移**;输入超 16 MiB 按 `too_large` 拒绝。每行含 `index`(绝对函数索引——WASM 的函数索引是「先导入后定义」,故已定义函数的绝对索引 = 被导入函数数 + 它在 Function 段里的位次,
+  这也正是 name 段与 call 指令用的编号)、`type_index`,以及(当 Type 段能解析该索引时)`params`/`results`(valtype 名),带 name 段时另有 `name`。**只列已定义函数**——被导入的函数属于 `wasm.imports` 而不进此表。
+  回 `functions`/`count`/`total`/`offset`/`declared`/`has_more`/`incomplete`:`total` 是实际解析出的可分页条数、`declared` 是段头声明的条数,二者因截断或触达条目上限而背离时 `incomplete` 为真,故短列表不被读成完整函数表;
+  预算裁剪落到 `has_more`,可继续翻页。工具面 275→**276**(158→**159** 只读,写不变)。单测(`test_wasm_imports_exports.py`):两个已定义函数带签名与绝对索引、索引在被导入函数之后偏移(一个 func 导入 + 一个 memory 导入,
+  已定义函数落在绝对索引 1)、name 段补名、未知类型索引只留 index/type_index 而不臆造签名、无 Function 段为空而非报错、段截断置 incomplete、非模块硬报错、WasmClient 无 wabt 也能分页读盘且列表字段名为 functions、
+  缺文件报 `not_found`。实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对真实 wat2wasm 产物读回其唯一定义函数(绝对索引 0、类型 0、签名 (i32,i32)->i32),并对带一个 func 导入但无 Function 段的模块确认
+  已定义函数数为 0(证明被导入函数不进此表)。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
