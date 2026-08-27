@@ -203,6 +203,31 @@ def test_disassemble_tiny_method_body(tmp_path: Path) -> None:
     assert result["partial"] is False
 
 
+def test_disassemble_fat_method_body(tmp_path: Path) -> None:
+    """The fat (12-byte) method header path; every other fixture uses tiny.
+
+    _read_method_body only reads MaxStack/CodeSize/LocalVarSig for a fat header
+    (low two bits of the first byte == 0x3), a branch no prior fixture reached.
+    """
+    binary = tmp_path / "fat.exe"
+    _write_clr_with_tables(binary)
+    data = bytearray(binary.read_bytes())
+    # Fat header: (Size<<12)|Flags with Flags=0x3 (CorILMethod_FatFormat),
+    # Size=3 dwords -> 0x3003; MaxStack=8; CodeSize=2; LocalVarSigTok=0.
+    fat_header = struct.pack("<HHII", 0x3003, 8, 2, 0)
+    body = fat_header + bytes([0x16, 0x2A])  # ldc.i4.0; ret
+    data[_METHOD_BODY_FILE : _METHOD_BODY_FILE + len(body)] = body
+    binary.write_bytes(data)
+
+    result = disassemble_method_il(binary, 0x06000001)
+    assert result["header"]["format"] == "fat"
+    assert result["header"]["code_size"] == 2
+    assert result["header"]["max_stack"] == 8
+    assert result["header"]["local_var_sig_tok"] == 0
+    assert [insn["mnemonic"] for insn in result["instructions"]] == ["ldc.i4.0", "ret"]
+    assert result["partial"] is False
+
+
 def test_memberref_xrefs_from_real_tables(tmp_path: Path) -> None:
     binary = tmp_path / "tables.exe"
     _write_clr_with_tables(binary)
