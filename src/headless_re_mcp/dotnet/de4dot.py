@@ -372,8 +372,12 @@ def _capture_process(
             break
         sleep(min(0.05, remaining))
 
-    stdout_thread.join(timeout=2.0)
-    stderr_thread.join(timeout=2.0)
+    # A single shared budget keeps this drain bounded: joining each reader for
+    # two full seconds would let a grandchild that inherited (and still holds
+    # open) a pipe extend the caller's deadline by seconds, one stream at a time.
+    drain_deadline = monotonic() + 2.0
+    stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+    stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
     if exited:
         # The runner ended on its own; make sure it left nothing behind. On
         # Windows the job object and the Toolhelp walk cover this. On POSIX the
@@ -398,8 +402,11 @@ def _capture_process(
                 from headless_re_mcp.core.process_tree import terminate_process_group
 
                 terminate_process_group(group_id)
-            stdout_thread.join(timeout=2.0)
-            stderr_thread.join(timeout=2.0)
+            # Bound the post-termination drain the same way, so killing the
+            # leftovers cannot add another two seconds per stuck reader.
+            drain_deadline = monotonic() + 2.0
+            stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+            stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
     # The readers close their own pipes; only close here when the reader has
     # finished, so a reader still blocked on a survivor's pipe never wedges this
     # thread on close().
