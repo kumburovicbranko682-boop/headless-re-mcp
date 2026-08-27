@@ -103,6 +103,8 @@ def test_native_macho_analyzes_through_ghidra() -> None:
         # the stdlib reader surfaces it before Ghidra ever runs.
         assert native["interpreter"] == "/usr/lib/dyld"
         assert native["dylibs"] == ["/usr/lib/libSystem.B.dylib"]
+        # LC_MAIN's offset mapped through __TEXT: the fixture's known entry.
+        assert native["entry"] == 0x1000001D0
         session_id = str(session["id"])
 
         functions = service.ghidra_functions(session_id, limit=64, timeout=240.0)
@@ -113,6 +115,9 @@ def test_native_macho_analyzes_through_ghidra() -> None:
         assert str(first.get("name") or "").strip()
         entry = str(first["entry"]).strip()
         assert entry
+        # Ghidra keeps the Mach-O vmaddr, so a function must sit exactly at the
+        # tool-free entry point -- the second backend to corroborate it.
+        assert any(int(str(r["entry"]), 16) == native["entry"] for r in rows)
 
         symbols = service.ghidra_symbols(session_id, limit=64, timeout=240.0)
         assert symbols.ok, symbols.error

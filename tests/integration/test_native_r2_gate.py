@@ -54,6 +54,8 @@ def test_native_elf_opens_and_r2_maps_real_analysis() -> None:
         # The stdlib reader also answers the triage questions before r2 runs.
         assert native["linking"] in {"dynamic", "static"}
         assert isinstance(native["pie"], bool)
+        # Where execution starts, read pre-tool; every real executable has one.
+        assert native["entry"] > 0
         # DT_NEEDED is the stdlib mirror of what r2's imports resolve against: a
         # dynamic ELF names the shared libraries it links, each a real name.
         needed = native.get("needed")
@@ -160,6 +162,8 @@ def test_native_macho_opens_and_r2_reads_it() -> None:
         # real executable always has: dyld as interpreter, libSystem as dylib.
         assert native["interpreter"] == "/usr/lib/dyld"
         assert native["dylibs"] == ["/usr/lib/libSystem.B.dylib"]
+        # LC_MAIN's offset mapped through __TEXT: the fixture's known entry.
+        assert native["entry"] == 0x1000001D0
         session_id = str(session["id"])
 
         opened = service.r2_open(session_id, timeout=60.0)
@@ -178,6 +182,9 @@ def test_native_macho_opens_and_r2_reads_it() -> None:
         mapped = [r for r in rows if isinstance(r.get("address"), dict) and "va" in r["address"]]
         assert mapped, f"no function carried a va-mapped address: {rows[:2]}"
         target_va = int(mapped[0]["address"]["va"])
+        # r2's analysis found a function exactly at the tool-free entry point,
+        # cross-validating the stdlib LC_MAIN mapping against real analysis.
+        assert native["entry"] in {int(r["address"]["va"]) for r in mapped}
 
         strings = service.r2_strings(session_id, timeout=60.0)
         assert strings.ok, strings.error

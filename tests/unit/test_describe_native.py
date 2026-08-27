@@ -120,6 +120,54 @@ def _lc_uuid() -> bytes:
     return _lc_uuid_bytes(b"\x00" * 16)
 
 
+def _lc_main(entryoff: int) -> bytes:
+    # LC_MAIN: entry point as a file offset of main(), plus an initial stack size.
+    return (
+        (0x80000028).to_bytes(4, "little")
+        + (24).to_bytes(4, "little")
+        + entryoff.to_bytes(8, "little")
+        + (0).to_bytes(8, "little")
+    )
+
+
+def _lc_segment64(vmaddr: int, fileoff: int, filesize: int) -> bytes:
+    cmd = bytearray(72)
+    cmd[0:4] = (0x19).to_bytes(4, "little")  # LC_SEGMENT_64
+    cmd[4:8] = (72).to_bytes(4, "little")
+    cmd[8:24] = b"__TEXT".ljust(16, b"\x00")
+    cmd[24:32] = vmaddr.to_bytes(8, "little")
+    cmd[32:40] = (0x1000).to_bytes(8, "little")  # vmsize
+    cmd[40:48] = fileoff.to_bytes(8, "little")
+    cmd[48:56] = filesize.to_bytes(8, "little")
+    return bytes(cmd)
+
+
+def _lc_segment32(vmaddr: int, fileoff: int, filesize: int) -> bytes:
+    cmd = bytearray(56)
+    cmd[0:4] = (0x01).to_bytes(4, "little")  # LC_SEGMENT
+    cmd[4:8] = (56).to_bytes(4, "little")
+    cmd[8:24] = b"__TEXT".ljust(16, b"\x00")
+    cmd[24:28] = vmaddr.to_bytes(4, "little")
+    cmd[28:32] = (0x1000).to_bytes(4, "little")  # vmsize
+    cmd[32:36] = fileoff.to_bytes(4, "little")
+    cmd[36:40] = filesize.to_bytes(4, "little")
+    return bytes(cmd)
+
+
+def _macho32_full(filetype: int, flags: int, load_cmds: bytes = b"", ncmds: int = 0) -> bytes:
+    # 32-bit little-endian mach_header (28 bytes, no reserved field).
+    return (
+        b"\xce\xfa\xed\xfe"
+        + (7).to_bytes(4, "little")  # cputype x86
+        + (3).to_bytes(4, "little")  # cpusubtype
+        + filetype.to_bytes(4, "little")
+        + ncmds.to_bytes(4, "little")
+        + len(load_cmds).to_bytes(4, "little")
+        + flags.to_bytes(4, "little")
+        + load_cmds
+    )
+
+
 def _macho_fat(*cputypes: int) -> bytes:
     header = b"\xca\xfe\xba\xbe" + len(cputypes).to_bytes(4, "big")
     for cputype in cputypes:
@@ -147,12 +195,15 @@ def _shdr64(sh_type: int) -> bytes:
     return bytes(entry)
 
 
-def _ehdr64(e_type: int, *, phoff: int, phnum: int, shoff: int, shnum: int) -> bytes:
+def _ehdr64(
+    e_type: int, *, phoff: int, phnum: int, shoff: int, shnum: int, entry: int = 0
+) -> bytes:
     ehdr = bytearray(64)
     ehdr[0:4] = b"\x7fELF"
     ehdr[4], ehdr[5], ehdr[6] = 2, 1, 1  # 64-bit, little-endian, version 1
     ehdr[16:18] = e_type.to_bytes(2, "little")
     ehdr[18:20] = (62).to_bytes(2, "little")  # x86-64
+    ehdr[24:32] = entry.to_bytes(8, "little")
     ehdr[32:40] = phoff.to_bytes(8, "little")
     ehdr[40:48] = shoff.to_bytes(8, "little")
     ehdr[54:56] = (56).to_bytes(2, "little")  # e_phentsize
@@ -336,6 +387,17 @@ def test_static_unstripped_facts_from_section_headers(tmp_path: Path) -> None:
     assert "build_id" not in facts
 
 
+def test_elf_entry_point_reported_only_when_nonzero(tmp_path: Path) -> None:
+    # e_entry is where execution starts -- the first address an analyst
+    # navigates to -- and zero means "no entry point" per the ELF spec, so a
+    # zero value is omitted rather than reported as a real address.
+    ehdr = _ehdr64(2, phoff=64, phnum=1, shoff=0, shnum=0, entry=0x401_000)  # ET_EXEC
+    facts = describe_native(_write(tmp_path, "a.bin", ehdr + _phdr64(1)))["native"]
+    assert facts["entry"] == 0x401_000
+    zero = _write(tmp_path, "b.bin", _elf64_dynamic_pie())  # helper leaves e_entry 0
+    assert "entry" not in describe_native(zero)["native"]
+
+
 def test_real_elf_pie_versus_shared_object() -> None:
     """A PIE executable and a shared object are both ET_DYN with an interpreter.
 
@@ -358,6 +420,8 @@ def test_real_elf_pie_versus_shared_object() -> None:
     assert ls_facts["pie"] is True
     assert ls_facts["linking"] == "dynamic"
     assert ls_facts["interpreter"].startswith("/lib")
+    # A real executable always names where execution starts.
+    assert ls_facts["entry"] > 0
     # A real dynamic executable names libc among its DT_NEEDED libraries.
     assert any("libc.so" in name for name in ls_facts["needed"])
     assert libc_facts["pie"] is False
@@ -451,6 +515,57 @@ def test_macho_records_uuid_and_install_name(tmp_path: Path) -> None:
     facts = describe_native(_write(tmp_path, "a.dylib", data))["native"]
     assert facts["install_name"] == install
     assert facts["uuid"] == "00010203-0405-0607-0809-0a0b0c0d0e0f"
+
+
+def test_macho_entry_point_mapped_through_its_segment(tmp_path: Path) -> None:
+    # LC_MAIN records where execution starts as a file offset, unlike ELF's
+    # e_entry which is already an address, so the covering segment supplies the
+    # translation: vmaddr + (entryoff - fileoff).
+    data = _macho64_full(
+        filetype=2,  # MH_EXECUTE
+        flags=0x00200000 | 0x4,  # MH_PIE | MH_DYLDLINK
+        load_cmds=_lc_segment64(0x100000000, 0, 0x2000) + _lc_main(0x1D0),
+        ncmds=2,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["entry"] == 0x1000001D0
+
+
+def test_macho_entry_outside_every_segment_is_not_fabricated(tmp_path: Path) -> None:
+    # A hostile or truncated image whose LC_MAIN offset no segment covers gets
+    # no entry fact rather than an invented address.
+    data = _macho64_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_segment64(0x100000000, 0, 0x100) + _lc_main(0x5000),
+        ncmds=2,
+    )
+    assert "entry" not in describe_native(_write(tmp_path, "a.bin", data))["native"]
+
+
+def test_macho32_entry_uses_the_32bit_segment_layout(tmp_path: Path) -> None:
+    # The 32-bit segment_command packs vmaddr/fileoff/filesize as u32s at
+    # different offsets than segment_command_64; the mapping must follow suit.
+    data = _macho32_full(
+        filetype=2,
+        flags=0x4,
+        load_cmds=_lc_segment32(0x1000, 0, 0x2000) + _lc_main(0x400),
+        ncmds=2,
+    )
+    facts = describe_native(_write(tmp_path, "a.bin", data))["native"]
+    assert facts["bits"] == 32
+    assert facts["entry"] == 0x1400
+
+
+def test_committed_macho_fixture_entry_matches_its_layout() -> None:
+    # The committed fixture's LC_MAIN points at its code blob inside __TEXT
+    # (vmaddr 0x100000000, fileoff 0), so the mapped entry is a known constant
+    # the r2/Ghidra gates also cross-check against real tool output.
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "native" / "minimal.macho"
+    if not fixture.is_file():
+        pytest.skip(f"fixture missing: {fixture}")
+    facts = describe_native(fixture)["native"]
+    assert facts["entry"] == 0x1000001D0
 
 
 def test_macho_reads_load_commands_past_the_header_window(tmp_path: Path) -> None:

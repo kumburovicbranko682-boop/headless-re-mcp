@@ -451,6 +451,9 @@ _LC_DYLIB_CMDS = frozenset({0x0C, 0x80000018, 0x8000001F})  # LOAD_DYLIB, weak, 
 _LC_LOAD_DYLINKER = 0x0E  # names the dynamic linker -- the Mach-O PT_INTERP
 _LC_ID_DYLIB = 0x0D  # a dylib's own install name -- the Mach-O DT_SONAME
 _LC_UUID = 0x1B  # the build's unique id -- the Mach-O GNU build-id
+_LC_MAIN = 0x80000028  # entry point as a file offset of main() -- the Mach-O e_entry
+_LC_SEGMENT = 0x01
+_LC_SEGMENT_64 = 0x19
 _MACHO_MAX_LOAD_CMDS = 4096
 _MACHO_MAX_DYLIBS = 64
 # The header window read for identity facts is small, but a real image's load
@@ -1840,6 +1843,14 @@ def _elf_facts(head: bytes, stream: BinaryIO) -> dict[str, Any]:
     e_machine = int.from_bytes(head[18:20], order)  # type: ignore[arg-type]
     facts["type"] = _ELF_TYPES.get(e_type, f"type_{e_type}")
     facts["arch"] = _ELF_MACHINES.get(e_machine, f"machine_{e_machine}")
+    # e_entry: where execution starts, the first address an analyst navigates
+    # to. Zero means "no entry point" per the ELF spec (typical for a shared
+    # object), so the fact is omitted rather than reported as 0.
+    entry_size = 8 if bits == 64 else 4
+    if len(head) >= 0x18 + entry_size:
+        e_entry = int.from_bytes(head[0x18 : 0x18 + entry_size], order)  # type: ignore[arg-type]
+        if e_entry:
+            facts["entry"] = e_entry
     # The triage questions -- dynamically or statically linked, position
     # independent, stripped, which interpreter -- live in the program and
     # section headers. Read them best-effort: any hiccup leaves the base facts
@@ -2132,6 +2143,9 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         for key in ("interpreter", "install_name", "uuid"):
             if lc[key] is not None:
                 facts[key] = lc[key]
+        entry = _macho_entry(lc["entryoff"], lc["segments"])
+        if entry is not None:
+            facts["entry"] = entry
     return facts
 
 
@@ -2176,21 +2190,27 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
 
     Returns ``dylibs`` (the LC_LOAD_DYLIB / weak / reexport names, or None when
     the command count is out of range), ``interpreter`` (LC_LOAD_DYLINKER),
-    ``install_name`` (LC_ID_DYLIB, a dylib's own name -- the DT_SONAME analogue)
-    and ``uuid`` (LC_UUID, the build id). Bounded by the command count and the
-    region already sized; a command whose body runs past that region stops the
-    walk.
+    ``install_name`` (LC_ID_DYLIB, a dylib's own name -- the DT_SONAME analogue),
+    ``uuid`` (LC_UUID, the build id), ``entryoff`` (LC_MAIN's file offset of
+    main, or None) and ``segments`` ((vmaddr, fileoff, filesize) per LC_SEGMENT
+    / LC_SEGMENT_64, for mapping that offset to an address). Bounded by the
+    command count and the region already sized; a command whose body runs past
+    that region stops the walk.
     """
     result: dict[str, Any] = {
         "dylibs": None,
         "interpreter": None,
         "install_name": None,
         "uuid": None,
+        "entryoff": None,
+        "segments": [],
     }
     if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
         return result
     names: list[str] = []
+    segments: list[tuple[int, int, int]] = []
     result["dylibs"] = names
+    result["segments"] = segments
     pos = 0
     for _ in range(ncmds):
         if pos + 8 > len(cmds):
@@ -2209,8 +2229,47 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             result["install_name"] = _macho_lc_str(cmds, pos, cmdsize, order)
         elif cmd == _LC_UUID and result["uuid"] is None and cmdsize >= 24:
             result["uuid"] = _macho_uuid(cmds[pos + 8 : pos + 24])
+        elif cmd == _LC_MAIN and result["entryoff"] is None and cmdsize >= 24:
+            result["entryoff"] = int.from_bytes(cmds[pos + 8 : pos + 16], order)  # type: ignore[arg-type]
+        elif cmd == _LC_SEGMENT_64 and cmdsize >= 56:
+            # segname(16) then vmaddr/vmsize/fileoff/filesize as u64s.
+            segments.append(
+                (
+                    int.from_bytes(cmds[pos + 24 : pos + 32], order),  # type: ignore[arg-type]
+                    int.from_bytes(cmds[pos + 40 : pos + 48], order),  # type: ignore[arg-type]
+                    int.from_bytes(cmds[pos + 48 : pos + 56], order),  # type: ignore[arg-type]
+                )
+            )
+        elif cmd == _LC_SEGMENT and cmdsize >= 40:
+            # segname(16) then vmaddr/vmsize/fileoff/filesize as u32s.
+            segments.append(
+                (
+                    int.from_bytes(cmds[pos + 24 : pos + 28], order),  # type: ignore[arg-type]
+                    int.from_bytes(cmds[pos + 32 : pos + 36], order),  # type: ignore[arg-type]
+                    int.from_bytes(cmds[pos + 36 : pos + 40], order),  # type: ignore[arg-type]
+                )
+            )
         pos += cmdsize
     return result
+
+
+def _macho_entry(entryoff: int | None, segments: list[tuple[int, int, int]]) -> int | None:
+    """Map LC_MAIN's file offset of main() to the address analysts navigate to.
+
+    LC_MAIN records where execution starts as a file offset, unlike ELF's
+    e_entry which is already an address, so the segment whose file range covers
+    the offset supplies the translation. No covering segment (a hostile or
+    truncated image) yields None rather than a fabricated address. Legacy
+    LC_UNIXTHREAD entry points (pre-10.8 binaries, whose entry hides in
+    arch-specific thread state) are not decoded; those images simply carry no
+    entry fact.
+    """
+    if entryoff is None:
+        return None
+    for vmaddr, fileoff, filesize in segments:
+        if filesize > 0 and fileoff <= entryoff < fileoff + filesize:
+            return vmaddr + (entryoff - fileoff)
+    return None
 
 
 def _macho_fat_facts(head: bytes) -> dict[str, Any]:
