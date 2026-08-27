@@ -146,7 +146,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 
 未干净关闭的会话会按同一 ID 从 `sessions.db` 水合回来（`state=created`，`metadata.restored=true`），不自动拉起 IDA/x64dbg。监控台重启后继续用旧 id，不要再 `session.create` 一条新的。
 
-工作方向（`workspace_profile`）把工具面裁剪到单一场景：`pe` 隐藏 Android 与 Web 工具，`android` 隐藏 Web 工具，`web` 隐藏 Android 工具，默认 `full` 不裁剪。裁剪只影响**可见性**，完整 catalog 仍是唯一权威；读写策略是另一条独立边界。监控台开屏会让你选择方向，选择同时作用于 MCP 客户端下次连接看到的工具集、监控台 Agent 的工具面，以及检查器布局（PE 虚拟桌面 / Web 页面监视 / Android APK；侧栏在 Web 方向改为 URL）。
+工作方向（`workspace_profile`）把工具面裁剪到单一场景：`pe` 隐藏 Android 与 Web 工具，`android` 隐藏 Web 工具，`web` 隐藏 Android 工具，默认 `full` 不裁剪。抓包（`proxy.*`，含 Android 专用的 `proxy.ca.install_android`）由 Web 与 Android 共用，故只在 `pe` 方向隐藏，`android`/`web` 都保留。裁剪只影响**可见性**，完整 catalog 仍是唯一权威；读写策略是另一条独立边界。监控台开屏会让你选择方向，选择同时作用于 MCP 客户端下次连接看到的工具集、监控台 Agent 的工具面，以及检查器布局（PE 虚拟桌面 / Web 页面监视 / Android APK；侧栏在 Web 方向改为 URL）。
 
 动态写操作仅接受明确参数与白名单寄存器；无 `dynamic.command`。同样的原则贯穿新增面：**没有 `device.shell`、没有 `web.evaluate`、不接受调用方自带 Frida 脚本**——设备与浏览器上的每个能力都是具名且校验过参数的工具。设备序列号与包名按严格正则校验，杜绝参数注入。
 

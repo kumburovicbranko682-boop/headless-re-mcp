@@ -13,13 +13,21 @@ from __future__ import annotations
 
 import os
 import subprocess
+import zipfile
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
+# apk.decode / repack / sign all declare le=1800 in their schema.
+_MAX_TIMEOUT_S = 1800.0
 _DEBUG_KEYSTORE = Path.home() / ".android" / "debug.keystore"
 _DEBUG_ALIAS = "androiddebugkey"
 _DEBUG_PASSWORD = "android"
@@ -40,6 +48,10 @@ class ApktoolError(RuntimeError):
 def _run(
     cmd: list[str], *, timeout: float, env: dict[str, str] | None = None
 ) -> tuple[str, str, int]:
+    try:
+        timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+    except InvalidTimeout as exc:
+        raise ApktoolError("invalid_params", str(exc)) from exc
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags, env=env)
@@ -132,9 +144,22 @@ class ApktoolClient:
                 exit_code=code,
                 stderr=stderr[:_MAX_STDERR],
             )
+        # apktool can exit 0 yet leave a truncated or empty file (a build that
+        # aborted after creating the output, a full disk). An APK is a zip, so a
+        # zero-byte or non-zip result is a failed rebuild -- reporting it as a
+        # rebuilt apk would send an unusable file into apk.sign/install.
+        size = out_apk.stat().st_size
+        if size == 0 or not zipfile.is_zipfile(out_apk):
+            raise ApktoolError(
+                "backend_error",
+                "apktool build produced an empty or invalid apk",
+                exit_code=code,
+                size=size,
+                stderr=stderr[:_MAX_STDERR],
+            )
         return {
             "apk": str(out_apk),
-            "size": out_apk.stat().st_size,
+            "size": size,
             "signed": False,
             "note": "unsigned; call apk.sign before installing",
         }
