@@ -1342,6 +1342,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_params`。实机 gate(`test_m11_android_apk_live_gate.py`)对真实 dex:`APK_GATE_MARKER_STRING` 由 `callee` 引用,精确查询命中 `callee`,`MARKER` 子串查询经 contains 命中同一条边——
   读的是真实 androguard 的 `StringAnalysis.get_xref_from`(区别于方法 xref-from/xref-to),而非 mock。
 
+- **`web.network.list` 只能按 offset/limit 翻页,一次繁忙抓包(几十上百条请求)只能整页翻,挑不出关心的那几条——与已加过滤的 `proxy.flows` 一边繁一边简。** 现把同一套过滤镜像到
+  `web.network.list`(彼此 AND):`method`(大小写不敏感精确匹配,如 GET)、`resource_type`(对 CDP resourceType 大小写不敏感精确匹配——Document/Script/XHR/Fetch/Image/Stylesheet 等固定词表,是 Web
+  分诊最自然的一维)、`url_contains`(大小写不敏感子串)、`status_min`/`status_max`(闭区间状态码,均 100..599——故 `status_min` 400 单用即所有错误响应,`status_min` 404 配 `status_max` 404 即精确 404)。
+  状态区间会排除还没拿到响应的请求(status 为 None):既然按状态过滤,它就没有状态可比。空白过滤串按「无过滤」处理,既不匹配全部也不匹配空。过滤在整段抓包上先做、再对命中集分页,故 `total` 变为命中数、
+  `has_more` 针对命中集翻页;此外新增 `filtered`(为真)与 `captured`(过滤前环内条数),让「命中数」与「抓到多少」不被混为一谈。`dropped` 仍是抓包环已淘汰的条数(抓包属性,与过滤无关)。工具描述
+  补上这些过滤与 `filtered`/`captured` 语义(保留原有 `requests`/`resourceType`/`dropped` 等字段说明)。这是修改既有工具而非新增,工具面计数不变。单测(`test_web_network_filters.py`,复用 `proxy.flows`
+  过滤测试的形制):method 精确/大小写、resource_type 精确/大小写、url 子串、状态区间选错误与精确码、状态区间排除无响应请求、多过滤 AND、空白串忽略、命中集分页与 `dropped` 不受过滤影响。实机 gate
+  (`test_web_re_gate.py`)对真实 Chrome 抓到的 `/index.html`(Document)与 `/app.js`(Script):`url_contains="app.js"` 命中子资源且置 `filtered`/`captured`、`resource_type="Script"` 只留脚本请求、
+  `method="GET"` 配 2xx 区间仍留住它、无意义子串给出空的已过滤视图(`total` 0)而非整环。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的
