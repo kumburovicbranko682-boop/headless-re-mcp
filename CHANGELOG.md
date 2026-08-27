@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（unpack rebuild 用未校验的 session_id 拼路径导致目录穿越）
+
+- `unpack.iat.rebuild` / `unpack.pe.rebuild` 直接把 `artifact_root/unpack/<session_id>` 建出来再写重建后的
+  PE。只有当 `iat_va`/`iat_size` 都给全、走到 `imports.read`（对活动运行时解析会话）那一步时，`session_id`
+  才会被校验；两者省略时 `session_id` 形如 `../../x` 从未过检，`mkdir` 就把重建产物写到了 artifact 根之外。
+  现在两个 rebuild 写盘方在建目录前都先过 `_session_artifact_roots` 同款的 `_is_safe_session_segment`——
+  非单一普通路径段一律回 `invalid_params: invalid session id`，把穿越挡在写盘之前。新增回归覆盖
+  `../` 穿越、绝对路径与合法段三种情形。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
