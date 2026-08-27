@@ -77,8 +77,15 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # The fixture hides its secret as hex escapes ("\x48\x33...") behind a
+        # rotated string array; the plaintext never appears in the input bytes.
+        # Only a real deobfuscation pass decodes it, so finding it here proves
+        # webcrack transformed the code -- `bytes > 0` alone also passes when
+        # the tool merely echoes or reformats its input.
+        assert "H3adl3ss" in code, f"deobfuscation did not recover the secret: {code[:400]!r}"
     finally:
         service.close_all()
 
@@ -87,13 +94,27 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
-    # The smallest valid module: magic + version, no sections.
-    module = tmp_path / "empty.wasm"
-    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    # A 41-byte module with one exported function whose body is real code.
+    # An empty module only checks the 8-byte header; this one makes the WAT
+    # show a decoded code section, which a header-only or truncated read
+    # cannot produce.
+    module = tmp_path / "add.wasm"
+    module.write_bytes(
+        bytes.fromhex(
+            "0061736d01000000"  # magic + version
+            "01070160027f7f017f"  # type section: (i32, i32) -> i32
+            "03020100"  # function section: one func of type 0
+            "070701036164640000"  # export section: "add" -> func 0
+            "0a09010700200020016a0b"  # code: local.get 0, local.get 1, i32.add
+        )
+    )
     service = AnalysisService()
     try:
         result = service.wasm_wat(str(module))
         assert result.ok, result.error
-        assert "module" in result.data["wat"]
+        wat = result.data["wat"]
+        assert "module" in wat
+        assert '(export "add"' in wat, wat[:400]
+        assert "i32.add" in wat, wat[:400]
     finally:
         service.close_all()

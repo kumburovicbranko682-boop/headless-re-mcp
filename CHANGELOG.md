@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 变更（Web 静态 gate 断言真实解码，不只是工具跑过）
+
+- `test_web_re_gate` 的 JS gate 过去只断言 `bytes > 0`——webcrack 原样回显输入也能过。
+  夹具里的秘密串只以十六进制转义（`"\x48\x33..."`）藏在旋转字符串数组后面，明文从不出现在
+  输入字节里；现在 gate 断言反混淆输出里出现明文 `H3adl3ss`，即只有真正做了字符串数组解码
+  才能通过。WASM gate 过去用空模块（8 字节头），`wasm2wat` 只要认得魔数就能过；现在换成带
+  一个导出函数真实函数体的 41 字节模块，并断言 WAT 里出现 `(export "add"` 与 `i32.add`——
+  截断读取或只解析了头部的实现无法产出这两样。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
