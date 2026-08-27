@@ -245,6 +245,12 @@ class ApkClient:
             "permissions": declared,
             "requested_permissions": requested,
             "count": len(declared),
+            # The two lists are capped independently; a single combined has_more
+            # could not say which one is short, so a caller auditing requested
+            # permissions could not tell a complete list from one truncated
+            # behind a full declared list. The per-list flags name it.
+            "permissions_truncated": declared_more,
+            "requested_permissions_truncated": requested_more,
             "has_more": declared_more or requested_more,
         }
 
@@ -284,6 +290,12 @@ class ApkClient:
             "signature_files": sig_files,
             "certificates": items,
             "v1_signed": bool(names),
+            # signature_files and certificates hit their caps independently; the
+            # per-list flags say which one is short so a combined has_more does
+            # not leave a signer audit unsure whether the certificate list is
+            # whole or truncated behind a full signature-file list.
+            "signature_files_truncated": files_more,
+            "certificates_truncated": certs_more,
             "has_more": certs_more or files_more,
         }
 

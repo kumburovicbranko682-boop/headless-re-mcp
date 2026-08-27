@@ -58,3 +58,27 @@ def test_apk_permissions_names_permissions_not_declared() -> None:
     assert "Answers with permissions" in doc
     assert "requested_permissions" in doc
     assert "has_more" in doc
+
+
+def test_apk_permissions_says_which_list_the_cap_hit() -> None:
+    """A combined has_more cannot say declared vs requested was truncated.
+
+    Both lists are capped independently, but the reply carried one has_more.
+    With 300 declared permissions and one requested, has_more is True purely
+    because of the declared list -- yet a caller checking the requested set
+    could not tell it was complete rather than a short list hidden behind the
+    same flag. The per-list flags name the truncated one.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.permissions(Path("dummy.apk"))
+
+    assert payload["has_more"] is True
+    assert payload["permissions_truncated"] is True
+    assert payload["requested_permissions_truncated"] is False
+    assert payload["has_more"] == (
+        payload["permissions_truncated"] or payload["requested_permissions_truncated"]
+    )
+    doc = _tool_docstring("apk.permissions")
+    assert "permissions_truncated" in doc
+    assert "requested_permissions_truncated" in doc

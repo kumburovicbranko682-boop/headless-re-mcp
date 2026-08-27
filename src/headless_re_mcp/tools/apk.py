@@ -46,8 +46,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List declared and requested permissions.
 
         Answers with permissions, requested_permissions, count, and has_more
-        so a list that filled the cap is not read as every permission. There
-        is no declared or requested field.
+        so a list that filled the cap is not read as every permission. The two
+        lists are capped on their own, so permissions_truncated and
+        requested_permissions_truncated say which one is short rather than
+        leaving the combined has_more ambiguous. There is no declared or
+        requested field.
         """
         return _dump(analysis.apk_permissions(session_id))
 
@@ -57,7 +60,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with certificates (subject, issuer, serial, sha256),
         signature_files, v1_signed, and has_more so a list that filled the
-        cap is not read as every signer. There is no certs or signatures field.
+        cap is not read as every signer. The two lists are capped on their
+        own, so signature_files_truncated and certificates_truncated say which
+        one is short rather than leaving the combined has_more ambiguous.
+        There is no certs or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 

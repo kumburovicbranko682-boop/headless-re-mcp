@@ -44,6 +44,16 @@ class _FakeApk:
         return [_Cert(index) for index in range(40)]
 
 
+class _ManyFilesOneCertApk:
+    """A pathological v1 APK: many signature files, a single certificate."""
+
+    def get_signature_names(self) -> list[str]:
+        return [f"META-INF/C{index}.RSA" for index in range(40)]
+
+    def get_certificates(self) -> list[_Cert]:
+        return [_Cert(0)]
+
+
 def test_apk_certificates_names_signature_files_not_certs() -> None:
     """The catalog never named the payload.
 
@@ -62,7 +72,34 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert len(payload["signature_files"]) == 32
     assert payload["has_more"] is True
     assert payload["v1_signed"] is True
+    # Both lists overflowed the cap here, so both flags are set.
+    assert payload["signature_files_truncated"] is True
+    assert payload["certificates_truncated"] is True
     doc = _tool_docstring("apk.certificates")
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+
+
+def test_apk_certificates_flags_the_truncated_list_independently() -> None:
+    """The two flags move independently: files can be short while certs are whole.
+
+    A single combined has_more said only "something is short". An APK with 40
+    signature files but one certificate now reports signature_files_truncated
+    while certificates_truncated stays False, so a signer audit reading the
+    lone certificate knows it is the whole set, not a truncated one.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _ManyFilesOneCertApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+
+    assert payload["has_more"] is True
+    assert payload["signature_files_truncated"] is True
+    assert payload["certificates_truncated"] is False
+    assert len(payload["certificates"]) == 1
+    assert payload["has_more"] == (
+        payload["signature_files_truncated"] or payload["certificates_truncated"]
+    )
+    doc = _tool_docstring("apk.certificates")
+    assert "signature_files_truncated" in doc
+    assert "certificates_truncated" in doc
