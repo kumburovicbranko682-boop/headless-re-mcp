@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（用假 frida 模块钉住设备解析路径与其错误分类，不依赖真实 frida）
+
+- `FridaClient` 服务安卓线的设备操作——`enumerate_devices`、`_resolve_device`(local/usb/纯序列号/\
+  `host:port` 远端)与公开的 `add_remote_device`——过去只有装了真实 frida 才跑得到,本机没装便\
+  从不执行;服务层测试(`test_frida_service_envelopes`)又刻意整只桩掉 `FridaClient`,只覆盖 service_frida\
+  的信封而碰不到这段解析逻辑。新增 `test_frida_device_resolution.py`,沿用 `test_frida_attach_fields` 的\
+  `client._available = True; client._frida = <假模块>` 接缝注入假 frida,钉住对无人值守 agent 要紧的分支:\
+  每个 `device_id` 选中哪条查找(local/usb/get_device/远端),远端端点先复用已注册设备、缺失时才 add(不\
+  每次调用都 churn frida 的 device manager),以及查找失败被映射成精确信封(解析失败 `not_found` 且 details\
+  带上 `device_id`、枚举失败 `backend_error`)而非把原始 frida 异常泄给 RPC 循环。frida/client.py 覆盖率\
+  相应回补(此前 `_resolve_device`/`enumerate_devices`/`add_remote_device`/`applications` 的解析与错误\
+  分支未覆盖)。(纯测试补充,无行为变更。)
+
 ### 测试（钉住 frida.applications 的 limit 在绕过工具 schema 时的后端重夹紧）
 
 - `frida.applications` 的 `limit` 在工具 schema 里限 1..256,但 agent 与 OpenAI 传输直接调服务层、\
