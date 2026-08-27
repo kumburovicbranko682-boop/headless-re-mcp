@@ -137,6 +137,9 @@ def test_scan_skips_empty_range_and_clamps_past_image_end() -> None:
     )
     # Only the clamped tail (0x100 - 0xE0 = 0x20 bytes) is scanned.
     assert counts["scanned_bytes"] == 0x20
+    # Clamping to the image end is data ending, not a budget cap.
+    assert counts["scan_capped"] is False
+    assert counts["code_bytes_available"] == 0x20
 
 
 def test_scan_stops_when_byte_budget_is_exhausted() -> None:
@@ -149,6 +152,40 @@ def test_scan_stops_when_byte_budget_is_exhausted() -> None:
         max_scan_bytes=0x40,
     )
     assert counts["scanned_bytes"] == 0x40
+    # The second range's 0x40 in-image bytes went unscanned: a real cap.
+    assert counts["scan_capped"] is True
+    assert counts["code_bytes_available"] == 0x80
+    assert counts["scan_limit_bytes"] == 0x40
+
+
+def test_partial_last_range_is_flagged_capped() -> None:
+    # A single range larger than the budget: the tail past max_scan_bytes is
+    # real in-image code, so the prefix-only counts are disclosed as capped.
+    image = bytearray(0x200)
+    counts = count_stub_vs_api_calls(
+        bytes(image),
+        image_base=0,
+        code_ranges=[(0x0, 0x200)],
+        stub_ranges=[],
+        max_scan_bytes=0x80,
+    )
+    assert counts["scanned_bytes"] == 0x80
+    assert counts["code_bytes_available"] == 0x200
+    assert counts["scan_capped"] is True
+
+
+def test_full_scan_within_budget_is_not_capped() -> None:
+    image = bytearray(0x200)
+    counts = count_stub_vs_api_calls(
+        bytes(image),
+        image_base=0,
+        code_ranges=[(0x0, 0x40), (0x100, 0x40)],
+        stub_ranges=[],
+        max_scan_bytes=0x1000,
+    )
+    assert counts["scanned_bytes"] == 0x80
+    assert counts["code_bytes_available"] == 0x80
+    assert counts["scan_capped"] is False
 
 
 # --- dump analyser -------------------------------------------------------
@@ -172,6 +209,43 @@ def test_empty_dump_scans_nothing_but_reports_ok(
     assert result["ok"] is True
     assert result["scanned_bytes"] == 0
     assert result["code_bytes"] == 0
+    # Nothing to scan is not a capped scan.
+    assert result["scan_capped"] is False
+    assert result["code_bytes_available"] == 0
+
+
+def test_dump_analyser_bubbles_scan_capped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dump = tmp_path / "big-code.bin"
+    dump.write_bytes(bytes(bytearray(0x4000)))
+    monkeypatch.setattr(
+        stub_calls,
+        "parse_runtime_headers",
+        lambda _data: _headers([_sec(".text", 0x0, 0x4000)]),
+    )
+    result = analyze_dump_stub_coupling(dump, max_scan_bytes=0x100)
+    assert result["ok"] is True
+    # A dump whose code dwarfs the budget must not read as a complete scan.
+    assert result["scan_capped"] is True
+    assert result["scanned_bytes"] == 0x100
+    assert result["code_bytes_available"] == 0x4000
+
+
+def test_unparseable_dump_carries_no_scan_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dump = tmp_path / "bad2.bin"
+    dump.write_bytes(b"x" * 64)
+
+    def _raise(_data: object) -> dict[str, Any]:
+        raise PeRebuildError("no PE header")
+
+    monkeypatch.setattr(stub_calls, "parse_runtime_headers", _raise)
+    result = analyze_dump_stub_coupling(dump)
+    assert result["ok"] is False
+    # A fail-closed error is not a "not capped" success; the flag is absent.
+    assert "scan_capped" not in result
 
 
 def test_unparseable_headers_fail_closed(
