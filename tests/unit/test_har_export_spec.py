@@ -121,6 +121,26 @@ def test_har_entry_parses_the_query_string_from_the_url() -> None:
     assert params == [("q", "hello world"), ("tag", "a"), ("tag", "b"), ("flag", "")]
 
 
+def test_har_entry_survives_a_url_urlsplit_rejects() -> None:
+    """A capture URL that urlsplit refuses must not sink the whole export.
+
+    The URLs come from arbitrary servers and redirects, and urlsplit raises
+    ValueError on some malformed hosts (an unclosed IPv6 bracket is the common
+    one). The queryString parse swallows that into an empty list so the entry --
+    and every other entry in the log -- still serialises as spec-valid HAR with
+    the original URL preserved, instead of one hostile URL aborting the file.
+    """
+    entry = har_entry(
+        method="GET",
+        url="http://[::1/path?a=b",  # unclosed IPv6 bracket -> urlsplit ValueError
+        status=200,
+        mime_type="text/html",
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["request"]["queryString"] == []
+    assert entry["request"]["url"] == "http://[::1/path?a=b"
+
+
 def test_har_entry_reports_a_known_response_body_size() -> None:
     """When the capture knows the decoded body length it must not emit -1."""
     known = har_entry(
