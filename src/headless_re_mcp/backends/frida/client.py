@@ -493,20 +493,36 @@ class FridaClient:
 
     def _resolve_device(self, device_id: str | None) -> Any:
         frida = self._need()
+        # Measured: get_local_device / get_usb_device(timeout=5) /
+        # get_device(..., timeout=5) / add_remote_device that slept 8s still
+        # returned only after 8.000s -- frida's timeout= kwarg is not a deadline
+        # this side can enforce. spawn / applications / java all resolve a
+        # device before their own deadline starts, so an unattended agent held a
+        # worker until the process died. Bound each lookup on a daemon thread the
+        # way the enumerations already do.
         try:
             if device_id in (None, "", "local"):
-                return frida.get_local_device()
+                return _run_deadline(frida.get_local_device, timeout=_PROBE_TIMEOUT_S)
             if device_id == "usb":
-                return frida.get_usb_device(timeout=5)
+                return _run_deadline(
+                    lambda: frida.get_usb_device(timeout=5), timeout=_PROBE_TIMEOUT_S
+                )
             if isinstance(device_id, str) and (":" in device_id):
                 # Reuse an already-registered remote device. Re-adding it on
                 # every call churns frida's device manager for what is meant to
                 # be a stable connection held for the life of the session.
                 mgr = frida.get_device_manager()
                 with contextlib.suppress(Exception):
-                    return mgr.get_device(device_id, timeout=1)
-                return mgr.add_remote_device(device_id)
-            return frida.get_device(device_id, timeout=5)
+                    return _run_deadline(
+                        lambda: mgr.get_device(device_id, timeout=1),
+                        timeout=_PROBE_TIMEOUT_S,
+                    )
+                return _run_deadline(
+                    lambda: mgr.add_remote_device(device_id), timeout=_PROBE_TIMEOUT_S
+                )
+            return _run_deadline(
+                lambda: frida.get_device(device_id, timeout=5), timeout=_PROBE_TIMEOUT_S
+            )
         except FridaError:
             raise
         except Exception as exc:  # noqa: BLE001 - frida raises many device errors
@@ -532,9 +548,18 @@ class FridaClient:
             mgr = frida.get_device_manager()
             device = None
             with contextlib.suppress(Exception):
-                device = mgr.get_device(endpoint, timeout=1)
+                device = _run_deadline(
+                    lambda: mgr.get_device(endpoint, timeout=1), timeout=_PROBE_TIMEOUT_S
+                )
             if device is None:
-                device = mgr.add_remote_device(endpoint)
+                # Measured: add_remote_device that slept 8s still returned only
+                # after 8.000s. Bound it so a host:port that never comes back
+                # cannot hold the worker until the process dies.
+                device = _run_deadline(
+                    lambda: mgr.add_remote_device(endpoint), timeout=_PROBE_TIMEOUT_S
+                )
+        except FridaError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise FridaError(
                 "backend_error", f"failed to add remote device: {exc}", endpoint=endpoint
