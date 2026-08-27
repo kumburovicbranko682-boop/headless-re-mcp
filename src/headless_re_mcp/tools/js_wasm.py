@@ -237,6 +237,34 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
+    @tools.tool(name="wasm.memory")
+    def wasm_memory(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List a WebAssembly module's linear memories (its footprint), wabt-free.
+
+        The memory declaration a module cannot run without, read in pure Python,
+        so unlike wasm.info / wasm.wat it needs no wabt installed and it says
+        more than wasm.sections (which only reports that a memory section
+        exists). It joins the import and memory sections into one table over the
+        memory index space. Each row is index, kind (import or local), min and
+        max, the size bounds in 64 KiB pages (max is null when the module sets
+        none, i.e. the memory may grow unbounded), shared (true for a
+        threads/atomics memory) and index_type (i64 for a memory64 memory, else
+        i32). Imported memories come first, per the WASM spec, and carry module
+        and name (the import's module and field); imported_count marks the
+        import/local boundary. Most modules declare exactly one memory, but the
+        multi-memory proposal allows several. Answers with memories, count,
+        total, offset and has_more so a filled page is not read as every memory;
+        total is capped at 50000 with scan_capped when more may exist, and
+        truncated is true when a limits record is malformed (memories read so far
+        are still returned). A file that is not a WebAssembly module is refused
+        as invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_memory(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.names")
     def wasm_names(
         path: str,

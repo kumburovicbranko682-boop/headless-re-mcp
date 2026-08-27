@@ -133,6 +133,12 @@ _MAX_WASM_GLOBALS_PAGE = 1000
 # with memory_offset left null. Reuses _WASM_DATA_SECTION_ID from wasm.strings.
 _MAX_WASM_DATA_COLLECT = 50000
 _MAX_WASM_DATA_PAGE = 1000
+# wasm.memory lists the module's linear memories (footprint, shared/threads,
+# memory64). Both the memory section and memory imports encode a "limits"
+# record, decoded by _read_limits, which wasm.tables will reuse.
+_WASM_MEMORY_SECTION_ID = 5
+_MAX_WASM_MEMORIES_COLLECT = 50000
+_MAX_WASM_MEMORIES_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -1309,6 +1315,152 @@ def parse_wasm_data(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObj
     return {
         "segments": window,
         "has_data_section": has_data_section,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _read_limits(data: bytes, pos: int) -> tuple[int, int | None, bool, bool, int]:
+    """Decode a limits record; return (min, max_or_None, shared, is64, next).
+
+    The flag byte is a bit set: 0x01 a maximum follows, 0x02 shared (threads),
+    0x04 a 64-bit (memory64) index. Used for both memory and table types.
+    """
+    flag = _byte_at(data, pos)
+    pos += 1
+    minimum, pos = _read_uleb(data, pos)
+    maximum: int | None = None
+    if flag & 0x01:
+        maximum, pos = _read_uleb(data, pos)
+    return minimum, maximum, bool(flag & 0x02), bool(flag & 0x04), pos
+
+
+def _parse_memory_imports(
+    body: bytes,
+) -> tuple[list[tuple[str, str, int, int | None, bool, bool]], bool]:
+    """Parse the import section, keeping the limits of each memory import."""
+    out: list[tuple[str, str, int, int | None, bool, bool]] = []
+    try:
+        count, pos = _read_uleb(body, 0)
+        for _ in range(count):
+            module, pos = _read_wasm_name(body, pos)
+            field, pos = _read_wasm_name(body, pos)
+            kind = _byte_at(body, pos)
+            pos += 1
+            if kind == 2:  # memory import: a limits record
+                minimum, maximum, shared, is64, pos = _read_limits(body, pos)
+                out.append((module, field, minimum, maximum, shared, is64))
+            else:
+                pos = _skip_import_desc(body, pos, kind)
+    except _WasmParseError:
+        return out, True
+    return out, False
+
+
+def _parse_memory_section(
+    body: bytes,
+) -> tuple[list[tuple[int, int | None, bool, bool]], bool]:
+    """Parse vec(memtype) into (min, max, shared, is64) tuples."""
+    out: list[tuple[int, int | None, bool, bool]] = []
+    try:
+        count, pos = _read_uleb(body, 0)
+        for _ in range(count):
+            minimum, maximum, shared, is64, pos = _read_limits(body, pos)
+            out.append((minimum, maximum, shared, is64))
+    except _WasmParseError:
+        return out, True
+    return out, False
+
+
+def parse_wasm_memory(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a WebAssembly module's linear memories (its footprint), wabt-free.
+
+    The memory declaration a module cannot run without, read in pure Python, so
+    unlike wasm.info / wasm.wat it needs no wabt installed and it says more than
+    wasm.sections (which only reports that a memory section exists). It joins the
+    import (2) and memory (5) sections into one table over the memory index
+    space. Each row is index, kind (import or local), min and max, the size
+    bounds in 64 KiB pages (max is null when the module sets none, i.e. the
+    memory may grow unbounded), shared (true for a threads/atomics memory) and
+    index_type (i64 for a memory64 memory, else i32). Imported memories come
+    first, per the WASM spec, and carry module and name (the import's module and
+    field); imported_count marks the import/local boundary. Most modules declare
+    exactly one memory, but the multi-memory proposal allows several. Returns
+    memories, count, total, offset and has_more so a filled page is not read as
+    every memory; total is capped at 50000 with scan_capped when more may exist,
+    and truncated is true when a limits record is malformed (the memories read
+    so far are still returned). A file that is not a WebAssembly module is
+    refused as invalid_params, one over 16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    bodies, truncated = _collect_section_bodies(
+        raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_MEMORY_SECTION_ID})
+    )
+    mem_imports: list[tuple[str, str, int, int | None, bool, bool]] = []
+    local_mems: list[tuple[int, int | None, bool, bool]] = []
+    if _WASM_IMPORT_SECTION_ID in bodies:
+        mem_imports, imp_trunc = _parse_memory_imports(bodies[_WASM_IMPORT_SECTION_ID])
+        truncated = truncated or imp_trunc
+    if _WASM_MEMORY_SECTION_ID in bodies:
+        local_mems, mem_trunc = _parse_memory_section(bodies[_WASM_MEMORY_SECTION_ID])
+        truncated = truncated or mem_trunc
+    rows: list[JsonObject] = []
+    scan_more = False
+    imported_count = len(mem_imports)
+    idx = 0
+    for module, field, minimum, maximum, shared, is64 in mem_imports:
+        if len(rows) >= _MAX_WASM_MEMORIES_COLLECT:
+            scan_more = True
+            break
+        rows.append(
+            {
+                "index": idx,
+                "kind": "import",
+                "module": module,
+                "name": field,
+                "min": minimum,
+                "max": maximum,
+                "shared": shared,
+                "index_type": "i64" if is64 else "i32",
+            }
+        )
+        idx += 1
+    if not scan_more:
+        for minimum, maximum, shared, is64 in local_mems:
+            if len(rows) >= _MAX_WASM_MEMORIES_COLLECT:
+                scan_more = True
+                break
+            rows.append(
+                {
+                    "index": idx,
+                    "kind": "local",
+                    "min": minimum,
+                    "max": maximum,
+                    "shared": shared,
+                    "index_type": "i64" if is64 else "i32",
+                }
+            )
+            idx += 1
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_MEMORIES_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "memories": window,
+        "imported_count": imported_count,
         "count": len(window),
         "total": len(rows),
         "offset": start,
