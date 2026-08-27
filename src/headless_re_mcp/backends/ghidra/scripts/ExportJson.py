@@ -8,6 +8,12 @@ import json
 from ghidra.app.decompiler import DecompInterface
 from ghidra.util.task import ConsoleTaskMonitor
 
+# analyzeHeadless passes -postScript arguments through getScriptArgs(); there is
+# no global named ARGS. Referencing one made every export fail with NameError
+# after analysis had already succeeded -- invisible until the line was run for
+# real against an installed Ghidra.
+ARGS = list(getScriptArgs())
+
 mode = ARGS[0] if ARGS else "functions"
 out_path = ARGS[1] if len(ARGS) > 1 else None
 limit = 256

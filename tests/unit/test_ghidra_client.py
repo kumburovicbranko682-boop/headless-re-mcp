@@ -52,6 +52,64 @@ def _capture_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return calls
 
 
+def test_find_analyze_headless_prefers_the_platform_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ghidra ships both launchers; POSIX must not pick the Windows .bat.
+
+    Both files exist in a real install. Preferring .bat everywhere meant Linux
+    launched a batch file it cannot execute, failing a correctly installed
+    Ghidra with PermissionError before analysis ever started.
+    """
+    support = tmp_path / "support"
+    support.mkdir()
+    posix_launcher = support / "analyzeHeadless"
+    windows_launcher = support / "analyzeHeadless.bat"
+    posix_launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    windows_launcher.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(tmp_path) == posix_launcher
+
+    monkeypatch.setattr(ghidra_client.os, "name", "nt")
+    assert ghidra_client._find_analyze_headless(tmp_path) == windows_launcher
+
+
+def test_find_analyze_headless_falls_back_when_only_one_launcher_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A POSIX-only install (no .bat) is still found on POSIX, and vice versa."""
+    support = tmp_path / "support"
+    support.mkdir()
+    posix_launcher = support / "analyzeHeadless"
+    posix_launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(tmp_path) == posix_launcher
+    # Even on Windows, the only launcher present is the one to use.
+    monkeypatch.setattr(ghidra_client.os, "name", "nt")
+    assert ghidra_client._find_analyze_headless(tmp_path) == posix_launcher
+
+
+def test_export_script_reads_args_from_get_script_args() -> None:
+    """analyzeHeadless passes -postScript args via getScriptArgs(), not ARGS.
+
+    Referencing an undefined ARGS made every export fail with NameError after
+    analysis had already succeeded -- invisible until Ghidra ran for real. Guard
+    the source so the regression cannot return without a live install.
+    """
+    script = (
+        Path(ghidra_client.__file__).resolve().parent / "scripts" / "ExportJson.py"
+    )
+    source = script.read_text(encoding="utf-8")
+    assert "getScriptArgs()" in source
+    # ARGS must be assigned from getScriptArgs() before it is ever read.
+    assign_at = source.find("ARGS = ")
+    first_use = source.find("ARGS[")
+    assert assign_at != -1, "ExportJson.py must define ARGS from getScriptArgs()"
+    assert first_use == -1 or assign_at < first_use
+
+
 def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
