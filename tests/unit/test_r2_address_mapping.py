@@ -335,6 +335,191 @@ def test_function_list_is_items_not_functions(tmp_path: Path) -> None:
     assert "no functions field" in described
 
 
+def test_r2_6x_aflj_addr_key_is_aliased_to_offset(tmp_path: Path) -> None:
+    """r2 6.x renamed the function-start key ``offset`` -> ``addr``.
+
+    aflj rows on a current radare2 carry ``addr`` and no ``offset``, so the
+    r2.functions contract (items carry ``offset``) and any caller pivoting on it
+    read nothing. enrich must alias ``addr`` back to ``offset`` -- and must not
+    mistake a function row (``addr`` with no ``from``) for an xref target and
+    grow a spurious ``to``/``to_address``.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [
+            {"addr": 0x140001000, "name": "entry0", "size": 32},
+            {"addr": 0x140002000, "name": "f1", "size": 8},
+        ]
+    )
+    payload = enrich_r2_payload(
+        {"raw": raw, "commands": ["aa", "aflj"]},
+        binary=binary,
+        architecture=Architecture.X64,
+    )
+    assert payload["count"] == 2
+    first = payload["items"][0]
+    assert first["offset"] == 0x140001000
+    assert first["address"]["va"] == 0x140001000
+    assert "to" not in first and "to_address" not in first
+    assert "from_address" not in first
+
+
+def test_r2_symbol_payloads_do_not_gain_an_offset_alias(tmp_path: Path) -> None:
+    """The offset alias is aflj-only; symbol tools promise no integer address."""
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps([{"name": "Sleep", "plt": 0x140003000, "lib": "KERNEL32.dll"}])
+    payload = enrich_r2_payload(
+        {"raw": raw, "commands": ["iij"]},
+        binary=binary,
+        architecture=Architecture.X64,
+    )
+    assert "offset" not in payload["items"][0]
+
+
+def test_r2_disasm_counts_ill_typed_bytes_as_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """r2 6.x tags undecodable bytes ``type: "ill"``, not ``"invalid"``.
+
+    The old count matched only the 5.x spelling, so invalid_count read 0 for a
+    header or a hole on a current r2 -- the address-is-not-code signal silently
+    inverted. Both spellings, and the opcode fallback, must count.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [
+            {"offset": 0x140001000, "type": "ill", "opcode": "invalid", "bytes": "4d"},
+            {"offset": 0x140001001, "type": "ill", "opcode": "invalid", "bytes": "5a"},
+            {"offset": 0x140001002, "type": "invalid", "opcode": "invalid", "bytes": "90"},
+        ]
+    )
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=raw.encode(), stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    payload = r2_client.R2Client(_stub_executable(tmp_path)).disasm(
+        binary, 0x140001000, count=3
+    )
+    assert payload["count"] == 3
+    assert payload["invalid_count"] == 3
+
+
+def test_r2_disasm_does_not_flag_decoded_instructions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Valid rows carry the mnemonic as ``type`` (sub/call/jmp), never ill."""
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps(
+        [
+            {"offset": 0x140001000, "type": "sub", "opcode": "sub rsp, 0x28", "bytes": "4883ec28"},
+            {"offset": 0x140001004, "type": "call", "opcode": "call 0x140001cf0", "bytes": "e8..."},
+        ]
+    )
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=raw.encode(), stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    payload = r2_client.R2Client(_stub_executable(tmp_path)).disasm(
+        binary, 0x140001000, count=2
+    )
+    assert payload["count"] == 2
+    assert payload["invalid_count"] == 0
+
+
+def test_r2_xrefs_queries_axtj_axfj_and_normalizes_both_directions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """r2 6.x makes ``axj @ addr`` empty; xrefs must query axtj + axfj.
+
+    axtj rows have the address as their target (only ``from`` is named); axfj
+    rows have it as their origin (``to``/``addr`` names the target). Each must
+    be normalised into a {from, to} pair with the mapped Address edges and a
+    direction, so a caller reads a uniform shape regardless of r2 version.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)
+    target = 0x140003000
+    to_rows = json.dumps(
+        [{"from": 0x140001228, "type": "CALL", "opcode": "call qword [rip + 1]"}]
+    )
+    from_rows = json.dumps([{"to": 0x140004000, "type": "DATA", "opcode": "lea rax, [rip + 2]"}])
+
+    recorded: list[list[str]] = []
+
+    def fake(argv: list[str], *args: Any, **kwargs: Any) -> Completed:
+        recorded.append(argv)
+        return Completed(returncode=0, stdout=(to_rows + "\n" + from_rows).encode(), stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    payload = r2_client.R2Client(_stub_executable(tmp_path)).xrefs(binary, target)
+
+    script = recorded[0][recorded[0].index("-c") + 1]
+    assert f"axtj @ {target}" in script
+    assert f"axfj @ {target}" in script
+
+    assert payload["parsed"] is True
+    assert payload["count"] == 2
+    assert payload["address_va"] == target
+
+    incoming = next(it for it in payload["items"] if it["direction"] == "to")
+    assert incoming["from"] == 0x140001228
+    assert incoming["to"] == target
+    assert incoming["from_address"]["va"] == 0x140001228
+    assert incoming["to_address"]["va"] == target
+
+    outgoing = next(it for it in payload["items"] if it["direction"] == "from")
+    assert outgoing["from"] == target
+    assert outgoing["to"] == 0x140004000
+    assert outgoing["from_address"]["va"] == target
+    assert outgoing["to_address"]["va"] == 0x140004000
+
+
+def test_r2_xrefs_empty_both_directions_is_parsed_and_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An address that references nothing must be parsed:true, count:0 -- not
+    an unparsed envelope. r2 prints ``[]`` for an empty axtj/axfj."""
+    binary = _minimal_pe(tmp_path, x64=True)
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=b"[]\n[]", stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    payload = r2_client.R2Client(_stub_executable(tmp_path)).xrefs(binary, 0x0)
+    assert payload["parsed"] is True
+    assert payload["count"] == 0
+    assert payload["items"] == []
+
+
+def test_r2_axtj_axfj_are_whitelisted_and_bare_axl_is_not() -> None:
+    from headless_re_mcp.backends.r2.client import _require_allowed_command
+
+    _require_allowed_command("axtj @ 0x140001000")
+    _require_allowed_command("axfj @ 4096")
+    _require_allowed_command("axj @ 0x1000")
+    with pytest.raises(r2_client.R2Error):
+        _require_allowed_command("axlj")  # whole-DB dump is not seeked; refuse
+    with pytest.raises(r2_client.R2Error):
+        _require_allowed_command("axtj")  # must carry a seek
+
+
+def test_parse_r2_arrays_returns_every_top_level_array_in_order() -> None:
+    from headless_re_mcp.backends.r2.mapping import parse_r2_arrays
+
+    # Two arrays, with a progress banner and opcode brackets that must not be
+    # mistaken for array roots.
+    raw = '[x] Analyzing\n[{"from":1,"opcode":"mov [rbp], eax"}]\n[{"to":2}]'
+    arrays = parse_r2_arrays(raw)
+    assert len(arrays) == 2
+    assert arrays[0][0]["from"] == 1
+    assert arrays[1][0]["to"] == 2
+
+
 def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

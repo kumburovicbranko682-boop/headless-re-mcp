@@ -74,6 +74,64 @@ def test_r2_xrefs_puts_the_request_va_in_address_va_not_address(
     assert "no integer address" in described.replace("\n", " ")
 
 
+def test_r2_5x_addr_row_still_carries_the_documented_to_and_to_address(
+    tmp_path: Path,
+) -> None:
+    """r2 5.x names the xref target ``addr``; the item must still say ``to``.
+
+    The tool docstring promises every xref item carries ``from``, ``to``,
+    ``from_address`` and ``to_address``. The address filter recognised the r2
+    5.x ``addr`` key, but the per-item enrichment only mapped ``from``/``to`` --
+    so on an r2 build that emits ``addr`` an xref row came back with neither the
+    integer ``to`` nor ``to_address``, and a caller pivoting on the reference
+    target read nothing. Both key spellings must yield the same shape.
+    """
+    origin = 0x140002000
+    target = 0x140001000
+    payload = enrich_r2_payload(
+        {
+            "raw": json.dumps(
+                [{"from": origin, "addr": target, "type": "CALL"}]
+            ),
+            "commands": ["axj"],
+            "address": target,
+        },
+        binary=_pe(tmp_path),
+        architecture=Architecture.X64,
+        xref_filter_va=target,
+    )
+    assert payload["count"] == 1
+    item = payload["items"][0]
+    # The documented integer edges, regardless of the r2 key spelling.
+    assert item["from"] == origin
+    assert item["to"] == target
+    # And the mapped Address objects the docstring names.
+    assert item["from_address"]["va"] == origin
+    assert item["to_address"]["va"] == target
+    assert type(item["to"]) is int
+
+
+def test_r2_modern_to_row_edges_are_unchanged(tmp_path: Path) -> None:
+    """The modern ``to`` spelling keeps its existing shape after the addr fix."""
+    origin = 0x140002000
+    target = 0x140001000
+    payload = enrich_r2_payload(
+        {
+            "raw": json.dumps([{"from": origin, "to": target, "type": "CODE"}]),
+            "commands": ["axj"],
+            "address": target,
+        },
+        binary=_pe(tmp_path),
+        architecture=Architecture.X64,
+        xref_filter_va=target,
+    )
+    item = payload["items"][0]
+    assert item["from"] == origin
+    assert item["to"] == target
+    assert item["from_address"]["va"] == origin
+    assert item["to_address"]["va"] == target
+
+
 def test_r2_address_schemas_match_the_client_non_negative_check() -> None:
     """The catalog accepted negative addresses on both r2 address tools.
 

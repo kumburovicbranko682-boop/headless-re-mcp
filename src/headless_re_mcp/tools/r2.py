@@ -112,9 +112,10 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with items holding those instructions, plus address
         (va/rva/module), address_va (the integer that was asked) and count.
         There is no integer address field. invalid_count says how many of those
-        items were undecodable bytes (radare2 type "invalid", no opcode): point
-        this at data, padding or unmapped memory and every byte comes back as its
-        own invalid item, so invalid_count == count means the address is not code.
+        items were undecodable bytes (radare2 type "invalid" on 5.x, "ill" on
+        6.x, no opcode): point this at data, padding or unmapped memory and every
+        byte comes back as its own invalid item, so invalid_count == count means
+        the address is not code.
         """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 
@@ -126,11 +127,12 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """References to and from address, as radare2 resolved them.
 
-        Answers with items, each carrying from, to, type, from_address and
-        to_address, plus address (va/rva/module) and address_va (the integer
-        that was asked). Read items_truncated, items_total and items_limit
-        when the list filled the cap (4096). There is no integer address,
-        xrefs, truncated or has_more field.
+        Answers with items, each carrying from, to, type, direction ("to" when
+        the row references address, "from" when address references it),
+        from_address and to_address, plus address (va/rva/module) and address_va
+        (the integer that was asked). Read items_truncated, items_total and
+        items_limit when the list filled the cap (4096). There is no integer
+        address, xrefs, truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
     return tools.bindings

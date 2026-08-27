@@ -117,6 +117,37 @@ def parse_r2_json(raw: str) -> Any | None:
     return None
 
 
+def parse_r2_arrays(raw: str) -> list[list[Any]]:
+    """Extract every top-level JSON array from r2 output, in emission order.
+
+    A single r2 invocation that runs more than one ``*j`` command prints one
+    array per command. ``parse_r2_json`` only returns the first, which is fine
+    for the single-command tools but loses the second half of the two-command
+    xref query (``axtj`` then ``axfj``). This walks the whole stream, decoding
+    at each ``[`` and skipping the ``[`` that live inside opcodes/strings of an
+    array already consumed (the decode jumps past them) and progress banners
+    like ``[x] Analyze...`` (which fail to decode and are stepped over).
+    """
+    text = raw or ""
+    decoder = json.JSONDecoder()
+    arrays: list[list[Any]] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] != "[":
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        if isinstance(value, list):
+            arrays.append(value)
+        index = end
+    return arrays
+
+
 def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = entry.get(key)
@@ -161,6 +192,12 @@ def enrich_r2_payload(
     arch = architecture or pe_arch
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
+    # r2 6.x renamed the aflj function-start key from ``offset`` to ``addr``.
+    # The address mapping below already tolerates either, but callers and the
+    # r2.functions contract still read the integer ``offset``; alias it back so
+    # the documented field survives the version bump. Scoped to aflj so the
+    # symbol tools (which promise "no integer address field") are untouched.
+    is_functions = any(str(command).strip() == "aflj" for command in commands)
     parsed = parse_r2_json(raw)
     out = dict(data)
     out["module"] = module
@@ -199,14 +236,32 @@ def enrich_r2_payload(
             mapped = address_dict(va, module=module, image_base=image_base, architecture=arch)
             if mapped is not None:
                 item["address"] = mapped
-            # Named endpoints for xrefs
-            for edge_key in ("from", "to"):
-                edge_va = _item_va(entry, (edge_key,))
-                edge_mapped = address_dict(
-                    edge_va, module=module, image_base=image_base, architecture=arch
+            if is_functions and "offset" not in item and va is not None:
+                item["offset"] = va
+            # Named xref endpoints, gated on the row being xref-shaped: it names
+            # an origin under ``from``. Only then does ``addr`` mean "referenced
+            # target" (r2 5.x) rather than, say, a function-start key -- so a
+            # function row (aflj, which has ``addr`` but no ``from``) never grows
+            # a spurious ``to``/``to_address``. The origin is ``from``; the
+            # target is ``to`` on modern r2 but ``addr`` on r2 5.x. Without this
+            # an r2 5.x xref row carried neither the documented ``to`` nor
+            # ``to_address`` and a caller pivoting on the target read nothing.
+            from_va = _item_va(entry, ("from",))
+            if from_va is not None:
+                from_mapped = address_dict(
+                    from_va, module=module, image_base=image_base, architecture=arch
                 )
-                if edge_mapped is not None:
-                    item[f"{edge_key}_address"] = edge_mapped
+                if from_mapped is not None:
+                    item["from_address"] = from_mapped
+                to_va = _item_va(entry, ("to", "addr"))
+                if to_va is not None:
+                    # Surface the documented integer ``to`` even when r2 named it ``addr``.
+                    item.setdefault("to", to_va)
+                    to_mapped = address_dict(
+                        to_va, module=module, image_base=image_base, architecture=arch
+                    )
+                    if to_mapped is not None:
+                        item["to_address"] = to_mapped
             items.append(item)
         out["items"] = items
         out["count"] = len(items)
