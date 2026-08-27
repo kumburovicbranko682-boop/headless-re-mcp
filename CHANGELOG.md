@@ -210,6 +210,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `7f454c46`。frida 原生 runtime 在 CI 跑不了，故按仓库既有做法（见 hook-template schema 测试）
   以源码静态断言钉住脚本用的是指针方法、不再出现被删的全局名。
 
+### 修复（timeline.list 每次读取都吃满 8 MiB 上限）
+
+- 会话事件日志的读取 `list_session_timeline` 过去用 `stream.read(_MAX_BYTES + 1)` 一次读完，
+  以便统计总条数并分页。Python 带缓冲的 `read(n)` 会先按 `n` 预分配再收缩——于是**每一次读取
+  无论日志多大都瞬时吃掉 8 MiB 堆**。该模块自己的注释就写着「every timeline.list call and
+  every monitor frame is one of those readers」，而监控台会持续轮询，一个会话大部分时间日志只有
+  几 KiB，这类尖峰却每帧重现。现改为分块读到 `max + 1`：短读即 EOF，一个分块内的日志仍是一次读
+  （超限拒绝与 `timeline exceeds N bytes` 信息不变），分配随磁盘上实际字节数增长而非随上限。
+  回归测试断言几 KiB 的日志在 8 MiB 上限下的读取分配与文件大小成比例。至此 PE 扫描（256 MiB）、
+  OCR 读图（128 MiB）、timeline 读取（8 MiB）这三处热路径上的“按上限预分配”读法都已收敛为按需分配。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的

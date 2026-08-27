@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -152,6 +153,38 @@ def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
 
     assert listed["events"] == []
     assert listed["read_failed"] == "timeline exceeds 64 bytes"
+
+
+def test_reading_a_small_timeline_allocates_in_proportion_to_the_file(
+    tmp_path: Path,
+) -> None:
+    """A few-KiB timeline must not cost the whole 8 MiB cap in transient heap.
+
+    ``list_session_timeline`` reads up to ``_MAX_BYTES + 1`` bytes, but a
+    buffered ``read(n)`` allocates all ``n`` bytes before shrinking. The old
+    single-call ``read(_MAX_BYTES + 1)`` therefore spiked the full 8 MiB cap on
+    every read, whatever the file's real size -- and the module's own note says
+    every timeline.list call and every monitor frame is one of those reads. Pin
+    that the read now scales with the file so nobody restores the one-shot read.
+    """
+    path = tmp_path / "timeline.jsonl"
+    for index in range(20):
+        _append(path, index)
+    assert path.stat().st_size < 64 * 1024  # cap stays the real 8 MiB
+
+    tracemalloc.start()
+    try:
+        listed = store.list_session_timeline(path, limit=5)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert listed["total"] == 20
+    assert len(listed["events"]) == 5
+    # The pre-fix peak was the full 8 MiB cap; anything near it means the read is
+    # again sizing to the cap rather than the file.
+    size = path.stat().st_size
+    assert peak < 2 * 1024 * 1024, f"reading a {size}-byte log peaked at {peak} bytes"
 
 
 def test_trimming_an_oversized_external_timeline_reads_only_its_tail(
