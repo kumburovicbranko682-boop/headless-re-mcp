@@ -167,6 +167,7 @@ jobs:
       WABT_VERSION: "1.0.36"
       R2_VERSION: "6.2.0"
       JADX_VERSION: "1.5.6"
+      APKTOOL_VERSION: "3.0.3"
     steps:
       - uses: actions/checkout@v7
 
@@ -212,6 +213,15 @@ jobs:
           unzip -oq /tmp/jadx.zip -d /tmp/jadx
           chmod +x /tmp/jadx/bin/jadx
           echo "/tmp/jadx/bin" >> "$GITHUB_PATH"
+
+      - name: Install apktool for the Android repack gate
+        run: |
+          mkdir -p /tmp/apktoolbin
+          curl -fsSL -o /tmp/apktoolbin/apktool.jar \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"
+          printf '#!/bin/sh\nexec java -jar /tmp/apktoolbin/apktool.jar "$@"\n' > /tmp/apktoolbin/apktool
+          chmod +x /tmp/apktoolbin/apktool
+          echo "/tmp/apktoolbin" >> "$GITHUB_PATH"
 
       - name: Linux integration gates
         run: python -m pytest tests/integration -q -rs --tb=short --timeout=300
