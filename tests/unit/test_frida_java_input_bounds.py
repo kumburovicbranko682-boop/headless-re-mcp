@@ -163,6 +163,23 @@ def test_class_name_with_a_nul_byte_is_refused() -> None:
     assert attached == []
 
 
+def test_a_non_string_class_name_is_refused_before_any_device_work() -> None:
+    """The MCP schema types class_name as a string, but the agent and OpenAI
+    transports call the backend directly and skip that validation. The backend
+    must therefore reject a non-string itself -- as invalid_params, before any
+    device is resolved -- rather than marshalling an int across the RPC."""
+    client, resolved, attached = _client(_RecordingApi())
+    for bad in (123, ["Foo"], object()):
+        with pytest.raises(FridaError) as caught:
+            client.java_enumerate(
+                None, 1, allowed_pids={1}, mode="methods", class_name=bad
+            )
+        assert caught.value.code == "invalid_params"
+        assert "class_name must be a string" in caught.value.message
+    assert resolved == []
+    assert attached == []
+
+
 def test_class_name_is_stripped_before_it_reaches_the_device() -> None:
     api = _RecordingApi()
     client, _resolved, _attached = _client(api)
@@ -191,6 +208,22 @@ def test_name_filter_with_a_nul_byte_is_refused() -> None:
             None, 1, allowed_pids={1}, mode="classes", name_filter="com\x00"
         )
     assert caught.value.code == "invalid_params"
+    assert resolved == []
+    assert attached == []
+
+
+def test_a_non_string_name_filter_is_refused_before_any_device_work() -> None:
+    """Like class_name, a name_filter that bypasses the schema as a non-string
+    (None is the only non-string accepted, meaning 'no filter') is refused up
+    front rather than shipped to the device as a malformed RPC argument."""
+    client, resolved, attached = _client(_RecordingApi())
+    for bad in (123, ["x"], object()):
+        with pytest.raises(FridaError) as caught:
+            client.java_enumerate(
+                None, 1, allowed_pids={1}, mode="classes", name_filter=bad
+            )
+        assert caught.value.code == "invalid_params"
+        assert "name_filter must be a string" in caught.value.message
     assert resolved == []
     assert attached == []
 
