@@ -909,6 +909,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
+- **`web.network.get` 在正文标称 base64 却解不出来时，回包漏掉了它自己承诺的字段**。CDP 说
+  某个响应体是 base64，但内容不是合法 base64（长度 4n+1 之类）时，这一条分支只回 `{请求元数据 +
+  body_error}`，把 `body` / `base64_encoded` / `body_truncated` 三个字段全丢了。而工具契约白纸黑字
+  写着「任何带 body_error 的失败路径都要保留 body、base64_encoded、body_truncated」——隔壁「CDP
+  没有正文」那条分支也确实保留了。于是一个照着文档、看到 body_error 后去读 `result["body"]` 的调用方，
+  偏偏在这条 base64 解码失败的路径上撞到缺键。现在与「没有正文」分支对齐：回空 `body`、
+  `base64_encoded=False`、`body_truncated=False`，外加 `body_error` 说明原因。
 
 ### 新增（项目文档）
 
