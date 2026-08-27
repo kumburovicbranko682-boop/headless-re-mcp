@@ -1130,6 +1130,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `has_more` 为真、编码体不超预算;`console` 用 200 条 ~8KiB 文本且 `limit`=2000(**不触行数上限**故 `has_more` 只能来自字节裁剪)、并断言留下的
   末行是最新的一条(#199)、首行不是最旧(#0);另有一条小页面用例断言合身时不裁、`has_more` 不误报。
 
+- **`apk.manifest`/`device.logcat`/`device.packages` 也会被传输层整条丢弃——它们只按原始字符数或行数封顶,没按编码字节裁。**
+  把同一条编码预算收敛推到 Android 剩下的原始文本/计数封顶输出:①`apk.manifest` 过去 `xml[:200000]` 按**字符**切。AndroidManifest 满是属性引号,
+  每个 `"` 编码成 `\"`(2 字节),200k 字符的切片编码后能越过 262144 预算,`bounded_tool_result` 照旧把整份 manifest 连 package 一起换成约 16KiB
+  摘要。改用 `fit_json_text` 按编码体积兜底(留 8KiB 给 package/truncated),`truncated` 无论字符上限还是编码上限触发都如实置真。②`device.logcat`
+  过去从 200k 字符切片里取最多 5000 行返回;行内的引号/反斜杠/控制字符编码后膨胀,数组自身的引号与逗号再叠加,字符上限单独拦不住。改用 `fit_json_list`
+  按编码体积裁,且这是「最近 N 行」视图,故**反向**裁剪留住最新、丢掉最旧,裁剪并入 `truncated`。③`device.packages` 过去列最多 2000 个包名,而
+  Android 包名可长达 255 字符,整份列表能越过预算;改用 `fit_json_list` 裁,无 offset 故裁剪并入 `has_more`。`apk.properties`(getprop 短值字典)风险低
+  且字典不便裁,保持原样。三条工具描述同步更新:读 `count`/`truncated`、别把页面当全集;logcat 注明留新弃旧。单测(`test_android_budget.py`)用真实
+  超量输出跑真实预算:全引号 manifest 断言 `manifest_xml` 被裁到字符上限**以下**、`truncated` 真、编码体不超预算;1900 行 ~100 字符引号密集的 logcat
+  (**内容短于字符上限**故裁剪只能来自字节预算)断言末行是最新(#1899)、首行不是最旧(#0)、编码体不超预算;1500 个 255 字符包名、`limit`=2000
+  (**不触行数上限**)断言 `0<count<1500`、`has_more` 真、编码体不超预算。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的
