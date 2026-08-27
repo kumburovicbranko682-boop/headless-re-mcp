@@ -570,7 +570,12 @@ class FridaClient:
         *,
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
-        device = self._resolve_device(device_id)
+        # Validate the request before resolving the device. _resolve_device
+        # goes through frida.get_usb_device / add_remote_device, which block up
+        # to their own timeout contacting hardware; a malformed package id (or a
+        # non-positive timeout) is a bad request no matter which device was
+        # named, so rejecting it first keeps a typo from spending the whole
+        # device-discovery wait only to fail.
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
         pkg = package.strip()
@@ -581,6 +586,7 @@ class FridaClient:
                 package=pkg,
             )
         deadline = _bound_timeout(timeout)
+        device = self._resolve_device(device_id)
         pids: list[int] = []
 
         def work() -> int:
