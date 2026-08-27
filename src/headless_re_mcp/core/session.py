@@ -1768,6 +1768,9 @@ _HTML_MAX_BYTES = 16 * 1024 * 1024
 # of tags cannot make the identity facts large; the totals are always exact.
 _HTML_MAX_ITEMS = 256
 _HTML_MAX_TITLE = 256
+# The tags that contribute a named field to the form they sit in. <button>
+# is excluded: it submits, it is not data the page collects.
+_HTML_FIELD_TAGS = frozenset({"input", "textarea", "select"})
 
 
 class _HtmlFactsParser(HTMLParser):
@@ -1784,6 +1787,9 @@ class _HtmlFactsParser(HTMLParser):
         self.hosts: set[str] = set()
         self.title: str | None = None
         self._in_title = False
+        self.form_total = 0
+        self.forms: list[dict[str, Any]] = []
+        self._form: dict[str, Any] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr = dict(attrs)
@@ -1804,12 +1810,35 @@ class _HtmlFactsParser(HTMLParser):
         elif tag == "iframe":
             self.iframe_total += 1
             self._add_host(attr.get("src"))
+        elif tag == "form":
+            # Where the page sends what it collects -- the submit surface. The
+            # method defaults to GET exactly as a browser submits it, and a
+            # cross-origin action is a host the page reaches like any other.
+            self.form_total += 1
+            form: dict[str, Any] = {
+                "action": attr.get("action"),
+                "method": (attr.get("method") or "get").strip().lower(),
+                "input_names": [],
+            }
+            self._add_host(attr.get("action"))
+            if len(self.forms) < _HTML_MAX_ITEMS:
+                self.forms.append(form)
+                self._form = form
+            else:
+                self._form = None
+        elif tag in _HTML_FIELD_TAGS and self._form is not None:
+            # Only named fields are submitted, so only they identify the form.
+            name = attr.get("name")
+            if name and len(self._form["input_names"]) < _HTML_MAX_ITEMS:
+                self._form["input_names"].append(name)
         elif tag == "title":
             self._in_title = True
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "title":
             self._in_title = False
+        elif tag == "form":
+            self._form = None
 
     def handle_data(self, data: str) -> None:
         if self._in_title and self.title is None:
@@ -1830,7 +1859,8 @@ def describe_html(path: Path) -> dict[str, Any]:
 
     Where a page loads its code from is the first thing a web reverser maps:
     how many scripts it pulls, how many are external versus inline, which hosts
-    those and its stylesheets and iframes reach, and the page title. stdlib
+    those and its stylesheets and iframes reach, the forms it submits (action,
+    method and the named fields it collects), and the page title. stdlib
     html.parser reads all of it without launching a browser -- the page-level
     analogue of the script-level facts describe_js gives.
 
@@ -1861,6 +1891,8 @@ def describe_html(path: Path) -> dict[str, Any]:
             "external_scripts": parser.external_scripts,
             "stylesheet_count": parser.stylesheet_total,
             "iframe_count": parser.iframe_total,
+            "form_count": parser.form_total,
+            "forms": parser.forms,
             "external_host_count": len(parser.hosts),
             "external_hosts": sorted(parser.hosts)[:_HTML_MAX_ITEMS],
             "truncated": size > _HTML_MAX_BYTES,

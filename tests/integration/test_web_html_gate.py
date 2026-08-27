@@ -1,16 +1,17 @@
 """Cross-validate the tool-free HTML reader against a real browser's fetches.
 
 describe_html walks a page with stdlib html.parser to report its script,
-stylesheet and iframe shape, the hosts it reaches and its title -- with no
-browser. But that reader is ours, and nothing proved its view of what a page
-loads matches how a real browser parses the same bytes. A browser is the
-ground truth for HTML: it actually fetches every external script, stylesheet
-and iframe document. This serves one page whose subresources are all
-same-origin (so chromium really loads them), then requires that the tool-free
-reader's counts, script URLs and hosts match exactly the set the browser
-fetched -- neither missing nor inventing a resource. It is the HTML analogue
-of the proxy gate cross-checking describe_har against real mitmproxy output
-and the WASM gate cross-checking describe_wasm against wabt.
+stylesheet and iframe shape, the hosts it reaches, its forms and its title --
+with no browser. But that reader is ours, and nothing proved its view of what
+a page loads matches how a real browser parses the same bytes. A browser is
+the ground truth for HTML: it actually fetches every external script,
+stylesheet and iframe document, and its DOM snapshot is its own re-parse of
+the form markup. This serves one page whose subresources are all same-origin
+(so chromium really loads them), then requires that the tool-free reader's
+counts, script URLs, hosts and form facts match exactly what the browser
+fetched and parsed -- neither missing nor inventing a resource. It is the
+HTML analogue of the proxy gate cross-checking describe_har against real
+mitmproxy output and the WASM gate cross-checking describe_wasm against wabt.
 
 Unlike the wasm cross-check above, this needs a browser (playwright + a
 chromium build); skip != pass -- it skips, naming the reason, when the module
@@ -20,6 +21,7 @@ or the browser is unavailable.
 from __future__ import annotations
 
 import contextlib
+import re
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -46,6 +48,10 @@ _PAGE_TEMPLATE = (
     "<script>window.__inline=1;</script>"
     "</head><body>"
     '<iframe src="{BASE}/frame.html"></iframe>'
+    '<form action="{BASE}/submit" method="post">'
+    '<input name="user"><input type="password" name="pass">'
+    '<input type="submit" value="go">'
+    "</form>"
     "</body></html>"
 )
 
@@ -138,6 +144,10 @@ def test_html_reader_matches_the_browsers_resource_graph(tmp_path: Path) -> None
         assert facts["iframe_count"] == 1
         assert set(facts["external_scripts"]) == {f"{base}/a.js", f"{base}/b.js"}
         assert facts["external_hosts"] == ["127.0.0.1"]
+        assert facts["form_count"] == 1
+        assert facts["forms"] == [
+            {"action": f"{base}/submit", "method": "post", "input_names": ["user", "pass"]}
+        ]
 
         service = AnalysisService()
         try:
@@ -203,6 +213,25 @@ def test_html_reader_matches_the_browsers_resource_graph(tmp_path: Path) -> None
                 dom = service.web_dom_snapshot(session_id)
                 assert dom.ok, dom.error
                 assert dom.data["title"] == facts["title"] == "html-gate"
+
+                # The form, as chromium parsed it: the DOM snapshot is the
+                # browser's own re-serialization of the page, so its <form>
+                # element is an independent decode of the same source bytes.
+                # The reader's action, method and named fields must match it
+                # exactly -- and the unnamed submit button is a field in
+                # neither view.
+                dom_html = cast(str, dom.data["html"])
+                form_match = re.search(r"<form\b([^>]*)>(.*?)</form>", dom_html, re.S)
+                assert form_match, dom_html
+                form_attrs, form_body = form_match.groups()
+                action_match = re.search(r'action="([^"]*)"', form_attrs)
+                method_match = re.search(r'method="([^"]*)"', form_attrs)
+                assert action_match and method_match, form_attrs
+                reader_form = facts["forms"][0]
+                assert action_match.group(1) == reader_form["action"] == f"{base}/submit"
+                assert method_match.group(1).lower() == reader_form["method"] == "post"
+                dom_names = re.findall(r'<input[^>]*\bname="([^"]*)"', form_body)
+                assert dom_names == reader_form["input_names"] == ["user", "pass"]
             finally:
                 service.web_close(session_id)
         finally:
