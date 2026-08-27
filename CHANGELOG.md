@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（apk.open 拒绝无法解析的清单而不泄漏 androguard 的 KeyError）
+
+- androguard 4.x 对无法解析的 `AndroidManifest.xml`（截断/垃圾字节/整份缺失，均为可打包成 zip 的
+  合理恶意输入）仍会构造出 APK 对象，其 getter 却不一致：实测 `get_package()` 返回 `""`、
+  `get_min_sdk_version()` / `get_main_activity()` 返回 `None`，但 `get_androidversion_name()` /
+  `get_androidversion_code()` 抛 `KeyError('Name'/'Code')`（package 与 version 键只在清单解析成功后同一
+  块里一起写入）。`apk.open` 先读 package、空则回结构化 `backend_error`，这一顺序正是唯一挡在恶意 APK
+  与「原始 KeyError 冒到服务层记为 internal_error 事故」之间的东西——把坏输入误判成工具 bug。此前无
+  任何测试钉住它，一旦重构把某个 version getter 挪到 package 校验之前便会静默复活该泄漏。新增两条回归：
+  一条用复刻 androguard 实测 getter 行为的假对象（确定性、处处可跑），一条在装了 androguard 时对真实垃圾
+  清单 APK 直接驱动（否则 `skip != pass`）。变更一处顺序即两条同时以泄漏的 `KeyError` 失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
