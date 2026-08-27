@@ -22,12 +22,13 @@ _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
 
 
-def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
+def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool, bool]:
     names: list[str] = []
     total = 0
     has_more = False
+    scan_capped = False
     if not root.is_dir():
-        return [], 0, False
+        return [], 0, False, False
     for path in root.rglob("*.java"):
         if not path.is_file():
             continue
@@ -37,10 +38,15 @@ def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]
         else:
             has_more = True
         if total >= _MAX_COUNTED_FILES:
+            # Counting stopped, so total is now a floor, not the real number of
+            # files. has_more already says "more than listed"; scan_capped is
+            # the separate signal that the count itself is incomplete, the same
+            # distinction apk.classes/methods/strings draw.
             has_more = True
+            scan_capped = True
             break
     names.sort()
-    return names, total, has_more
+    return names, total, has_more, scan_capped
 
 
 class JadxError(RuntimeError):
@@ -75,7 +81,7 @@ class JadxClient:
             timeout=timeout,
         )
         sources_root = out_dir / "sources"
-        java_files, java_file_count, has_more = _capped_java_listing(
+        java_files, java_file_count, has_more, scan_capped = _capped_java_listing(
             out_dir, cap=_MAX_LISTED_FILES
         )
         return {
@@ -84,6 +90,7 @@ class JadxClient:
             "java_file_count": java_file_count,
             "java_files": java_files,
             "has_more": has_more,
+            "scan_capped": scan_capped,
         }
 
     def decompile(

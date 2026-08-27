@@ -3391,6 +3391,7 @@ class TestExportedFileListsDiscloseTruncation:
         assert result["java_file_count"] == 6
         assert len(result["java_files"]) == 4
         assert result["has_more"] is True
+        assert result["scan_capped"] is False
 
     def test_jadx_decompile_does_not_return_a_homonym_class(self, tmp_path: Any) -> None:
         from headless_re_mcp.backends.jadx import client as mod

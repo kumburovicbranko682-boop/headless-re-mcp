@@ -290,6 +290,35 @@ def test_apk_export_sources_says_when_the_java_list_was_cut(
     assert payload["java_file_count"] == 5
     assert len(payload["java_files"]) == 3
     assert payload["has_more"] is True
+    # The list was cut, but every file was still counted, so the count is
+    # exact and scan_capped stays false.
+    assert payload["scan_capped"] is False
     doc = _tool_docstring("apk.export_sources")
     assert "java_files" in doc
     assert "has_more" in doc
+    assert "scan_capped" in doc
+
+
+def test_apk_export_sources_says_when_the_count_itself_was_capped(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """java_file_count stops at the counting cap, so it must flag itself a floor.
+
+    Measured: 6 java files, counting cap 4 -> java_file_count 4 (a floor, not
+    the real 6), has_more True and scan_capped True. Reading java_file_count
+    as exact when scan_capped is true understates a very large app.
+    """
+    from headless_re_mcp.backends.jadx import client as mod
+
+    out = tmp_path / "out"
+    sources = out / "sources"
+    sources.mkdir(parents=True)
+    for index in range(6):
+        (sources / f"C{index}.java").write_text("class C {}", encoding="utf-8")
+    monkeypatch.setattr(mod, "_MAX_COUNTED_FILES", 4)
+    client = mod.JadxClient(tmp_path / "jadx.bat")
+    monkeypatch.setattr(client, "_run", lambda *args, **kwargs: ("", "", 0))
+    payload = client.export_sources(tmp_path / "app.apk", out)
+    assert payload["java_file_count"] == 4
+    assert payload["has_more"] is True
+    assert payload["scan_capped"] is True
