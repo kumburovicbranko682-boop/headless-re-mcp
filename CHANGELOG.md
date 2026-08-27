@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（快照式 provider 的并行 tool_calls 被合并成一个坏调用）
+
+- `openai_compatible` 的 `_ingest_tool_calls` 用 `int(raw_call.get("index", 0))` 给每个
+  tool call 归组。这对流式 delta 是对的——delta 里每片带稳定的 `index`，用它把同一调用跨
+  chunk 的碎片拼回去。但对**消息快照**是错的：有的 provider（缓冲式代理、部分本地推理
+  服务）对 `stream: true` 只回一个含完整 `message` 的 chunk 而非 delta，其 `tool_calls`
+  走的是非流式 schema——每个调用已完整、且**不带 `index`**。于是 `get("index", 0)` 把所有
+  快照调用都归到 0：名字被拼成 `static.readstatic.write`、参数被拼成
+  `{...}{...}`（不再是合法 JSON），最终 `json.loads` 抛错、整个 run 失败——凡是快照式
+  provider 只要返回并行 tool call 就必挂。现给 `_ingest_tool_calls` 加 `snapshot` 形参：
+  快照按列表位置归组（列表本就按调用顺序），流式仍按 `index`；调用点用
+  `calls_are_snapshot` 区分 delta 与 `message.tool_calls` 回退两条路径。回归测试构造一个含
+  两个无 `index` 并行调用的快照，断言二者各自完整还原、不再被合并。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

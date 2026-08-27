@@ -268,6 +268,71 @@ async def test_stream_counts_reasoning_usage_and_message_snapshots(
 
 
 @pytest.mark.asyncio
+async def test_parallel_tool_calls_in_a_message_snapshot_stay_separate(
+    tmp_path: Path,
+) -> None:
+    """Two snapshot tool calls without an index must not collapse into one.
+
+    A provider that answers ``stream: true`` by emitting the whole assistant
+    message in one chunk (buffering proxies and some local servers do) follows
+    the non-streaming schema, where each tool call is complete and carries no
+    ``index``. Keying on ``index`` then mapped both onto 0, concatenating their
+    names ("static.readstatic.write") and arguments ('{...}{...}', which no
+    longer parses) into a single call, so parallel tool calls failed the run.
+    They are keyed on list position instead, so both survive intact.
+    """
+    del tmp_path
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunk = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_a",
+                                "type": "function",
+                                "function": {
+                                    "name": "static.read",
+                                    "arguments": '{"offset": 0}',
+                                },
+                            },
+                            {
+                                "id": "call_b",
+                                "type": "function",
+                                "function": {
+                                    "name": "static.write",
+                                    "arguments": '{"offset": 16}',
+                                },
+                            },
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+        body = f"data: {json.dumps(chunk, separators=(',', ':'))}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    completed = events[-1]
+    calls = [(call.id, call.name, call.arguments) for call in completed.tool_calls]
+    assert calls == [
+        ("call_a", "static.read", {"offset": 0}),
+        ("call_b", "static.write", {"offset": 16}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_json_lines_without_sse_prefix_still_stream(tmp_path: Path) -> None:
     del tmp_path
 
