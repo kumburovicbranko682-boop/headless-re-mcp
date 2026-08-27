@@ -75,6 +75,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   被杀 pid 直到都不再可调度，使回收对调用方是同步完成而不是与刚发信号的 helper 抢跑。三条正常
   退出路径均接入；Windows 上是空操作（Job 对象/Toolhelp 遍历已覆盖）。
 
+### 修复（Android 设备操作 honesty）
+
+- **`device.push` 现在核对文件是否真的落到设备上**：过去 `dev.sync.push` 一返回就答
+  `{local, remote, size}`——但 adb 返回不等于文件落地（设备只读分区、空间不足、断连都能让一次
+  返回的调用背后没有文件）。现在推送后 `stat` 远端路径：常规文件按字节比对源大小（adb sync 是
+  逐字节拷贝、无换行转换，大小一致即为真实落地信号），推送到目录时按 `<dir>/<basename>` 复核落地
+  文件。回包新增 `pushed`（真/假，或无法核实时为 null）与 `remote_size`；`pushed` 非真时附
+  `note`。对齐 `install`/`uninstall` 已有的「adb 返回不等于成功」范式。
+- **`device.forward` 现在核对转发是否真的在 adb 转发表里**：`dev.forward(...)` 返回不等于 adb
+  持有该转发（服务陈旧、竞态移除、设备掉线都能留下一次返回却没有活转发的调用）。现在读
+  `forward_list` 核对本地端点是否在表中，回包新增 `listed`（真/假，或转发表读不到时为 null，
+  并附 `note`）。为便于 `close_all` 后续清理，即便 `listed` 为假也保留本进程的转发预留。
+- **空截图不再被当成成功**：`device.screenshot` 若 `image.save` 返回却留下 0 字节文件，过去会
+  答一个 `size:0` 的成功包，把调用方引向一张空 PNG。现在删除该文件并报 `backend_error`。
+- 新增覆盖以上三处的契约单测（落地/未落地/短写/无法核实/推送到目录、转发在表/不在表/读不到、
+  空截图删除并拒绝），均不依赖真实 adb。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛

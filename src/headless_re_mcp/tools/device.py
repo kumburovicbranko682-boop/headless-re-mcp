@@ -170,8 +170,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_push(serial: str, local_path: str, remote_path: str) -> dict[str, Any]:
         """Push a local file to a path on the device.
 
-        Answers with local, remote and size. Files over the capture cap are
-        refused rather than copied onto the device.
+        Answers with local, remote, size, pushed (true/false, or null when it
+        could not be verified) and remote_size. A return from adb is not by
+        itself a landed file; pushed compares the remote size to the source.
+        Files over the capture cap are refused rather than copied.
         """
         return _dump(analysis.device_push(serial, local_path, remote_path))
 
@@ -179,8 +181,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_forward(serial: str, local: str, remote: str) -> dict[str, Any]:
         """Set an adb forward (e.g. tcp:27042 -> tcp:27042 for frida-server).
 
-        Answers with local and remote. Forwards stay on the adb server until
-        close_all; this process will refuse a new one once the table is full.
+        Answers with local, remote and listed (true/false, or null when the
+        adb forward table could not be read). A return from adb is not by
+        itself a live forward. Forwards stay on the adb server until close_all;
+        this process will refuse a new one once the table is full.
         """
         return _dump(analysis.device_forward(serial, local, remote))
 
