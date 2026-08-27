@@ -568,6 +568,7 @@ class WebBackend:
         return {
             "console": page,
             "count": len(page),
+            "total": len(held),
             "has_more": len(held) > capped,
             "dropped": dropped,
         }

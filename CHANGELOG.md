@@ -60,7 +60,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
-### 修复（监控台回环护栏）
+### 修复（web.console 分页 total）
+
+- `web.console` 现在像 `web.network.list` / `web.scripts` 一样回传 `total`(当前缓冲区
+  里持有的条数)。此前只有 `count` / `has_more` / `dropped`:`has_more` 为真时调用方
+  知道“还有更早的”,却不知道到底缓冲了多少条。`total` 补齐这一分页信号,与同类只读工具
+  一致。
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
   `HTTPException`,而 FastAPI 的异常处理器只包住路由层,拒绝会变成 `500 internal_error`,
