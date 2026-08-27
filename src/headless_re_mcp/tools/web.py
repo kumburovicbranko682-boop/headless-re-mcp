@@ -105,8 +105,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         why, while body, base64_encoded and body_truncated stay present. A
         body over the capture cap is refused rather than written to disk. For a
         WebSocket row the answer is instead websocket=true with
-        websocket_messages (the retained frames in order, each with from_client
-        and size, plus text for a short UTF-8 frame, base64 (the actual bytes)
+        websocket_messages (the retained frames in order, each with from_client,
+        size, and time (the frame's wall-clock timestamp when resolvable), plus
+        text for a short UTF-8 frame, base64 (the actual bytes)
         for a short binary frame, or omitted=too_large past the per-frame cap),
         websocket_message_count (the true total seen), and
         websocket_truncated when fewer frames survived the retain budget than

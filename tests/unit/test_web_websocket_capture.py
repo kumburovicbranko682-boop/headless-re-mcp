@@ -7,7 +7,9 @@ its frames -- the application protocol an RE session is after -- were lost.
 These tests drive the real event callbacks with recorded CDP payloads (no
 browser): the connection appears as a WebSocket row with frame counters, and
 web.network.get returns the retained frames bounded, with control frames skipped
-and a flood truncated with an honest count.
+and a flood truncated with an honest count. Each frame also carries the
+wall-clock time it crossed, resolved from CDP's monotonic clock via the offset
+learned from a preceding request (the way DevTools times its own HAR frames).
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ def _wired() -> tuple[WebBackend, SimpleNamespace, _CapturingCdp]:
         console=deque(maxlen=64),
         console_dropped=0,
         ws_frames=deque(maxlen=_MAX_WS_FRAMES_TOTAL),
+        mono_wall_offset=None,
     )
     backend._wire_events(handle)  # type: ignore[arg-type]
     return backend, handle, cdp
@@ -177,6 +180,71 @@ def test_network_get_truncates_a_flood_and_reports_the_true_total(
     assert detail["websocket_message_count"] == _MAX_WS_MESSAGES + 25
     assert len(detail["websocket_messages"]) == _MAX_WS_MESSAGES
     assert detail["websocket_truncated"] is True
+
+
+def test_frames_carry_wall_clock_time_from_the_cdp_offset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # CDP frame events are monotonic; the offset learned from a preceding
+    # requestWillBeSent (which alone carries wallTime) turns them into the
+    # wall-clock time Chrome's HAR uses. wallTime 1_700_000_000 at monotonic
+    # 100.0 fixes the offset, so a frame at monotonic 101.5 is at 1_700_000_001.5.
+    backend, handle, cdp = _wired()
+    fire = cdp.handlers
+    fire["Network.requestWillBeSent"](
+        {
+            "requestId": "1",
+            "type": "Document",
+            "request": {"url": "http://x/y", "method": "GET"},
+            "timestamp": 100.0,
+            "wallTime": 1_700_000_000.0,
+        }
+    )
+    fire["Network.webSocketCreated"]({"requestId": "9", "url": "ws://x/live"})
+    sent = _text_frame("9", "hi")
+    sent["timestamp"] = 101.5
+    fire["Network.webSocketFrameSent"](sent)
+    got = {
+        "requestId": "9",
+        "response": {"opcode": 1, "payloadData": "echo:hi"},
+        "timestamp": 101.75,
+    }
+    fire["Network.webSocketFrameReceived"](got)
+
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    msgs = backend.network_get("s", "9", tmp_path)["websocket_messages"]
+    assert msgs[0]["time"] == 1_700_000_001.5
+    assert msgs[1]["time"] == 1_700_000_001.75
+
+    import json
+
+    out = tmp_path / "capture.har"
+    backend.har_export("s", out)
+    ws_entry = {
+        e["request"]["url"]: e
+        for e in json.loads(out.read_text(encoding="utf-8"))["log"]["entries"]
+    }["ws://x/live"]
+    assert [m["time"] for m in ws_entry["_webSocketMessages"]] == [
+        1_700_000_001.5,
+        1_700_000_001.75,
+    ]
+
+
+def test_frames_without_a_learned_offset_carry_no_time(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # No requestWillBeSent preceded the socket, so no offset was learned: a
+    # frame carries no time rather than a fabricated one.
+    backend, handle, cdp = _wired()
+    fire = cdp.handlers
+    fire["Network.webSocketCreated"]({"requestId": "9", "url": "ws://x/live"})
+    sent = _text_frame("9", "hi")
+    sent["timestamp"] = 5.0
+    fire["Network.webSocketFrameSent"](sent)
+
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    msgs = backend.network_get("s", "9", tmp_path)["websocket_messages"]
+    assert "time" not in msgs[0]
 
 
 def test_a_plain_request_row_never_gets_websocket_fields(

@@ -180,6 +180,42 @@ def _ws_frame_summary(params: JsonObject, *, from_client: bool) -> tuple[JsonObj
     return None
 
 
+def _capture_mono_wall_offset(handle: _WebSession, params: JsonObject) -> None:
+    """Learn the monotonic->wall-clock offset from a requestWillBeSent, once.
+
+    Must be called under ``handle.lock``. CDP's ``timestamp`` is monotonic and
+    ``wallTime`` is a Unix epoch; their difference is a session-stable offset
+    that turns any later monotonic timestamp (a WebSocket frame's) into
+    wall-clock. Captured from the first request carrying both and then left
+    alone, which is what Chrome DevTools does to time its own HAR frames.
+    """
+    if getattr(handle, "mono_wall_offset", None) is not None:
+        return
+    mono = params.get("timestamp")
+    wall = params.get("wallTime")
+    if (
+        isinstance(mono, (int, float))
+        and not isinstance(mono, bool)
+        and isinstance(wall, (int, float))
+        and not isinstance(wall, bool)
+    ):
+        handle.mono_wall_offset = float(wall) - float(mono)
+
+
+def _wall_time(handle: _WebSession, mono: Any) -> float | None:
+    """A CDP monotonic timestamp as wall-clock seconds, or None if not resolvable.
+
+    Must be called under ``handle.lock`` (it reads the offset). None when the
+    offset was never learned (no request preceded the frame) or the timestamp is
+    missing, so a frame without a trustworthy time carries none rather than a
+    fabricated one.
+    """
+    offset = getattr(handle, "mono_wall_offset", None)
+    if offset is None or not isinstance(mono, (int, float)) or isinstance(mono, bool):
+        return None
+    return float(mono) + offset
+
+
 def _har_ws_message(frame: JsonObject) -> JsonObject:
     """One stored WS frame as Chrome DevTools' ``_webSocketMessages`` shape.
 
@@ -189,10 +225,12 @@ def _har_ws_message(frame: JsonObject) -> JsonObject:
     maps straight to an opcode-2 entry -- the binary payload rides along
     faithfully instead of as an empty string. An oversized frame we had to omit
     has no bytes to write, so ``data`` is empty and its opcode defaults to 1
-    (we never decoded it). No ``time`` is emitted because the capture
-    records no per-frame timestamp.
+    (we never decoded it). ``time`` (the frame's wall-clock timestamp, Chrome's
+    per-frame field) rides along when we could resolve it from CDP's clocks.
     """
     entry: JsonObject = {"type": "send" if frame.get("from_client") else "receive"}
+    if "time" in frame:
+        entry["time"] = frame["time"]
     if "base64" in frame:
         entry["opcode"] = 2
         entry["data"] = frame["base64"]
@@ -400,6 +438,13 @@ class _WebSession:
         # network.get filters by id. The deque evicts oldest-first, so a busy
         # socket cannot exhaust memory and old frames age out like request rows.
         self.ws_frames: deque[tuple[str, JsonObject]] = deque(maxlen=_MAX_WS_FRAMES_TOTAL)
+        # CDP stamps every Network event with a monotonic ``timestamp`` (seconds
+        # from an arbitrary origin) but only ``requestWillBeSent`` also carries
+        # ``wallTime`` (a Unix epoch). Capture the offset from the first request
+        # that has both, so a WebSocket frame's monotonic timestamp can be turned
+        # into the wall-clock ``time`` Chrome's HAR uses -- exactly how DevTools
+        # itself converts frame times. None until the first such request is seen.
+        self.mono_wall_offset: float | None = None
         self.lock = threading.RLock()
         # Set right after construction: the runner is what built these objects,
         # and it is the only thread allowed to touch them again.
@@ -575,6 +620,7 @@ class WebBackend:
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
             with handle.lock:
+                _capture_mono_wall_offset(handle, params)
                 handle.requests[str(params.get("requestId"))] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
                     handle.requests.popitem(last=False)
@@ -667,6 +713,9 @@ class WebBackend:
             frame, size = summarized
             request_id = str(params.get("requestId"))
             with handle.lock:
+                wall = _wall_time(handle, params.get("timestamp"))
+                if wall is not None:
+                    frame["time"] = wall
                 handle.ws_frames.append((request_id, frame))
                 entry = handle.requests.get(request_id)
                 if entry is not None:

@@ -13,7 +13,10 @@ frame counters, and that web.network.get returns the frames both directions.
 A binary frame of non-UTF-8 bytes is exchanged too, and the gate asserts it
 comes back retrievable as base64 (not a dead "omitted") through both
 web.network.get and the HAR -- a binary WebSocket protocol is what an RE
-session most needs to read. The page then closes the socket, and the gate
+session most needs to read. Each frame also carries a wall-clock time
+(resolved from CDP's monotonic clock via the request offset, the way DevTools
+times its own HAR frames); the gate asserts the times are plausible epochs and
+run forward. The page then closes the socket, and the gate
 asserts the row picks up ws_closed=true -- a socket the server kicked must not
 read as still streaming. Guarding the guard: the origin transforms each
 message, so seeing the client's
@@ -262,6 +265,13 @@ def test_web_lists_a_websocket_and_returns_its_frames() -> None:
                 }
                 assert _BINARY_FRAME in blobs, blobs
                 assert b"echo:" + _BINARY_FRAME in blobs, blobs
+                # Every frame carries a wall-clock time (resolved from CDP's
+                # monotonic clock via the request offset), and they run forward
+                # -- what an analyst reads heartbeat/latency timing from. The
+                # offset is anchored on this century, so a plausible epoch too.
+                times = [m["time"] for m in final.data["websocket_messages"]]
+                assert all(isinstance(t, float) and t > 1_600_000_000 for t in times), times
+                assert times == sorted(times), times
 
                 # The exported HAR must carry the frames, not just a 101 entry:
                 # Chrome DevTools reads them from the _webSocketMessages array.
@@ -288,6 +298,8 @@ def test_web_lists_a_websocket_and_returns_its_frames() -> None:
                 }
                 assert _BINARY_FRAME in har_blobs, har_blobs
                 assert b"echo:" + _BINARY_FRAME in har_blobs, har_blobs
+                # Chrome's per-frame time survives the HAR round-trip too.
+                assert all(isinstance(m.get("time"), float) for m in frames), frames
             finally:
                 service.web_close(session_id)
     finally:
