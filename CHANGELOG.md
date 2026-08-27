@@ -51,7 +51,7 @@ androguard/jadx/apktool 因此只被断言「优雅降级不崩」，没有任�
 在运行期炸，基于 fake 的单测一律照过。新增单个真 APK 夹具 `fixtures/android/fixture.apk`
 （由 `fixtures/android/src` 用 apktool 2.10.0 的内置 aapt2 编译：合法 AXML 清单 + 真 classes.dex，
 包名 `com.example.fixture`、`INTERNET` 权限、`MainActivity`，含 `main→decryptSecret` 调用边与可
-恢复字符串 `s3cr3t-flag-value`；`src/` 连同 apktool.yml/smali 一并入库以备重建），并据此加四条
+恢复字符串 `s3cr3t-flag-value`；`src/` 连同 apktool.yml/smali 一并入库以备重建），并据此加五条
 gate（缺相应工具时明确 skip，skip≠pass）：
 
 - **DEX 分析**（`test_apk_dex_analysis_gate.py`）：经 `AnalysisService` 全栈跑
@@ -76,6 +76,14 @@ gate（缺相应工具时明确 skip，skip≠pass）：
   钉住 AXML 清单被解回文本（含包名与 `INTERNET`）、classes.dex 被反汇编出带 `decryptSecret` 的
   `MainActivity.smali`。apktool 2.10.0 实测通过：`d -o -f` 与产物布局（`AndroidManifest.xml` +
   `smali*/`）仍如客户端所设。
+- **apktool 重打包**（`test_apk_apktool_repack_gate.py`）：decode gate 只覆盖 `apktool d`，重建
+  这条同样版本敏感的写路径（`apktool b` 走 `ApktoolClient.build` / `apk.repack`）此前无人真跑——
+  `b` 调用、「看起来像 decode 产物」的守卫、或产物 APK 布局一旦随版本漂移，fake 单测照样过，只在真
+  重建时才在运行期炸。本 gate 同款方式发现 apktool，decode 夹具后用 `ApktoolClient.build` 重建，再
+  用 androguard **重开重建出来的 APK**，钉住 round-trip 后仍是可加载应用：包名 `com.example.fixture`、
+  `versionName=1.0`、类 `Lcom/example/fixture/MainActivity;`、方法 `<init>/decryptSecret/main` 与字符串
+  `s3cr3t-flag-value` 都在，且 `build` 回的 envelope 诚实标注 `signed=False`（装机前需另行签名）。
+  apktool 2.10.0 + androguard 4.1.4 实测通过。缺 apktool 或 `android` extra 时明确 skip。
 
 ### 修复（`apk.certificates` 的 subject/issuer 漏出对象 repr、带进程内存地址）
 
