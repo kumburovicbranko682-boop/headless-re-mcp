@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from headless_re_mcp.backends.common.har import har_entry, serialize_har
+from headless_re_mcp.backends.common.har import har_entry, iso_from_epoch, serialize_har
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
 
 JsonObject = dict[str, Any]
@@ -369,6 +369,10 @@ class _FlowRecorder:
         # whose body was not retained -- and the HAR export can report a real
         # content size instead of the -1 "unknown" sentinel.
         response_size = _content_len(resp)
+        # mitmproxy stamps each request with a real epoch start time; keep it as
+        # an ISO instant so the summary and the HAR waterfall show when the flow
+        # actually began instead of the moment the HAR was exported.
+        started_at = iso_from_epoch(getattr(req, "timestamp_start", None))
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
@@ -400,6 +404,7 @@ class _FlowRecorder:
                 "status": getattr(resp, "status_code", None),
                 "content_type": content_type,
                 "response_size": response_size,
+                "started_at": started_at,
             }
             if omitted:
                 entry["body_omitted"] = True
@@ -729,6 +734,7 @@ class ProxyBackend:
                 url=f.get("url"),
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
+                started_date_time=f.get("started_at"),
                 response_body_size=f.get("response_size"),
             )
             for f in inst.recorder.snapshot()

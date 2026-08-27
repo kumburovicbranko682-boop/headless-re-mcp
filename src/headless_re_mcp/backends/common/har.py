@@ -63,6 +63,31 @@ def _iso_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def iso_from_epoch(timestamp: object) -> str | None:
+    """A unix-epoch instant as ISO 8601 with offset, or None when unusable.
+
+    HAR's ``startedDateTime`` wants each entry's real start time, and both
+    captures have one -- mitmproxy's ``request.timestamp_start`` and CDP's
+    ``requestWillBeSent.wallTime`` are unix-epoch seconds. Threading them through
+    here keeps a HAR viewer's waterfall honest instead of stamping every entry
+    with ``_iso_now()``, which collapses a whole capture onto the export instant.
+    A missing, zero, negative or non-finite value returns None so ``har_entry``
+    falls back to the export instant rather than emitting a bogus 1970 date.
+    """
+    if timestamp is None or isinstance(timestamp, bool):
+        return None
+    try:
+        value = float(timestamp)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, UTC).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _query_string(url: str) -> list[JsonObject]:
     """Parse the URL's query into HAR ``name``/``value`` pairs, bounded.
 

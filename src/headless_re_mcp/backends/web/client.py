@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
-from headless_re_mcp.backends.common.har import har_entry, serialize_har
+from headless_re_mcp.backends.common.har import har_entry, iso_from_epoch, serialize_har
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -465,6 +465,10 @@ class WebBackend:
             resource_type, type_truncated = _bounded_metadata(
                 params.get("type"), _MAX_METADATA_BYTES
             )
+            # CDP hands over the request's real wall-clock start; keep it as an
+            # ISO instant so the summary and the HAR waterfall reflect when the
+            # request began, not the moment the HAR was exported.
+            started_at = iso_from_epoch(params.get("wallTime"))
             entry: JsonObject = {
                 "requestId": params.get("requestId"),
                 "url": url,
@@ -472,6 +476,7 @@ class WebBackend:
                 "resourceType": resource_type,
                 "status": None,
                 "mimeType": None,
+                "started_at": started_at,
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
@@ -812,6 +817,7 @@ class WebBackend:
                     url=e.get("url"),
                     status=e.get("status"),
                     mime_type=e.get("mimeType") or "",
+                    started_date_time=e.get("started_at"),
                     resource_type=e.get("resourceType"),
                 )
                 for e in handle.requests.values()

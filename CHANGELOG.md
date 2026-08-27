@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（HAR 导出把每条请求都盖上导出时刻，波形图失真）
+
+- `proxy.export_har` 与 `web.har.export` 生成的每个 entry 的 `startedDateTime` 都取
+  `har_entry` 的兜底值——导出那一刻的 `_iso_now()`。于是一整份抓包在 Chrome DevTools「Import
+  HAR」等查看器的瀑布图里全部堆在同一时刻，请求先后与间隔尽失，而 HAR 1.2 的 `startedDateTime`
+  本就是给分析者看每条请求何时开始的。可两端其实都拿得到真实开始时间：mitmproxy 的
+  `request.timestamp_start`、CDP `Network.requestWillBeSent` 的 `wallTime` 都是 unix 纪元秒。
+  新增 `har.iso_from_epoch` 把纪元秒转成带时区偏移的 ISO 8601（缺失/零/负/非有限/bool 一律回
+  None，让 `har_entry` 退回导出时刻而非伪造 1970 日期）；`_FlowRecorder._record` 与 web 的
+  `on_request` 各自把真实开始时间记成 ISO `started_at`，导出时喂给 `startedDateTime`。该字段
+  同时如实出现在 `proxy.flows` 与 `web.network.list` 的行里（抓不到时为 null），工具文档串已同步
+  列出。新增五条直测：`iso_from_epoch` 转换与拒绝各类脏值、proxy/web 的 HAR 用真实开始时间、
+  以及未带时间戳的流仍如实 `started_at=null` 且 HAR 仍是合法 ISO（退回导出时刻）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

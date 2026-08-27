@@ -74,11 +74,13 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List captured network requests.
 
-        Answers with requests (url, method, status, resourceType), count,
-        total, offset, has_more, and dropped so a page that filled the
+        Answers with requests (url, method, status, resourceType, started_at),
+        count, total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
-        visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        visible. started_at is the request's real start time as an ISO 8601
+        instant (null when CDP sent no wallTime); it is what the exported HAR
+        uses for startedDateTime. metadata_truncated marks bounded oversized
+        request fields. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 

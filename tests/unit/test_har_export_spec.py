@@ -23,7 +23,12 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.common.har import build_har, har_entry, serialize_har
+from headless_re_mcp.backends.common.har import (
+    build_har,
+    har_entry,
+    iso_from_epoch,
+    serialize_har,
+)
 from headless_re_mcp.backends.proxy import client as proxy_client
 from headless_re_mcp.backends.proxy.client import ProxyBackend, ProxyError, _FlowRecorder
 from headless_re_mcp.backends.web import client as web_client
@@ -187,6 +192,118 @@ class _WebHandle:
             }
             for index in range(count)
         }
+
+
+def test_iso_from_epoch_converts_real_times_and_rejects_placeholders() -> None:
+    """The epoch->ISO helper accepts a real timestamp and refuses junk.
+
+    A real request time becomes an offset-aware ISO instant HAR can use; a
+    missing/zero/negative/non-finite or bool value returns None so har_entry
+    falls back to the export instant instead of stamping a bogus 1970 date.
+    """
+    iso = iso_from_epoch(1_700_000_000.0)
+    assert iso is not None
+    parsed = datetime.fromisoformat(iso)
+    assert parsed.utcoffset() is not None  # carries the TZD HAR requires
+    assert int(parsed.timestamp()) == 1_700_000_000
+    for bad in (None, 0, -1.0, True, False, float("nan"), float("inf"), "not-a-time"):
+        assert iso_from_epoch(bad) is None
+
+
+def test_proxy_flow_records_the_real_request_start_time(tmp_path: Path) -> None:
+    """mitmproxy stamps request.timestamp_start; the summary and HAR must use it.
+
+    Without it every entry's startedDateTime is the export instant, which stacks
+    a whole capture on one point in a HAR viewer's waterfall. The recorder now
+    keeps the epoch as an ISO started_at, and export_har feeds it to
+    startedDateTime rather than the export moment.
+    """
+    recorder = _FlowRecorder()
+    epoch = 1_700_000_000.0
+    request = SimpleNamespace(
+        method="GET", pretty_url="http://x/1", host="x", timestamp_start=epoch
+    )
+    response = SimpleNamespace(
+        status_code=200, headers={"content-type": "text/plain"}, raw_content=None
+    )
+    recorder.response(SimpleNamespace(id="1", request=request, response=response))
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    expected = iso_from_epoch(epoch)
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["started_at"] == expected
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    assert doc["log"]["entries"][0]["startedDateTime"] == expected
+
+
+def test_proxy_flow_without_a_timestamp_falls_back_to_the_export_instant(
+    tmp_path: Path,
+) -> None:
+    """A flow mitmproxy never stamped keeps started_at null and still validates.
+
+    The HAR stays spec-valid because har_entry fills startedDateTime with the
+    export instant when no real time is available.
+    """
+    backend = _proxy_backend_with_flows(1)
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["started_at"] is None
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    # Still a real ISO instant, just the export moment rather than a fabricated one.
+    datetime.fromisoformat(doc["log"]["entries"][0]["startedDateTime"])
+
+
+def test_web_capture_records_the_request_start_time_for_the_har(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """CDP's requestWillBeSent.wallTime is the real start; the HAR must use it.
+
+    Driving the capture handler with a wallTime must land an ISO started_at on
+    the request summary and, in turn, on the exported HAR's startedDateTime.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _WebHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    epoch = 1_700_000_000.0
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r1",
+            "request": {"url": "https://example.com/a", "method": "GET"},
+            "type": "Document",
+            "wallTime": epoch,
+        }
+    )
+    cdp.handlers["Network.responseReceived"](
+        {"requestId": "r1", "response": {"status": 200, "mimeType": "text/html"}}
+    )
+
+    expected = iso_from_epoch(epoch)
+    assert handle.requests["r1"]["started_at"] == expected
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    out = tmp_path / "capture.har"
+    backend.har_export("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    assert doc["log"]["entries"][0]["startedDateTime"] == expected
 
 
 def test_web_har_export_writes_a_valid_har_that_carries_every_request(
