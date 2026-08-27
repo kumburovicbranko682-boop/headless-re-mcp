@@ -1,14 +1,15 @@
 """device.* state changes must land in the global (session-less) audit log.
 
 Device operations are keyed by serial, not a session, so unlike apk.* / frida.* /
-web.* they have no per-session timeline. The high-stakes mutations -- connect,
-install, uninstall, launch, force-stop, push, forward -- therefore used to leave
-no trace anywhere: an operator reviewing an unattended run had no record that the
-agent installed or removed an app or forwarded a port. These pin that each such
-mutation now records an audit entry with session_id null (visible through
-audit.list's unfiltered listing), that a failure is still recorded with its error
-code, that read-only device ops are not audited, and that an audit-write failure
-never fails the device op.
+web.* they have no per-session timeline. Two groups therefore used to leave no
+trace: the mutations (connect, install, uninstall, launch, force-stop, push,
+forward), so an operator had no record the agent installed/removed an app or
+forwarded a port; and the captures (pull, screenshot), whose files are never
+registered in the artifact table (it needs a session_id these ops lack), so a
+pulled file or screenshot had zero provenance. These pin that each such operation
+now records an audit entry with session_id null (visible through audit.list's
+unfiltered listing), that a failure is still recorded with its error code, that
+pure reads are not audited, and that an audit-write failure never fails the op.
 """
 
 from __future__ import annotations
@@ -69,6 +70,14 @@ class _FakeAdb(AdbBackend):
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
         self.calls.append("forward")
         return {"local": local, "remote": remote}
+
+    def screenshot(self, serial: str, out_path: Any) -> JsonObject:
+        self.calls.append("screenshot")
+        return {"path": str(out_path), "serial": serial, "size": 123}
+
+    def pull(self, serial: str, remote_path: str, local_path: Any) -> JsonObject:
+        self.calls.append("pull")
+        return {"remote": remote_path, "local": str(local_path), "size": 456}
 
     def info(self, serial: str) -> JsonObject:
         self.calls.append("info")
@@ -197,7 +206,59 @@ def test_a_connect_downgraded_to_failure_is_audited_as_not_ok(tmp_path: Path) ->
         service.close_all()
 
 
-def test_read_only_device_ops_are_not_audited(tmp_path: Path) -> None:
+def test_captures_are_audited_with_their_provenance(tmp_path: Path) -> None:
+    """pull/screenshot files are never registered in the artifact table (they
+    key by serial), so the audit entry is their only record."""
+    service, _fake = _service(tmp_path)
+    try:
+        service.device_screenshot("emulator-5554")
+        service.device_pull("emulator-5554", "/data/local/tmp/f.bin")
+
+        shot = _by_action(service, "device.screenshot")[0]
+        assert shot["session_id"] is None
+        assert shot["ok"] == 1
+        assert shot["params_summary"] == {"serial": "emulator-5554"}
+        assert shot["result_summary"]["size"] == 123
+        assert shot["result_summary"]["path"]  # a concrete local path was recorded
+
+        pulled = _by_action(service, "device.pull")[0]
+        assert pulled["session_id"] is None
+        assert pulled["ok"] == 1
+        assert pulled["result_summary"]["remote"] == "/data/local/tmp/f.bin"
+        assert pulled["result_summary"]["size"] == 456
+        assert pulled["result_summary"]["local"]
+    finally:
+        service.close_all()
+
+
+def test_a_capture_that_overflows_the_cap_is_audited_as_too_large(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A capture that hit disk, exceeded the cap and was deleted must audit the
+    too_large outcome, not the raw ok the backend first returned."""
+    from headless_re_mcp.core.models import Result, RpcError
+
+    service, _fake = _service(tmp_path)
+    try:
+        monkeypatch.setattr(
+            "headless_re_mcp.core.service_device.refuse_oversized_device_file",
+            lambda out: Result(
+                ok=False,
+                error=RpcError(code="output_too_large", message="too big", details={}),
+            ),
+        )
+        result = service.device_screenshot("emulator-5554")
+        assert result.ok is False
+        entry = _by_action(service, "device.screenshot")[0]
+        assert entry["ok"] == 0
+        assert entry["result_summary"] == {"code": "output_too_large"}
+    finally:
+        service.close_all()
+
+
+def test_pure_read_device_ops_are_not_audited(tmp_path: Path) -> None:
+    """info/logcat return data and touch nothing, so unlike the captures they
+    leave no audit entry."""
     service, _fake = _service(tmp_path)
     try:
         service.device_info("emulator-5554")

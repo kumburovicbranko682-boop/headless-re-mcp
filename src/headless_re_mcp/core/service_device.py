@@ -141,22 +141,27 @@ class DeviceAnalysisMixin:
         params: JsonObject,
         *fields: str,
     ) -> None:
-        """Record a device state change in the global audit log, best-effort.
+        """Record a side-effecting device operation in the global audit log.
 
         device.* operations are keyed by serial, not a session, so unlike
-        apk.* / frida.* / web.* they have no per-session timeline to land in --
-        yet connect, install, uninstall, launch, force-stop, push and forward
-        are precisely the high-stakes mutations an operator reviewing an
-        unattended run needs a record of, and they used to reach neither the
-        timeline nor the audit log. append_audit takes session_id=None for
-        exactly this: a serial-scoped action that belongs in the audit trail
-        but owns no session, visible through audit.list's unfiltered listing.
-        Best-effort -- an audit write that fails must not turn a device change
-        that already happened into a failed tool call -- and it copies only the
-        named, structural result fields (serials, package ids, verification
-        booleans, ports) which carry no secrets; the store redacts regardless.
-        A failed call is still recorded, with its error code, the way ui.drive
-        audits both outcomes.
+        apk.* / frida.* / web.* they have no per-session timeline to land in.
+        Two groups need a record and used to have none: the mutations (connect,
+        install, uninstall, launch, force-stop, push, forward), which are the
+        high-stakes changes an operator reviewing an unattended run must be able
+        to see; and the captures (pull, screenshot), which write a file under
+        artifact_root/device/ that -- because the artifact table needs a
+        session_id these ops do not have -- is never registered, so this line
+        is the *only* provenance the pulled file or screenshot ever gets. Pure
+        reads (info, properties, packages, logcat, current_activity) return data
+        and touch nothing, so they are not audited. append_audit takes
+        session_id=None for exactly this: a serial-scoped action that belongs in
+        the audit trail but owns no session, visible through audit.list's
+        unfiltered listing. Best-effort -- an audit write that fails must not
+        turn a device operation that already happened into a failed tool call --
+        and it copies only the named, structural result fields (serials, package
+        ids, verification booleans, ports, capture paths and sizes) which carry
+        no secrets; the store redacts regardless. A failed call is still
+        recorded, with its error code, the way ui.drive audits both outcomes.
         """
         if result.ok and isinstance(result.data, dict):
             summary: JsonObject = {name: result.data.get(name) for name in fields}
@@ -258,17 +263,18 @@ class DeviceAnalysisMixin:
         if result.ok:
             oversized = refuse_oversized_device_file(out)
             if oversized is not None:
-                prune_capped_dir(
-                    out.parent,
-                    max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
-                    max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES,
-                )
-                return oversized
+                # The capture hit disk, exceeded the cap and was deleted; the
+                # audit below then records the too_large outcome, not a success.
+                result = oversized
         prune_capped_dir(
             out.parent,
             max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
             max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES,
         )
+        # Screenshots key by serial, so they never enter the artifact table and
+        # own no session timeline: this audit line is the only record that a
+        # capture happened and where it landed.
+        self._audit_device("device.screenshot", result, {"serial": serial}, "path", "size")
         return result
 
     def device_pull(self, serial: str, remote_path: str) -> Result[JsonObject]:
@@ -277,16 +283,19 @@ class DeviceAnalysisMixin:
         if result.ok:
             oversized = refuse_oversized_device_file(out)
             if oversized is not None:
-                prune_capped_dir(
-                    out.parent,
-                    max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
-                    max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES,
-                )
-                return oversized
+                # The file was pulled, exceeded the cap and was deleted; the
+                # audit below then records the too_large outcome, not a success.
+                result = oversized
         prune_capped_dir(
             out.parent,
             max_entries=UNREGISTERED_CAPTURE_MAX_ENTRIES,
             max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+        # Like screenshot, a pulled file never enters the artifact table and has
+        # no session timeline, so this is its only provenance: which remote path
+        # was read off which device, where it landed locally and how big it was.
+        self._audit_device(
+            "device.pull", result, {"serial": serial}, "remote", "local", "size"
         )
         return result
 

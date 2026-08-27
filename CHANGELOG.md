@@ -24,7 +24,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
-### 新增（device.* 变更进入审计日志）
+### 新增（有副作用的 device.* 操作进入审计日志）
 
 - 高风险的设备变更——`device.connect/install/uninstall/launch/force_stop/push/forward`——此前在任何
   日志里都不留痕:它们按序列号(serial)寻址、不属于任何会话,因此 apk.*/frida.*/web.* 用的按会话时间线
@@ -32,13 +32,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   应用、转发了哪个端口,操作者事后无从查证。现在这七个状态变更调用会写入全局审计日志:`append_audit`
   本就接受 `session_id=None`——正是为"归属某序列号却不属于任何会话"的动作准备的——所以它们以空
   `session_id` 落库,通过 `audit.list` 不带 `session_id` 的列举可见。失败的调用也照记(带其错误码),
-  与 `ui.drive` 同时审计成败两种结局的做法一致;只读设备操作(info/logcat/…)不记。
-- 记账是尽力而为:设备上的变更已经发生,一次审计写入失败绝不能把一个已成功的 install 变成失败的工具调用。
-  写入只拷贝结构化字段(序列号、包名、校验布尔、端口),不含机密,store 侧另有脱敏兜底。
-- `audit.list` 描述更新为点名设备变更,并解释它们为何以空 `session_id` 落在这里;新增
-  `tests/unit/test_device_audit.py` 钉住:七个变更各记一条空会话审计、失败仍记且带错误码、connect 被
-  降级为失败时按最终结局记 `ok=False`、只读操作不记、按会话过滤看不到而不带过滤看得到、以及审计写失败
-  不拖垮设备调用。
+  与 `ui.drive` 同时审计成败两种结局的做法一致。
+- 两个捕获类操作 `device.pull` / `device.screenshot` 同样纳入审计,理由更硬:它们把文件写到
+  `artifact_root/device/` 下,但制品表需要 `session_id` 而这些操作按序列号寻址、给不出,所以文件从不登记
+  ——没有会话时间线、不进制品表、原本也不在审计里,一次 pull/截图落在磁盘上的文件毫无出处可查。现在这条
+  审计就是它唯一的出处:哪台设备、拉了哪个远端路径、落到哪个本地文件、多大。真正的只读操作
+  (info/properties/packages/logcat/current_activity)只回数据、不动任何东西,因此不记。
+- 记账是尽力而为:设备上的操作已经发生,一次审计写入失败绝不能把一个已成功的 install 或 pull 变成失败的
+  工具调用。写入只拷贝结构化字段(序列号、包名、校验布尔、端口、捕获文件路径与大小),不含机密,store 侧
+  另有脱敏兜底。
+- `audit.list` 描述更新为点名设备的变更与捕获,并解释它们为何以空 `session_id` 落在这里;新增
+  `tests/unit/test_device_audit.py` 钉住:各操作各记一条空会话审计、失败仍记且带错误码、connect 被
+  降级为失败时按最终结局记 `ok=False`、捕获文件的出处被记录、超限捕获记 `output_too_large`、纯只读操作
+  不记、按会话过滤看不到而不带过滤看得到、以及审计写失败不拖垮设备调用。
 
 ### 新增（监控台工作台）
 
