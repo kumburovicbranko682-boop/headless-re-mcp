@@ -531,6 +531,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `cancel_requested`，超时等待也会去取消那条 asyncio 任务。
 - **超长 objective 先建空 inbox 再拒绝**。空 thread 不会被 trim，重试会把库撑大。
   现在先 `validate_mission`，过了才建 thread。
+- **完成一条较旧的 mission/run 会把它自己删掉再崩**。终态保留裁剪按 `created_at DESC`
+  只留每线程最新 N 条；当同线程里较新的先完成、较旧的后完成时，那条刚完成的旧记录恰是
+  「最旧的终态行」而被裁掉——可 `set_mission_status` / `cancel_mission` / `transition`
+  紧接着 `get_mission` / `get_run` 读回并 `assert ... is not None`,于是操作本身以
+  `AssertionError` 崩溃(对无人值守调用者表现为 `internal_error`),而不是返回它刚写下的
+  状态。裁剪改按 `updated_at DESC`(即完成时间)排序:刚完成的记录必是最新的一条,永远落在
+  保留窗口内,保留条数仍恰为 N。新增三条回归测试(mission 完成 / mission 取消 / run 转终态,
+  均为「旧记录后完成」)以严格递增时钟钉住顺序。
 - **压缩后的请求仍会超过自己报的预算**。8,000 字符上限选出的尾巴，再加上系统提示
   和压缩通知，线上变成 8,115。现在先给这两条留位置再选尾巴。
 - **`cdb -c` 只看第一个 token**。`lm; !process` 和 `k\n.shell` 能穿过白名单。
