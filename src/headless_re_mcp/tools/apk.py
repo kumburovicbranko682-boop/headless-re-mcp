@@ -81,6 +81,27 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.files")
+    def apk_files(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+        prefix: str = "",
+    ) -> dict[str, Any]:
+        """List the files inside the APK archive with pagination.
+
+        Answers with files (name plus size from the zip central directory;
+        size is absent for an entry that directory could not describe),
+        count, total, offset, and has_more so a page that filled the limit
+        is not read as the whole archive. prefix narrows to one subtree,
+        e.g. assets/ where secondary payloads hide, and total counts the
+        narrowed list. A name appearing twice is real (zip entry
+        shadowing). There is no entries or listing field.
+        """
+        return _dump(
+            analysis.apk_files(session_id, offset=offset, limit=limit, prefix=prefix)
+        )
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,

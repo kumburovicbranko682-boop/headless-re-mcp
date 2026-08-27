@@ -9,6 +9,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 from __future__ import annotations
 
 import threading
+import zipfile
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
@@ -34,6 +35,7 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+_MAX_FILES_PAGE = 1000
 
 
 class ApkError(RuntimeError):
@@ -300,6 +302,43 @@ class ApkClient:
             "providers": providers,
             "main_activity": apk.get_main_activity(),
             "has_more": a_more or s_more or r_more or p_more,
+        }
+
+    def files(
+        self, path: Path, *, offset: int = 0, limit: int = 200, prefix: str = ""
+    ) -> JsonObject:
+        apk = self._apk(path)
+        names = sorted(str(name) for name in apk.get_files() or [])
+        wanted = str(prefix or "")
+        if wanted:
+            names = [name for name in names if name.startswith(wanted)]
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_FILES_PAGE)
+        window = names[start : start + cap]
+        # Sizes come from the zip central directory (cheap: no entry is
+        # decompressed). Names stay androguard's list -- the parser the rest
+        # of the tool surface trusts on hostile zips -- so an entry the
+        # stdlib reader cannot describe simply lacks size rather than
+        # vanishing from the listing. Duplicate names are kept: a name
+        # appearing twice is a real signal (zip entry shadowing).
+        sizes: dict[str, int] = {}
+        try:
+            with zipfile.ZipFile(path) as archive:
+                for info in archive.infolist():
+                    sizes[info.filename] = int(info.file_size)
+        except Exception:  # noqa: BLE001 - hostile/broken central directory
+            sizes = {}
+        entries: list[JsonObject] = []
+        for name in window:
+            entry: JsonObject = {"name": name}
+            if name in sizes:
+                entry["size"] = sizes[name]
+            entries.append(entry)
+        return {
+            "files": entries,
+            "count": len(entries),
+            "total": len(names),
+            "offset": start,
+            "has_more": start + len(entries) < len(names),
         }
 
     def native_libs(self, path: Path) -> JsonObject:
