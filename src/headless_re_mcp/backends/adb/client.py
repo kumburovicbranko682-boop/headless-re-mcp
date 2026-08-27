@@ -82,6 +82,35 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> None:
+    """Validate an adb forward endpoint, port range included.
+
+    The patterns already block shell metacharacters, but ``\\d{1,5}`` also admits
+    ``tcp:70000`` -- five digits that are not a port. ``connect`` already refuses
+    a port outside 1..65535; this makes ``forward`` say the same thing at the
+    boundary instead of handing adb a bind request it can only reject with an
+    opaque error. ``tcp:0`` is refused on both sides: adb reads a local 0 as
+    "allocate a free port", but adbutils discards the reply payload naming that
+    port, so the caller would get ``tcp:0`` back with no way to learn where to
+    connect -- and ``release_forwards`` removes by the requested spec, which can
+    never match the listener adb registered under the real port. Every such
+    forward would leak an adb-server listener and pin one of the tracked slots
+    until the cap locks the process out. A remote 0 is simply not connectable.
+    """
+    tcp = re.match(r"^tcp:(\d{1,5})$", spec or "")
+    if tcp is not None:
+        if not 1 <= int(tcp.group(1)) <= 65535:
+            raise AdbError(
+                "invalid_params", f"{side} tcp port must be 1..65535", **{side: spec}
+            )
+        return
+    if re.match(r"^localabstract:[\w.\-]+$", spec or ""):
+        return
+    if allow_jdwp and re.match(r"^jdwp:\d+$", spec or ""):
+        return
+    raise AdbError("invalid_params", f"invalid {side} forward spec", **{side: spec})
+
+
 def _is_timeout(exc: BaseException) -> bool:
     name = type(exc).__name__.lower()
     return "timeout" in name or "timed out" in str(exc).lower()
@@ -643,6 +672,17 @@ class AdbBackend:
                 "refusing to keep a pulled directory",
                 remote=remote_path,
             )
+        if not local_path.exists():
+            # adb sync can report a clean pull yet write nothing when the remote
+            # path does not exist -- older adbutils does not raise, and the
+            # pre-stat probe above is best-effort. capped_file_size returns 0 for
+            # a missing file, so without this the reply would be a size-0
+            # success the caller reads as a real empty file it can open.
+            raise AdbError(
+                "not_found",
+                "pull wrote no local file; the remote path may not exist",
+                remote=remote_path,
+            )
         pulled, over = capped_file_size(local_path, cap=cap)
         if over:
             raise AdbError(
@@ -740,10 +780,8 @@ class AdbBackend:
         }
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
-        if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+)$", local):
-            raise AdbError("invalid_params", "invalid local forward spec", local=local)
-        if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+|jdwp:\d+)$", remote):
-            raise AdbError("invalid_params", "invalid remote forward spec", remote=remote)
+        _check_forward_spec(local, side="local")
+        _check_forward_spec(remote, side="remote", allow_jdwp=True)
         serial_id = _check_serial(serial)
         key = (serial_id, local)
         # Resolve the device before occupying a slot: a failed lookup used to

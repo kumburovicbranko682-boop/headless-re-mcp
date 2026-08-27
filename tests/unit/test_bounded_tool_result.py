@@ -70,3 +70,34 @@ def test_the_summary_is_capped_by_half_the_budget_when_the_budget_is_small() -> 
     assert truncated is True
     # summary slice is encoded[: min(16_384, max_bytes // 2)] -> 500 chars here.
     assert len(out["summary"]) <= 500
+
+
+def test_a_truncated_success_keeps_its_ok_verdict() -> None:
+    # A big but successful envelope: without carrying ok, the caller reads the
+    # missing field as ok=False and files a success as a failed tool call.
+    payload = {"ok": True, "data": {"blob": "y" * 100_000}, "error": None}
+    out, truncated = bounded_tool_result(payload, max_bytes=4096)
+    assert truncated is True
+    assert out["ok"] is True
+    assert out["truncated"] is True
+    assert out["untrusted_tool_output"] is True
+    assert _size(out) <= 4096
+
+
+def test_a_truncated_failure_keeps_its_ok_verdict() -> None:
+    payload = {
+        "ok": False,
+        "data": {"blob": "y" * 100_000},
+        "error": {"code": "backend_error", "message": "boom"},
+    }
+    out, truncated = bounded_tool_result(payload, max_bytes=4096)
+    assert truncated is True
+    assert out["ok"] is False
+
+
+def test_a_truncated_non_envelope_gains_no_ok_field() -> None:
+    # Only real envelopes carry ok; a raw oversized value must not sprout one.
+    payload = {"data": "x" * 100_000}
+    out, truncated = bounded_tool_result(payload, max_bytes=4096)
+    assert truncated is True
+    assert "ok" not in out
