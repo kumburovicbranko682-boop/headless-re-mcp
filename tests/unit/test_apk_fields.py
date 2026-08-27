@@ -271,6 +271,52 @@ def test_apk_methods_puts_the_list_in_methods_and_says_when_it_stopped(
     assert "Answers with methods" in doc
     assert "has_more" in doc
 
+def test_apk_methods_reports_not_found_for_a_class_that_is_not_present(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A wrong or obfuscated class name is not_found, not an empty method list.
+
+    methods matches the requested class by its raw smali name or its dotted form
+    and raises not_found when none matches. Collapsing that to an empty
+    ``methods: []`` would read as "this class declares no methods of its own" --
+    a real answer for a marker interface -- and hide a caller's bad class name,
+    so the miss is reported distinctly with the name it looked for.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeMethodParsed(3))
+    with pytest.raises(ApkError) as caught:
+        client.methods(tmp_path / "app.apk", "com.example.NotHere")
+    assert caught.value.code == "not_found"
+    assert caught.value.details.get("class_name") == "com.example.NotHere"
+
+
+def test_apk_methods_and_xrefs_reject_an_empty_target_name(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A blank class_name / method_name is refused before any DEX scan.
+
+    Both handlers strip the name and refuse an empty or whitespace-only value as
+    invalid_params rather than scanning every class/method for a name that
+    cannot match -- an empty query would otherwise walk the whole analysis graph
+    to return nothing, or (for methods) match the first class whose smali name
+    also strips to empty.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeMethodParsed(3))
+    for blank in ("", "   "):
+        with pytest.raises(ApkError) as methods_error:
+            client.methods(tmp_path / "app.apk", blank)
+        assert methods_error.value.code == "invalid_params"
+
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeParsed([_FakeMethod("decrypt", 1)])
+    )
+    for blank in ("", "   "):
+        with pytest.raises(ApkError) as xrefs_error:
+            client.xrefs(tmp_path / "app.apk", blank)
+        assert xrefs_error.value.code == "invalid_params"
+
+
 def test_apk_decompile_names_source_and_says_when_it_was_cut(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
