@@ -133,7 +133,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Return the current foreground package and activity.
 
         Answers with package and activity. There is no foreground, current,
-        component or app field.
+        component or app field. A read that returns no package is a backend
+        error, not an empty foreground.
         """
         return _dump(analysis.device_current_activity(serial))
 
