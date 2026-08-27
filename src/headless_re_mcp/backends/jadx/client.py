@@ -27,6 +27,10 @@ _MAX_TIMEOUT_S = 1800.0
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
+# A simple class name can match several decompiled files across packages; the
+# ambiguity error lists the matches so the caller can qualify the name, bounded
+# so a pathological name that matches thousands does not inflate one reply.
+_MAX_AMBIGUOUS_CANDIDATES = 50
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -121,7 +125,15 @@ class JadxClient:
         *,
         timeout: float = 300.0,
     ) -> JsonObject:
-        """Decompile the whole APK, then return one class's Java source."""
+        """Decompile the whole APK, then return one class's Java source.
+
+        A ``class_name`` that does not map to an exact source path falls back to
+        a simple-name match. One match is used; several is reported as
+        ``invalid_params`` (ambiguous) carrying ``candidates`` and
+        ``candidate_count`` -- not ``not_found``, which would claim a class that
+        was in fact decompiled is absent -- so the caller can re-issue with a
+        package-qualified name.
+        """
         target = class_name.strip()
         if not target:
             raise JadxError("invalid_params", "class_name is required")
@@ -136,11 +148,11 @@ class JadxClient:
             raise JadxError("invalid_params", "class_name escapes the jadx sources directory")
         if not candidate.is_file():
             match = None
+            matches: list[Path] = []
             if sources.is_dir():
                 # A simple-name walk used to return the first Main.java in the
                 # tree, which is whoever jadx happened to emit first -- not
                 # necessarily the class the caller named.
-                matches = []
                 for path in sources.rglob(candidate.name):
                     try:
                         resolved = path.resolve()
@@ -151,6 +163,22 @@ class JadxClient:
                 if len(matches) == 1:
                     match = matches[0]
             if match is None:
+                if len(matches) > 1:
+                    # The class *was* decompiled -- several classes share this
+                    # simple name across packages -- so "not found" would tell
+                    # the caller the class is absent when the name is merely
+                    # ambiguous. Surface the candidates (relative to sources,
+                    # sorted, bounded) so the caller can re-issue with a
+                    # package-qualified name instead of concluding it is missing.
+                    candidates = sorted(str(m.relative_to(sources)) for m in matches)
+                    raise JadxError(
+                        "invalid_params",
+                        "class_name is ambiguous; multiple decompiled classes "
+                        "match this simple name -- qualify it with the full package",
+                        class_name=class_name,
+                        candidates=candidates[:_MAX_AMBIGUOUS_CANDIDATES],
+                        candidate_count=len(candidates),
+                    )
                 raise JadxError(
                     "not_found",
                     "decompiled class not found",

@@ -157,7 +157,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Java was cut at the buffer. There is no java, code or text field. If
         jadx exited non-zero on the whole-APK pass but still wrote this class,
         the reply carries exit_code, tool_failed and stderr so a partial
-        decompile is not read as complete.
+        decompile is not read as complete. A class_name that matches several
+        decompiled files by its simple name fails invalid_params (ambiguous)
+        with candidates and candidate_count -- the class exists, so qualify the
+        name with its package rather than reading it as not_found.
         """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 
