@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（jadx/apktool/apksigner 少查了 JRE）
+
+- **doctor 找到 jadx / apktool / apksigner 的启动器就报 detected，却没查它们真正要跑的
+  JVM**。这三个都是拉起 JVM 的启动脚本，形态与 Ghidra 的 `analyzeHeadless` 一样；而
+  `probe_ghidra` 早就诚实处理过这种情况——启动器在、`java` 不在 PATH 时报“present but
+  java is not on PATH”，并指向 JRE。可这三个 Android 工具走的是通用的
+  `probe_optional_tool`，找到启动器就收工。于是只装了 jadx/apktool/apksigner、没装 JRE
+  的宿主，doctor 把它们报成 detected，让人以为 `apk.decompile` / `apk.export_sources` /
+  `apk.decode` / `apk.repack` / `apk.sign` 可用，实际一调用启动器就因起不了 JVM 而失败——
+  这正是 wabt/apksigner 探针同类的“只查了一半”。现在这三个探针改走新的
+  `probe_jvm_backed_tool`：仍复用原有的路径/PATH 解析，但找到启动器后再查 `java`，
+  查到就把路径记进 details；查不到仍报 detected（与 Ghidra 一致，不谎报 missing），但在
+  摘要里点明“java is not on PATH so it cannot run”并给出装 JRE 的建议。回归测试覆盖
+  已配置/PATH 两种发现路径、有无 java 两种情形，以及 `run_doctor` 端到端确实走了新探针。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
