@@ -101,6 +101,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 变更（设备抓包保留策略去掉过时的死代码路径）
+
+- `service_device.py` 里还留着 `prune_device_artifacts` 与 `_MAX_DEVICE_ARTIFACTS`：
+  只按数量、无字节上限的旧保留器。`device.screenshot` / `device.pull` 的现行路径早已
+  改用 `prune_capped_dir`（同时约束 `UNREGISTERED_CAPTURE_MAX_ENTRIES` 与 `_BYTES`、保留
+  最新一条），旧函数不再被任何生产路径调用，只有一条单测在钉着它——顶部注释却仍把这条
+  弱策略写成设备目录“就是这样保留的”，读起来与实际生效的策略互相打架。现删掉死函数与常量、
+  把注释改成描述真正在跑的 `prune_capped_dir` + `refuse_oversized_device_file`；单测不再钉死
+  代码，改为走 `device.screenshot` 的实路径并断言共享的 `UNREGISTERED_CAPTURE_MAX_ENTRIES`
+  上限（`prune_capped_dir` 的数量/字节/保留最新语义已有专门直测覆盖）。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
