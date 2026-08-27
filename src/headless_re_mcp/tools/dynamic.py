@@ -310,10 +310,13 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Break on an API and capture its integer arguments on each hit.
 
         Give either expression (for example kernel32.CreateFileW) or a runtime
-        address. Answers with hits (instruction_pointer and arguments), hit_count,
-        truncated, stopped_elsewhere, convention, architecture, target and
-        max_hits. There is no top-level arguments, rip or ok field. The
-        breakpoint is removed when the trace ends.
+        address. Answers with hits (instruction_pointer, arguments and
+        arguments_read_failed), hit_count, truncated, stopped_elsewhere,
+        arguments_read_failed_hits, convention, architecture, target and
+        max_hits. There is no top-level arguments, rip or ok field. A hit's
+        empty arguments list means "no arguments" only when its
+        arguments_read_failed is false; otherwise the argument source could not
+        be read. The breakpoint is removed when the trace ends.
         """
         return _dump(
             analysis.trace_api_arguments(

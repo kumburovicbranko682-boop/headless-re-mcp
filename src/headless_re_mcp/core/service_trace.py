@@ -686,6 +686,14 @@ class TraceMixin:
         arguments are read off the stack above the return address. The breakpoint
         is always removed again, and a stop at another address ends the trace
         rather than mislabelling someone else's break as a hit.
+
+        Reading the arguments can fail on a hit that otherwise landed on the
+        target -- an x86 stack read that errored, or an x64 register bank that
+        could not be read -- and that leaves an empty arguments list that reads
+        exactly like a call with no arguments. Each such hit carries
+        arguments_read_failed=True and arguments_read_failed_hits counts them, so
+        an empty arguments list is only trusted as "no arguments" when the flag
+        is false.
         """
         try:
             if (expression is None) == (address is None):
@@ -748,6 +756,14 @@ class TraceMixin:
                         break
                     if decodes_registers:
                         arguments = _register_arguments(registers, int(argument_count))
+                        # x64 arguments are decoded from the register bank read
+                        # just above. When that read failed there is no bank, so
+                        # _register_arguments returns [] for an argument_count>0
+                        # request -- the same empty list a genuine zero-argument
+                        # call yields.
+                        arguments_read_failed = (
+                            int(argument_count) > 0 and registers is None
+                        )
                     else:
                         stack = self.stack_read(
                             session_id,
@@ -758,11 +774,23 @@ class TraceMixin:
                             stack.data if stack.ok else None,
                             int(argument_count),
                         )
+                        # x86 arguments live on the stack, read by a call separate
+                        # from the register read that confirmed the pause. When the
+                        # stack read fails, arguments comes back [] on a hit whose
+                        # pointer still matched the target: with no flag that reads
+                        # as a confirmed call that takes no arguments rather than
+                        # one whose arguments could not be captured.
+                        arguments_read_failed = int(argument_count) > 0 and not stack.ok
                     hits.append(
                         {
                             "sequence": sequence,
                             "instruction_pointer": pointer,
                             "arguments": arguments,
+                            # True when arguments were requested but their source
+                            # (the x64 register bank or the x86 stack) could not be
+                            # read, so [] here means "unavailable", not "this call
+                            # takes no arguments".
+                            "arguments_read_failed": arguments_read_failed,
                         }
                     )
             finally:
@@ -786,6 +814,15 @@ class TraceMixin:
                     "max_hits": int(max_hits),
                     "truncated": len(hits) >= int(max_hits),
                     "stopped_elsewhere": stopped_elsewhere,
+                    # How many recorded hits requested arguments but could not
+                    # read them (each carries arguments_read_failed=True). 0 when
+                    # every hit's arguments were captured, or when none were
+                    # requested, so a nonzero value is the one signal that some
+                    # empty arguments lists are missing data rather than genuinely
+                    # empty.
+                    "arguments_read_failed_hits": sum(
+                        1 for hit in hits if hit["arguments_read_failed"]
+                    ),
                 },
                 session_id=session_id,
                 backend=BackendKind.X64DBG.value,
