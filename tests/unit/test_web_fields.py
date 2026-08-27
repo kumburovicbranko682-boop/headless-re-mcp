@@ -175,6 +175,78 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert script["metadata_truncated"] is True
 
 
+def test_web_capture_marks_a_failed_request_instead_of_leaving_it_pending() -> None:
+    """A blocked/refused request fires loadingFailed, not responseReceived.
+
+    Without that subscription it sat in the map at status None forever, reading
+    as still in flight, and the reason was lost. Pin that the entry is marked
+    failed with error_text (and blocked_reason when given), that the status
+    stays null, that an oversized reason is bounded, and that a loadingFailed
+    for an unknown id creates no phantom entry.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "blocked-1",
+            "request": {"url": "https://ads.example/x", "method": "GET"},
+            "type": "Script",
+        }
+    )
+    cdp.handlers["Network.loadingFailed"](
+        {
+            "requestId": "blocked-1",
+            "errorText": "net::ERR_BLOCKED_BY_CLIENT",
+            "blockedReason": "inspector",
+        }
+    )
+    entry = handle.requests["blocked-1"]
+    assert entry["failed"] is True
+    assert entry["error_text"] == "net::ERR_BLOCKED_BY_CLIENT"
+    assert entry["blocked_reason"] == "inspector"
+    # The request never got a response, so status stays null; failed is what
+    # says it will not arrive.
+    assert entry["status"] is None
+
+    # A failure with no blockedReason omits the field rather than emptying it,
+    # and an oversized reason is bounded and flagged.
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "dns-1", "request": {"url": "https://nope.invalid/", "method": "GET"}}
+    )
+    cdp.handlers["Network.loadingFailed"](
+        {"requestId": "dns-1", "errorText": "é" * (_MAX_METADATA_BYTES + 1)}
+    )
+    dns = handle.requests["dns-1"]
+    assert dns["failed"] is True
+    assert "blocked_reason" not in dns
+    assert len(str(dns["error_text"]).encode()) <= _MAX_METADATA_BYTES
+    assert dns["metadata_truncated"] is True
+
+    # A loadingFailed for a request never seen must not fabricate an entry.
+    cdp.handlers["Network.loadingFailed"](
+        {"requestId": "ghost", "errorText": "net::ERR_ABORTED"}
+    )
+    assert "ghost" not in handle.requests
+
+    doc = _tool_docstring("web.network.list")
+    assert "failed" in doc
+    assert "error_text" in doc
+
+
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     monkeypatch: Any,
 ) -> None:
