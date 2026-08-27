@@ -691,8 +691,16 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
             continue
         info = _OPCODES.get(op)
         if info is None:
+            # An opcode outside the curated subset (ldc.i4.s, ldc.i8, ldloc.s,
+            # switch, the conditional branches, leave, ...) carries an operand
+            # this decoder cannot size, so advancing a single byte reads that
+            # operand as the next opcode and desyncs the rest of the method.
+            # Flag the disassembly as partial like the prefix.fe case above:
+            # the trailing op_XX entries -- and any call token harvested from
+            # them -- are no longer trustworthy.
             rebuilt.append({"ip": start, "mnemonic": f"op_{op:02x}", "operand": None})
             i += 1
+            partial = True
             continue
         name, imm = info
         i += 1

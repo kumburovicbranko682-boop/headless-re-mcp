@@ -92,6 +92,25 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
     assert partial is False
 
 
+def test_unknown_opcode_marks_disassembly_partial() -> None:
+    """An opcode outside the subset desyncs the stream, so it must not read complete.
+
+    ldc.i4.s (0x1F) is not in the curated table and carries a one-byte operand.
+    The decoder cannot size it, advances a single byte, and reads the operand as
+    the next opcode -- here the 0x2A byte becomes a fabricated ``ret`` that the
+    method never contained, and a desync could just as easily invent a ``call``
+    token. That is exactly the honesty the prefix.fe path already protects, so an
+    unknown opcode must flag the disassembly partial rather than present the
+    trailing entries as a complete, trustworthy decode.
+    """
+    il = bytes([0x00, 0x1F, 0x2A])  # nop, ldc.i4.s <0x2A> -- 0x1F is not in the table
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    assert [insn["mnemonic"] for insn in instructions] == ["nop", "op_1f", "ret"]
+    assert partial is True
+
+
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     binary = tmp_path / "empty_tables.exe"
     _write_minimal_clr(binary)

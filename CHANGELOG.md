@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（.NET IL 反汇编遇未知操作码要报 partial,而非把脱轨结果当完整)
+
+- `_disassemble_il` 用的是一张精选操作码子表,碰到表外操作码时只吐 `op_XX` 并**只前进 1 字节**。
+  但真实 IL 里表外操作码大多带操作数(`ldc.i4.s`、`ldc.i8`、`ldloc.s`、`switch`、各条件分支、
+  `leave` 等),只进 1 字节会把操作数字节误当成下一条操作码,让该方法后续整段反汇编脱轨——
+  例如 `nop; ldc.i4.s 0x2A` 会被读成 `nop; op_1f; ret`,凭空造出一条本不存在的 `ret`,同理也可能
+  伪造出一个 `call` token 混进 `call_tokens`。而这一切过去 `partial=False`,把不可信结果当完整呈现。
+  上方的 `prefix.fe`(两字节操作码)分支早已因"无法可靠续读"而置 `partial=True`,未知操作码分支
+  与之不一致。现让未知操作码同样置 `partial=True`,诚实地标记其后的 `op_XX` 与由此得到的 call token
+  不可信。新增回归测试。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
