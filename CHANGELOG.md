@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 jsre 服务层四个一次性包装的成功/错误分类钉进测试）
+
+- `js.deobfuscate` / `js.beautify` / `wasm.wat` / `wasm.info` 在服务层都是薄包装:把文件交给
+  JsClient/WasmClient、再把回复裹成信封。后端测试直接驱动那两个 client(打桩 `run_bounded`),
+  于是**服务层包装本身**从没被触及过——测试机上根本没装 webcrack/wabt,只有
+  `capability_unavailable` 这一条 JsReError 路径真跑过服务层。这样每个方法都留了三处未钉的契约:
+  盖上 backend 名的成功信封、JsReError→原样 code 的映射,以及那句 `except BaseException`——它把
+  非 JsReError 的意外故障收敛成结构化 `internal_error`,而不是让它逃出服务层冲进 RPC 循环。
+- 新增 `tests/unit/test_jsre_service_envelopes.py`,在服务层钉住这四个一次性方法的三种结局(成功盖
+  backend、JsReError 透传 code、意外异常 fail-closed 成 `internal_error`)、`js.unpack_bundle` 同一条
+  意外异常 catch-all,以及 `prune_jsre_unpack_dirs` 的两处 OSError 守卫(根不是目录/不存在时静默返回、
+  排序途中 stat 失败时按 age 0 兜底继续清理)。`service_jsre` 覆盖率 81%→98%,纯补测、不改行为。
+
 ### 加固（把 proxy.start/ca 的失败与竞态守卫钉进测试）
 
 - proxy 服务层是非 PE 各线里覆盖最低的一档(74%),其中最大的一段未测代码正是 `proxy.start` 的
