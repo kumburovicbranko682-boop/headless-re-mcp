@@ -88,7 +88,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         bytes, body is empty, body_truncated is false, and body_bytes is the
         decoded size. When CDP has no body for the request (a redirect, or a
         body already evicted from its cache) body is empty and body_error says
-        why, while body, base64_encoded and body_truncated stay present. A
+        why, while body, base64_encoded and body_truncated stay present.
+        body_error is only that per-request case; a closed, wedged, or
+        timed-out session fails the call instead of reporting an empty body. A
         body over the capture cap is refused rather than written to disk.
         """
         return _dump(analysis.web_network_get(session_id, request_id))

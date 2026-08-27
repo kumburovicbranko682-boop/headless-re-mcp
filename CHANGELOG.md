@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（web.network.get 不再把会话级失败压成单条 body_error）
+
+- `web.network.get` 取响应体时在会话浏览器线程上跑一次 CDP 调用。体真的取不到(重定向、缓存已淘汰)
+  时该线程抛的是原始驱动错误,回成 `body_error` 保持既有形状,这是对的。但当会话已关闭 / 卡死 /
+  超时,`_Runner.call` 自己抛的是 `WebError`——这是会话级失败,不是「这一条没有体」。过去那条宽
+  `except Exception` 把 `WebError` 也吞了:一台已死的浏览器被读成「健康会话里恰好一条体取不到」,
+  无人值守的调用方于是照常翻页、毫不知情。现在在宽捕获前先 `except WebError: raise`,让会话级失败
+  以真正的错误信封上抛;而原始驱动错误(非 `WebError`)仍照旧归为 `body_error`。回归测试以打桩的
+  runner 覆盖超时、卡死(均上抛)与体不可用(仍回 body_error)三种情形。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
