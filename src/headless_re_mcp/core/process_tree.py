@@ -6,9 +6,11 @@ import ctypes
 import os
 import signal
 import subprocess
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -237,6 +239,44 @@ def terminate_process_group(pgid: int) -> list[int]:
             _kill_pid(pid)
             killed.append(pid)
     return killed
+
+
+def reap_exited_launcher(
+    process: Any,
+    *,
+    group_id: int,
+    readers: Sequence[Thread],
+    terminate: Callable[[Any], None],
+) -> None:
+    """Reap helpers a launcher left running after it exited on its own.
+
+    A CLI that exits 0 can still leave a helper it spawned. On Windows the
+    recorded ppid outlives the parent, so the descendant walk still names it; on
+    POSIX the kernel reparents an orphan to init and only the session group the
+    launcher led still does. A reader thread still alive means a survivor holds
+    one of our pipes -- count that as leftover too, since a helper that inherited
+    the pipe is exactly what the parent/child walk cannot see once it is
+    reparented. ``terminate`` is the adapter's own tree-kill and runs only when
+    something is actually left, so a clean run with no leftovers pays nothing.
+
+    The four bounded-CLI capture paths (die, exeinfope, upx, de4dot) share this
+    so a fix here reaches all of them instead of drifting per copy.
+    """
+    readers_alive = any(reader.is_alive() for reader in readers)
+    pid = getattr(process, "pid", None)
+    if os.name == "nt":
+        leftover = readers_alive or bool(
+            isinstance(pid, int) and pid > 0 and collect_descendants(pid)
+        )
+    else:
+        leftover = readers_alive or bool(group_id and collect_process_group(group_id))
+    if not leftover:
+        return
+    terminate(process)
+    if os.name != "nt" and group_id:
+        terminate_process_group(group_id)
+    for reader in readers:
+        reader.join(timeout=2.0)
 
 
 def _kill_own_process_group(pid: int) -> list[int]:

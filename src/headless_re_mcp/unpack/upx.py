@@ -222,7 +222,7 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
     """Stop upx and anything it started; the configured path may be a wrapper."""
     from headless_re_mcp.core.process_tree import terminate_process_tree
 
-    terminate_process_tree(process, wait_s=5.0)
+    terminate_process_tree(process, wait_s=5.0, kill_group=os.name != "nt")
 
 
 def _capture_process(
@@ -256,6 +256,11 @@ def _capture_process(
             "upx process did not expose stdout/stderr pipes",
         )
 
+    # start_new_session (POSIX) makes upx its own group leader, so the group id
+    # is its pid -- used to find and kill a reparented child by group after upx
+    # exits, when the parent/child walk sees nothing.
+    group_id = int(getattr(process, "pid", 0) or 0) if os.name != "nt" else 0
+
     limit_event = Event()
     stdout_capture = _CapturedStream(max_output_size)
     stderr_capture = _CapturedStream(max_output_size)
@@ -277,6 +282,7 @@ def _capture_process(
     deadline = monotonic() + timeout
     timed_out = False
     cancelled = False
+    exited = False
     stop = active_bound_cancel()
     while True:
         if stop is not None and stop.is_set():
@@ -292,11 +298,24 @@ def _capture_process(
             _terminate_process(process)
             break
         if process.poll() is not None:
+            exited = True
             break
         sleep(min(0.05, remaining))
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
+    if exited:
+        # A clean exit can still leave a helper upx spawned and orphaned to init:
+        # invisible to the ppid walk and holding none of our pipes. Sweep the
+        # session group so a finished unpack leaves nothing behind.
+        from headless_re_mcp.core.process_tree import reap_exited_launcher
+
+        reap_exited_launcher(
+            process,
+            group_id=group_id,
+            readers=(stdout_thread, stderr_thread),
+            terminate=_terminate_process,
+        )
     # The readers close their own pipes; only close here when the reader has
     # finished, so a reader still blocked on a survivor's pipe never wedges this
     # thread on close().

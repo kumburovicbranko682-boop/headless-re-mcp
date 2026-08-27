@@ -294,6 +294,11 @@ def _capture_process(
             "diec process did not expose stdout/stderr pipes",
         )
 
+    # start_new_session (POSIX) makes diec its own group leader, so the group id
+    # is its pid -- used to find and kill a reparented child by group after diec
+    # exits, when the parent/child walk sees nothing.
+    group_id = int(getattr(process, "pid", 0) or 0) if os.name != "nt" else 0
+
     limit_event = Event()
     stdout_capture = _CapturedStream(max_output_size)
     stderr_capture = _CapturedStream(max_output_size)
@@ -360,6 +365,18 @@ def _capture_process(
         # truncate a short-lived process's final JSON bytes.
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
+        if not (timed_out or limited or cancelled):
+            # A clean exit can still leave a helper diec spawned and orphaned to
+            # init: invisible to the ppid walk and holding none of our pipes.
+            # Sweep the session group so a finished scan leaves nothing behind.
+            from headless_re_mcp.core.process_tree import reap_exited_launcher
+
+            reap_exited_launcher(
+                process,
+                group_id=group_id,
+                readers=(stdout_thread, stderr_thread),
+                terminate=_terminate_process,
+            )
         # The readers close their own pipes; only close here when the reader has
         # already finished, so a reader still blocked on a survivor's pipe never
         # wedges this thread on close().
@@ -417,7 +434,7 @@ def _terminate_process(process: Any) -> None:
     """
     from headless_re_mcp.core.process_tree import terminate_process_tree
 
-    terminate_process_tree(process, wait_s=1.0)
+    terminate_process_tree(process, wait_s=1.0, kill_group=os.name != "nt")
 
 
 def _close_pipe(pipe: Any) -> None:
