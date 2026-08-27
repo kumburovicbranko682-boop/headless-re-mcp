@@ -704,7 +704,12 @@ class FridaClient:
         *,
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
-        device = self._resolve_device(device_id)
+        # Validate the package before resolving the device, matching
+        # java_enumerate's class_name / name_filter ordering: a malformed local
+        # argument should fail fast and precisely (invalid_params) rather than
+        # after the cost of resolving a device, or hidden behind the
+        # capability_unavailable that _resolve_device raises when frida is
+        # missing -- a bad package id is a bad package id with or without a device.
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
         pkg = package.strip()
@@ -714,6 +719,7 @@ class FridaClient:
                 "package must be an Android package id",
                 package=pkg,
             )
+        device = self._resolve_device(device_id)
         deadline = _bound_timeout(timeout)
         pids: list[int] = []
 

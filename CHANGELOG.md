@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（frida.spawn 在解析设备前先校验 package，与 java_enumerate 的 fail-fast 次序看齐）
+
+- `frida.spawn` 过去先 `_resolve_device` 再校验 `package`;而兄弟 `java_enumerate` 明确把便宜的本地字符串校验
+  (`class_name` / `name_filter` 的界)放在 `_resolve_device` 之前,好让畸形输入在任何设备工作之前就以精确的
+  `invalid_params` 失败。spawn 的次序与之不一致:一个畸形 package(空、非包名 id)在没装 frida 或没连设备的主机
+  上,会被 `_resolve_device` 抛的 `capability_unavailable` / `backend_error` 盖过,而不是它应得的
+  `invalid_params`,还白付了一次它根本用不上的设备解析代价。
+- 现把 package 的 required + Android 包名 regex 校验移到 `_resolve_device` 之前(该 regex 有锚点、每段强制以
+  `.` 前缀,无灾难性回溯,故无需再加长度界)。行为的净变化:畸形 package 一律先拿到 `invalid_params`,与 device
+  / frida 是否就绪无关。
+- `tests/unit/test_frida_fields.py` 新增一例:畸形 package 在 `_resolve_device` 被调用之前即以 `invalid_params`
+  拒掉(resolved 保持空),合法 package 恰好解析设备一次。
+
 ### 加固（把 frida.java 工具的 pid 参数在 schema 层收敛为非负并文档化其契约）
 
 - `frida.java.classes` / `frida.java.methods` 的 `pid` 过去是裸 `int`(默认 0),而它是 OS 进程号:唯一哨兵是

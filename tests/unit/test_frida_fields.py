@@ -390,6 +390,40 @@ def test_frida_spawn_refuses_a_path_or_bare_name() -> None:
     assert "There is no process_id" in doc
 
 
+def test_frida_spawn_refuses_a_bad_package_before_resolving_the_device() -> None:
+    """A malformed package must fail before any device work, like java_enumerate.
+
+    spawn used to resolve the device first and validate the package after, so a
+    bad package id on a host without frida (or with no device attached) surfaced
+    as the resolver's capability_unavailable / backend_error instead of the
+    precise invalid_params the input warranted -- and paid the cost of resolving
+    a device it was never going to use. The package check now runs first:
+    resolved stays empty on a bad package and only fills once it is well-formed.
+    """
+    from headless_re_mcp.backends.frida.client import FridaError
+
+    resolved: list[str | None] = []
+
+    def _recording_resolve(device_id: str | None) -> _SpawnDevice:
+        resolved.append(device_id)
+        return _SpawnDevice()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = _recording_resolve  # type: ignore[method-assign]
+
+    for package in ("", "   ", "notapackage", "/system/bin/sh"):
+        with pytest.raises(FridaError) as caught:
+            client.spawn("usb", package)
+        assert caught.value.code == "invalid_params"
+    assert resolved == [], "a malformed package must not reach _resolve_device"
+
+    payload = client.spawn("usb", "com.example.app")
+    assert payload["pid"] == 4242
+    assert resolved == ["usb"], "a well-formed package resolves the device exactly once"
+
+
 def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:
     """device.spawn / resume with no deadline parked a worker forever.
 
