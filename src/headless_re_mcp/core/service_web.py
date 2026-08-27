@@ -168,8 +168,22 @@ class WebAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def web_console(self, session_id: str, limit: int = 200) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "console", session_id, limit=limit)
+    def web_console(
+        self,
+        session_id: str,
+        limit: int = 200,
+        *,
+        level: str | None = None,
+        text_contains: str | None = None,
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "console",
+            session_id,
+            limit=limit,
+            level=level,
+            text_contains=text_contains,
+        )
 
     def web_cookies(self, session_id: str) -> Result[JsonObject]:
         return self._web_wrap(session_id, "cookies", session_id)

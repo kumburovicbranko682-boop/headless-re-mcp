@@ -1352,6 +1352,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (`test_web_re_gate.py`)对真实 Chrome 抓到的 `/index.html`(Document)与 `/app.js`(Script):`url_contains="app.js"` 命中子资源且置 `filtered`/`captured`、`resource_type="Script"` 只留脚本请求、
   `method="GET"` 配 2xx 区间仍留住它、无意义子串给出空的已过滤视图(`total` 0)而非整环。
 
+- **`web.console` 只能取最近 N 条,一页嘈杂的控制台(几百条 debug/log 里夹着那一条 error)只能全量翻,挑不出关心的那几条——与已加过滤的 `web.network.list`/`proxy.flows` 一边繁一边简。**
+  现把同一套过滤镜像到 `web.console`(彼此 AND,然后仍取命中集里最近的 N 条):`level`(对消息 `type` 大小写不敏感精确匹配——CDP consoleAPICalled 词表 log/info/warning/error/debug/trace 等,故 `level`
+  error 只留错误、不含警告)、`text_contains`(消息文本大小写不敏感子串;文本在抓取时已按每条上限裁剪,故子串比对的是裁剪后的形态)。空白过滤串按「无过滤」处理,既不匹配全部也不匹配空。命中后新增
+  `filtered`(为真)与 `captured`(过滤前缓冲区条数),`has_more` 转为对命中集的最近 N 视图翻页;`dropped` 仍是控制台环已淘汰的条数(抓包属性,与过滤无关)。工具描述补上这些过滤与 `filtered`/`captured`
+  语义并点明每行有 `type`/`text`(保留原有「最近 N 视图」「预算裁剪保留最新」「`text_truncated`」说明)。这是修改既有工具而非新增,工具面计数不变。单测(`test_web_console_filters.py`,复用
+  `web.network.list` 过滤测试的形制):level 精确/大小写、text 子串、多过滤 AND、空白串忽略、命中集的最近 N 视图翻页与 `has_more`、`dropped` 不受过滤影响。实机 gate(`test_web_re_gate.py`)对真实 Chrome
+  抓到的 `console.log('gate-ready')`:`text_contains="gate-ready"` 与 `level="log"` 都留住它并置 `filtered`/`captured`,不匹配子串给出空的已过滤视图、`level="error"` 不含该条——端到端走真实 `_console_matches`
+  而非仅单测 fake。
+
 - **新增 `apk.disassemble`:直接从 androguard 读出某方法的 Dalvik 字节码指令,回答 `apk.xrefs` 只能指到而答不出的「这个方法到底做了什么」。** 现有反编译 `apk.decompile`(jadx,需 Java/JRE)与
   `apk.decode`(apktool 的 baksmali)都依赖外部工具,本机没装就用不了;本工具走 androguard 的 `EncodedMethod.get_instructions`,**不需要 jadx/JRE 或 apktool**,与 WASM 那套无依赖二进制读取同一思路。
   按 `class_name`+`method_name` 定位(类名接受点分 `com.example.X` 或 smali `Lcom/example/X;` 两种形式);方法名有重载时,`overloads` 列出该名下所有描述符、默认按描述符排序取第一个,传 `descriptor`

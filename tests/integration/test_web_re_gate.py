@@ -140,6 +140,33 @@ def test_web_cdp_open_and_inspect() -> None:
                 )
 
             assert _wait_until(_console_has_marker), "console.log was not captured over CDP"
+
+            # The console filters run against the same live capture: the marker is
+            # a console.log, so a text substring and level "log" both keep it,
+            # while a non-matching substring and level "error" both drop it and
+            # flag the narrowing. This exercises _console_matches end to end, not
+            # only the unit fakes.
+            def _console_text(res: Any) -> list[str]:
+                return [e.get("text") or "" for e in res.data["console"]]
+
+            by_text = service.web_console(session_id, text_contains="gate-ready")
+            assert by_text.ok, by_text.error
+            assert any("gate-ready" in t for t in _console_text(by_text))
+            assert by_text.data["filtered"] is True
+            assert by_text.data["captured"] >= by_text.data["count"]
+
+            by_level = service.web_console(session_id, level="log")
+            assert by_level.ok, by_level.error
+            assert any("gate-ready" in t for t in _console_text(by_level))
+
+            miss_text = service.web_console(session_id, text_contains="no-such-console-marker")
+            assert miss_text.ok, miss_text.error
+            assert miss_text.data["count"] == 0
+            assert miss_text.data["filtered"] is True
+
+            miss_level = service.web_console(session_id, level="error")
+            assert miss_level.ok, miss_level.error
+            assert all("gate-ready" not in t for t in _console_text(miss_level))
         finally:
             service.web_close(session_id)
     finally:

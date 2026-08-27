@@ -134,7 +134,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.console")
     def web_console(
-        session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 200
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        level: str | None = None,
+        text_contains: str | None = None,
     ) -> dict[str, Any]:
         """Return recent browser console messages.
 
@@ -144,9 +147,25 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         result-size budget trims the page it keeps the newest messages and
         drops the oldest, setting has_more, so count may be below the limit.
         A line longer than the per-message cap is cut and marked
-        text_truncated.
+        text_truncated. Each row has type (log, info, warning, error, debug,
+        trace ...) and text.
+
+        Optional filters narrow a noisy console and are ANDed, then the
+        most-recent N of the matches are returned: level is an exact
+        case-insensitive match on a row's type (so level error selects only
+        errors, not warnings); text_contains is a case-insensitive substring of
+        the message text (tested against the per-message-capped text). When a
+        filter is active the reply adds filtered true and captured (the
+        pre-filter buffer size), and has_more then pages the filtered tail.
+        dropped stays the ring-eviction count regardless of any filter. An empty
+        or whitespace-only filter string is ignored rather than matching
+        everything or nothing.
         """
-        return _dump(analysis.web_console(session_id, limit=limit))
+        return _dump(
+            analysis.web_console(
+                session_id, limit=limit, level=level, text_contains=text_contains
+            )
+        )
 
     @tools.tool(name="web.cookies")
     def web_cookies(session_id: str) -> dict[str, Any]:

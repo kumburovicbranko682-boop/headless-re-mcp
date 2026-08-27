@@ -256,6 +256,26 @@ def _request_matches(
     return True
 
 
+def _console_matches(
+    entry: JsonObject, *, level: str | None, text_contains: str | None
+) -> bool:
+    """True when a console message passes every active filter (filters are ANDed).
+
+    ``level`` is an exact case-insensitive match on the message ``type`` field
+    (the CDP consoleAPICalled vocabulary -- log, info, warning, error, debug,
+    trace ...), so ``error`` selects only errors, not warnings. ``text_contains``
+    is a case-insensitive substring of the joined message text; that text was
+    already clipped to the per-message cap on capture, so the substring is tested
+    against the clipped form, not the page's original argument. Mirrors the
+    proxy.flows / network_list filter shape so the capture surfaces read the same.
+    """
+    if level is not None and str(entry.get("type") or "").casefold() != level.casefold():
+        return False
+    if text_contains is None:
+        return True
+    return text_contains.casefold() in str(entry.get("text") or "").casefold()
+
+
 def _accumulate_headers(
     store: OrderedDict[str, dict[str, str]], request_id: str, raw: object
 ) -> None:
@@ -1008,13 +1028,34 @@ class WebBackend:
             "session_storage_truncated": session_cut,
         }
 
-    def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
+    def console(
+        self,
+        session_id: str,
+        *,
+        limit: int = 200,
+        level: str | None = None,
+        text_contains: str | None = None,
+    ) -> JsonObject:
         handle = self._get(session_id)
         capped = max(1, min(int(limit), _MAX_CONSOLE))
         with handle.lock:
             held = list(handle.console)
             dropped = handle.console_dropped
-        page = held[-capped:]
+        level_f = _norm_str_filter(level)
+        text_f = _norm_str_filter(text_contains)
+        filtered = level_f is not None or text_f is not None
+        # Filter the whole buffer first, then take the most-recent N of the
+        # matches, so has_more describes the filtered tail the caller is actually
+        # reading (not the raw ring). dropped stays a property of the capture ring
+        # -- what it already evicted, independent of any filter -- and captured
+        # reports the pre-filter buffer size, mirroring network_list / proxy.flows
+        # so the capture surfaces read the same.
+        matched = (
+            [row for row in held if _console_matches(row, level=level_f, text_contains=text_f)]
+            if filtered
+            else held
+        )
+        page = matched[-capped:]
         # Bound the page by its JSON-encoded size too: each message text is
         # capped at 8 KiB, so a 2000-row page can reach ~16 MB and be discarded
         # whole by the transport for a ~16 KiB summary. This is a "last N" view
@@ -1026,12 +1067,18 @@ class WebBackend:
             list(reversed(page)), reserve=_LIST_FIELD_RESERVE
         )
         page = list(reversed(kept_recent))
-        return {
+        result: JsonObject = {
             "console": page,
             "count": len(page),
-            "has_more": len(held) > capped or budget_cut,
+            "has_more": len(matched) > capped or budget_cut,
             "dropped": dropped,
         }
+        if filtered:
+            # The recent-N view now counts only matches, so surface both the flag
+            # and the pre-filter buffer size to keep the narrowing honest.
+            result["filtered"] = True
+            result["captured"] = len(held)
+        return result
 
     def scripts(
         self,
