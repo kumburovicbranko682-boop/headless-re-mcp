@@ -24,6 +24,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（纯 Python .NET 托管读取器 MCP Gate）
+
+- 新集成 Gate `tests/integration/test_dotnet_managed_mcp_gate.py`（纯 Python,任何平台可跑)补上
+  一条实打实的缺口:.NET 元数据读取器是纯 Python(不依赖 IDA/de4dot),但唯一的端到端 gate
+  (`test_dotnet_m6_gate.py`)要有 `HEADLESS_RE_DE4DOT` + 真实样本才不 skip,于是裸 Linux 上整
+  个 .NET 工具面只有单测直调函数在跑,没有任何东西经**真实 MCP 服务器**驱动
+  `dotnet.inspect/enumerate/il/xrefs`,也没有钉住工具边界上的 fail-closed 契约。本 Gate 用三个
+  无需外部工具的输入做到:
+  - 测试内构造一个真正可验证的合成 CLR 映像(合法 PE + COR20 + BSJB 元数据根):读取器必须
+    verify 通过并读回真实头部事实(runtime 2.5、`v4.0.30319`、入口 token `0x06000001`、ILONLY、
+    `pure_managed`),元数据工具以纯 Python `dotnet_metadata` 后端应答(`not_ida_idalib=true`、
+    从不谎称是 IDA、不声称通用脱壳)。
+  - 已提交的 `fixtures/dotnet/minimal_clr_hint.exe`(有 CLR 目录 hint 但元数据不可验证):
+    `require_verified` inspect 与每个元数据工具都以 `clr_unverified` 失败闭合,不崩溃、不去够外部
+    反混淆器。
+  - 一个纯原生 PE:`dotnet.inspect` 判定 `is_dotnet=false` / `not_dotnet`,strict 模式给
+    `not_dotnet` 错误。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
