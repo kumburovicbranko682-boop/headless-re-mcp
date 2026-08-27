@@ -156,6 +156,35 @@ def _drain_proxy_servers(master: Any, loop: asyncio.AbstractEventLoop) -> None:
         future.result(timeout=_SERVER_STOP_WAIT_S)
 
 
+def _content_family(raw: object) -> str:
+    """Bucket a content-type into a small, fixed set for the capture summary.
+
+    The mime subtype space is unbounded (vendor types, +suffixes), so tallying
+    raw content-type strings would let one capture blow the summary up; the
+    families are a fixed vocabulary that keeps the distribution readable.
+    """
+    text = str(raw or "").split(";")[0].strip().lower()
+    if not text:
+        return "none"
+    if "json" in text:
+        return "json"
+    if "javascript" in text or "ecmascript" in text:
+        return "javascript"
+    if "xml" in text:
+        return "xml"
+    if text == "text/html" or text.endswith("+html"):
+        return "html"
+    if text.startswith("image/"):
+        return "image"
+    if text.startswith("font/") or "font" in text:
+        return "font"
+    if text.startswith("text/"):
+        return "text"
+    if text.startswith("application/"):
+        return "binary"
+    return "other"
+
+
 def _content_len(part: Any) -> int:
     if part is None:
         return 0
@@ -641,6 +670,62 @@ class ProxyBackend:
             "total": len(items),
             "offset": start,
             "has_more": start + len(window) < len(items),
+            "dropped": dropped,
+        }
+
+    def summary(self, session_id: str) -> JsonObject:
+        """Whole-capture triage: distributions over the retained flow summaries.
+
+        Reads the same summary ring flows pages, so it counts what is still
+        retained (capped at _MAX_FLOWS); dropped is how many the ring already
+        evicted, so the tallies are not misread as the whole session's history.
+        """
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        status_classes = {"1xx": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
+        methods: dict[str, int] = {}
+        content_types: dict[str, int] = {}
+        hosts: set[str] = set()
+        errored = 0
+        no_status = 0
+        body_omitted = 0
+        total_response_bytes = 0
+        for entry in items:
+            if entry.get("error"):
+                errored += 1
+            if entry.get("body_omitted"):
+                body_omitted += 1
+            status = entry.get("status")
+            if isinstance(status, int) and 100 <= status <= 599:
+                status_classes[f"{status // 100}xx"] += 1
+            else:
+                # An errored flow carries a null status; count it as unanswered
+                # rather than forcing it into a status class it never had.
+                no_status += 1
+            method = str(entry.get("method") or "")
+            if method:
+                methods[method] = methods.get(method, 0) + 1
+            family = _content_family(entry.get("content_type"))
+            content_types[family] = content_types.get(family, 0) + 1
+            host = str(entry.get("host") or "")
+            if host:
+                hosts.add(host)
+            size = entry.get("response_size")
+            if isinstance(size, int) and size > 0:
+                total_response_bytes += size
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        return {
+            "total": len(items),
+            "hosts": len(hosts),
+            "status_classes": status_classes,
+            "methods": methods,
+            "content_types": content_types,
+            "errored": errored,
+            "no_status": no_status,
+            "body_omitted": body_omitted,
+            "total_response_bytes": total_response_bytes,
             "dropped": dropped,
         }
 

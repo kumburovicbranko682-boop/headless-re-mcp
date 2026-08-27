@@ -74,6 +74,24 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_flows(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="proxy.summary")
+    def proxy_summary(session_id: str) -> dict[str, Any]:
+        """Triage a whole capture at once: distributions over the retained flows.
+
+        The overview that reading proxy.flows page by page would have to build
+        by hand. Answers with total, hosts (distinct host count), status_classes
+        (fixed 1xx..5xx counts), methods (GET/POST/... counts), content_types
+        (counts bucketed into a fixed family set: json, javascript, xml, html,
+        image, font, text, binary, other, none), errored (flows mitmproxy could
+        not complete, which carry a null status), no_status (errored plus any
+        other flow with no numeric status), body_omitted (bodies over the retain
+        cap), total_response_bytes, and dropped. Counts only what the ring still
+        holds (capped at 2000); dropped is how many were already evicted, so the
+        tallies are not read as the session's whole history. There is no flows
+        or items field -- this is the aggregate, not the per-flow list.
+        """
+        return _dump(analysis.proxy_summary(session_id))
+
     @tools.tool(name="proxy.flow.get")
     def proxy_flow_get(session_id: str, flow_id: str) -> dict[str, Any]:
         """Fetch one flow's headers and bodies (large or binary bodies spill).
