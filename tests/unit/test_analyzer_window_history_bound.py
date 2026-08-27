@@ -8,6 +8,7 @@ one permanent string per sighting for the life of the worker.
 
 from __future__ import annotations
 
+import queue
 from collections import deque
 from itertools import count
 from threading import Lock
@@ -36,6 +37,10 @@ def _bare_ida_client() -> IdaWorkerClient:
     client._stderr_log = deque(maxlen=100)
     client._observed_windows = set()
     client._observed_windows_dropped = 0
+    # _diagnostics() also reports the bounded pending-message queue, so a bare
+    # client needs those attributes too, exactly as __init__ sets them.
+    client._messages = queue.Queue(maxsize=ida_client._MAX_PENDING_WORKER_MESSAGES)
+    client._messages_dropped = 0
     return client
 
 
