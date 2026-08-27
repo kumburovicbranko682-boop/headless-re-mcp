@@ -415,6 +415,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   在截断前按子串 `m.name.indexOf(filter) !== -1` 过滤（与 `classes` 同一范式，大小写敏感），返回的 `total` 是匹配数、
   `has_more` 据此计算，故按名字即可把任意模块捞进页内、进而拿到精确名喂给 `frida.exports`。JS 仍最多 push `cap` 条、
   `total` 走计数，不会把整张模块表序列化成一坨 JSON。`frida.modules` 的既有无过滤行为不变（`name_filter` 默认空）。
+- **`frida.exports` 同一个坑，只是低一层**：只有 `limit`（上限 512）、无 offset、无导出名过滤，一个大模块
+  （libc、libcrypto、带上千符号的混淆 `.so`）里排在 512 之后的导出无从触达——可「拿到某个目标符号（如
+  `SSL_write`）的地址去 hook」正是这个工具存在的全部意义。现在 `frida.exports` 加 `name_filter`：agent 端在截断前
+  按子串 `e.name.indexOf(filter) !== -1` 过滤（与 `frida.modules` / `classes` 同一范式，大小写敏感），`has_more` 仍
+  沿用「多取一条」的探针机制，故目标符号即便埋在 512 之后也能连同地址一并捞出。既有无过滤行为不变
+  （`name_filter` 默认空）。至此 frida 的三个枚举器（modules / exports / java.classes）都能按名字收敛，
+  `frida.modules(name_filter)` → 精确模块名 → `frida.exports(module, name_filter)` → 精确符号地址这条链彻底打通。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`
   按数量、`UNREGISTERED_CAPTURE_MAX_BYTES` 按总量，比只裁数量更全），那个函数与常量遂再无调用方，只剩

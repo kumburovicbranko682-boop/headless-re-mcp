@@ -104,15 +104,19 @@ def test_frida_modules_name_filter_reaches_past_the_page() -> None:
     assert payload["has_more"] is False
 
 class _ExportApi:
-    def exports(self, name: str, count: int) -> dict[str, Any]:
+    def exports(self, name: str, name_filter: str, count: int) -> dict[str, Any]:
+        # Mirror the agent: filter first, then honor the caller's cap (limit+1).
+        rows = [
+            {"name": f"e{index}", "address": "0x2", "type": "function"}
+            for index in range(25)
+        ]
+        if name_filter:
+            rows = [row for row in rows if name_filter in row["name"]]
         return {
             "found": True,
             "module": name,
             "base": "0x1",
-            "exports": [
-                {"name": f"e{index}", "address": "0x2", "type": "function"}
-                for index in range(int(count))
-            ],
+            "exports": rows[: int(count)],
         }
 
 
@@ -152,6 +156,24 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert payload["has_more"] is True
     doc = _tool_docstring("frida.exports")
     assert "has_more" in doc
+    assert "name_filter" in doc
+
+
+def test_frida_exports_name_filter_finds_a_symbol_past_the_cap() -> None:
+    """No offset means a specific export must be reachable by name.
+
+    Filter 'e2' against the 25-export fake matches e2 and e20..e24 -> count 6,
+    has_more False, and the page is drawn only from matches, so a target symbol
+    the unfiltered first page would bury is found together with its address.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _ExportFrida()
+    payload = client.exports(1, "libc.so", allowed_pid=1, limit=64, name_filter="e2")
+    names = {row["name"] for row in payload["exports"]}
+    assert names == {"e2", "e20", "e21", "e22", "e23", "e24"}
+    assert payload["count"] == 6
+    assert payload["has_more"] is False
 
 
 class _Dev:

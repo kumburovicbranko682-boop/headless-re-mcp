@@ -110,7 +110,7 @@ rpc.exports = {
     }
     return {modules: items, total: total};
   },
-  exports: function (moduleName, limit) {
+  exports: function (moduleName, filter, limit) {
     var mod = Process.findModuleByName(moduleName);
     if (mod === null) {
       return {found: false, exports: []};
@@ -119,6 +119,9 @@ rpc.exports = {
     var items = [];
     for (var i = 0; i < all.length && items.length < limit; i++) {
       var e = all[i];
+      if (filter && e.name.indexOf(filter) === -1) {
+        continue;
+      }
       items.push({name: e.name, address: e.address.toString(), type: e.type});
     }
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
@@ -371,6 +374,7 @@ class FridaClient:
         *,
         allowed_pid: int,
         limit: int = 64,
+        name_filter: str = "",
     ) -> JsonObject:
         self._require(pid, allowed_pid)
         if not isinstance(module_name, str) or not module_name.strip():
@@ -380,7 +384,13 @@ class FridaClient:
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
-            raw = script.exports_sync.exports(module_name.strip(), capped + 1)
+            # A substring name filter, applied in-agent before the cap, is the
+            # only way to reach an export past the cap in a big module (libc,
+            # libcrypto, an obfuscated .so with thousands of symbols) -- there is
+            # no offset -- and finding one target symbol's address is the whole
+            # point of this tool. Mirrors frida.modules / frida.java.classes.
+            needle = name_filter.strip() if isinstance(name_filter, str) else ""
+            raw = script.exports_sync.exports(module_name.strip(), needle, capped + 1)
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
             page, has_more = _page(list(raw.get("exports") or []), capped)

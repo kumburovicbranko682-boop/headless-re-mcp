@@ -52,14 +52,22 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         module_name: str,
         limit: Annotated[int, Field(ge=1, le=512)] = 64,
+        name_filter: str = "",
     ) -> dict[str, Any]:
         """List exports of one named module in the session debuggee via a Frida probe.
 
         Answers with found, module, base, and exports (name, address, type),
         plus count and has_more so a page that filled the limit is not read
-        as the whole export table. Limited to the debuggee pid.
+        as the whole export table. name_filter keeps only exports whose name
+        contains that substring (case-sensitive), applied before the cap, so a
+        target symbol (e.g. SSL_write) in a big module is findable rather than
+        buried past the limit. Limited to the debuggee pid.
         """
-        return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
+        return _dump(
+            analysis.frida_exports(
+                session_id, module_name, limit=limit, name_filter=name_filter
+            )
+        )
 
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
