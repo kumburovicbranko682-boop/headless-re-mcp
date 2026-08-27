@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 jsre 的列举/输入守卫与 _run 错误分类钉进测试）
+
+- jsre 线有三个纯 helper 决定它报什么、收什么,却薄测或没测:`_capped_file_listing` 从两个维度约束
+  `js.unpack_bundle` 的目录列举(返回名数 `cap` 与遍历总数 `_MAX_COUNTED_FILES`),它的 `has_more` 是
+  agent 得知列举被裁剪的唯一信号——一个填满 cap 却报 `has_more=False` 的列举会让 agent 以为看全了所有解包
+  文件;`_looks_like_wasm` 的魔数有/无已在别处钉住,但读不开路径那条(必须为 False 而非崩)没测;
+  `_require_existing_file` 是每个 jsre 工具把文件交给子进程前的大小/存在守卫。
+- 新增 `tests/unit/test_jsre_pure_helpers.py`(不需 webcrack/wabt):`_capped_file_listing` 钉住名数封顶
+  内排序返回、超 cap 时仍数全并置 `has_more`、非目录/缺失根回空、只数文件不数目录且嵌套按相对路径、
+  到遍历上限即停且 total 不越界;`_looks_like_wasm` 对目录路径回 False;`_require_existing_file` 缺失回
+  `not_found`、正常回原文件、超字节上限回 `too_large` 并带 size/max_file_size;并直接驱动 `_run` 钉住其
+  错误分类——`InvalidTimeout`→`invalid_params`、超时→`timeout` 且带 `killed_pids`、启动失败(OSError)→
+  `backend_error`。`jsre/client.py` 中 50/53/61、100-101、78/84-91、109-121 补齐,纯补测、不改行为。
+
 ### 加固（把 classify_target 的目标路由矩阵钉进测试）
 
 - `classify_target` 是多线分析器的前门:它决定一个进来的目标交给 PE / APK / Web 哪条线,而且**先信后缀
