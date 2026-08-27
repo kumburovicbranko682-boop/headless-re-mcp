@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（ghidra 导出非零退出但已落盘时不再伪装成完整结果）
+
+- `ghidra` 的 `_export`(functions/symbols/xrefs/decompile 共用)只在导出 JSON 缺失时硬失败;
+  analyzeHeadless 非零退出但 `ExportJson.py` 已把「崩溃前分析到的部分」写盘时,按「拿到什么回什么」
+  保留该文件。但返回的 payload 与一次干净导出一模一样,调用方无从分辨「整段列表」与「Ghidra 中途
+  出错、这些是幸存的」——于是一份被 JVM OOM 或脚本异常截断的短列表被读成整个二进制。现按 jadx
+  `_note_partial_decompile` 与 js/wasm `_note_nonzero_exit` 同款契约,非零退出时给 payload 补
+  `tool_failed=true` 与 `exit_code`(有 stderr 时附 `stderr`);`tool_failed` 与逐列表的
+  `has_more`/`truncated`(讲分页/截断)正交,讲的是 Ghidra 本身报了错、结果可能不完整。四个导出型
+  工具的描述同步点明该标志。回归测试以打桩的 `run_bounded`(非零退出但写出 JSON)覆盖部分导出与
+  干净导出两种情形,不依赖真实 Ghidra。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

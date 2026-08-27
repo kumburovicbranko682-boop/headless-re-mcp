@@ -342,6 +342,59 @@ def test_ghidra_refuses_an_oversized_export_json(
     assert caught.value.code == "too_large"
 
 
+def _run_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    code: int,
+    stderr: bytes = b"",
+    payload: str = '{"items": [{"name": "f", "entry": "0x1000", "body_size": 4}]}',
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text(payload, encoding="utf-8")
+        return Completed(code, b"ran", stderr)
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+
+
+def test_ghidra_export_flags_a_partial_result_when_headless_exits_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-zero exit with the export on disk is kept, but marked partial.
+
+    ExportJson.py can write what Ghidra analysed before analyzeHeadless errored
+    out (a JVM OOM near the end, a script exception), so _export returns the
+    file rather than raising. Without a flag that listing read as the whole
+    binary. tool_failed/exit_code say the run failed so the export may be short.
+    """
+    _run_writing(monkeypatch, code=3, stderr=b"java.lang.OutOfMemoryError")
+    client = _client(tmp_path)
+    payload = client.functions(_binary(tmp_path), tmp_path / "project")
+    assert payload["items"], "the partial listing is still returned, not dropped"
+    assert payload["tool_failed"] is True
+    assert payload["exit_code"] == 3
+    assert "OutOfMemoryError" in payload["stderr"]
+
+
+def test_ghidra_export_does_not_flag_a_clean_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run_writing(monkeypatch, code=0)
+    client = _client(tmp_path)
+    payload = client.functions(_binary(tmp_path), tmp_path / "project")
+    assert payload["items"]
+    assert "tool_failed" not in payload
+    assert "exit_code" not in payload
+    assert "stderr" not in payload
+
+
+def test_ghidra_export_descriptions_disclose_the_partial_flag() -> None:
+    for name in ("ghidra.functions", "ghidra.symbols", "ghidra.xrefs", "ghidra.decompile"):
+        assert "tool_failed" in _tool_docstring(name), f"{name} must disclose tool_failed"
+
+
 @pytest.mark.parametrize(
     ("payload", "error_type"),
     [

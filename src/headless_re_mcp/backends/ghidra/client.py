@@ -15,12 +15,34 @@ _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
+_MAX_STDERR = 4000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
 
 
 def _project_lock(project_dir: Path) -> Any:
     key = os.path.normcase(str(project_dir.expanduser().resolve()))
     return _PROJECT_LOCKS[hash(key) % len(_PROJECT_LOCKS)]
+
+
+def _note_partial_export(payload: JsonObject, *, code: int, stderr: str) -> JsonObject:
+    """Say when analyzeHeadless exited non-zero but still wrote the export.
+
+    ``_export`` only fails hard when the JSON is missing; a non-zero exit with
+    the file on disk is kept because the postScript still wrote whatever Ghidra
+    managed to analyse before the run errored out. But the payload then looked
+    exactly like a clean export, so a caller could not tell a whole listing (or
+    decompilation) from one Ghidra abandoned partway. ``tool_failed`` mirrors
+    the jadx and js/wasm readers: it means analyzeHeadless itself reported
+    failure, so the result may be incomplete for a reason not visible here. It
+    is distinct from the per-list ``truncated``/``has_more`` flags, which are
+    only about paging a complete export.
+    """
+    if code != 0:
+        payload["exit_code"] = code
+        payload["tool_failed"] = True
+        if stderr.strip():
+            payload["stderr"] = stderr[:_MAX_STDERR]
+    return payload
 
 
 class GhidraError(RuntimeError):
@@ -256,6 +278,7 @@ class GhidraClient:
             raise GhidraError("backend_error", "export JSON must be an object")
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
+        _note_partial_export(payload, code=code, stderr=stderr)
         if mode == "decompile":
             # The postScript records `function`/`entry` only when it found one
             # containing the address; an address inside no function comes back
