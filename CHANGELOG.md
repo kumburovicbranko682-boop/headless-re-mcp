@@ -82,6 +82,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 测试（device.launch 复核应用是否真到前台）
+
+- `force_stop` / `install` / `uninstall` 都带 true/false/null 三态并已钉死,而 `device.launch` 形状
+  相同却一个测试都没有。monkey 返回并不证明应用起来了——它可能撞上崩溃、权限弹窗,或干脆没到前台——
+  所以 launch 会回读 `app_current` 并报:前台包正是所请求包时 `launched=True`、前台是别的应用或读不到
+  包名时 `launched=False`、连前台读取本身都失败时 `launched=None`(复核跑不起来),并带上它真正看到的
+  `foreground`。没有测试兜底,一个反转或写死的比较、或一个被吞掉的复核错误塌成猜测,都会让 agent 把
+  「monkey 跑了」读成「应用起来了」。新增回归:前台==请求包→`True` 且回显 `foreground`;前台是
+  `com.other.app`→`False` 且 `foreground` 指向真正在前台的应用(而非请求包);`app_current` 给出空包名
+  →`False`+`foreground=None`(确定的「不在前台」,与「无法复核」区分);`app_current` 抛错→`launched=None`
+  +note、不带 `foreground`;非法包名在碰设备前即以 `invalid_params` 拒绝(monkey 一次都不发);monkey
+  在设备上抛错→`backend_error`(而非静默 launched-false)。
+- 变异验证:把 `launched` 写死 True、把 `foreground == pkg` 反转成 `!=`、去掉 `app_current` 的
+  `except`(让错误穿透)、去掉 `_check_package`、把 `foreground` 字段改成取 `pkg` 而非真实回读,均分别
+  只被对应新测试逮住;源树零改动(仅新增测试与本条目)。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
