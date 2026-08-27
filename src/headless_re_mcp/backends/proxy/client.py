@@ -266,6 +266,16 @@ class _FlowRecorder:
         with self._lock:
             return len(self.flows)
 
+    def dropped(self) -> int:
+        """How many recorded flows the ring has already evicted.
+
+        ``_seq`` counts every response ever recorded; the deque only keeps the
+        newest ``capacity``. Their difference is what a reader can no longer
+        retrieve -- the signal that a page or a HAR is not the whole capture.
+        """
+        with self._lock:
+            return max(0, self._seq - len(self.flows))
+
     def retained_bytes(self) -> int:
         with self._lock:
             return self._retained_bytes
@@ -464,16 +474,13 @@ class ProxyBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
-        dropped = 0
-        if items:
-            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
         return {
             "flows": window,
             "count": len(window),
             "total": len(items),
             "offset": start,
             "has_more": start + len(window) < len(items),
-            "dropped": dropped,
+            "dropped": inst.recorder.dropped(),
         }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
@@ -579,7 +586,14 @@ class ProxyBackend:
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        # The capture ring holds only the newest _MAX_FLOWS flows; a longer
+        # session exports just those. Report how many were already evicted so a
+        # HAR is not read as the complete capture, matching proxy.flows.
+        return {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "dropped": inst.recorder.dropped(),
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):

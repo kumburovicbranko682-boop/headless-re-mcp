@@ -227,6 +227,30 @@ def test_proxy_export_har_names_path_and_entry_count(
     assert "output" not in payload
     assert payload["entry_count"] == 4
     assert payload["path"].endswith("capture.har")
+    # Nothing evicted from a fresh ring, so a clean export says dropped 0.
+    assert payload["dropped"] == 0
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+    assert "dropped" in doc
+
+
+def test_proxy_export_har_reports_flows_the_ring_evicted(tmp_path: Path) -> None:
+    """A HAR from a capture longer than the ring must not read as complete.
+
+    Measured: capacity 5, 12 responses -> the HAR holds the newest 5 entries
+    and dropped is 7, matching proxy.flows. Without dropped, a HAR of a long
+    session looks like the whole session.
+    """
+    recorder = _FlowRecorder(capacity=5)
+    for index in range(12):
+        request = SimpleNamespace(method="GET", pretty_url=f"http://x/{index}", host="x")
+        response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)
+    payload = backend.export_har("s", tmp_path / "capture.har")
+    assert payload["entry_count"] == 5
+    assert payload["dropped"] == 7

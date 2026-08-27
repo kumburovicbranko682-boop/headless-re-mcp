@@ -70,6 +70,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   退出再附一段有界 `stderr` 摘录；只在“非零退出且无任何输出”时才继续 fail-closed 抛 `backend_error`。
   退出码为零的常见路径行为不变（`clean_exit` 为真、不带 `stderr`）。
 
+### 修复（proxy.export_har 报告环形缓冲已丢弃的 flow 数）
+
+- `proxy.export_har` 过去只回 `path` 与 `entry_count`，而抓包环形缓冲只保留最新 `_MAX_FLOWS`（2000）
+  条；会话更长时导出的 HAR 只含最新那批，却没有任何“不完整”的信号——`proxy.flows` 早已回 `dropped`，
+  HAR 导出却没有。现把 `dropped` 计算收敛进 `_FlowRecorder.dropped()`，`proxy.flows` 与
+  `proxy.export_har` 共用同一实现：导出载荷新增 `dropped`，非零即表示 HAR 只是最新片段而非整段会话。
+
 ### 修复（ghidra.decompile 区分“该地址没有函数”与“反编译为空”）
 
 - `ghidra.decompile` 过去在给定地址不落在任何函数内时返回 `decompiled: ""`，与“确实反编译出空
