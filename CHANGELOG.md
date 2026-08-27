@@ -868,10 +868,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tests/integration/test_m11_ghidra_live_gate.py`:POSIX 现编小 ELF、经
   `HEADLESS_RE_GHIDRA_HOME` 跑真实 headless 导入+分析,断言选中 Unix 启动器、输出含成功报告、
   `-deleteProject` 未留下 `.gpr`/`.rep`;未配置 Ghidra/缺编译器时 skip(skip≠pass)。已在 Linux 对
-  真实 Ghidra 12.1.3 验证通过。另注:Ghidra 11.3+ 移除 Jython 改用 PyGhidra,`ExportJson.py`
-  (`@runtime Jython`)在其上会报「Ghidra was not started with PyGhidra」——functions/decompile 等
-  导出工具需 Jython 时代的 Ghidra(≤11.2)或后续迁移 PyGhidra,gate 因此钉的是与版本无关的
-  导入+分析主链路。
+  真实 Ghidra 12.1.3 验证通过。
+- **`ghidra.functions`/`symbols`/`xrefs`/`decompile` 在现代 Ghidra 上全部空手而归**。导出 postScript
+  `ExportJson.py` 标着 `@runtime Jython`,而 Ghidra 11.3 起移除了自带 Jython 改用 PyGhidra——在 11.3+
+  (含当前发行的 12.x)上,分析本身成功,但脚本阶段直接报「Ghidra was not started with PyGhidra.
+  Python is not available」,于是四个导出工具对任何近代 Ghidra 都取不到结果。现把 postScript 重写为
+  原生 `ExportJson.java`(Ghidra 的一等脚本语言,headless 下自动编译、无需任何额外运行时,且各版本通用),
+  保持原有 `mode/out_path/limit/address` 入参与 `{mode,items,count,has_more}`(decompile 另加
+  `function/entry/decompiled/truncated`)输出契约不变;JSON 手写转义,不依赖 Ghidra classpath 上是否有
+  JSON 库。客户端 `_EXPORT_SCRIPT` 相应改为 `ExportJson.java`,旧 Jython 脚本删除,pyproject 对应的
+  ruff/mypy 例外一并移除。`test_m11_ghidra_live_gate.py` 新增 export gate:对现编 ELF 跑
+  functions/symbols/xrefs/decompile,断言取到带 entry/body_size 的具名函数、带 type 的符号、
+  `main→helper` 的真实 CALL 边、以及点名被调者 `secret` 的反编译 C。已在 Linux 对真实 Ghidra 12.1.3
+  验证四个工具全部返回。
 
 ### 变更（Android 后端清理）
 

@@ -103,3 +103,48 @@ def test_m11_ghidra_live_headless_analyze(tmp_path: Path) -> None:
     assert "succeeded" in excerpt.lower(), f"no success report in output: {excerpt[-500:]}"
     leftovers = list(project.glob("*.gpr")) + list(project.glob("*.rep"))
     assert not leftovers, f"-deleteProject left project files behind: {leftovers}"
+
+
+@pytest.mark.integration
+def test_m11_ghidra_live_export_tools_run_the_java_script(tmp_path: Path) -> None:
+    """functions/symbols/xrefs/decompile must return via the Java post-script.
+
+    Guards the Jython->Java rewrite: Ghidra 11.3 dropped Jython, so the old
+    @runtime Jython post-script errored with "Ghidra was not started with
+    PyGhidra" and every export came back empty on current Ghidra. The Java
+    GhidraScript compiles headlessly with no extra runtime. Against the compiled
+    ELF this checks the whole contract the client parses: named functions with
+    entry/body_size, symbols with type, the real main->helper CALL edge from
+    xrefs, and decompiled C naming the callee. POSIX only -- it needs the
+    compiled ELF's own symbols, which the committed PE sample does not share.
+    """
+    if os.name == "nt":
+        pytest.skip("export assertions target the compiled ELF fixture (skip != pass)")
+    client = _ghidra_client()
+    fixture = _ghidra_fixture(tmp_path)
+    project = tmp_path / "ghidra-export"
+
+    funcs = client.functions(fixture, project, limit=256, timeout=600.0)
+    by_name = {str(item.get("name")): item for item in funcs.get("items", [])}
+    assert "helper" in by_name, f"no helper among {sorted(by_name)}"
+    helper = by_name["helper"]
+    assert isinstance(helper.get("entry"), str) and helper["entry"]
+    assert isinstance(helper.get("body_size"), int) and helper["body_size"] > 0
+
+    symbols = client.symbols(fixture, project, limit=512, timeout=600.0)
+    assert symbols.get("count", 0) >= 1
+    assert all("type" in item for item in symbols.get("items", []))
+
+    xrefs = client.xrefs(fixture, project, helper["entry"], timeout=600.0)
+    call_edges = [
+        item
+        for item in xrefs.get("items", [])
+        if str(item.get("type", "")).endswith("CALL") and item.get("to") == helper["entry"]
+    ]
+    assert call_edges, f"no CALL edge into helper@{helper['entry']}: {xrefs.get('items')}"
+
+    decompiled = client.decompile(fixture, project, helper["entry"], timeout=600.0)
+    assert decompiled.get("function") == "helper"
+    assert decompiled.get("truncated") is False
+    body = str(decompiled.get("decompiled", ""))
+    assert "secret" in body, f"decompiled helper did not name its callee: {body!r}"
