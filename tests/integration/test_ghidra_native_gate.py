@@ -9,12 +9,16 @@ postScript" on every current Ghidra. Second, the native target kind made ELF
 sessions reachable at all (before it, an ELF was classified PE and rejected).
 
 This drives the real ``analyzeHeadless`` against a tiny ELF compiled by the
-system C compiler: ``ghidra.functions`` must list the fixture's own functions
-and ``ghidra.decompile`` must recover a named call from one of them, proving the
-Java post-script both loads and reads the program. A PE-only tool on the same
-session must still be refused, so the native kind does not loosen the debugger
-guard. Skips honestly when Ghidra (``HEADLESS_RE_GHIDRA_HOME``) or a C compiler
-is not present; a real headless import/analyze takes a few seconds, no network.
+system C compiler and exercises every export mode of the Java post-script:
+``ghidra.functions`` must list the fixture's own functions, ``ghidra.decompile``
+must recover a named call from one of them, ``ghidra.symbols`` must return the
+symbol table with name/address/type, and ``ghidra.xrefs`` must resolve the real
+references to a function that is called twice -- proving the script both loads
+and reads the analysed program, not merely that analyzeHeadless ran. A PE-only
+tool on the same session must still be refused, so the native kind does not
+loosen the debugger guard. Skips honestly when Ghidra
+(``HEADLESS_RE_GHIDRA_HOME``) or a C compiler is not present; each tool is a
+separate headless import/analyze of a few seconds, no network.
 """
 
 from __future__ import annotations
@@ -84,7 +88,7 @@ def _build_elf_fixture(tmp_path: Path) -> Path:
 
 
 @pytest.mark.integration
-def test_ghidra_functions_and_decompile_on_a_native_elf(tmp_path: Path) -> None:
+def test_ghidra_functions_decompile_symbols_and_xrefs_on_a_native_elf(tmp_path: Path) -> None:
     settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
     client = GhidraClient(home=getattr(settings, "ghidra_home", None))
     if not client.available:
@@ -106,8 +110,7 @@ def test_ghidra_functions_and_decompile_on_a_native_elf(tmp_path: Path) -> None:
         assert funcs.ok, funcs.error
         assert funcs.data["count"] >= 1
         by_name = {str(item.get("name", "")): item for item in funcs.data["items"]}
-        assert "main" in by_name, sorted(by_name)
-        assert "gate_root" in by_name, sorted(by_name)
+        assert {"main", "gate_root", "gate_leaf"} <= set(by_name), sorted(by_name)
         # Ghidra items carry entry + body_size, not address/size.
         assert by_name["gate_root"]["entry"]
         assert int(by_name["gate_root"]["body_size"]) > 0
@@ -124,6 +127,29 @@ def test_ghidra_functions_and_decompile_on_a_native_elf(tmp_path: Path) -> None:
         body = str(decompiled.data["decompiled"])
         assert body.strip(), "decompilation came back empty"
         assert "gate_leaf" in body, body
+
+        # symbols: the same Java post-script, symbols mode. The fixture's own
+        # functions are in the symbol table (not stripped), each item carrying
+        # name/address/type -- the shape the tool contract promises.
+        symbols = service.ghidra_symbols(session_id, limit=1024, timeout=300.0)
+        assert symbols.ok, symbols.error
+        assert symbols.data["count"] >= 1
+        sym_names = {str(item.get("name", "")) for item in symbols.data["items"]}
+        assert {"gate_leaf", "gate_root", "main"} & sym_names, sorted(sym_names)[:40]
+        assert all(
+            item.get("address") and item.get("type") for item in symbols.data["items"]
+        ), "a symbol came back without an address or type"
+
+        # xrefs: gate_leaf is called from gate_mid and gate_root, so there must be
+        # references *to* its entry. Proves the xrefs mode resolves real edges,
+        # each with from/to, not an empty list.
+        leaf_entry = str(by_name["gate_leaf"]["entry"])
+        xrefs = service.ghidra_xrefs(session_id, leaf_entry, limit=256, timeout=300.0)
+        assert xrefs.ok, xrefs.error
+        assert xrefs.data["count"] >= 1, "no references to gate_leaf, which is called twice"
+        assert all(
+            item.get("from") and item.get("to") for item in xrefs.data["items"]
+        ), "an xref came back without a from/to endpoint"
 
         # A PE-only tool must reject the native session with target_mismatch,
         # not analyse it -- the native kind does not loosen the debugger guard.
