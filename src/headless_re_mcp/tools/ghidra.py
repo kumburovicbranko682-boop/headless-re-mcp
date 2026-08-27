@@ -43,6 +43,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items, each carrying name, entry and body_size, plus count
         and has_more so a page that filled the limit is not read as the whole list.
+        Adds partial (with note and exit_code) when analyzeHeadless exited with
+        errors after exporting, so the listing may be incomplete.
         """
         return _dump(analysis.ghidra_functions(session_id, limit=limit, timeout=timeout))
 
@@ -55,7 +57,9 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Symbols Ghidra recovered.
 
         Answers with items, each carrying name, address and type, plus count
-        and has_more. The listing does not include a containing scope.
+        and has_more. The listing does not include a containing scope. Adds
+        partial (with note and exit_code) when analyzeHeadless exited with
+        errors after exporting, so the listing may be incomplete.
         """
         return _dump(analysis.ghidra_symbols(session_id, limit=limit, timeout=timeout))
 
@@ -70,6 +74,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Only incoming refs (getReferencesTo). Answers with items carrying from,
         to and type, plus count and has_more. Outgoing refs are not listed.
+        Adds partial (with note and exit_code) when analyzeHeadless exited with
+        errors after exporting, so the reference list may be incomplete.
         """
         return _dump(analysis.ghidra_xrefs(session_id, address, limit=limit, timeout=timeout))
 
@@ -83,7 +89,8 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with decompiled, and truncated when the C was cut at the
         buffer. A second reading of code IDA decompiled differently, or of
-        code it could not.
+        code it could not. Adds partial (with note and exit_code) when
+        analyzeHeadless exited with errors after exporting.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
     return tools.bindings

@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（ghidra 局部导出不再谎报为完整分析结果）
+
+- `ghidra.functions`/`symbols`/`xrefs`/`decompile` 经 `analyzeHeadless` + `ExportJson.py` 后置脚本
+  导出。`_export_unlocked` 只在退出码非 0 **且**导出文件缺失时才报错——非 0 退出但后置脚本已写出
+  JSON 的情况被容忍(脚本导出了 Ghidra 已分析出的部分),却把退出码一并吞掉、当成成功返回。于是
+  一次分析中途报错(超时前被杀、脚本后清理失败、分析告警升级为非 0)的运行,被回成看似完整的
+  `items`/`decompiled`,调用方据此断定「这就是全部函数/符号/引用」。现导出成功后附 `partial`
+  (`true`/`false`);局部时加 `exit_code`、`note` 与截断后的 `stderr`,明说结果可能不完整。该标志
+  与逐页的 `has_more`/`truncated`(讲的是分页截断)相互独立,并与本轮 jadx、webcrack/wabt 的
+  `partial` 披露同构,让所有子进程导出类后端共享一致的诚实契约。
+
 ### 修复（apk 列表分页越界）
 
 - **`apk.classes` / `apk.methods` / `apk.strings` 现在在后端自身钳制分页窗口,不再只依赖工具
