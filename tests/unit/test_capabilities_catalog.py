@@ -95,6 +95,7 @@ def _stub_report() -> DoctorReport:
             Probe("ida_idalib", ProbeStatus.READY, "stub ready"),
             Probe("win32_ui", ProbeStatus.READY, "stub ready"),
             Probe("diec", ProbeStatus.MISSING, "stub missing"),
+            Probe("win32_ui", ProbeStatus.READY, "stub ready"),
         )
     )
 
@@ -115,8 +116,11 @@ def test_list_capabilities_maps_probe_status_and_honors_filters(
     # A ready probe surfaces as ready; a missing probe as missing.
     assert by_id["ida.idalib"]["status"] == "ready"
     assert by_id["detect.die"]["status"] == "missing"
-    # ui.win32 tracks the win32_ui doctor probe (ready in the stub report).
+    # ui.win32 is pinned to the win32_ui probe since Linux support landed, so
+    # its status follows the probe like every other capability.
     assert by_id["ui.win32"]["status"] == "ready"
+    # A status_probe of None (no probe to consult) is always ready.
+    assert capabilities_catalog._probe_status(_stub_report(), None) == "ready"
     # A probe absent from the report falls back to missing rather than raising.
     assert by_id["unpack.upx"]["status"] == "missing"
 

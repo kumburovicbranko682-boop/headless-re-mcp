@@ -249,9 +249,8 @@ def _poisoned_report(*, ready: bool):
     )
     if not ready:
         return DoctorReport(probes=(leaky,))
-    # Ready needs every required probe present and READY. "platform" is required
-    # on every host (Linux needs only platform+python; Windows also needs IDA and
-    # x64dbg), so include it or this report is never ready off Windows.
+    # Ready needs every required probe present and READY; the required set is
+    # platform-dependent and always contains "platform" since Linux support.
     return DoctorReport(
         probes=(
             leaky,

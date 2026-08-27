@@ -32,6 +32,30 @@ from headless_re_mcp.process_group import assign_to_process_group
 DEFAULT_MAX_OUTPUT = 8 * 1024 * 1024
 
 
+class InvalidTimeout(ValueError):
+    """A caller deadline that is not a positive, finite number of seconds."""
+
+
+def clamp_cli_timeout(timeout: float, *, maximum: float) -> float:
+    """Bound a caller-supplied CLI deadline before spawning anything.
+
+    The tool schemas declare ``0 < timeout <= maximum``, but the agent
+    transport invokes handlers straight from model arguments with no schema
+    enforcement (``CommandCatalog.invoke`` -> ``spec.handler(**arguments)``),
+    the same gap ``frida._bound_timeout`` and ``web._bound_nav_timeout`` already
+    guard. Left unchecked, a non-positive value makes ``run_bounded`` launch the
+    JVM/node only to kill it on the first loop iteration and report a misleading
+    timeout for what is really a bad parameter, and a huge one lets a tool that
+    hangs on hostile input hold a worker for as long as the caller named. Reject
+    the first (and NaN) and cap the second, so every CLI adapter agrees on the
+    bound regardless of transport.
+    """
+    value = float(timeout)
+    if value != value or value <= 0:
+        raise InvalidTimeout("timeout must be positive")
+    return min(value, float(maximum))
+
+
 class TimedOut(RuntimeError):
     """The tool outran its deadline; ``killed`` is what had to be stopped."""
 

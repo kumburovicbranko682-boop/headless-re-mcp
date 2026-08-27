@@ -6,6 +6,8 @@ import ctypes
 import os
 import signal
 import subprocess
+import sys
+import time
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
@@ -19,6 +21,23 @@ _MAX_CHILD_PIDS = 16
 # tool run, and the walk is bounded so a fork bomb cannot hold the killer.
 _MAX_KILL_DESCENDANTS = 64
 _MAX_KILL_DEPTH = 4
+
+
+def _enable_linux_child_subreaper() -> bool:
+    """Adopt orphaned tool grandchildren so this process can reap them."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        result = int(libc.prctl(36, 1, 0, 0, 0))  # PR_SET_CHILD_SUBREAPER
+        return result == 0
+    except (AttributeError, OSError):
+        return False
+
+
+_LINUX_CHILD_SUBREAPER = _enable_linux_child_subreaper()
+
+
 def _child_enum_limit(max_pids: int) -> int:
     """UI discovery defaults to 16; kill walks may ask for more.
 
@@ -223,6 +242,18 @@ def collect_process_group(pgid: int) -> list[int]:
     return members
 
 
+def collect_process_tree(parent_pid: int) -> list[int]:
+    """Known descendants plus isolated-group members whose launcher exited.
+
+    The ppid walk sees children the launcher still parents; the group scan sees
+    POSIX orphans that kept the launcher's session group after the kernel
+    reparented them to init. Together they cover a helper detached either way.
+    """
+    found = collect_descendants(parent_pid)
+    found.extend(collect_process_group(parent_pid))
+    return list(dict.fromkeys(pid for pid in found if pid != parent_pid))
+
+
 def terminate_process_group(pgid: int) -> list[int]:
     """POSIX: kill every live member of process group ``pgid``. [] on Windows.
 
@@ -271,42 +302,40 @@ def _kill_own_process_group(pid: int) -> list[int]:
     return []
 
 
-def reap_detached_helpers(
-    process: Any,
-    group_id: int,
-    reader_threads: tuple[Any, ...] = (),
-) -> list[int]:
-    """After a tool exits on its own, kill any detached helper it left behind.
+def _reap_terminated(pids: list[int], wait_s: float) -> None:
+    """Best-effort reap of descendants adopted by the Linux subreaper.
 
-    A tool started with ``start_new_session`` leads its own process group. A
-    worker it orphaned to init keeps that group id but loses the parent link,
-    so the ppid walk in :func:`terminate_process_tree` cannot see it -- and when
-    the tool exits normally nothing calls that walk at all, so the orphan (a
-    lingering JVM/dotnet runner, say) survives the call that was told to finish.
-
-    Enumerate the group the tool led (POSIX) or its descendants (Windows). If a
-    reader thread is still blocked or a member survives, terminate the tool's
-    tree and, on POSIX, every remaining member of the recorded group -- matched
-    on each member's own ``pgrp`` field so a reaped leader's recycled pid cannot
-    misdirect the kill. Returns the killed PIDs. Never raises: this is cleanup.
+    A SIGKILL is asynchronous: the target stays in state R for a scheduler
+    tick and then lingers as a zombie until someone waits on it. Callers that
+    return immediately after a kill would report a helper as still alive when
+    it is merely not reaped yet. With PR_SET_CHILD_SUBREAPER the orphan is our
+    child, so waitpid can retire it here instead of hoping init gets to it.
     """
-    pid = getattr(process, "pid", None)
-    readers_blocked = any(thread.is_alive() for thread in reader_threads)
-    if os.name == "nt":
-        leftover = readers_blocked or bool(
-            isinstance(pid, int) and pid > 0 and collect_descendants(int(pid))
-        )
-    else:
-        leftover = readers_blocked or bool(group_id and collect_process_group(group_id))
-    if not leftover:
-        return []
-    killed = terminate_process_tree(process, wait_s=2.0, kill_group=os.name != "nt")
-    if os.name != "nt" and group_id:
-        killed.extend(terminate_process_group(group_id))
-    for thread in reader_threads:
-        with suppress(Exception):
-            thread.join(timeout=2.0)
-    return killed
+    if not _LINUX_CHILD_SUBREAPER:
+        return
+    pending = {pid for pid in pids if pid > 0}
+    deadline = time.monotonic() + max(0.0, wait_s)
+    while pending:
+        for pid in tuple(pending):
+            try:
+                waited, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                # Not currently our child. Either someone already retired it
+                # (Popen.wait on a launcher, init before the reparent) and the
+                # pid is gone, or it has not yet been reparented to this
+                # subreaper and will become waitable in a moment. /proc tells
+                # the two apart, so a fully retired pid does not make the
+                # sweep spin until the deadline.
+                if not Path(f"/proc/{pid}").exists():
+                    pending.discard(pid)
+                continue
+            except OSError:
+                continue
+            if waited == pid:
+                pending.discard(pid)
+        if not pending or time.monotonic() >= deadline:
+            return
+        time.sleep(0.01)
 
 
 def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: bool = False) -> list[int]:
@@ -348,7 +377,37 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
     if kill_group and os.name != "nt" and isinstance(pid, int):
         with suppress(Exception):
             os.killpg(pid, 9)
+    _reap_terminated(descendants, min(wait_s, 1.0))
     return killed
+
+
+def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+    """Terminate children left behind after a launcher reported completion.
+
+    A CLI wrapper that exits 0 can still have detached a helper -- measured
+    with die/exeinfope/upx launch scripts, that helper outlives the tool call
+    and holds the sample open. Checked and swept only when something is
+    actually left, so the common clean exit stays a single /proc (or Toolhelp)
+    scan. Never raises: this runs on the success path.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    with suppress(Exception):
+        if not collect_process_tree(pid):
+            return []
+        killed = terminate_process_tree(process, wait_s=wait_s)
+        # An orphan reparented to init keeps the group id but not the parent
+        # link, so the descendant walk above cannot see it; the per-member
+        # group sweep can, and it matches on pgrp so a recycled leader pid
+        # cannot make it hit an unrelated group.
+        killed.extend(terminate_process_group(pid))
+        killed = list(dict.fromkeys(killed))
+        # Callers assert the helper is gone the moment this returns; without a
+        # reap that answer depends on how fast the kernel processes the kill.
+        _reap_terminated(killed, min(wait_s, 1.0))
+        return killed
+    return []
 
 
 def terminate_pid_tree(pid: int) -> list[int]:
@@ -373,6 +432,7 @@ def terminate_pid_tree(pid: int) -> list[int]:
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    _reap_terminated([pid, *descendants], 1.0)
     return killed
 
 

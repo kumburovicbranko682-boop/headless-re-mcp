@@ -57,6 +57,10 @@ jobs:
         # itself reads exactly like a suite that passed.
         # A single stuck process-backed test must name itself and fail before
         # the 30-minute job deadline erases the useful per-test context.
+        # The step timeout exists because the job timeout has been observed to
+        # cancel the whole job with its logs unrecoverable; failing the step
+        # instead keeps the transcript and still uploads coverage.
+        timeout-minutes: 25
         run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --cov --cov-report=term --cov-report=xml
 
       - name: Upload coverage
@@ -97,9 +101,9 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -120,7 +124,11 @@ jobs:
           python -m pip check
 
       - name: Linux unit tests
-        run: python -m pytest tests/unit -q -rs --tb=short --cov --cov-report=term
+        # Same per-test and step bounds as the Windows job: a hung test names
+        # itself, and a wedged step fails with its logs instead of the job
+        # timeout cancelling the whole job and losing them.
+        timeout-minutes: 20
+        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120 --cov --cov-report=term
 
       - name: Doctor and core service smoke
         run: |

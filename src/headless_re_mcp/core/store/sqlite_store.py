@@ -308,12 +308,20 @@ class SessionStore:
         """
         if self.db_path.parent.name != "meta":
             return
-        # A stored id is always a uuid, but cleanup must never be the thing that
-        # follows a traversing id out of the root; skip anything that is not a
-        # single path component, matching the debug-events guard below.
-        if Path(session_id).name != session_id:
+        # A stored id is always a uuid, but cleanup must never be the thing
+        # that follows a traversing id out of the root, and the inline check
+        # this replaces (``Path(id).name != id``) was not that guard: ".."
+        # passes it, and <root>/debug-events/.. below is the artifact root
+        # itself, so the rmtree would have taken every artifact and this
+        # database with it. session_timeline_path already refuses everything
+        # that is not one ordinary path component (and a symlinked session
+        # dir); skip what it refuses rather than raise, because this runs
+        # inside the trim on session close and one poisoned row must not fail
+        # every later clean close.
+        try:
+            path = session_timeline_path(self.db_path.parent.parent, session_id)
+        except ValueError:
             return
-        path = session_timeline_path(self.db_path.parent.parent, session_id)
         with suppress(OSError):
             if path.is_file():
                 path.unlink()

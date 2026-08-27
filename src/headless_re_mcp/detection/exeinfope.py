@@ -427,12 +427,6 @@ def _capture_process(
     stderr_thread.start()
     monitor_thread.start()
 
-    # start_new_session (POSIX) makes Exeinfo PE its own group leader, so the
-    # group id is its pid. Used to reap a child a wrapper orphaned to init after
-    # the tool has exited, when the parent/child walk sees nothing.
-    leader_pid = getattr(process, "pid", None)
-    group_id = int(leader_pid) if os.name != "nt" and leader_pid else 0
-
     deadline = monotonic() + timeout
     timed_out = False
     limited = False
@@ -475,15 +469,19 @@ def _capture_process(
                 _terminate_process(process)
                 returncode = process.poll()
         stop_monitor.set()
-        stdout_thread.join(timeout=1.0)
-        stderr_thread.join(timeout=1.0)
-        monitor_thread.join(timeout=1.0)
-        if not (timed_out or limited or cancelled):
-            # Exeinfo PE ended on its own; sweep the session group so a wrapper's
-            # orphaned child cannot outlive the call that was told to finish.
-            from headless_re_mcp.core.process_tree import reap_detached_helpers
+        # A single shared budget keeps cleanup bounded: joining each of the
+        # three threads for a full second would let a grandchild that inherited
+        # (and still holds open) a pipe extend the caller's deadline by seconds,
+        # one thread at a time.
+        drain_deadline = monotonic() + 1.0
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        monitor_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        # A clean exit can still leave the GUI wrapper's detached helper
+        # behind; sweep survivors so a successful call never leaks a process.
+        from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
 
-            reap_detached_helpers(process, group_id, (stdout_thread, stderr_thread))
+        terminate_leftover_process_tree(process, wait_s=1.0)
         # The readers close their own pipes; only close here when the reader has
         # finished, so a reader still blocked on a survivor's pipe never wedges
         # this thread on close().

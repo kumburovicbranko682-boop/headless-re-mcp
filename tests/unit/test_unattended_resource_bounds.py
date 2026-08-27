@@ -193,8 +193,10 @@ class TestProxyCaptureIsBounded:
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 
-        writers = [threading.Thread(target=writer, args=(i * 1000,)) for i in range(4)]
-        readers = [threading.Thread(target=reader) for _ in range(2)]
+        # Daemon: a wedged worker outliving the suite must not hold interpreter
+        # shutdown hostage -- no per-test watchdog covers that phase.
+        writers = [threading.Thread(target=writer, args=(i * 1000,), daemon=True) for i in range(4)]
+        readers = [threading.Thread(target=reader, daemon=True) for _ in range(2)]
         for thread in readers:
             thread.start()
         for thread in writers:
@@ -400,7 +402,7 @@ class TestConcurrentStartDoesNotLeakABackend:
         def first() -> None:
             backend.start("s", port=18080)
 
-        thread = threading.Thread(target=first)
+        thread = threading.Thread(target=first, daemon=True)
         thread.start()
         try:
             assert first_entered.wait(2.0)
@@ -411,6 +413,7 @@ class TestConcurrentStartDoesNotLeakABackend:
         finally:
             release.set()
             thread.join(2.0)
+        assert not thread.is_alive(), "the first start wedged instead of finishing"
         assert list(backend._instances) == ["s"]
         backend.stop("s")
 
@@ -502,7 +505,7 @@ class TestConcurrentStartDoesNotLeakABackend:
             except WebError as exc:
                 errors.append(exc)
 
-        thread = Thread(target=first_open)
+        thread = Thread(target=first_open, daemon=True)
         thread.start()
         assert first_blocked.wait(5)
         backend.close("s")
@@ -960,7 +963,7 @@ class TestLongLivedBackendsAreSingletons:
                 seen_proxy.append(id(service._proxy))
                 seen_adb.append(id(service._backend()))
 
-            threads = [threading.Thread(target=touch) for _ in range(8)]
+            threads = [threading.Thread(target=touch, daemon=True) for _ in range(8)]
             for thread in threads:
                 thread.start()
             for thread in threads:
@@ -1202,7 +1205,7 @@ class TestArtifactBudgetAppliesToAnOpenSession:
             except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
                 errors.append(exc)
 
-        threads = [threading.Thread(target=register) for _ in range(8)]
+        threads = [threading.Thread(target=register, daemon=True) for _ in range(8)]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -2328,7 +2331,7 @@ class TestTheApkCacheSurvivesConcurrentUse:
             except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
                 errors.append(exc)
 
-        threads = [threading.Thread(target=churn, args=(index,)) for index in range(6)]
+        threads = [threading.Thread(target=churn, args=(index,), daemon=True) for index in range(6)]
         try:
             for thread in threads:
                 thread.start()
@@ -3430,7 +3433,7 @@ class TestExportedFileListsDiscloseTruncation:
             "_require_input",
             lambda self, path: path,
         )
-        monkeypatch.setattr(mod, "_run", lambda cmd, timeout: ("", "", 0))
+        monkeypatch.setattr(mod, "_run", lambda cmd, timeout, maximum=0.0: ("", "", 0))
         out = tmp_path / "unpacked"
         out.mkdir()
         for index in range(5):

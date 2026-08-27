@@ -29,6 +29,11 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _MAX_LOGCAT_LINES = 5000
 _MAX_LOGCAT_CHARS = 200_000
+# Only the package attribute near the top of the manifest is needed. Reading
+# the whole member first would let a bomb-compressed AndroidManifest.xml -- a
+# few KiB on disk that inflates to gigabytes -- decompress in full before the
+# slice ever ran.
+_MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
@@ -77,6 +82,35 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> None:
+    """Validate an adb forward endpoint, port range included.
+
+    The patterns already block shell metacharacters, but ``\\d{1,5}`` also admits
+    ``tcp:70000`` -- five digits that are not a port. ``connect`` already refuses
+    a port outside 1..65535; this makes ``forward`` say the same thing at the
+    boundary instead of handing adb a bind request it can only reject with an
+    opaque error. ``tcp:0`` is refused on both sides: adb reads a local 0 as
+    "allocate a free port", but adbutils discards the reply payload naming that
+    port, so the caller would get ``tcp:0`` back with no way to learn where to
+    connect -- and ``release_forwards`` removes by the requested spec, which can
+    never match the listener adb registered under the real port. Every such
+    forward would leak an adb-server listener and pin one of the tracked slots
+    until the cap locks the process out. A remote 0 is simply not connectable.
+    """
+    tcp = re.match(r"^tcp:(\d{1,5})$", spec or "")
+    if tcp is not None:
+        if not 1 <= int(tcp.group(1)) <= 65535:
+            raise AdbError(
+                "invalid_params", f"{side} tcp port must be 1..65535", **{side: spec}
+            )
+        return
+    if re.match(r"^localabstract:[\w.\-]+$", spec or ""):
+        return
+    if allow_jdwp and re.match(r"^jdwp:\d+$", spec or ""):
+        return
+    raise AdbError("invalid_params", f"invalid {side} forward spec", **{side: spec})
+
+
 def _is_timeout(exc: BaseException) -> bool:
     name = type(exc).__name__.lower()
     return "timeout" in name or "timed out" in str(exc).lower()
@@ -116,6 +150,22 @@ def _device_shell(dev: Any, args: str | list[str], *, timeout: float = _ADB_SHEL
             raise AdbError("timeout", f"adb timed out after {timeout:g}s") from exc
         raise AdbError("backend_error", f"adb shell failed: {exc}") from exc
     return str(raw)
+
+
+def _is_host_error_output(text: str) -> bool:
+    """Whether adb handed back only host-error text instead of a real result.
+
+    adbutils' ``shell`` can return the adb host's own ``error:`` / ``adb:``
+    message as stdout rather than raising, so a dead or offline device answers
+    a text command with an error string. A reply whose every non-blank line is
+    such a line is a failure, not an empty-but-successful result. A real result
+    -- even a logcat line that merely mentions "error" -- has at least one line
+    that does not start with those prefixes.
+    """
+    captured = [line for line in text.splitlines() if line.strip()]
+    return bool(captured) and all(
+        line.lstrip().lower().startswith(("error:", "adb:")) for line in captured
+    )
 
 
 def _call(method: Any, *args: Any, timeout: float | None = None, **kwargs: Any) -> Any:
@@ -184,8 +234,13 @@ def _device_info_row(info: Any) -> JsonObject:
 def _apk_package_name(path: Path) -> str | None:
     """Best-effort package id from the APK, without pulling androguard in."""
     try:
-        with zipfile.ZipFile(path) as archive:
-            data = archive.read("AndroidManifest.xml")[:65536]
+        with (
+            zipfile.ZipFile(path) as archive,
+            archive.open("AndroidManifest.xml") as manifest,
+        ):
+            # read(n) on the member stream decompresses at most n bytes; the old
+            # read()[:n] inflated the entire entry into memory before slicing.
+            data = manifest.read(_MAX_MANIFEST_BYTES)
     except Exception:  # noqa: BLE001
         return None
     try:
@@ -400,9 +455,12 @@ class AdbBackend:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PROPERTIES))
         raw = _device_shell(dev, "getprop")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "getprop failed", output=text[:800])
         props: dict[str, str] = {}
         has_more = False
-        for line in str(raw).splitlines():
+        for line in text.splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if not match:
                 continue
@@ -419,9 +477,12 @@ class AdbBackend:
         capped = max(1, min(int(limit), _MAX_PACKAGES))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "pm list failed", output=text[:800])
         pkgs: list[str] = []
         has_more = False
-        for line in str(raw).splitlines():
+        for line in text.splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
@@ -570,6 +631,8 @@ class AdbBackend:
         capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
         raw = _device_shell(dev, ["logcat", "-d", "-t", str(capped)])
         text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "logcat failed", output=text[:800])
         truncated = len(text) > _MAX_LOGCAT_CHARS
         if truncated:
             text = text[-_MAX_LOGCAT_CHARS:]
@@ -640,6 +703,17 @@ class AdbBackend:
             raise AdbError(
                 "invalid_params",
                 "refusing to keep a pulled directory",
+                remote=remote_path,
+            )
+        if not local_path.exists():
+            # adb sync can report a clean pull yet write nothing when the remote
+            # path does not exist -- older adbutils does not raise, and the
+            # pre-stat probe above is best-effort. capped_file_size returns 0 for
+            # a missing file, so without this the reply would be a size-0
+            # success the caller reads as a real empty file it can open.
+            raise AdbError(
+                "not_found",
+                "pull wrote no local file; the remote path may not exist",
                 remote=remote_path,
             )
         pulled, over = capped_file_size(local_path, cap=cap)
@@ -741,10 +815,8 @@ class AdbBackend:
         }
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
-        if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+)$", local):
-            raise AdbError("invalid_params", "invalid local forward spec", local=local)
-        if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+|jdwp:\d+)$", remote):
-            raise AdbError("invalid_params", "invalid remote forward spec", remote=remote)
+        _check_forward_spec(local, side="local")
+        _check_forward_spec(remote, side="remote", allow_jdwp=True)
         serial_id = _check_serial(serial)
         key = (serial_id, local)
         # Resolve the device before occupying a slot: a failed lookup used to

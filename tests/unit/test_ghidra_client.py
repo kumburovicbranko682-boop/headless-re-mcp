@@ -52,6 +52,53 @@ def _capture_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return calls
 
 
+def _capture_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        captured["env"] = kwargs.get("env")
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text('{"items": []}', encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    return captured
+
+
+def test_ghidra_sets_the_heap_bound_when_no_operator_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _capture_env(monkeypatch)
+    monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+    client = _client(tmp_path)
+
+    client.functions(_binary(tmp_path), tmp_path / "project")
+
+    assert captured["env"]["JAVA_TOOL_OPTIONS"] == "-Xmx2G"
+
+
+def test_ghidra_preserves_operator_java_tool_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """analyzeHeadless env must keep an operator's JAVA_TOOL_OPTIONS, not clobber it.
+
+    Operators set it for a proxy, an encoding, or the JDK 17+ --add-opens Ghidra
+    needs; overwriting it with only -Xmx silently breaks their runs. Ours is
+    prepended so the heap bound is the default while their explicit -Xmx, which
+    the JVM parses last, still wins.
+    """
+    captured = _capture_env(monkeypatch)
+    monkeypatch.setenv("JAVA_TOOL_OPTIONS", "-Dfile.encoding=UTF-8 -Xmx8G")
+    client = _client(tmp_path)
+
+    client.functions(_binary(tmp_path), tmp_path / "project")
+
+    opts = captured["env"]["JAVA_TOOL_OPTIONS"]
+    assert "-Dfile.encoding=UTF-8" in opts
+    assert opts.index("-Xmx2G") < opts.index("-Xmx8G")
+
+
 def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -208,6 +255,62 @@ def test_ghidra_list_descriptions_name_the_fields_the_export_returns() -> None:
     decompile = _tool_docstring("ghidra.decompile")
     assert "decompiled" in decompile
     assert "truncated" in decompile
+    assert "found" in decompile
+
+
+def _decompile_run(monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        del kwargs
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(arg).write_text(payload, encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+
+
+def test_ghidra_decompile_reports_found_false_when_no_function_contains_the_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An address inside no function used to read as an empty function body.
+
+    ExportJson writes decompiled "" and no function key when getFunctionContaining
+    returns nothing. Without found, a caller cannot tell that from a function that
+    decompiled to nothing, and an unattended pass would treat the empty string as
+    the body.
+    """
+    _decompile_run(monkeypatch, '{"mode": "decompile", "decompiled": "", "truncated": false}')
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is False
+    assert payload["decompiled"] == ""
+
+
+def test_ghidra_decompile_reports_found_true_when_a_function_was_decompiled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "function": "main", "entry": "0x401000",'
+        ' "decompiled": "int main(){}", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is True
+    assert payload["function"] == "main"
+
+
+def test_ghidra_decompile_trusts_a_found_flag_the_script_already_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A found flag emitted by the script is not overwritten by the derivation."""
+    _decompile_run(
+        monkeypatch,
+        '{"mode": "decompile", "found": true, "decompiled": "", "truncated": false}',
+    )
+    client = _client(tmp_path)
+    payload = client.decompile(_binary(tmp_path), tmp_path / "project", "0x401000")
+    assert payload["found"] is True
 
 
 def test_ghidra_refuses_an_oversized_export_json(

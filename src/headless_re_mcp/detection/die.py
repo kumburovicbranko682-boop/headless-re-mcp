@@ -312,12 +312,6 @@ def _capture_process(
     stdout_thread.start()
     stderr_thread.start()
 
-    # start_new_session (POSIX) makes diec its own group leader, so the group id
-    # is its pid. Used to reap a child a wrapper orphaned to init after diec has
-    # exited, when the parent/child walk sees nothing.
-    leader_pid = getattr(process, "pid", None)
-    group_id = int(leader_pid) if os.name != "nt" and leader_pid else 0
-
     deadline = monotonic() + timeout
     timed_out = False
     limited = False
@@ -363,15 +357,18 @@ def _capture_process(
                 returncode = process.poll()
         # Once the child has exited, let both readers consume the remaining
         # kernel pipe buffers before closing our handles.  Closing first can
-        # truncate a short-lived process's final JSON bytes.
-        stdout_thread.join(timeout=1.0)
-        stderr_thread.join(timeout=1.0)
-        if not (timed_out or limited or cancelled):
-            # diec ended on its own; sweep the session group so a wrapper's
-            # orphaned child cannot outlive the call that was told to finish.
-            from headless_re_mcp.core.process_tree import reap_detached_helpers
+        # truncate a short-lived process's final JSON bytes.  A single shared
+        # budget keeps cleanup bounded: joining each reader for a full second
+        # would let a grandchild that inherited (and still holds open) a pipe
+        # extend the caller's deadline by seconds, one stream at a time.
+        drain_deadline = monotonic() + 1.0
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        # A clean diec exit can still leave a wrapper's detached helper behind;
+        # sweep survivors so a successful call never leaks a process.
+        from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
 
-            reap_detached_helpers(process, group_id, (stdout_thread, stderr_thread))
+        terminate_leftover_process_tree(process, wait_s=1.0)
         # The readers close their own pipes; only close here when the reader has
         # already finished, so a reader still blocked on a survivor's pipe never
         # wedges this thread on close().
@@ -379,8 +376,8 @@ def _capture_process(
             _close_pipe(stdout_pipe)
         if not stderr_thread.is_alive():
             _close_pipe(stderr_pipe)
-        stdout_thread.join(timeout=0.1)
-        stderr_thread.join(timeout=0.1)
+        stdout_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
+        stderr_thread.join(timeout=max(0.0, drain_deadline - monotonic()))
 
     if returncode is None:
         returncode = -1
