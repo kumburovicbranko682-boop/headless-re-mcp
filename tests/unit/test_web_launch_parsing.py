@@ -136,6 +136,58 @@ def test_choose_bind_port_returns_the_first_free_fallback(
     assert reason == "fallback"
 
 
+def test_port_is_free_treats_an_out_of_range_port_as_not_free() -> None:
+    """socket.bind raises OverflowError -- not OSError -- past 65535.
+
+    port_is_free only caught OSError, so a probe at 65536 crashed the caller
+    with an uncaught OverflowError instead of answering the question it was
+    asked. An unbindable port is, for this predicate, simply not free.
+    """
+    assert port_is_free("127.0.0.1", 65536) is False
+    assert port_is_free("127.0.0.1", 70000) is False
+
+
+def test_choose_bind_port_does_not_walk_past_65535_when_preferred_is_at_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A busy preferred=65535 used to send the fallback walk to 65536 and crash.
+
+    The search stepped preferred+1, preferred+2, ... with no upper bound, so
+    the first candidate past a busy 65535 was 65536 -- where the real bind
+    raises OverflowError and took the whole launcher down. Only 1..65535 are
+    real ports, so the walk stops there and reports the span exhausted; the
+    probe must never even be asked about an out-of-range port.
+    """
+    probed: list[int] = []
+
+    def _record(host: str, port: int) -> bool:
+        probed.append(port)
+        return False  # everything busy, forcing the full walk
+
+    monkeypatch.setattr(launch_util, "port_is_free", _record)
+    chosen, reason = choose_bind_port("127.0.0.1", 65535, span=5, auto=True)
+    assert chosen == 65535
+    assert reason == "exhausted"
+    # 65535 itself is the preferred probe; the fallback walk adds nothing
+    # because there is no valid port above it.
+    assert probed == [65535]
+    assert all(port <= 65535 for port in probed)
+
+
+def test_choose_bind_port_walk_stops_at_65535_but_still_finds_a_free_one_below(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capping the ceiling must not hide a free port inside the valid range."""
+
+    def _free(host: str, port: int) -> bool:
+        return port == 65535
+
+    monkeypatch.setattr(launch_util, "port_is_free", _free)
+    chosen, reason = choose_bind_port("127.0.0.1", 65533, span=40, auto=True)
+    assert chosen == 65535
+    assert reason == "fallback"
+
+
 # --------------------------------------------------------------------------- #
 # _recv_until                                                                 #
 # --------------------------------------------------------------------------- #
