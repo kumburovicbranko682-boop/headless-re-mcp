@@ -3928,8 +3928,14 @@ class TestFridaJavaEnumerationStopsEarly:
         from headless_re_mcp.backends.frida.client import _JAVA_SCRIPT
 
         assert "enumerateLoadedClassesSync" not in _JAVA_SCRIPT
-        assert "headless-re-mcp:class-cap" in _JAVA_SCRIPT
         assert "enumerateLoadedClasses" in _JAVA_SCRIPT
+        # Early stop at the cap now resolves the Promise (finish()) instead of
+        # throwing a sentinel string: frida-java-bridge 7.x (frida 17+) runs the
+        # enumeration asynchronously, so the throw-to-stop pattern no longer
+        # applies and a synchronous return came back empty. Reaching the cap must
+        # still short-circuit rather than materialize every loaded class.
+        assert "if (out.length >= limit) { finish(); }" in _JAVA_SCRIPT
+        assert "onComplete: function () { finish(); }" in _JAVA_SCRIPT
 
 
 class TestFridaModuleEnumerationCapsRpc:

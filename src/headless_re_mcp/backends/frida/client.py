@@ -133,41 +133,52 @@ rpc.exports = {
 """
 
 _JAVA_SCRIPT = """
+// Each RPC returns a Promise resolved from onComplete rather than returning a
+// synchronously-collected array. On frida-java-bridge 7.x (bundled since frida
+// 17) enumerateLoadedClasses runs its callbacks asynchronously, so the old
+// `return out` right after Java.perform handed back an empty list; on frida 16
+// the same Promise resolves before the executor returns. exports_sync awaits
+// either, so this reads correctly on both. resolve(out) on the cap replaces the
+// old thrown early-stop sentinel string, which the modern bridge does not honor.
 rpc.exports = {
   classes: function (filter, limit) {
-    var out = [];
-    Java.perform(function () {
-      try {
-        Java.enumerateLoadedClasses({
-          onMatch: function (name) {
-            if (filter && name.indexOf(filter) === -1) {
-              return;
-            }
-            out.push(name);
-            if (out.length >= limit) {
-              throw 'headless-re-mcp:class-cap';
-            }
-          },
-          onComplete: function () {}
-        });
-      } catch (e) {
-        if (String(e) !== 'headless-re-mcp:class-cap') {
-          throw e;
+    return new Promise(function (resolve, reject) {
+      Java.perform(function () {
+        var out = [];
+        var settled = false;
+        var finish = function () { if (!settled) { settled = true; resolve(out); } };
+        try {
+          Java.enumerateLoadedClasses({
+            onMatch: function (name) {
+              if (settled) { return; }
+              if (filter && name.indexOf(filter) === -1) { return; }
+              out.push(name);
+              if (out.length >= limit) { finish(); }
+            },
+            onComplete: function () { finish(); }
+          });
+        } catch (e) {
+          if (!settled) { reject(e); }
         }
-      }
+      });
     });
-    return out;
   },
   methods: function (className, limit) {
-    var out = [];
-    Java.perform(function () {
-      var clazz = Java.use(className);
-      var methods = clazz.class.getDeclaredMethods();
-      for (var i = 0; i < methods.length && out.length < limit; i++) {
-        out.push(methods[i].toString());
-      }
+    return new Promise(function (resolve, reject) {
+      Java.perform(function () {
+        try {
+          var clazz = Java.use(className);
+          var methods = clazz.class.getDeclaredMethods();
+          var out = [];
+          for (var i = 0; i < methods.length && out.length < limit; i++) {
+            out.push(methods[i].toString());
+          }
+          resolve(out);
+        } catch (e) {
+          reject(e);
+        }
+      });
     });
-    return out;
   }
 };
 """

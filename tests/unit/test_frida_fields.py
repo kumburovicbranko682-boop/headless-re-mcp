@@ -196,6 +196,25 @@ def test_frida_enum_script_reads_via_nativepointer_not_the_removed_global() -> N
     assert ".readByteArray(" in _ENUM_SCRIPT
 
 
+def test_frida_java_script_resolves_from_a_promise_not_a_sync_return() -> None:
+    """classes/methods must resolve a Promise from onComplete, not return early.
+
+    frida-java-bridge 7.x (bundled since frida 17) runs enumerateLoadedClasses
+    asynchronously, so the old synchronous `return out` after Java.perform came
+    back empty on any current frida while frida 16 still worked. Both RPCs now
+    return a Promise resolved from onComplete (verified live that exports_sync
+    awaits a Promise-returning RPC on frida 17.17.0). Pin the shape so a
+    regression to the sync return -- unobservable without a live ART device --
+    is caught in CI, and confirm the removed 'class-cap' throw sentinel is gone.
+    """
+    from headless_re_mcp.backends.frida.client import _JAVA_SCRIPT
+
+    assert _JAVA_SCRIPT.count("new Promise(") >= 2
+    assert "onComplete: function () { finish(); }" in _JAVA_SCRIPT
+    assert "resolve(out)" in _JAVA_SCRIPT
+    assert "class-cap" not in _JAVA_SCRIPT
+
+
 def test_frida_memory_read_rejects_a_negative_address() -> None:
     """The tool types address as int but sets no lower bound; the client must.
 
