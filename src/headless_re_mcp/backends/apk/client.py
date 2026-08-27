@@ -425,9 +425,11 @@ class ApkClient:
         _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
         callers: list[JsonObject] = []
         has_more = False
+        found = False
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
                 continue
+            found = True
             for _, call, _ in method.get_xref_from():
                 if len(callers) >= cap:
                     # Only set once something was actually left out, so a result
@@ -444,6 +446,12 @@ class ApkClient:
                 break
         return {
             "method_name": target,
+            # found distinguishes "no method by this name exists" (a typo or
+            # wrong name) from "the method exists but nothing calls it" -- an
+            # empty callers list alone reads as the latter and silently hides a
+            # bad name, so an agent concludes a method is dead code when it was
+            # never in the DEX at all.
+            "found": found,
             "callers": callers,
             "count": len(callers),
             # A caller deciding "these are all the callers" has to know whether

@@ -61,6 +61,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（`apk.xrefs` 区分「查无此方法」与「方法无人调用」）
+
+- `apk.xrefs` 对整个 DEX 里名为 `method_name` 的方法逐个收集其调用点。此前拼错名字、传错方法名
+  时，枚举一个也匹配不到，回的是 `callers: []`、`count: 0`、`has_more: false`——与「方法确实存在
+  但从没人调用它」逐字节相同。调用方（尤其是无人值守的 agent）据此会把一个从来不在 DEX 里的
+  名字判成「死代码/无引用」，而真正的原因是名字写错了，本该换个名字重试。现补上 `found`：任何
+  非 external 的方法命中该名字即为 `true`，一个都没命中为 `false`，于是空的 `callers` 不再被误读
+  成「真方法无人调用」。文档串同步说明，并新增两条直测：方法存在但零调用点 → `found` 为真、
+  `callers` 为空；名字全不匹配 → `found` 为假、`callers` 为空。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
