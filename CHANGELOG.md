@@ -62,6 +62,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（adb 的 serial/package/port 校验移到 adbutils 能力门之前，与 forward 看齐）
+
+- adb 后端里 `_device(serial)` 先过 `_client()` 能力门、再 `_check_serial(serial)`；`connect` 先过门再判
+  port/endpoint；`uninstall`/`launch`/`force_stop` 先 `_device`（含门）再 `_check_package`。于是**没装
+  adbutils 的机器**（adbutils 是可选依赖，这类机器恰恰是常态）对一个坏 serial/包名/端口回的是
+  `capability_unavailable`，而装了 adbutils 的机器回 `invalid_params`——同一个坏输入两地两判。而
+  `forward` 早就把 local/remote 规格与 serial 都在 `_device` 之前校验，是这条线里唯一做对的样板。现把
+  serial 校验挪进 `_device` 的**门之前**（每个设备动作都经过这个唯一收口，等于一处修好全线），`connect`
+  的 port/endpoint 挪到 `_client()` 之前，`uninstall`/`launch`/`force_stop` 的包名校验挪到 `_device` 之前。
+  与 `proxy.start` 的 port、`ensure_frida_server` 的 port/remote_path、`java_enumerate` 的
+  mode/class_name 同属一致处理。回归用一个会在被触达时抛断言的 tripwire `_client` 钉住：坏 serial/包名/
+  端口都在门之前回 `invalid_params` 且从不触达门，而一个合法 serial 恰好触达门——证明重排没有顺手把真正的
+  能力缺失也吞掉。纯排序修复，合法输入路径与返回结构不变。
+
 ### 新增（web.network.get 返回响应头，补齐 CDP 线相对 proxy 线缺失的 header 视图）
 
 - CDP 的 `Network.responseReceived` 事件本就带着整份响应头，但 web 后端此前只从中取 `status` 与

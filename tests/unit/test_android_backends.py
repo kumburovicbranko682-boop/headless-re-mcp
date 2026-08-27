@@ -146,6 +146,65 @@ class TestFridaServerEnsurePortContract:
         assert result == {"running": True, "pushed": False, "port": 27042}
 
 
+class TestAdbInputBeforeCapabilityGate:
+    """Serial, package and port are settled before the adbutils capability gate.
+
+    adbutils is optional, so a host without it answering capability_unavailable
+    for a malformed serial/package/port -- while a host with it answers
+    invalid_params -- is one bad input with two verdicts, and the optional
+    module means the no-adbutils host is the common one. ``forward`` already
+    validated its specs before the gate; ``_device`` (the choke point every
+    device verb shares), ``connect`` and the package verbs now match, the way
+    proxy.start's port and ensure_frida_server's port do. A tripwire ``_client``
+    stands in for the gate on any host: it must never be reached for a malformed
+    request, and must be reached once a well-formed one clears validation.
+    """
+
+    def _gated_backend(self) -> tuple[AdbBackend, list[str]]:
+        backend = AdbBackend()
+        reached: list[str] = []
+
+        def _client(*args: Any, **kwargs: Any) -> Any:
+            del args, kwargs
+            reached.append("client")
+            raise AssertionError("the capability gate must not be reached")
+
+        backend._client = _client  # type: ignore[method-assign]
+        return backend, reached
+
+    @pytest.mark.parametrize("serial", ["bad serial", "x;rm -rf /", "$(id)", ""])
+    def test_a_bad_serial_is_invalid_params_before_the_gate(self, serial: str) -> None:
+        backend, reached = self._gated_backend()
+        with pytest.raises(AdbError) as info:
+            backend.info(serial)
+        assert info.value.code == "invalid_params"
+        assert reached == []
+
+    def test_a_valid_serial_reaches_the_capability_gate(self) -> None:
+        """The reorder does not smother real capability gaps: a good serial hits it."""
+        backend, reached = self._gated_backend()
+        with pytest.raises(AssertionError):
+            backend.info("emulator-5554")
+        assert reached == ["client"]
+
+    @pytest.mark.parametrize("package", ["bad package", "com.x;id", "com.x/../y", ""])
+    def test_a_bad_package_is_invalid_params_before_the_gate(self, package: str) -> None:
+        backend, reached = self._gated_backend()
+        for verb in (backend.uninstall, backend.launch, backend.force_stop):
+            with pytest.raises(AdbError) as info:
+                verb("emulator-5554", package)
+            assert info.value.code == "invalid_params"
+        assert reached == []
+
+    @pytest.mark.parametrize("port", [0, -1, 65536, "5555", None])
+    def test_connect_rejects_a_bad_port_before_the_gate(self, port: Any) -> None:
+        backend, reached = self._gated_backend()
+        with pytest.raises(AdbError) as info:
+            backend.connect("127.0.0.1", port)
+        assert info.value.code == "invalid_params"
+        assert reached == []
+
+
 class TestFridaTargetAuthorization:
     """The target boundary holds whether or not the frida module is installed.
 

@@ -313,9 +313,16 @@ class AdbBackend:
             raise AdbError("backend_error", f"cannot reach adb server: {exc}") from exc
 
     def _device(self, serial: str) -> Any:
+        # Validate the serial before the capability gate. adbutils is optional,
+        # so a host without it must answer invalid_params for a malformed serial
+        # the same way a host with it does, not capability_unavailable -- one bad
+        # input, one verdict. This is the single choke point every device verb
+        # goes through, so the check lands here rather than in each caller, the
+        # way forward() already validated its specs before reaching the gate.
+        checked = _check_serial(serial)
         client = self._client(socket_timeout=_ADB_TRANSPORT_TIMEOUT_S)
         try:
-            dev = client.device(serial=_check_serial(serial))
+            dev = client.device(serial=checked)
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -352,11 +359,13 @@ class AdbBackend:
         return {"devices": page, "count": len(page), "has_more": has_more}
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:
-        client = self._client()
+        # Port and endpoint are request properties, judged before the capability
+        # gate so the verdict is the same with or without adbutils installed.
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise AdbError("invalid_params", "port must be 1..65535", port=port)
         endpoint = f"{host}:{port}"
         _check_serial(endpoint)
+        client = self._client()
         try:
             message = client.connect(endpoint, timeout=10.0)
         except Exception as exc:  # noqa: BLE001
@@ -485,8 +494,9 @@ class AdbBackend:
         return result
 
     def uninstall(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
+        # Package is a request property; validate it before the capability gate.
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _call(dev.uninstall, pkg, timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
@@ -507,8 +517,9 @@ class AdbBackend:
         return result
 
     def launch(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
+        # Package is a request property; validate it before the capability gate.
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _device_shell(
                 dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"]
@@ -533,8 +544,9 @@ class AdbBackend:
         }
 
     def force_stop(self, serial: str, package: str) -> JsonObject:
-        dev = self._device(serial)
+        # Package is a request property; validate it before the capability gate.
         pkg = _check_package(package)
+        dev = self._device(serial)
         try:
             _device_shell(dev, ["am", "force-stop", pkg])
         except AdbError:
