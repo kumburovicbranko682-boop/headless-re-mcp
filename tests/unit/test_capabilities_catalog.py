@@ -65,21 +65,9 @@ def _stub_report() -> DoctorReport:
         probes=(
             Probe("ida_idalib", ProbeStatus.READY, "stub ready"),
             Probe("diec", ProbeStatus.MISSING, "stub missing"),
-            # ui.win32 gained a real probe with Linux support: it reports READY
-            # on Windows and unsupported_on_platform on Linux, rather than being
-            # unconditionally advertised as ready everywhere.
             Probe("win32_ui", ProbeStatus.READY, "stub ready"),
         )
     )
-
-
-def test_probe_status_defaults_to_ready_when_a_capability_has_no_probe() -> None:
-    # The None branch is dead in the shipped catalog (every capability now names
-    # a probe), but it stays as the defined contract for a future probe-less
-    # capability, so it is pinned here directly rather than through one.
-    from headless_re_mcp.core.capabilities_catalog import _probe_status
-
-    assert _probe_status(_stub_report(), None) == "ready"
 
 
 def test_list_capabilities_maps_probe_status_and_honors_filters(
@@ -92,8 +80,11 @@ def test_list_capabilities_maps_probe_status_and_honors_filters(
     # A ready probe surfaces as ready; a missing probe as missing.
     assert by_id["ida.idalib"]["status"] == "ready"
     assert by_id["detect.die"]["status"] == "missing"
-    # ui.win32 now maps from its own win32_ui probe (READY in this stub).
+    # ui.win32 is pinned to the win32_ui probe since Linux support landed, so
+    # its status follows the probe like every other capability.
     assert by_id["ui.win32"]["status"] == "ready"
+    # A status_probe of None (no probe to consult) is always ready.
+    assert capabilities_catalog._probe_status(_stub_report(), None) == "ready"
     # A probe absent from the report falls back to missing rather than raising.
     assert by_id["unpack.upx"]["status"] == "missing"
 

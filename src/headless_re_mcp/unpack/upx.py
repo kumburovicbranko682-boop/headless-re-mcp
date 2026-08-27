@@ -256,16 +256,6 @@ def _capture_process(
             "upx process did not expose stdout/stderr pipes",
         )
 
-    # start_new_session (POSIX) makes upx its own group leader, so the group id
-    # is its pid. Used to reap a child a wrapper detached and left behind after
-    # upx itself exited, when the parent/child walk sees nothing.
-    group_pid = getattr(process, "pid", None)
-    group_id = (
-        int(group_pid)
-        if os.name != "nt" and isinstance(group_pid, int) and group_pid > 0
-        else 0
-    )
-
     limit_event = Event()
     stdout_capture = _CapturedStream(max_output_size)
     stderr_capture = _CapturedStream(max_output_size)
@@ -287,7 +277,6 @@ def _capture_process(
     deadline = monotonic() + timeout
     timed_out = False
     cancelled = False
-    exited = False
     stop = active_bound_cancel()
     while True:
         if stop is not None and stop.is_set():
@@ -303,21 +292,16 @@ def _capture_process(
             _terminate_process(process)
             break
         if process.poll() is not None:
-            exited = True
             break
         sleep(min(0.05, remaining))
 
     stdout_thread.join(timeout=2.0)
     stderr_thread.join(timeout=2.0)
-    if exited:
-        # upx exited on its own; the kill path above only runs on
-        # timeout/limit/cancel, so reap anything a wrapper left detached.
-        from headless_re_mcp.core.process_tree import reap_detached_group
+    # A clean upx exit can still leave a wrapper's detached helper behind;
+    # sweep survivors so a successful call never leaks a process.
+    from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
 
-        readers_blocked = stdout_thread.is_alive() or stderr_thread.is_alive()
-        if reap_detached_group(process, group_id=group_id, readers_blocked=readers_blocked):
-            stdout_thread.join(timeout=2.0)
-            stderr_thread.join(timeout=2.0)
+    terminate_leftover_process_tree(process, wait_s=1.0)
     # The readers close their own pipes; only close here when the reader has
     # finished, so a reader still blocked on a survivor's pipe never wedges this
     # thread on close().

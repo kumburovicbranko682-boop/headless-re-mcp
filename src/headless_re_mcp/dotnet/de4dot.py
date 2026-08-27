@@ -329,12 +329,7 @@ def _capture_process(
     # start_new_session (POSIX) makes the runner its own group leader, so the
     # group id is the runner's pid. Used to find and kill a reparented child by
     # group after the runner exits, when the parent/child walk sees nothing.
-    group_pid = getattr(process, "pid", None)
-    group_id = (
-        int(group_pid)
-        if os.name != "nt" and isinstance(group_pid, int) and group_pid > 0
-        else 0
-    )
+    group_id = int(process.pid) if os.name != "nt" and process.pid else 0
 
     limit_event = Event()
     stdout_capture = _CapturedStream(max_output_size)
@@ -381,13 +376,28 @@ def _capture_process(
     stderr_thread.join(timeout=2.0)
     if exited:
         # The runner ended on its own; make sure it left nothing behind. On
-        # Windows the Toolhelp walk covers this. On POSIX the parent/child walk
-        # is blind to a child the runner orphaned to init, so the session group
-        # the runner led is enumerated and killed per-member instead.
-        from headless_re_mcp.core.process_tree import reap_detached_group
-
+        # Windows the job object and the Toolhelp walk cover this. On POSIX the
+        # parent/child walk is blind to a child the runner orphaned to init, so
+        # enumerate the session group the runner led instead.
         readers_blocked = stdout_thread.is_alive() or stderr_thread.is_alive()
-        if reap_detached_group(process, group_id=group_id, readers_blocked=readers_blocked):
+        if os.name == "nt":
+            from headless_re_mcp.core.process_tree import collect_descendants
+
+            leftover_children = readers_blocked or bool(
+                process.pid and collect_descendants(int(process.pid))
+            )
+        else:
+            from headless_re_mcp.core.process_tree import collect_process_group
+
+            leftover_children = readers_blocked or bool(
+                group_id and collect_process_group(group_id)
+            )
+        if leftover_children:
+            _terminate_process(process)
+            if os.name != "nt" and group_id:
+                from headless_re_mcp.core.process_tree import terminate_process_group
+
+                terminate_process_group(group_id)
             stdout_thread.join(timeout=2.0)
             stderr_thread.join(timeout=2.0)
     # The readers close their own pipes; only close here when the reader has
