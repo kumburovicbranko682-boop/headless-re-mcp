@@ -43,33 +43,7 @@ def _sidx(name: bytes) -> int:
     return _STRINGS.index(name)
 
 
-def _metadata_blob() -> bytes:
-    valid = (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 0x0A) | (1 << 0x28)
-    header = bytearray()
-    header += b"\x00\x00\x00\x00"  # reserved
-    header += bytes([2, 0])  # major, minor
-    header += bytes([0x00])  # heap sizes -> all 2-byte indexes
-    header += bytes([0x01])  # reserved
-    header += struct.pack("<Q", valid)
-    header += struct.pack("<Q", 0)  # sorted
-    # Module, TypeDef, Field, MethodDef, MemberRef, ManifestResource counts.
-    for count in (1, 2, 2, 3, 1, 1):
-        header += struct.pack("<I", count)
-
-    data = bytearray()
-    data += struct.pack("<HHHHH", 0, 0, 0, 0, 0)  # Module
-    for _ in range(2):  # TypeDef x2
-        data += struct.pack("<IHHHHH", 0, _sidx(b"MyType"), _sidx(b"MyNamespace"), 0, 1, 1)
-    for _ in range(2):  # Field x2
-        data += struct.pack("<HHH", 0, _sidx(b"MyField"), 0)
-    # MethodDef x3: a tiny body, an abstract (rva 0), and a fat body.
-    data += struct.pack("<IHHHHH", _TINY_RVA, 0, 0, _sidx(b"MyMethod"), 0, 1)
-    data += struct.pack("<IHHHHH", 0, 0, 0, _sidx(b"MyMethod"), 0, 1)
-    data += struct.pack("<IHHHHH", _FAT_RVA, 0, 0, _sidx(b"MyMethod"), 0, 1)
-    data += struct.pack("<HHH", 0, _sidx(b"MyMember"), 0)  # MemberRef
-    data += struct.pack("<IIHH", 0x10, 1, _sidx(b"MyResource"), 0)  # ManifestResource
-    tilde = bytes(header) + bytes(data)
-
+def _pack_blob(order: list[str], names: dict[str, bytes]) -> bytes:
     version = b"v4.0.30319\x00"
     version_padded = version + b"\x00" * ((4 - len(version) % 4) % 4)
     blob = bytearray()
@@ -78,10 +52,7 @@ def _metadata_blob() -> bytes:
     blob += struct.pack("<I", 0)
     blob += struct.pack("<I", len(version))
     blob += version_padded
-    blob += struct.pack("<HH", 0, 2)
-
-    names = {"#Strings": _STRINGS, "#~": tilde}
-    order = ["#Strings", "#~"]
+    blob += struct.pack("<HH", 0, len(order))
 
     def name_bytes(name: str) -> bytes:
         raw = name.encode() + b"\x00"
@@ -99,6 +70,34 @@ def _metadata_blob() -> bytes:
     for n in order:
         blob += names[n]
     return bytes(blob)
+
+
+def _metadata_blob(method_rvas: tuple[int, ...] = (_TINY_RVA, 0, _FAT_RVA)) -> bytes:
+    valid = (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 0x0A) | (1 << 0x28)
+    header = bytearray()
+    header += b"\x00\x00\x00\x00"  # reserved
+    header += bytes([2, 0])  # major, minor
+    header += bytes([0x00])  # heap sizes -> all 2-byte indexes
+    header += bytes([0x01])  # reserved
+    header += struct.pack("<Q", valid)
+    header += struct.pack("<Q", 0)  # sorted
+    # Module, TypeDef, Field, MethodDef, MemberRef, ManifestResource counts.
+    for count in (1, 2, 2, len(method_rvas), 1, 1):
+        header += struct.pack("<I", count)
+
+    data = bytearray()
+    data += struct.pack("<HHHHH", 0, 0, 0, 0, 0)  # Module
+    for _ in range(2):  # TypeDef x2
+        data += struct.pack("<IHHHHH", 0, _sidx(b"MyType"), _sidx(b"MyNamespace"), 0, 1, 1)
+    for _ in range(2):  # Field x2
+        data += struct.pack("<HHH", 0, _sidx(b"MyField"), 0)
+    for rva in method_rvas:  # MethodDef rows: tiny body, abstract, fat body, ...
+        data += struct.pack("<IHHHHH", rva, 0, 0, _sidx(b"MyMethod"), 0, 1)
+    data += struct.pack("<HHH", 0, _sidx(b"MyMember"), 0)  # MemberRef
+    data += struct.pack("<IIHH", 0x10, 1, _sidx(b"MyResource"), 0)  # ManifestResource
+    tilde = bytes(header) + bytes(data)
+
+    return _pack_blob(["#Strings", "#~"], {"#Strings": _STRINGS, "#~": tilde})
 
 
 def _write_clr_with_tables(path: Path, metadata: bytes | None = None) -> None:
@@ -403,39 +402,29 @@ def test_metadata_streams_truncated(tmp_path: Path) -> None:
 
 def test_tables_stream_too_small_yields_empty(tmp_path: Path) -> None:
     """A #~ stream under the 24-byte header floor enumerates as empty."""
-    strings = b"\x00A\x00"
-    version = b"v4.0.30319\x00"
-    version_padded = version + b"\x00" * ((4 - len(version) % 4) % 4)
-    tilde = b"\x00" * 8  # far under the 24-byte header
-    blob = bytearray()
-    blob += b"BSJB"
-    blob += struct.pack("<HH", 1, 1)
-    blob += struct.pack("<I", 0)
-    blob += struct.pack("<I", len(version))
-    blob += version_padded
-    blob += struct.pack("<HH", 0, 2)
-    order = ["#Strings", "#~"]
-    names = {"#Strings": strings, "#~": tilde}
-
-    def name_bytes(name: str) -> bytes:
-        rawn = name.encode() + b"\x00"
-        return rawn + b"\x00" * ((4 - len(rawn) % 4) % 4)
-
-    hdr_len = sum(8 + len(name_bytes(n)) for n in order)
-    cur = len(blob) + hdr_len
-    offsets: dict[str, int] = {}
-    for n in order:
-        offsets[n] = cur
-        cur += len(names[n])
-    for n in order:
-        blob += struct.pack("<II", offsets[n], len(names[n]))
-        blob += name_bytes(n)
-    for n in order:
-        blob += names[n]
-
+    blob = _pack_blob(["#Strings", "#~"], {"#Strings": b"\x00A\x00", "#~": b"\x00" * 8})
     path = tmp_path / "small_tables.dll"
-    _write_clr_with_tables(path, metadata=bytes(blob))
+    _write_clr_with_tables(path, metadata=blob)
     ctx = _load_metadata_context(path)
     assert ctx.row_counts == {}
     page = enumerate_metadata(path, "types", require_verified=False)
     assert page.total == 0
+
+
+def test_strings_heap_skips_empty_entries_and_runs_to_the_end(tmp_path: Path) -> None:
+    """An empty entry is skipped and the last entry is read to the heap end."""
+    # index 0 is the heap NUL; index 1 is an empty entry; "tail" has no NUL.
+    blob = _pack_blob(["#Strings"], {"#Strings": b"\x00\x00tail"})
+    path = tmp_path / "no_terminator.dll"
+    _write_clr_with_tables(path, metadata=blob)
+    page = enumerate_metadata(path, "strings", require_verified=False)
+    assert [item["value"] for item in page.items] == ["tail"]
+
+
+def test_disassemble_reports_an_unmappable_method_rva(tmp_path: Path) -> None:
+    path = tmp_path / "unmappable.dll"
+    _write_clr_with_tables(
+        path, metadata=_metadata_blob(method_rvas=(_TINY_RVA, 0, _FAT_RVA, 0x7FFFFFF0))
+    )
+    with pytest.raises(DotnetInspectError, match="not mappable"):
+        disassemble_method_il(path, 0x06000004, require_verified=False)
