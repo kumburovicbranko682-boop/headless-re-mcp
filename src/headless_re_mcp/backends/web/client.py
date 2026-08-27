@@ -418,8 +418,10 @@ class WebBackend:
                     "url": _bounded_metadata(page.url, _MAX_URL_BYTES)[0],
                     "title": _safe_title(page),
                     "headless": headless,
-                    "status": _response_status(response),
                 }
+                status = _response_status(response)
+                if status is not None:
+                    summary["status"] = status
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     pw.stop()
@@ -547,11 +549,14 @@ class WebBackend:
                 )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
-            return {
+            result: JsonObject = {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
-                "status": _response_status(response),
             }
+            status = _response_status(response)
+            if status is not None:
+                result["status"] = status
+            return result
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)
 
@@ -844,22 +849,21 @@ def _safe_title(page: Any) -> str:
 
 
 def _response_status(response: Any) -> int | None:
-    """HTTP status of a navigation's main document, or None when there is none.
+    """HTTP status of a navigation, or None when it produced no response.
 
-    ``page.goto`` returns the main-resource response, but None for a
-    same-document navigation and a handful of wait conditions. Playwright only
-    raises on network-level failure (DNS, refused, timeout): a page that
-    answered 403/404/500 is a successful goto. Discarding the response reported
-    that landing as a clean load; surfacing ``status`` is how an unattended
-    agent tells an error page from a real one.
+    page.goto only raises for transport failures (DNS, refused, timeout); a
+    4xx/5xx main document resolves normally, so without surfacing this a
+    navigation onto an error page reports the same success as a real hit. goto
+    also returns None for about:blank and same-document navigations, which is
+    an absent status rather than a failure.
     """
     if response is None:
         return None
-    status = getattr(response, "status", None)
     try:
-        return int(status) if status is not None else None
-    except (TypeError, ValueError):
+        status = response.status
+    except Exception:  # noqa: BLE001
         return None
+    return status if isinstance(status, int) else None
 
 
 def _playwright_driver_pid(playwright: Any) -> int | None:

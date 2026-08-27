@@ -34,12 +34,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Launch a Chrome browser for the session and open a URL via CDP.
 
-        Answers with opened, url, title, headless and status -- the HTTP
-        status of the main document (null when no URL was opened or the
-        navigation produced no response). Playwright only raises on
-        network-level failure, so status is how a 404 or 500 landing page
-        is told from a clean load. There is no session, browser, ok or page
-        field.
+        Answers with opened, url, title and headless, plus status when a URL
+        was given and produced an HTTP response. A 4xx/5xx page still opens, so
+        read status to tell an error page from a hit. There is no session,
+        browser, ok or page field.
         """
         return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
 
@@ -51,11 +49,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Navigate the session's browser to a new URL.
 
-        Answers with url, title and status -- the HTTP status of the main
-        document, or null when the navigation produced no response (e.g. a
-        same-document jump). Playwright only raises on network-level
-        failure, so status is how a 404 or 500 landing page is told from a
-        clean load. There is no navigated, ok or page field.
+        Answers with url and title, plus status when the navigation produced an
+        HTTP response. A 4xx/5xx page still counts as navigated, so read status
+        to tell an error page from a hit. There is no navigated, ok or page
+        field.
         """
         return _dump(analysis.web_navigate(session_id, url, timeout=timeout))
 
