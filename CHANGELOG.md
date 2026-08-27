@@ -86,7 +86,13 @@ gate 与 CI，并修掉两处只有在真后端下才暴露的缺陷。全部 ga
   Ghidra 下载、配 JDK 21，只收 Ghidra gate 文件。两个 job 都钉在 `ubuntu-24.04`（而非会随 LTS 升级悄悄
   漂移的 `ubuntu-latest` 别名）——apt 后端（radare2/wabt/apksigner/gcc）从该发行版 archive 取版本，钉住
   镜像才钉住它们；webcrack 也用 `WEBCRACK_VERSION` 显式钉版（npm registry 保留旧版，可复现），与既有的
-  Ghidra/jadx/apktool 版本钉法一致，均在本地 Ubuntu 24.04 上跑通对应版本后钉定，「刻意升级」。
+  Ghidra/jadx/apktool 版本钉法一致，均在本地 Ubuntu 24.04 上跑通对应版本后钉定，「刻意升级」。pip 侧的
+  逆向后端（frida/androguard/adbutils/playwright/mitmproxy）此前只受 pyproject 下限（如 `frida>=16.5`）
+  约束、会随上游漂移——正是 frida 17 抽掉 `Memory.readByteArray` 那类断层——现由 `.github/linux-gates-constraints.txt`
+  经 `pip install -c` 只在 CI 钉死（不进 pyproject，运行时消费者仍保留灵活下限）。只钉叶子后端、不碰其共享
+  传递依赖（pydantic/typing-extensions），故 job 记述的 pydantic 2.11 + typing-extensions 4.14（满足
+  mitmproxy 的 `typing-extensions<=4.14`）解析平衡不受扰动；已在干净 venv（ubuntu-24.04/CPython 3.12）
+  验证 `pip check` 干净、pydantic 仍解析为 2.11.10。
 
 ### 新增（监控台工作台）
 

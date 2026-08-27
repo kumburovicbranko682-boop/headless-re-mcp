@@ -154,7 +154,13 @@ jobs:
           # extensions 4.14, the newest set that also satisfies mitmproxy 12.x
           # (which pins typing-extensions<=4.14). It is consistent, so pip check
           # below is clean; the quality job installs the pydantic 2.13 line.
-          python -m pip install -e ".[test,dev,web,android,browser,proxy]"
+          # -c freezes the RE backends (frida/androguard/adbutils/playwright/
+          # mitmproxy) to the versions the gates were validated against, so an
+          # upstream release cannot silently shift a gate's backend API. Only
+          # the leaf backends are pinned, so the pydantic/typing-extensions
+          # balance above still resolves as documented.
+          python -m pip install -e ".[test,dev,web,android,browser,proxy]" \
+            -c .github/linux-gates-constraints.txt
 
       - name: Playwright Chromium
         # Bundled Chromium with its system libraries -- the same browser
