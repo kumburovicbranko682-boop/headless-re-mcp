@@ -24,6 +24,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（SECURITY.md 如实交代默认预设自动放行的非 PE 状态变更半径）
+
+- 默认 *packed-analysis 预设*按*效应类*放开 `state_change`,因此它不仅自动跑补壳 PE 分析的写,还
+  一并放开**全部非 PE 状态变更**——Android 设备线、Frida 设备线、拦截代理(含开启 MITM、推送 CA、
+  重放请求)、浏览器驱动与全局 `workspace.mode.set`。SECURITY.md 此前只列出被排除的 `file_write`
+  (patches、APK 改包签名、产物 GC、设备/Web 抓取),把自动放行集描述成"补壳 PE 分析常用的写",
+  未点明这批非 PE 状态变更同样无人值守自动运行;对照之下还有一处反直觉的不对称:只读性更强的设备
+  抓取(`device.pull`/`screenshot`)留给人工,破坏性更强的 `device.uninstall` 却自动跑。
+- 现在 SECURITY.md 的 autonomy 小节如实列出这批随预设自动运行的非 PE 状态变更、点出该不对称,并指向
+  缓解手段(`agent_never_auto_approve` 逐个钉死、或 `local_full_access: false` 只读部署)。这不改变
+  任何行为,只把默认放行的真实半径讲清楚,使无人值守部署方能据实做取舍;该集合仍由
+  `tests/unit/test_agent_autonomy.py` 钉住。
+
 ### 加固（proxy.ca.install_android 的 CA 推送补记持久 audit）
 
 - `proxy.ca.install_android` 通过 adb 把 mitmproxy 根证书推到设备上——与 `frida.server.ensure`

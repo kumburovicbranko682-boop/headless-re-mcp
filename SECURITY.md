@@ -98,6 +98,18 @@ Frida 脚本——每个能力都是具名、参数经校验的工具。任何�
 - **完全不配置这三个键** → 应用 *packed-analysis 预设*:自动批准 `state_change` 以及**非敏感**的
   `file_write`。补壳 PE 分析常用的写会自动跑,但 patches(打补丁/回滚/改字节)、APK 改包与签名、
   产物 GC(`artifacts.gc`)、设备与 Web 抓取(截图 / pull / HAR 导出等)始终留给人工。
+  **注意这条放行的真实半径**:`state_change` 是按*效应类*、而非具名清单放开的,所以它一并放开了
+  **全部非 PE 的状态变更**——这些都不属于补壳 PE 分析,却同样在默认预设下无人值守地自动运行:
+  Android 设备线(`device.connect` / `install` / `uninstall` / `launch` / `force_stop` / `push` /
+  `forward`)、Frida 设备线(`frida.device.connect` / `server.ensure` / `spawn` / `attach` /
+  `hook.template`)、拦截代理(`proxy.start` / `stop` / `replay` / `ca.install_android`——含开启在途
+  MITM 代理、向设备推送 CA、把捕获请求重放到线上服务)、浏览器驱动(`web.open` / `navigate` /
+  `click` / `type` / `close`),以及改写全局工作方向档、跨重启生效的 `workspace.mode.set`。这带来一处
+  值得留意的不对称:设备**抓取**(`device.pull` / `device.screenshot`)因是 `file_write` 而留给人工,
+  破坏性更强的设备**变更**(如 `device.uninstall`)反而自动跑。若不希望这些在无人值守时自动执行,
+  用 `agent_never_auto_approve` 逐个钉死为人工批准,或直接 `local_full_access: false` 只读部署。
+  这一"随预设自动运行的非 PE 状态变更"集合由 `tests/unit/test_agent_autonomy.py` 钉住,新增同类工具
+  会触发测试失败,强制对"是否该无人值守自动运行"做出显式决定。
 - **显式写成空列表**(`"agent_auto_approve_effects": []`)→ *fail-closed*:只有只读工具自动运行,
   任何写都等待批准。空列表不是"沿用默认",而是"什么都别自动批准"。
 - **想彻底只读**用 `local_full_access: false`;**想无人值守但钉死个别高危工具**,
