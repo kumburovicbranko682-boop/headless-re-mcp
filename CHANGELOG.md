@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（用假 APK 钉住 apk 清单级读取的故障映射、版本回退与输出诚实，不依赖 androguard）
+
+- `ApkClient` 的清单级读取(`manifest`/`permissions`/`certificates`)只解析 APK 容器,但仍走 androguard 的\
+  APK 对象,本机没装 androguard 时其故障分支与版本兼容回退从不执行。`_apk` 命中缓存时会在导入 androguard\
+  *之前*返回已解析对象,故往 light 缓存里播入一个假 APK 即可确定性驱动这些方法(与 frida 设备测试同一\
+  注入接缝)。新增 `test_apk_manifest_reads_faults.py`,钉住对无人值守 agent 要紧的分支:文件缺失先报\
+  `not_found`(而非稍后更费解的解析错误);清单解不出来映射成精确的 `backend_error` 而非泄漏原始异常;\
+  读取容忍它本就要吸收的 androguard 版本差异(旧版缺 `get_requested_permissions` 时回退到已声明集、APK 无\
+  v1 签名块时 `v1_signed=False` 而不抛、证书对象字段取值崩溃时跳过而非致命);证书与签名文件列表按上限\
+  截断并如实 `has_more`,不把无界签名史整体铺开;并覆盖纯helper `_dotted_to_smali` 对已是 smali 形态的\
+  名字原样透传。(纯测试补充,无行为变更;autouse fixture 在每例后清空进程级解析缓存以免污染其他用例。)
+
 ### 测试（用假设备钉住 frida 设备路径的授权门与故障分类，不依赖真实 frida）
 
 - 安卓动态分析方法(`java_enumerate`/`hook_template_device`)共用授权门 `_authorize` 与一段\
