@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -16,6 +17,19 @@ from platformdirs import user_config_path, user_data_path
 from headless_re_mcp.core.retention import DEFAULT_MAX_TOTAL_BYTES
 
 _MAX_CONFIG_FILE_BYTES = 1024 * 1024
+# update_config_values is a read-merge-write, and its writers really do run
+# concurrently inside the web process: workspace.mode_set persists
+# ``workspace_profile`` from an agent tool thread while the console persists
+# the ``agent_*`` autonomy keys from a request thread, and the setup pages save
+# tool paths from yet another. Unserialized, two in-flight merges each read a
+# snapshot missing the other's key and the later os.replace erases the earlier
+# write -- a setting silently reverts with nothing in any log. The atomic
+# replace already keeps the file valid; this lock is what keeps it complete.
+# Writers in another process (the stdio MCP server during setup) still
+# last-win against this one, which is accepted: every routine writer lives in
+# the web process, and cross-process file locking buys that corner case at the
+# price of platform-specific lock semantics.
+_CONFIG_WRITE_LOCK = threading.Lock()
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -439,49 +453,56 @@ def update_config_values(
     *,
     config_path: Path | None = None,
 ) -> Path:
-    """Merge keys into the user config.json (does not touch the IDA install tree)."""
+    """Merge keys into the user config.json (does not touch the IDA install tree).
+
+    Serialized on ``_CONFIG_WRITE_LOCK``: the merge reads the whole file and
+    writes the whole file back, so two concurrent callers with different keys
+    would otherwise each merge into a snapshot missing the other's key and the
+    later replace would silently drop the earlier write.
+    """
     path = config_path or default_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    data: dict[str, Any] = {}
-    if path.is_file():
+    with _CONFIG_WRITE_LOCK:
+        data: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                loaded = _read_json_object(path)
+            except OSError as exc:
+                raise OSError(f"could not read existing config: {path}") from exc
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"existing config is not valid JSON: {path}") from exc
+            data = loaded
+        for key, value in updates.items():
+            if value is None:
+                data.pop(key, None)
+            elif isinstance(value, Path):
+                data[key] = str(value)
+            else:
+                data[key] = value
+        encoded = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        if len(encoded) > _MAX_CONFIG_FILE_BYTES:
+            raise ValueError(f"configuration file exceeds {_MAX_CONFIG_FILE_BYTES} bytes")
+        temporary: Path | None = None
         try:
-            loaded = _read_json_object(path)
-        except OSError as exc:
-            raise OSError(f"could not read existing config: {path}") from exc
-        except (ValueError, TypeError) as exc:
-            raise ValueError(f"existing config is not valid JSON: {path}") from exc
-        data = loaded
-    for key, value in updates.items():
-        if value is None:
-            data.pop(key, None)
-        elif isinstance(value, Path):
-            data[key] = str(value)
-        else:
-            data[key] = value
-    encoded = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-    if len(encoded) > _MAX_CONFIG_FILE_BYTES:
-        raise ValueError(f"configuration file exceeds {_MAX_CONFIG_FILE_BYTES} bytes")
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=path.parent,
-            prefix=f".{path.name}-",
-            suffix=".tmp",
-            delete=False,
-        ) as stream:
-            temporary = Path(stream.name)
-            stream.write(encoded)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        temporary = None
-    finally:
-        if temporary is not None:
-            with suppress(OSError):
-                temporary.unlink()
-    with suppress(OSError):
-        path.chmod(0o600)
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path.parent,
+                prefix=f".{path.name}-",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                with suppress(OSError):
+                    temporary.unlink()
+        with suppress(OSError):
+            path.chmod(0o600)
     return path
 
 
