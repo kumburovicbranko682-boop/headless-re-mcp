@@ -316,8 +316,27 @@ class TestApkClassification:
     def test_describe_apk_reads_abis_without_androguard(self, tmp_path: Path) -> None:
         info = describe_apk(_apk(tmp_path / "app.apk"))["apk"]
         assert info["native_abis"] == ["arm64-v8a"]
+        assert info["native_abis_truncated"] is False
         assert info["dex_count"] == 1
         assert info["signed_v1"] is True
+
+    def test_describe_apk_caps_a_flood_of_distinct_abis(self, tmp_path: Path) -> None:
+        """The identity read runs at session creation for every APK.
+
+        A crafted archive can stuff distinct lib/<abi>/ prefixes to grow the
+        one list-valued field it returns; the set is capped and the reply says
+        so, so a hostile package cannot bloat the create-session payload.
+        """
+        from headless_re_mcp.core.session import _MAX_APK_ABIS
+
+        path = tmp_path / "many.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            for index in range(_MAX_APK_ABIS + 50):
+                archive.writestr(f"lib/abi{index:05d}/libx.so", b"\x7fELF")
+        info = describe_apk(path)["apk"]
+        assert len(info["native_abis"]) == _MAX_APK_ABIS
+        assert info["native_abis_truncated"] is True
 
     def test_describe_apk_rejects_archive_without_manifest(self, tmp_path: Path) -> None:
         plain = tmp_path / "archive.zip"

@@ -26,8 +26,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Parse an APK session's identity.
 
         Answers with package, version_name, version_code, min_sdk, target_sdk,
-        native_abis, main_activity, permission_count and opened. There is no
-        version, sdk or abis field.
+        native_abis, main_activity, permission_count and opened, plus
+        native_abis_truncated when the ABI set hit its count cap or an ABI name
+        was clipped. There is no version, sdk or abis field.
         """
         return _dump(analysis.apk_open(session_id))
 
@@ -80,8 +81,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with native_libs, abis, count, has_more so a list that filled
         the cap is not read as every .so, and truncated when an APK-derived
-        entry path was clipped to its length cap. There is no libs or
-        libraries field.
+        entry path was clipped to its length cap or the ABI set hit its own
+        count/value cap. There is no libs or libraries field.
         """
         return _dump(analysis.apk_native_libs(session_id))
 

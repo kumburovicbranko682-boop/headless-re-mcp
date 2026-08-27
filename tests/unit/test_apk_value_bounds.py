@@ -15,7 +15,7 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.apk.client import _MAX_NAME_LEN, ApkClient
+from headless_re_mcp.backends.apk.client import _MAX_ABIS, _MAX_NAME_LEN, ApkClient
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -72,6 +72,78 @@ def test_native_libs_leaves_a_normal_apk_untruncated() -> None:
     payload = client.native_libs(Path("dummy.apk"))
     assert payload["truncated"] is False
     assert payload["native_libs"] == ["lib/arm64-v8a/libfoo.so"]
+
+
+class _ManyAbisApk:
+    """A crafted package with more distinct lib/<abi>/ prefixes than any device.
+
+    open() reads identity beside the ABI set; native_libs() reads only files, so
+    the fake answers both surfaces.
+    """
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def get_package(self) -> str:
+        return "com.x"
+
+    def get_androidversion_name(self) -> str:
+        return "1.0"
+
+    def get_androidversion_code(self) -> str:
+        return "1"
+
+    def get_min_sdk_version(self) -> str:
+        return "21"
+
+    def get_target_sdk_version(self) -> str:
+        return "33"
+
+    def get_main_activity(self) -> str:
+        return "com.x.Main"
+
+    def get_permissions(self) -> list[str]:
+        return ["A"]
+
+    def get_files(self) -> list[str]:
+        return [f"lib/abi{i:05d}/libx.so" for i in range(self._count)]
+
+
+def test_native_libs_caps_a_flood_of_distinct_abis_and_flags_it() -> None:
+    """The ABI set is built from every lib/ path, not the paged lib list.
+
+    Measured: a package with 200 distinct lib/<abi>/ prefixes returns exactly
+    _MAX_ABIS ABIs and sets truncated, so the set cannot grow with the archive.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _ManyAbisApk(200)  # type: ignore[method-assign]
+    payload = client.native_libs(Path("dummy.apk"))
+    assert len(payload["abis"]) == _MAX_ABIS
+    assert payload["truncated"] is True
+
+
+def test_open_caps_a_flood_of_distinct_abis_and_flags_it() -> None:
+    """open() computes the same ABI set for identity; it is bounded the same way.
+
+    Measured: 200 distinct prefixes yield _MAX_ABIS ABIs and set
+    native_abis_truncated.
+    """
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _ManyAbisApk(200)  # type: ignore[method-assign]
+    payload = client.open(Path("dummy.apk"))
+    assert len(payload["native_abis"]) == _MAX_ABIS
+    assert payload["native_abis_truncated"] is True
+
+
+def test_open_leaves_a_normal_apk_abi_set_unflagged() -> None:
+    """A real handful of ABIs is returned whole with the flag clear."""
+    client = ApkClient()
+    client._available = True
+    client._apk = lambda _path: _ManyAbisApk(3)  # type: ignore[method-assign]
+    payload = client.open(Path("dummy.apk"))
+    assert len(payload["native_abis"]) == 3
+    assert payload["native_abis_truncated"] is False
 
 
 class _PermApk:

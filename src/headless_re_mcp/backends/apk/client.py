@@ -37,6 +37,13 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# A real device ships a handful of ABIs (arm64-v8a, armeabi-v7a, x86, x86_64
+# and a few legacy ones); a set larger than this is a crafted APK stuffing
+# distinct ``lib/<junk>/`` prefixes to grow the reply. Every other zip-derived
+# list here is count-capped, but the ABI set grew with the entry count: it is
+# built from every ``lib/`` path, so a package with tens of thousands of them
+# each under its own directory returned an ABI list to match.
+_MAX_ABIS = 64
 
 
 class ApkError(RuntimeError):
@@ -68,6 +75,36 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool, bool]:
         items.append(clipped)
     items.sort()
     return items, has_more, truncated
+
+
+def _collect_abis(files: Any) -> tuple[list[str], bool]:
+    """Distinct ABI directory names from ``lib/<abi>/...`` entries, bounded.
+
+    Count- and value-capped like every other APK-derived list: the ABI segment
+    of each ``lib/`` entry is clipped so a crafted path cannot bloat the set
+    with a multi-kilobyte pseudo-ABI, and the set stops growing at ``_MAX_ABIS``
+    distinct names. Returns the sorted ABIs and whether the set was capped or a
+    name was clipped.
+    """
+    abis: set[str] = set()
+    truncated = False
+    for name in files or []:
+        text = str(name)
+        if not text.startswith("lib/"):
+            continue
+        parts = text.split("/")
+        if len(parts) < 3 or not parts[1]:
+            continue
+        abi, cut = _clip_name(parts[1])
+        if cut:
+            truncated = True
+        if abi in abis:
+            continue
+        if len(abis) >= _MAX_ABIS:
+            truncated = True
+            break
+        abis.add(abi)
+    return sorted(abis), truncated
 
 
 class _ParsedApk:
@@ -188,6 +225,7 @@ class ApkClient:
 
     def open(self, path: Path) -> JsonObject:
         apk = self._apk(path)
+        native_abis, abis_truncated = _collect_abis(apk.get_files())
         return {
             "opened": True,
             "package": apk.get_package(),
@@ -197,13 +235,8 @@ class ApkClient:
             "target_sdk": apk.get_target_sdk_version(),
             "main_activity": apk.get_main_activity(),
             "permission_count": len(apk.get_permissions()),
-            "native_abis": sorted(
-                {
-                    name.split("/")[1]
-                    for name in apk.get_files()
-                    if name.startswith("lib/") and len(name.split("/")) >= 3
-                }
-            ),
+            "native_abis": native_abis,
+            "native_abis_truncated": abis_truncated,
         }
 
     def manifest(self, path: Path) -> JsonObject:
@@ -304,36 +337,32 @@ class ApkClient:
 
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
+        files = list(apk.get_files() or [])
         libs: list[str] = []
-        abis: set[str] = set()
         has_more = False
         truncated = False
-        for name in apk.get_files() or []:
+        for name in files:
             text = str(name)
             if not text.startswith("lib/"):
                 continue
-            parts = text.split("/")
-            if len(parts) >= 3:
-                # ABI segment only; clip it too so a crafted entry cannot bloat
-                # the abis set with a multi-kilobyte pseudo-ABI.
-                abi, abi_cut = _clip_name(parts[1])
-                if abi_cut:
-                    truncated = True
-                abis.add(abi)
             if len(libs) >= _MAX_NATIVE_LIBS:
                 has_more = True
-                continue
+                break
             clipped, cut = _clip_name(text)
             if cut:
                 truncated = True
             libs.append(clipped)
         libs.sort()
+        # The ABI set is scanned in full and separately bounded: the lib list
+        # stops at its cap, but a package can register far more distinct ABIs
+        # than libraries a page shows, so it gets its own count/value bound.
+        abis, abis_truncated = _collect_abis(files)
         return {
             "native_libs": libs,
-            "abis": sorted(abis),
+            "abis": abis,
             "count": len(libs),
             "has_more": has_more,
-            "truncated": truncated,
+            "truncated": truncated or abis_truncated,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

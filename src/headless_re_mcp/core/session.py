@@ -361,6 +361,12 @@ _WEB_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".wasm", ".html", ".htm", ".ha
 _APK_MANIFEST = "AndroidManifest.xml"
 # Enough for every magic number below without pulling a large header into memory.
 _MAGIC_BYTES = 8
+# A real package ships a handful of ABIs; a longer list is a crafted archive
+# stuffing distinct ``lib/<junk>/`` prefixes. This identity read runs at session
+# creation for every APK, so the one list-valued field it returns is bounded in
+# both count and per-name length the way the androguard-backed reader is.
+_MAX_APK_ABIS = 64
+_MAX_APK_ABI_LEN = 2000
 
 
 def is_http_url(reference: str) -> bool:
@@ -421,16 +427,28 @@ def describe_apk(path: Path) -> dict[str, Any]:
         raise ValueError(f"not a readable Android package: {path}") from exc
     if _APK_MANIFEST not in names:
         raise ValueError(f"archive has no {_APK_MANIFEST}: {path}")
-    abis = sorted(
-        {
-            parts[1]
-            for name in names
-            if name.startswith("lib/") and len(parts := name.split("/")) >= 3 and parts[1]
-        }
-    )
+    abi_set: set[str] = set()
+    abis_truncated = False
+    for name in names:
+        if not name.startswith("lib/"):
+            continue
+        parts = name.split("/")
+        if len(parts) < 3 or not parts[1]:
+            continue
+        abi = parts[1]
+        if len(abi) > _MAX_APK_ABI_LEN:
+            abi = abi[:_MAX_APK_ABI_LEN]
+            abis_truncated = True
+        if abi in abi_set:
+            continue
+        if len(abi_set) >= _MAX_APK_ABIS:
+            abis_truncated = True
+            break
+        abi_set.add(abi)
     return {
         "apk": {
-            "native_abis": abis,
+            "native_abis": sorted(abi_set),
+            "native_abis_truncated": abis_truncated,
             "dex_count": sum(1 for name in names if name.endswith(".dex")),
             "entry_count": len(names),
             "signed_v1": any(
