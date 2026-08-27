@@ -13,10 +13,17 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 _MAX_SOURCE_BYTES = 400_000
+# apk.decompile / export_sources both declare le=1800 in their schema.
+_MAX_TIMEOUT_S = 1800.0
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
@@ -180,6 +187,10 @@ class JadxClient:
         *,
         timeout: float,
     ) -> tuple[str, str, int]:
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise JadxError("invalid_params", str(exc)) from exc
         if not self.available or self.executable is None:
             raise JadxError("capability_unavailable", "jadx is not configured")
         if not apk.is_file():
