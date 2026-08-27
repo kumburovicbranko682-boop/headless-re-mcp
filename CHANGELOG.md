@@ -240,6 +240,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
   空的合法远端文件仍会作为 0 字节正常返回。
 
+### 修复（`apk.certificates` 不再把只签了 v2/v3 的现代 APK 读成未签名）
+
+- `apk.certificates` 只回一个 `v1_signed`(来自 `META-INF/*.RSA` 等 JAR 签名文件)。可 API 24 起
+  v1(JAR)签名已是可选,现代 APK 常常**只**用 APK Signature Scheme v2/v3 签名、根本没有 v1 文件。
+  于是这类 APK 回来 `v1_signed=false`;调用方若据此判断,会把一个签得好好的包当成未签名——在改包
+  重签(`apk.decode`→`apk.repack`→`apk.sign`)前后核对签名方案时尤其误导。
+- 现在新增 `v2_signed` / `v3_signed`:androguard 能查 APK Signing Block 时回 true/false,查不了
+  (旧版 androguard 没有 `is_signed_v2` / `is_signed_v3`)时回 null。三态明确区分「未按此方案签名」
+  与「解析器无法判断」,不拿后者冒充前者。`v1_signed` 与证书枚举行为不变。
+- 新增回归:只签 v2 的 APK(`v1_signed=false`/`v2_signed=true`/`v3_signed=false` 且仍回证书)不再读作未签名、
+  旧版 androguard 缺探针时两标志为 null 而非假 false,以及既有的 v1 用例照旧。`apk.certificates`
+  描述点名 `v2_signed` / `v3_signed`。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
