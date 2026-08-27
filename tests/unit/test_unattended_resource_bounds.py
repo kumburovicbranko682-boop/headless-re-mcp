@@ -3237,6 +3237,44 @@ class TestDeviceListsDiscloseTruncation:
         assert result["total"] == 10
         assert result["has_more"] is True
 
+    def test_frida_application_limit_is_reclamped_against_a_bypassing_transport(
+        self,
+    ) -> None:
+        """frida.applications' limit is bounded 1..256 in the tool schema, but the
+        backend re-clamps to max(1, min(limit, 1000)) because the agent and OpenAI
+        transports call the service directly and never see that schema. Pin both
+        edges a bypass can reach: a non-positive limit must floor at one page rather
+        than slice a Python tail (limit<=0 -> apps[:0] is empty, which would read as
+        an appless device), and an over-large limit must cap at 1000 rather than
+        materialise every installed app into one reply. The has_more flag stays
+        honest at the clamped size so the caller still learns the list was cut.
+        """
+        from headless_re_mcp.backends.frida.client import FridaClient
+
+        class App:
+            def __init__(self, index: int) -> None:
+                self.identifier = f"com.app{index}"
+                self.name = str(index)
+                self.pid = 0
+
+        class Dev:
+            def enumerate_applications(self) -> list[App]:
+                return [App(index) for index in range(1500)]
+
+        client = FridaClient()
+        client._resolve_device = lambda device_id: Dev()  # type: ignore[method-assign]
+
+        for bypass_limit in (0, -5):
+            floored = client.applications("usb", limit=bypass_limit)
+            assert floored["count"] == 1
+            assert floored["total"] == 1500
+            assert floored["has_more"] is True
+
+        capped = client.applications("usb", limit=99999)
+        assert capped["count"] == 1000
+        assert capped["total"] == 1500
+        assert capped["has_more"] is True
+
     def test_a_failed_resume_kills_the_spawned_pid(self) -> None:
         from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 

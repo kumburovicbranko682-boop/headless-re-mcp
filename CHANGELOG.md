@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（钉住 frida.applications 的 limit 在绕过工具 schema 时的后端重夹紧）
+
+- `frida.applications` 的 `limit` 在工具 schema 里限 1..256,但 agent 与 OpenAI 传输直接调服务层、\
+  从不经过该 schema,所以后端另行 `max(1, min(limit, 1000))` 重夹紧。既有测试只覆盖 `limit<total`\
+  (limit 10 与 3),两个绕过传输能触到的边界都没钉:非正 `limit` 必须下探到一页(`limit<=0` 若走\
+  Python 尾切片会得到 `apps[:0]` 空页,读起来像一台没装应用的设备),超大 `limit` 必须封顶到 1000\
+  (而非把整机已装应用一次性铺进单条回复)。新增 `test_frida_application_limit_is_reclamped_against_a_bypassing_transport`\
+  以 1500 个假应用钉住这两端,并确认 `has_more` 在夹紧后的尺寸上仍如实报被截断——与 apk `_clamp_page`、\
+  adb 端口的后端重校验同口径。(纯测试补充,无行为变更。)
+
 ### 可观测性（web.status 增加 capture 抓包健康块，与 proxy.status 对齐）
 
 - `web.status` 本是页面身份快照(open/url/title),唯独不报抓包环健康。web 会话有三个有界抓包环
