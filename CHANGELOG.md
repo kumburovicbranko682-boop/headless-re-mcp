@@ -116,6 +116,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的递归与大小写直测,以及 `_SETTINGS_ENV_MAP` 只引用真实 `Settings` 字段的漂移护栏(否则改名
   会让某个 `HEADLESS_RE_*` 路径从生成配置里悄悄消失)。
 
+### 修复（adb forward 端口越界未在边界拦截）
+
+- `device.forward` 的 local/remote 端点校验用 `tcp:\d{1,5}` 匹配，会放过 `tcp:70000` 这类五位数
+  “端口”——而 `connect` 早已拒绝 1..65535 之外的端口。这类越界值原样交给 adb，只能换回一条含糊的
+  `backend_error`。现抽出 `_check_forward_spec` 统一校验：tcp 端口须在 0..65535（保留 `0`=由 adb
+  自动分配空闲端口），越界即报 `invalid_params` 并把越界值放进 details；`localabstract:` 与仅限
+  remote 侧的 `jdwp:` 原样保留。校验在解析设备之前完成,坏参数不占用任何 forward 槽。新增回归测试覆盖
+  越界端口(local/remote)、边界 `0`/`65535`、`localabstract`/`jdwp`、jdwp 只在 remote 有效、以及
+  畸形规格一律拒绝。
+
 ### 修复（托管质量门）
 
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
