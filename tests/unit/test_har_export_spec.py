@@ -176,6 +176,7 @@ def test_serialize_har_leaves_a_small_capture_intact() -> None:
 class _WebHandle:
     def __init__(self, count: int) -> None:
         self.lock = Lock()
+        self.requests_dropped = 0
         self.requests = {
             str(index): {
                 "requestId": str(index),
