@@ -369,3 +369,45 @@ def test_failed_health_envelope_does_not_forget_dead_backends() -> None:
     kinds = [alert["kind"] for alert in watchdog.recent_alerts()]
     assert kinds.count("backend_dead") == 1
     assert "session_health_recovered" in kinds
+
+
+def test_a_backend_that_comes_back_is_forgotten_from_the_dead_streak() -> None:
+    # A dead backend that returns must not carry its old streak forward, or a
+    # later death would be misread as a continuation rather than a fresh one.
+    health = FakeHealth([_row("s1", "x64dbg", alive=False, connected=False)])
+    watchdog = Watchdog(health)
+    watchdog.sweep()
+    assert ("s1", "x64dbg") in watchdog._dead_streak
+
+    health.rows = [_row("s1", "x64dbg", alive=True, connected=True)]
+    watchdog.sweep()
+    assert ("s1", "x64dbg") not in watchdog._dead_streak
+
+
+def test_recovery_succeeded_rejects_shapeless_or_non_numeric_data() -> None:
+    # ok=True is not enough: the counts have to say a backend actually came back.
+    assert Watchdog._recovery_succeeded(FakeResult(True, None)) is False
+    assert (
+        Watchdog._recovery_succeeded(
+            FakeResult(True, {"failed": "x", "recovered": "y"})
+        )
+        is False
+    )
+
+
+def test_recovery_failure_detail_falls_back_when_counts_are_unreadable() -> None:
+    # No error message and a non-numeric failed count leaves only the generic
+    # explanation, never a raised exception.
+    detail = Watchdog._recovery_failure_detail(
+        FakeResult(True, {"failed": "bad"}, error=None)
+    )
+    assert detail == "recovery returned no error"
+    # The same fallback holds when there is no data payload to inspect at all.
+    assert (
+        Watchdog._recovery_failure_detail(FakeResult(True, None, error=None))
+        == "recovery returned no error"
+    )
+
+
+def test_rows_reads_as_empty_when_the_payload_is_not_a_dict() -> None:
+    assert Watchdog._rows(FakeResult(True, None)) == []
