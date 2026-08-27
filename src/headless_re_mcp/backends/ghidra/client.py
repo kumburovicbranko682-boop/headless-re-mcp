@@ -321,13 +321,17 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
-        candidate = home / rel
-        if candidate.is_file():
-            return candidate
+    # A Ghidra distribution ships both launchers side by side: the Windows
+    # analyzeHeadless.bat and the Unix analyzeHeadless shell script. Prefer the
+    # one for this host -- picking the .bat first on Linux/macOS made Popen fail
+    # with "Exec format error" even though a perfectly good launcher was present.
+    if os.name == "nt":
+        names = ("analyzeHeadless.bat", "analyzeHeadless")
+    else:
+        names = ("analyzeHeadless", "analyzeHeadless.bat")
+    for name in names:
+        for rel in (f"support/{name}", name):
+            candidate = home / rel
+            if candidate.is_file():
+                return candidate
     return None

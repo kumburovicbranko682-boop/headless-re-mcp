@@ -8,16 +8,19 @@ import json
 from ghidra.app.decompiler import DecompInterface
 from ghidra.util.task import ConsoleTaskMonitor
 
-mode = ARGS[0] if ARGS else "functions"
-out_path = ARGS[1] if len(ARGS) > 1 else None
+# Ghidra exposes postScript arguments through getScriptArgs(), not a global
+# named ARGS -- referencing ARGS raised NameError and left every export empty.
+_args = getScriptArgs()
+mode = _args[0] if len(_args) > 0 else "functions"
+out_path = _args[1] if len(_args) > 1 else None
 limit = 256
 try:
-    if len(ARGS) > 2:
-        limit = max(1, min(int(ARGS[2]), 1024))
+    if len(_args) > 2:
+        limit = max(1, min(int(_args[2]), 1024))
 except Exception:
     limit = 256
 
-address_arg = ARGS[3] if len(ARGS) > 3 else None
+address_arg = _args[3] if len(_args) > 3 else None
 payload = {"mode": mode, "items": [], "count": 0, "has_more": False}
 monitor = ConsoleTaskMonitor()
 program = currentProgram
