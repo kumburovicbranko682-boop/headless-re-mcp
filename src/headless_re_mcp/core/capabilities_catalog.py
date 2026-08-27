@@ -83,7 +83,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "frida.session",
         "backend": "frida",
         "status_probe": "frida",
-        "tools": ["frida.attach", "frida.modules", "frida.exports", "frida.memory.read", "frida.hook.template"],
+        "tools": ["frida.attach", "frida.modules", "frida.exports", "frida.imports", "frida.memory.read", "frida.hook.template"],
         "summary": "Session-bound Frida hooks",
         "optional": True,
     },

@@ -35,6 +35,7 @@ _PLANNED_TOOLS = {
         "frida.attach",
         "frida.modules",
         "frida.exports",
+        "frida.imports",
         "frida.memory.read",
         "frida.hook.template",
     },
@@ -87,6 +88,13 @@ def test_m11_capabilities_and_missing_backends() -> None:
         frida_exports = service.frida_exports(session_id, "kernel32.dll")
         assert not frida_exports.ok and frida_exports.error is not None
         assert frida_exports.error.code in {
+            "invalid_state",
+            "capability_unavailable",
+            "backend_unavailable",
+        }
+        frida_imports = service.frida_imports(session_id, "kernel32.dll")
+        assert not frida_imports.ok and frida_imports.error is not None
+        assert frida_imports.error.code in {
             "invalid_state",
             "capability_unavailable",
             "backend_unavailable",

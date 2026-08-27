@@ -265,6 +265,89 @@ def test_frida_exports_name_filter_finds_a_symbol_past_the_cap() -> None:
     assert payload["has_more"] is False
 
 
+class _ImportApi:
+    def imports(self, name: str, name_filter: str, count: int) -> dict[str, Any]:
+        # The dependency side: mirror the agent -- filter first, then cap.
+        rows = [
+            {
+                "name": f"i{index}",
+                "type": "function",
+                "module": "libc.so",
+                "address": "0x3",
+            }
+            for index in range(25)
+        ]
+        if name_filter:
+            rows = [row for row in rows if name_filter in row["name"]]
+        return {
+            "found": True,
+            "module": name,
+            "base": "0x1",
+            "imports": rows[: int(count)],
+        }
+
+
+class _ImportScript:
+    exports_sync = _ImportApi()
+
+    def load(self) -> None:
+        return None
+
+
+class _ImportSession:
+    def create_script(self, source: str) -> _ImportScript:
+        return _ImportScript()
+
+    def detach(self) -> None:
+        return None
+
+
+class _ImportFrida:
+    def attach(self, pid: int) -> _ImportSession:
+        return _ImportSession()
+
+
+def test_frida_imports_says_when_the_page_is_not_the_whole_table() -> None:
+    """imports mirrors exports: a filled page must report has_more, not silence.
+
+    25 imports behind a page of 10 -> count 10, has_more True, and each row
+    carries the providing module so a caller can see where a symbol resolves.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _ImportFrida()
+    payload = client.imports(1, "libtarget.so", allowed_pid=1, limit=10)
+    assert payload["found"] is True
+    assert payload["count"] == 10
+    assert len(payload["imports"]) == 10
+    assert payload["has_more"] is True
+    assert payload["imports"][0]["module"] == "libc.so"
+    doc = _tool_docstring("frida.imports")
+    assert "has_more" in doc
+    assert "name_filter" in doc
+
+
+def test_frida_imports_name_filter_finds_a_dependency_past_the_cap() -> None:
+    """No offset, so a specific import (dlopen/JNI_OnLoad) must be reachable."""
+    client = FridaClient()
+    client._available = True
+    client._frida = _ImportFrida()
+    payload = client.imports(1, "libtarget.so", allowed_pid=1, limit=64, name_filter="i1")
+    names = {row["name"] for row in payload["imports"]}
+    assert names == {"i1", "i10", "i11", "i12", "i13", "i14", "i15", "i16", "i17", "i18", "i19"}
+    assert payload["count"] == 11
+    assert payload["has_more"] is False
+
+
+def test_frida_imports_requires_a_module_name() -> None:
+    client = FridaClient()
+    client._available = True
+    client._frida = _ImportFrida()
+    with pytest.raises(FridaError) as info:
+        client.imports(1, "  ", allowed_pid=1)
+    assert info.value.code == "invalid_params"
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident

@@ -69,6 +69,30 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="frida.imports")
+    def frida_imports(
+        session_id: str,
+        module_name: str,
+        limit: Annotated[int, Field(ge=1, le=512)] = 64,
+        name_filter: str = "",
+    ) -> dict[str, Any]:
+        """List the imports one named module resolves, via a short-lived Frida probe.
+
+        The dependency side of frida.exports: which external symbols a native
+        module actually calls (libc, libdl, JNI), the first read on an
+        unfamiliar .so. Answers with found, module, base, and imports (name,
+        type, module -- the providing library, address when bound), plus count
+        and has_more so a page that filled the limit is not read as the whole
+        import table. name_filter keeps only imports whose name contains that
+        substring (case-sensitive), applied before the cap so a target (e.g.
+        dlopen, JNI_OnLoad) is findable rather than buried. Debuggee pid only.
+        """
+        return _dump(
+            analysis.frida_imports(
+                session_id, module_name, limit=limit, name_filter=name_filter
+            )
+        )
+
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16

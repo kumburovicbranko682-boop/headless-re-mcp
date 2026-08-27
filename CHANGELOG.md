@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **267（150 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -221,6 +221,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`web.scripts` 无法只看运行时生成脚本，也不能按 URL 定位**。给它加上 `dynamic_only` 与 `url_filter`：前者只留
   `dynamic=True` 的脚本（`eval`/`new Function`/注入 `<script>`，其 url 通常为空，正是加壳器解包后 payload 的落点，url 过滤够不着），
   后者对 url 做大小写不敏感子串匹配；二者都在分页前应用，于是 `total` 即匹配数——在解析了成百上千脚本的页面上直接锁定目标。
+- **`frida.imports` 缺席：能列一个原生模块导出什么，却看不到它调用什么**。`frida.exports` 回答"这个 `.so` 提供哪些符号"，
+  但拿到一个陌生原生库时，分析者的第一问往往是反过来的——"它依赖什么"：`dlopen`/`JNI_OnLoad` 说明它在动态加载或桥接 Java，
+  `system`/`ptrace` 是行为线索。新增 `frida.imports`，用 `Module.enumerateImports` 完整镜像 exports 那条路径：同样的
+  在 agent 内先按子串过滤再取上限（`limit+1` 分页、无 offset），返回 `found`/`module`/`base` 与 `imports`（`name`、`type`、
+  提供方 `module`、绑定后的 `address`），以及 `count`/`has_more`，只作用于 debuggee pid。工具总数 266→267。
 - **`device.logcat` 只能拉最后 N 行，噪声设备上错误被淹没**。它一直只按 `-t N` 取尾，等价于 console 加 `type_filter` 之前的样子。
   现给它加上 `min_priority`（`V`/`D`/`I`/`W`/`E`/`F`）：交给 logcat 自己的 `*:<级别>` filterspec 在源头过滤，于是 `-t N` 取到的是
   最后 N 条**匹配**行，而不是先取 N 行再由客户端筛剩下寥寥几条——传 `E` 即可从吵闹的设备里只捞错误。级别在固定集合内校验，
