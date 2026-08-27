@@ -102,6 +102,44 @@ def test_rebuild_imports_adds_himps_section(tmp_path: Path) -> None:
     assert any(section.name.startswith(".himps") for section in pe.pe.sections)
 
 
+def test_rebuild_imports_tolerates_a_non_ascii_api_name(tmp_path: Path) -> None:
+    """A packer can leave a non-ASCII byte in a resolved import name.
+
+    The DLL-name path encodes with "replace", but the API-name path used
+    "strict" and raised UnicodeEncodeError out of the whole rebuild, so one odd
+    byte aborted an otherwise recoverable import table. It must degrade instead.
+    """
+    dump = _make_runtime_dump()
+    remapped, _ = remap_dump_to_file(dump, entry_point_rva=0x1000)
+    entries = [
+        {
+            "kind": "api",
+            "module": "kernel32.dll",
+            "name": "Bad\u00e9Name",
+            "ordinal": 0,
+            "thunk_va": 0x140002000,
+        },
+        {
+            "kind": "api",
+            "module": "kernel32.dll",
+            "name": "VirtualAlloc",
+            "ordinal": 0,
+            "thunk_va": 0x140002008,
+        },
+        {"kind": "null", "thunk_va": 0x140002010, "value": 0},
+    ]
+    rebuilt, report = rebuild_imports(remapped, entries)
+    assert any(".himps" in change for change in report.changes)
+    # The non-ASCII byte becomes '?' (ascii/replace); the rest of the name and
+    # the neighbouring clean import both survive into the rebuilt name table.
+    assert b"Bad?Name\x00" in rebuilt
+    assert b"VirtualAlloc\x00" in rebuilt
+    out = tmp_path / "imports-nonascii.exe"
+    write_rebuilt_pe(out, rebuilt)
+    pe = scan_pe(out)
+    assert pe.pe.imports.function_count >= 2
+
+
 def test_pe_rebuild_report_always_lists_checksum_unfixed() -> None:
     dump = _make_runtime_dump()
     _, remap_report = remap_dump_to_file(dump, entry_point_rva=0x1000)

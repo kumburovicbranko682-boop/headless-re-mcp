@@ -49,7 +49,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
-### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
+### 修复（unpack.iat.rebuild 遇到非 ASCII 导入名整段崩掉）
+
+- `rebuild_imports` 写导入名表时，DLL 名走 `encode("ascii", "replace")` 容错，函数名却走
+  `_encode_name` 里的 `encode("ascii", "strict")`。被解析出来的导入名是目标 IAT 指向的字符串，
+  加壳器完全可能在其中留下一个非 ASCII 字节；一旦如此，`strict` 抛出的 `UnicodeEncodeError`
+  会穿出整个重建，把一个本可恢复的导入表因单个怪字节而整体作废（且以泛化 internal_error 的
+  面目出现，而非干净的 `PeRebuildError`）。改为与 DLL 名一致的 `replace`：怪字节降级成 `?`，
+  名字其余部分与相邻的正常导入照常写入重建后的名表。
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
   作为输出路径，指望它触发 `run_scylla` 的“output_path must differ from input_path”守卫。

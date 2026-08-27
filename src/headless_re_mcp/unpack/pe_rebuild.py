@@ -358,7 +358,12 @@ def remap_dump_to_file(
 
 
 def _encode_name(name: str) -> bytes:
-    raw = name.encode("ascii", "strict") + b"\0"
+    # A resolved import name is a string the target's IAT pointed at, so a
+    # packer can leave a non-ASCII byte in it. The DLL-name path already
+    # encodes with "replace"; "strict" here raised UnicodeEncodeError out of
+    # the whole rebuild instead, so a single odd byte aborted an otherwise
+    # recoverable import table. Degrade the same way the DLL name does.
+    raw = name.encode("ascii", "replace") + b"\0"
     if len(raw) % 2:
         raw += b"\0"
     return raw
