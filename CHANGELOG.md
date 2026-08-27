@@ -49,6 +49,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`apk.decompile` 截断的类源码只给一条打不开的磁盘路径,截掉的部分取不回来）
+
+- `apk.decompile` 把类的 Java 源码截到 `_MAX_SOURCE_BYTES`(400 KB)后回一个 `truncated=true` 和一条
+  磁盘 `path`。可工具面上**没有任何工具能按裸路径打开文件**——`artifacts.read` 只认 `artifact_id`。
+  于是一个超过 400 KB 的大类(混淆后的巨型类、内嵌大量字符串的类)截断之后,剩下的部分**再也取不回**:
+  内联只有前 400 KB,`path` 打不开。这与全面其它反编译器的约定相悖:`static.decompile`(IDA)一旦
+  超过内联上限就把全文落盘成制品并回 `artifact_id`,`artifacts.read` 的描述也白纸黑字承诺「大到无法内联
+  返回的反编译产物会登记成制品并回 `artifact_id`」——唯独 jadx 这条没兑现。
+- 现在 `apk_decompile` 在 `truncated` 时用共用的 `_register_capture` 把 jadx **已经写在磁盘上的**那个
+  `.java` 文件登记成制品(kind=`jadx_source`),把 `artifact_id` 并进结果、再加一个 `hint=full_source_in_artifact`。
+  该文件本就落在 `artifact_root/jadx/<会话>/` 下,正好通过 `artifacts.read` 的根目录校验,于是调用方可以
+  按 `offset` 翻页取回**完整**源码,而不是守着 400 KB 的残片。登记纯增量:不截断时源码本就整段内联,不
+  登记、不加 `artifact_id`/`hint`;登记失败也只在结果里带 `artifact_error`(来自 `_register_capture`)绝不
+  让反编译本身失败。`apk.decompile` 描述点明截断时回 `artifact_id`、`hint`,并让调用方「用 `artifacts.read`
+  翻页取回其余」。
+- 新增回归:fake jadx 把整类写盘、内联只回前 16 字节并标 `truncated=true` → 结果带 `artifact_id` 与
+  `hint=full_source_in_artifact`,且 `artifacts.read(artifact_id)` 读回的字节与整个类逐字节相等、`size`
+  等于整类长度;不截断的类 → 无 `artifact_id`、无 `hint`;并断言 `apk.decompile` 描述里点名
+  `artifact_id` 与 `artifacts.read`。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
