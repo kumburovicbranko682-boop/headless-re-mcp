@@ -10,9 +10,12 @@ from headless_re_mcp.mcp.adapter import apply_result_budget
 def test_mcp_adapter_cuts_a_400k_jadx_class_the_agent_path_already_cuts() -> None:
     """Measured: a successful apk.decompile envelope with a 400000-char
     source is 400128 bytes. The catalog budget is 262144. MCP sent the raw
-    envelope; the agent path replaced it with a 16482-byte truncated
+    envelope; the agent path replaced it with a 16494-byte truncated
     summary. Overnight Cursor then holds a whole class in context while
     the same call on the agent path already admitted it would not fit.
+
+    The summary keeps the envelope's ok verdict, so a large but successful
+    call is not reported as a failed one just because it was truncated.
     """
     envelope = {
         "ok": True,
@@ -35,6 +38,9 @@ def test_mcp_adapter_cuts_a_400k_jadx_class_the_agent_path_already_cuts() -> Non
     out = apply_result_budget(fat, max_bytes=262_144)()
     assert out["truncated"] is True
     assert out["original_bytes"] == raw
+    # The success verdict survives truncation: a large decompile is still a
+    # success, not a failure invented by the size cap.
+    assert out["ok"] is True
     encoded = json.dumps(out, ensure_ascii=False).encode("utf-8")
     assert len(encoded) < 262_144
-    assert len(encoded) == 16_482
+    assert len(encoded) == 16_494
