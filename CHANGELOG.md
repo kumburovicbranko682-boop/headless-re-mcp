@@ -49,6 +49,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（bounded 子进程诊断行读取器契约固化）
+
+- `backends/common/text_stream.py` 的 `read_bounded_text_line` 只保留一行的前 `max_chars` 个字符、其余整行 drain 掉，既防止聒噪/恶意子进程让一次诊断读取吃掉无界内存，也防止把未读的半行卡在管道里污染下一次读取；截断还必须诚实——可见内容超限的行一定以 `… [truncated]` 结尾且长度不超过上限。此前覆盖率 15%、无同名测试。
+- 新增 `tests/unit/test_text_stream.py`（12 项，`text_stream.py` 覆盖率 100%），固化这些落在 off-by-one 边界上的性质：空流回 `None`、`\r\n`/`\n` 剥除、无换行的末行整读；恰好等于上限（带换行与 EOF 无换行两种）不截断；超限行按标记截断并 drain 到换行或 EOF（后者不空转）；drain 恰好吃到换行、下一行完整保留；截断结果长度恒等于上限；`max_chars<=0` 被夹取为 1 而非报错。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
