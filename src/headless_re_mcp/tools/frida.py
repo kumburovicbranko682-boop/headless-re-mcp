@@ -58,10 +58,14 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
-        session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        size: Annotated[int, Field(ge=1, le=262144)] = 16,
     ) -> dict[str, Any]:
         """Read up to 256 KiB from the session debuggee via a Frida probe.
 
+        address must be non-negative (like dynamic.memory.read); a negative
+        value would reach Frida's ptr() as a wrapped pointer, not a rejection.
         Answers with data holding the hex string and encoding naming the form,
         alongside address and size. Limited to the debuggee pid.
         """

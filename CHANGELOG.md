@@ -907,6 +907,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `replayed: True`。现在等到 mitmproxy 真正执行完（15 秒上限）才回成功。
 - **`frida.java.classes` 会在设备上把已加载类全部列一遍**。`enumerateLoadedClassesSync`
   先物化全集再截断；加壳应用可以有十几万个类，这一次 RPC 就能把目标拖死。改为边枚举边停。
+- **`frida.memory.read` 的 `size` 有界，`address` 却什么都收**。同一次读的两半只封了一半：
+  `dynamic.memory.read` 早已把 address 下限钉在 0，而 frida 这条把 address 原样交给 Frida 的
+  `ptr()`——负值在那里是一个回绕的指针、不是一次拒绝，读到的是别处的内存。现在 schema 与
+  后端都要求 `address >= 0`（后端与 `size` 的校验对称，即便绕过 schema 也拦得住），与
+  `dynamic.memory.read` 对齐。
 - **jadx 反编译会把整个 .java 读进内存再切**。生成器吐出的单文件可以到几十 MB。按上限读。
 - **有界执行器仍会把工具的全部 stdout/stderr 读进内存**。Ghidra / jadx 的进度输出可以到
   上百 MB，调用方只用其中几 KB。现在每个流最多保留 8 MB，多出的丢弃以免撑满管道。
