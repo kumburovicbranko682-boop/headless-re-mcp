@@ -218,6 +218,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`frida.memory.read` 只界定了 `size`，`address` 不设防**。`size` 在后端严格校验（1..262144），但
+  `address` 直接透传给注入 JS 的 `ptr(address)`；MCP schema 虽标注 int，Agent 传输不跑 pydantic，于是
+  负值/浮点/字符串都能到达，非数字还会以 `ValueError` 冒泡成 `internal_error`。现在后端在 attach 之前
+  按与 `size` 相同的严格形状校验 `address`（必须是 int，且落在 `[0, 2**64)`，连 bool 一并拒），越界即
+  `invalid_params`。另外，读到未映射/受保护地址时 `Memory.readByteArray` 会在 agent 内抛错，过去裸异常
+  冒泡成 `internal_error`（读作工具 bug），现改为干净的 `backend_error` 并点名地址——那是调用方给的地址
+  不可读，不是内部故障。
 - **`web.network.get` 拿不到请求/响应头，而 `proxy.flow.get` 早就有——两条动态分析线不对称**。
   响应头（Set-Cookie/CSP/CORS/Content-Type）与请求头（鉴权、cookie、自定义 API 头）正是 Web 动态分析要看的，
   CDP 在 `requestWillBeSent` / `responseReceived` 事件里就带着，但 ring entry 从不保留、`web.network.get` 也

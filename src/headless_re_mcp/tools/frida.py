@@ -76,7 +76,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Read up to 256 KiB from the session debuggee via a Frida probe.
 
         Answers with data holding the hex string and encoding naming the form,
-        alongside address and size. Limited to the debuggee pid.
+        alongside address and size. Limited to the debuggee pid. address must be
+        an integer in [0, 2**64); an unmapped or protected address is a
+        backend_error, not a successful empty read.
         """
         return _dump(analysis.frida_memory_read(session_id, address, size))
 

@@ -427,11 +427,35 @@ class FridaClient:
         self._require(pid, allowed_pid)
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
+        # address is typed int in the MCP schema, but the agent transport calls
+        # handlers with no pydantic validation, so a float/str/negative value can
+        # reach here and be handed to ptr() in the injected JS. Reject anything
+        # that is not a real pointer (a non-int -- bool included -- or outside the
+        # 64-bit range) with invalid_params, the same strict shape the size check
+        # uses, before a session is even attached.
+        if type(address) is not int or not 0 <= address < 2**64:
+            raise FridaError("invalid_params", "address must be an integer in [0, 2**64)")
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
-            data = bytes(script.exports_sync.read(int(address), int(size)))
+            try:
+                data = bytes(script.exports_sync.read(int(address), int(size)))
+            except FridaError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # Reading an unmapped or protected address makes Memory.
+                # readByteArray throw in the agent, surfacing as an RPC error.
+                # That is the caller's address being unreadable, not an internal
+                # fault, so give it a clean backend_error instead of letting a
+                # raw exception bubble up as internal_error.
+                raise FridaError(
+                    "backend_error",
+                    f"could not read {size} bytes at {address:#x}; "
+                    "the address may be unmapped or protected",
+                    address=address,
+                    size=size,
+                ) from exc
             return {
                 "address": address,
                 "size": size,

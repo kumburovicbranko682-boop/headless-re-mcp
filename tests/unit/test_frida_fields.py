@@ -103,6 +103,95 @@ def test_frida_modules_name_filter_reaches_past_the_page() -> None:
     assert payload["count"] == 6
     assert payload["has_more"] is False
 
+class _ReadApi:
+    def __init__(self, payload: Any = None, error: Exception | None = None) -> None:
+        self._payload = payload if payload is not None else [1, 2, 3, 4]
+        self._error = error
+
+    def read(self, address: int, size: int) -> Any:
+        if self._error is not None:
+            raise self._error
+        return self._payload
+
+
+class _ReadScript:
+    def __init__(self, api: _ReadApi) -> None:
+        self.exports_sync = api
+
+    def load(self) -> None:
+        return None
+
+
+class _ReadSession:
+    def __init__(self, api: _ReadApi) -> None:
+        self._api = api
+
+    def create_script(self, source: str) -> _ReadScript:
+        return _ReadScript(self._api)
+
+    def detach(self) -> None:
+        return None
+
+
+def _read_client(api: _ReadApi) -> FridaClient:
+    client = FridaClient()
+    client._available = True
+    client._frida = object()  # only _require inspects it (must be non-None)
+    client._attach_local = lambda pid, **kwargs: _ReadSession(api)  # type: ignore[method-assign]
+    return client
+
+
+def test_frida_memory_read_returns_hex() -> None:
+    """A good read hands back the bytes as a hex string with encoding named."""
+    client = _read_client(_ReadApi([0xDE, 0xAD, 0xBE, 0xEF]))
+    payload = client.memory_read(1, 0x1000, 4, allowed_pid=1)
+    assert payload["data"] == "deadbeef"
+    assert payload["encoding"] == "hex"
+    assert payload["address"] == 0x1000
+    assert payload["size"] == 4
+    doc = _tool_docstring("frida.memory.read")
+    assert "2**64" in doc
+
+
+@pytest.mark.parametrize("address", [-1, 2**64, 4096.0, "0x1000", True])
+def test_frida_memory_read_rejects_a_bad_address(address: Any) -> None:
+    """A non-int, negative, or out-of-range address never reaches ptr().
+
+    The MCP schema types address as int, but the agent transport skips
+    validation, so a float/str/negative could otherwise be handed to the
+    injected JS. Refuse it as invalid_params before a session is attached.
+    """
+    attached = {"count": 0}
+
+    def _attach(pid: int, **kwargs: Any) -> _ReadSession:
+        attached["count"] += 1
+        return _ReadSession(_ReadApi())
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._attach_local = _attach  # type: ignore[method-assign]
+
+    with pytest.raises(FridaError) as excinfo:
+        client.memory_read(1, address, 4, allowed_pid=1)
+    assert excinfo.value.code == "invalid_params"
+    assert attached["count"] == 0
+
+
+def test_frida_memory_read_maps_an_unmapped_address_to_backend_error() -> None:
+    """A read that throws in the agent is a backend_error, not internal_error.
+
+    Reading an unmapped/protected address makes Memory.readByteArray throw,
+    which arrives here as a raw RPC exception. Left to bubble it became a
+    misleading internal_error; it is the caller's address being unreadable.
+    """
+    client = _read_client(_ReadApi(error=RuntimeError("access violation")))
+    with pytest.raises(FridaError) as excinfo:
+        client.memory_read(1, 0x4000, 16, allowed_pid=1)
+    assert excinfo.value.code == "backend_error"
+    assert "0x4000" in excinfo.value.message
+
+
 class _ExportApi:
     def exports(self, name: str, name_filter: str, count: int) -> dict[str, Any]:
         # Mirror the agent: filter first, then honor the caller's cap (limit+1).
