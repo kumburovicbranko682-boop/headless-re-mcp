@@ -68,6 +68,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `apk.strings` 解出该常量、`apk.xrefs(gateSecret)` 从调用图里认出 `gateCaller` 这个调用者；另有一条
   反向直测钉住 `apk.methods` 对未定义类返回干净的 `not_found`。至此 DEX 分析面
   （classes/methods/strings/xrefs）都有真解码实测。缺 androguard 时如实跳过（skip 不等于 pass）。
+- 同一 gate 补上最后一件 manifest 级工具 `apk.certificates`：此前它从未在真签名的 APK 上被实测过，只能
+  证明它在没签名时不炸。现用 `cryptography` 在测试内现签一把 RSA 私钥与自签 X.509 证书，把 fixture 按
+  v1(JAR) 规范真签一遍——写 `META-INF/MANIFEST.MF`（每个条目的 SHA-256 摘要）、`CERT.SF`、以及对
+  `CERT.SF` 原文做**无 signed-attrs 的分离式 PKCS#7** 签名得到 `CERT.RSA`。这不是摆样子：androguard
+  必须先**验签**才会交出 v1 证书（`get_certificates_v1` → `get_certificate_der` 走的是 apksig
+  `V1SchemeVerifier` 的真实校验路径，验的正是 RSA-PKCS1v15 over `CERT.SF`），验不过就是零证书。于是断言
+  拿回来的证书身份（CN/O、自签发者、序列号）与**该证书精确的 SHA-256 指纹**（测试内从自己签的证书算出，
+  而非硬编码）都是“签名确实通过”的证据；再补一条反向直测钉住未签名 fixture 报 `v1_signed=False`、零证书，
+  证明抽取反映的是真实签名状态而非常量。无需 keystore 或 Android SDK。至此 Android 静态 manifest 级面
+  （open/manifest/permissions/components/native_libs/certificates）全部有真解码实测。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
