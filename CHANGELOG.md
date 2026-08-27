@@ -392,6 +392,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   栈，抛原始量则接其 `value`），与其他控制台行共用同一环形写入器和 `_MAX_CONSOLE_TEXT` 逐行上限（一个抛出
   兆字节字符串的页面钉不住缓冲）。落库的 entry 记 `type:"error"` 并置 `uncaught:true`，让调用方能把「抛出的
   失败」与「页面自己 `console.error` 的」区分开，引擎报了抛出点时附上 `url`/`line`。`console.*` 的既有行为不变。
+- **`web.network.list` 里被拦截/中断的请求停在 `status:null`，和还在飞的请求长一个样**。网络环形缓冲只挂了
+  `Network.requestWillBeSent` 与 `Network.responseReceived`——可一个被 CSP/CORS/混合内容拦下、被 abort、或撞上
+  `net::ERR_*` 传输故障的请求根本不会有响应，它走的是 `Network.loadingFailed` 这条独立事件。缺了它，一次失败的
+  加载就永远停在 `status:None`，与一个仍在进行中的请求无从区分——而「哪个端点被拦了」恰是逆向最想看的信号。现在
+  新增 `on_loading_failed`：就地给对应 entry 打上 `failed:true`，附 `error_text`（如 `net::ERR_BLOCKED_BY_CLIENT`），
+  策略拦截再带 `blocked_reason`（如 `csp`）与 `canceled`，字段照 `_MAX_METADATA_BYTES` 有界（超限置
+  `metadata_truncated`），与 `on_response` 填 `status` 同一范式。失败事件指向一个已被环形缓冲挤出/从未见过的
+  requestId 时直接忽略，不凭空造一条裸 entry。`web.network.list` 原样透出这些字段，成功请求行为不变。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`
   按数量、`UNREGISTERED_CAPTURE_MAX_BYTES` 按总量，比只裁数量更全），那个函数与常量遂再无调用方，只剩

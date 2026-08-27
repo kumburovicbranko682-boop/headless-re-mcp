@@ -124,6 +124,9 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     assert "has_more" in doc
     assert "dropped" in doc
     assert "metadata_truncated" in doc
+    assert "failed" in doc
+    assert "error_text" in doc
+    assert "blocked_reason" in doc
 
 
 def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
@@ -170,6 +173,64 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert len(str(script["url"]).encode()) <= _MAX_URL_BYTES
     assert len(str(script["language"]).encode()) <= _MAX_METADATA_BYTES
     assert script["metadata_truncated"] is True
+
+
+def test_web_marks_a_failed_request_instead_of_leaving_it_pending() -> None:
+    """Network.loadingFailed, not responseReceived, carries a blocked/aborted load.
+
+    Without wiring it a request killed by CSP/CORS or a net::ERR_* transport
+    failure stays at status None, indistinguishable from one still in flight --
+    and a blocked endpoint is exactly what an analyst hunts for. Measured: two
+    requests sent, r1 blocked by CSP and r2 answered 200 -> r1 carries failed
+    with error_text/blocked_reason and status stays None, r2 has no failed flag.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+    assert "Network.loadingFailed" in cdp.handlers
+
+    for request_id, url in (("r1", "https://x/a"), ("r2", "https://x/b")):
+        cdp.handlers["Network.requestWillBeSent"](
+            {"requestId": request_id, "request": {"url": url, "method": "GET"}, "type": "XHR"}
+        )
+    cdp.handlers["Network.loadingFailed"](
+        {
+            "requestId": "r1",
+            "errorText": "net::ERR_BLOCKED_BY_CLIENT",
+            "blockedReason": "csp",
+            "canceled": False,
+        }
+    )
+    cdp.handlers["Network.responseReceived"](
+        {"requestId": "r2", "response": {"status": 200, "mimeType": "text/html"}}
+    )
+
+    failed = handle.requests["r1"]
+    assert failed["failed"] is True
+    assert failed["error_text"] == "net::ERR_BLOCKED_BY_CLIENT"
+    assert failed["blocked_reason"] == "csp"
+    assert failed["canceled"] is False
+    assert failed["status"] is None
+    ok = handle.requests["r2"]
+    assert "failed" not in ok
+    assert ok["status"] == 200
+
+    # A failure for a request never seen (evicted or pre-capture) is dropped,
+    # not resurrected as a bare entry.
+    cdp.handlers["Network.loadingFailed"]({"requestId": "ghost", "errorText": "x"})
+    assert "ghost" not in handle.requests
 
 
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(

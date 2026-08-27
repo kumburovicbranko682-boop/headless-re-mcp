@@ -534,6 +534,34 @@ class WebBackend:
                     if mime_truncated:
                         entry["metadata_truncated"] = True
 
+        def on_loading_failed(params: JsonObject) -> None:
+            # A request that never gets a response -- blocked by CSP/CORS/mixed
+            # content, aborted, or a net::ERR_* transport failure -- arrives on
+            # loadingFailed, not responseReceived. Without it a failed load sits
+            # in the ring at status None, indistinguishable from one still in
+            # flight, so a reader could not tell a blocked endpoint (exactly what
+            # an analyst hunts for) from a slow one. Mark the entry in place with
+            # why it failed, mirroring how on_response fills status.
+            error_text, error_truncated = _bounded_metadata(
+                params.get("errorText"), _MAX_METADATA_BYTES
+            )
+            blocked, blocked_truncated = _bounded_metadata(
+                params.get("blockedReason"), _MAX_METADATA_BYTES
+            )
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is None:
+                    return
+                entry["failed"] = True
+                if error_text:
+                    entry["error_text"] = error_text
+                if blocked:
+                    entry["blocked_reason"] = blocked
+                if isinstance(params.get("canceled"), bool):
+                    entry["canceled"] = params["canceled"]
+                if error_truncated or blocked_truncated:
+                    entry["metadata_truncated"] = True
+
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
             language, language_truncated = _bounded_metadata(
@@ -598,6 +626,7 @@ class WebBackend:
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.loadingFailed", on_loading_failed)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,
