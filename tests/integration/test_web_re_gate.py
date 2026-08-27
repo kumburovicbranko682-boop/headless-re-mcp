@@ -7,7 +7,9 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
 import json
 import threading
 import time
@@ -205,6 +207,126 @@ class _WasmHandler(BaseHTTPRequestHandler):
 def _wasm_site() -> Iterator[str]:
     """Serve a page that instantiates a WASM module from loopback."""
     server = ThreadingHTTPServer(("127.0.0.1", 0), _WasmHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        server.server_close()
+
+
+# A hand-rolled RFC 6455 endpoint so the gate proves CDP WebSocket capture
+# against a real browser socket without pulling in a websocket dependency. The
+# page opens ws://host/ws, sends one text frame, and the server pushes back a
+# text and a binary frame -- exercising both the sent and received capture path.
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+_WS_PATH = "/ws"
+_WS_CLIENT_TEXT = "ws-gate-client-9449"
+_WS_TEXT_REPLY = "ws-gate-server-9449"
+_WS_BINARY_REPLY = b"\x00\x01\x02\x03\xfd\xfe\xff"
+_WS_HTML = (
+    "<!doctype html><html><head><title>ws-gate</title></head><body>ws"
+    "<script>"
+    "window.__wsrecv=0;"
+    f"var ws=new WebSocket('ws://'+location.host+'{_WS_PATH}');"
+    "ws.binaryType='arraybuffer';"
+    f"ws.onopen=function(){{ws.send('{_WS_CLIENT_TEXT}');}};"
+    "ws.onmessage=function(e){window.__wsrecv++;};"
+    "ws.onclose=function(){window.__wsclosed=1;};"
+    "</script></body></html>"
+)
+
+
+def _ws_send(wfile: Any, opcode: int, payload: bytes) -> None:
+    """Write one unmasked server->client frame (small payloads only)."""
+    header = bytes([0x80 | opcode])
+    length = len(payload)
+    if length < 126:
+        header += bytes([length])
+    elif length < 65536:
+        header += bytes([126]) + length.to_bytes(2, "big")
+    else:
+        header += bytes([127]) + length.to_bytes(8, "big")
+    wfile.write(header + payload)
+    wfile.flush()
+
+
+def _ws_recv(rfile: Any) -> tuple[int | None, bytes]:
+    """Read one masked client->server frame; returns (opcode, payload)."""
+    first = rfile.read(1)
+    if not first:
+        return None, b""
+    opcode = first[0] & 0x0F
+    second = rfile.read(1)
+    if not second:
+        return None, b""
+    masked = bool(second[0] & 0x80)
+    length = second[0] & 0x7F
+    if length == 126:
+        length = int.from_bytes(rfile.read(2), "big")
+    elif length == 127:
+        length = int.from_bytes(rfile.read(8), "big")
+    mask = rfile.read(4) if masked else b""
+    data = rfile.read(length)
+    if masked:
+        data = bytes(byte ^ mask[i % 4] for i, byte in enumerate(data))
+    return opcode, data
+
+
+class _WsGateHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:  # silence per-request logging
+        pass
+
+    def _serve_ws(self) -> None:
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        accept = base64.b64encode(
+            hashlib.sha1((key + _WS_GUID).encode()).digest()  # noqa: S324 - RFC 6455 mandates SHA-1
+        ).decode()
+        self.wfile.write(
+            b"HTTP/1.1 101 Switching Protocols\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Accept: " + accept.encode() + b"\r\n\r\n"
+        )
+        self.wfile.flush()
+        self.close_connection = True
+        # Push both a text and a binary frame so CDP records a received frame of
+        # each kind; the page's own send gives the sent-frame capture.
+        _ws_send(self.wfile, 0x1, _WS_TEXT_REPLY.encode())
+        _ws_send(self.wfile, 0x2, _WS_BINARY_REPLY)
+        self.connection.settimeout(8.0)
+        with contextlib.suppress(Exception):
+            while True:
+                opcode, data = _ws_recv(self.rfile)
+                if opcode is None or opcode == 0x8:
+                    break
+                if opcode == 0x9:  # ping -> pong, then keep listening
+                    _ws_send(self.wfile, 0xA, data)
+                    continue
+                if opcode == 0x1:  # the page's frame arrived; we can close now
+                    break
+        with contextlib.suppress(Exception):
+            _ws_send(self.wfile, 0x8, b"")
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path == _WS_PATH and self.headers.get("Upgrade", "").lower() == "websocket":
+            self._serve_ws()
+            return
+        body = _WS_HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextlib.contextmanager
+def _ws_site() -> Iterator[str]:
+    """Serve a page that opens a WebSocket back to the same loopback server."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _WsGateHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -464,6 +586,88 @@ def test_web_cdp_captures_network_console_and_screenshot(tmp_path: Path) -> None
                 assert redir_hop["response"]["redirectURL"].endswith(_REDIR_TARGET), redir_hop[
                     "response"
                 ]["redirectURL"]
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
+def test_web_cdp_captures_websocket_frames() -> None:
+    """Prove the CDP WebSocket capture against a real browser socket.
+
+    The web line drives Chromium but ignored WebSocket traffic entirely, so a
+    page that streamed over a socket left nothing to inspect. A loopback page
+    opens ws://host/ws, sends one text frame, and the server pushes back a text
+    and a binary frame; ws.list/ws.frames must then show the connection with the
+    sent frame and both received frames, opcodes and payloads intact. CDP
+    telemetry is async, so the reads poll. skip != pass when the browser is
+    unavailable.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    with _ws_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                def _ws_conn() -> dict[str, Any] | None:
+                    listing = service.web_ws_list(session_id)
+                    if not listing.ok:
+                        return None
+                    return next(
+                        (
+                            c
+                            for c in listing.data["websockets"]
+                            if str(c.get("url", "")).endswith(_WS_PATH)
+                        ),
+                        None,
+                    )
+
+                conn = _poll(
+                    _ws_conn,
+                    lambda c: c is not None
+                    and int(c.get("frames_sent", 0)) >= 1
+                    and int(c.get("frames_received", 0)) >= 2,
+                    tries=80,
+                )
+                assert conn is not None, "no /ws connection was captured"
+                assert conn["status"] == 101, conn
+                assert conn["frames_sent"] >= 1, conn
+                assert conn["frames_received"] >= 2, conn
+
+                frames = service.web_ws_frames(session_id, str(conn["wsId"]), limit=1000)
+                assert frames.ok, frames.error
+                rows = frames.data["frames"]
+
+                sent_text = [
+                    f for f in rows if f["direction"] == "sent" and f["type"] == "text"
+                ]
+                assert any(f["payload"] == _WS_CLIENT_TEXT for f in sent_text), rows
+
+                recv_text = [
+                    f for f in rows if f["direction"] == "received" and f["type"] == "text"
+                ]
+                assert any(f["payload"] == _WS_TEXT_REPLY for f in recv_text), rows
+
+                recv_binary = [
+                    f for f in rows if f["direction"] == "received" and f["type"] == "binary"
+                ]
+                assert recv_binary, rows
+                # A binary frame's payload is base64; decoding it yields the exact
+                # bytes the server sent, not a lossy text rendering.
+                assert any(
+                    base64.b64decode(f["payload"]) == _WS_BINARY_REPLY for f in recv_binary
+                ), recv_binary
             finally:
                 service.web_close(session_id)
         finally:
