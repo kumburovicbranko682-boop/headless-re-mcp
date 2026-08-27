@@ -43,6 +43,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 新增（内置 PE 侦测引擎首个在真实打包样本上真跑的 Gate）
+
+- `detect.scan/packer.classify/unpack.recommend/detect.explain` 这条侦测面的内置 PE 启发式引擎（DIE
+  与 Exeinfo PE 只是可选的第二意见,引擎本身纯 Python、无需任何外部工具）此前只有单测,没有任何一条
+  集成 Gate 在真实打包样本上经 `AnalysisService` 端到端跑过它——唯一的侦测 Gate
+  （`test_exeinfope_gate.py`）还得装了 Exeinfo PE 才跑。现新增
+  `tests/integration/test_detection_packer_gate.py`,用 `use_die=False, use_exeinfope=False` 把内置
+  引擎单独拉起,跑在一对已提交、互为对照的夹具上:`console_fixture-x64.upx.exe`（真被 UPX 打包）与
+  `console_fixture-x64.pre-upx.exe`（同一程序打包前的原件）。这一对正是断言诚实的关键——引擎必须把
+  打包件判成 UPX（`builtin:packer:upx-sections`、UPX0/UPX1 段、UPX1 段高熵 >7.0）、把原件判成干净
+  （`packer.classify` 结论 `none_detected`、`unpack.recommend` 路由 `none`）,于是一个“总说打包”或
+  “从不说打包”的启发式必然在某一侧翻车。`packer.classify` 还原出候选、`unpack.recommend` 给出 `upx`
+  路由与 upx 系工具、`detect.explain` 按 id 取回带证据的单条 finding,核的都是“还原出的内容”;负路径
+  （关闭会话 `invalid_request`、未知 finding id `finding_not_found`）就地覆盖。引擎无任何可选依赖,故
+  该 Gate 恒跑。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
