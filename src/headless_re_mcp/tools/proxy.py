@@ -102,9 +102,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def proxy_ca_install_android(session_id: str, serial: str) -> dict[str, Any]:
         """Push the mitmproxy CA certificate onto a device via adb (best-effort).
 
-        Answers with pushed_to and note. There is no installed, ok or path
-        field. Envelope success means the PEM landed in device tmp, not that
-        the system store trusts it.
+        Answers with pushed_to, landed (true/false, or null when it could not
+        be verified), remote_size and note. There is no installed, ok or path
+        field. landed reflects whether the PEM reached device tmp, not that the
+        system store trusts it.
         """
         return _dump(analysis.proxy_ca_install_android(session_id, serial))
 

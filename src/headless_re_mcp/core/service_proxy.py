@@ -158,7 +158,7 @@ class ProxyAnalysisMixin:
                 getattr(self.settings, "adb", None)
             )
             remote_tmp = "/data/local/tmp/mitmproxy-ca-cert.pem"
-            backend.push(serial, str(cert), remote_tmp)
+            push_result = backend.push(serial, str(cert), remote_tmp)
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -168,13 +168,28 @@ class ProxyAnalysisMixin:
                 raise InvalidStateTransition(
                     f"proxy.ca.install_android cannot run in {session.state.value} state"
                 )
+            # push now verifies the file actually landed; carry that signal
+            # through rather than asserting the PEM is on the device because adb
+            # returned. landed is true/false, or null on an adb that cannot stat.
+            landed = push_result.get("pushed") if isinstance(push_result, dict) else None
+            remote_size = push_result.get("remote_size") if isinstance(push_result, dict) else None
+            note = (
+                "Pushed CA to device tmp. Installing as a system-trusted cert "
+                "requires root and remounting /system; use frida.server.ensure "
+                "flows or a rooted image. As a user cert, import via Settings."
+            )
+            if landed is False:
+                note = (
+                    "adb push returned but the CA is not visible in device tmp; it "
+                    "likely did not land. " + note
+                )
+            elif landed is None:
+                note = "CA push could not be verified on this adb. " + note
             data = {
                 "pushed_to": remote_tmp,
-                "note": (
-                    "Pushed CA to device tmp. Installing as a system-trusted cert "
-                    "requires root and remounting /system; use frida.server.ensure "
-                    "flows or a rooted image. As a user cert, import via Settings."
-                ),
+                "landed": landed,
+                "remote_size": remote_size,
+                "note": note,
             }
             _timeline_append(
                 self, session_id, "proxy.ca.install_android", "CA pushed to device", serial=serial
