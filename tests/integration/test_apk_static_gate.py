@@ -14,8 +14,10 @@ is not installed.
 
 from __future__ import annotations
 
+import hashlib
 import struct
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,9 @@ import pytest
 from headless_re_mcp.core.service import AnalysisService
 
 _ANDROID_URI = "http://schemas.android.com/apk/res/android"
+_DEX_CLASS = "Lcom/example/headlessre/Secret;"
+_DEX_SUPER = "Ljava/lang/Object;"
+_DEX_METHOD = "decrypt"
 
 
 class _StringPool:
@@ -133,10 +138,121 @@ def _build_manifest_axml() -> bytes:
     return struct.pack("<HHI", 0x0003, 8, 8 + len(rest)) + rest
 
 
+def _uleb128(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _mutf8(text: str) -> bytes:
+    encoded = text.encode("utf-8")
+    return _uleb128(len(text)) + encoded + b"\x00"
+
+
+def _build_classes_dex() -> bytes:
+    """A minimal but valid classes.dex: one class with one native method.
+
+    Enough for the analysis pipeline to return real data -- a class name, a
+    method, and the DEX string pool -- with correct adler32 checksum and SHA-1
+    signature so androguard accepts it. No code item is needed to list them.
+    """
+    strings = sorted({_DEX_CLASS, _DEX_SUPER, "V", _DEX_METHOD})
+    sidx = {value: i for i, value in enumerate(strings)}
+    type_descs = sorted({_DEX_CLASS, _DEX_SUPER, "V"}, key=lambda d: sidx[d])
+    tidx = {value: i for i, value in enumerate(type_descs)}
+
+    n_str, n_type, n_proto, n_method, n_class = len(strings), len(type_descs), 1, 1, 1
+    off = 0x70
+    string_ids_off = off
+    off += 4 * n_str
+    type_ids_off = off
+    off += 4 * n_type
+    proto_ids_off = off
+    off += 12 * n_proto
+    method_ids_off = off
+    off += 8 * n_method
+    class_defs_off = off
+    off += 32 * n_class
+    data_off = off
+
+    data = bytearray()
+
+    def emit(chunk: bytes) -> int:
+        pos = data_off + len(data)
+        data.extend(chunk)
+        return pos
+
+    class_data = bytearray()
+    class_data += _uleb128(0) + _uleb128(0) + _uleb128(1) + _uleb128(0)
+    class_data += _uleb128(0) + _uleb128(0x101) + _uleb128(0)  # public|native, no code
+    class_data_off = emit(bytes(class_data))
+
+    string_data_offs = [emit(_mutf8(value)) for value in strings]
+
+    while (data_off + len(data)) % 4:
+        data.extend(b"\x00")
+    map_off = data_off + len(data)
+    map_items = [
+        (0x0000, 1, 0),
+        (0x0001, n_str, string_ids_off),
+        (0x0002, n_type, type_ids_off),
+        (0x0003, n_proto, proto_ids_off),
+        (0x0005, n_method, method_ids_off),
+        (0x0006, n_class, class_defs_off),
+        (0x2000, 1, class_data_off),
+        (0x2002, n_str, string_data_offs[0]),
+        (0x1000, 1, map_off),
+    ]
+    map_bytes = bytearray(struct.pack("<I", len(map_items)))
+    for kind, size, offset in map_items:
+        map_bytes += struct.pack("<HHII", kind, 0, size, offset)
+    emit(bytes(map_bytes))
+    data_size = len(data)
+
+    string_ids = b"".join(struct.pack("<I", o) for o in string_data_offs)
+    type_ids = b"".join(struct.pack("<I", sidx[d]) for d in type_descs)
+    proto_ids = struct.pack("<III", sidx["V"], tidx["V"], 0)
+    method_ids = struct.pack("<HHI", tidx[_DEX_CLASS], 0, sidx[_DEX_METHOD])
+    class_defs = struct.pack(
+        "<IIIIIIII",
+        tidx[_DEX_CLASS], 0x1, tidx[_DEX_SUPER], 0, 0xFFFFFFFF, 0, class_data_off, 0,
+    )
+    body = string_ids + type_ids + proto_ids + method_ids + class_defs + bytes(data)
+
+    header = bytearray()
+    header += b"dex\n035\x00"
+    header += b"\x00\x00\x00\x00"  # checksum, filled below
+    header += b"\x00" * 20  # signature, filled below
+    header += struct.pack("<I", 0x70 + len(body))
+    header += struct.pack("<I", 0x70)
+    header += struct.pack("<I", 0x12345678)
+    header += struct.pack("<II", 0, 0)
+    header += struct.pack("<I", map_off)
+    header += struct.pack("<II", n_str, string_ids_off)
+    header += struct.pack("<II", n_type, type_ids_off)
+    header += struct.pack("<II", n_proto, proto_ids_off)
+    header += struct.pack("<II", 0, 0)
+    header += struct.pack("<II", n_method, method_ids_off)
+    header += struct.pack("<II", n_class, class_defs_off)
+    header += struct.pack("<II", data_size, data_off)
+
+    dex = bytearray(bytes(header) + body)
+    dex[12:32] = hashlib.sha1(bytes(dex[32:])).digest()
+    dex[8:12] = struct.pack("<I", zlib.adler32(bytes(dex[12:])) & 0xFFFFFFFF)
+    return bytes(dex)
+
+
 def _build_apk(dest: Path) -> Path:
     axml = _build_manifest_axml()
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("AndroidManifest.xml", axml)
+        zf.writestr("classes.dex", _build_classes_dex())
         zf.writestr("resources.arsc", b"")
         zf.writestr("lib/arm64-v8a/libnative.so", b"\x7fELF" + b"\x00" * 60)
         zf.writestr("lib/x86_64/libnative.so", b"\x7fELF" + b"\x00" * 60)
@@ -201,16 +317,32 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert certs.data["v1_signed"] is False
         assert certs.data["certificates"] == []
 
-        # No classes.dex, but the DEX-analysis pipeline (AnalyzeAPK, Analysis,
-        # get_classes / get_strings) must still run cleanly and report empty,
-        # not raise -- that is the API surface a version bump could break.
+        # The DEX-analysis pipeline (AnalyzeAPK, Analysis, get_classes,
+        # klass.get_methods, get_strings, get_xref_from) is the API surface a
+        # version bump could break; drive it against a real classes.dex.
         classes = service.apk_classes(session_id)
         assert classes.ok, classes.error
-        assert classes.data["total"] == 0
+        assert classes.data["total"] == 1
+        assert _DEX_CLASS in classes.data["classes"]
         assert classes.data["scan_capped"] is False
 
-        strings = service.apk_strings(session_id, limit=5)
+        # A dotted class name must resolve to the smali descriptor internally.
+        methods = service.apk_methods(session_id, "com.example.headlessre.Secret")
+        assert methods.ok, methods.error
+        assert methods.data["total"] == 1
+        method = methods.data["methods"][0]
+        assert method["name"] == _DEX_METHOD
+        assert method["descriptor"] == "()V"
+
+        strings = service.apk_strings(session_id, limit=50)
         assert strings.ok, strings.error
-        assert strings.data["total"] == 0
+        assert _DEX_METHOD in strings.data["strings"]
+        assert _DEX_CLASS in strings.data["strings"]
+
+        # xrefs must traverse the analysis graph and return cleanly even when
+        # the target method has no callers.
+        xrefs = service.apk_xrefs(session_id, _DEX_METHOD)
+        assert xrefs.ok, xrefs.error
+        assert xrefs.data["callers"] == []
     finally:
         service.close_all()

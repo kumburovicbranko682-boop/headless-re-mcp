@@ -240,9 +240,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   manifest 解码变化），单测照过、生产才炸——正是 frida `Memory.read*` 被删那类漏检。仓库此前没有任何 APK 夹具，
   于是 `apk.open/manifest/permissions/components/certificates/native_libs` 以及 `AnalyzeAPK` 分析流水线
   从未跑过真的 androguard。新增 `test_apk_static_gate.py`：用纯 Python 现搓一个**真正合法**的最小 APK
-  （手工编译的二进制 `AndroidManifest.xml` + 真实 zip 布局），经会话把整条 manifest 级接口跑通——包名、版本、
-  两项权限、四类组件、launcher activity、native ABI、证书（未签名），并断言无 `classes.dex` 时
-  `AnalyzeAPK`/`get_classes`/`get_strings` 仍干净返回空而非抛错（缺 androguard 时 skip≠pass）。
+  （手工编译的二进制 `AndroidManifest.xml` + 一个带正确 adler32/SHA-1 的最小 `classes.dex` + 真实 zip 布局），
+  经会话把整条静态线跑通——manifest 级的包名、版本、两项权限、四类组件、launcher activity、native ABI、
+  证书（未签名），以及 DEX 分析流水线 `AnalyzeAPK`/`get_classes`/`get_methods`/`get_strings`/`get_xref_from`：
+  断言列出真实类名、`decrypt ()V` 方法（并验证点分类名→smali 描述符的转换）、DEX 字符串池与空 xref
+  的干净返回（缺 androguard 时 skip≠pass）。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
