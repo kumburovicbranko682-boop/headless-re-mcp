@@ -91,6 +91,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（stdio 传输对超限请求静默丢弃、调用方永久挂起）
+
+- MCP stdio 传输对单行超过大小上限的请求会在上限处截断记录，于是 `json.loads` 永远解析不出这段
+  残片、`_request_id` 恒为 `None`——发来一个 8 MiB `tools/call` 的调用方拿不到任何回应而直接挂死，
+  正是本模块（按 id 回错误而非沉默）要防的失败。现对超限记录做尽力而为的 id 恢复：序列化器通常把
+  `id` 放在文档靠前处，用一个有界（扫描头部 4096 字符、分支互斥无回溯、数字位数受限）的正则从残片头部
+  抽出 `id`，据此按 id 回一条错误。抽不到才回退到原来的沉默。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
