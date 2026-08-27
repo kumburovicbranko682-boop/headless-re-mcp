@@ -69,11 +69,13 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List captured network requests.
 
-        Answers with requests (url, method, status, resourceType), count,
-        total, offset, has_more, and dropped so a page that filled the
-        limit is not read as the whole capture, and ring eviction is
-        visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        Answers with requests (requestId, url, method, status, resourceType,
+        mimeType), count, total, offset, has_more, and dropped so a page that
+        filled the limit is not read as the whole capture, and ring eviction
+        is visible. requestId is the id web.network.get takes to fetch a body;
+        status and mimeType stay null until the response arrives.
+        metadata_truncated marks bounded oversized request fields. There is
+        no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -175,8 +177,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_har_export(session_id: str) -> dict[str, Any]:
         """Export captured network activity to a HAR artifact.
 
-        Answers with path and entry_count, plus artifact_id when the HAR
-        was registered. There is no har, entries or artifact field.
+        Answers with path, entry_count and size, plus artifact_id when the
+        HAR was registered. entry_count counts the entries actually written;
+        when the file would exceed the capture cap the oldest are dropped to
+        fit and truncated is set, so entry_count is then fewer than the
+        requests captured. There is no har, entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

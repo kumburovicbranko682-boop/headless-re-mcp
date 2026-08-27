@@ -112,13 +112,19 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     row = payload["requests"][0]
     assert "type" not in row
     assert row["resourceType"] == "XHR"
+    # requestId is the id web.network.get takes; without it in the row an
+    # agent has no way to page from a listed request to its body.
+    assert row["requestId"] == "0"
+    assert row["mimeType"] == "application/json"
     normalized = backend.network_list("s", offset=-10, limit=0)
     assert normalized["offset"] == 0
     assert normalized["count"] == 1
     assert normalized["has_more"] is True
     doc = _tool_docstring("web.network.list")
     assert "Answers with requests" in doc
+    assert "requestId" in doc
     assert "resourceType" in doc
+    assert "mimeType" in doc
     assert "total" in doc
     assert "has_more" in doc
     assert "dropped" in doc
