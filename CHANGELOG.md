@@ -43,6 +43,24 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 测试（会话持久化 Gate：重启后按同一 id 恢复，且轨迹重挂）
+
+- 监控台承诺分析会话在重启后按**同一 id** 回来——机制是 `hydrate_persisted_sessions`：把
+  `sessions.db` 里未干净关闭的行重新收编进空注册表，成为带 `metadata.restored`、状态 `created`
+  的休眠会话。id 保持稳定，正是知识、时间线、审计轨迹得以跨重启仍挂在这条会话上的原因。这条保证在
+  Linux 上没有任何覆盖：`test_m12_persist_gate.py` 虽然碰了存储，但它钉死在 Windows-only 的
+  `headless_fixture.exe` 上、在非 Windows 被强制跳过，且即便在 Windows 也只验证 `sessions.unclean`
+  会**列出**脏 id，从不证明该会话真的被重新收编（`session.get` 又能用）、更不证明记录的知识/时间线按
+  id 重新挂回。
+- 新增 `tests/integration/test_session_persistence_gate.py`：在 Linux 上、零后端、拿提交的 PE 夹具做
+  真正的两实例重启并断言——一个**开着**（未干净关闭即被抛弃）的会话被恢复进新服务：`session.get` 成功、
+  `metadata.restored` 置位、binary/SHA-256/架构都在，其知识、时间线、审计轨迹按 id 重新挂回，且被
+  `sessions.unclean` 当作遗留工作提供；一个**干净关闭**的会话不被复活（`session.get` 报
+  `session_not_found`、也不在 `sessions.unclean` 里），但它的审计＋时间线轨迹仍按 id 持久可查。
+  重启前后 `session.create` 的审计行与 `session.created` 时间线事件都被断言存在，顺带把审计/时间线
+  这条只在 Windows-only 门里跑过的记录面也在 Linux 上钉住。全程零外部工具，任何平台都不应跳过；
+  夹具缺失时按 skip != pass 明确跳过。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
