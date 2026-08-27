@@ -62,6 +62,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（r2.functions 的截断契约与兄弟工具对齐，补上缺失的字段测试）
+
+- `r2.functions` 与 `r2.strings/imports/exports/xrefs` 走的是同一个 `enrich_r2_payload`：任何列表超过
+  4096 条都会被钳到 `_MAX_ITEMS`，并附上 `items_truncated`/`items_total`/`items_limit` 三元组披露真实
+  条数。大型静态链接二进制的函数数超过 4096 是完全现实的情形，但 `r2.functions` 的 docstring 只提了
+  `items_truncated`，漏掉了 `items_total`（真实条数所在）与 `items_limit`，也没有像五个兄弟那样声明
+  "没有 truncated / has_more 字段"——于是按契约读取的调用方在函数列表被截断时不知道去哪里取真实总数。
+  它还是六个返回列表的 r2 工具里**唯一**没有字段契约测试的。现把 docstring 补齐成与兄弟一致
+  （`items_truncated`/`items_total`/`items_limit`/`(4096)`，并声明无 `functions`/`truncated`/`has_more`
+  字段），并新增 `test_r2_functions_fields.py`：用 4099 条 `aflj` 条目喂 `enrich_r2_payload`，钉住 count=4096、
+  三元组齐全、且既无 `functions` 也无 `truncated`/`has_more`，同时断言 docstring 点名这三个字段。纯文档/
+  测试改动，工具面与返回结构不变。
+
 ### 修复（apk.methods/xrefs 的必填名校验移到 androguard 解析之前）
 
 - `ApkClient.methods`/`xrefs` 把 `class_name`/`method_name` 的必填校验放在 `self._parsed(path)` **之后**，
