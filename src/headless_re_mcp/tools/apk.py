@@ -71,6 +71,15 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with activities, services, receivers, providers,
         main_activity, and has_more so a list that filled the cap is not
         read as every component. There is no components field.
+
+        For attack-surface triage, details maps each of those four kinds to
+        per-component records: name, exported (Android's effective value --
+        the explicit android:exported when set, otherwise inferred from the
+        presence of an intent-filter), exported_explicit (the raw attribute,
+        or null when unset so an inferred value is distinguishable from a
+        declared one), has_intent_filter, and permission when the component
+        is guarded by one. exported is a convenience map of each kind to just
+        the names that are reachable from other apps.
         """
         return _dump(analysis.apk_components(session_id))
 

@@ -30,6 +30,30 @@ _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
 
+# Manifest attributes live in the Android resource namespace; the AXML decoder
+# androguard hands back keeps that URI, so component attributes read as
+# ``{http://schemas.android.com/apk/res/android}exported`` etc.
+_ANDROID_NS = "http://schemas.android.com/apk/res/android"
+_COMPONENT_TAGS: tuple[tuple[str, str], ...] = (
+    ("activities", "activity"),
+    ("services", "service"),
+    ("receivers", "receiver"),
+    ("providers", "provider"),
+)
+
+
+def _android_attr(element: Any, name: str) -> str | None:
+    """Read an ``android:``-namespaced attribute off a manifest element."""
+    value = element.get(f"{{{_ANDROID_NS}}}{name}")
+    return None if value is None else str(value)
+
+
+def _android_bool(value: str | None) -> bool | None:
+    """Parse an AXML boolean attribute; ``None`` means the attribute is absent."""
+    if value is None:
+        return None
+    return value.strip().lower() == "true"
+
 
 class ApkError(RuntimeError):
     def __init__(self, code: str, message: str, **details: object) -> None:
@@ -306,6 +330,77 @@ class ApkClient:
             "has_more": certs_more or files_more,
         }
 
+    @staticmethod
+    def _component_elements(apk: Any, tag: str) -> dict[str, Any]:
+        """Map each ``android:name`` under ``tag`` to its manifest element.
+
+        Best-effort: a manifest that androguard cannot re-parse into an lxml
+        tree (malformed, or an old build predating the getter) leaves the map
+        empty, and callers fall back to the flat name list with unknown
+        export state rather than failing the whole call.
+        """
+        getter = getattr(apk, "get_android_manifest_xml", None)
+        if getter is None:
+            return {}
+        try:
+            root = getter()
+        except Exception:  # noqa: BLE001 - androguard raises raw types on bad AXML
+            return {}
+        if root is None:
+            return {}
+        elements: dict[str, Any] = {}
+        try:
+            for element in root.iter(tag):
+                name = _android_attr(element, "name")
+                if name is not None:
+                    elements[name] = element
+        except Exception:  # noqa: BLE001 - defensive against non-lxml stand-ins
+            return {}
+        return elements
+
+    def _component_details(
+        self, apk: Any, plural: str, tag: str, names: list[str]
+    ) -> tuple[list[JsonObject], list[str]]:
+        """Annotate each named component with its export state.
+
+        ``exported`` is Android's effective value: the explicit
+        ``android:exported`` when the manifest sets it, otherwise inferred
+        from whether the component declares an ``<intent-filter>`` (the
+        platform default for activities/services/receivers, and a safe
+        approximation for providers, which normally set the flag explicitly).
+        ``exported_explicit`` preserves the raw attribute (``None`` when unset)
+        so a caller can tell a declared value from an inferred one.
+        """
+        elements = self._component_elements(apk, tag)
+        details: list[JsonObject] = []
+        exported: list[str] = []
+        for name in names:
+            element = elements.get(name)
+            if element is not None:
+                explicit = _android_bool(_android_attr(element, "exported"))
+                try:
+                    has_filter = len(element.findall("intent-filter")) > 0
+                except Exception:  # noqa: BLE001 - defensive against odd trees
+                    has_filter = False
+                permission = _android_attr(element, "permission")
+            else:
+                explicit = None
+                has_filter = False
+                permission = None
+            effective = explicit if explicit is not None else has_filter
+            entry: JsonObject = {
+                "name": name,
+                "exported": effective,
+                "exported_explicit": explicit,
+                "has_intent_filter": has_filter,
+            }
+            if permission:
+                entry["permission"] = permission
+            details.append(entry)
+            if effective:
+                exported.append(name)
+        return details, exported
+
     @_guard_androguard
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
@@ -313,12 +408,28 @@ class ApkClient:
         services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
         receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
         providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
+        name_lists = {
+            "activities": activities,
+            "services": services,
+            "receivers": receivers,
+            "providers": providers,
+        }
+        details: JsonObject = {}
+        exported: JsonObject = {}
+        for plural, tag in _COMPONENT_TAGS:
+            comp_details, comp_exported = self._component_details(
+                apk, plural, tag, name_lists[plural]
+            )
+            details[plural] = comp_details
+            exported[plural] = comp_exported
         return {
             "activities": activities,
             "services": services,
             "receivers": receivers,
             "providers": providers,
             "main_activity": apk.get_main_activity(),
+            "details": details,
+            "exported": exported,
             "has_more": a_more or s_more or r_more or p_more,
         }
 

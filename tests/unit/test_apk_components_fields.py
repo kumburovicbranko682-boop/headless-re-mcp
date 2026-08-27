@@ -65,3 +65,126 @@ def test_apk_components_names_the_four_lists_not_components() -> None:
     assert "Answers with activities" in doc
     assert "has_more" in doc
     assert "main_activity" in doc
+
+
+def test_apk_components_fallback_leaves_export_state_unknown() -> None:
+    """A manifest androguard cannot re-parse must not sink the whole call.
+
+    The four flat name lists still populate; every per-component record falls
+    back to not-exported/unset so nothing is falsely advertised as reachable.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.components(Path("dummy.apk"))
+    assert set(payload["details"]) == {
+        "activities",
+        "services",
+        "receivers",
+        "providers",
+    }
+    assert payload["exported"] == {
+        "activities": [],
+        "services": [],
+        "receivers": [],
+        "providers": [],
+    }
+    service = payload["details"]["services"][0]
+    assert service["name"] == "S"
+    assert service["exported"] is False
+    assert service["exported_explicit"] is None
+    assert service["has_intent_filter"] is False
+
+
+_MANIFEST_XML = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="com.x">
+  <application>
+    <activity android:name="com.x.Main">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+      </intent-filter>
+    </activity>
+    <activity android:name="com.x.Internal"/>
+    <activity android:name="com.x.ForcedOff" android:exported="false">
+      <intent-filter>
+        <action android:name="com.x.ACTION"/>
+      </intent-filter>
+    </activity>
+    <service android:name="com.x.Svc" android:exported="true"
+             android:permission="com.x.PERM"/>
+    <receiver android:name="com.x.Rcv"/>
+    <provider android:name="com.x.Prov" android:exported="true"/>
+  </application>
+</manifest>
+"""
+
+
+class _ManifestApk:
+    def get_activities(self) -> list[str]:
+        return ["com.x.Main", "com.x.Internal", "com.x.ForcedOff"]
+
+    def get_services(self) -> list[str]:
+        return ["com.x.Svc"]
+
+    def get_receivers(self) -> list[str]:
+        return ["com.x.Rcv"]
+
+    def get_providers(self) -> list[str]:
+        return ["com.x.Prov"]
+
+    def get_main_activity(self) -> str:
+        return "com.x.Main"
+
+    def get_android_manifest_xml(self) -> object:
+        from lxml import etree
+
+        return etree.fromstring(_MANIFEST_XML.encode("utf-8"))
+
+
+def _detail(payload: dict, kind: str, name: str) -> dict:
+    return next(row for row in payload["details"][kind] if row["name"] == name)
+
+
+def test_apk_components_reports_effective_export_state() -> None:
+    """Export state drives Android attack-surface triage.
+
+    An intent-filter with no explicit flag reads as exported; an explicit
+    android:exported="false" wins even when a filter is present; a guarding
+    permission is surfaced; and the exported convenience map lists exactly the
+    reachable components.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _ManifestApk()  # type: ignore[method-assign]
+    payload = client.components(Path("dummy.apk"))
+
+    main = _detail(payload, "activities", "com.x.Main")
+    assert main["exported"] is True
+    assert main["exported_explicit"] is None
+    assert main["has_intent_filter"] is True
+
+    internal = _detail(payload, "activities", "com.x.Internal")
+    assert internal["exported"] is False
+    assert internal["has_intent_filter"] is False
+
+    forced_off = _detail(payload, "activities", "com.x.ForcedOff")
+    assert forced_off["exported"] is False
+    assert forced_off["exported_explicit"] is False
+    assert forced_off["has_intent_filter"] is True
+
+    svc = _detail(payload, "services", "com.x.Svc")
+    assert svc["exported"] is True
+    assert svc["exported_explicit"] is True
+    assert svc["permission"] == "com.x.PERM"
+
+    prov = _detail(payload, "providers", "com.x.Prov")
+    assert prov["exported"] is True
+
+    assert payload["exported"]["activities"] == ["com.x.Main"]
+    assert payload["exported"]["services"] == ["com.x.Svc"]
+    assert payload["exported"]["receivers"] == []
+    assert payload["exported"]["providers"] == ["com.x.Prov"]
+
+    doc = _tool_docstring("apk.components")
+    assert "exported" in doc
+    assert "has_intent_filter" in doc

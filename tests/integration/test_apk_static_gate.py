@@ -390,6 +390,29 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert components.data["providers"] == ["com.example.headlessre.DataProvider"]
         assert components.data["main_activity"] == "com.example.headlessre.MainActivity"
 
+        # The launcher activity carries an intent-filter and no explicit flag,
+        # so it reads as exported; the other components declare neither, so the
+        # attack-surface map lists only the activity. This is the whole reason
+        # to parse the manifest tree rather than just enumerate names.
+        details = components.data["details"]
+        main_detail = next(
+            row
+            for row in details["activities"]
+            if row["name"] == "com.example.headlessre.MainActivity"
+        )
+        assert main_detail["exported"] is True
+        assert main_detail["exported_explicit"] is None
+        assert main_detail["has_intent_filter"] is True
+        svc_detail = details["services"][0]
+        assert svc_detail["exported"] is False
+        assert svc_detail["has_intent_filter"] is False
+        assert components.data["exported"] == {
+            "activities": ["com.example.headlessre.MainActivity"],
+            "services": [],
+            "receivers": [],
+            "providers": [],
+        }
+
         libs = service.apk_native_libs(session_id)
         assert libs.ok, libs.error
         assert sorted(libs.data["abis"]) == ["arm64-v8a", "x86_64"]

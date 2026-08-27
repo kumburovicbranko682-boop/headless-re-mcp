@@ -311,6 +311,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「已 bind 但从不 listen」的回环端口（内核直接拒连）发一次请求，断言该 flow 被标 `failed`、带非空 `error`、
   `status` 为 null、且 `flow.get` 如实回报失败（缺 mitmproxy 时 skip≠pass）；单测直接驱动 `error`，覆盖新建失败行、
   `flow.get` 透出失败、以及「响应后再报错只标注不重复建行」。
+- **`apk.components` 只给四类组件的名字清单，攻击面无从判断**。活动/服务/接收器/提供者过去只回名字，
+  分析者拿到列表却看不出哪些能被其它应用触达——而「哪些组件对外暴露」正是 Android 攻击面三连问的第一问。
+  过去只能自己再去拉一遍 `apk.manifest` 原文、手动数 `android:exported` 与 `<intent-filter>`。现在
+  `components` 在原有四个名字清单之外新增 `details`：把每类组件映射为逐个记录，含 `name`、`exported`
+  （Android 的**有效**取值——显式 `android:exported` 优先，缺省时按是否声明 `<intent-filter>` 推断，这与
+  activity/service/receiver 的平台默认一致，对 provider 亦是安全近似）、`exported_explicit`（原始属性，未设为
+  null，好让「显式声明」与「推断」可区分）、`has_intent_filter`，以及组件被权限守卫时的 `permission`；再加
+  `exported` 便捷映射，把每类只列出对外可达的组件名。原四个名字清单与 `main_activity`/`has_more` 契约不变，
+  纯增量、不破坏既有调用方。经 androguard 的 `get_android_manifest_xml()` 读清单树逐元素取属性；清单无法被重新
+  解析（畸形或老版本缺该 getter）时逐组件降级为「未暴露/未设」，绝不谎报可达，也不因此让整次调用失败。活体门在
+  真实 APK 上断言带 LAUNCHER intent-filter 的启动 Activity 读作 `exported`、其余三类不暴露、`exported` 映射只含
+  该 Activity；单测另覆盖显式 `exported="false"` 压过 intent-filter、`permission` 透出、以及清单不可解析时的降级。
 - **`r2.xrefs` 完全忽略传入地址，永远返回整个二进制的全部交叉引用**。用的命令是 `axj @ addr`——可 `axj`
   是「列出全部 refs」，`@ addr` 的 seek 对它毫无作用（实测某 ELF 上 `axj @ 任意地址` 与不带 seek 的 `axj` 都回
   相同的 20 条、`/bin/ls` 上都回 820 条）。于是 `r2.xrefs(某函数)` 拿到的是全程序 refs、而非该地址的引用者，
