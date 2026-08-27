@@ -92,6 +92,22 @@ JsonObject = dict[str, Any]
 _OEP_REGION_SNAPSHOT_LIMIT = 512
 
 
+def _session_segment_is_safe(session_id: str) -> bool:
+    """True when ``session_id`` is one ordinary path component (no traversal).
+
+    unpack.pe.rebuild builds ``artifact_root/unpack/<session_id>`` directly and
+    only reaches imports.read -- the step that resolves the session against a
+    live runtime -- when iat_va/iat_size are both supplied. With them omitted a
+    session_id like ``../../x`` was never validated, so mkdir wrote the rebuilt
+    PE outside the artifact root. Gate the two rebuild writers on the same check
+    _session_artifact_roots uses. Imported locally because service imports this
+    mixin.
+    """
+    from headless_re_mcp.core.service import _is_safe_session_segment
+
+    return _is_safe_session_segment(session_id)
+
+
 def _refuse_rebuild_that_will_not_fit(
     path: Path, *, observed_size: int | None = None
 ) -> Result[JsonObject] | None:
@@ -138,9 +154,7 @@ def _read_dump_for_rebuild(
     """Bind the memory check and bounded read to the same open file handle."""
     with path.open("rb") as stream:
         observed_size = os.fstat(stream.fileno()).st_size
-        refusal = _refuse_rebuild_that_will_not_fit(
-            path, observed_size=observed_size
-        )
+        refusal = _refuse_rebuild_that_will_not_fit(path, observed_size=observed_size)
         if refusal is not None:
             return None, refusal
         payload = stream.read(observed_size + 1)
@@ -339,6 +353,7 @@ class UnpackMixin:
                 sha256=output_sha,
             )
         return _success(payload, session_id=session_id, backend="unpack")
+
     def unpack_stub_coupling(
         self,
         session_id: str,
@@ -415,6 +430,7 @@ class UnpackMixin:
             return _success(payload, session_id=session_id, backend="unpack")
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def unpack_iat_scan(
         self,
         session_id: str,
@@ -468,6 +484,7 @@ class UnpackMixin:
             "IME/high-RVA noise is down-ranked; half-sparse layouts need validate."
         )
         return _success(data, session_id=session_id, backend="unpack")
+
     def unpack_iat_validate(
         self,
         session_id: str,
@@ -611,6 +628,7 @@ class UnpackMixin:
                 "IAT range not confirmed; rebuild would be speculative",
             ]
         return _success(data, session_id=session_id, backend="unpack")
+
     def unpack_iat_rebuild(
         self,
         session_id: str,
@@ -623,6 +641,11 @@ class UnpackMixin:
     ) -> Result[JsonObject]:
         """Rebuild import tables on a dumped PE using a confirmed IAT range."""
         try:
+            if not _session_segment_is_safe(session_id):
+                return Result[JsonObject](
+                    ok=False,
+                    error=RpcError(code="invalid_params", message="invalid session id"),
+                )
             blocked = self._guard_unpack_active(session_id, stage="iat_rebuild")
             if blocked is not None:
                 return blocked
@@ -700,9 +723,7 @@ class UnpackMixin:
             confirmed_iat_rva = iat_va - image_base if iat_va >= image_base else iat_va
             if type(confirmed_iat_rva) is not int or confirmed_iat_rva < 0:
                 raise PeRebuildError("iat_va does not map to a usable IAT RVA")
-            rebuilt, report = rebuild_imports(
-                pe_bytes, entries, iat_rva=confirmed_iat_rva
-            )
+            rebuilt, report = rebuild_imports(pe_bytes, entries, iat_rva=confirmed_iat_rva)
             blocked = self._guard_unpack_active(session_id, stage="iat_rebuild_advance")
             if blocked is not None:
                 return blocked
@@ -773,6 +794,7 @@ class UnpackMixin:
             return _success(payload, session_id=session_id, backend="unpack")
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def unpack_pe_rebuild(
         self,
         session_id: str,
@@ -785,6 +807,11 @@ class UnpackMixin:
     ) -> Result[JsonObject]:
         """Remap a runtime dump to file layout and optionally rebuild imports."""
         try:
+            if not _session_segment_is_safe(session_id):
+                return Result[JsonObject](
+                    ok=False,
+                    error=RpcError(code="invalid_params", message="invalid session id"),
+                )
             blocked = self._guard_unpack_active(session_id, stage="pe_rebuild")
             if blocked is not None:
                 return blocked
@@ -894,6 +921,7 @@ class UnpackMixin:
             return _success(payload, session_id=session_id, backend="unpack")
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def unpack_verify(
         self,
         session_id: str,
@@ -919,9 +947,7 @@ class UnpackMixin:
             target = Path(path).expanduser().resolve(strict=True)
             from headless_re_mcp.core.service import _session_owns_artifact_path
 
-            if not _session_owns_artifact_path(
-                self.settings.artifact_root, session_id, target
-            ):
+            if not _session_owns_artifact_path(self.settings.artifact_root, session_id, target):
                 return Result[JsonObject](
                     ok=False,
                     error=RpcError(
@@ -1048,8 +1074,7 @@ class UnpackMixin:
                                 or expect_window_title.casefold() in title.casefold()
                             )
                             class_ok = (
-                                expect_window_class is None
-                                or class_name == expect_window_class
+                                expect_window_class is None or class_name == expect_window_class
                             )
                             if title_ok and class_ok:
                                 matched = True
@@ -1109,6 +1134,7 @@ class UnpackMixin:
             return _success(payload, session_id=session_id, backend="unpack")
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def unpack_plan(
         self,
         session_id: str,
@@ -1172,6 +1198,7 @@ class UnpackMixin:
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def unpack_start(
         self,
         session_id: str,
@@ -1401,6 +1428,7 @@ class UnpackMixin:
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def unpack_status(self, session_id: str) -> Result[JsonObject]:
         """Return the current unpack orchestration state for a session."""
         try:
@@ -1426,6 +1454,7 @@ class UnpackMixin:
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def unpack_cancel(
         self,
         session_id: str,
@@ -1478,6 +1507,7 @@ class UnpackMixin:
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def unpack_artifacts(self, session_id: str) -> Result[JsonObject]:
         """List artifacts produced by the current unpack session."""
         try:
@@ -1506,6 +1536,7 @@ class UnpackMixin:
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def unpack_score_oep(
         self,
         session_id: str,
@@ -1634,6 +1665,7 @@ class UnpackMixin:
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def _collect_oep_observations_from_runtime(
         self,
         session_id: str,
@@ -1780,6 +1812,7 @@ class UnpackMixin:
             session_id=session_id,
             backend="unpack",
         )
+
     def unpack_confirm_oep(
         self,
         session_id: str,
@@ -1940,6 +1973,7 @@ class UnpackMixin:
             )
         except BaseException as exc:
             return _failure(exc, session_id=session_id, backend="unpack")
+
     def _bounded_runtime_probe(
         self,
         state: UnpackSessionState,
@@ -2044,6 +2078,7 @@ class UnpackMixin:
                     details=probe.get("oep_score_error"),
                 )
         return state, probe
+
     def _run_upx_orchestration(
         self,
         state: UnpackSessionState,
@@ -2119,12 +2154,14 @@ class UnpackMixin:
                 details={"reanalyze": reanalyze},
             )
         return state
+
     def _unpack_session_dir(self, session_id: str) -> Path:
         if not session_id or Path(session_id).name != session_id:
             raise ValueError("invalid session id for unpack artifact path")
         return (
             self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id / "session"
         )
+
     def _store_unpack_session(self, state: UnpackSessionState) -> None:
         self._unpack_owner.put(state.session_id, state)
 
@@ -2136,6 +2173,7 @@ class UnpackMixin:
             state.session_id,
             write=write,
         )
+
     def _guard_unpack_active(
         self,
         session_id: str,
@@ -2176,6 +2214,7 @@ class UnpackMixin:
             error=RpcError(code=code, message=message, details=details),
             meta={"unpack": state.to_dict()},
         )
+
     def _advance_unpack_after_dump(
         self,
         session_id: str,
@@ -2201,6 +2240,7 @@ class UnpackMixin:
             self._store_unpack_session(state)
         except UnpackSessionError:
             return
+
     def _advance_unpack_after_imports_rebuilt(
         self,
         session_id: str,
@@ -2227,6 +2267,7 @@ class UnpackMixin:
             self._store_unpack_session(state)
         except UnpackSessionError:
             return
+
     def _advance_unpack_after_verify(
         self,
         session_id: str,
