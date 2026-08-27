@@ -47,10 +47,13 @@ class BrowserFakeProvider:
             yield ProviderEvent("text_delta", text="running read-only check")
             yield ProviderEvent("completed", tool_calls=(ProviderToolCall("read-call", "doctor", {}),))
             return
+        # patches.apply is in the packed-analysis exclusion list, so it still
+        # prompts under the default policy; plain state_change tools (like
+        # workflow.cancel) are auto-approved and would never show the card.
         yield ProviderEvent("text_delta", text="dangerous operation proposed")
         yield ProviderEvent(
             "completed",
-            tool_calls=(ProviderToolCall("danger-call", "workflow.cancel", {"session_id": "missing-session"}),),
+            tool_calls=(ProviderToolCall("danger-call", "patches.apply", {"session_id": "missing-session"}),),
         )
 
     async def list_models(self) -> list[str]:
@@ -91,11 +94,18 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
     secret = "browser-provider-secret-value"
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=True,
-                executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                args=["--disable-gpu", "--no-first-run"],
-            )
+            launch_kwargs: JsonObject = {
+                "headless": True,
+                "args": ["--disable-gpu", "--no-first-run"],
+            }
+            # The Windows gate machine has no Playwright-managed build, so the
+            # system Chrome fills in there; everywhere else the managed
+            # Chromium is the one that exists, and pinning the Windows path
+            # unconditionally made this gate Windows-only by accident.
+            system_chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+            if system_chrome.exists():
+                launch_kwargs["executable_path"] = str(system_chrome)
+            browser = playwright.chromium.launch(**launch_kwargs)
             page = browser.new_page()
 
             def capture(response: Response) -> None:
@@ -110,7 +120,7 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
             page.on("response", capture)
             # A fresh profile lands on the work-direction screen first.
             page.goto(f"http://127.0.0.1:{port}/?token={token}")
-            expect(page.get_by_role("heading", name="你想逆向什么？")).to_be_visible()
+            expect(page.get_by_role("heading", name="开始一段分析")).to_be_visible()
 
             # Skip past it for the agent flow. Seeding the stored choice rather
             # than clicking keeps this gate from persisting a workspace profile
@@ -118,42 +128,62 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
             # webui/src/components/WorkspaceLanding.test.tsx.
             page.evaluate("localStorage.setItem('headless_ws_profile','full')")
             page.goto(f"http://127.0.0.1:{port}/?token={token}")
-            expect(page.get_by_role("heading", name="Agent analysis")).to_be_visible()
+            expect(page.get_by_role("heading", name="新对话")).to_be_visible()
             assert "token=" not in page.url
 
-            page.get_by_label("Message").fill("run read-only tool")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_text("tool round finished")).to_be_visible(timeout=_ROUND_TRIP_MS)
-            expect(page.get_by_text("tool.completed").first).to_be_visible()
+            page.get_by_label("消息").fill("run read-only tool")
+            page.get_by_role("button", name="发送").click()
+            expect(page.get_by_text("tool round finished", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
+            # Round-1 streamed text and the run telemetry line both rendered.
+            expect(page.get_by_text("running read-only check", exact=True)).to_be_visible()
+            expect(page.get_by_role("status")).to_be_visible()
 
-            page.get_by_role("button", name="Provider & setup").click()
-            page.get_by_label("Base URL").fill("https://example.invalid/v1")
-            page.get_by_label("Model").fill("browser-fake")
-            page.get_by_label("API key").fill(secret)
-            page.get_by_role("button", name="Save server-side").click()
+            page.get_by_role("button", name="设置").click()
+            dialog = page.get_by_role("dialog")
+            expect(dialog).to_be_visible()
+            dialog.get_by_label("接口地址").fill("https://example.invalid/v1")
+            dialog.get_by_label("模型", exact=True).fill("browser-fake")
+            dialog.get_by_label("API 密钥").fill(secret)
+            dialog.get_by_role("button", name="保存模型").click()
+            expect(dialog.get_by_text("模型设置已保存到本机服务。")).to_be_visible(
+                timeout=_ROUND_TRIP_MS
+            )
+            page.get_by_role("button", name="×").click()
             expect(page.get_by_role("dialog")).not_to_be_visible()
 
-            page.get_by_label("Message").fill("danger approve")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_role("button", name="Approve once")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_label("消息").fill("danger approve")
+            page.get_by_role("button", name="发送").click()
+            expect(page.get_by_role("button", name="批准一次")).to_be_visible(timeout=_ROUND_TRIP_MS)
             prior_seq = int(page.evaluate("window.history.state.runSeq"))
             assert prior_seq > 0
             page.reload()
-            expect(page.get_by_role("button", name="Approve once")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            expect(page.get_by_role("button", name="批准一次")).to_be_visible(timeout=_ROUND_TRIP_MS)
             assert "token=" not in page.url
-            page.get_by_role("button", name="Approve once").click()
-            expect(page.get_by_text("tool round finished")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_role("button", name="批准一次").click()
+            # A reload drops the thread selection, so the approved round's text
+            # reaches the transcript only after the thread is reopened. Wait for
+            # the resumed run to finish, then read the round back from the store.
+            page.wait_for_function(
+                "() => window.history.state && window.history.state.activeRun === null",
+                timeout=_ROUND_TRIP_MS,
+            )
+            page.get_by_role("button", name="run read-only tool 对话").click()
+            # The read round already said it once; this is the approved round's.
+            expect(page.get_by_text("tool round finished", exact=True).nth(1)).to_be_visible(
+                timeout=_ROUND_TRIP_MS
+            )
             assert any(f"after={prior_seq}" in url for url in sse_urls)
 
-            page.get_by_label("Message").fill("danger reject")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_role("button", name="Reject", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_label("消息").fill("danger reject")
+            page.get_by_role("button", name="发送").click()
+            expect(page.get_by_role("button", name="拒绝", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
             with page.expect_response(
                 lambda response: response.url.endswith("/reject"), timeout=_ROUND_TRIP_MS
             ) as rejected_response:
-                page.get_by_role("button", name="Reject", exact=True).click()
+                page.get_by_role("button", name="拒绝", exact=True).click()
             assert rejected_response.value.status == 200
-            expect(page.get_by_text("run.rejected")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            # runFailureHint for run.rejected; cancel says 已取消 instead.
+            expect(page.get_by_text("本轮已停")).to_be_visible(timeout=_ROUND_TRIP_MS)
 
             providers = page.evaluate(
                 """async ({token}) => (await fetch('/api/providers', {headers:{Authorization:`Bearer ${token}`}})).text()""",
