@@ -212,6 +212,32 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
         assert methods.data["count"] == 0
         assert methods.data["methods"] == []
 
+        # The DEX string table is read for real: the class/superclass
+        # descriptors are the strings this app contains.
+        strings = service.apk_strings(session_id)
+        assert strings.ok, strings.error
+        assert _CLASS_SMALI in strings.data["strings"]
+
+        # Native libraries come straight from the zip entries androguard lists.
+        native = service.apk_native_libs(session_id)
+        assert native.ok, native.error
+        assert set(native.data["abis"]) == {"arm64-v8a", "x86_64"}
+        assert native.data["count"] == 2
+
+        # Components are declared by none of this minimal manifest, so every
+        # list is empty -- but the call succeeds against the real parser.
+        components = service.apk_components(session_id)
+        assert components.ok, components.error
+        assert components.data["activities"] == []
+        assert components.data["services"] == []
+
+        # Certificates parse without raising even though the placeholder v1
+        # signature is partial; v1_signed is a real boolean either way.
+        certificates = service.apk_certificates(session_id)
+        assert certificates.ok, certificates.error
+        assert isinstance(certificates.data["v1_signed"], bool)
+        assert isinstance(certificates.data["certificates"], list)
+
         # Device enumeration degrades cleanly when adbutils / adb is absent.
         listed = service.device_list()
         assert isinstance(listed.ok, bool)
