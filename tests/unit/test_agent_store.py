@@ -36,6 +36,74 @@ def test_agent_store_seq_approval_and_restart(tmp_path: Path) -> None:
     assert [event.seq for event in events] == sorted({event.seq for event in events})
 
 
+def test_message_content_with_an_unpaired_surrogate_is_stored_not_fatal(
+    tmp_path: Path,
+) -> None:
+    """json.loads accepts a lone \\ud800 escape, so provider text carries it here.
+
+    add_message's own size check (content.encode("utf-8")) raised
+    UnicodeEncodeError before the SQLite text bind could, and the run died on
+    an incident-labelled internal error. Transport already decodes bytes with
+    errors="replace"; the same lossy-but-alive policy applies to storage.
+    """
+    store = AgentStore(tmp_path / "agent.db")
+    thread = store.create_thread(session_id="s")
+
+    message = store.add_message(thread.id, "assistant", "before \ud800 after")
+
+    assert "\ud800" not in message.content
+    assert message.content.startswith("before ") and message.content.endswith(" after")
+    stored = store.list_messages(thread.id)
+    assert stored[-1].content == message.content
+
+
+def test_thread_title_with_an_unpaired_surrogate_is_stored_not_fatal(
+    tmp_path: Path,
+) -> None:
+    store = AgentStore(tmp_path / "agent.db")
+    thread = store.create_thread(title="bad \ud800 title", session_id="s")
+    assert "\ud800" not in thread.title
+    assert store.list_threads()[0].title == thread.title
+
+
+def test_event_data_with_an_unpaired_surrogate_is_stored_and_streamable(
+    tmp_path: Path,
+) -> None:
+    """The stored and returned views must both be UTF-8 encodable.
+
+    The event returned here is what the SSE stream re-serializes with
+    ensure_ascii=False and encodes to bytes; a surrogate surviving in either
+    view broke the events endpoint for the whole run.
+    """
+    store = AgentStore(tmp_path / "agent.db")
+    thread = store.create_thread(session_id="s")
+    run = store.create_run(thread.id, provider_profile="default", model="m", deadline_seconds=30)
+
+    event = store.append_event(run.id, "message.delta", {"delta": "x \ud800 y"})
+
+    json.dumps(event.data, ensure_ascii=False).encode("utf-8")
+    listed = store.list_events(run.id)
+    json.dumps(listed[-1].data, ensure_ascii=False).encode("utf-8")
+    assert listed[-1].data == event.data
+
+
+def test_tool_arguments_with_an_unpaired_surrogate_are_refused_in_the_stores_voice(
+    tmp_path: Path,
+) -> None:
+    """Arguments are instructions: refuse rather than sanitize-then-execute.
+
+    Without the guard the size check raised a raw UnicodeEncodeError (and
+    canonical_args_sha256 would have, one line later) instead of the store's
+    own refusal style.
+    """
+    store = AgentStore(tmp_path / "agent.db")
+    thread = store.create_thread(session_id="s")
+    run = store.create_run(thread.id, provider_profile="default", model="m", deadline_seconds=30)
+
+    with pytest.raises(ValueError, match="cannot be encoded as UTF-8"):
+        store.propose_tool_call(run.id, "call-1", "dynamic.resume", {"note": "\ud800"}, ["state_change"])
+
+
 def test_canonical_args_hash_is_key_order_independent() -> None:
     """The approval gate compares two independently computed hashes.
 

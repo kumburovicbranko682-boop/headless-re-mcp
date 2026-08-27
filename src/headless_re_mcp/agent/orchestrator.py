@@ -511,6 +511,17 @@ class AgentOrchestrator:
         self.store.append_event(run_id, "reasoning.delta", {"delta": "".join(parts)})
         parts.clear()
 
+    def _refuse_tool_call(
+        self, run_id: str, call_id: str, name: str, *, code: str, message: str
+    ) -> JsonObject:
+        """Record and return a designed refusal as the call's tool result."""
+        self.store.append_event(
+            run_id,
+            "tool.completed",
+            {"tool_call_id": call_id, "name": name[:200], "ok": False, "error": code},
+        )
+        return {"ok": False, "error": {"code": code, "message": message}}
+
     def _arguments_too_large(self, arguments: JsonObject) -> JsonObject | None:
         """Refuse a call whose arguments are too big to be meant, and say so.
 
@@ -549,6 +560,23 @@ class AgentOrchestrator:
                     "message": (
                         "arguments are nested too deeply to encode; send a reference "
                         "such as an artifact_id rather than inline data"
+                    ),
+                },
+            }
+        except UnicodeEncodeError:
+            # json.loads accepts a lone \ud800 escape and hands back an
+            # unpaired surrogate, which no UTF-8 consumer downstream will
+            # take: the store's size check, its canonical argument hashing,
+            # and the SQLite text bind all raise on it. Like the depth case
+            # above, refuse as a tool result the model can read and correct
+            # rather than dying on an incident-labelled internal error.
+            return {
+                "ok": False,
+                "error": {
+                    "code": "arguments_not_utf8",
+                    "message": (
+                        "arguments contain text that cannot be encoded as UTF-8 "
+                        "(an unpaired surrogate); resend the call with valid text"
                     ),
                 },
             }
@@ -628,17 +656,39 @@ class AgentOrchestrator:
     async def _handle_tool_call(self, run_id: str, call_id: str, name: str, arguments: JsonObject) -> JsonObject:
         if self._check_cancelled(run_id):
             raise asyncio.CancelledError
-        spec = self.catalog.require(name)
+        spec = self.catalog.get(name)
+        if spec is None:
+            # Models hallucinate tool names routinely. catalog.require raised
+            # KeyError here, which nothing below catches, so one made-up name
+            # minted an incident and failed the whole run -- against this
+            # file's own convention that a refusal goes back as the tool
+            # result, the one thing the model reads and can correct. The name
+            # is model-controlled and can be megabytes, hence the slice.
+            return self._refuse_tool_call(
+                run_id,
+                call_id,
+                name,
+                code="unknown_tool",
+                message=f"no tool named {name[:200]!r}; call only the tools in the provided list",
+            )
         if CommandTransport.AGENT not in spec.transports or not spec.effects:
-            raise PermissionError(f"tool is unavailable to Agent: {name}")
-        oversized = self._arguments_too_large(arguments)
-        if oversized is not None:
+            # Same shape as unknown_tool: raising PermissionError failed the
+            # run for naming a real tool the Agent transport does not carry.
+            return self._refuse_tool_call(
+                run_id,
+                call_id,
+                name,
+                code="tool_unavailable",
+                message=f"tool is unavailable to Agent: {name[:200]}",
+            )
+        refused = self._arguments_too_large(arguments)
+        if refused is not None:
             self.store.append_event(
                 run_id,
                 "tool.completed",
-                {"tool_call_id": call_id, "name": name, "ok": False, "error": "arguments_too_large"},
+                {"tool_call_id": call_id, "name": name, "ok": False, "error": refused["error"]["code"]},
             )
-            return oversized
+            return refused
         effects = sorted(effect.value for effect in spec.effects)
         proposed = self.store.propose_tool_call(run_id, call_id, name, arguments, effects)
         self.store.append_event(run_id, "tool.proposed", {"tool_call_id": call_id, "name": name, "arguments": redact(arguments), "args_sha256": proposed["args_sha256"], "effects": effects})

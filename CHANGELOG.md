@@ -49,6 +49,32 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（孤立代理项穿透 JSON 解析后炸 Agent 存储与 SSE）
+
+- `json.loads` 接受 JSON 文本里的孤立 `\ud800` 转义并原样产出未配对代理项，而下游所有
+  UTF-8 消费方都会在它上面抛 `UnicodeEncodeError`（`ValueError` 子类）：`add_message`
+  自己的体积检查 `content.encode("utf-8")`、SQLite 的 TEXT 绑定、事件的 SSE 再序列化
+  （`ensure_ascii=False` 后 `.encode()`）、以及 `canonical_args_sha256`。模型正文或
+  工具参数里带一个孤立代理项，运行就以铸了事故号的内部错误收场。现按各处语义分别处置：
+  正文/标题沿用传输层 `decode(..., "replace")` 的有损存活策略消毒后入库（`add_message`、
+  `create_thread`）；事件数据消毒后保证存储视图与 SSE 流出视图一致（`_append_event_tx`
+  在回退路径用消毒后的文本重导出返回的 dict）；参数是指令，消毒后执行等于执行调用方没说过
+  的话，故 orchestrator 的参数预检对 `UnicodeEncodeError` 走与深嵌套 `RecursionError`
+  同款的设计化拒绝（错误码 `arguments_not_utf8`，作为模型能读到并自我纠正的 tool result
+  返回），store 的 `propose_tool_call` 独立可达处也以自己的口径拒绝而非裸抛编码错误。
+  五条新回归测试在未修复代码上全部复现原崩溃。
+
+### 修复（模型幻觉工具名铸事故号炸掉整个运行）
+
+- `_handle_tool_call` 用 `catalog.require(name)` 查规格,未知名字抛 `KeyError`,调用点
+  又无兜底,于是模型幻觉一个工具名——大模型的家常便饭——就把整个运行以事故号收场;调用
+  真实存在但 Agent 传输不载的工具同理死于 `PermissionError`。这与本模块自己写明的契约
+  相悖:「拒绝要作为 tool result 回给模型,它读得到才能自我纠正」(参数超大、超时都是
+  这么办的)。现两种情况都改为设计化拒绝(`unknown_tool` / `tool_unavailable`),记
+  `tool.completed` 事件后作为工具结果返回,运行继续;名字是模型可控、可达兆级的串,
+  拒绝文案与事件里做了截断。端到端测试证实未修复时运行 FAILED、修复后 COMPLETED 且
+  目标处理器未被执行。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

@@ -314,6 +314,9 @@ class AgentStore:
 
     def create_thread(self, *, title: str = "New analysis", session_id: str | None = None) -> AgentThread:
         session_id = self._checked_session_id(session_id)
+        # An unpaired surrogate in an API-supplied title fails the SQLite
+        # text bind; same replace policy as message content.
+        title = title.encode("utf-8", "replace").decode("utf-8")
         thread_id = uuid.uuid4().hex
         now = utc_now()
         with self.transaction() as con:
@@ -363,7 +366,17 @@ class AgentStore:
                 raise KeyError(thread_id)
 
     def add_message(self, thread_id: str, role: str, content: str, *, run_id: str | None = None, tool_call_id: str | None = None) -> AgentMessage:
-        if len(content.encode("utf-8")) > 1_048_576:
+        try:
+            content_bytes = content.encode("utf-8")
+        except UnicodeEncodeError:
+            # json.loads accepts a lone \ud800 escape, so provider text and
+            # API request bodies can carry unpaired surrogates this far. The
+            # size check above would raise on them, and so would the SQLite
+            # text bind below. Transport already decodes bytes with
+            # errors="replace"; apply the same lossy-but-alive policy here.
+            content = content.encode("utf-8", "replace").decode("utf-8")
+            content_bytes = content.encode("utf-8")
+        if len(content_bytes) > 1_048_576:
             raise ValueError("message exceeds 1 MiB")
         message_id = uuid.uuid4().hex
         now = utc_now()
@@ -520,7 +533,17 @@ class AgentStore:
         safe = redact(data)
         encoded = json.dumps(safe, ensure_ascii=False, default=str)
         limit = max(1024, int(self.event_data_max_bytes))
-        payload_bytes = len(encoded.encode("utf-8"))
+        try:
+            payload_bytes = len(encoded.encode("utf-8"))
+        except UnicodeEncodeError:
+            # An unpaired surrogate (json.loads accepts a lone \ud800 escape)
+            # in a tool result or message delta would otherwise fail this
+            # size check, the SQLite bind, and the SSE serializer that later
+            # re-encodes this event. Replace and re-derive the returned dict
+            # from the sanitized text so the stored and streamed views agree.
+            encoded = encoded.encode("utf-8", "replace").decode("utf-8")
+            safe = json.loads(encoded)
+            payload_bytes = len(encoded.encode("utf-8"))
         if payload_bytes > limit:
             safe, encoded = _bounded_event_summary(
                 encoded,
@@ -614,9 +637,22 @@ class AgentStore:
         safe_arguments = redact(arguments)
         encoded = json.dumps(safe_arguments, ensure_ascii=False, sort_keys=True)
         limit = max(1024, int(self.tool_argument_max_bytes))
-        if len(encoded.encode("utf-8")) > limit:
+        try:
+            encoded_bytes = len(encoded.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            # The orchestrator refuses unencodable arguments before reaching
+            # here, but the store is reachable on its own, and an unpaired
+            # surrogate would otherwise surface as a raw UnicodeEncodeError
+            # from this size check (or from canonical_args_sha256 below)
+            # instead of a refusal in the store's own voice. Arguments are
+            # instructions: sanitizing then executing something the caller
+            # did not say is worse than refusing.
             raise ValueError(
-                f"tool call arguments are {len(encoded.encode('utf-8'))} bytes, "
+                "tool call arguments contain text that cannot be encoded as UTF-8"
+            ) from exc
+        if encoded_bytes > limit:
+            raise ValueError(
+                f"tool call arguments are {encoded_bytes} bytes, "
                 f"over the {limit} byte limit"
             )
         args_hash = canonical_args_sha256(arguments)

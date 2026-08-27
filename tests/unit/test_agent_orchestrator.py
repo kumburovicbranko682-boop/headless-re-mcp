@@ -212,6 +212,89 @@ async def test_a_runaway_argument_is_refused_rather_than_stored_and_run(
 
 
 @pytest.mark.asyncio
+async def test_a_hallucinated_tool_name_is_refused_rather_than_fatal(
+    tmp_path: Path,
+) -> None:
+    """Models make up tool names routinely; that must not fail the run.
+
+    catalog.require raised KeyError, nothing below caught it, and one
+    hallucinated name minted an incident and failed the whole run -- against
+    this module's own convention that a refusal goes back as the tool result,
+    the one thing the model reads and can correct.
+    """
+    executed: list[str] = []
+
+    def note() -> JsonObject:
+        executed.append("ran")
+        return {"ok": True}
+
+    store = AgentStore(tmp_path / "hallucinated.db")
+    thread = store.create_thread()
+    provider = FakeProvider([
+        (ProviderToolCall("h1", "made.up.tool", {"x": 1}),),
+        (),
+    ])
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(note)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.COMPLETED, "a made-up name is the model's mistake, not the run's death"
+    assert executed == []
+    messages = store.list_messages(thread.id)
+    refusals = [item for item in messages if "unknown_tool" in str(item.content)]
+    assert refusals, "the model has to be told, or it just sends it again"
+    completed = [event for event in store.list_events(run["id"]) if event.type == "tool.completed"]
+    assert any(event.data.get("error") == "unknown_tool" for event in completed)
+
+
+@pytest.mark.asyncio
+async def test_a_tool_outside_the_agent_transport_is_refused_rather_than_fatal(
+    tmp_path: Path,
+) -> None:
+    """Naming a real tool the Agent transport does not carry raised PermissionError."""
+    executed: list[str] = []
+
+    def secret() -> JsonObject:
+        executed.append("ran")
+        return {"ok": True}
+
+    mcp_only = CommandSpec(
+        "test.mcp_only",
+        "test_mcp_only",
+        frozenset({CommandTransport.MCP}),
+        frozenset({ToolEffect.READ_ONLY}),
+        handler=secret,
+        input_schema={"type": "object", "properties": {}},
+    )
+    store = AgentStore(tmp_path / "mcponly.db")
+    thread = store.create_thread()
+    provider = FakeProvider([
+        (ProviderToolCall("m1", "test.mcp_only", {}),),
+        (),
+    ])
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([mcp_only]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+
+    assert status is RunStatus.COMPLETED
+    assert executed == []
+    messages = store.list_messages(thread.id)
+    assert any("tool_unavailable" in str(item.content) for item in messages)
+
+
+@pytest.mark.asyncio
 async def test_an_ordinary_argument_is_left_alone(tmp_path: Path) -> None:
     """The limit is far above anything the catalog actually takes."""
     executed: list[str] = []
@@ -853,6 +936,34 @@ async def test_arguments_too_deep_to_encode_are_refused_like_oversized_ones(
     assert refusal["error"]["code"] == "arguments_too_large"
     assert "nested too deeply" in refusal["error"]["message"]
     assert runner._arguments_too_large({"session_id": "abc"}) is None
+
+
+@pytest.mark.asyncio
+async def test_arguments_with_an_unpaired_surrogate_are_refused_not_fatal(
+    tmp_path: Path,
+) -> None:
+    """json.loads accepts a lone \\ud800 escape and hands back a surrogate.
+
+    The size check's encode("utf-8") then raised UnicodeEncodeError before
+    the designed refusal -- the same trap this check already guards for deep
+    nesting via RecursionError -- and the run died on an incident-labelled
+    internal error instead of handing the model a tool result it can read
+    and correct.
+    """
+    store = AgentStore(tmp_path / "surrogate.db")
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: FakeProvider([]),
+    )
+
+    refusal = runner._arguments_too_large({"note": "bad \ud800 text"})
+
+    assert refusal is not None
+    assert refusal["error"]["code"] == "arguments_not_utf8"
+    assert "UTF-8" in refusal["error"]["message"]
+    assert runner._arguments_too_large({"note": "fine text"}) is None
 
 
 class _TinyDeltaProvider:
