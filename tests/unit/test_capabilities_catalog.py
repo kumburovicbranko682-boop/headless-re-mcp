@@ -37,6 +37,34 @@ def test_every_advertised_tool_name_is_a_real_catalog_tool() -> None:
     assert not stale, f"capability catalog names tools that no longer exist: {stale}"
 
 
+def test_androguard_capability_advertises_every_androguard_backed_apk_tool() -> None:
+    """apk.certificates / components / native_libs were dropped from the catalog.
+
+    All three reach ApkClient, which raises capability_unavailable when
+    androguard is absent, so they are gated on the androguard probe exactly like
+    the other static tools. The catalog listed only seven of the ten and
+    silently omitted these three, so capabilities.list / .describe never
+    mentioned them -- an operator or agent checking readiness could not learn
+    they need androguard, nor that they go missing when it is not installed. The
+    forward-direction test above only rejects names that do not exist; nothing
+    caught a real tool that no capability advertises.
+    """
+    androguard = next(cap for cap in _CORE_CAPABILITIES if cap["id"] == "apk.androguard")
+
+    assert set(androguard["tools"]) == {
+        "apk.open",
+        "apk.manifest",
+        "apk.permissions",
+        "apk.certificates",
+        "apk.components",
+        "apk.native_libs",
+        "apk.classes",
+        "apk.methods",
+        "apk.strings",
+        "apk.xrefs",
+    }
+
+
 def test_every_status_probe_matches_a_real_doctor_probe() -> None:
     probe_names = {probe.name for probe in run_doctor(None).probes}
     stale = {
