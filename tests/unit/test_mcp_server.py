@@ -371,6 +371,62 @@ async def test_minimal_mcp_tool_surface() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_read_only_tool_call_round_trips_the_envelope() -> None:
+    """One in-process call proves what the schema tests only imply.
+
+    Every other test here inspects tool metadata; none actually dispatches a
+    call through FastMCP's tool manager. This one does, on session.list (read
+    only, no backend needed), and pins the transport contract both integration
+    suites and the web console rely on: the structured result is the
+    ``{ok, data, error, meta}`` envelope, and the text content block carries
+    the same envelope serialised as JSON, not a diverging summary.
+    """
+    import json
+
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        content, structured = await server.call_tool("session.list", {})
+
+        assert isinstance(structured, dict)
+        assert set(structured) == {"ok", "data", "error", "meta"}
+        assert structured["ok"] is True
+        assert structured["error"] is None
+        data = structured["data"]
+        assert data["sessions"] == []
+        assert data["count"] == 0
+        assert data["has_more"] is False
+
+        texts = [block.text for block in content if getattr(block, "type", "") == "text"]
+        assert texts, "a tool call must carry a text content block"
+        assert json.loads(texts[0]) == structured
+    finally:
+        analysis.close_all()
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_tool_call_does_not_reach_a_handler() -> None:
+    """A typo'd tool name must be a protocol error, not a service dispatch.
+
+    The catalog binds names to service methods; a lookup that fell through to
+    some default handler would run an arbitrary method on a name the caller
+    never registered. FastMCP's manager raises ToolError before any handler
+    runs -- pin that, since the dispatch path above is now exercised in-process.
+    """
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    analysis = AnalysisService()
+    try:
+        object.__setattr__(analysis.settings, "workspace_profile", "full")
+        server = create_server(analysis)
+        with pytest.raises(ToolError, match="Unknown tool"):
+            await server.call_tool("session.not_a_tool", {})
+    finally:
+        analysis.close_all()
+
+
+@pytest.mark.asyncio
 async def test_every_timeout_parameter_declares_an_upper_bound() -> None:
     """No caller may buy an unbounded wait.
 

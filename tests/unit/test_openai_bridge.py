@@ -204,6 +204,42 @@ def test_the_export_covers_every_mcp_tool_and_matches_the_write_classification()
     assert catalog_writes
 
 
+def test_every_exported_schema_is_a_valid_openai_function_schema() -> None:
+    """An OpenAI client rejects a malformed function entry at request time.
+
+    The name sanitisation and write-set parity are pinned above; nothing pinned
+    the schema bodies. OpenAI requires each function to carry a description and
+    a JSON-schema object under parameters, and a required list that names keys
+    which actually exist in properties -- an entry that drifts (say a spec adds
+    a required argument the schema forgot) fails only when a live caller sends
+    the whole toolset, far from the code that broke it.
+    """
+    from headless_re_mcp.openai_bridge import build_bound_catalog
+
+    payload = build_openai_tools(build_bound_catalog())
+    assert payload["count"] > 0
+
+    for entry in payload["tools"]:
+        assert entry["type"] == "function"
+        function = entry["function"]
+        name = function["name"]
+
+        description = function.get("description")
+        assert isinstance(description, str) and description.strip(), name
+
+        parameters = function.get("parameters")
+        assert isinstance(parameters, dict), name
+        assert parameters.get("type") == "object", name
+
+        properties = parameters.get("properties")
+        assert isinstance(properties, dict), name
+
+        required = parameters.get("required", [])
+        assert isinstance(required, list), name
+        missing = [key for key in required if key not in properties]
+        assert not missing, f"{name}: required names absent from properties: {missing}"
+
+
 def test_cli_prints_the_full_export_as_json_by_default(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
