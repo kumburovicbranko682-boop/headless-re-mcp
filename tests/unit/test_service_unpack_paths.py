@@ -419,3 +419,123 @@ def test_verify_ui_gate_reports_no_match_and_errors(
     )
     assert errored.data is not None
     assert errored.data["ui_gate"]["status"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# unpack_plan
+# ---------------------------------------------------------------------------
+
+
+def test_unpack_plan_builds_a_non_authoritative_plan(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_plan(session_id, use_die=False)
+    assert result.ok and result.data is not None
+    assert result.data["claims_universal_unpack"] is False
+    assert "plan" in result.data and "recommendation" in result.data
+
+
+def test_unpack_plan_refuses_a_closed_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.close_session(session_id).ok
+    result = service.unpack_plan(session_id, use_die=False)
+    assert not result.ok and result.error is not None
+
+
+# ---------------------------------------------------------------------------
+# unpack_start
+# ---------------------------------------------------------------------------
+
+
+def test_unpack_start_rejects_a_non_boolean_replace(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_start(session_id, replace="yes")  # type: ignore[arg-type]
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+
+
+def test_unpack_start_refuses_a_closed_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.close_session(session_id).ok
+    result = service.unpack_start(session_id)
+    assert not result.ok and result.error is not None
+
+
+def test_unpack_start_runs_the_no_packer_route_and_guards_replacement(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    started = service.unpack_start(session_id, use_die=False, execute_upx=False)
+    assert started.ok and started.data is not None
+    assert started.data["claims_universal_unpack"] is False
+
+    # A second start without replace is refused while the session is active.
+    again = service.unpack_start(session_id, use_die=False, execute_upx=False)
+    assert not again.ok and again.error is not None
+    assert again.error.code == "unpack_already_active"
+
+    # replace=True restarts the orchestration.
+    replaced = service.unpack_start(session_id, use_die=False, execute_upx=False, replace=True)
+    assert replaced.ok
+
+
+# ---------------------------------------------------------------------------
+# unpack_status / unpack_cancel / unpack_artifacts
+# ---------------------------------------------------------------------------
+
+
+def test_unpack_status_not_started_and_bad_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    not_started = service.unpack_status(session_id)
+    assert not not_started.ok and not_started.error is not None
+    assert not_started.error.code == "unpack_not_started"
+    assert not service.unpack_status("no-such-session").ok
+
+
+def test_unpack_artifacts_not_started_and_bad_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    not_started = service.unpack_artifacts(session_id)
+    assert not not_started.ok and not_started.error is not None
+    assert not_started.error.code == "unpack_not_started"
+    assert not service.unpack_artifacts("no-such-session").ok
+
+
+def test_unpack_cancel_not_started(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    result = service.unpack_cancel(session_id)
+    assert not result.ok and result.error is not None
+    assert result.error.code == "unpack_not_started"
+
+
+def test_unpack_cancel_attempts_a_pause_when_dynamic_is_open(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+    assert service.open_dynamic(session_id).ok
+    assert service.unpack_start(session_id, use_die=False, execute_upx=False).ok
+    result = service.unpack_cancel(session_id, reason="stop now")
+    assert result.ok and result.data is not None
+    assert result.data["debuggee_paused_attempted"] is True
+    assert result.data["original_input_preserved"] is True
