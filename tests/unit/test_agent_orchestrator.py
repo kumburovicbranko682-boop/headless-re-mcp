@@ -1047,3 +1047,100 @@ async def test_reasoning_deltas_are_flushed_to_the_event_log(tmp_path: Path) -> 
     assert "".join(str(event.data.get("delta") or "") for event in reasoning) == "hmm ok"
     visible = [event for event in events if event.type == "message.delta"]
     assert "".join(str(event.data.get("delta") or "") for event in visible) == "answer"
+
+
+def _reject_orphaned_tool_messages(messages: Sequence[JsonObject]) -> None:
+    """Raise the way an OpenAI-compatible API does on an unpaired tool message."""
+    offered: set[str] = set()
+    for message in messages:
+        role = message.get("role")
+        if role == "assistant":
+            for call in message.get("tool_calls") or []:
+                offered.add(str(call.get("id")))
+        elif role == "tool":
+            tid = str(message.get("tool_call_id"))
+            if tid not in offered:
+                raise ValueError(
+                    "provider 400: a 'tool' message must follow an assistant "
+                    f"'tool_calls' offering its id (unpaired id {tid})"
+                )
+
+
+class _ToolPairingValidatingProvider:
+    """A provider that enforces tool-call pairing like a real endpoint.
+
+    The FakeProvider ignores the messages it is sent, which is why the orphaned
+    tool result a continued mission replayed went unnoticed for so long. This
+    one inspects them and 400s on an orphan, so a run that rebuilt an invalid
+    conversation fails here exactly as it would in production.
+    """
+
+    def __init__(self, calls: list[tuple[ProviderToolCall, ...]]) -> None:
+        self.calls = calls
+        self.round = 0
+
+    def stream_chat(
+        self,
+        *,
+        messages: Sequence[JsonObject],
+        tools: Sequence[JsonObject],
+        model: str,
+        enable_thinking: bool = False,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        del tools, model, enable_thinking, reasoning_effort
+        _reject_orphaned_tool_messages(messages)
+        return self._events()
+
+    async def _events(self) -> AsyncIterator[ProviderEvent]:
+        yield ProviderEvent("text_delta", text="ok")
+        calls = self.calls[self.round] if self.round < len(self.calls) else ()
+        self.round += 1
+        yield ProviderEvent("completed", tool_calls=calls)
+
+    async def list_models(self) -> list[str]:
+        return ["fake"]
+
+
+@pytest.mark.asyncio
+async def test_a_continued_missions_second_run_replays_valid_tool_pairs(
+    tmp_path: Path,
+) -> None:
+    """A mission's next run must not 400 on the previous run's tool result.
+
+    Each mission run is a fresh run on the same thread, rebuilt from the store.
+    The store keeps a tool result as a role="tool" row but not the assistant
+    tool_calls that named it, so the second run used to replay an orphaned tool
+    message that an OpenAI-compatible provider rejects with 400 -- failing the
+    run, which the scheduler counts as the mission failing. The multi-run
+    mechanism the scheduler exists for therefore died on its second run
+    whenever the first one called a tool, which is almost always.
+    """
+    store = AgentStore(tmp_path / "continue.db")
+    thread = store.create_thread()
+    provider = _ToolPairingValidatingProvider(
+        [(ProviderToolCall("c1", "test.tool", {}),), (), ()]
+    )
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+    )
+
+    store.add_message(thread.id, "user", "continuation contract attempt 1")
+    run1 = await runner.start_run(thread.id)
+    assert (
+        await _wait_status(store, run1["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+        is RunStatus.COMPLETED
+    )
+    assert any(
+        message.role == "tool" for message in store.list_messages(thread.id)
+    ), "run 1 must leave a tool result on the thread for run 2 to replay"
+
+    store.add_message(thread.id, "user", "continuation contract attempt 2")
+    run2 = await runner.start_run(thread.id)
+    assert (
+        await _wait_status(store, run2["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+        is RunStatus.COMPLETED
+    ), "the replayed tool result must be a valid, paired turn, not an orphan"
