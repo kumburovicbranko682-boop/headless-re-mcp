@@ -17,6 +17,7 @@ from headless_re_mcp.core.store.sqlite_store import (
     AUDIT_RETAINED_ROWS,
     CLOSED_SESSION_RETAINED,
     KNOWLEDGE_RETAINED_PER_SESSION,
+    TIMELINE_RETAINED_PER_SESSION,
     encode_knowledge_value,
     redact_audit_payload,
 )
@@ -393,6 +394,7 @@ class InMemoryAnalysisRepository:
         self._lock = RLock()
         self.retained_knowledge_per_session = KNOWLEDGE_RETAINED_PER_SESSION
         self.retained_closed_sessions = CLOSED_SESSION_RETAINED
+        self.retained_timeline_per_session = TIMELINE_RETAINED_PER_SESSION
         self._sessions: dict[str, JsonObject] = {}
         self._backends: dict[tuple[str, str], JsonObject] = {}
         self._artifacts: dict[str, JsonObject] = {}
@@ -557,7 +559,8 @@ class InMemoryAnalysisRepository:
         **details: object,
     ) -> None:
         with self.transaction():
-            self._timeline.setdefault(session_id, []).append(
+            entries = self._timeline.setdefault(session_id, [])
+            entries.append(
                 {
                     "at": datetime.now(UTC).isoformat(),
                     "event": event,
@@ -565,6 +568,13 @@ class InMemoryAnalysisRepository:
                     "details": dict(details),
                 }
             )
+            # Audit and knowledge are both trimmed here; the timeline was not,
+            # so it was the one per-session list a long-lived process never
+            # stopped growing. Keep the newest entries, like the file-backed
+            # timeline's own line cap.
+            keep = max(1, int(self.retained_timeline_per_session))
+            if len(entries) > keep:
+                del entries[: len(entries) - keep]
 
     def register_artifact(self, **fields: Any) -> JsonObject:
         path = Path(fields["path"])

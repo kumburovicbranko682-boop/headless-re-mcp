@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import ast
+import zipfile
 from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.apktool.client import ApktoolClient
 from headless_re_mcp.tools.apk import build_apk_tools
+
+
+def _write_apk(path: Path) -> Path:
+    """A real (if tiny) zip: apktool's input must be a zip, and the client now
+    refuses a non-zip before launching the JVM."""
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"manifest")
+    return path
 
 
 def _tool_docstring(name: str) -> str:
@@ -41,8 +50,7 @@ def test_apk_decode_names_decoded_dir_not_output(
     """
     fake_tool = tmp_path / "apktool.bat"
     fake_tool.write_text("@echo off\n", encoding="utf-8")
-    apk = tmp_path / "a.apk"
-    apk.write_bytes(b"PK")
+    apk = _write_apk(tmp_path / "a.apk")
     out = tmp_path / "decoded"
     out.mkdir()
     (out / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
