@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（provider 配置的 public 视图不说哪些字段被环境变量钉死）
+
+- `_profile_from_raw` 里 `api_key` / `base_url` / `model` 的生效值按
+  `HEADLESS_RE_PROVIDER_<ID>_*` → 全局 `HEADLESS_RE_PROVIDER_*` → 文件的顺序取，但 `public()` /
+  `list_public()` / `save()` 返回的公开视图一律标 `source: "file"`：操作者在监控台看到的值分不清是
+  文件给的还是部署用环境钉死的——在监控台改一个被钉死的字段，保存"成功"、文件也真的变了，生效值却
+  纹丝不动，下次刷新又变回环境值，看起来像改动被吞了。现在 `public()` 在有环境覆盖时附
+  `env_overrides`（如 `["api_key", "model"]`），判定逻辑与 `_profile_from_raw` 完全同口径（含空变量
+  视为未设的真值语义）；无覆盖时字段不出现、响应不变。密钥仍只以掩码出现。回归测试钉住：设了全局
+  `API_KEY` 与按 profile 的 `MODEL` 时列表/保存返回都带 `env_overrides` 且展示值即环境值、密钥不泄
+  漏；环境干净时不带该字段。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

@@ -102,6 +102,51 @@ def test_the_zerofall_preview_masks_every_credential_it_would_import(tmp_path: P
     assert "somethingUnknown" in result["ignored"]
 
 
+def test_env_pinned_fields_are_named_in_the_public_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The console must say which displayed values the environment pins.
+
+    The environment beats the file for api_key/base_url/model, but every
+    public form said source "file" regardless: an operator could not tell a
+    value the file supplies from one the deployment pinned, and a save that
+    appears to change a pinned field succeeds while changing nothing
+    effective. The public form now lists those fields under env_overrides.
+    """
+    store = _store(tmp_path)
+    store.save(_profile(api_key=None))
+    monkeypatch.delenv("HEADLESS_RE_PROVIDER_BASE_URL", raising=False)
+    monkeypatch.delenv("HEADLESS_RE_PROVIDER_DEFAULT_BASE_URL", raising=False)
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_API_KEY", "env-secret-key-123456")
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_DEFAULT_MODEL", "env-pinned-model")
+
+    listed = store.list_public()["profiles"][0]
+    assert listed["env_overrides"] == ["api_key", "model"]
+    # The disclosure names exactly the fields whose displayed value is env's.
+    assert listed["model"] == "env-pinned-model"
+    assert listed["configured"] is True
+    assert "env-secret-key-123456" not in json.dumps(listed)
+
+    # A save while pinned reports the pin too: the file changed, the
+    # effective value did not.
+    saved = store.save(_profile(api_key=None, model="typed-into-the-console"))
+    assert saved["env_overrides"] == ["api_key", "model"]
+
+
+def test_an_unpinned_profile_carries_no_env_overrides_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without environment overrides the public form is unchanged."""
+    for suffix in ("API_KEY", "BASE_URL", "MODEL"):
+        monkeypatch.delenv(f"HEADLESS_RE_PROVIDER_{suffix}", raising=False)
+        monkeypatch.delenv(f"HEADLESS_RE_PROVIDER_DEFAULT_{suffix}", raising=False)
+    store = _store(tmp_path)
+    saved = store.save(_profile())
+
+    assert "env_overrides" not in saved
+    assert "env_overrides" not in store.list_public()["profiles"][0]
+
+
 def test_the_environment_key_overrides_the_file_and_still_never_leaks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
