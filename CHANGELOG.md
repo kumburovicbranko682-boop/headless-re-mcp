@@ -58,6 +58,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+
 ### 修复（`ui.windows.list` 的窗口标题读取用被调试方控制的长度分配缓冲）
 
 - `list_process_windows` 过去按 `GetWindowTextLengthW(hwnd)` 报的原始长度分配标题缓冲
@@ -297,6 +298,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   文件版时间线自身有 10,000 行 / 8 MB 的裁剪上限，现新增
   `TIMELINE_RETAINED_PER_SESSION`（10,000，与文件版行数上限一致）在 `append_timeline`
   里同样只留最新条目。新增回归：把保留数调小后断言旧条目被裁、无关会话不受影响。
+
 ### 修复（OCR 每次读图都吃满 128 MiB 上限）
 
 - `ui.ocr` 的 Windows 路径经 `_read_bounded_bmp` 把截图整份读进内存喂给 OCR 引擎，过去用
@@ -306,6 +308,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   ui.ocr call, which a UI-driving loop makes constantly」，在 UI 驱动循环里这类尖峰反复出现。
   现改为分块读到 `max + 1`：短读即 EOF，一个分块内的图仍是一次读（拒绝/接受边界与超限判断不变），
   分配随磁盘上实际字节数增长而非随上限。回归测试断言小图在 128 MiB 上限下的分配与文件大小成比例。
+
 ### 修复（timeline.list 每次读取都吃满 8 MiB 上限）
 
 - 会话事件日志的读取 `list_session_timeline` 过去用 `stream.read(_MAX_BYTES + 1)` 一次读完，
