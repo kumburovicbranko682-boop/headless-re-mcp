@@ -44,9 +44,50 @@ versionInfo:
   versionName: '1.0'
 """
 
+# A smali class apktool assembles into a real classes.dex on build. It carries
+# exactly the facts the DEX surface must read back: a class name, three named
+# methods, a unique string constant, and an internal call site (run -> add) so
+# xrefs has a non-external caller to find. apktool's bundled smali assembler is
+# what produces the dex, so no Android SDK / d8 is needed.
+_ADDER_SMALI = """.class public Lcom/example/gate/Adder;
+.super Ljava/lang/Object;
 
-def _build_real_apk(tmp_path: Path) -> Path:
-    """Compile a real APK from a text manifest, or skip if apktool cannot."""
+.method public constructor <init>()V
+    .registers 1
+    invoke-direct {p0}, Ljava/lang/Object;-><init>()V
+    return-void
+.end method
+
+.method public add(II)I
+    .registers 3
+    add-int v0, p1, p2
+    return v0
+.end method
+
+.method public greet()Ljava/lang/String;
+    .registers 2
+    const-string v0, "gate-secret-string"
+    return-object v0
+.end method
+
+.method public run()I
+    .registers 4
+    const/4 v1, 0x1
+    const/4 v2, 0x2
+    invoke-virtual {p0, v1, v2}, Lcom/example/gate/Adder;->add(II)I
+    move-result v0
+    return v0
+.end method
+"""
+
+
+def _build_real_apk(tmp_path: Path, *, with_code: bool = False) -> Path:
+    """Compile a real APK from a text manifest, or skip if apktool cannot.
+
+    With ``with_code`` a smali class is dropped in so apktool assembles a real
+    classes.dex, which the androguard DEX surface (classes/methods/strings/xrefs)
+    needs; without it the APK is manifest-only, enough for the metadata paths.
+    """
     apktool = shutil.which("apktool")
     if apktool is None:
         pytest.skip("apktool not installed — cannot compile a real manifest (skip != pass)")
@@ -54,6 +95,10 @@ def _build_real_apk(tmp_path: Path) -> Path:
     skeleton.mkdir()
     (skeleton / "AndroidManifest.xml").write_text(_REAL_MANIFEST, encoding="utf-8")
     (skeleton / "apktool.yml").write_text(_REAL_APKTOOL_YML, encoding="utf-8")
+    if with_code:
+        smali_dir = skeleton / "smali" / "com" / "example" / "gate"
+        smali_dir.mkdir(parents=True)
+        (smali_dir / "Adder.smali").write_text(_ADDER_SMALI, encoding="utf-8")
     out = tmp_path / "real.apk"
     proc = subprocess.run(
         [apktool, "b", str(skeleton), "-o", str(out)],
@@ -150,6 +195,60 @@ def test_androguard_reads_a_real_compiled_manifest(tmp_path: Path) -> None:
         assert manifest.ok, manifest.error
         assert manifest.data["package"] == "com.example.gate"
         assert "uses-sdk" in manifest.data["manifest_xml"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_androguard_dex_analysis_reads_classes_methods_strings_xrefs(tmp_path: Path) -> None:
+    """Drive the whole DEX surface against a real classes.dex, not a placeholder.
+
+    classes/methods/strings/xrefs are the heart of APK static analysis, yet every
+    other test runs on the synthetic archive whose classes.dex is 'dex\\n035...'
+    garbage that only reaches the backend_error path -- so a renamed androguard
+    accessor (its 4.x rewrite already moved this surface once) would pass every
+    test and only fail on a user's real app. apktool assembles a smali class into
+    a genuine dex here, and we assert the four operations return the exact class,
+    methods, embedded string, and internal caller we compiled in. The static
+    contract guard in the unit suite checks the API still exists; this checks it
+    still reads correctly.
+    """
+    from headless_re_mcp.backends.apk.client import ApkClient
+
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — DEX surface not exercised (skip != pass)")
+    apk = _build_real_apk(tmp_path, with_code=True)
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk), target="apk")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        # classes: the one compiled class, no framework noise (externals filtered).
+        classes = service.apk_classes(session_id, limit=50)
+        assert classes.ok, classes.error
+        assert "Lcom/example/gate/Adder;" in classes.data["classes"]
+
+        # methods: resolvable by both the smali and dotted class name forms.
+        methods = service.apk_methods(session_id, "Lcom/example/gate/Adder;", limit=50)
+        assert methods.ok, methods.error
+        names = {m["name"] for m in methods.data["methods"]}
+        assert {"<init>", "add", "greet", "run"} <= names
+        dotted = service.apk_methods(session_id, "com.example.gate.Adder", limit=50)
+        assert dotted.ok, dotted.error
+        assert dotted.data["count"] == methods.data["count"]
+
+        # strings: the unique constant we compiled in must survive DEX parsing.
+        strings = service.apk_strings(session_id, limit=500)
+        assert strings.ok, strings.error
+        assert "gate-secret-string" in strings.data["strings"]
+
+        # xrefs: run() invokes add(), so add's callers include the internal run().
+        xrefs = service.apk_xrefs(session_id, "add", limit=50)
+        assert xrefs.ok, xrefs.error
+        callers = {(c["class"], c["method"]) for c in xrefs.data["callers"]}
+        assert ("Lcom/example/gate/Adder;", "run") in callers
     finally:
         service.close_all()
 
