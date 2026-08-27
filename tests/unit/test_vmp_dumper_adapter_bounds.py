@@ -12,6 +12,7 @@ retention), and the probe classification.
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import struct
@@ -140,6 +141,26 @@ def test_is_pe_file_rejects_missing_short_and_malformed(tmp_path: Path) -> None:
     assert vd._is_pe_file(valid) is True
 
 
+def test_is_pe_file_returns_false_when_the_signature_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    valid = tmp_path / "v.bin"
+    _write_minimal_pe(valid)
+    header = valid.read_bytes()
+    calls = {"n": 0}
+
+    def flaky_open(self: Path, *args: object, **kwargs: object) -> io.BytesIO:
+        calls["n"] += 1
+        # The header read (first open) must succeed so the MZ/offset checks pass;
+        # only the second open, for the PE signature, fails.
+        if calls["n"] >= 2:
+            raise OSError("signature read gone")
+        return io.BytesIO(header)
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+    assert vd._is_pe_file(valid) is False
+
+
 # --- _infer_imports_rebuilt ----------------------------------------------
 
 
@@ -197,6 +218,31 @@ def test_collect_output_pe_skips_unreadable_root(tmp_path: Path) -> None:
         assert excinfo.value.code == VmpDumperErrorCode.OUTPUT_MISSING
     finally:
         root.chmod(0o755)
+
+
+def test_collect_output_pe_skips_a_candidate_that_cannot_be_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    candidate = root / "one.VMPDump.exe"
+    _write_minimal_pe(candidate)
+    real_stat = Path.stat
+    calls = {"n": 0}
+
+    def flaky_stat(self: Path, *args: object, **kwargs: object) -> object:
+        if self.name == candidate.name:
+            calls["n"] += 1
+            # is_file() takes the first stat; the explicit st_mtime read is the
+            # second and is the one this test forces to fail.
+            if calls["n"] >= 2:
+                raise OSError("mtime gone")
+        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+    with pytest.raises(VmpDumperError) as excinfo:
+        vd._collect_output_pe(stdout="", stderr="", mtime_floor=0.0, search_roots=[root])
+    assert excinfo.value.code == VmpDumperErrorCode.OUTPUT_MISSING
 
 
 def test_collect_output_pe_missing_raises(tmp_path: Path) -> None:
@@ -269,6 +315,21 @@ def test_run_rejects_existing_destination(tmp_path: Path) -> None:
             exe, sample, dest, input_sha256=file_sha256(sample), pid=1
         )
     assert excinfo.value.code == VmpDumperErrorCode.INVALID_ARGUMENT
+
+
+def test_run_rejects_output_equal_to_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exe, sample = _sample(tmp_path)
+    # Force the exists() guard to miss so the input/output identity check runs
+    # instead (they resolve to the same path).
+    monkeypatch.setattr(Path, "exists", lambda self: False)
+    with pytest.raises(VmpDumperError) as excinfo:
+        run_vmp_dumper(
+            exe, sample, sample, input_sha256=file_sha256(sample), pid=1
+        )
+    assert excinfo.value.code == VmpDumperErrorCode.INVALID_ARGUMENT
+    assert "differ from input_path" in str(excinfo.value)
 
 
 def test_run_detects_input_sha_mismatch(tmp_path: Path) -> None:
