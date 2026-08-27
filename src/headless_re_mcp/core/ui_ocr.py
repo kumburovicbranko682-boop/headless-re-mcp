@@ -187,7 +187,22 @@ def ocr_bmp_windows(path: str | Path, *, language: str = "en-US") -> JsonObject:
     lines_out = [ln for ln in (completed.stdout or "").splitlines() if ln.strip()]
     if not lines_out:
         raise UiPidBoundaryError("backend_error", "Windows OCR subprocess produced no output")
-    payload = json.loads(lines_out[-1])
+    # The worker's last stdout line is meant to be the JSON result, but a stray
+    # warning, a partial write, or a deeply nested value would make json.loads
+    # raise (JSONDecodeError is a ValueError; a nested flood raises
+    # RecursionError). Unwrapped, that escaped as an internal_error -- and in an
+    # explicit backend="windows" call it bypassed the backend_error contract
+    # every other failure here honours, the same mapping the tesseract launch
+    # OSError below already applies.
+    try:
+        payload = json.loads(lines_out[-1])
+    except (ValueError, RecursionError) as exc:
+        raise UiPidBoundaryError(
+            "backend_error",
+            "Windows OCR subprocess returned unparseable output",
+            error=f"{type(exc).__name__}: {exc}",
+            stdout=(completed.stdout or "")[:200],
+        ) from exc
     if not isinstance(payload, dict):
         raise UiPidBoundaryError("backend_error", "Windows OCR returned non-object")
     return payload
