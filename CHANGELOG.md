@@ -43,6 +43,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 新增（androguard APK 静态面首个真跑的 Linux Gate）
+
+- `apk.open/manifest/permissions/components/certificates/native_libs/classes/methods/strings/xrefs`
+  这条 androguard 静态读取面此前没有任何在真实 APK 上执行的测试：唯一的 Android Gate
+  （`test_android_re_gate.py`）用一个 `AndroidManifest.xml` 只有四字节假 AXML 的合成 zip，只断言
+  `apk.open` 返回“一个信封”（`opened.ok or opened.error is not None`）——解析失败与解析成功都能满足，
+  于是读到真实包名、解出二进制 AXML、列权限/组件、读签名证书、枚举 native ABI、遍历 DEX 取
+  类/方法/字符串/xref 这些真正要紧的能力,一直没有被真验证过。现提交一个真实的、极小的、v1 已签名
+  APK 夹具（`fixtures/android/gate_fixture.apk`，由旁边的源树用 apktool 编译 AXML + 汇编 smali 成
+  classes.dex、再由 jdk 的 jarsigner 加自签 v1 JAR 签名而来）并新增
+  `tests/integration/test_androguard_apk_gate.py`：夹具是刻意设计的——包名
+  `com.headlessre.gatefixture`、两个已知权限、一个 activity/service/receiver、两个 native ABI，以及
+  一个类 `MainActivity`，其 `getMarker()` 返回字面量 `headless-re apk gate fixture` 且被 `onResume()`
+  调用——因此每条断言核的是“还原出的内容”，不是“非空信封”。缺 androguard 时按明确的 skip != pass
+  跳过；关闭会话（`invalid_request`）与库缺失降级（`capability_unavailable`）两条无需解析 APK，始终
+  运行。基于 androguard 4.1.4 在 Linux 实测。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
