@@ -29,6 +29,8 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.apk import ApkClient
+from headless_re_mcp.backends.jadx import JadxClient
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
 _NO = 0xFFFFFFFF
@@ -898,3 +900,71 @@ def test_apk_dex_readers_fail_soft_on_a_corrupt_dex(tmp_path: Path) -> None:
             assert opened.data["package"] == _PACKAGE, (label, opened.data)
         finally:
             service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_decompile_and_export_sources_with_jadx(tmp_path: Path) -> None:
+    """The jadx decompile path must round-trip a real class to Java source.
+
+    androguard covers the in-process readers, but apk.decompile / apk.export_sources
+    shell out to jadx and had no end-to-end coverage at all -- the whole path
+    (settings discovery, the bounded subprocess, reading the tree back, and the
+    class-name -> file mapping with its traversal guards) went unproven, exactly
+    the version-drift blind spot that hid the frida and wasm-objdump breaks. Here
+    a populated DEX (App.main calls App.onCreate) is decompiled through the real
+    service, so a green proves jadx actually produced the named class's source.
+    skip != pass when jadx is absent; the in-process APK/DEX builders need no
+    device or external sample.
+    """
+    settings = Settings.load()
+    if not JadxClient(settings.jadx).available:
+        pytest.skip("jadx not configured (HEADLESS_RE_JADX / PATH) — Gate not run (skip != pass)")
+    apk = _build_apk(tmp_path / "decompile.apk", dex=_build_populated_dex())
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        exported = service.apk_export_sources(session_id, timeout=240.0)
+        assert exported.ok and exported.data is not None, exported.error
+        assert exported.data["java_file_count"] >= 1
+        assert any(name.endswith("com/example/App.java") for name in exported.data["java_files"])
+
+        decompiled = service.apk_decompile(session_id, "com.example.App", timeout=240.0)
+        assert decompiled.ok and decompiled.data is not None, decompiled.error
+        source = decompiled.data["source"]
+        # jadx recovered the class and both of the methods the DEX defined.
+        assert "class App" in source
+        assert decompiled.data["path"].endswith("com/example/App.java")
+        for method in _DEX_METHODS:
+            assert method in source, (method, source)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_apk_decompile_missing_class_is_a_clean_not_found(tmp_path: Path) -> None:
+    """Decompiling a class jadx never emitted must be a structured not_found.
+
+    An agent will ask for classes that are not there (renamed, stripped, or
+    guessed). The service walks jadx's output tree for the named file and, on a
+    miss, must return not_found -- not internal_error and not the first
+    same-named file it stumbles across -- so the caller can branch on it.
+    """
+    settings = Settings.load()
+    if not JadxClient(settings.jadx).available:
+        pytest.skip("jadx not configured (HEADLESS_RE_JADX / PATH) — Gate not run (skip != pass)")
+    apk = _build_apk(tmp_path / "missing.apk", dex=_build_populated_dex())
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        result = service.apk_decompile(session_id, "com.example.NoSuchClass", timeout=240.0)
+        assert not result.ok and result.error is not None
+        assert result.error.code != "internal_error", result.error
+        assert result.error.code == "not_found", result.error
+    finally:
+        service.close_all()
