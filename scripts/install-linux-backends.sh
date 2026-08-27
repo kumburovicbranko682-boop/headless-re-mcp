@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install the optional *portable* reverse-engineering backends on Linux x86_64:
 #   radare2   cross-platform disassembler (r2 track)
+#   mingw-w64 Windows PE cross-compiler    (r2 PE-portability gate fixture)
 #   wabt      wasm2wat / wasm-objdump      (Web WASM track)
 #   webcrack  JavaScript deobfuscation     (Web JS track)
 #   apktool   APK decode/rebuild           (Android repackaging track)
@@ -248,8 +249,27 @@ install_ghidra() {
   fi
 }
 
+install_mingw() {
+  # The r2 portability gate builds a real Windows PE on Linux to prove the
+  # backend reads PE end to end (image-base -> rva mapping, PE import table)
+  # without any Windows tooling; the mingw cross-compiler is what mints that
+  # fixture. Only the x86_64 target is needed.
+  if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    echo "mingw-w64: already present ($(command -v x86_64-w64-mingw32-gcc))"
+    return 0
+  fi
+  echo "mingw-w64: installing via apt…"
+  if apt_install gcc-mingw-w64-x86-64; then
+    echo "mingw-w64: $(x86_64-w64-mingw32-gcc --version 2>/dev/null | head -1)"
+  else
+    echo "  ! mingw-w64 install failed; the r2 PE-portability gate will skip" >&2
+    return 1
+  fi
+}
+
 echo "Installing non-PE RE backends…"
 install_radare2 || failures=$((failures + 1))
+install_mingw || failures=$((failures + 1))
 install_wabt || failures=$((failures + 1))
 install_webcrack || failures=$((failures + 1))
 install_apktool || failures=$((failures + 1))
