@@ -515,3 +515,69 @@ def test_add_remote_device_reuses_a_device_already_registered() -> None:
     assert first["id"] == "10.0.0.1:27042"
     assert second["id"] == "10.0.0.1:27042"
     assert client._frida.manager.added == 0
+
+
+class _ReadApi:
+    def __init__(self, returned: int) -> None:
+        self._returned = returned
+
+    def read(self, address: int, size: int) -> list[int]:
+        del address, size
+        return [0xDE] * self._returned
+
+
+class _ReadScript:
+    def __init__(self, returned: int) -> None:
+        self.exports_sync = _ReadApi(returned)
+
+    def load(self) -> None:
+        return None
+
+
+class _ReadSession:
+    def __init__(self, returned: int) -> None:
+        self._returned = returned
+
+    def create_script(self, source: str) -> _ReadScript:
+        del source
+        return _ReadScript(self._returned)
+
+    def detach(self) -> None:
+        return None
+
+
+class _ReadFrida:
+    def __init__(self, returned: int) -> None:
+        self._returned = returned
+
+    def attach(self, pid: int) -> _ReadSession:
+        del pid
+        return _ReadSession(self._returned)
+
+
+def test_frida_memory_read_flags_a_short_read() -> None:
+    """A 64-byte read that came back 2 bytes used to answer size=64.
+
+    Measured against FridaClient.memory_read: the requested size was echoed
+    back with no truncated flag, so an unattended agent treated a short read
+    (a guard page, an unmapped hole) as the full range it asked for. size is
+    now the bytes that came back, and truncated is True.
+    """
+    client = FridaClient()
+    client._available = True
+    client._frida = _ReadFrida(2)
+    payload = client.memory_read(1, 0x1000, 64, allowed_pid=1)
+    assert payload["size"] == 2
+    assert payload["truncated"] is True
+    assert payload["data"] == "dede"
+    doc = _tool_docstring("frida.memory.read")
+    assert "truncated" in doc
+
+
+def test_frida_memory_read_full_read_is_not_truncated() -> None:
+    client = FridaClient()
+    client._available = True
+    client._frida = _ReadFrida(64)
+    payload = client.memory_read(1, 0x1000, 64, allowed_pid=1)
+    assert payload["size"] == 64
+    assert payload["truncated"] is False

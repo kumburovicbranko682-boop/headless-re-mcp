@@ -63,7 +63,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Read up to 256 KiB from the session debuggee via a Frida probe.
 
         Answers with data holding the hex string and encoding naming the form,
-        alongside address and size. Limited to the debuggee pid.
+        alongside address and size. size is the bytes that came back, and
+        truncated is True when that is fewer than requested, so a short read
+        is not read as the whole range. Limited to the debuggee pid.
         """
         return _dump(analysis.frida_memory_read(session_id, address, size))
 

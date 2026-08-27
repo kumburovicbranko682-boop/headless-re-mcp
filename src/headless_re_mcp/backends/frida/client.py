@@ -403,11 +403,17 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
+            # Measured: a 64-byte request that got 16 bytes still answered
+            # size=64 with no truncated, and an empty buffer answered the same
+            # with data="", so an agent treated a hole or short read as the
+            # bytes it asked for. Report the bytes that came back and flag when
+            # fewer than requested arrived.
             return {
                 "address": address,
-                "size": size,
+                "size": len(data),
                 "encoding": "hex",
                 "data": data.hex(),
+                "truncated": len(data) < int(size),
             }
         finally:
             with contextlib.suppress(Exception):

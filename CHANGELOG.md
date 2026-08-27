@@ -745,6 +745,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`frida.applications` / `frida.modules` 以及 apk 的 classes/methods/strings 分页
   只有 total，没有 `has_more`**。total 能算出来，但和相邻工具的字段不一致，只读 count
   的调用方仍会当成完整一页。一律补上。
+- **`frida.memory.read` 短读也回请求的 `size` 且不带 `truncated`**。请求 64 字节只拿回
+  16 字节（撞上守护页或未映射空洞）时，回包仍写 `size: 64`，空缓冲更是回 `data: ""`，
+  无人值守的 agent 便把一个洞当成它要的那段字节。现在 `size` 是实际返回的字节数，实到
+  少于请求时 `truncated` 为 True。
 - **`apk.strings` 会为了给出 total 把 DEX 里每一条字符串都装进一个集合再排序**。加壳
   样本可以有上百万条，一次调用就能把进程打满。采集上限 5000 条唯一值，超出回
   `has_more`，不再为了计数去物化全集。
