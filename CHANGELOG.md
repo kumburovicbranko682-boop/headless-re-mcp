@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 adb 三个纯校验/解析 helper 的契约钉进测试）
+
+- adb 后端的设备读出(logcat/packages/force_stop)已由 `test_adb_device_readouts` 用脚本化假设备钉住,
+  但还有三个纯函数只在真设备路径上跑过、从没单测:`_check_forward_spec` 是 `device.forward` 让 adb
+  绑定什么的唯一守卫,`_is_host_error_output` 决定一台离线设备的 stdout 该判成失败还是真回复,
+  `_frida_server_visible` 读 ps 表给 `frida.server.ensure` 做幂等判定。这三条都是对不可信输入/输出的
+  行为契约:转发规范放错会泄漏 adb-server 监听器,离线判错会把真日志当失败(或反之),ps 探测答错会让
+  ensure 在一个它没看见的 server 上再推一个。
+- 新增 `tests/unit/test_adb_pure_helpers.py`,不需 adbutils 或设备,直接钉住:`_check_forward_spec` 接受
+  合法 tcp/localabstract(远端另含 jdwp)、拒绝五位非端口与 `tcp:0`、拒绝空/垃圾/带 shell 元字符的规范
+  且把被拒规范按 side 键回带、jdwp 只在放行的一侧才收;`_is_host_error_output` 仅当每条非空行都是
+  `error:`/`adb:` 时才为真(容忍前导空白)、空/纯空白为假、只要有一条真行(哪怕日志里出现 "error")即为假;
+  `_frida_server_visible` 从 `ps -A` 命中即真、`ps` 兜底命中亦真、两处都无为假、shell 读不出时为 None
+  (不谎报没有)。`adb/client.py` 中 127-138 / 182-195 / 213-220 三段纯逻辑补齐,纯补测、不改行为。
+
 ### 加固（把 workspace.mode 的 fail-closed 包装钉进测试）
 
 - workspace 审计测试覆盖了正常路径、被拒的非法档、以及尽力而为的写审计,但两处 `except BaseException`
