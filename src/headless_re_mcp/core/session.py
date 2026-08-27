@@ -795,6 +795,7 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
     versions: set[str] = set()
     class_count = method_count = string_count = 0
     class_names: set[str] = set()
+    signatures: list[dict[str, str]] = []
     found = False
     try:
         with zipfile.ZipFile(path) as archive:
@@ -817,6 +818,9 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
                 string_count += facts["string_count"]
                 method_count += facts["method_count"]
                 class_count += facts["class_count"]
+                # Per-member so a repackaged split can be told apart; each dex
+                # carries its own fingerprint even when the counts are summed.
+                signatures.append({"dex": name, "sha1": facts["signature"]})
                 if len(data) > _DEX_HEADER_SIZE and len(class_names) < _DEX_MAX_TOTAL_NAMES:
                     for cname in _dex_class_names(data, facts):
                         class_names.add(cname)
@@ -832,6 +836,7 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
         "method_count": method_count,
         "string_count": string_count,
         "classes": sorted(class_names),
+        "signatures": signatures,
     }
 
 
@@ -847,6 +852,10 @@ def _parse_dex_header(header: bytes) -> dict[str, Any] | None:
         return None
     return {
         "version": header[4:7].decode("ascii", errors="replace"),
+        # The 20-byte SHA-1 over everything past it: the DEX build fingerprint,
+        # the Android analogue of an ELF build-id / Mach-O uuid / .NET MVID. Two
+        # APKs whose classes.dex share this carry byte-identical code.
+        "signature": header[12:32].hex(),
         "string_count": string_count,
         "string_ids_off": int.from_bytes(header[60:64], "little"),
         "type_count": int.from_bytes(header[64:68], "little"),

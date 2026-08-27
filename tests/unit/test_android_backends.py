@@ -6,6 +6,7 @@ happy paths (which need a real device and live in the integration gates).
 
 from __future__ import annotations
 
+import hashlib
 import struct
 import zipfile
 from pathlib import Path
@@ -180,6 +181,8 @@ def _dex_header(version: bytes, strings: int, methods: int, classes: int) -> byt
     """A minimal but well-formed 0x70-byte DEX header carrying the counts."""
     header = bytearray(0x70)
     header[0:8] = b"dex\n" + version + b"\x00"
+    # A deterministic, per-input signature so multidex members are distinct.
+    header[12:32] = hashlib.sha1(version + struct.pack("<III", strings, methods, classes)).digest()
     struct.pack_into("<I", header, 40, 0x12345678)  # endian tag
     struct.pack_into("<I", header, 56, strings)  # string_ids_size
     struct.pack_into("<I", header, 88, methods)  # method_ids_size
@@ -206,6 +209,12 @@ class TestDexFactsWithoutAndroguard:
         assert dex["string_count"] == 7
         # The defined class name is resolved from the id tables, not just counted.
         assert dex["classes"] == ["com.example.headless.Sample"]
+        # The DEX build fingerprint: the SHA-1 the builder stamps over the body,
+        # per-member so a repackaged split is distinguishable. The fixture's dex
+        # is byte-identical across rebuilds, so this value is stable.
+        assert dex["signatures"] == [
+            {"dex": "classes.dex", "sha1": "08b2b62009d67cfd8301354fbc30bfe0c84d5b64"}
+        ]
 
     def test_class_names_are_empty_when_only_the_header_is_present(self, tmp_path: Path) -> None:
         # _dex_header carries no id tables, so the class-name walk finds nothing
@@ -245,6 +254,13 @@ class TestDexFactsWithoutAndroguard:
         assert dex["string_count"] == 15
         assert dex["method_count"] == 27
         assert dex["class_count"] == 5
+        # Each member reports its own fingerprint, in sorted dex-name order, so a
+        # single repackaged split can be spotted without re-hashing the archive.
+        sigs = dex["signatures"]
+        assert [s["dex"] for s in sigs] == ["classes.dex", "classes2.dex"]
+        assert sigs[0]["sha1"] == hashlib.sha1(b"035" + struct.pack("<III", 10, 20, 3)).hexdigest()
+        assert sigs[1]["sha1"] == hashlib.sha1(b"038" + struct.pack("<III", 5, 7, 2)).hexdigest()
+        assert sigs[0]["sha1"] != sigs[1]["sha1"]
 
     def test_dex_facts_are_empty_when_no_header_is_readable(self, tmp_path: Path) -> None:
         # A member named .dex whose magic is wrong is skipped; with no readable
