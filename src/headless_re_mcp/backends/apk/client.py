@@ -8,12 +8,43 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
 
 JsonObject = dict[str, Any]
+
+_ANDROGUARD_LOGS_SILENCED = False
+
+
+def _silence_androguard_logs() -> None:
+    """Stop androguard's loguru flood from reaching the process's stderr.
+
+    androguard 4.x logs prolifically through loguru: measured ~233 DEBUG records
+    for a single apk.strings on a two-class APK, and a real app (thousands of
+    classes, full xref build) emits proportionally more -- all onto stderr, on
+    every apk.* call. For a headless MCP server that is I/O and noise an operator
+    never asked for, and on a stdio transport it drowns the server's own
+    diagnostics. loguru.disable() is scoped by record name, so this silences only
+    androguard's own records (and apkInspector, its parser dependency); a host
+    application's logging is left untouched. Anything the caller actually needs
+    is surfaced through ApkError, not these logs. Idempotent and cheap: the guard
+    means the repeated per-instance call after the first is a no-op.
+    """
+    global _ANDROGUARD_LOGS_SILENCED
+    if _ANDROGUARD_LOGS_SILENCED:
+        return
+    try:
+        from loguru import logger
+    except Exception:  # noqa: BLE001 - loguru rides with androguard; its absence is fine
+        _ANDROGUARD_LOGS_SILENCED = True
+        return
+    for name in ("androguard", "apkInspector"):
+        with contextlib.suppress(Exception):
+            logger.disable(name)
+    _ANDROGUARD_LOGS_SILENCED = True
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -105,6 +136,9 @@ class ApkClient:
 
             self._androguard = androguard
             self._available = True
+            # androguard is imported: quiet its loguru flood before the first
+            # parse, so no apk.* call ever spills hundreds of DEBUG lines.
+            _silence_androguard_logs()
         except Exception:
             self._androguard = None
             self._available = False
