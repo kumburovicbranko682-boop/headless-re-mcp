@@ -58,6 +58,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+### 修复（`ui.windows.list` 的窗口标题读取用被调试方控制的长度分配缓冲）
+
+- `list_process_windows` 过去按 `GetWindowTextLengthW(hwnd)` 报的原始长度分配标题缓冲
+  (`create_unicode_buffer` 每字符 2 字节)。可窗口标题是**被调试方能随意设定**的数据——
+  `SetWindowText` 接受任意长度的字符串——于是一个恶意样本把某个窗口标题设成几亿字符,就能让
+  每一次窗口枚举都为该窗口瞬时分配数百 MB;而窗口枚举既跑在 `ui.windows.list`,也跑在周期性的
+  桌面监控帧上,尖峰反复出现。姊妹枚举器 `list_input_desktop_windows` 早已把标题钳到 4096 字符,
+  唯独这条路径没钳。现两条路径共用同一个 `_MAX_WINDOW_TITLE_CHARS`(4096)上限——没有哪个真实
+  标题需要这么多字符——并按钳后的长度分配、按缓冲实际大小调用 `GetWindowTextW`。新增回归覆盖
+  超长标题被钳、常规标题不受影响、长度为 0 与负数的边界。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
