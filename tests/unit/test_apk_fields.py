@@ -8,7 +8,12 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient, ApkError
+from headless_re_mcp.backends.apk.client import (
+    _MAX_MANIFEST_CHARS,
+    ApkClient,
+    ApkError,
+    _dotted_to_smali,
+)
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -288,6 +293,35 @@ def test_apk_methods_reports_not_found_for_a_class_that_is_not_present(
         client.methods(tmp_path / "app.apk", "com.example.NotHere")
     assert caught.value.code == "not_found"
     assert caught.value.details.get("class_name") == "com.example.NotHere"
+
+
+def test_dotted_to_smali_converts_a_dotted_name_and_passes_smali_through() -> None:
+    """Either class-name form maps to one smali key, and smali is not re-wrapped.
+
+    A dotted name becomes ``Lpkg/Class;``; a name already in that form is
+    returned unchanged. Without the passthrough, a smali name -- exactly what
+    apk.classes hands back -- would be wrapped into ``LLpkg/Class;;`` and match
+    nothing.
+    """
+    assert _dotted_to_smali("com.example.Foo") == "Lcom/example/Foo;"
+    assert _dotted_to_smali("a.b") == "La/b;"
+    assert _dotted_to_smali("Lcom/example/Foo;") == "Lcom/example/Foo;"
+
+
+def test_apk_methods_resolves_a_class_named_in_raw_smali_form(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """apk.classes answers with smali names, so apk.methods must accept them back.
+
+    A caller lists classes (which returns ``Lcom/example/Foo;``) and asks for its
+    methods with that exact string. It has to resolve the same class the dotted
+    form would, not be re-wrapped into a name that matches nothing.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeMethodParsed(3))
+    payload = client.methods(tmp_path / "app.apk", "Lcom/example/Foo;", offset=0, limit=10)
+    assert payload["class_name"] == "Lcom/example/Foo;"
+    assert payload["count"] == 3
 
 
 def test_apk_methods_and_xrefs_reject_an_empty_target_name(
