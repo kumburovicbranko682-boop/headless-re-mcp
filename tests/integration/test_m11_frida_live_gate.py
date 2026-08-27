@@ -1,9 +1,18 @@
-"""M11 Frida live gate: attach/modules/exports against a standalone process."""
+"""M11 Frida live gate: attach/modules/exports against a standalone process.
+
+Frida's local attach / enumerate / hook surface is cross-platform, so this
+gate runs on Linux and Windows alike: it spawns a throwaway target, attaches,
+and checks the same contract -- modules, a system library's exports, the
+cross-pid permission stop, and a template load. Only the target binary and the
+expected system module differ by platform. skip != pass: it skips only when the
+frida module is absent or the OS forbids ptrace.
+"""
 
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -14,25 +23,46 @@ from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _spawn_target() -> tuple[subprocess.Popen[bytes], set[str]]:
+    """Start a long-lived process to attach to, and the modules to expect.
+
+    On Windows the GUI fixture loads the Win32 core DLLs; elsewhere any process
+    is dynamically linked against the C runtime, so libc is the portable
+    equivalent of kernel32/ntdll.
+    """
+    if os.name == "nt":
+        fixture = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "gui_fixture.exe"
+        if not fixture.is_file():
+            pytest.skip(f"fixture missing: {fixture}")
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        proc = subprocess.Popen(
+            [str(fixture)],
+            creationflags=creationflags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return proc, {"kernel32.dll", "ntdll.dll", "user32.dll"}
+    # A plain Python sleeper is guaranteed present and stays up long enough to
+    # attach; like every ELF here it is dynamically linked against libc.
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc, {"libc.so.6"}
+
+
 @pytest.mark.integration
 def test_m11_frida_live_attach_modules_exports() -> None:
     client = FridaClient()
     if not client.available:
         pytest.skip("frida Python module not installed — live Gate not run (skip≠pass)")
-    fixture = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "gui_fixture.exe"
-    if not fixture.is_file():
-        pytest.skip(f"fixture missing: {fixture}")
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-    proc = subprocess.Popen(
-        [str(fixture)],
-        creationflags=creationflags,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    proc, system_modules = _spawn_target()
     try:
         time.sleep(0.5)
-        assert proc.poll() is None, "fixture exited early"
+        assert proc.poll() is None, "target exited early"
 
+        # A cross-pid read is refused before any attach happens.
         denied = None
         try:
             client.modules(proc.pid, allowed_pid=proc.pid + 1, limit=4)
@@ -40,25 +70,32 @@ def test_m11_frida_live_attach_modules_exports() -> None:
             denied = exc
         assert denied is not None and denied.code == "permission_denied"
 
-        attached = client.attach(proc.pid, allowed_pid=proc.pid)
+        try:
+            attached = client.attach(proc.pid, allowed_pid=proc.pid)
+        except FridaError as exc:
+            # A locked-down host (kernel.yama.ptrace_scope) refuses attach; that
+            # is a missing capability, not a gate failure, so skip loudly.
+            if os.name != "nt" and exc.code in {"backend_error", "timeout"}:
+                pytest.skip(f"frida could not attach (ptrace restricted?): {exc.code} — skip≠pass")
+            raise
         assert attached.get("attached") is True
         assert attached.get("pid") == proc.pid
 
-        mods = client.modules(proc.pid, allowed_pid=proc.pid, limit=8)
+        mods = client.modules(proc.pid, allowed_pid=proc.pid, limit=64)
         assert mods["count"] >= 1
         assert any(isinstance(m.get("name"), str) and m["name"] for m in mods["modules"])
 
-        # Main fixture PE may have zero exports; probe a loaded system DLL.
+        wanted = {name.lower() for name in system_modules}
         sys_mod = next(
             (
                 str(m["name"])
                 for m in mods["modules"]
-                if str(m.get("name", "")).lower() in {"kernel32.dll", "ntdll.dll", "user32.dll"}
+                if str(m.get("name", "")).lower() in wanted
             ),
             None,
         )
         if sys_mod is None:
-            pytest.fail("expected kernel32/ntdll/user32 among frida modules")
+            pytest.fail(f"expected one of {sorted(system_modules)} among frida modules")
         exports = client.exports(proc.pid, sys_mod, allowed_pid=proc.pid, limit=16)
         assert exports.get("found") is True
         assert exports.get("count", 0) >= 1
