@@ -62,6 +62,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（frida 本地读取 exports/memory_read/hook_template 的形态校验移到能力门之前）
+
+- 本地单 pid 路径（服务本机 PE 会话）此前统一走 `_require`——先判 pid 授权、紧接着判能力门——**之后**才校验各自
+  的请求形态：`exports` 的 module_name、`memory_read` 的地址/长度窗口、`hook_template` 的模板名。于是没装 frida
+  的机器对一个一眼可辨的畸形形态（空 module_name、越界长度、未知模板）回 `capability_unavailable`，而装了的机器
+  回 `invalid_params`——同一个坏请求两地两判，恰是设备侧兄弟（`java_enumerate`、`hook_template_device` 先判
+  mode/class_name/template 再解析设备）早已避开的分裂。现把 `_require` 拆成纯授权的 `_authorize_local` 与显式
+  `_need()` 门，四个方法改成 **pid 授权 → 形态 → 门**，与设备侧的 `_authorize → mode/class_name → _resolve_device`
+  完全对齐；授权仍在最前，越权 pid 即便同时带着空 module_name 也先回 `permission_denied`。`_require` 已无引用，
+  随之删除（依赖它做源码边界的 `test_frida_hook_template_fields` 改用 `def _attach_local(` 作锚）。回归在「装作没装
+  frida」的客户端上钉住：三者对畸形形态回 `invalid_params`、对合法形态才触达门回 `capability_unavailable`，越权 pid
+  先于形态与门回 `permission_denied`。纯排序修复，合法输入路径与返回结构不变。
+
 ### 修复（frida.attach 的 pid 形态/授权与 frida.spawn 的 package 校验移到能力门之前）
 
 - 同一份文件里 `_authorize` 用一大段注释立了规矩——授权与请求形态先于能力门结算，好让「没装 frida 的机器」

@@ -31,7 +31,7 @@ def _tool_docstring(name: str) -> str:
 def _hook_return() -> str:
     source = Path(FridaClient.hook_template.__code__.co_filename).read_text(encoding="utf-8")
     start = source.index("def hook_template(self, pid: int")
-    chunk = source[start : source.index("def _require(", start)]
+    chunk = source[start : source.index("def _attach_local(", start)]
     return chunk[chunk.rindex("return {") :]
 
 

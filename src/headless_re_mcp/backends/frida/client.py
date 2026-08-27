@@ -299,8 +299,8 @@ class FridaClient:
         # malformed or unauthorized pid that a host with frida rejects as
         # invalid_params / permission_denied: one bad request, two verdicts, and
         # the permission contract hidden from every run without the optional
-        # module. Same "input/authorization before the gate" rule as _require and
-        # java_enumerate's mode/class_name.
+        # module. Same "input/authorization before the gate" rule as
+        # _authorize_local and java_enumerate's mode/class_name.
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
         if pid != allowed_pid:
@@ -325,7 +325,8 @@ class FridaClient:
                 session.detach()
 
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
-        self._require(pid, allowed_pid)
+        self._authorize_local(pid, allowed_pid)
+        self._need()
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
@@ -366,9 +367,10 @@ class FridaClient:
         allowed_pid: int,
         limit: int = 64,
     ) -> JsonObject:
-        self._require(pid, allowed_pid)
+        self._authorize_local(pid, allowed_pid)
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
+        self._need()
         capped = max(1, min(int(limit), 512))
         session = self._attach_local(pid)
         try:
@@ -404,15 +406,17 @@ class FridaClient:
     def memory_read(
         self, pid: int, address: int, size: int, *, allowed_pid: int
     ) -> JsonObject:
-        self._require(pid, allowed_pid)
-        # Validate the read window before attaching, the same shape the r2
-        # adapter uses. A negative or non-int address reached ptr(address) in
-        # the injected script and came back as an uncaught error -- an
-        # internal_error incident for what is a malformed request.
+        self._authorize_local(pid, allowed_pid)
+        # Validate the read window before the capability gate and before
+        # attaching, the same shape the r2 adapter uses. A negative or non-int
+        # address reached ptr(address) in the injected script and came back as an
+        # uncaught error -- an internal_error incident for what is a malformed
+        # request -- and a frida-less host used to mask it as capability_unavailable.
         if type(address) is not int or address < 0:
             raise FridaError("invalid_params", "address must be a non-negative integer")
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
+        self._need()
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
@@ -430,7 +434,7 @@ class FridaClient:
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
-        self._require(pid, allowed_pid)
+        self._authorize_local(pid, allowed_pid)
         source = _HOOK_TEMPLATES.get(template)
         if source is None:
             raise FridaError(
@@ -439,6 +443,7 @@ class FridaClient:
                 template=template,
                 allowed=sorted(_HOOK_TEMPLATES),
             )
+        self._need()
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
 
@@ -490,11 +495,21 @@ class FridaClient:
                 raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
 
-    def _require(self, pid: int, allowed_pid: int) -> None:
+    def _authorize_local(self, pid: int, allowed_pid: int) -> None:
+        """Pure authorization for the local single-pid path -- no capability gate.
+
+        Split out of the old ``_require`` (which bundled auth and gate) so a
+        request-shape check -- ``exports``' module_name, ``memory_read``'s window,
+        ``hook_template``'s template -- can sit between authorization and the
+        gate: pid-auth -> shape -> gate, the same ordering the device path uses
+        (``_authorize`` -> mode/class_name -> ``_resolve_device``). With the gate
+        bundled ahead of the shape check, a frida-less host answered
+        capability_unavailable for a module_name/template malformed on its face,
+        while a host with frida rejects it as invalid_params. Each caller now
+        pairs this with an explicit ``_need()`` after its shape check.
+        """
         if pid != allowed_pid:
             raise FridaError("permission_denied", "pid not allowed", pid=pid)
-        if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
 
     # ------------------------------------------------------------------
     # Device-aware operations (USB / emulator / remote). The single-pid
@@ -783,7 +798,7 @@ class FridaClient:
         # different error for the same bad request depending on the machine, and
         # one that hid the permission contract from every test run without the
         # optional dependency. Settling authorization first (the order the local
-        # ``_require`` path uses) means a refused pid is refused everywhere, and
+        # ``_authorize_local`` path uses) means a refused pid is refused everywhere, and
         # a malformed pid or unknown hook template is reported before "frida is
         # not installed" -- the same "input/authorization before the gate"
         # ordering as web.open's scheme, Ghidra's max_heap and proxy.start's port.

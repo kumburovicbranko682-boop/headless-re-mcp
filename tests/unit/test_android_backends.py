@@ -209,8 +209,8 @@ class TestFridaTargetAuthorization:
     """The target boundary holds whether or not the frida module is installed.
 
     Authorization is a property of the request, so it is settled before the
-    capability gate on both the local (`_require`) and device (`_authorize`)
-    paths. That is what lets these assertions run unconditionally: an
+    capability gate on both the local (`_authorize_local`) and device
+    (`_authorize`) paths. That is what lets these assertions run unconditionally: an
     unauthorized pid is refused with `permission_denied` -- not masked as
     `capability_unavailable` -- on a host with no frida, and none of these
     calls reaches a real device (the refusal fires first).
@@ -410,6 +410,73 @@ class TestFridaSpawnInputContract:
         with pytest.raises(FridaError) as info:
             client.spawn("usb", "com.example.app")
         assert info.value.code == "capability_unavailable"
+
+
+class TestFridaLocalShapeBeforeGate:
+    """exports/memory_read/hook_template judge their shape before the gate.
+
+    The local reads used to run the old _require (pid-auth then capability gate)
+    and only then check module_name/window/template. On a frida-less host that
+    made a shape malformed on its face answer capability_unavailable, while a
+    host with frida rejects it as invalid_params -- one bad request, two
+    verdicts, the split the device siblings already avoid. _require is now split
+    into a pure-auth _authorize_local plus an explicit _need(), so the order is
+    pid-auth -> shape -> gate. pid-auth still leads, so a wrong pid is refused
+    even alongside a bad shape; a well-formed shape reaches the gate.
+    """
+
+    def _unavailable_client(self) -> FridaClient:
+        client = FridaClient()
+        client._frida = None
+        client._available = False
+        return client
+
+    @pytest.mark.parametrize("module_name", ["", "   "])
+    def test_exports_empty_module_name_is_invalid_params(self, module_name: str) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.exports(5, module_name, allowed_pid=5)
+        assert info.value.code == "invalid_params"
+
+    def test_exports_well_formed_reaches_the_gate(self) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.exports(5, "libc.so", allowed_pid=5)
+        assert info.value.code == "capability_unavailable"
+
+    @pytest.mark.parametrize(
+        ("address", "size"), [(-1, 16), (0, 0), (0, 10**9), ("0", 16), (0, "16")]
+    )
+    def test_memory_read_bad_window_is_invalid_params(self, address: Any, size: Any) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.memory_read(5, address, size, allowed_pid=5)
+        assert info.value.code == "invalid_params"
+
+    def test_memory_read_well_formed_reaches_the_gate(self) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.memory_read(5, 0x1000, 16, allowed_pid=5)
+        assert info.value.code == "capability_unavailable"
+
+    def test_hook_template_unknown_is_invalid_params(self) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.hook_template(5, "bogus", allowed_pid=5)
+        assert info.value.code == "invalid_params"
+
+    def test_hook_template_known_reaches_the_gate(self) -> None:
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.hook_template(5, "noop", allowed_pid=5)
+        assert info.value.code == "capability_unavailable"
+
+    def test_pid_authorization_precedes_shape_and_gate(self) -> None:
+        """A wrong pid is permission_denied even with a deliberately empty name."""
+        client = self._unavailable_client()
+        with pytest.raises(FridaError) as info:
+            client.exports(4242, "", allowed_pid=7)
+        assert info.value.code == "permission_denied"
 
 
 class _FakeScript:
