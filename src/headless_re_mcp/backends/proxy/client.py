@@ -38,6 +38,11 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Per-value cap and whole-map encoded budget for flow_get's header maps. Each
+# map gets its own 16 KiB slice so the two of them plus the bounded url stay
+# inside the room flow_get's body check reserves for non-body fields.
+_MAX_HEADER_VALUE_BYTES = 4 * 1024
+_MAX_HEADERS_ENCODED = 16 * 1024
 # Longest inline body string flow_get returns before spilling to a file. This
 # is a raw-length gate: it bounds a base64 body (4/3 the raw size, no JSON-
 # special chars) fine, but a UTF-8 *text* body of this length full of quotes/
@@ -232,6 +237,44 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _coerce_header(value: object) -> str:
+    """A JSON-safe str for a header key or value, whatever mitmproxy handed us."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    return "" if value is None else str(value)
+
+
+def _bounded_headers(raw: object) -> tuple[dict[str, str], bool]:
+    """Coerce a header container to a JSON-safe, size-bounded ``str -> str`` map.
+
+    flow_get used to return ``dict(headers)`` verbatim. Header keys and values
+    are peer-controlled and were neither coerced nor bounded: a hostile server
+    can send megabytes of headers -- enough to push the reply past the result
+    budget and get the whole flow_get discarded for a ~16 KiB summary even after
+    the body spills -- and some mitmproxy versions expose raw ``bytes`` that the
+    JSON serializer cannot encode at all. Coerce every field to ``str``, cap
+    each value, and bound the whole map by its JSON-encoded size (its own
+    slice, so the two header maps plus the bounded url still fit the room the
+    body's encoded-size check reserves). Returns ``(headers, truncated)``.
+    """
+    try:
+        base = dict(raw)  # type: ignore[call-overload]
+    except Exception:  # noqa: BLE001 - header container shape varies by version
+        return {}, False
+    pairs: list[list[str]] = []
+    truncated = False
+    for key, value in base.items():
+        bounded_value, value_cut = _bounded_metadata(
+            _coerce_header(value), _MAX_HEADER_VALUE_BYTES
+        )
+        truncated = truncated or value_cut
+        pairs.append([_coerce_header(key), bounded_value])
+    kept, _dropped, list_cut = fit_json_list(pairs, budget=_MAX_HEADERS_ENCODED, reserve=0)
+    return {k: v for k, v in kept}, truncated or list_cut
 
 
 class _FlowRecorder:
@@ -601,22 +644,28 @@ class ProxyBackend:
             body = resp.raw_content or b"" if resp else b""
         except Exception:  # noqa: BLE001
             body = b""
-        result: JsonObject = {
-            "id": flow_id,
-            "request": {
-                "method": req.method,
-                # Bound the url like flows() does: it is attacker-influenced and
-                # otherwise unbounded here, so a multi-KiB url would eat into the
-                # room the body's encoded-size check reserves for other fields.
-                "url": _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)[0],
-                "headers": dict(req.headers),
-            },
-            "response": {
-                "status": getattr(resp, "status_code", None),
-                "headers": dict(resp.headers) if resp else {},
-                "size": len(body),
-            },
+        req_headers, req_headers_cut = _bounded_headers(getattr(req, "headers", {}))
+        resp_headers, resp_headers_cut = (
+            _bounded_headers(resp.headers) if resp else ({}, False)
+        )
+        request: JsonObject = {
+            "method": req.method,
+            # Bound the url like flows() does: it is attacker-influenced and
+            # otherwise unbounded here, so a multi-KiB url would eat into the
+            # room the body's encoded-size check reserves for other fields.
+            "url": _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)[0],
+            "headers": req_headers,
         }
+        if req_headers_cut:
+            request["headers_truncated"] = True
+        response: JsonObject = {
+            "status": getattr(resp, "status_code", None),
+            "headers": resp_headers,
+            "size": len(body),
+        }
+        if resp_headers_cut:
+            response["headers_truncated"] = True
+        result: JsonObject = {"id": flow_id, "request": request, "response": response}
         # Decode the body honestly. A response body is often text (JSON, HTML),
         # but just as often binary -- an image, protobuf, or a payload mitmproxy
         # did not decompress. utf-8 with errors="replace" used to hand a binary

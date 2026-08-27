@@ -80,7 +80,9 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         so it is recoverable and not silently mangled into mojibake. A body that
         is too large to inline -- over 200000 chars, or whose JSON-encoded form
         would overrun the result budget -- is spilled to response.body_path with
-        no body key. There are no top-level headers or body fields.
+        no body key. Header maps are coerced to strings and bounded by size;
+        headers_truncated is set on the request or response when its headers were
+        capped. There are no top-level headers or body fields.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
