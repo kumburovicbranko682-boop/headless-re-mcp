@@ -91,6 +91,54 @@ def test_agent_rest_spa_and_provider_secret_boundary(tmp_path: Path, monkeypatch
         assert client.get("/api/agent/threads", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
+def test_decision_endpoints_distinguish_missing_run_from_missing_call(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """approve/reject must 404 a gone run, 404 a gone call, and 409 a stopped run.
+
+    A missing run and a terminal run used to share one 409 "run is terminal or
+    missing", so approving on a run that never existed looked like a transient
+    conflict rather than the plain 404 the cancel endpoint already gives.
+    """
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    app = create_app(AnalysisService(settings), token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    sha = "0" * 64
+
+    with TestClient(app) as client:
+        gone = client.post(
+            "/api/agent/runs/no-such-run/tool-calls/no-such-call/approve",
+            headers=headers,
+            json={"args_sha256": sha},
+        )
+        assert gone.status_code == 404
+        assert gone.json()["detail"] == "run_not_found"
+
+        store = app.state.agent_store
+        thread = store.create_thread()
+        run = store.create_run(
+            thread.id, provider_profile="default", model="fake", deadline_seconds=30
+        )
+
+        missing_call = client.post(
+            f"/api/agent/runs/{run.id}/tool-calls/no-such-call/reject",
+            headers=headers,
+            json={"args_sha256": sha},
+        )
+        assert missing_call.status_code == 404
+        assert missing_call.json()["detail"] == "tool_call_not_found"
+
+        store.request_cancel(run.id)
+        conflict = client.post(
+            f"/api/agent/runs/{run.id}/tool-calls/no-such-call/approve",
+            headers=headers,
+            json={"args_sha256": sha},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"] == "run is terminal"
+
+
 def test_agent_message_limits_are_client_errors_not_incidents(
     tmp_path: Path, monkeypatch
 ) -> None:  # type: ignore[no-untyped-def]
