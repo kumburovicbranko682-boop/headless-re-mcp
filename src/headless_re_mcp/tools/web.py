@@ -34,8 +34,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Launch a Chrome browser for the session and open a URL via CDP.
 
-        Answers with opened, url, title and headless. There is no session,
-        browser, ok or page field.
+        Answers with opened, url, title and headless, plus status (the
+        main-frame HTTP status) when a url was given and the navigation returned
+        one. There is no session, browser, ok or page field: a 4xx/5xx landing
+        page shows up in status, not as a failed open.
         """
         return _dump(analysis.web_open(session_id, url=url, headless=headless, timeout=timeout))
 

@@ -337,8 +337,11 @@ class WebBackend:
                 handle = _WebSession(pw, browser, context, page, cdp)
                 handle.driver_pid = pid
                 self._wire_events(handle)
+                response = None
                 if url:
-                    page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                    response = page.goto(
+                        url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
+                    )
                 # Summarised here rather than by a second call: between the two,
                 # a browser exists that no session yet refers to, and a failure
                 # in that window would leave it with nothing able to close it.
@@ -348,6 +351,12 @@ class WebBackend:
                     "title": _safe_title(page),
                     "headless": headless,
                 }
+                # Like web.navigate: a 4xx/5xx landing page still opens, so
+                # report the main-frame HTTP status when the initial navigation
+                # returned one rather than let an error page read as a clean open.
+                status = getattr(response, "status", None) if response is not None else None
+                if isinstance(status, int):
+                    summary["status"] = status
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     pw.stop()

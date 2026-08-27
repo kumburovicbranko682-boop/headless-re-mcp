@@ -85,6 +85,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   时按实省略而非编造），描述同步点名 `status`：4xx/5xx 落在 `status` 里，而不是靠“调用失败”体现。
   仍不加 `ok` 字段（沿用既有约定）。补测:命中响应回 `status=404`、响应为 None 时不含 `status`、
   描述点名 `status`。
+- `web.open` 首次导航同样调用 `page.goto` 却丢弃响应,落地页 4xx/5xx 也报 `opened: true` 而无状态。
+  现按同一范式:给了 url 且导航确有响应时,`summary` 补 `status`（描述同步点名）,错误落地页不再冒充
+  干净打开。补测:open 源码保留 goto 响应并把 `status` 加进 summary、描述点名 `status`。
 
 ### 修复（device.pull 写不出文件时不再报成 size 0 的成功）
 

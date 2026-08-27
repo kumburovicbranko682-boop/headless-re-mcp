@@ -53,3 +53,20 @@ def test_web_open_puts_the_result_in_opened_url_title_headless() -> None:
     assert "url" in doc
     assert "title" in doc
     assert "headless" in doc
+    assert "status" in doc
+
+
+def test_web_open_threads_the_landing_http_status_from_goto() -> None:
+    """An open whose landing page 404s must show it, like web.navigate does.
+
+    open() runs the first page.goto itself and used to drop its response, so a
+    4xx/5xx landing page read as a clean open. Pinned at the source (open() cannot
+    be instantiated without a real browser): the initial goto's response is kept
+    and its status added to the summary when present.
+    """
+    source = Path(WebBackend.open.__code__.co_filename).read_text(encoding="utf-8")
+    start = source.index("def open(")
+    chunk = source[start : source.index("def _wire_events", start)]
+    assert "response = page.goto(" in chunk
+    assert 'getattr(response, "status"' in chunk
+    assert 'summary["status"] = status' in chunk
