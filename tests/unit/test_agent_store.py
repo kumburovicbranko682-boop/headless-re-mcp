@@ -320,6 +320,13 @@ def test_every_capped_list_keeps_the_end_it_says_it_keeps(tmp_path: Path) -> Non
     )
     second_page = store.list_events(run.id, after=first_page[-1].seq, limit=5)
     assert second_page[0].seq > first_page[-1].seq, "a cursor page must not repeat itself"
+    # has_events_after is how a one-shot history reader learns a full-looking
+    # page has more behind it: true from the start and after an early page,
+    # false once the cursor has passed the last event.
+    assert store.has_events_after(run.id, 0) is True
+    assert store.has_events_after(run.id, first_page[-1].seq) is True
+    last_seq = store.list_events(run.id, after=0, limit=5000)[-1].seq
+    assert store.has_events_after(run.id, last_seq) is False
 
 def test_a_failed_transaction_reports_what_failed_not_the_cleanup(tmp_path: Path) -> None:
     """The rollback must not become the error report.
