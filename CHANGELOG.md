@@ -312,6 +312,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `TYPE_INT_DEC` 编码——否则 apksig 默认 API 1、又拒签自己的 SHA-256 v1 签名），用 keytool 现生成的 keystore
   驱动 `ApktoolClient.sign` 签名，断言产物签成、带 v1 JAR 签名块，再独立 `apksigner verify` 复核（缺 apksigner /
   keytool 时 skip≠pass）。
+- **`apk.certificates` 只认 v1 签名，对绝大多数现代 App 会误判为未签名**。签名状态过去只报 `v1_signed`
+  （= `get_signature_names()` 是否有 META-INF 签名文件），可 v2/v3 签名放在 APK Signing Block 里、根本不落
+  META-INF——如今新 App 普遍 v2/v3-only（v1 早已可选甚至默认关闭），于是一个签得好好的包被读成 `v1_signed
+  False` 就当成没签，签名方案与完整性保护整条信息缺失。现在按方案分别上报 `v1_signed`（JAR/META-INF）、
+  `v2_signed` 与 `v3_signed`（APK Signing Block），外加「任一方案即视为已签」的 `signed`；证书列表本就走
+  `get_certificates()`（androguard 会聚合 v1/v2/v3），v2/v3-only 也照样有证书。每个 `is_signed_v*` 探测都各自
+  兜底（不同 androguard 版本 / APK 差异下不抛错）。单测锁 v1+v2 与 v2-only（无 META-INF 仍报 signed）两种；
+  静态门里未签名夹具补断言三个方案位与 `signed` 全 False，签名门在装了 androguard 时回读 apksigner 产物、
+  断言 `v2_signed` / `signed` 为真。
 - **Ghidra 线在现代 Ghidra（11.4+/12.x）上整条不可用**，两处独立故障叠加：
   1) 导出脚本 `ExportJson.py` 标了 `@runtime Jython`，而 Ghidra 11.4 起不再内置 Jython，headless
      分析一执行 postScript 就以 `JythonStubException` 整体中止——`ghidra.functions/symbols/xrefs/decompile`

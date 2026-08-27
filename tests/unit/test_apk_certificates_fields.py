@@ -43,6 +43,34 @@ class _FakeApk:
     def get_certificates(self) -> list[_Cert]:
         return [_Cert(index) for index in range(40)]
 
+    def is_signed_v1(self) -> bool:
+        return True
+
+    def is_signed_v2(self) -> bool:
+        return True
+
+    def is_signed_v3(self) -> bool:
+        return False
+
+
+class _FakeApkV2Only:
+    """A modern app signed with scheme v2 only: no META-INF signature files."""
+
+    def get_signature_names(self) -> list[str]:
+        return []
+
+    def get_certificates(self) -> list[_Cert]:
+        return [_Cert(0)]
+
+    def is_signed_v1(self) -> bool:
+        return False
+
+    def is_signed_v2(self) -> bool:
+        return True
+
+    def is_signed_v3(self) -> bool:
+        return False
+
 
 def test_apk_certificates_names_signature_files_not_certs() -> None:
     """The catalog never named the payload.
@@ -62,7 +90,31 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert len(payload["signature_files"]) == 32
     assert payload["has_more"] is True
     assert payload["v1_signed"] is True
+    assert payload["v2_signed"] is True
+    assert payload["v3_signed"] is False
+    assert payload["signed"] is True
     doc = _tool_docstring("apk.certificates")
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+    assert "v2_signed" in doc
+    assert "v3_signed" in doc
+
+
+def test_apk_certificates_reports_a_v2_only_app_as_signed() -> None:
+    """A v2/v3-only app has no META-INF signature files.
+
+    Reporting only v1_signed would read as unsigned for the overwhelming
+    majority of modern apps. Measured: no signature_files, is_signed_v2 True
+    -> v1_signed False, v2_signed True, signed True, certificates still
+    present from the APK Signing Block.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApkV2Only()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert payload["signature_files"] == []
+    assert payload["v1_signed"] is False
+    assert payload["v2_signed"] is True
+    assert payload["v3_signed"] is False
+    assert payload["signed"] is True
+    assert len(payload["certificates"]) == 1

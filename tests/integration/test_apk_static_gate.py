@@ -398,6 +398,9 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         certs = service.apk_certificates(session_id)
         assert certs.ok, certs.error
         assert certs.data["v1_signed"] is False
+        assert certs.data["v2_signed"] is False
+        assert certs.data["v3_signed"] is False
+        assert certs.data["signed"] is False
         assert certs.data["certificates"] == []
 
         # The DEX-analysis pipeline (AnalyzeAPK, Analysis, get_classes,
@@ -555,6 +558,23 @@ def test_apk_sign_produces_a_verifiable_apk(tmp_path: Path) -> None:
         timeout=120,
     )
     assert verified.returncode == 0, verified.stderr.decode("utf-8", "replace")
+
+    # apksigner adds an APK Signing Block (v2) alongside the v1 block, so the
+    # scheme detection has a genuinely v2-signed artifact to read back -- the
+    # modern case v1_signed alone would misreport. Only when androguard is here.
+    if _androguard_available():
+        service = AnalysisService()
+        try:
+            created = service.create_session(str(out_apk))
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+            certs = service.apk_certificates(session_id)
+            assert certs.ok, certs.error
+            assert certs.data["v2_signed"] is True
+            assert certs.data["signed"] is True
+            assert certs.data["certificates"], "signed APK reported no certificates"
+        finally:
+            service.close_all()
 
 
 @pytest.mark.integration

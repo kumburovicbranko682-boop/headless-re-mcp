@@ -259,6 +259,15 @@ class ApkClient:
             names = apk.get_signature_names()
         except Exception:  # noqa: BLE001
             names = []
+
+        def _scheme(method: str) -> bool:
+            getter = getattr(apk, method, None)
+            if getter is None:
+                return False
+            try:
+                return bool(getter())
+            except Exception:  # noqa: BLE001 - varies by androguard version / apk
+                return False
         sig_files: list[str] = []
         files_more = False
         for name in names or []:
@@ -284,10 +293,16 @@ class ApkClient:
                 )
             except Exception:  # noqa: BLE001 - certificate objects vary by version
                 continue
+        v1_signed = _scheme("is_signed_v1") or bool(names)
+        v2_signed = _scheme("is_signed_v2")
+        v3_signed = _scheme("is_signed_v3")
         return {
             "signature_files": sig_files,
             "certificates": items,
-            "v1_signed": bool(names),
+            "v1_signed": v1_signed,
+            "v2_signed": v2_signed,
+            "v3_signed": v3_signed,
+            "signed": v1_signed or v2_signed or v3_signed,
             "has_more": certs_more or files_more,
         }
 
