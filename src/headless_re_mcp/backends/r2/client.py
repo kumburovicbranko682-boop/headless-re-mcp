@@ -9,8 +9,20 @@ from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
+from headless_re_mcp.core.models import Architecture
 
 JsonObject = dict[str, Any]
+# Architecture -> the (-a, -b) pair that makes r2 pick the matching slice of a
+# fat Mach-O. Verified against r2 5.5.0 on a hand-crafted x86_64+arm64 fat:
+# ``-a arm -b 64`` flips ``iI`` to arch arm and baddr to the arm64 slice's
+# __TEXT vmaddr, while ``-a arm64`` and ``-e bin.arch=arm`` are both ignored
+# and leave r2 on its host-dependent default pick.
+_SLICE_FLAGS: dict[Architecture, tuple[str, str]] = {
+    Architecture.X86: ("x86", "32"),
+    Architecture.X64: ("x86", "64"),
+    Architecture.ARM: ("arm", "32"),
+    Architecture.ARM64: ("arm", "64"),
+}
 _MAX_OUTPUT = 1_000_000
 _ALLOWED = frozenset(
     {
@@ -77,11 +89,17 @@ class R2Client:
     def available(self) -> bool:
         return self.executable is not None and self.executable.is_file()
 
-    def open(self, binary: Path, *, timeout: float = 30.0) -> JsonObject:
+    def open(
+        self,
+        binary: Path,
+        *,
+        timeout: float = 30.0,
+        slice_arch: Architecture | None = None,
+    ) -> JsonObject:
         """Validate that r2 can open ``binary`` (one-shot; no persistent pipe)."""
         if not binary.is_file():
             raise R2Error("not_found", "binary not found", path=str(binary))
-        data = self.run(binary, ["i"], timeout=timeout)
+        data = self.run(binary, ["i"], timeout=timeout, slice_arch=slice_arch)
         return {
             "opened": True,
             "binary": str(binary),
@@ -97,17 +115,18 @@ class R2Client:
         count: int = 32,
         analysis: str = "aa",
         timeout: float = 30.0,
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         if type(count) is not int or not 1 <= count <= 512:
             raise R2Error("invalid_params", "count must be 1..512")
         cmd = f"pdj {count} @ {address}"
-        data = self.run(binary, [analysis, cmd], timeout=timeout)
+        data = self.run(binary, [analysis, cmd], timeout=timeout, slice_arch=slice_arch)
         data = dict(data)
         data["address"] = address
         data["count"] = count
-        return enrich_r2_payload(data, binary=binary)
+        return enrich_r2_payload(data, binary=binary, slice_arch=slice_arch)
 
     def xrefs(
         self,
@@ -116,14 +135,15 @@ class R2Client:
         *,
         analysis: str = "aa",
         timeout: float = 30.0,
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axj @ {address}"
-        data = self.run(binary, [analysis, cmd], timeout=timeout)
+        data = self.run(binary, [analysis, cmd], timeout=timeout, slice_arch=slice_arch)
         data = dict(data)
         data["address"] = address
-        return enrich_r2_payload(data, binary=binary)
+        return enrich_r2_payload(data, binary=binary, slice_arch=slice_arch)
 
     def xrefs_to(
         self,
@@ -132,6 +152,7 @@ class R2Client:
         *,
         analysis: str = "aa",
         timeout: float = 30.0,
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         """References that target ``address`` (``axtj``), not the global graph.
 
@@ -152,10 +173,10 @@ class R2Client:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axtj @ {address}"
-        data = self.run(binary, [analysis, cmd], timeout=timeout)
+        data = self.run(binary, [analysis, cmd], timeout=timeout, slice_arch=slice_arch)
         data = dict(data)
         data["address"] = address
-        return enrich_r2_payload(data, binary=binary)
+        return enrich_r2_payload(data, binary=binary, slice_arch=slice_arch)
 
     def xrefs_from(
         self,
@@ -164,6 +185,7 @@ class R2Client:
         *,
         analysis: str = "aa",
         timeout: float = 30.0,
+        slice_arch: Architecture | None = None,
     ) -> JsonObject:
         """References made *from* the function containing ``address`` (``axffj``).
 
@@ -184,12 +206,19 @@ class R2Client:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
         cmd = f"axffj @ {address}"
-        data = self.run(binary, [analysis, cmd], timeout=timeout)
+        data = self.run(binary, [analysis, cmd], timeout=timeout, slice_arch=slice_arch)
         data = dict(data)
         data["address"] = address
-        return enrich_r2_payload(data, binary=binary)
+        return enrich_r2_payload(data, binary=binary, slice_arch=slice_arch)
 
-    def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
+    def run(
+        self,
+        binary: Path,
+        commands: list[str],
+        *,
+        timeout: float = 30.0,
+        slice_arch: Architecture | None = None,
+    ) -> JsonObject:
         if not self.available or self.executable is None:
             raise R2Error("capability_unavailable", "radare2/rizin is not installed")
         if not binary.is_file():
@@ -197,6 +226,10 @@ class R2Client:
         for cmd in commands:
             _require_allowed_command(cmd)
         script = "\n".join([*commands, "q"])
+        select: list[str] = []
+        if slice_arch is not None:
+            arch_name, bits = _SLICE_FLAGS[slice_arch]
+            select = ["-a", arch_name, "-b", bits]
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         try:
             # r2 on PATH is often a launcher script, and subprocess.run kills
@@ -204,7 +237,7 @@ class R2Client:
             # that started a child and held the pipes did not return 8s after a
             # 0.8s timeout, and the child was still running.
             completed = run_bounded(
-                [str(self.executable), "-q0", "-c", script, str(binary)],
+                [str(self.executable), "-q0", *select, "-c", script, str(binary)],
                 timeout=timeout,
                 creationflags=creationflags,
             )
@@ -248,7 +281,7 @@ class R2Client:
             payload["truncated"] = True
             payload["output_bytes"] = produced
             payload["returned_bytes"] = len(out)
-        return enrich_r2_payload(payload, binary=binary)
+        return enrich_r2_payload(payload, binary=binary, slice_arch=slice_arch)
 
 
 def _discover() -> Path | None:

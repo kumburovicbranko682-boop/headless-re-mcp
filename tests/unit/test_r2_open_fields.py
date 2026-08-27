@@ -40,7 +40,7 @@ def test_r2_open_puts_identity_text_in_info_not_raw(tmp_path: Path) -> None:
     binary = tmp_path / "a.exe"
     binary.write_bytes(b"MZ")
     client = R2Client(stub)
-    client.run = lambda _binary, _cmds, timeout=30.0: {  # type: ignore[method-assign]
+    client.run = lambda _binary, _cmds, timeout=30.0, slice_arch=None: {  # type: ignore[method-assign]
         "raw": "arch     x86\nbinsz    16\n"
     }
     payload = client.open(binary)

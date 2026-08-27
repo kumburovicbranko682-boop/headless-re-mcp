@@ -40,6 +40,16 @@ _MACHO_MAGICS: dict[bytes, tuple[bool, Literal["big", "little"]]] = {
 }
 _MACHO_LC_SEGMENT = 0x01
 _MACHO_LC_SEGMENT_64 = 0x19
+# Fat/universal magics -> 64-bit table entries, mirroring session._FAT_MAGICS.
+# Only consulted when a caller explicitly selects a slice: the 0xCAFEBABE
+# collision with Java class files is harmless here because a Java file has no
+# slice whose cputype maps onto the requested Architecture, so the scan below
+# simply finds nothing and the addresses stay va-only.
+_FAT_MAGICS: dict[bytes, bool] = {
+    b"\xca\xfe\xba\xbe": False,
+    b"\xca\xfe\xba\xbf": True,
+}
+_FAT_MAX_ARCHS = 32
 
 
 def pe_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
@@ -153,8 +163,10 @@ def elf_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
     return arch, base
 
 
-def macho_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
-    """Read a thin Mach-O's load base and architecture without spawning r2.
+def macho_preferred_base(
+    binary: Path, *, select: Architecture | None = None
+) -> tuple[Architecture | None, int | None]:
+    """Read a Mach-O's load base and architecture without spawning r2.
 
     The Mach-O counterpart of ``pe_preferred_base``/``elf_preferred_base``: the
     load base is the vmaddr of the segment that maps the mach header (fileoff 0,
@@ -162,26 +174,67 @@ def macho_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]
     0x100000000 for a standard 64-bit executable, and 0 for a PIE image -- so
     ``va - base`` yields an rva consistent with the addresses r2 reports.
     ``__PAGEZERO`` sits at vmaddr 0 and would otherwise drag the base to 0, so it
-    is skipped. Fat/universal (0xCAFEBABE) binaries are declined: that magic
-    collides with Java class files and a fat file has no single base until an
-    architecture is picked. Either half of the pair may be None.
+    is skipped.
+
+    A fat/universal (0xCAFEBABE) binary has no single base until an architecture
+    is picked, and which slice r2 picks by default depends on the host, so with
+    no ``select`` a fat file yields ``(None, None)`` and addresses stay va-only.
+    When the caller *has* directed r2 at a slice (``-a``/``-b``), passing that
+    slice's ``Architecture`` as ``select`` resolves the fat table, parses the
+    matching slice's own thin header, and returns its base -- verified to equal
+    the ``baddr`` r2 reports for the same selection. ``select`` is ignored for a
+    thin file, which has only its own architecture. Either half of the returned
+    pair may be None.
     """
     try:
         with binary.open("rb") as stream:
-            head = stream.read(32)
-            order = _MACHO_MAGICS.get(head[:4])
-            if order is None or len(head) < 24:
+            magic = stream.read(4)
+            if magic in _MACHO_MAGICS:
+                return _thin_macho_base(stream, 0)
+            fat_is64 = _FAT_MAGICS.get(magic)
+            if fat_is64 is None or select is None:
                 return None, None
-            is64, endian = order
-            arch = _MACHO_CPUTYPE_TO_ARCH.get(int.from_bytes(head[4:8], endian))
-            ncmds = int.from_bytes(head[16:20], endian)
-            sizeofcmds = int.from_bytes(head[20:24], endian)
-            if ncmds <= 0 or not 0 < sizeofcmds <= _MAX_HEADER:
-                return arch, None
-            stream.seek(32 if is64 else 28)
-            commands = stream.read(sizeofcmds)
+            nfat = int.from_bytes(stream.read(4), "big")
+            if not 1 <= nfat <= _FAT_MAX_ARCHS:
+                return None, None
+            entry_size = 32 if fat_is64 else 20
+            table = stream.read(entry_size * nfat)
+            if len(table) < entry_size * nfat:
+                return None, None
+            for index in range(nfat):
+                entry = table[index * entry_size :]
+                cputype = int.from_bytes(entry[0:4], "big")
+                if _MACHO_CPUTYPE_TO_ARCH.get(cputype) is not select:
+                    continue
+                offset_size = 8 if fat_is64 else 4
+                slice_offset = int.from_bytes(entry[8 : 8 + offset_size], "big")
+                return _thin_macho_base(stream, slice_offset)
+            return None, None
     except OSError:
         return None, None
+
+
+def _thin_macho_base(stream: Any, header_offset: int) -> tuple[Architecture | None, int | None]:
+    """(architecture, base) of the thin Mach-O whose header starts at ``header_offset``.
+
+    Works for a whole thin file (offset 0) and for a slice inside a fat file:
+    segment ``vmaddr`` is an absolute virtual address either way, and ``fileoff``
+    is relative to the slice's own start, so the fileoff==0 header-segment test
+    holds unchanged.
+    """
+    stream.seek(header_offset)
+    head = stream.read(32)
+    order = _MACHO_MAGICS.get(head[:4])
+    if order is None or len(head) < 24:
+        return None, None
+    is64, endian = order
+    arch = _MACHO_CPUTYPE_TO_ARCH.get(int.from_bytes(head[4:8], endian))
+    ncmds = int.from_bytes(head[16:20], endian)
+    sizeofcmds = int.from_bytes(head[20:24], endian)
+    if ncmds <= 0 or not 0 < sizeofcmds <= _MAX_HEADER:
+        return arch, None
+    stream.seek(header_offset + (32 if is64 else 28))
+    commands = stream.read(sizeofcmds)
     if len(commands) < sizeofcmds:
         return arch, None
     seg_cmd = _MACHO_LC_SEGMENT_64 if is64 else _MACHO_LC_SEGMENT
@@ -220,7 +273,9 @@ def macho_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]
     return arch, header_base if header_base is not None else min_base
 
 
-def preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
+def preferred_base(
+    binary: Path, *, select: Architecture | None = None
+) -> tuple[Architecture | None, int | None]:
     """Best-effort (architecture, load base) for a local binary.
 
     Tries each supported container in turn: a PE parse that named neither an
@@ -229,6 +284,10 @@ def preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
     base is merely unresolvable (e.g. an arch the enum cannot name) stops the
     chain rather than being reparsed as another format. Both halves may be None
     for an unknown container.
+
+    ``select`` names the slice of a fat Mach-O the caller directed the engine
+    at (see ``macho_preferred_base``); it is meaningless for the single-arch
+    containers and ignored by them.
     """
     arch, base = pe_preferred_base(binary)
     if arch is not None or base is not None:
@@ -236,7 +295,7 @@ def preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
     arch, base = elf_preferred_base(binary)
     if arch is not None or base is not None:
         return arch, base
-    return macho_preferred_base(binary)
+    return macho_preferred_base(binary, select=select)
 
 
 def address_dict(
@@ -302,13 +361,21 @@ def enrich_r2_payload(
     *,
     binary: Path,
     architecture: Architecture | None = None,
+    slice_arch: Architecture | None = None,
 ) -> JsonObject:
-    """Parse *j payloads into items with unified Address fields."""
+    """Parse *j payloads into items with unified Address fields.
+
+    ``slice_arch`` names the fat Mach-O slice the r2 invocation was directed at
+    (``-a``/``-b``); it selects that slice's base and architecture so the
+    payload's coordinates describe the slice r2 actually analysed. Leave it
+    None for everything else -- single-arch binaries ignore it and an
+    unselected fat stays va-only.
+    """
     module = binary.name
     # PE, then ELF, then Mach-O: a non-PE binary still gains rva/module/arch
     # instead of staying va-only, and the first container to recognise the
     # header wins (see preferred_base).
-    detected_arch, image_base = preferred_base(binary)
+    detected_arch, image_base = preferred_base(binary, select=slice_arch)
     arch = architecture or detected_arch
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])

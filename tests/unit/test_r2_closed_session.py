@@ -24,15 +24,17 @@ class _TrackingR2:
         self.opens = 0
         self.runs = 0
 
-    def open(self, binary: Path, *, timeout: float = 30.0) -> dict[str, Any]:
-        del binary, timeout
+    def open(
+        self, binary: Path, *, timeout: float = 30.0, slice_arch: object = None
+    ) -> dict[str, Any]:
+        del binary, timeout, slice_arch
         self.opens += 1
         return {"opened": True, "binary": "x", "info": "i", "note": "tracked"}
 
     def run(
-        self, binary: Path, commands: list[str], *, timeout: float = 30.0
+        self, binary: Path, commands: list[str], *, timeout: float = 30.0, slice_arch: object = None
     ) -> dict[str, Any]:
-        del binary, commands, timeout
+        del binary, commands, timeout, slice_arch
         self.runs += 1
         return {"raw": "ok", "commands": []}
 
@@ -84,9 +86,11 @@ def test_r2_open_does_not_report_success_if_the_session_closes_during_run(
     _write_minimal_pe(binary)
 
     class _CloseThenOpen(_TrackingR2):
-        def open(self, binary: Path, *, timeout: float = 30.0) -> dict[str, Any]:
+        def open(
+            self, binary: Path, *, timeout: float = 30.0, slice_arch: object = None
+        ) -> dict[str, Any]:
             service.close_session(session_id)
-            return super().open(binary, timeout=timeout)
+            return super().open(binary, timeout=timeout, slice_arch=slice_arch)
 
     tracker = _CloseThenOpen()
     monkeypatch.setattr(

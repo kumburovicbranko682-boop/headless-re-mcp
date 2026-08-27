@@ -20,7 +20,7 @@ from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.application_services import ApplicationServices
 from headless_re_mcp.core.capabilities_catalog import describe_capability, list_capabilities
-from headless_re_mcp.core.models import Result, RpcError, SessionState
+from headless_re_mcp.core.models import Architecture, Result, RpcError, SessionState
 from headless_re_mcp.core.repository import AnalysisRepository, SqliteAnalysisRepository
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.session import (
@@ -298,7 +298,9 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
         return _success({"capability": item})
 
-    def r2_open(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
+    def r2_open(
+        self, session_id: str, timeout: float = 30.0, slice_arch: str | None = None
+    ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
             if session.state in {
@@ -309,9 +311,10 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"r2.open cannot run in {session.state.value} state"
                 )
+            select = _resolve_slice_arch(session, slice_arch)
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
-            data = client.open(session.require_binary(), timeout=timeout)
+            data = client.open(session.require_binary(), timeout=timeout, slice_arch=select)
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -329,20 +332,32 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def r2_info(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return _r2_request(self, session_id, ["i"], timeout=timeout)
+    def r2_info(
+        self, session_id: str, timeout: float = 30.0, slice_arch: str | None = None
+    ) -> Result[JsonObject]:
+        return _r2_request(self, session_id, ["i"], timeout=timeout, slice_arch=slice_arch)
 
-    def r2_functions(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return _r2_request(self, session_id, ["aa", "aflj"], timeout=timeout)
+    def r2_functions(
+        self, session_id: str, timeout: float = 30.0, slice_arch: str | None = None
+    ) -> Result[JsonObject]:
+        return _r2_request(
+            self, session_id, ["aa", "aflj"], timeout=timeout, slice_arch=slice_arch
+        )
 
-    def r2_strings(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return _r2_request(self, session_id, ["izj"], timeout=timeout)
+    def r2_strings(
+        self, session_id: str, timeout: float = 30.0, slice_arch: str | None = None
+    ) -> Result[JsonObject]:
+        return _r2_request(self, session_id, ["izj"], timeout=timeout, slice_arch=slice_arch)
 
-    def r2_imports(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return _r2_request(self, session_id, ["iij"], timeout=timeout)
+    def r2_imports(
+        self, session_id: str, timeout: float = 30.0, slice_arch: str | None = None
+    ) -> Result[JsonObject]:
+        return _r2_request(self, session_id, ["iij"], timeout=timeout, slice_arch=slice_arch)
 
-    def r2_exports(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return _r2_request(self, session_id, ["iEj"], timeout=timeout)
+    def r2_exports(
+        self, session_id: str, timeout: float = 30.0, slice_arch: str | None = None
+    ) -> Result[JsonObject]:
+        return _r2_request(self, session_id, ["iEj"], timeout=timeout, slice_arch=slice_arch)
 
     def r2_disasm(
         self,
@@ -351,6 +366,7 @@ class ExtAnalysisMixin(UiDriveMixin):
         count: int = 32,
         analysis: str = "aa",
         timeout: float = 30.0,
+        slice_arch: str | None = None,
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -362,10 +378,16 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"r2.disasm cannot run in {session.state.value} state"
                 )
+            select = _resolve_slice_arch(session, slice_arch)
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
             data = client.disasm(
-                session.require_binary(), address, count=count, analysis=analysis, timeout=timeout
+                session.require_binary(),
+                address,
+                count=count,
+                analysis=analysis,
+                timeout=timeout,
+                slice_arch=select,
             )
             session = self.registry.get(session_id)
             if session.state in {
@@ -387,7 +409,12 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _failure(exc, session_id=session_id)
 
     def r2_xrefs(
-        self, session_id: str, address: int, analysis: str = "aa", timeout: float = 30.0
+        self,
+        session_id: str,
+        address: int,
+        analysis: str = "aa",
+        timeout: float = 30.0,
+        slice_arch: str | None = None,
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -399,10 +426,15 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"r2.xrefs cannot run in {session.state.value} state"
                 )
+            select = _resolve_slice_arch(session, slice_arch)
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
             data = client.xrefs(
-                session.require_binary(), address, analysis=analysis, timeout=timeout
+                session.require_binary(),
+                address,
+                analysis=analysis,
+                timeout=timeout,
+                slice_arch=select,
             )
             session = self.registry.get(session_id)
             if session.state in {
@@ -423,7 +455,12 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _failure(exc, session_id=session_id)
 
     def r2_xrefs_to(
-        self, session_id: str, address: int, analysis: str = "aa", timeout: float = 30.0
+        self,
+        session_id: str,
+        address: int,
+        analysis: str = "aa",
+        timeout: float = 30.0,
+        slice_arch: str | None = None,
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -435,10 +472,15 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"r2.xrefs_to cannot run in {session.state.value} state"
                 )
+            select = _resolve_slice_arch(session, slice_arch)
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
             data = client.xrefs_to(
-                session.require_binary(), address, analysis=analysis, timeout=timeout
+                session.require_binary(),
+                address,
+                analysis=analysis,
+                timeout=timeout,
+                slice_arch=select,
             )
             session = self.registry.get(session_id)
             if session.state in {
@@ -459,7 +501,12 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _failure(exc, session_id=session_id)
 
     def r2_xrefs_from(
-        self, session_id: str, address: int, analysis: str = "aa", timeout: float = 30.0
+        self,
+        session_id: str,
+        address: int,
+        analysis: str = "aa",
+        timeout: float = 30.0,
+        slice_arch: str | None = None,
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -471,10 +518,15 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"r2.xrefs_from cannot run in {session.state.value} state"
                 )
+            select = _resolve_slice_arch(session, slice_arch)
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
             data = client.xrefs_from(
-                session.require_binary(), address, analysis=analysis, timeout=timeout
+                session.require_binary(),
+                address,
+                analysis=analysis,
+                timeout=timeout,
+                slice_arch=select,
             )
             session = self.registry.get(session_id)
             if session.state in {
@@ -1173,7 +1225,60 @@ def _windbg_client(service: Any) -> WindbgClient:
     return WindbgClient(Path(cdb) if cdb else None, allow_kernel=allow_kernel)
 
 
-def _r2_request(service: Any, session_id: str, commands: list[str], *, timeout: float) -> Result[JsonObject]:
+def _resolve_slice_arch(session: Any, value: str | None) -> Architecture | None:
+    """Validate a caller-supplied fat Mach-O slice name against the session.
+
+    Strict on purpose, because the failure modes are silent: on a non-fat
+    target the ``-a``/``-b`` pair this resolves to would *override* r2's format
+    autodetection and disassemble the code as the wrong ISA, and on a fat that
+    lacks the requested slice r2 quietly falls back to its host-dependent
+    default pick. Both would return well-formed garbage, so anything but a
+    known Architecture name that the session's recorded fat slice table
+    actually contains is rejected as invalid_params before a subprocess is
+    spawned.
+    """
+    if value is None:
+        return None
+    try:
+        select = Architecture(value)
+    except ValueError:
+        allowed = ", ".join(member.value for member in Architecture)
+        raise XdbgRpcError(
+            "invalid_params",
+            f"slice_arch must be one of: {allowed}",
+            details={"slice_arch": value},
+        ) from None
+    macho = session.metadata.get("macho") if isinstance(session.metadata, dict) else None
+    if not (isinstance(macho, dict) and macho.get("fat") is True):
+        raise XdbgRpcError(
+            "invalid_params",
+            "slice_arch is only valid for a fat/universal Mach-O target",
+            details={"slice_arch": value},
+        )
+    available = sorted(
+        {
+            str(entry["architecture"])
+            for entry in macho.get("slices") or []
+            if isinstance(entry, dict) and entry.get("architecture")
+        }
+    )
+    if select.value not in available:
+        raise XdbgRpcError(
+            "invalid_params",
+            f"this fat binary has no {select.value} slice",
+            details={"slice_arch": value, "available_slices": available},
+        )
+    return select
+
+
+def _r2_request(
+    service: Any,
+    session_id: str,
+    commands: list[str],
+    *,
+    timeout: float,
+    slice_arch: str | None = None,
+) -> Result[JsonObject]:
     try:
         session = service.registry.get(session_id)
         if session.state in {
@@ -1184,9 +1289,10 @@ def _r2_request(service: Any, session_id: str, commands: list[str], *, timeout: 
             raise InvalidStateTransition(
                 f"r2 request cannot run in {session.state.value} state"
             )
+        select = _resolve_slice_arch(session, slice_arch)
         exe = getattr(service.settings, "r2", None)
         client = R2Client(Path(exe) if exe else None)
-        data = client.run(session.require_binary(), commands, timeout=timeout)
+        data = client.run(session.require_binary(), commands, timeout=timeout, slice_arch=select)
         session = service.registry.get(session_id)
         if session.state in {
             SessionState.CLOSING,
