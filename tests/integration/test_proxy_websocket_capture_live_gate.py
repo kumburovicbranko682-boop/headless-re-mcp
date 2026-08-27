@@ -12,16 +12,19 @@ This gate drives a real WebSocket conversation through a real mitmproxy: a
 `websockets` client connects *through* the started proxy and exchanges two
 messages. It then asserts the flow's row advertises the traffic
 (websocket=true, ws_messages counts both directions) and that flow.get returns
-the actual frames with their text and direction. Guarding the guard: the origin
-transforms each message ("echo:"+msg), so seeing both the client's "hello" and
-the server's distinct "echo:hello" proves both directions round-tripped through
-the proxy and were captured -- not one side echoed back by accident. skip !=
-pass: it skips only when mitmproxy or the websockets client is genuinely absent.
+the actual frames with their text and direction, and that proxy.export_har
+carries those frames as Chrome DevTools' _webSocketMessages array rather than
+leaving a bare 101 entry. Guarding the guard: the origin transforms each message
+("echo:"+msg), so seeing both the client's "hello" and the server's distinct
+"echo:hello" proves both directions round-tripped through the proxy and were
+captured -- not one side echoed back by accident. skip != pass: it skips only
+when mitmproxy or the websockets client is genuinely absent.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import time
 from pathlib import Path
@@ -116,5 +119,19 @@ def test_proxy_captures_websocket_frames_both_directions(tmp_path: Path) -> None
         # crossed the real proxy and were captured, not one side reflected.
         assert (True, "hello") in texts, texts
         assert (False, "echo:hello") in texts, texts
+
+        # The exported HAR must carry the frames, not just a 101 entry: Chrome
+        # DevTools reads them from the _webSocketMessages array.
+        exported = backend.export_har("ws-gate", tmp_path / "capture.har")
+        har = json.loads(Path(exported["path"]).read_text(encoding="utf-8"))
+        ws_entries = [
+            e for e in har["log"]["entries"] if str(e["request"]["url"]).endswith("/chat")
+        ]
+        assert ws_entries, "the WebSocket was absent from the HAR"
+        frames = ws_entries[0].get("_webSocketMessages")
+        assert frames, "the HAR entry carried no _webSocketMessages"
+        pairs = {(m["type"], m.get("data")) for m in frames}
+        assert ("send", "hello") in pairs, pairs
+        assert ("receive", "echo:hello") in pairs, pairs
     finally:
         backend.stop("ws-gate")

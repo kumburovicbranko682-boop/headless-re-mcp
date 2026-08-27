@@ -69,8 +69,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   转发一次真实 WebSocket 对话——`websockets` 回声源把每条消息变成 `echo:`+原文,客户端经代理连上
   并互发两条,断言该流行 `websocket=true`、`ws_messages≥4`（两个方向各两帧）,且 flow.get 同时取到
   客户端的 `hello` 与服务端另一形态的 `echo:hello`；“守卫其守卫”——两方向文本不同,故都在即证明两向
-  都真经代理抓到而非单侧回显。CI 新增 `linux-proxy-websocket` job 装 mitmproxy 与 websockets 跑该
-  gate，skip≠pass 守卫在两者已装却仍 skip 时判失败。
+  都真经代理抓到而非单侧回显。`proxy.export_har` 现在也把 socket 的帧随导出带走：WebSocket 以条目
+  形式写入 HAR，其保留帧作为 Chrome DevTools 的 `_webSocketMessages` 扩展数组（每条 `{type:
+  send/receive, opcode, data}`）附在该条目上，而不再只是一个孤零零的 101 握手——分析者把 HAR 交给
+  别的查看器时不会再丢掉 WebSocket 会话内容。帧从原始流按需取回（`flow.get` 用的同一套有界解码视图），
+  原始流已随保留预算淘汰或 body 被省略时该字段为空,不伪造；未捕获逐帧时间戳,故不写 `time`。CI 新增
+  `linux-proxy-websocket` job 装 mitmproxy 与 websockets 跑该 gate（现同时断言 `proxy.flows`、
+  `proxy.flow.get` 与导出的 HAR 里都抓到双向帧），skip≠pass 守卫在两者已装却仍 skip 时判失败。
 
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 

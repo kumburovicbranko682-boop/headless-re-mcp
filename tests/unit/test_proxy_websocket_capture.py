@@ -12,6 +12,7 @@ with fake mitmproxy flows (no network) and assert the row advertises the traffic
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -145,3 +146,68 @@ def test_flow_get_on_a_plain_flow_has_no_websocket_keys(
     assert "websocket" not in payload
     assert "websocket_messages" not in payload
     assert "websocket_message_count" not in payload
+
+
+def test_export_har_carries_ws_frames_as_websocketmessages(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # A plain flow and a WebSocket in the same capture: only the socket entry
+    # gets _webSocketMessages built from the frames on its raw flow, and the
+    # plain one is untouched.
+    ws_flow = SimpleNamespace(
+        websocket=SimpleNamespace(
+            messages=[
+                _frame(b'{"op":"subscribe"}', from_client=True),
+                _frame(b'{"tick":1}', from_client=False),
+                _frame(b"\x00\x01\x02\xff", from_client=False),  # binary
+            ]
+        )
+    )
+    summaries = [
+        {
+            "id": "p1",
+            "method": "GET",
+            "url": "http://x/y",
+            "status": 200,
+            "content_type": "text/html",
+            "response_size": 2,
+        },
+        {
+            "id": "ws1",
+            "method": "GET",
+            "url": "ws://x/chat",
+            "status": 101,
+            "content_type": "",
+            "response_size": 0,
+            "websocket": True,
+            "ws_messages": 3,
+            "ws_bytes": 32,
+        },
+    ]
+
+    class _Recorder:
+        def snapshot(self) -> list[dict[str, Any]]:
+            return summaries
+
+        def raw(self, flow_id: str) -> Any:
+            return ws_flow if flow_id == "ws1" else None
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    out = tmp_path / "capture.har"
+    result = backend.export_har("s", out)
+    assert result["entry_count"] == 2
+
+    log = json.loads(out.read_text(encoding="utf-8"))["log"]
+    by_url = {e["request"]["url"]: e for e in log["entries"]}
+    assert "_webSocketMessages" not in by_url["http://x/y"]
+
+    ws_entry = by_url["ws://x/chat"]
+    assert ws_entry["response"]["status"] == 101
+    assert ws_entry["_webSocketMessages"] == [
+        {"type": "send", "opcode": 1, "data": '{"op":"subscribe"}'},
+        {"type": "receive", "opcode": 1, "data": '{"tick":1}'},
+        {"type": "receive", "opcode": 2, "data": ""},
+    ]

@@ -346,6 +346,23 @@ def _bounded_ws_messages(flow: Any) -> tuple[list[JsonObject], int, bool]:
     return out, total, total > _MAX_WS_MESSAGES
 
 
+def _har_ws_message(frame: JsonObject) -> JsonObject:
+    """One bounded WS frame as Chrome DevTools' ``_webSocketMessages`` shape.
+
+    type is send/receive from the direction we recorded; opcode is derived from
+    the frame we kept (a frame marked omitted "binary" is opcode 2, everything
+    else is a text frame, opcode 1); data is the retained UTF-8 text, empty when
+    the frame was binary or clipped for size (we never stored its bytes, so there
+    is nothing faithful to write). No ``time`` is emitted because the capture
+    records no per-frame timestamp.
+    """
+    return {
+        "type": "send" if frame.get("from_client") else "receive",
+        "opcode": 2 if frame.get("omitted") == "binary" else 1,
+        "data": frame.get("text", ""),
+    }
+
+
 class _FlowRecorder:
     """A mitmproxy addon that snapshots finished flows into a ring buffer.
 
@@ -802,6 +819,26 @@ class ProxyBackend:
             raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
         return {"replayed": True, "flow_id": flow_id}
 
+    @staticmethod
+    def _har_ws_messages(inst: _ProxyInstance, summary: JsonObject) -> list[JsonObject] | None:
+        """The _webSocketMessages array for a WS summary, or None.
+
+        The summary only carries counters; the frames live on the raw flow, so
+        reach for it the way flow.get does and reuse the same bounded, decoded
+        view. None when the row is not a socket, when its raw flow was evicted or
+        its body omitted to stay under the retain budget (nothing faithful left
+        to export), or when no frames were seen.
+        """
+        if not summary.get("websocket"):
+            return None
+        flow = inst.recorder.raw(str(summary.get("id")))
+        if flow is None or flow is _OMITTED_BODY:
+            return None
+        frames, _total, _truncated = _bounded_ws_messages(flow)
+        if not frames:
+            return None
+        return [_har_ws_message(frame) for frame in frames]
+
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
         inst = self._get(session_id)
         entries = [
@@ -811,6 +848,7 @@ class ProxyBackend:
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
+                websocket_messages=self._har_ws_messages(inst, f),
             )
             for f in inst.recorder.snapshot()
         ]
