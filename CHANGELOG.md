@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -596,6 +596,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同时作用于 MCP 客户端与监控台 Agent 的工具面（后者按 run 读取，改了不必重建 orchestrator）。
 - 监控台增加开屏页，让用户在「本地 PE / Web / Android / 全部」之间选择方向，选择经
   `GET`/`POST /api/workspace/mode` 持久化到用户配置；也可用 `workspace.mode.get/set` 工具。
+
+### 新增（本地二进制类结构）
+
+- `r2.classes`（只读）用 radare2 的 `icj` 列出二进制里可恢复的类结构（C++/Obj-C/Swift/Java），
+  读出普通函数表或符号表会抹平的类/虚表结构。每条 item 带 `classname`、`addr`（radare2 给的整数）
+  与统一的 `address`（va/rva/module），外加 `methods` 与 `fields`（radare2 自带的成员列表，每个成员
+  各自带 addr）及 `count`。计数只映射顶层类地址；每个类的 methods/fields 是 radare2 的原样列表，
+  这里不再对其分页。C 语言二进制或无法恢复出类的二进制作答为空 `items`，而非报错——多数原生 `.so`
+  是 C，因此常为空。没有 `classes`/`truncated`/`has_more` 字段；列表填满上限（4096）时给
+  `items_truncated`/`items_total`/`items_limit`。`icj` 已加入 r2 命令白名单。
 
 ### 依赖
 

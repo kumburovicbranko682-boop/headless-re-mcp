@@ -100,6 +100,25 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_exports(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.classes")
+    def r2_classes(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Classes radare2 recovered (icj) -- C++/Obj-C/Swift/Java structure.
+
+        Runs ``icj``. Answers with items, each carrying classname, addr (the
+        integer radare2 reports) and a unified address (va/rva/module), plus
+        methods and fields (radare2's own per-member lists, each member naming
+        its own addr) and count. Reads the class/vtable structure a plain
+        function or symbol list flattens away. A C binary, or one whose classes
+        radare2 could not recover, is an empty items list, not an error -- most
+        native .so are C and answer empty. There is no classes, truncated or
+        has_more field; read items_truncated, items_total and items_limit when
+        the list filled the cap (4096). The per-class methods and fields lists
+        are radare2's and are not themselves paginated here.
+        """
+        return _dump(analysis.r2_classes(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,
