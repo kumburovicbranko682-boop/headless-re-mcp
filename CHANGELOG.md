@@ -1155,6 +1155,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   字节裁剪)、2000 个长类名/方法名的 java `classes`/`methods`、1000 个 255 字符包名的 `applications`,各断言 `0<count<上限`、`has_more` 真、编码体
   不超预算。
 
+- **`proxy.flow.get` 的响应体只按原始字符数决定是否落盘,文本体会被传输层整条丢弃。**
+  `flow_get` 过去在 `len(inline) <= 200000` 时内联响应体。这道闸是给 base64 体设计的(无 JSON 特殊字符,原始长度≈编码长度),但 UTF-8**文本**
+  体里的引号/反斜杠/控制字符编码后会膨胀——一个 18 万字符、引号密集的文本体编码后约 360KB,越过 262144 预算,`bounded_tool_result` 便把**整条**
+  `flow_get`(连 headers、size、body)换成约 16KiB 摘要。`web.network_get` 早已用 `_spill_text` 按编码体积兜底;现在 `flow_get` 对齐:当内联体的
+  **编码形态**会越界时,把精确的原始字节落到 `body_path`(而非内联一份被截断或重编码的),不再只看字符数。顺带用 `_bounded_metadata` 把请求 `url`
+  按 `_MAX_URL_BYTES`=16KiB 兜住(此前在 `flow_get` 里无上限,会侵蚀留给编码检查的余量,`flows()` 早已这么兜)。既有 flow_get 测试不变(20 万字符
+  落盘、小文本/二进制内联路径行为如常)。新测(`test_proxy_flow_get_budget.py`):18 万全引号文本体(**短于字符上限**故只能靠编码闸)断言 `body`
+  不在、`body_path` 存在且落盘字节与原文一致、`size`=180000、整条编码体不超预算。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的
