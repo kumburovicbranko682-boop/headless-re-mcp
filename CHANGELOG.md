@@ -924,6 +924,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   自己也点明 addon/flow API 各版本有别)。新增抓包 gate:起一个一次性的本地 HTTP 源站,经代理 GET 它(纯
   HTTP,不需要 TLS/CA 信任),断言这条 flow 以正确的 method/url/status/host 被记录、`flow_get` 取回真实的
   请求/响应体、`export_har` 至少产出一条。已在 mitmproxy 12.2.3 实测通过。
+- **jsre 的 WASM 路径(wabt)补上真实 live 覆盖**。`wasm.wat`/`wasm.info` 的单测都 mock 掉
+  `wasm2wat`/`wasm-objdump` 的输出,结构上抓不到「装着的 wabt 吐出客户端处理不了的东西」这类
+  漂移——而 wabt 是本工程里唯一在 Linux 上能真跑、却从没被 live gate 碰过的具名后端。新增 WASM
+  gate:把一个极小模块(导出 `add` 函数外加一段 memory)的 wasm 字节内嵌进测试(只依赖
+  `wasm2wat`/`wasm-objdump`,不需要 `wat2wasm`),对它真跑两条工具,断言 `wasm2wat` 的 WAT
+  回环里带着 `(module`、`export "add"`、`i32.add`,`wasm-objdump -h -x` 列出 Type/Export/Code
+  段与 `add` 符号(证明是段遍历解析成功,而非只读了文件头)。gate 像服务一样从 settings/PATH
+  解析 wabt,缺失时干净 skip(skip≠pass)。已在 wabt 1.0.41 实测通过,并确认未配置 wabt 时按预期
+  skip。
 
 ### 变更（Android 后端清理）
 
