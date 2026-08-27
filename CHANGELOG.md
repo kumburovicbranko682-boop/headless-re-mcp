@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（device.logcat 把带非换行分隔符的一条日志切成碎片）
+
+- `device.logcat` 过去用 `text.splitlines()` 切分抓到的日志。`splitlines()` 除了 `\n` 还会在
+  U+2028 / U+2029 / U+0085 以及垂直制表等控制字符处断行，而这些字符都可能原样出现在一条日志
+  *消息*里——混合型 App 打印 JS 字符串时 U+2028 是常态，二进制载荷当文本打印时也会带这些控制字节。
+  于是一条完整日志被撕成若干碎片：`count` 虚高，某个碎片被当成一条完整日志（正是字符上限逻辑丢弃
+  首行残行时要避免的误读），而且因为只保留最后 `lines` 条，一条真实的较旧日志会被挤出末尾给幻影
+  碎片让位。改为只按 `\n`（含转发链路补的 `\r\n`）切分记录——与字符上限修剪本就依据的 `\n` 一致——
+  其余字符一律当作消息内容保留；末尾单个换行不再产生空记录，`\r\n` 的回车照旧剥除。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

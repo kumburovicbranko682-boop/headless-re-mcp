@@ -348,6 +348,31 @@ def _file_mode_size(info: Any) -> tuple[int, int]:
     return mode, size
 
 
+def _logcat_records(text: str) -> list[str]:
+    """Split a logcat dump into records on the newline that delimits them.
+
+    ``str.splitlines()`` also breaks on U+2028, U+2029, U+0085 and the vertical
+    control characters (\\v, \\f, \\x1c-\\x1e), and a logcat *message* carries any
+    of those verbatim from the app under analysis -- a hybrid app logging a
+    JavaScript string embeds U+2028 as a matter of course, and a binary payload
+    logged as text carries the control bytes. That tore one log entry into
+    fragments: the count came back inflated, a fragment read as a complete entry
+    (the very mis-parse the character-cap guard drops its leading partial line to
+    avoid), and because only the last ``lines`` survive, a genuine older entry
+    was pushed out of the tail to make room for the phantom.
+
+    logcat delimits records with ``\\n`` (``\\r\\n`` on transports that add the
+    carriage return), so split on that alone -- matching the ``\\n`` the
+    character-cap trim above already navigates by -- and keep every other
+    character as the message content it is. A single trailing newline does not
+    yield an empty final record, the way ``splitlines()`` behaved.
+    """
+    records = text.split("\n")
+    if records and records[-1] == "":
+        records.pop()
+    return [record.rstrip("\r") for record in records]
+
+
 class AdbBackend:
     def __init__(self, adb_path: Path | None = None) -> None:
         self._adbutils: Any = None
@@ -683,7 +708,7 @@ class AdbBackend:
             text = text[-_MAX_LOGCAT_CHARS:]
             newline = text.find("\n")
             text = text[newline + 1 :] if newline != -1 else ""
-        out_lines = text.splitlines()[-capped:]
+        out_lines = _logcat_records(text)[-capped:]
         return {
             "lines": out_lines,
             "count": len(out_lines),

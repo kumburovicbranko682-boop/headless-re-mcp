@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from headless_re_mcp.backends.adb.client import _MAX_LOGCAT_CHARS, AdbBackend
 
 
@@ -96,6 +98,62 @@ def test_logcat_clamps_the_requested_line_count() -> None:
     assert payload["requested"] == 5000
     # The device-side -t argument carries the same clamped number, never 99999.
     assert dev.calls == [["logcat", "-d", "-t", "5000"]]
+
+
+@pytest.mark.parametrize(
+    "sep",
+    [
+        "\u2028",  # LINE SEPARATOR -- a hybrid app logging a JS string emits this
+        "\u2029",  # PARAGRAPH SEPARATOR
+        "\u0085",  # NEL
+        "\x0b",  # VERTICAL TAB -- a binary payload logged as text carries these
+        "\x0c",  # FORM FEED
+    ],
+)
+def test_logcat_keeps_one_entry_whole_across_a_non_newline_separator(sep: str) -> None:
+    """A record delimiter is ``\\n`` alone, not every char ``splitlines`` breaks on.
+
+    ``str.splitlines()`` splits on U+2028/U+2029/U+0085 and the vertical control
+    characters too, and an app logs any of those inside a single message. The old
+    reader tore that one entry into fragments: ``count`` came back inflated and a
+    fragment read as a complete log line. logcat delimits with ``\\n``, so the
+    entry must survive the read whole with its separator intact.
+    """
+    dump = f"aaa: start\nbbb: mid{sep}tail\nccc: end\n"
+    payload = _backend_with(_ScriptedDev({("logcat",): dump})).logcat(
+        "emulator-5554", lines=200
+    )
+    assert payload["count"] == 3
+    assert payload["lines"] == ["aaa: start", f"bbb: mid{sep}tail", "ccc: end"]
+
+
+def test_logcat_tail_is_not_displaced_by_a_separator_in_a_message() -> None:
+    """Asking for the last N returns N genuine entries, not fragments of them.
+
+    Over-splitting one message inflated the line count, so ``[-N:]`` dropped a
+    real older entry to make room for a phantom fragment. The newest N records
+    must be exactly the newest N log lines.
+    """
+    dump = "aaa: start\nbbb: mid\u2028tail\nccc: end\n"
+    payload = _backend_with(_ScriptedDev({("logcat",): dump})).logcat(
+        "emulator-5554", lines=2
+    )
+    assert payload["count"] == 2
+    assert payload["lines"] == ["bbb: mid\u2028tail", "ccc: end"]
+
+
+def test_logcat_still_strips_carriage_returns_and_the_trailing_blank() -> None:
+    """Splitting on the record newline keeps the old CRLF and trailing behaviour.
+
+    ``splitlines()`` dropped the ``\\r`` of a ``\\r\\n`` transport and never emitted
+    an empty final record for a trailing newline; the newline-only split must do
+    the same, while still keeping a genuine interior blank line.
+    """
+    payload = _backend_with(_ScriptedDev({("logcat",): "a\r\n\r\nb\r\n"})).logcat(
+        "emulator-5554", lines=200
+    )
+    assert payload["lines"] == ["a", "", "b"]
+    assert payload["count"] == 3
 
 
 def test_packages_reports_has_more_and_sorts_the_page() -> None:
