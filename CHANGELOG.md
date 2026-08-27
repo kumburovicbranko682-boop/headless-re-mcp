@@ -116,6 +116,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的递归与大小写直测,以及 `_SETTINGS_ENV_MAP` 只引用真实 `Settings` 字段的漂移护栏(否则改名
   会让某个 `HEADLESS_RE_*` 路径从生成配置里悄悄消失)。
 
+### 修复（proxy HAR 导出未受产物上限约束）
+
+- `proxy.export_har` 把每条保留 flow 序列化后无条件落盘，唯独它不受
+  `UNREGISTERED_CAPTURE_MAX_BYTES` 约束——而其余产物写入方(含对等的 `web.har_export`)都会。
+  单条摘要 URL 上限 16 KiB，但 2000 条累加、再被 JSON 转义把连续反斜杠/引号翻倍后，足以让 HAR 越过
+  该上限,写出一份别处一律禁止的超限产物。现与 `web.har_export` 对齐:超限时按 1/8 逐批丢弃最新条目
+  直到装得下并置 `truncated`,若连空日志骨架都超限则报 `too_large`(不落盘);返回值补 `truncated` 与
+  `size`,与 web 侧字段一致。新增回归测试直测超限触发丢弃、`size` 与实际落盘字节一致、空骨架仍超限即拒、
+  以及转义放大的 URL 场景(计数上限单独拦不住)保持在真实上限之内。
+
 ### 修复（托管质量门）
 
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
