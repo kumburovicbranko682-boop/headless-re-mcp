@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 from urllib.parse import urlsplit
 
 from headless_re_mcp.core.models import (
@@ -129,6 +129,7 @@ class SessionRegistry:
             metadata: dict[str, Any] = {}
             if kind is TargetKind.PE:
                 architecture = detect_pe_architecture(path)
+                metadata = describe_pe_clr(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             session = Session(
@@ -1408,3 +1409,122 @@ def detect_pe_architecture(path: Path) -> Architecture:
     if machine == 0x8664:
         return Architecture.X64
     raise ValueError(f"unsupported PE machine 0x{machine:04x}: {path}")
+
+
+# A .NET assembly is a PE with a COM descriptor data directory (index 14) that
+# points at the CLR (COR20) header, whose MetaData directory points at the BSJB
+# metadata root. Whether a PE is managed -- and its runtime and metadata version
+# -- is the first fork in a Windows-binary triage (native RE vs the dotnet.*
+# tools), so surface it stdlib-only. The heavier assembly-name table walk stays
+# in dotnet.inspect; this only reads the headers via seeks (no hash, no full
+# read), so it never regresses session creation over a large native PE.
+_PE_COM_DESCRIPTOR_DIR = 14
+_PE_MAX_SECTIONS = 96
+_CLR_METADATA_MAGIC = b"BSJB"
+_CLR_MAX_VERSION_LEN = 256
+_COMIMAGE_FLAGS_ILONLY = 0x00000001
+
+
+def describe_pe_clr(path: Path) -> dict[str, Any]:
+    """Tool-free .NET identity facts for a PE; ``{}`` for a native binary.
+
+    Fail-closed and cheap: reads only the PE/CLR headers by seeking, so a native
+    PE returns ``{}`` after a few small reads and a managed one never has its
+    whole body read or hashed a second time.
+    """
+    major = minor = entry_token = flags = None
+    metadata_version: str | None = None
+    try:
+        with path.open("rb") as stream:
+            dos = stream.read(0x40)
+            if len(dos) < 0x40 or dos[:2] != b"MZ":
+                return {}
+            stream.seek(int.from_bytes(dos[0x3C:0x40], "little"))
+            coff = stream.read(24)
+            if len(coff) < 24 or coff[:4] != b"PE\x00\x00":
+                return {}
+            num_sections = int.from_bytes(coff[6:8], "little")
+            optional = stream.read(int.from_bytes(coff[20:22], "little"))
+            magic = int.from_bytes(optional[0:2], "little") if len(optional) >= 2 else 0
+            if magic == 0x10B:  # PE32
+                dir_count_off = 92
+            elif magic == 0x20B:  # PE32+
+                dir_count_off = 108
+            else:
+                return {}
+            if dir_count_off + 4 > len(optional):
+                return {}
+            dir_count = int.from_bytes(optional[dir_count_off : dir_count_off + 4], "little")
+            if dir_count <= _PE_COM_DESCRIPTOR_DIR:
+                return {}
+            entry = dir_count_off + 4 + _PE_COM_DESCRIPTOR_DIR * 8
+            if entry + 8 > len(optional):
+                return {}
+            clr_rva = int.from_bytes(optional[entry : entry + 4], "little")
+            if clr_rva == 0:
+                return {}  # no CLR directory: a native PE
+            sections = _pe_sections(stream.read(min(num_sections, _PE_MAX_SECTIONS) * 40))
+            clr_off = _pe_rva_to_offset(sections, clr_rva)
+            if clr_off is not None:
+                stream.seek(clr_off)
+                cor20 = stream.read(24)
+                if len(cor20) >= 24:
+                    major = int.from_bytes(cor20[4:6], "little")
+                    minor = int.from_bytes(cor20[6:8], "little")
+                    flags = int.from_bytes(cor20[16:20], "little")
+                    entry_token = int.from_bytes(cor20[20:24], "little")
+                    metadata_version = _clr_metadata_version(
+                        stream, sections, int.from_bytes(cor20[8:12], "little")
+                    )
+    except OSError:
+        return {}
+    return {
+        "dotnet": {
+            "is_dotnet": True,
+            "runtime_version": (
+                f"{major}.{minor}" if major is not None and minor is not None else None
+            ),
+            "metadata_version": metadata_version,
+            "entry_point_token": entry_token,
+            "il_only": bool(flags & _COMIMAGE_FLAGS_ILONLY) if flags is not None else False,
+        }
+    }
+
+
+def _pe_sections(table: bytes) -> list[tuple[int, int, int, int]]:
+    """Parse the section table into (virtual_addr, span, raw_ptr, raw_size) rows."""
+    rows: list[tuple[int, int, int, int]] = []
+    for i in range(len(table) // 40):
+        row = table[i * 40 : i * 40 + 40]
+        virtual_size = int.from_bytes(row[8:12], "little")
+        virtual_addr = int.from_bytes(row[12:16], "little")
+        raw_size = int.from_bytes(row[16:20], "little")
+        raw_ptr = int.from_bytes(row[20:24], "little")
+        rows.append((virtual_addr, max(virtual_size, raw_size), raw_ptr, raw_size))
+    return rows
+
+
+def _pe_rva_to_offset(sections: list[tuple[int, int, int, int]], rva: int) -> int | None:
+    for virtual_addr, span, raw_ptr, raw_size in sections:
+        if virtual_addr <= rva < virtual_addr + span:
+            delta = rva - virtual_addr
+            if raw_size == 0 or delta < raw_size:
+                return raw_ptr + delta
+    return None
+
+
+def _clr_metadata_version(
+    stream: BinaryIO, sections: list[tuple[int, int, int, int]], meta_rva: int
+) -> str | None:
+    meta_off = _pe_rva_to_offset(sections, meta_rva)
+    if meta_off is None:
+        return None
+    stream.seek(meta_off)
+    root = stream.read(16)
+    if len(root) < 16 or root[:4] != _CLR_METADATA_MAGIC:
+        return None
+    version_len = int.from_bytes(root[12:16], "little")
+    if not 0 < version_len <= _CLR_MAX_VERSION_LEN:
+        return None
+    raw = stream.read(version_len)
+    return raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")

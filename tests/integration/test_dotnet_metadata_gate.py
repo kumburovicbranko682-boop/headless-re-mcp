@@ -57,7 +57,15 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         )
     service = _service(tmp_path)
     try:
-        session_id = _data(service.create_session(str(_FIXTURE)))["session"]["id"]
+        created = _data(service.create_session(str(_FIXTURE)))["session"]
+        session_id = created["id"]
+
+        # Session creation already reads the managed-vs-native fork stdlib-only:
+        # the metadata carries a dotnet block before any dotnet.* tool runs.
+        session_facts = created["metadata"]["dotnet"]
+        assert session_facts["is_dotnet"] is True
+        assert session_facts["il_only"] is True
+        assert session_facts["entry_point_token"] == 0x06000002
 
         # inspect: a verified, pure-managed CLR image with real metadata.
         report = _data(service.dotnet_inspect(session_id, require_verified=True))
@@ -69,6 +77,8 @@ def test_dotnet_metadata_inspect_enumerate_il_xrefs(tmp_path: Path) -> None:
         assert "ILONLY" in report["flags_decoded"]
         assert "#~" in report["streams"] and "#Strings" in report["streams"]
         assert str(report["metadata_version"]).startswith("v")
+        # The two readers parse the BSJB root independently; they must agree.
+        assert report["metadata_version"] == session_facts["metadata_version"]
         assert report["module_name"] == "MyModule.dll"
         # assembly_name only reads correctly once the walker steps over the
         # TypeDef/Field/MethodDef tables that sit before Assembly in any real
