@@ -343,6 +343,7 @@ jobs:
             tests/integration/test_android_manifest_gate.py \
             tests/integration/test_android_jadx_apk_gate.py \
             tests/integration/test_android_sign_gate.py \
+            tests/integration/test_android_sign_service_gate.py \
             tests/integration/test_android_cert_gate.py \
             tests/integration/test_android_apktool_resources_gate.py \
             tests/integration/test_agent_browser_smoke.py \
