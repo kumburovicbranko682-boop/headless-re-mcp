@@ -151,10 +151,21 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     optional = file_header + 20
     if optional + optional_size > len(image):
         raise PeRebuildError("optional header is truncated")
+    # SizeOfOptionalHeader is the dump's own value, but every field below is read
+    # at a fixed offset regardless of it. An understated size passes the span
+    # check above while the image still ends inside those fields, and
+    # struct.unpack_from would then raise a bare struct.error -- which is not a
+    # ValueError, so the service envelope files it as an internal_error incident
+    # instead of the clean refusal every other unusable header here produces.
+    if optional + 2 > len(image):
+        raise PeRebuildError("optional header does not contain its magic")
     magic = _u16(image, optional)
     pe32_plus = magic == 0x20B
     if magic not in {0x10B, 0x20B}:
         raise PeRebuildError(f"unsupported optional magic: {magic:#x}")
+    fixed_optional = 112 if pe32_plus else 96
+    if optional + fixed_optional > len(image):
+        raise PeRebuildError("optional header is truncated for its magic")
 
     entry_point_rva = _u32(image, optional + 16)
     image_base = (
@@ -168,7 +179,13 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     dll_characteristics = _u16(image, optional + 70)
     dir_count_off = optional + (108 if pe32_plus else 92)
     dir_off = optional + (112 if pe32_plus else 96)
-    dir_count = min(_u32(image, dir_count_off), 16)
+    # The fixed fields are guaranteed present now, but the directory array sized
+    # by NumberOfRvaAndSizes follows them; clamp to what the image actually holds
+    # so a dump that ends mid-array is short a directory rather than a
+    # struct.error. A truthful header keeps its directories inside the declared
+    # optional size, so this never trims a well-formed dump.
+    available = max(0, (len(image) - dir_off) // 8)
+    dir_count = min(_u32(image, dir_count_off), 16, available)
     directories = []
     for index in range(dir_count):
         base = dir_off + index * 8

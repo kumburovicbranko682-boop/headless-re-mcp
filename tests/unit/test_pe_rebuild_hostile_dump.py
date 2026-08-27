@@ -17,6 +17,7 @@ import pytest
 from headless_re_mcp.unpack.pe_rebuild import (
     MAX_SECTIONS,
     PeRebuildError,
+    parse_runtime_headers,
     rebuild_imports,
     remap_dump_to_file,
 )
@@ -312,3 +313,85 @@ def test_import_rebuild_refuses_a_sizeofimage_that_overflows_the_new_section_rva
     assert "SizeOfImage" in str(caught.value)
     rebuilt, _report = rebuild_imports(_minimal_rebuildable_pe(), entries)
     assert len(rebuilt) > 0
+
+
+def _truncatable_pe(
+    *,
+    total_len: int,
+    optional_size: int = 0,
+    number_of_rva_and_sizes: int | None = None,
+) -> bytes:
+    """A DOS+PE stub whose optional header ends wherever the test wants it to.
+
+    parse_runtime_headers indexes the PE32+ optional header at fixed offsets --
+    AddressOfEntryPoint at +16, NumberOfRvaAndSizes at +108, the directory array
+    at +112 -- no matter what SizeOfOptionalHeader claims. An image that ends
+    inside those offsets is the case the guards cover; a small optional_size
+    slips past the declared-span check so the fixed reads are what run off the
+    end.
+    """
+    pe_offset = 0x40
+    file_header = pe_offset + 4
+    optional = file_header + 20
+    data = bytearray(total_len)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, pe_offset)
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    struct.pack_into("<H", data, file_header, 0x8664)  # machine x64
+    struct.pack_into("<H", data, file_header + 2, 0)  # NumberOfSections
+    struct.pack_into("<H", data, file_header + 16, optional_size)
+    if optional + 2 <= total_len:
+        struct.pack_into("<H", data, optional, 0x20B)  # PE32+ magic
+    if number_of_rva_and_sizes is not None and optional + 112 <= total_len:
+        struct.pack_into("<I", data, optional + 108, number_of_rva_and_sizes)
+    return bytes(data)
+
+
+@pytest.mark.parametrize(
+    "total_len",
+    [
+        0x58,  # image ends exactly at the optional header, before the magic
+        0x5C,  # magic fits, but AddressOfEntryPoint at +16 does not
+        0x58 + 40,  # somewhere in the middle of the fixed fields
+        0x58 + 111,  # one byte short of NumberOfRvaAndSizes at +108
+    ],
+)
+def test_a_truncated_optional_header_is_a_named_refusal_not_a_struct_error(
+    total_len: int,
+) -> None:
+    """SizeOfOptionalHeader is the dump's own value; the reads are at fixed offsets.
+
+    An understated size passes the declared-span check while the image still
+    ends inside AddressOfEntryPoint or the alignment fields, so struct.unpack_from
+    used to raise a bare struct.error. That is not a ValueError, so the service
+    envelope filed it as an internal_error incident instead of the invalid_request
+    every other unusable header here reports. The refusal must be a PeRebuildError
+    -- and, so the mapping holds, a ValueError.
+    """
+    dump = _truncatable_pe(total_len=total_len)
+
+    with pytest.raises(PeRebuildError) as caught:
+        parse_runtime_headers(dump)
+
+    assert isinstance(caught.value, ValueError)
+
+
+def test_a_dump_that_ends_inside_the_directory_array_is_short_a_directory() -> None:
+    """NumberOfRvaAndSizes sizes the array that follows the fixed fields.
+
+    The fixed fields fit here, but the image stops after three of the sixteen
+    directories the header declares. Reading all sixteen ran off the end; the
+    reader now keeps the directories the image actually holds rather than
+    raising, the same way it already clamps a count above the sixteen the format
+    allows.
+    """
+    pe_offset = 0x40
+    optional = pe_offset + 4 + 20
+    dir_off = optional + 112
+    dump = _truncatable_pe(
+        total_len=dir_off + 3 * 8, optional_size=4, number_of_rva_and_sizes=16
+    )
+
+    headers = parse_runtime_headers(dump)
+
+    assert len(headers["directories"]) == 3
