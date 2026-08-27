@@ -81,6 +81,19 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.uses_libraries")
+    def apk_uses_libraries(session_id: str) -> dict[str, Any]:
+        """List declared <uses-library> / <uses-native-library> dependencies.
+
+        These are shared framework and platform native libraries the app
+        declares a dependency on and loads from the device at runtime, which is
+        a different fact from apk.native_libs (the .so files packaged in the
+        APK). Answers with libraries (each carrying name, type java|native, and
+        required), count, and has_more; required defaults to true when the
+        manifest omits android:required, matching Android.
+        """
+        return _dump(analysis.apk_uses_libraries(session_id))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,

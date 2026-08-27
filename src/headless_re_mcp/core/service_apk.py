@@ -116,6 +116,9 @@ class ApkAnalysisMixin:
     def apk_native_libs(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "native_libs")
 
+    def apk_uses_libraries(self, session_id: str) -> Result[JsonObject]:
+        return self._apk_call(session_id, "uses_libraries")
+
     def apk_classes(self, session_id: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)

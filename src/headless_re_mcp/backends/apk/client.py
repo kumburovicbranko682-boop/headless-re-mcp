@@ -23,6 +23,7 @@ _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
+_MAX_USES_LIBRARIES = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
@@ -54,6 +55,22 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+# Android attribute namespace. androguard leaves manifest element tags bare but
+# keeps attributes namespaced, so a raw `el.get("name")` on <uses-library> misses
+# `android:name` entirely. Mirror androguard's own resolution
+# (`tag.get(_ns(attr)) or tag.get(attr)`) so the parse matches its accessors.
+_ANDROID_NS_URI = "http://schemas.android.com/apk/res/android"
+
+
+def _android_attr(el: Any, name: str) -> str | None:
+    value = el.get(f"{{{_ANDROID_NS_URI}}}{name}")
+    if value is None:
+        value = el.get(name)
+    if value is None:
+        return None
+    return str(value)
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -323,6 +340,52 @@ class ApkClient:
             "native_libs": libs,
             "abis": sorted(abis),
             "count": len(libs),
+            "has_more": has_more,
+        }
+
+    def uses_libraries(self, path: Path) -> JsonObject:
+        """List <uses-library> / <uses-native-library> manifest declarations.
+
+        This is the app's declared dependency on shared framework and platform
+        native libraries (loaded from the device at runtime), which is a
+        different fact from apk.native_libs (the .so files packaged inside the
+        APK). Each entry carries android:required, defaulting to true per the
+        Android manifest spec when the attribute is absent, so an optional
+        dependency is not mistaken for a hard one.
+        """
+        apk = self._apk(path)
+        try:
+            root = apk.get_android_manifest_xml()
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to read manifest: {exc}") from exc
+        if root is None:
+            raise ApkError("backend_error", "manifest xml unavailable")
+        libraries: list[JsonObject] = []
+        has_more = False
+        for tag, kind in (("uses-library", "java"), ("uses-native-library", "native")):
+            for el in root.iter(tag):
+                name = _android_attr(el, "name")
+                if not name:
+                    continue
+                if len(libraries) >= _MAX_USES_LIBRARIES:
+                    has_more = True
+                    break
+                required = _android_attr(el, "required")
+                libraries.append(
+                    {
+                        "name": str(name),
+                        "type": kind,
+                        # Android defaults uses-library required to true.
+                        "required": required is None
+                        or str(required).lower() != "false",
+                    }
+                )
+            if has_more:
+                break
+        libraries.sort(key=lambda item: (item["type"], item["name"]))
+        return {
+            "libraries": libraries,
+            "count": len(libraries),
             "has_more": has_more,
         }
 
