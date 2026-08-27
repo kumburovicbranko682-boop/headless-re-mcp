@@ -247,6 +247,80 @@ def test_consume_approval_refuses_a_cancelled_run(tmp_path: Path) -> None:
     assert store.consume_approval(run.id, "w1", str(proposed["args_sha256"])) is False
 
 
+class _CancelRaceStore(AgentStore):
+    """A store whose approval consume loses a race to a concurrent cancel.
+
+    consume_approval already refuses a cancelled run, so a stop that lands
+    between the orchestrator's cancel check and its consume call makes a granted
+    approval un-consumable. This reproduces that exact window deterministically:
+    the first consume flips cancel_requested and refuses, as it would if the
+    user pressed stop a moment earlier.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.raced = False
+
+    def consume_approval(self, run_id: str, tool_call_id: str, args_sha256: str) -> bool:
+        if not self.raced:
+            self.raced = True
+            self.request_cancel(run_id)
+            return False
+        return super().consume_approval(run_id, tool_call_id, args_sha256)
+
+
+@pytest.mark.asyncio
+async def test_cancel_racing_approval_consume_ends_cancelled_not_failed(
+    tmp_path: Path,
+) -> None:
+    """A stop that beats the consume must not be filed as a failure.
+
+    The orchestrator checks for cancellation, then consumes the approval. When a
+    cancel lands in that gap the consume refuses, and the old code raised
+    PermissionError -- which the run's error boundary turned into a FAILED run
+    with a minted incident id, for a user who simply pressed stop. It must end
+    CANCELLED with no incident, and the approved tool must never run.
+    """
+    invoked: list[str] = []
+
+    def write() -> JsonObject:
+        invoked.append("write")
+        return {"ok": True, "data": {"changed": True}}
+
+    store = _CancelRaceStore(tmp_path / "race.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "do the write")
+    provider = FakeProvider([(ProviderToolCall("w1", "test.write", {}),), ()])
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_spec("test.write", write, effect=ToolEffect.STATE_CHANGE)]),
+        _configs(tmp_path),
+        provider_factory=lambda _: provider,
+    )
+    run = await runner.start_run(thread.id)
+    assert (
+        await _wait_status(store, run["id"], {RunStatus.AWAITING_APPROVAL})
+        is RunStatus.AWAITING_APPROVAL
+    )
+    event = next(
+        item for item in store.list_events(run["id"]) if item.type == "approval.required"
+    )
+    await runner.decide(run["id"], "w1", str(event.data["args_sha256"]), approved=True)
+
+    assert (
+        await _wait_status(store, run["id"], {RunStatus.CANCELLED, RunStatus.FAILED})
+        is RunStatus.CANCELLED
+    )
+    assert store.raced, "the injected race must have fired"
+    final = store.get_run(run["id"])
+    assert final is not None
+    assert "incident" not in (final.error or ""), "a stop must not mint an incident"
+    events = store.list_events(run["id"])
+    assert any(item.type == "run.cancelled" for item in events)
+    assert not any(item.type == "run.failed" for item in events)
+    assert invoked == [], "the tool must not run once the approval is refused"
+
+
 @pytest.mark.asyncio
 async def test_scheduler_timeout_cancels_the_bound_orchestrator_run(tmp_path: Path) -> None:
     """A wait timeout must stop the run, not only flip the row."""

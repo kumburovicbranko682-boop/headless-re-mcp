@@ -674,6 +674,15 @@ class AgentOrchestrator:
                     if self._check_cancelled(run_id):
                         raise asyncio.CancelledError
                     if not self.store.consume_approval(run_id, call_id, str(proposed["args_sha256"])):
+                        # consume_approval also refuses once the run is cancelled
+                        # or terminal, so a stop that lands between the check
+                        # above and this call turns a granted approval into a
+                        # refused one. That is the user pressing stop, not a
+                        # defect: surface it as a cancellation so the run ends
+                        # CANCELLED, rather than raising here and minting a
+                        # FAILED incident for work nobody asked to fail.
+                        if self._check_cancelled(run_id):
+                            raise asyncio.CancelledError
                         raise PermissionError("approval could not be consumed")
                     break
                 await asyncio.sleep(0.1)
