@@ -142,3 +142,95 @@ def test_frida_server_ensure_does_not_report_success_if_the_session_closes_durin
         assert "closed" in result.error.message
     finally:
         service.close_all()
+
+
+def test_frida_spawn_does_not_report_success_if_the_session_closes_during_run(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A close mid-spawn must not persist the spawned pid on a dead session.
+
+    frida.spawn authorizes the pid it launches; if the session closes while the
+    device is spawning, reporting ok and writing that pid would leave a dead
+    session looking like it owns a running process -- the same failure the
+    server.ensure guard already prevents.
+    """
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+    session_id = ""
+
+    class _CloseThenSpawn:
+        def spawn(self, device_id: str | None, package: str, **kwargs: Any) -> dict[str, Any]:
+            service.close_session(session_id)
+            return {"pid": 4242, "package": package, "device": str(device_id)}
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_frida.FridaClient",
+        lambda *args, **kwargs: _CloseThenSpawn(),
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        service.registry.update_metadata(
+            session_id,
+            {"frida_authorized": {"device_id": "usb", "pids": [], "packages": []}},
+        )
+        result = service.frida_spawn(session_id, "com.example.app")
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+        auth = service.registry.get(session_id).metadata["frida_authorized"]
+        assert auth["pids"] == []
+        assert auth["packages"] == []
+    finally:
+        service.close_all()
+
+
+def test_frida_attach_app_does_not_report_success_if_the_session_closes_during_run(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A close mid-attach must not persist the resolved pid on a dead session."""
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+    session_id = ""
+
+    class _CloseThenList:
+        def applications(self, device_id: str | None, *, limit: int) -> dict[str, Any]:
+            del device_id, limit
+            service.close_session(session_id)
+            return {
+                "applications": [
+                    {"identifier": "com.example.app", "name": "Example", "pid": 5678}
+                ],
+                "count": 1,
+                "total": 1,
+                "has_more": False,
+            }
+
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_frida.FridaClient",
+        lambda *args, **kwargs: _CloseThenList(),
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        service.registry.update_metadata(
+            session_id,
+            {"frida_authorized": {"device_id": "usb", "pids": [], "packages": []}},
+        )
+        result = service.frida_attach_app(session_id, "com.example.app")
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+        auth = service.registry.get(session_id).metadata["frida_authorized"]
+        assert auth["pids"] == []
+        assert auth["packages"] == []
+    finally:
+        service.close_all()

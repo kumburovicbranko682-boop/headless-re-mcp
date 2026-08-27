@@ -157,6 +157,10 @@ class FridaDeviceMixin:
             auth = self._frida_auth(session_id)
             data = FridaClient().spawn(auth.get("device_id"), package)
             pid = int(data["pid"])
+            # A close during the spawn must not report success or persist the
+            # pid on a dead session -- the same guard frida.server.ensure and
+            # frida.device.connect apply after they touch the device.
+            self._require_open_session(session_id, "frida.spawn")
             auth = dict(auth)
             auth["pids"] = _append_recent(auth.get("pids"), pid)
             auth["packages"] = _append_recent(auth.get("packages"), package.strip())
@@ -190,6 +194,9 @@ class FridaDeviceMixin:
                     f"{pkg} is not running on the device; launch it (device.launch) "
                     "or use frida.spawn to start it",
                 )
+            # A close during the application scan must not persist authorization
+            # on a dead session (matches frida.spawn / frida.server.ensure).
+            self._require_open_session(session_id, "frida.attach.app")
             auth = dict(auth)
             auth["pids"] = _append_recent(auth.get("pids"), pid)
             auth["packages"] = _append_recent(auth.get("packages"), pkg)
