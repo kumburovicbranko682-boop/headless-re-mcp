@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（任务调度器无人值守整环 Gate）
+
+- 新集成 Gate `tests/integration/test_mission_scheduler_real_gate.py`（纯 Python,任何平台可跑）
+  第一次把 `MissionScheduler` 对着**真实编排器 + 真实工具目录 + 真实服务**跑——此前调度器的全部
+  单测都用假 `start_run`（FakeRunner）。这里用无后端、脚本化的 provider 驱动真正的无人值守栈。
+- 钉住长目标契约:**无人按下开始**（PENDING 任务仅由 `scheduler.tick()` 认领并驱动);
+  **一个目标跨多个 bounded run**（run1 打开样本、run2 用第一轮从真实工具结果学到的会话 id 记
+  finding、run3 出报告并声明 `MISSION_COMPLETE`;run 之间任务回到 PENDING 由下一 tick 续跑,
+  每个 run 都把续跑契约追加到同一线程——正好三个 run,不多不少);**完成以模型的话为准**
+  （仅当某 run 的最终回复以标记开头时任务才转 COMPLETED,此后真实服务侧确有会话、finding 与
+  报告制品）。全程无网络、不打开任何分析后端。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
