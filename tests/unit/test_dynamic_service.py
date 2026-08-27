@@ -1630,6 +1630,40 @@ def test_memory_regions_and_modules_dump_service_wrappers(tmp_path: Path) -> Non
     assert too_large.error.code == "dump_too_large"
 
 
+def test_imports_read_rejects_a_size_over_the_iat_ceiling(tmp_path: Path) -> None:
+    """imports.read must refuse an oversized range at the service boundary.
+
+    The schema declares le=MAX_IAT_READ_BYTES and the native ReadImports rejects
+    anything above MaxImportScanBytes, but the agent transport reaches the
+    handler with no schema check. Without a service-side ceiling a caller could
+    ask for a gigabyte-wide IAT and occupy a worker until the native side
+    refused it; modules_dump already caps its own size the same way.
+    """
+    from headless_re_mcp.core.limits import MAX_IAT_READ_BYTES
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    # A read exactly at the ceiling is legal and still reaches the worker.
+    ok = service.imports_read(session_id, worker.module_base, MAX_IAT_READ_BYTES)
+    assert ok.ok and ok.data is not None
+    assert any(req[0] == "imports.read" for req in worker.requests)
+
+    before = len(worker.requests)
+    too_large = service.imports_read(session_id, worker.module_base, MAX_IAT_READ_BYTES + 1)
+    assert not too_large.ok and too_large.error is not None
+    assert too_large.error.code == "invalid_params"
+    assert too_large.error.details is not None
+    assert too_large.error.details["max_iat_read_bytes"] == MAX_IAT_READ_BYTES
+    # The oversized request never travelled to the worker.
+    assert len(worker.requests) == before
+
+
 def test_modules_dump_rejects_a_worker_redirecting_the_artifact_path(tmp_path: Path) -> None:
     outside = tmp_path / "outside.bin"
     outside.write_bytes(b"keep")

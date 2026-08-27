@@ -30,6 +30,14 @@ PE_REBUILD_MEMORY_HEADROOM = 0.8
 # Refuse to dump more than this from one module in a single call.
 MAX_MODULE_DUMP_BYTES = 64 * 1024 * 1024
 
+# Refuse to read more than this from one IAT range in a single call. A real
+# import address table is a few thousand pointers; 16 MiB is already ~2M of
+# them. The imports.read tool schema declares this same ceiling, but the agent
+# transport calls handlers straight from model arguments with no schema check,
+# so the service must enforce it too -- exactly as modules_dump enforces
+# MAX_MODULE_DUMP_BYTES rather than trusting the schema alone.
+MAX_IAT_READ_BYTES = 16 * 1024 * 1024
+
 # Static results larger than this are written to an artifact instead of inlined.
 MAX_STATIC_INLINE_TEXT = 64 * 1024
 

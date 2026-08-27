@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.core.addressing import RuntimeModuleCatalog
-from headless_re_mcp.core.limits import MAX_MODULE_DUMP_BYTES
+from headless_re_mcp.core.limits import MAX_IAT_READ_BYTES, MAX_MODULE_DUMP_BYTES
 from headless_re_mcp.core.models import BackendKind, ModuleSelector, Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _register_capture, _timeline_append
@@ -728,6 +728,19 @@ class DynamicInspectMixin:
             return Result[JsonObject](
                 ok=False,
                 error=RpcError(code="invalid_params", message="size must be a positive integer"),
+            )
+        # The imports.read schema declares le=MAX_IAT_READ_BYTES, but the agent
+        # transport reaches this handler with no schema check, so a huge range
+        # would otherwise drive the worker to read far past any real IAT. Bound
+        # it here the same way modules_dump bounds its own dump size.
+        if size > MAX_IAT_READ_BYTES:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="size exceeds the maximum IAT read range",
+                    details={"size": size, "max_iat_read_bytes": MAX_IAT_READ_BYTES},
+                ),
             )
         return self._dynamic_request(
             session_id,

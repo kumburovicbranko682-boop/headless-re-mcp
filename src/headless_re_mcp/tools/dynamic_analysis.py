@@ -4,6 +4,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
+from headless_re_mcp.core.limits import MAX_IAT_READ_BYTES
 from headless_re_mcp.core.models import ModuleSelector, Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
@@ -271,7 +272,7 @@ def build_dynamic_analysis_tools(analysis: AnalysisService) -> tuple[BoundTool, 
     def imports_read(
         session_id: str,
         iat_va: Annotated[int, Field(ge=0)],
-        size: Annotated[int, Field(ge=1, le=16 * 1024 * 1024)],
+        size: Annotated[int, Field(ge=1, le=MAX_IAT_READ_BYTES)],
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Read one confirmed IAT range and resolve thunks against loaded exports.
