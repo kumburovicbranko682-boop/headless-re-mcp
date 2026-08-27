@@ -182,9 +182,47 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         module_name is the module's own name or null. function_names lists rows
         of index and name sorted by index; count may be below limit when the
         result-size budget trimmed the page, so read count, not limit, and page
-        on has_more. incomplete is true when the name section was truncated or
+        on has_more.         incomplete is true when the name section was truncated or
         hit the entry cap. The list field is function_names, not names or items.
         """
         return _dump(analysis.wasm_names(path, offset=offset, limit=limit))
+
+    @tools.tool(name="wasm.strings")
+    def wasm_strings(
+        path: str,
+        min_length: Annotated[int, Field(ge=1, le=256)] = 4,
+        contains: Annotated[str | None, Field(max_length=200)] = None,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Extract printable strings from a .wasm module's Data section (no wabt).
+
+        Reads the Data-section segments of the module's binary directly, so it
+        needs no wabt and cannot drift with a wabt version; an input over 16 MiB
+        is refused as too_large. This is the WASM analogue of pe.strings: the
+        literal pool a module ships -- URLs, API paths, format strings, error
+        text -- that neither wasm.info nor the import/export surface shows.
+        Answers with strings, count, total, offset, min_length, data_segments,
+        has_more and incomplete. strings are distinct printable-ASCII runs of at
+        least min_length characters, sorted; a run longer than 256 characters is
+        clipped. contains keeps only strings holding that case-insensitive
+        substring and adds filtered true (a blank filter is ignored); total is
+        the number of strings after any filter and is pageable. data_segments is
+        how many Data segments were scanned. incomplete is true when the Data
+        section was truncated mid-walk, an unknown segment layout was hit, or the
+        collection cap was reached, so a short list is not read as the whole
+        literal pool. count may be below limit when the result-size budget
+        trimmed the page, so read count, not limit, and page on has_more. The
+        list field is strings, not items.
+        """
+        return _dump(
+            analysis.wasm_strings(
+                path,
+                min_length=min_length,
+                contains=contains,
+                offset=offset,
+                limit=limit,
+            )
+        )
 
     return tools.bindings

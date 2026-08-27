@@ -7,8 +7,8 @@ against a tiny embedded module -- an exported ``add`` function plus a memory --
 and asserts the WAT round-trips with that export and the objdump lists the
 sections. Portable: it resolves wabt from settings/PATH exactly as the service
 does and skips (skip != pass) when wabt is absent. The dependency-free readers
-(imports/exports/names/sections) run in a second test that never skips, since
-they read the module bytes in-process with no wabt.
+(imports/exports/names/sections/strings) run in further tests that never skip,
+since they read the module bytes in-process with no wabt.
 """
 
 from __future__ import annotations
@@ -163,3 +163,40 @@ def test_m11_wasm_imports_exports_read_from_bytes(tmp_path: Path) -> None:
     custom = next(row for row in named_sections if row["id"] == 0)
     assert custom["name"] == "custom"
     assert custom["custom_name"] == "name"
+
+
+@pytest.mark.integration
+def test_m11_wasm_strings_read_from_bytes(tmp_path: Path) -> None:
+    """wasm.strings pulls the Data-section literal pool from real bytes, no wabt.
+
+    Builds a spec-valid module with a memory and one active data segment holding
+    two distinct strings, then asserts the parser recovers both, honours a raised
+    min_length, and filters by a case-insensitive substring -- all in-process, so
+    this never skips on a wabt-less host.
+    """
+    payload = b"MARKER_STRING\x00https://example.test/v1"
+    magic = bytes.fromhex("0061736d01000000")
+    memory = bytes([5, 3, 1, 0, 1])  # memory section: one memory, min 1
+    # one active segment into memory 0 at i32.const 0, then the byte vector.
+    segment = b"\x00\x41\x00\x0b" + bytes([len(payload)]) + payload
+    data_body = bytes([1]) + segment
+    module = magic + memory + bytes([11, len(data_body)]) + data_body
+
+    fixture = tmp_path / "data.wasm"
+    fixture.write_bytes(module)
+    client = WasmClient(None)  # deliberately no wabt: strings never needs it
+
+    result = client.strings(fixture)
+    assert result["incomplete"] is False
+    assert result["data_segments"] == 1
+    assert result["min_length"] == 4
+    assert set(result["strings"]) == {"MARKER_STRING", "https://example.test/v1"}
+    assert "filtered" not in result
+
+    # A raised floor drops the shorter run (13 chars) but keeps the 23-char URL.
+    long_only = client.strings(fixture, min_length=20)
+    assert long_only["strings"] == ["https://example.test/v1"]
+
+    filtered = client.strings(fixture, contains="marker")  # case-insensitive
+    assert filtered["filtered"] is True
+    assert filtered["strings"] == ["MARKER_STRING"]

@@ -305,6 +305,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "wasm.exports",
         "wasm.names",
         "wasm.sections",
+        "wasm.strings",
         # Web dynamic (web.*)
         "web.open",
         "web.navigate",

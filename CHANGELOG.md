@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **274（157 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **275（158 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1407,6 +1407,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (`test_wasm_imports_exports.py`):type+import+export 三段地图带正确 id/name/count 与偏移不越界、自定义 `name`/`producers` 段按 `custom_name` 区分且不带 `count`、data_count 段读出其单一计数、未知 id 以
   十六进制呈现、段越界置 `incomplete` 且只保留已成功走完的段、非模块硬报错、WasmClient 无 wabt 也能分页读盘、缺文件报 `not_found`。实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对真实
   wat2wasm 产物读回 type/export/code 段与各自条数、段按文件序升序且不越界,并对带 name 段的模块经 `custom_name` 认出自定义 "name" 段。
+
+- **新增 `wasm.strings`:从一个 `.wasm` 模块的 Data 段抽取可打印字符串——即模块内嵌的字面量池(URL、API 路径、格式串、错误文本),是 `pe.strings` 的 WASM 版。** 此前 WASM 域看不到这层:`wasm.info` 只给段头
+  文本、`wasm.imports`/`exports` 只给宿主边界,字面量池无从查。新工具承接 `wasm.imports`/`exports`/`names`/`sections` 的二进制读取思路,直接走 Data 段各数据段(active/passive、MVP 与 bulk-memory 两种编码都
+  认)、跳过 active 段的 offset 初始化表达式,再从段字节里抽出长度不小于 `min_length`(默认 4)的极大可打印 ASCII 串——同样**不需要 wabt**、不随其版本漂移。回 `strings`(去重且排序)/`count`/`total`/`offset`/
+  `min_length`/`data_segments`/`has_more`/`incomplete`;`contains` 只保留含该(大小写不敏感)子串的串并置 `filtered`(空过滤忽略),`total` 为过滤后的可分页条数,`data_segments` 为扫过的段数。防敌意:单串超
+  256 字符即切分(不让一个巨大 run 独吞成一条)、去重串数触顶即停并置 `incomplete`;offset 初始化表达式只「跳过」不求值,遇不认识的段 flag 或无法跳过的 opcode 便停并置 `incomplete`——绝不猜段字节起点而把随后的
+  向量长度误读成数据。工具面 274→**275**(157→**158** 只读,写不变)。单测(`test_wasm_imports_exports.py`):可打印 run 抽取与 min_len 下限、单串切分不超上限、去重触顶置 incomplete、active/passive/带 memidx 三种段
+  flag 均解、global.get 的 offset 表达式可跳过、未知 offset opcode 停并置 incomplete、段越界置 incomplete、无 Data 段为空而非报错、非模块硬报错、WasmClient 无 wabt 也能过滤分页读盘且 `min_length` 下限被夹到 1、
+  缺文件报 `not_found`。实机测试(`test_m11_wasm_live_gate.py`,因不需 wabt 故不 skip)对含内存+一 active 数据段的真实模块读回两个字面串、按 `min_length` 抬高下限筛除短串、按大小写不敏感子串过滤。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

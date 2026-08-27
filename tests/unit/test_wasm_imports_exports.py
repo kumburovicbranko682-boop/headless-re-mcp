@@ -1,10 +1,11 @@
-"""wasm.imports / wasm.exports must read the module's host boundary from bytes.
+"""The dependency-free WASM readers must recover a module's static surface.
 
-These read the WebAssembly binary directly (no wabt), so the tests build minimal
-but real modules from bytes and assert the parser resolves the import/export
-surface, stays bounded on hostile/truncated input, and never requires a wabt
-install. The parser is exercised directly and through the WasmClient methods
-that add the file guard and pagination.
+wasm.imports / wasm.exports / wasm.sections / wasm.names / wasm.strings read the
+WebAssembly binary directly (no wabt), so the tests build minimal but real
+modules from bytes and assert the parsers resolve the import/export/section/name
+surface and the Data-section literal pool, stay bounded on hostile/truncated
+input, and never require a wabt install. Each parser is exercised directly and
+through the WasmClient method that adds the file guard and pagination.
 """
 
 from __future__ import annotations
@@ -473,4 +474,218 @@ def test_wasm_client_sections_missing_file_is_not_found(tmp_path: Path) -> None:
 def test_wasm_sections_docstring_names_its_fields() -> None:
     doc = _tool_docstring("wasm.sections")
     for token in ("sections", "custom_name", "count", "offset", "size", "incomplete"):
+        assert token in doc
+
+
+def _bytevec(payload: bytes) -> bytes:
+    # A WASM byte vector: a LEB length prefix (single byte for len < 128) then
+    # the raw bytes. All data-segment payloads here stay under that.
+    return bytes([len(payload)]) + payload
+
+
+def _data_active(payload: bytes, *, offset: int = 0) -> bytes:
+    # flag 0: active segment into memory 0, offset = i32.const <offset>; end.
+    return b"\x00" + b"\x41" + bytes([offset]) + b"\x0b" + _bytevec(payload)
+
+
+def _data_passive(payload: bytes) -> bytes:
+    # flag 1: passive segment, bytes only (no memory index, no offset expr).
+    return b"\x01" + _bytevec(payload)
+
+
+def _data_active_memidx(payload: bytes, *, memidx: int = 0, offset: int = 0) -> bytes:
+    # flag 2: active into an explicit memory index, then offset expr, then bytes.
+    return b"\x02" + bytes([memidx]) + b"\x41" + bytes([offset]) + b"\x0b" + _bytevec(payload)
+
+
+def _data_section(*segments: bytes) -> bytes:
+    return _section(11, _vec(list(segments)))
+
+
+def test_parse_data_strings_extracts_printable_ascii_runs() -> None:
+    """Printable runs in a data segment surface as distinct, sorted strings.
+
+    Non-printable bytes split runs; a run shorter than min_len (default 4) is
+    dropped. Measured on one active segment: "GET /path", "first_string" and
+    "second-one" survive, the 2-char "hi" is dropped, one segment, not
+    incomplete.
+    """
+    payload = b"first_string\x00\x00second-one\x01hi\x00GET /path"
+    module = _module(_data_section(_data_active(payload)))
+    strings, segments, incomplete = wf.parse_data_strings(module)
+    assert segments == 1
+    assert incomplete is False
+    assert strings == ["GET /path", "first_string", "second-one"]
+
+
+def test_parse_data_strings_respects_min_length() -> None:
+    """min_len is the floor on run length: raising it drops the shorter runs."""
+    module = _module(_data_section(_data_active(b"abc\x00abcd\x00abcde")))
+    assert wf.parse_data_strings(module, min_len=3) == (["abc", "abcd", "abcde"], 1, False)
+    assert wf.parse_data_strings(module, min_len=4) == (["abcd", "abcde"], 1, False)
+    assert wf.parse_data_strings(module, min_len=5) == (["abcde"], 1, False)
+
+
+def test_parse_data_strings_caps_individual_strings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run past the per-string clip is split, never returned as one giant string.
+
+    With the clip lowered to 8, a 20-'A' run yields clipped 8-char pieces (and a
+    4-char tail), so every returned string respects the cap.
+    """
+    monkeypatch.setattr(wf, "_MAX_STRING_CHARS", 8)
+    module = _module(_data_section(_data_active(b"A" * 20)))
+    strings, _segments, _incomplete = wf.parse_data_strings(module, min_len=4)
+    assert strings  # something came back
+    assert all(len(text) <= 8 for text in strings)
+    assert "AAAAAAAA" in strings
+
+
+def test_parse_data_strings_caps_distinct_strings_and_flags_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hitting the distinct-string cap stops collection and flags incomplete."""
+    monkeypatch.setattr(wf, "_MAX_DATA_STRINGS", 2)
+    payload = b"alpha\x00bravo\x00charlie\x00delta"
+    module = _module(_data_section(_data_active(payload)))
+    strings, _segments, incomplete = wf.parse_data_strings(module, min_len=4)
+    assert len(strings) == 2
+    assert incomplete is True
+
+
+def test_parse_data_strings_handles_different_segment_flags() -> None:
+    """Active (mem 0), passive, and active-with-memidx segments all decode.
+
+    Each of the three segment encodings carries one string; all three are found,
+    the segment count is 3, and nothing is incomplete.
+    """
+    module = _module(
+        _data_section(
+            _data_active(b"active_default"),
+            _data_passive(b"passive_only"),
+            _data_active_memidx(b"active_memidx"),
+        )
+    )
+    strings, segments, incomplete = wf.parse_data_strings(module)
+    assert segments == 3
+    assert incomplete is False
+    assert strings == ["active_default", "active_memidx", "passive_only"]
+
+
+def test_parse_data_strings_skips_a_global_get_offset_expr() -> None:
+    """An active segment whose offset is global.get (not a const) is still walked.
+
+    Dynamically linked modules place data at a global-relative offset; the parser
+    only needs to step past the init-expr to reach the bytes, so the string is
+    still extracted with nothing flagged incomplete.
+    """
+    # flag 0, offset = global.get 0 (0x23 0x00) then end (0x0b), then the bytes.
+    segment = b"\x00" + b"\x23\x00" + b"\x0b" + _bytevec(b"relocatable_string")
+    module = _module(_data_section(segment))
+    strings, segments, incomplete = wf.parse_data_strings(module)
+    assert segments == 1
+    assert incomplete is False
+    assert strings == ["relocatable_string"]
+
+
+def test_parse_data_strings_stops_on_an_unknown_offset_op() -> None:
+    """An offset expr with an opcode we cannot skip stops the walk and flags it.
+
+    Not knowing an opcode's immediate width means the byte after it is unknown,
+    so the parser must not guess where the segment bytes begin: it returns what
+    it had (nothing) with incomplete True rather than misreading the buffer.
+    """
+    # flag 0, offset expr = 0xd1 (ref.is_null, not a const op) -> unresolvable.
+    segment = b"\x00" + b"\xd1" + b"\x0b" + _bytevec(b"unreachable_string")
+    module = _module(_data_section(segment))
+    strings, _segments, incomplete = wf.parse_data_strings(module)
+    assert strings == []
+    assert incomplete is True
+
+
+def test_parse_data_strings_flags_a_truncated_segment_incomplete() -> None:
+    """A segment claiming more bytes than the section holds stops and flags it."""
+    # count 1, flag 0, i32.const 0, end, then a byte-vec of declared length 50
+    # with no bytes following.
+    body = b"\x01" + b"\x00" + b"\x41\x00\x0b" + b"\x32"
+    module = _module(_section(11, body))
+    strings, _segments, incomplete = wf.parse_data_strings(module)
+    assert strings == []
+    assert incomplete is True
+
+
+def test_parse_data_strings_no_data_section_is_empty_not_incomplete() -> None:
+    """A module without a Data section yields an empty, complete answer."""
+    assert wf.parse_data_strings(_module(_TYPE_SECTION)) == ([], 0, False)
+
+
+def test_parse_data_strings_rejects_a_non_module() -> None:
+    """Bytes without the wasm magic are not a module at all (hard error)."""
+    for bad in (b"", b"not wasm here", b"\x00asm"):
+        with pytest.raises(wf.WasmParseError):
+            wf.parse_data_strings(bad)
+
+
+def test_wasm_client_strings_pages_and_filters(tmp_path: Path) -> None:
+    """WasmClient.strings reads a file, filters by substring, pages, and needs no wabt.
+
+    Measured on a segment holding four strings through WasmClient(None):
+    total 4, min_length 4, data_segments 1, list field strings (not items);
+    contains "API" (case-insensitive) -> two rows and filtered True; a blank
+    filter is ignored; limit/offset page the filtered list with has_more.
+    """
+    payload = b"/api/login\x00/API/logout\x00static-token\x00banner text"
+    module = _module(_data_section(_data_active(payload)))
+    path = tmp_path / "m.wasm"
+    path.write_bytes(module)
+
+    client = WasmClient(None)  # no wabt path; strings must still work
+    full = client.strings(path)
+    assert full["total"] == 4
+    assert full["min_length"] == 4
+    assert full["data_segments"] == 1
+    assert full["incomplete"] is False
+    assert "filtered" not in full
+    assert "items" not in full
+    assert full["strings"] == sorted(full["strings"])
+
+    filtered = client.strings(path, contains="API")
+    assert filtered["filtered"] is True
+    assert filtered["strings"] == ["/API/logout", "/api/login"]
+    assert filtered["total"] == 2
+
+    blank = client.strings(path, contains="   ")
+    assert "filtered" not in blank
+    assert blank["total"] == 4
+
+    first = client.strings(path, contains="api", limit=1)
+    assert first["count"] == 1
+    assert first["has_more"] is True
+    second = client.strings(path, contains="api", offset=1, limit=1)
+    assert second["count"] == 1
+    assert second["has_more"] is False
+    assert first["strings"][0] != second["strings"][0]
+
+
+def test_wasm_client_strings_min_length_is_bounded(tmp_path: Path) -> None:
+    """min_length raises the floor and is clamped to at least 1."""
+    module = _module(_data_section(_data_active(b"ab\x00abcd\x00abcdef")))
+    path = tmp_path / "m.wasm"
+    path.write_bytes(module)
+    client = WasmClient(None)
+    assert client.strings(path, min_length=6)["strings"] == ["abcdef"]
+    low = client.strings(path, min_length=0)
+    assert low["min_length"] == 1  # clamped up from 0
+    assert "ab" in low["strings"]
+
+
+def test_wasm_client_strings_missing_file_is_not_found(tmp_path: Path) -> None:
+    """A missing module is not_found, not a crash or a fabricated empty list."""
+    with pytest.raises(JsReError) as info:
+        WasmClient(None).strings(tmp_path / "nope.wasm")
+    assert info.value.code == "not_found"
+
+
+def test_wasm_strings_docstring_names_its_fields() -> None:
+    doc = _tool_docstring("wasm.strings")
+    for token in ("strings", "min_length", "data_segments", "incomplete", "filtered"):
         assert token in doc

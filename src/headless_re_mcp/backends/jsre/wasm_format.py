@@ -1,11 +1,13 @@
-"""Dependency-free WebAssembly binary reader for a module's import/export surface.
+"""Dependency-free WebAssembly binary reader for a module's static surface.
 
 ``wasm.imports`` / ``wasm.exports`` answer the two questions a WASM reverse
 engineer asks first -- what host functions/globals/memories/tables the module
-depends on, and what it exposes back to the host -- straight from the module's
-binary sections. Reading the bytes (the format is a stable spec) instead of
-scraping ``wasm-objdump`` text means these work with no wabt install and cannot
-drift with a wabt version.
+depends on, and what it exposes back to the host -- while ``wasm.sections`` maps
+the module's layout, ``wasm.names`` symbolises it from the custom name section,
+and ``wasm.strings`` pulls the Data-section literal pool. All read the module's
+binary sections directly. Reading the bytes (the format is a stable spec)
+instead of scraping ``wasm-objdump`` text means these work with no wabt install
+and cannot drift with a wabt version.
 
 The reader is bounded end to end because a ``.wasm`` is attacker-controlled
 input: every slice is checked against the buffer, LEB128 is width-capped so a
@@ -18,6 +20,7 @@ file that is not a WebAssembly module at all.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import suppress
 from typing import Any
 
@@ -68,6 +71,21 @@ _MAX_NAME_CHARS = 512
 # The largest declared vector length worth attempting before calling the module
 # malformed: 2^24 dwarfs any real section yet bounds the loop cheaply.
 _MAX_VEC = 1 << 24
+
+# Data-section string extraction bounds. A printable run longer than this is
+# clipped and restarted (a hostile segment can be one very long "string"), and
+# the number of distinct strings collected is capped so a giant Data section
+# yields a partial-but-flagged list rather than an unbounded set.
+_DATA_SECTION_ID = 11
+_MAX_STRING_CHARS = 256
+_MAX_DATA_STRINGS = 4096
+# Constant-expression opcodes we step over to reach a data segment's bytes. An
+# active segment's memory offset is a const expr terminated by ``end`` (0x0b);
+# we only skip it, so each opcode maps to how its immediate is encoded -- a
+# single LEB, or a fixed number of bytes.
+_END_OP = 0x0B
+_CONST_LEB_OPS = frozenset({0x41, 0x42, 0x23, 0xD2})  # i32/i64.const, global.get, ref.func
+_CONST_FIXED_OPS = {0x43: 4, 0x44: 8, 0xD0: 1}  # f32.const, f64.const, ref.null
 
 
 class WasmParseError(Exception):
@@ -123,6 +141,15 @@ class _Reader:
         chunk = self.data[self.pos : self.pos + count]
         self.pos += count
         return chunk
+
+    def skip_leb(self, *, max_bytes: int = 10) -> None:
+        # Consume a LEB128 immediate we do not need the value of (a const-expr
+        # operand). Ten 7-bit groups cover a 64-bit integer; refusing past that
+        # stops a padded-continuation-byte run just like uleb.
+        for _ in range(max_bytes):
+            if not self.byte() & 0x80:
+                return
+        raise _Truncated
 
     def name(self) -> str:
         length = self.uleb()
@@ -447,3 +474,113 @@ def parse_sections(data: bytes) -> tuple[list[JsonObject], bool]:
     except _Truncated:
         incomplete = True
     return sections, incomplete
+
+
+def _skip_const_expr(reader: _Reader) -> None:
+    """Step a data segment's offset init-expr up to its terminating ``end``.
+
+    We do not evaluate the offset, only skip it to reach the segment bytes, so
+    each opcode is consumed with its immediate. An opcode we do not recognise
+    means the byte layout ahead is unknown, so raise ``_Truncated`` and let the
+    caller stop and flag the result rather than misread the following vector
+    length as segment data.
+    """
+    steps = 0
+    while True:
+        op = reader.byte()
+        if op == _END_OP:
+            return
+        if op in _CONST_LEB_OPS:
+            reader.skip_leb()
+        elif op in _CONST_FIXED_OPS:
+            reader.take(_CONST_FIXED_OPS[op])
+        else:
+            raise _Truncated
+        steps += 1
+        if steps > _MAX_VEC:
+            raise _Truncated
+
+
+def _ascii_runs(chunk: bytes, min_len: int) -> Iterator[str]:
+    """Yield maximal printable-ASCII runs of at least ``min_len`` characters.
+
+    A run reaching ``_MAX_STRING_CHARS`` is emitted and restarted, so a segment
+    that is one very long printable run yields clipped strings rather than a
+    single giant one.
+    """
+    run = bytearray()
+    for byte in chunk:
+        if 0x20 <= byte < 0x7F:
+            run.append(byte)
+            if len(run) >= _MAX_STRING_CHARS:
+                yield run.decode("ascii")
+                run.clear()
+            continue
+        if len(run) >= min_len:
+            yield run.decode("ascii")
+        run.clear()
+    if len(run) >= min_len:
+        yield run.decode("ascii")
+
+
+def parse_data_strings(data: bytes, *, min_len: int = 4) -> tuple[list[str], int, bool]:
+    """``(strings, segment_count, incomplete)`` from the module's Data section.
+
+    Walks each data segment (active or passive, MVP or bulk-memory encoded),
+    skips an active segment's offset init-expr, and pulls maximal printable-ASCII
+    runs of at least ``min_len`` characters from the segment bytes -- the literal
+    pool a WASM module ships (URLs, format strings, error text) read straight
+    from the binary with no wabt. Distinct strings are returned sorted.
+    ``incomplete`` is true when the section was truncated mid-walk, an unknown
+    segment flag or a non-const offset op left the layout unknown, or the
+    distinct-string cap was reached, so a partial list is never read as the whole
+    literal pool.
+    """
+    if min_len < 1:
+        min_len = 1
+    sections = _walk_sections(data)
+    body = sections.get(_DATA_SECTION_ID)
+    if not body:
+        return [], 0, False
+    reader = _Reader(body)
+    found: set[str] = set()
+    segments = 0
+    incomplete = False
+    capped = False
+    try:
+        count = reader.uleb()
+        if count > _MAX_VEC:
+            raise _Truncated
+        limit = min(count, _MAX_ENTRIES)
+        if count > limit:
+            incomplete = True
+        for _ in range(limit):
+            flag = reader.uleb()
+            if flag == 0:  # active, memory 0: offset expr then bytes
+                _skip_const_expr(reader)
+            elif flag == 1:  # passive: bytes only
+                pass
+            elif flag == 2:  # active, explicit memidx: memidx, offset expr, bytes
+                reader.uleb()
+                _skip_const_expr(reader)
+            else:
+                # An unknown segment flag means the byte layout ahead is unknown.
+                incomplete = True
+                break
+            seg_len = reader.uleb()
+            if seg_len > _MAX_VEC:
+                raise _Truncated
+            chunk = reader.take(seg_len)
+            segments += 1
+            for text in _ascii_runs(chunk, min_len):
+                found.add(text)
+                if len(found) >= _MAX_DATA_STRINGS:
+                    capped = True
+                    break
+            if capped:
+                break
+    except _Truncated:
+        incomplete = True
+    if capped:
+        incomplete = True
+    return sorted(found), segments, incomplete

@@ -17,6 +17,7 @@ from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.common.json_budget import fit_json_list, fit_json_text
 from headless_re_mcp.backends.jsre.wasm_format import (
     WasmParseError,
+    parse_data_strings,
     parse_exports,
     parse_imports,
     parse_names,
@@ -29,6 +30,10 @@ _MAX_LISTED_FILES = 2000
 # Default and ceiling for one page of parsed import/export entries.
 _WASM_ENTRY_DEFAULT = 200
 _WASM_ENTRY_CAP = 2000
+# Default minimum printable-run length for wasm.strings, and the ceiling a
+# caller may raise it to (matches the per-string clip in the parser).
+_WASM_STRINGS_MIN_DEFAULT = 4
+_WASM_STRINGS_MIN_CAP = 256
 _MAX_COUNTED_FILES = 50_000
 # Output is already sliced. The child still has to load the file, and an
 # unattended pass that pointed js.deobfuscate at a captured bundle started
@@ -351,6 +356,54 @@ class WasmClient:
             "has_more": start + len(window) < len(function_names),
             "incomplete": incomplete,
         }
+
+    def strings(
+        self,
+        path: Path,
+        *,
+        min_length: int = _WASM_STRINGS_MIN_DEFAULT,
+        contains: str | None = None,
+        offset: int = 0,
+        limit: int = _WASM_ENTRY_DEFAULT,
+    ) -> JsonObject:
+        """Printable strings from a module's Data section (no wabt).
+
+        Pulls maximal printable-ASCII runs of at least min_length characters from
+        the Data-section segments -- the literal pool a module ships (URLs,
+        format strings, error text) -- reading the binary directly, so it works
+        on any host and cannot drift with a wabt version. Strings are distinct
+        and sorted; contains keeps only those holding that case-insensitive
+        substring (a blank filter is ignored). data_segments is how many segments
+        were scanned, and incomplete flags a Data section truncated mid-walk or
+        that hit the collection cap, so a short list is never read as the whole
+        literal pool.
+        """
+        data = self._read_module(path)
+        min_len = max(1, min(int(min_length), _WASM_STRINGS_MIN_CAP))
+        try:
+            strings, segments, incomplete = parse_data_strings(data, min_len=min_len)
+        except WasmParseError as exc:
+            raise JsReError("backend_error", str(exc), path=str(path)) from exc
+        needle = contains.casefold() if contains and contains.strip() else None
+        if needle is not None:
+            strings = [text for text in strings if needle in text.casefold()]
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _WASM_ENTRY_CAP))
+        window = strings[start : start + cap]
+        window, _dropped, _budget_cut = fit_json_list(window)
+        result: JsonObject = {
+            "strings": window,
+            "count": len(window),
+            "total": len(strings),
+            "offset": start,
+            "min_length": min_len,
+            "data_segments": segments,
+            "has_more": start + len(window) < len(strings),
+            "incomplete": incomplete,
+        }
+        if needle is not None:
+            result["filtered"] = True
+        return result
 
     def _read_module(self, path: Path) -> bytes:
         # Existence and the 16 MiB input cap apply exactly as for the wabt tools,
