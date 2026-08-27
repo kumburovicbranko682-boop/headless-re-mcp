@@ -231,9 +231,14 @@ def build_detect_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return non-authoritative packer/protector/obfuscator candidates.
 
-        Answers with candidates, conclusion (candidates or none_detected),
+        Answers with candidates, conclusion, signature_scan_completed, scanners,
         report_sha256, stealth_profile (whitelist id or null), and
-        claims_universal_unpack false. stealth_profile is tmd/Themida → themida,
+        claims_universal_unpack false. conclusion is candidates, none_detected,
+        or inconclusive: an empty result is only none_detected when a signature
+        scanner (diec/exeinfope) completed, and inconclusive otherwise (diec
+        unavailable/disabled/failed with no second opinion), so it never reads
+        as a clean all-clear when detection was degraded. scanners lists each
+        source name/status/summary. stealth_profile is tmd/Themida → themida,
         VMProtect → vmp, or null when the name is not in the hide whitelist.
         """
         return _dump(

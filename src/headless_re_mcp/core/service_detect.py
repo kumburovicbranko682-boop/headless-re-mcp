@@ -376,7 +376,17 @@ class DetectAnalysisMixin:
         use_exeinfope: bool = False,
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
-        """Return packer/protector/obfuscator candidates without forcing a conclusion."""
+        """Return packer/protector/obfuscator candidates without forcing a conclusion.
+
+        The ``conclusion`` distinguishes three states rather than two: with
+        candidates it is ``"candidates"``; with no candidates it is
+        ``"none_detected"`` only when a signature scanner (diec/exeinfope)
+        actually completed, and ``"inconclusive"`` when none did (diec
+        unavailable/disabled/failed and no second opinion). ``scanners`` carries
+        each source's name/status/summary and ``signature_scan_completed`` the
+        boolean the conclusion turns on, so an empty result never reads as a
+        clean bill of health when detection was degraded.
+        """
         result = self.detect_scan(
             session_id,
             mode=mode,
@@ -411,6 +421,45 @@ class DetectAnalysisMixin:
                 FindingCategory.OBFUSCATOR.value,
             }
         ]
+        # An empty candidate list means one of two very different things, and a
+        # caller (or agent) must be able to tell them apart. Either the
+        # signature-driven packer/protector detectors ran and genuinely found
+        # nothing, or the detector that would have found a packer never ran to
+        # completion -- diec was not configured (unavailable), was turned off
+        # (disabled), or crashed (failed), and no second opinion was collected
+        # either. detect_scan records each of those outcomes per source, but
+        # this distilled view used to collapse both cases into "none_detected",
+        # reporting a clean bill of health when detection was actually degraded.
+        # Only a completed signature scan earns "none_detected"; otherwise the
+        # honest answer is "inconclusive". The built-in PE scan always runs, but
+        # it only carries a couple of structural hints (e.g. UPX section names),
+        # so on its own it does not turn an empty result into a confident
+        # all-clear for the whole packer/protector space.
+        raw_sources = report.get("sources")
+        source_items = (
+            [item for item in raw_sources if isinstance(item, dict)]
+            if isinstance(raw_sources, list)
+            else []
+        )
+        scanners = [
+            {
+                "name": str(item.get("name", "")),
+                "status": str(item.get("status", "")),
+                "summary": item.get("summary"),
+            }
+            for item in source_items
+        ]
+        signature_sources = {"diec", "exeinfope"}
+        signature_scan_completed = any(
+            item.get("name") in signature_sources and item.get("status") == "completed"
+            for item in source_items
+        )
+        if candidates:
+            conclusion = "candidates"
+        elif signature_scan_completed:
+            conclusion = "none_detected"
+        else:
+            conclusion = "inconclusive"
         session = self.registry.get(session_id)
         stealth_profile, hint = remember_stealth_hint(
             candidates,
@@ -420,7 +469,9 @@ class DetectAnalysisMixin:
         return _success(
             {
                 "candidates": candidates,
-                "conclusion": "candidates" if candidates else "none_detected",
+                "conclusion": conclusion,
+                "signature_scan_completed": signature_scan_completed,
+                "scanners": scanners,
                 "report_sha256": report.get("sha256"),
                 "claims_universal_unpack": False,
                 "stealth_profile": stealth_profile,
