@@ -81,6 +81,42 @@ def test_put_monotonic_allows_forward_progress_between_active_phases() -> None:
     assert owner.get("s3") is dumped
 
 
+def test_update_if_present_never_creates_an_absent_session() -> None:
+    owner: UnpackStateOwner[UnpackSessionState] = UnpackStateOwner()
+    called = False
+
+    def _update(state: UnpackSessionState) -> UnpackSessionState:
+        nonlocal called
+        called = True
+        return state
+
+    assert owner.update_if_present("gone", _update, is_terminal=_is_terminal) is None
+    assert called is False
+    assert owner.get("gone") is None
+
+
+def test_update_if_present_transforms_current_state_and_keeps_terminal() -> None:
+    owner: UnpackStateOwner[UnpackSessionState] = UnpackStateOwner()
+    running = _running("s4")
+    owner.put_monotonic("s4", running, is_terminal=_is_terminal)
+
+    to_cancelled = owner.update_if_present(
+        "s4",
+        lambda s: replace(s, phase=UnpackPhase.CANCELLED),
+        is_terminal=_is_terminal,
+    )
+    assert to_cancelled is not None and to_cancelled.phase is UnpackPhase.CANCELLED
+
+    # A late update that would regress the terminal session is refused.
+    kept = owner.update_if_present(
+        "s4",
+        lambda s: replace(s, phase=UnpackPhase.DUMPED),
+        is_terminal=_is_terminal,
+    )
+    assert kept is not None and kept.phase is UnpackPhase.CANCELLED
+    assert owner.get("s4").phase is UnpackPhase.CANCELLED
+
+
 def _write_verified_clr_pe(path: Path) -> None:
     image = bytearray(0x800)
     pe_offset = 0x80
@@ -162,5 +198,50 @@ def test_abandoned_dump_worker_cannot_resurrect_a_cancelled_session(tmp_path: Pa
         effective = service._store_unpack_session(resurrection)
         assert effective.phase is UnpackPhase.CANCELLED
         assert service._unpack_owner.get(session_id).phase is UnpackPhase.CANCELLED
+    finally:
+        service.close_all()
+
+
+def test_unpack_cancel_racing_close_does_not_recreate_state(tmp_path: Path) -> None:
+    """If close clears the session while cancel runs, cancel must not re-create it.
+
+    unpack.cancel reads the session, then does a best-effort debuggee pause before
+    storing. close clears the unpack owner in that window; storing the cancel back
+    afterwards would resurrect unpack state for a closed session. The atomic
+    update_if_present must return None instead of writing.
+    """
+    binary = tmp_path / "managed.exe"
+    _write_verified_clr_pe(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        service._store_unpack_session(_running(session_id))
+
+        # Inject the race: close clears the owner right after cancel's presence
+        # check, standing in for a close that lands during the pause window.
+        original_signal = service._signal_unpack_cancel
+
+        def clear_then_signal(sid: str) -> None:
+            service._unpack_owner.clear(sid)
+            original_signal(sid)
+
+        service._signal_unpack_cancel = clear_then_signal  # type: ignore[method-assign]
+
+        result = service.unpack_cancel(session_id)
+
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "unpack_not_started"
+        assert service._unpack_owner.get(session_id) is None
     finally:
         service.close_all()

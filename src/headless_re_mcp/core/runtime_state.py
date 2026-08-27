@@ -217,6 +217,34 @@ class UnpackStateOwner(Generic[UnpackT]):
             self.sessions[session_id] = state
             return state
 
+    def update_if_present(
+        self,
+        session_id: str,
+        update: Callable[[UnpackT], UnpackT],
+        *,
+        is_terminal: Callable[[UnpackT], bool],
+    ) -> UnpackT | None:
+        """Atomically transform an existing session's state; never create one.
+
+        Reads, transforms and stores under a single lock hold, so ``update`` sees
+        the currently stored state rather than a snapshot the caller read earlier
+        and then blocked on (e.g. ``unpack.cancel`` doing a best-effort debuggee
+        pause between its read and its write). Returns None without writing when
+        the session is absent: a session that ``close`` cleared must not be
+        revived by a late cancel storing state back onto it. The monotonic
+        terminal guard still applies -- a terminal session is not regressed to an
+        active phase. ``update`` must be pure (no I/O) since it runs under the lock.
+        """
+        with self.lock:
+            current = self.sessions.get(session_id)
+            if current is None:
+                return None
+            updated = update(current)
+            if is_terminal(current) and not is_terminal(updated):
+                return current
+            self.sessions[session_id] = updated
+            return updated
+
     def get_protection_snapshot(
         self,
         session_id: str,

@@ -81,6 +81,8 @@ from headless_re_mcp.unpack.stage_labels import (
 from headless_re_mcp.unpack.stub_calls import analyze_dump_stub_coupling
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from headless_re_mcp.config import Settings
     from headless_re_mcp.core.repository import AnalysisRepository
     from headless_re_mcp.core.runtime_state import BackendRuntimeOwner, UnpackStateOwner
@@ -1446,8 +1448,7 @@ class UnpackMixin:
         """
         try:
             self.registry.get(session_id)
-            state = self._unpack_owner.get(session_id)
-            if state is None:
+            if not self._unpack_owner.contains(session_id):
                 return Result[JsonObject](
                     ok=False,
                     error=RpcError(
@@ -1463,12 +1464,26 @@ class UnpackMixin:
                 debuggee_paused_attempted = True
                 with suppress(Exception):
                     self.dynamic_pause(session_id)
-            state = cancel_unpack_session(
-                state,
-                reason=reason,
-                debuggee_paused_attempted=debuggee_paused_attempted,
+            # Cancel the *current* state atomically. If close cleared the session
+            # while the pause above ran, update_if_present returns None and we must
+            # not re-create unpack state for a session that is gone.
+            state = self._apply_unpack_update(
+                session_id,
+                lambda current: cancel_unpack_session(
+                    current,
+                    reason=reason,
+                    debuggee_paused_attempted=debuggee_paused_attempted,
+                ),
             )
-            self._store_unpack_session(state)
+            if state is None:
+                return Result[JsonObject](
+                    ok=False,
+                    error=RpcError(
+                        code="unpack_not_started",
+                        message="no unpack session to cancel",
+                        details={"session_id": session_id},
+                    ),
+                )
             return _success(
                 {
                     "unpack": state.to_dict(),
@@ -2131,6 +2146,16 @@ class UnpackMixin:
         return (
             self.settings.artifact_root.expanduser().resolve() / "unpack" / session_id / "session"
         )
+    def _persist_unpack_to_disk(self, state: UnpackSessionState) -> None:
+        def write(directory: Path) -> None:
+            write_timeline_jsonl(state, directory / "timeline.jsonl")
+            persist_state_snapshot(state, directory / "state.json")
+
+        self.repository.persist_unpack_state(
+            state.session_id,
+            write=write,
+        )
+
     def _store_unpack_session(self, state: UnpackSessionState) -> UnpackSessionState:
         # Compare-and-set under the owner lock: a terminal session must never be
         # revived by a slower, abandoned worker storing an active phase on top of
@@ -2141,15 +2166,25 @@ class UnpackMixin:
             state,
             is_terminal=_unpack_state_is_terminal,
         )
+        self._persist_unpack_to_disk(effective)
+        return effective
 
-        def write(directory: Path) -> None:
-            write_timeline_jsonl(effective, directory / "timeline.jsonl")
-            persist_state_snapshot(effective, directory / "state.json")
-
-        self.repository.persist_unpack_state(
-            effective.session_id,
-            write=write,
+    def _apply_unpack_update(
+        self,
+        session_id: str,
+        update: Callable[[UnpackSessionState], UnpackSessionState],
+    ) -> UnpackSessionState | None:
+        # Transform the *current* stored state atomically. Returns None (and
+        # persists nothing) when the session was cleared -- e.g. close ran while
+        # unpack.cancel was blocked in its best-effort debuggee pause -- so a late
+        # cancel cannot re-create unpack state for a closed session.
+        effective = self._unpack_owner.update_if_present(
+            session_id,
+            update,
+            is_terminal=_unpack_state_is_terminal,
         )
+        if effective is not None:
+            self._persist_unpack_to_disk(effective)
         return effective
     def _guard_unpack_active(
         self,
