@@ -330,3 +330,83 @@ def test_the_packed_analysis_preset_keeps_sensitive_writes_behind_approval() -> 
 
     # A representative packed-analysis write still runs unattended.
     assert policy.decide(agent_specs["dynamic.stealth.set"]).approved is True
+
+
+def test_non_pe_state_change_tools_riding_the_packed_preset_are_pinned() -> None:
+    """Pin the non-PE state changes that auto-run under the packed-PE preset.
+
+    The preset grants the state_change class by effect, so every non-PE mutation
+    -- the Android device.* line, the frida.* device path, proxy start/stop and
+    replay, the web.* browser drive and the global workspace.mode.set -- rides
+    the unattended default even though none of it is packed-PE analysis. An
+    effect grant, unlike the file-write denylist above, records nothing about
+    which tools it sweeps in, so a newly added non-PE state-change tool would
+    silently join this set with no review. Pinning it against the shipped
+    catalog turns that into a failing test that forces a conscious decision:
+    either the new tool genuinely belongs in the unattended preset and is added
+    here, or it does not and should be excluded before it ships. The file-write
+    carve-outs on these same lines (device.pull/screenshot, proxy.export_har,
+    web.har.export/screenshot) must stay gated and so must not appear.
+    """
+    from headless_re_mcp.agent.autonomy import (
+        PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS,
+        PACKED_ANALYSIS_AUTO_APPROVE_TOOLS,
+    )
+    from headless_re_mcp.tools.catalog import COMMAND_CATALOG
+
+    policy = AutonomyPolicy(
+        auto_approve_effects=frozenset(
+            ToolEffect(value) for value in PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS
+        ),
+        auto_approve_tools=frozenset(PACKED_ANALYSIS_AUTO_APPROVE_TOOLS),
+    )
+    non_pe_prefixes = ("device.", "frida.", "proxy.", "web.", "workspace.")
+    riding = {
+        spec.name
+        for spec in COMMAND_CATALOG.for_transport(CommandTransport.AGENT)
+        if spec.write
+        and spec.name.startswith(non_pe_prefixes)
+        and policy.decide(spec).approved
+    }
+
+    assert riding == {
+        "device.connect",
+        "device.force_stop",
+        "device.forward",
+        "device.install",
+        "device.launch",
+        "device.push",
+        "device.uninstall",
+        "frida.attach",
+        "frida.device.connect",
+        "frida.hook.template",
+        "frida.server.ensure",
+        "frida.spawn",
+        "proxy.ca.install_android",
+        "proxy.replay",
+        "proxy.start",
+        "proxy.stop",
+        "web.click",
+        "web.close",
+        "web.navigate",
+        "web.open",
+        "web.type",
+        "workspace.mode.set",
+    }
+
+    # The file-write carve-outs on these same lines never auto-run under the
+    # preset; if one starts to, this and the file-write pin above both fail.
+    gated_file_writes = {
+        spec.name
+        for spec in COMMAND_CATALOG.for_transport(CommandTransport.AGENT)
+        if spec.name.startswith(non_pe_prefixes)
+        and ToolEffect.FILE_WRITE in spec.effects
+        and not policy.decide(spec).approved
+    }
+    assert gated_file_writes == {
+        "device.pull",
+        "device.screenshot",
+        "proxy.export_har",
+        "web.har.export",
+        "web.screenshot",
+    }

@@ -94,6 +94,19 @@ _EXCLUDED_AUTO_FILE_WRITES = frozenset(
         "web.screenshot",
     }
 )
+# Granting the state_change class by effect (rather than by an allowlist of
+# named tools, the way file writes are handled above) is deliberate: packed-PE
+# analysis needs the whole dynamic/unpack/workflow surface to run unattended and
+# enumerating it would be churny and fragile. The consequence is that the same
+# grant also sweeps in every non-PE state change -- device.* mutations, the
+# frida.* device path, proxy.start/stop, the web.* browser drive and
+# workspace.mode.set -- none of which are packed-PE work but all of which then
+# auto-run under the default preset. Unlike the file-write denylist, an effect
+# grant has no place to record which tools it covers, so a newly added non-PE
+# state-change tool would silently join this unattended set with no review. The
+# set is therefore pinned against the shipped catalog in test_agent_autonomy.py
+# (test_non_pe_state_change_tools_riding_the_packed_preset_are_pinned) so adding
+# one trips a test and forces a conscious acknowledgement that it auto-runs.
 PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS: tuple[str, ...] = ("state_change",)
 PACKED_ANALYSIS_AUTO_APPROVE_TOOLS: tuple[str, ...] = tuple(
     sorted(

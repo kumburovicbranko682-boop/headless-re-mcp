@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（钉住无人值守预设里搭车的非 PE 状态变更工具）
+
+- 无人值守的 packed-PE 预设按 effect 授予整个 `state_change` 类(而非像文件写那样按具名工具白名单),
+  这是有意为之:PE 拆包要让 dynamic/unpack/workflow 一整片都能自跑,逐个枚举既繁且脆。代价是同一授权也
+  把所有非 PE 状态变更一并扫入——device.* 一族的连接/安装/卸载/启动/停止/推送/转发、frida.* 的设备路径
+  (attach/spawn/server.ensure 等)、proxy.start/stop/replay/ca.install_android、web.* 浏览器驱动
+  (open/close/navigate/click/type)以及全局 workspace.mode.set——它们都不是 PE 工作,却都在默认预设下
+  自动执行。与文件写的 denylist 不同,effect 授权无处记录它到底覆盖了哪些工具,于是新加一个非 PE 状态变更
+  工具就会悄悄搭上这趟无人值守的车、无人复核。
+- 不改任何运行期策略(有意保留这份宽度),而是把这 22 个搭车的非 PE 写工具按实际目录钉死:在
+  `agent/autonomy.py` 于 `PACKED_ANALYSIS_AUTO_APPROVE_EFFECTS` 处加注说明这一跨线后果,并新增
+  `test_non_pe_state_change_tools_riding_the_packed_preset_are_pinned`——新增一个此类工具会让测试失败,逼
+  出一次"它是否真该无人值守自跑"的自觉判断;同时反向钉住这些线上的文件写抠除项(device.pull/screenshot、
+  proxy.export_har、web.har.export/screenshot)始终保持需人工批准。
+
 ### 新增（js.unpack_bundle 补记会话无关出处）
 
 - `js.unpack_bundle` 把拆出来的文件树写到 `artifact_root/jsre/unpack-<uuid>/`,但它按文件路径寻址、不
