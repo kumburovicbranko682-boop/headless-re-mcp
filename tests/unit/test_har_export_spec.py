@@ -138,6 +138,27 @@ def test_har_entry_reports_a_known_response_body_size() -> None:
     assert unknown["response"]["bodySize"] == -1
 
 
+def test_har_entry_carries_the_server_ip_when_known_and_omits_it_otherwise() -> None:
+    """A resolved upstream IP becomes the optional serverIPAddress; unknown omits it.
+
+    serverIPAddress is an optional HAR member, so it is present only when the
+    capture resolved a host and absent (not emitted empty) otherwise -- both
+    shapes are spec-valid, and an analyst sees which server each request hit.
+    """
+    with_ip = har_entry(
+        method="GET",
+        url="https://x/1",
+        status=200,
+        mime_type="text/html",
+        server_ip_address="93.184.216.34",
+    )
+    _assert_valid_har(json.dumps(build_har([with_ip])))
+    assert with_ip["serverIPAddress"] == "93.184.216.34"
+    without = har_entry(method="GET", url="https://x/1", status=200, mime_type="")
+    _assert_valid_har(json.dumps(build_har([without])))
+    assert "serverIPAddress" not in without
+
+
 def test_serialize_har_keeps_the_newest_entries_that_fit_the_cap() -> None:
     """Eviction drops the oldest end, so the surviving entries are the newest.
 
@@ -282,6 +303,94 @@ def test_proxy_export_har_carries_the_captured_response_body_size(tmp_path: Path
     for entry in doc["log"]["entries"]:
         assert entry["response"]["content"]["size"] == 512
         assert entry["response"]["bodySize"] == 512
+
+
+def test_proxy_flow_records_the_resolved_server_ip(tmp_path: Path) -> None:
+    """mitmproxy's server_conn.ip_address becomes server_ip and serverIPAddress.
+
+    An analyst reverse-engineering an app's traffic wants to see which host each
+    flow reached; the recorder keeps the resolved IP and export_har fills the
+    HAR's optional serverIPAddress from it.
+    """
+    recorder = _FlowRecorder()
+    request = SimpleNamespace(method="GET", pretty_url="http://x/1", host="x")
+    response = SimpleNamespace(
+        status_code=200, headers={"content-type": "text/plain"}, raw_content=b"ok"
+    )
+    server_conn = SimpleNamespace(ip_address=("93.184.216.34", 80))
+    recorder.response(
+        SimpleNamespace(
+            id="1", request=request, response=response, server_conn=server_conn
+        )
+    )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(recorder=recorder)  # type: ignore[assignment]
+
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["server_ip"] == "93.184.216.34"
+
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["serverIPAddress"] == "93.184.216.34"
+
+
+def test_proxy_flow_without_a_connection_omits_the_server_ip(tmp_path: Path) -> None:
+    """A flow that never connected keeps server_ip null and omits serverIPAddress."""
+    backend = _proxy_backend_with_flows(1)
+    row = backend.flows("s", offset=0, limit=10)["flows"][0]
+    assert row["server_ip"] is None
+    out = tmp_path / "capture.har"
+    backend.export_har("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert "serverIPAddress" not in entry
+
+
+def test_web_capture_records_the_server_ip_for_the_har(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """CDP's response.remoteIPAddress lands on the summary and the HAR entry."""
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _WebHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r1",
+            "request": {"url": "https://example.com/a", "method": "GET"},
+            "type": "Document",
+        }
+    )
+    cdp.handlers["Network.responseReceived"](
+        {
+            "requestId": "r1",
+            "response": {
+                "status": 200,
+                "mimeType": "text/html",
+                "remoteIPAddress": "93.184.216.34",
+            },
+        }
+    )
+    assert handle.requests["r1"]["server_ip"] == "93.184.216.34"
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    out = tmp_path / "capture.har"
+    backend.har_export("s", out)
+    entry = _assert_valid_har(out.read_text(encoding="utf-8"))["log"]["entries"][0]
+    assert entry["serverIPAddress"] == "93.184.216.34"
 
 
 def test_proxy_export_har_is_now_bounded_by_the_capture_cap(

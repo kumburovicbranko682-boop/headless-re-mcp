@@ -74,11 +74,13 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List captured network requests.
 
-        Answers with requests (url, method, status, resourceType), count,
-        total, offset, has_more, and dropped so a page that filled the
+        Answers with requests (url, method, status, resourceType, server_ip),
+        count, total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
-        visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        visible. server_ip is the resolved server address CDP reached (null
+        until the response arrives, or when CDP reported none); export_har uses
+        it for the HAR serverIPAddress. metadata_truncated marks bounded
+        oversized request fields. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 

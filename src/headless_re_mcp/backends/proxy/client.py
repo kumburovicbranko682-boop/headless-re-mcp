@@ -207,6 +207,24 @@ def _flow_stored_bytes(flow: Any) -> int:
     return total + _headers_len(request) + _headers_len(response)
 
 
+def _server_ip(flow: Any) -> str | None:
+    """The resolved upstream IP mitmproxy connected to, or None.
+
+    mitmproxy records the server connection's ``ip_address`` as an ``(ip, port)``
+    tuple once the upstream socket is established; it becomes the HAR's optional
+    serverIPAddress so an analyst sees which host each flow reached. A flow that
+    never connected (TLS refused, DNS failure) has no server_conn or no address,
+    so the field is simply absent rather than guessed.
+    """
+    conn = getattr(flow, "server_conn", None)
+    address = getattr(conn, "ip_address", None) if conn is not None else None
+    if isinstance(address, (tuple, list)) and address:
+        ip = address[0]
+        if isinstance(ip, str) and ip:
+            return ip
+    return None
+
+
 def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     text = value if isinstance(value, str) else ("" if value is None else str(value))
     payload = text.encode("utf-8", errors="replace")
@@ -369,6 +387,12 @@ class _FlowRecorder:
         # whose body was not retained -- and the HAR export can report a real
         # content size instead of the -1 "unknown" sentinel.
         response_size = _content_len(resp)
+        # The resolved upstream IP is known once mitmproxy connected; keep it on
+        # the summary so the flow list shows which host each request reached and
+        # export_har can fill the HAR's serverIPAddress.
+        server_ip, server_ip_truncated = _bounded_metadata(
+            _server_ip(flow), _MAX_METADATA_BYTES
+        )
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
@@ -400,6 +424,7 @@ class _FlowRecorder:
                 "status": getattr(resp, "status_code", None),
                 "content_type": content_type,
                 "response_size": response_size,
+                "server_ip": server_ip or None,
             }
             if omitted:
                 entry["body_omitted"] = True
@@ -411,6 +436,7 @@ class _FlowRecorder:
                 or url_truncated
                 or host_truncated
                 or type_truncated
+                or server_ip_truncated
                 or error_truncated
             ):
                 entry["metadata_truncated"] = True
@@ -730,6 +756,7 @@ class ProxyBackend:
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
+                server_ip_address=f.get("server_ip"),
             )
             for f in inst.recorder.snapshot()
         ]

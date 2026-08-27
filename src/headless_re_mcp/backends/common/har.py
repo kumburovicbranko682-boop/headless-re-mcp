@@ -89,6 +89,7 @@ def har_entry(
     started_date_time: str | None = None,
     resource_type: str | None = None,
     response_body_size: int | None = None,
+    server_ip_address: str | None = None,
 ) -> JsonObject:
     """One spec-complete HAR 1.2 entry from the fields a summary actually has.
 
@@ -98,8 +99,12 @@ def har_entry(
     absent field. ``queryString`` is parsed from the URL, and when the capture
     knows the decoded response body length (``response_body_size``) it fills
     ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
-    ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
-    browser capture keeps that hint.
+    ``server_ip_address``, when the capture resolved it, becomes the spec's
+    optional ``serverIPAddress`` so an analyst sees which host each request
+    actually reached (a CDN edge, a load-balancer member); it is omitted rather
+    than emitted empty when unknown, which the spec allows for an optional
+    member. ``resource_type`` rides along as Chrome's ``_resourceType``
+    extension so the browser capture keeps that hint.
     """
     status_code = int(status) if isinstance(status, int) else 0
     url_text = str(url or "")
@@ -135,6 +140,8 @@ def har_entry(
         "timings": dict(_UNKNOWN_TIMINGS),
         "comment": _ENTRY_COMMENT,
     }
+    if server_ip_address:
+        entry["serverIPAddress"] = str(server_ip_address)
     if resource_type:
         entry["_resourceType"] = str(resource_type)
     return entry

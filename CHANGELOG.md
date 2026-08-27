@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 新增（HAR 导出补上 serverIPAddress，看得见每条请求打到哪台主机）
+
+- 两端的 HAR 导出（`proxy.export_har` / `web.har.export`）从不写 HAR 1.2 的可选字段
+  `serverIPAddress`，可这正是逆向一款 App 网络时最想知道的一件事——某条请求究竟落到了哪台主机
+  （CDN 边缘、负载均衡后端的哪个成员）。两端其实都拿得到解析后的服务器 IP：mitmproxy 的
+  `flow.server_conn.ip_address` 是 `(ip, port)`、CDP `Network.responseReceived` 的
+  `response.remoteIPAddress` 是字符串。现 `har_entry` 新增 `server_ip_address` 参数，在场时补成
+  entry 的 `serverIPAddress`、缺失时按规范如实省略（可选成员省略仍是合法 HAR，绝不写空串）；
+  `_FlowRecorder._record` 用 `_server_ip` 从 server_conn 取（没连上的流——握手被拒、DNS 失败——
+  没有 server_conn 或没有地址，则为 null），web 的 `on_response` 从 `remoteIPAddress` 取。该 IP
+  也如实出现在 `proxy.flows` 与 `web.network.list` 的 `server_ip` 行上（proxy 未连上或 web 响应
+  未到时为 null），并按既有 metadata 上限夹取、命中即计入 `metadata_truncated`。工具文档串同步。
+  新增四条直测：`har_entry` 有 IP 时带 `serverIPAddress`、无 IP 时省略；proxy 从 server_conn 取到
+  IP（列表与 HAR 皆有）、未连上的流列表为 null 且 HAR 省略；web 从 `remoteIPAddress` 取到 IP。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
