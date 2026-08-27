@@ -359,7 +359,13 @@ class ExtAnalysisMixin(UiDriveMixin):
                 )
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
-            data = client.disasm(session.require_binary(), address, count=count, timeout=timeout)
+            data = client.disasm(
+                session.require_binary(),
+                address,
+                count=count,
+                timeout=timeout,
+                architecture=session.architecture,
+            )
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -389,7 +395,12 @@ class ExtAnalysisMixin(UiDriveMixin):
                 )
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
-            data = client.xrefs(session.require_binary(), address, timeout=timeout)
+            data = client.xrefs(
+                session.require_binary(),
+                address,
+                timeout=timeout,
+                architecture=session.architecture,
+            )
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -1114,7 +1125,12 @@ def _r2_request(service: Any, session_id: str, commands: list[str], *, timeout: 
             )
         exe = getattr(service.settings, "r2", None)
         client = R2Client(Path(exe) if exe else None)
-        data = client.run(session.require_binary(), commands, timeout=timeout)
+        data = client.run(
+            session.require_binary(),
+            commands,
+            timeout=timeout,
+            architecture=session.architecture,
+        )
         session = service.registry.get(session_id)
         if session.state in {
             SessionState.CLOSING,

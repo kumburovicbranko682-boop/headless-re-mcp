@@ -55,6 +55,15 @@ def _stub_executable(tmp_path: Path) -> Path:
     return path
 
 
+def _non_pe(tmp_path: Path) -> Path:
+    """An ELF: r2 can open it, but ``pe_preferred_base`` reads no arch from it."""
+    path = tmp_path / "prog.elf"
+    # 64-bit little-endian x86-64 ELF header stub; enough for pe_preferred_base
+    # to (correctly) find no PE, so any architecture in the output is threaded.
+    path.write_bytes(b"\x7fELF\x02\x01" + b"\x00" * 58)
+    return path
+
+
 def test_output_cut_at_the_buffer_says_it_was_cut(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -371,3 +380,89 @@ def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
             described = ast.get_docstring(node) or ""
     assert "Answers with raw" in described
     assert "no format, arch, bits" in described
+
+
+def test_session_architecture_flows_into_non_pe_r2_output(tmp_path: Path) -> None:
+    """An ELF has no PE header, so enrich learned no arch and left output blank.
+
+    A native session already knows it is x86-64 from ``describe_native``; the
+    service threads that into ``enrich_r2_payload`` so an ELF's functions carry
+    the same ``architecture`` a PE's do, instead of dropping it because there is
+    no PE header to read.
+    """
+    binary = _non_pe(tmp_path)
+    assert pe_preferred_base(binary) == (None, None)
+    raw = json.dumps([{"offset": 0x1189, "name": "gate_root", "size": 32}])
+
+    enriched = enrich_r2_payload(
+        {"raw": raw, "commands": ["aa", "aflj"]},
+        binary=binary,
+        architecture=Architecture.X64,
+    )
+
+    assert enriched["architecture"] == "x64"
+    assert enriched["items"][0]["address"]["architecture"] == "x64"
+    # No PE base, so the address is a bare VA rather than module+rva.
+    assert enriched["items"][0]["address"]["va"] == 0x1189
+    assert "rva" not in enriched["items"][0]["address"]
+
+
+def test_a_non_pe_reports_no_architecture_without_a_session_one(tmp_path: Path) -> None:
+    """Threading is the only source for a non-PE: none supplied, none invented."""
+    binary = _non_pe(tmp_path)
+    raw = json.dumps([{"offset": 0x1189, "name": "gate_root", "size": 32}])
+
+    enriched = enrich_r2_payload({"raw": raw, "commands": ["aa", "aflj"]}, binary=binary)
+
+    assert "architecture" not in enriched
+    assert "architecture" not in enriched["items"][0].get("address", {})
+
+
+def test_disasm_threads_architecture_through_the_double_enrich(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """disasm enriches twice (in run, then again on itself); both must carry arch.
+
+    The second enrich rebuilt the payload from ``run``'s output, so an
+    architecture only passed to the first call would be lost. It must reach the
+    request address and the disassembled rows on a non-PE.
+    """
+    binary = _non_pe(tmp_path)
+    raw = json.dumps([{"offset": 0x1189, "opcode": "endbr64"}])
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=raw.encode(), stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+
+    payload = client.disasm(binary, 0x1189, count=1, architecture=Architecture.X64)
+
+    assert payload["architecture"] == "x64"
+    assert payload["address"]["architecture"] == "x64"
+    assert payload["items"][0]["address"]["architecture"] == "x64"
+
+
+def test_r2_info_surfaces_a_threaded_architecture_on_a_non_pe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``i`` is unparsed text, but the threaded arch still labels the payload.
+
+    ``r2.info`` runs ``i`` and does not parse it, yet the session's known
+    architecture belongs on the envelope for a native binary the same way it is
+    for a PE -- proving the thread reaches even the raw path.
+    """
+    binary = _non_pe(tmp_path)
+
+    def fake(*args: Any, **kwargs: Any) -> Completed:
+        return Completed(returncode=0, stdout=b"arch x86\nbits 64\n", stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", fake)
+    payload = r2_client.R2Client(_stub_executable(tmp_path)).run(
+        binary, ["i"], architecture=Architecture.X64
+    )
+
+    assert payload["parsed"] is False
+    assert payload["architecture"] == "x64"
