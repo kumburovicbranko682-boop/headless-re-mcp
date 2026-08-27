@@ -144,14 +144,15 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
-  # Real-backend coverage for the portable (non-Windows) lines. radare2 and
-  # wabt are hosted-runner installable, so their live gates run for real on
-  # Linux instead of skipping forever -- "skip != pass" only means something
-  # when the backend is actually present somewhere. gcc ships on ubuntu-latest,
-  # so the r2 gate builds its own ELF fixture rather than needing the Windows PE.
+  # Real-backend coverage for the portable (non-Windows) lines. radare2, wabt,
+  # webcrack, mitmproxy, androguard and playwright's chromium are all
+  # hosted-runner installable, so their live gates run for real on Linux
+  # instead of skipping forever -- "skip != pass" only means something when
+  # the backend is actually present somewhere. gcc ships on ubuntu-latest, so
+  # the r2 gate builds its own ELF fixture rather than needing the Windows PE.
   linux-portable-backends:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -159,23 +160,35 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-node@v7
+        with:
+          # webcrack supports Node 22/24; pin instead of trusting the image.
+          node-version: "24"
+
       - name: Install portable backends
         run: |
           sudo apt-get update
           sudo apt-get install -y radare2 wabt
+          npm install -g webcrack
           r2 -v
           wasm2wat --version
+          webcrack --version
 
       - name: Install package
         run: |
           python -m pip install -U pip
-          python -m pip install -e ".[test,dev,web]"
+          python -m pip install -e ".[test,dev,web,browser,proxy,android]"
+          python -m playwright install --with-deps chromium
 
       - name: Portable backend gates run for real (skip != pass)
         run: |
           python -m pytest \
             tests/integration/test_m11_r2_live_gate.py \
-            "tests/integration/test_web_re_gate.py::test_wasm_wat_when_wabt_present" \
+            tests/integration/test_web_re_gate.py \
+            tests/integration/test_web_lifecycle_gate.py \
+            tests/integration/test_proxy_lifecycle_gate.py \
+            tests/integration/test_android_re_gate.py \
+            tests/integration/test_agent_browser_smoke.py \
             -rs --tb=short --junitxml=portable-gates.xml
           python - <<'PY'
           import sys

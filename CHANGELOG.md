@@ -14,7 +14,11 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建；真实 Windows 后端 gate 继续留在 Windows job，Linux 收集时给 Windows-only 集成测试明确 skip 原因。另加 `linux-portable-backends` job：在 Ubuntu 上装 radare2 与 wabt 后真机执行可移植后端的集成 gate（`test_m11_r2_live_gate` 缺 PE 夹具时用 gcc 现编一个可移植 ELF，`test_web_re_gate` 的 wabt 用例），并在这些 gate 因缺后端而 skip 时判失败——让非 PE 的可移植静态线在 Linux 有真机执行覆盖，而不是永远 skip。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建；真实 Windows 后端 gate 继续留在 Windows job，Linux 收集时给 Windows-only 集成测试明确 skip 原因。另加 `linux-portable-backends` job：在 Ubuntu 上装 radare2、wabt、webcrack、mitmproxy、androguard 与 Playwright chromium 后真机执行可移植后端的全部集成 gate（`test_m11_r2_live_gate` 缺 PE 夹具时用 gcc 现编一个可移植 ELF；`test_web_re_gate` 的 CDP/webcrack/wabt 三条；`test_web_lifecycle_gate` 与 `test_proxy_lifecycle_gate` 的浏览器/代理生命周期；`test_android_re_gate` 的 APK 分类与降级；`test_agent_browser_smoke` 的端到端工作台冒烟），并在这些 gate 因缺后端而 skip 时判失败——让非 PE 的 Web / Android / 可移植静态线在 Linux 有真机执行覆盖，而不是永远 skip。为此浏览器冒烟测试不再硬编码 Windows Chrome 路径（Windows 上仍优先系统 Chrome，其它平台走与生产 `WebBackend.open` 相同的 Playwright 自管 chromium），playwright 缺席时从收集报错改为明确 skip；控制台句柄泄漏 gate 在 Linux 直接数 `/proc/self/fd`，不再依赖只有 Windows 才有的 psutil `num_handles`。
+
+端到端浏览器冒烟此前从未进过任何 CI，断言的还是重做前的英文界面（`Agent analysis` / `Approve once`），早已跑不过：现按当前工作台界面重写，并把危险调用从 `workflow.cancel` 换成 `patches.apply`——默认策略已自动放行 `state_change`，前者不再触发批准卡片，后者在永不自动批准名单里，批准/拒绝/刷新恢复三条路径才真被验证。
+
+第一次在 Linux 真机跑这些 gate 就抓到一个真泄漏：mitmproxy 12 起监听 socket 落在 mitmproxy_rs 的 Rust runtime 里，停止代理时仅等 asyncio 任务退出关不掉它——`proxy.stop` 报告已停止但端口仍在接受连接，同端口的下一次 `proxy.start` 永远被拒（mitmproxy 自己的入口 run 完就退进程，所以上游从不需要显式关）。现在停止时先在事件循环上逐个 `ServerInstance.stop()` 关闭监听，再让 master 退出；`test_web_lifecycle_gate` 的「端口必须回来」断言在 Linux CI 上从此真在执行。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
