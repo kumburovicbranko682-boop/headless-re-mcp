@@ -41,6 +41,20 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Headers are attacker-influenced and unbounded (a hostile server can send many
+# or huge ones), and the ring holds thousands of requests, so cap the count, each
+# value, and the total bytes per header set before it enters a capture entry.
+_MAX_HEADERS = 64
+_MAX_HEADER_VALUE_BYTES = 2 * 1024
+_MAX_HEADERS_TOTAL_BYTES = 8 * 1024
+# Header maps live in the ring for the detail view (web.network.get) but are kept
+# out of the list (web.network.list) so a page of rows stays lean.
+_HEADER_KEYS = (
+    "request_headers",
+    "response_headers",
+    "request_headers_truncated",
+    "response_headers_truncated",
+)
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -84,6 +98,36 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _bounded_headers(raw: object) -> tuple[JsonObject, bool]:
+    """Bound a CDP header map before it enters the capture ring.
+
+    Returns the bounded map and whether anything was dropped or cut, so a
+    trimmed header set is never read as complete. Caps the header count, each
+    value, and the summed value bytes; a header whose value would breach the
+    total budget stops the walk rather than being partially kept.
+    """
+    if not isinstance(raw, dict):
+        return {}, False
+    out: JsonObject = {}
+    truncated = False
+    total = 0
+    for name, value in raw.items():
+        if len(out) >= _MAX_HEADERS:
+            truncated = True
+            break
+        key, key_cut = _bounded_metadata(name, _MAX_METADATA_BYTES)
+        val, val_cut = _bounded_metadata(value, _MAX_HEADER_VALUE_BYTES)
+        cost = len(val.encode("utf-8", errors="replace"))
+        if total + cost > _MAX_HEADERS_TOTAL_BYTES:
+            truncated = True
+            break
+        total += cost
+        out[key] = val
+        if key_cut or val_cut:
+            truncated = True
+    return out, truncated
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -475,6 +519,10 @@ class WebBackend:
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            request_headers, request_headers_truncated = _bounded_headers(req.get("headers"))
+            entry["request_headers"] = request_headers
+            if request_headers_truncated:
+                entry["request_headers_truncated"] = True
             with handle.lock:
                 handle.requests[str(params.get("requestId"))] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
@@ -493,6 +541,12 @@ class WebBackend:
                     entry["mimeType"] = mime_type
                     if mime_truncated:
                         entry["metadata_truncated"] = True
+                    response_headers, response_headers_truncated = _bounded_headers(
+                        resp.get("headers")
+                    )
+                    entry["response_headers"] = response_headers
+                    if response_headers_truncated:
+                        entry["response_headers_truncated"] = True
 
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
@@ -597,7 +651,12 @@ class WebBackend:
             dropped = handle.requests_dropped
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
-        window = items[start : start + cap]
+        # Keep the summary lean: header maps ride in the ring for the detail
+        # view but would bloat a page of up to 1000 rows here.
+        window = [
+            {key: value for key, value in item.items() if key not in _HEADER_KEYS}
+            for item in items[start : start + cap]
+        ]
         return {
             "requests": window,
             "count": len(window),

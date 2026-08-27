@@ -24,6 +24,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（web 网络抓包丢弃请求/响应头,鉴权头、Set-Cookie、CSP、重定向 Location 全看不到）
+
+- web 网络抓包(`web.network.list` / `web.network.get`)只留 url/method/status/mimeType,**请求头与响应头
+  被整个丢弃**。而 `Network.requestWillBeSent` 带 `request.headers`、`Network.responseReceived` 带
+  `response.headers`,里面是 Web 逆向最要看的东西:请求侧的 `Authorization`(bearer 令牌)、`Cookie`、自定义
+  `X-` 头;响应侧的 `Set-Cookie`、`Content-Security-Policy`、CORS 的 `Access-Control-*`、重定向 `Location`。
+  抓到了却不留,逆向者只能改用抓包代理旁路。
+- 现在两个事件处理器把头**有界地**收进抓包条目:`_bounded_headers` 限头数(64)、单值字节(2 KiB)、单条目
+  头总字节(8 KiB),越界即停并标记,绝不让敌意服务器用海量/超长头撑爆容量为数千条的抓包环。头随
+  `web.network.get` 的 `{**entry}` 自然带出,新增 `request_headers` / `response_headers`,并有
+  `request_headers_truncated` / `response_headers_truncated` 提示头集被截断;响应到达前 `response_headers`
+  不出现。`web.network.list` 摘要**主动剔除**头字段,保持一页(至多 1000 行)精简——头只在明细视图给。
+- 不新增工具、不改工具计数;`har_export` 只读固定字段、不受影响。`web.network.get` / `web.network.list`
+  描述点明头的去向与截断语义。新增回归:请求/响应头如实保留(Authorization/Set-Cookie);`network_list`
+  剔除头而环内条目仍留头供明细读;海量+超长头被限数限值并置 `request_headers_truncated`。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

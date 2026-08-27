@@ -78,7 +78,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
         visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        There is no type field. Request and response headers are not in
+        this summary; read web.network.get for one request's headers.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -95,6 +96,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         body already evicted from its cache) body is empty and body_error says
         why, while body, base64_encoded and body_truncated stay present. A
         body over the capture cap is refused rather than written to disk.
+        Also answers with request_headers and response_headers (the captured
+        header maps: Authorization, Set-Cookie, Content-Security-Policy,
+        Location, and the rest); each is bounded, and request_headers_truncated
+        or response_headers_truncated marks a set that was capped so it is not
+        read as every header. response_headers is absent until the response
+        arrives.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
