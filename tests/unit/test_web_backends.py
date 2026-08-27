@@ -361,3 +361,36 @@ class TestClosedSessionCannotSpawnBackends:
             assert web.live == set()
         finally:
             service.close_all()
+
+    def test_proxy_start_reclaims_if_the_session_closes_during_launch(self) -> None:
+        """A close arriving mid-start must not leave a proxy holding its port.
+
+        proxy.start binds a listener before it can re-check the session; if a
+        close slips in during that window the started proxy has to be stopped,
+        or the bound port outlives the session with nothing able to free it --
+        the same reclaim web.open performs for a browser.
+        """
+        service = AnalysisService()
+        proxy = _TrackingProxyBackend()
+        service._proxy_backend = proxy  # type: ignore[assignment]
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+
+            original_start = proxy.start
+
+            def start_and_close(
+                session_id: str, host: str = "127.0.0.1", port: int = 8080
+            ) -> dict:  # type: ignore[type-arg]
+                service.close_session(session_id)
+                return original_start(session_id, host=host, port=port)
+
+            proxy.start = start_and_close  # type: ignore[method-assign]
+            result = service.proxy_start(session_id, port=18080)
+            assert result.ok is False
+            # The proxy was actually started, then reclaimed -- not merely
+            # refused up front -- so the reclaim path is what emptied live.
+            assert proxy.starts == [session_id]
+            assert proxy.live == set()
+        finally:
+            service.close_all()
