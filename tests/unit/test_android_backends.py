@@ -12,7 +12,13 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_package, _check_serial
+from headless_re_mcp.backends.adb.client import (
+    AdbBackend,
+    AdbError,
+    _apk_package_name,
+    _check_package,
+    _check_serial,
+)
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.common.bounded_run import Completed
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
@@ -327,6 +333,55 @@ class TestApkClassification:
             archive.writestr("readme.txt", "hello")
         with pytest.raises(ValueError):
             describe_apk(plain)
+
+
+class TestApkPackageNameParsing:
+    """device.install verifies against whatever package this parser names.
+
+    It is best-effort and never reaches a shell unvalidated: a candidate must
+    pass the same strict package pattern before it is returned, and an
+    unreadable APK yields None (install then reports it could not verify)
+    rather than a guess. Every other test monkeypatches this out, so the real
+    two-pass parse (UTF-8 attribute, then UTF-16-LE string pool) is pinned here.
+    """
+
+    @staticmethod
+    def _apk_with_manifest(path: Path, manifest: bytes) -> Path:
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", manifest)
+        return path
+
+    def test_reads_a_plain_text_package_attribute(self, tmp_path: Path) -> None:
+        apk = self._apk_with_manifest(
+            tmp_path / "a.apk",
+            b'<manifest package="com.example.app" xmlns:android="x"/>',
+        )
+        assert _apk_package_name(apk) == "com.example.app"
+
+    def test_reads_a_utf16_string_pool_and_skips_framework_packages(
+        self, tmp_path: Path
+    ) -> None:
+        # A binary manifest fails the UTF-8 attribute pass, so the id has to
+        # come from the UTF-16-LE string pool. android.* entries are framework
+        # references, not the app; the parser must skip them for the real id.
+        manifest = "package\x00android.support.v4\x00com.example.app\x00".encode("utf-16-le")
+        apk = self._apk_with_manifest(tmp_path / "a.apk", manifest)
+        assert _apk_package_name(apk) == "com.example.app"
+
+    def test_returns_none_when_no_package_is_discernible(self, tmp_path: Path) -> None:
+        apk = self._apk_with_manifest(tmp_path / "a.apk", b"<manifest/>")
+        assert _apk_package_name(apk) is None
+
+    def test_returns_none_when_the_manifest_entry_is_missing(self, tmp_path: Path) -> None:
+        plain = tmp_path / "a.apk"
+        with zipfile.ZipFile(plain, "w") as archive:
+            archive.writestr("classes.dex", b"dex\n035\x00")
+        assert _apk_package_name(plain) is None
+
+    def test_returns_none_when_the_file_is_not_a_zip(self, tmp_path: Path) -> None:
+        broken = tmp_path / "a.apk"
+        broken.write_bytes(b"not a zip archive")
+        assert _apk_package_name(broken) is None
 
 
 class TestApktoolBoundaries:
