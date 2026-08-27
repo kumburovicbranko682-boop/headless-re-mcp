@@ -89,13 +89,19 @@ def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> No
     ``tcp:70000`` -- five digits that are not a port. ``connect`` already refuses
     a port outside 1..65535; this makes ``forward`` say the same thing at the
     boundary instead of handing adb a bind request it can only reject with an
-    opaque error. Port 0 is kept: adb reads it as "allocate a free local port".
+    opaque error. ``tcp:0`` is refused on both sides: adb reads a local 0 as
+    "allocate a free port", but adbutils discards the reply payload naming that
+    port, so the caller would get ``tcp:0`` back with no way to learn where to
+    connect -- and ``release_forwards`` removes by the requested spec, which can
+    never match the listener adb registered under the real port. Every such
+    forward would leak an adb-server listener and pin one of the tracked slots
+    until the cap locks the process out. A remote 0 is simply not connectable.
     """
     tcp = re.match(r"^tcp:(\d{1,5})$", spec or "")
     if tcp is not None:
-        if not 0 <= int(tcp.group(1)) <= 65535:
+        if not 1 <= int(tcp.group(1)) <= 65535:
             raise AdbError(
-                "invalid_params", f"{side} tcp port must be 0..65535", **{side: spec}
+                "invalid_params", f"{side} tcp port must be 1..65535", **{side: spec}
             )
         return
     if re.match(r"^localabstract:[\w.\-]+$", spec or ""):
