@@ -451,6 +451,74 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def class_xrefs(
+        self,
+        path: Path,
+        class_name: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """List the classes and methods that reference a given class.
+
+        The class-level xref: where apk.xrefs finds the callers of one method
+        and apk.field_xrefs the readers/writers of one field, this finds where a
+        whole class is used -- instantiated, cast to, or otherwise referenced --
+        which is how you answer "who uses this type". The target may be internal
+        or external (a framework class such as Landroid/telephony/Telephony
+        Manager; is a valid query), so it is looked up by name and is not_found
+        only when absent from the analysis; accepts the dotted or Lsmali/form.
+        Each row is class (the referencing class) and method (the method the
+        reference sits in). Rows are deduped and sorted by (class, method).
+        total is the number collected, capped at 10000 with scan_capped when
+        more may exist, and offset/has_more page it.
+        """
+        parsed = self._parsed(path)
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        smali = _dotted_to_smali(target)
+        target_klass = None
+        for klass in parsed.analysis.get_classes():
+            if str(klass.name) in (smali, target):
+                target_klass = klass
+                break
+        if target_klass is None:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        rows: list[JsonObject] = []
+        seen: set[tuple[str, str]] = set()
+        scan_more = False
+        for caller, refs in target_klass.get_xref_from().items():
+            caller_name = str(caller.name)
+            for ref in refs:
+                try:
+                    _, ref_method, _ = ref
+                except (ValueError, TypeError):
+                    continue
+                method_name = str(getattr(ref_method, "name", ""))
+                key = (caller_name, method_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({"class": caller_name, "method": method_name})
+                if len(rows) >= _MAX_CLASSES_COLLECT:
+                    scan_more = True
+                    break
+            if scan_more:
+                break
+        rows.sort(key=lambda row: (row["class"], row["method"]))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_XREFS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "class_name": smali,
+            "xrefs": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+        }
+
 
 def _dotted_to_smali(name: str) -> str:
     """com.example.Foo -> Lcom/example/Foo; so either form resolves a class."""

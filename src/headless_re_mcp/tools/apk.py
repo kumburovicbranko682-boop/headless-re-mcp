@@ -97,6 +97,30 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.class_xrefs")
+    def apk_class_xrefs(
+        session_id: str,
+        class_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the classes and methods that reference a given class.
+
+        The class-level xref: where apk.xrefs finds the callers of one method
+        and apk.field_xrefs the readers/writers of one field, this finds where a
+        whole class is used -- instantiated, cast to, or otherwise referenced --
+        answering "who uses this type". The target may be internal or external
+        (a framework class such as Landroid/telephony/TelephonyManager; is a
+        valid query), so it is looked up by name and is not_found only when
+        absent; accepts the dotted or Lsmali/form. Each row is class (the
+        referencing class) and method (the method the reference sits in). Answers
+        with class_name, xrefs, count, total, offset, and has_more so a filled
+        page is not read as every reference. total is capped at 10000; scan
+        _capped is true when more may exist. Rows are deduped and sorted by
+        (class, method).
+        """
+        return _dump(analysis.apk_class_xrefs(session_id, class_name, offset=offset, limit=limit))
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -551,6 +551,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   原来的单 pid 校验是**替换而不是移除**：设备操作改用按会话的「设备 + 已授权 pid 集合」，
   会话必须先连设备、pid 必须由本会话 spawn 得到；PE 会话的本机单 pid 行为逐字未变。
   Android hook 模板并入现有 `frida.hook.template`，仍不接受调用方自带脚本。
+
+### 新增（APK 静态分析）
+
+- `apk.class_xrefs`：类级 xref，回答「谁在用这个类型」。`apk.xrefs` 找某方法的调用方、
+  `apk.field_xrefs` 找某字段的读写点，而本工具沿 androguard 的
+  `ClassAnalysis.get_xref_from()` 找一个类被实例化/引用的所有位置。目标类按名查找，内部类与
+  框架类（如 `Landroid/telephony/TelephonyManager;`）都可查，缺失才报 `not_found`；接受点名
+  或 `Lsmali/` 形式。每行是 `class`（引用方类）与 `method`（引用所在方法），按 `(class, method)`
+  去重排序。返回 `class_name/xrefs/count/total/offset/has_more`，`total` 上限 10000、越限置
+  `scan_capped`，让填满的一页不被误读成全部引用。
 
 ### 新增（Web）
 
