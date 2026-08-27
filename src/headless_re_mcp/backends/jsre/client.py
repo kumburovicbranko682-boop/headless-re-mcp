@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -162,7 +163,18 @@ class JsClient:
         limit: int = 100,
     ) -> JsonObject:
         resolved = self._require_input(path)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # webcrack creates the output directory itself and refuses to run when
+        # it already exists ("output directory already exists", exit 1). Pre-
+        # creating it -- as this did -- therefore guaranteed the tool bailed
+        # before writing anything, and the failure surfaced as an opaque
+        # "webcrack unpack failed" rather than the real cause. Only ensure the
+        # parent exists, and clear a leftover *empty* leaf (a retried call, a
+        # stale run) so the rerun is not read as a name clash. A non-empty leaf
+        # is left untouched, so webcrack fails honestly rather than clobbering.
+        out_dir.parent.mkdir(parents=True, exist_ok=True)
+        if out_dir.is_dir() and not any(out_dir.iterdir()):
+            with suppress(OSError):
+                out_dir.rmdir()
         stdout, stderr, code = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)], timeout=timeout
         )

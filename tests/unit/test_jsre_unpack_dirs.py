@@ -91,8 +91,11 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
 
     def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
         del timeout
+        # webcrack creates the -o directory itself; the client no longer
+        # pre-creates it, so the stub does what the real tool does.
         out_dir = Path(cmd[cmd.index("-o") + 1])
-        if not any(out_dir.iterdir()):
+        if not out_dir.exists():
+            out_dir.mkdir(parents=True)
             for index in range(250):
                 (out_dir / f"mod-{index:03d}.js").write_text("x", encoding="utf-8")
         return "", "", 0
@@ -130,8 +133,10 @@ def test_bounded_unpack_listing_finishes_at_the_last_readable_page(
 
     def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
         del timeout
+        # webcrack creates the -o directory itself; mirror that here.
         out_dir = Path(cmd[cmd.index("-o") + 1])
-        if not any(out_dir.iterdir()):
+        if not out_dir.exists():
+            out_dir.mkdir(parents=True)
             for index in range(files_written):
                 (out_dir / f"mod-{index}.js").write_text("x", encoding="utf-8")
         return "", "", 0

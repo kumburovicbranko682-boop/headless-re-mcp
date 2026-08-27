@@ -352,6 +352,95 @@ def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
     assert "has_more" in _tool_docstring("js.unpack_bundle")
 
 
+def _webcrack_like(cmd: list[str], **kwargs: Any) -> Completed:
+    """Stand in for the real webcrack's output-directory contract.
+
+    The live tool creates the -o directory itself and exits 1 with "output
+    directory already exists" if it is already there, so a stub that always
+    returns success hid the bug where the client pre-created that directory.
+    """
+    target = Path(cmd[cmd.index("-o") + 1])
+    if target.exists():
+        return Completed(1, b"", b"output directory already exists\n")
+    target.mkdir(parents=True)
+    (target / "deobfuscated.js").write_text("1", encoding="utf-8")
+    return Completed(0, b"", b"")
+
+
+def test_unpack_bundle_lets_webcrack_own_the_output_dir(tmp_path: Path) -> None:
+    """webcrack refuses a pre-existing -o dir, so the client must not create it.
+
+    Pre-creating the leaf made every real unpack fail with "output directory
+    already exists", surfaced as an opaque webcrack unpack failed. The leaf here
+    does not exist and its parent does not either; the client must reach webcrack
+    with the target still absent.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "nested" / "unpack-abc"
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", _webcrack_like):
+        payload = mod.JsClient(tool).unpack_bundle(src, out, offset=0, limit=10)
+
+    assert payload["clean_exit"] is True
+    assert payload["exit_code"] == 0
+    assert payload["file_count"] == 1
+    assert "deobfuscated.js" in payload["files"]
+
+
+def test_unpack_bundle_clears_an_empty_leftover_output_dir(tmp_path: Path) -> None:
+    """An empty leftover leaf (a retried call) is cleared so webcrack can run.
+
+    Without this, a rerun into the same session path would trip webcrack's
+    "already exists" refusal even though nothing usable was there.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "unpack-stale"
+    out.mkdir()
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", _webcrack_like):
+        payload = mod.JsClient(tool).unpack_bundle(src, out, offset=0, limit=10)
+
+    assert payload["clean_exit"] is True
+    assert payload["file_count"] == 1
+
+
+def test_unpack_bundle_keeps_a_non_empty_leftover_dir_and_fails_honestly(
+    tmp_path: Path,
+) -> None:
+    """A non-empty leaf is not clobbered; webcrack's refusal is reported as-is.
+
+    Clearing it could delete a caller's files, so instead the failing exit code
+    and stderr are surfaced and the pre-existing content stays put.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "unpack-used"
+    out.mkdir()
+    (out / "keep.txt").write_text("mine", encoding="utf-8")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", _webcrack_like):
+        payload = mod.JsClient(tool).unpack_bundle(src, out, offset=0, limit=10)
+
+    assert payload["clean_exit"] is False
+    assert payload["exit_code"] == 1
+    assert "already exists" in payload["stderr"]
+    assert (out / "keep.txt").read_text(encoding="utf-8") == "mine"
+
+
 def test_js_deobfuscate_refuses_an_oversized_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

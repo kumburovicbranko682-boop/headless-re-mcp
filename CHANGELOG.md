@@ -70,6 +70,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   退出再附一段有界 `stderr` 摘录；只在“非零退出且无任何输出”时才继续 fail-closed 抛 `backend_error`。
   退出码为零的常见路径行为不变（`clean_exit` 为真、不带 `stderr`）。
 
+### 修复（js.unpack_bundle 不再因自建输出目录而必然失败）
+
+- `js.unpack_bundle` 过去在调用 webcrack 前先 `out_dir.mkdir(parents=True, exist_ok=True)`。但真实
+  webcrack 会**自己**创建 `-o` 目录，并在该目录已存在时直接以“output directory already exists”非零退出、
+  一个文件都不写。于是客户端亲手建的这个目录保证了 webcrack 每次都在写盘前 bail，`js.unpack_bundle`
+  只要碰上真的 webcrack 就**从不成功**，还把真正原因裹成一句含糊的 `webcrack unpack failed`。用实测
+  webcrack 2.16.0 复现：`-o` 指向已存在目录必失败、指向不存在目录则自建（含多级父目录）并写出
+  `deobfuscated.js` 等文件。现改为只确保父目录存在、绝不预建叶子目录；仅当叶子是**空**的遗留目录
+  （重试、上一次残留）时清掉它，好让重跑不被误判成目录名冲突；非空目录一律不动，交给 webcrack 按其
+  约定诚实报错（`clean_exit=false` 加 `stderr`），绝不覆盖调用方已有文件。补测以“拒绝已存在 `-o` 目录、
+  否则自建并写文件”的假 runner 复刻 webcrack 的真实约定，旧实现下两条正向用例正是以 `webcrack unpack
+  failed` 失败。
+
 ### 修复（web.har.export 报告被裁剪的条目数并在描述里点名 truncated）
 
 - `web.har.export` 为塞进抓包字节上限会从尾部丢弃条目并置 `truncated`，但工具描述只写了 `path` 与
