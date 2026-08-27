@@ -2,7 +2,8 @@
 
 A single WebBackend holds one browser per web session for this service. Web
 sessions are bound to their session id, and large payloads (bodies, scripts,
-HAR) spill to the session artifact area rather than inflating a tool result.
+DOM snapshots, HAR) spill to the session artifact area rather than inflating a
+tool result.
 """
 
 from __future__ import annotations
@@ -245,7 +246,23 @@ class WebAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def web_dom_snapshot(self, session_id: str) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "dom_snapshot", session_id)
+        try:
+            data = self._web.dom_snapshot(session_id, self._web_artifact_dir(session_id))
+            spill = data.get("html_path")
+            if isinstance(spill, str):
+                data = _register_capture(
+                    self,
+                    session_id,
+                    Path(spill),
+                    kind="web_dom_snapshot",
+                    source="web.dom.snapshot",
+                    payload=data,
+                )
+            return _success(data, session_id=session_id, backend="web")
+        except WebError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def web_screenshot(self, session_id: str, full_page: bool = False) -> Result[JsonObject]:
         try:

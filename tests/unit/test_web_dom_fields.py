@@ -1,4 +1,4 @@
-"""web.dom.snapshot description must name html and truncated."""
+"""web.dom.snapshot must name html/truncated and spill an oversized DOM."""
 
 from __future__ import annotations
 
@@ -36,38 +36,80 @@ class _Immediate:
 
 
 class _Page:
+    """A page whose DOM overflows the inline cap but fits the transfer budget."""
+
     url = "https://example/app"
 
     def evaluate(self, script: str, cap: int) -> dict[str, Any]:
         del script
         html = "x" * (_MAX_INLINE_BODY + 50)
-        return {"html": html[:cap], "truncated": True}
+        # The real evaluate clips only at the transfer ceiling (the disk cap),
+        # not the inline cap, so a slightly-oversized DOM crosses back whole and
+        # the Python side is what decides to spill it.
+        return {"html": html[:cap], "transfer_truncated": len(html) > cap}
 
     def title(self) -> str:
         return "Example"
 
 
-def test_web_dom_snapshot_names_html_and_says_when_it_was_cut(
-    monkeypatch: Any,
-) -> None:
-    """The catalog said HTML and never named the payload.
+class _SmallPage:
+    """A page whose whole DOM fits inline, so nothing spills."""
 
-    Measured: truncated True, html 200000 chars (the cap), no content, dom
-    or body field. Looking for those after a successful call reads as a
-    missing document, and a 200000-char string with no truncated flag
-    reads as the whole page.
+    url = "https://example/small"
+
+    def evaluate(self, script: str, cap: int) -> dict[str, Any]:
+        del script, cap
+        return {"html": "<html></html>", "transfer_truncated": False}
+
+    def title(self) -> str:
+        return "Small"
+
+
+def test_web_dom_snapshot_spills_the_full_dom_and_flags_the_cut(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """An oversized DOM must not be thrown away at the 200 KiB inline clip.
+
+    The full document -- available nowhere else for a large SPA -- is written to
+    the artifact dir and its path returned as html_path, with the inline html a
+    bounded preview and truncated flagged, mirroring web.network.get /
+    web.script.source. Measured: truncated True, html 200000 chars, and a
+    spill file holding the entire 200050-char document. No content/dom/body key.
     """
     backend = WebBackend()
     monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=_Page()))
     monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
-    payload = backend.dom_snapshot("s")
+    payload = backend.dom_snapshot("s", tmp_path)
     assert "content" not in payload
     assert "dom" not in payload
     assert "body" not in payload
     assert payload["truncated"] is True
     assert payload["url"] == "https://example/app"
-    assert payload["title"] == "Example"
     assert len(payload["html"]) == _MAX_INLINE_BODY
+    spill = Path(payload["html_path"])
+    assert spill.is_file()
+    assert spill.parent == tmp_path
+    assert len(spill.read_text(encoding="utf-8")) == _MAX_INLINE_BODY + 50
     doc = _tool_docstring("web.dom.snapshot")
     assert "html" in doc
     assert "truncated" in doc
+    assert "html_path" in doc
+
+
+def test_web_dom_snapshot_inlines_a_small_dom_without_spilling(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A DOM under the inline cap comes back whole with no html_path and no file.
+
+    The spill is only for oversized documents: an ordinary page must not litter
+    the artifact dir, and truncated must read false so the caller trusts html as
+    the complete document.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=_SmallPage()))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.dom_snapshot("s", tmp_path)
+    assert payload["html"] == "<html></html>"
+    assert payload["truncated"] is False
+    assert "html_path" not in payload
+    assert list(tmp_path.iterdir()) == []

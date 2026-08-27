@@ -24,7 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
-### 观测（web.network_get 未命中时点明\"可能已被抓取环淘汰\"，与 proxy.flow_get 对齐，别让淘汰读成\"给错了 id\"）
+### 完整性（web.dom.snapshot 溢出的完整 DOM 落盘为已登记制品，与 web.network.get / web.script.source 对齐，别在 200 KiB 内联裁剪处把大页 DOM 丢掉）
+
+- `web.dom.snapshot` 过去在浏览器内把 `outerHTML` 裁到 200 KiB 内联上限、只回 `truncated=True`，超出部分\
+  无从取回——而大型 SPA 的完整 DOM 别处都拿不到，等于永久丢失。现在改用它的两个同类"大负载"读工具\
+  （`web.network.get` / `web.script.source`）已有的溢出范式：内联仍给一段有界预览，完整文档写入会话制品区\
+  并登记，`html_path`（登记成功后再带 `artifact_id`）指向它，`truncated` 只表示"内联是前缀"。
+- 传输仍在浏览器内按"字符预算=磁盘上限（64 MiB）"截断：因为一个 UTF-8 字节不会少于一个 JS 码元，任何能\
+  塞进 64 MiB 溢出的 DOM 字符数都不超过该上限，所以这道闸只会截掉 `_spill_text` 本就要按 `too_large` 拒绝的\
+  文档，同时避免病态 DOM 在驱动里无界物化。服务层沿用 `network.get` 的 `_register_capture` 接线，登记失败\
+  经 `artifact_error` 上报而不掀翻这次快照。
 
 - `handle.requests` 是有界环:超过 `_MAX_REQUESTS` 就从最旧开始淘汰(并累加 `requests_dropped`),所以 `web.network_get`\
   对一个已掉出环的 request_id 会 `not_found`——但旧消息只说\"unknown request id\",读起来像\"你给错了 id\",而真实\

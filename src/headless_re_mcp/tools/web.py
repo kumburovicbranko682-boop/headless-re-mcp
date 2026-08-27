@@ -219,10 +219,14 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.dom.snapshot")
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
-        """Return the current page HTML, URL, and title.
+        """Return the current page HTML, URL, and title (large DOMs spill).
 
-        Answers with url, title and html, plus truncated when the HTML was
-        cut at the buffer. There is no content, dom or body field.
+        Answers with url, title and html, plus truncated when the inline html
+        is only a prefix. When truncated, the whole document is written to a
+        registered artifact and its path is html_path (with artifact_id once
+        registered), so the full DOM of a large page is recoverable rather than
+        lost -- the same spill web.network.get and web.script.source use. The
+        cut flag is truncated; there is no content, dom or body field.
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 

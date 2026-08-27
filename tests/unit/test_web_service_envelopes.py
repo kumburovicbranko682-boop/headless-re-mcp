@@ -4,11 +4,12 @@ success/error envelopes for status/preview/open/close/network/script.
 The web *backend* is exercised by the field tests and the leak-guard races by
 test_web_backends.py, but a whole band of the service layer only runs when a
 browser is actually driven, which needs Playwright. That left the thin read
-passthroughs (network.list / console / scripts / wasm.list / dom.snapshot),
-the spill->register_capture wiring on network.get / script.source, web.status /
-web.preview / web.close, web.open's *success* tail, and the _web_wrap
-`except BaseException` catch-all with no unit coverage. A fake WebBackend stands
-in for the browser so the service wiring is what is pinned, without Playwright.
+passthroughs (network.list / console / scripts / wasm.list), the
+spill->register_capture wiring on network.get / script.source / dom.snapshot,
+web.status / web.preview / web.close, web.open's *success* tail, and the
+_web_wrap `except BaseException` catch-all with no unit coverage. A fake
+WebBackend stands in for the browser so the service wiring is what is pinned,
+without Playwright.
 """
 
 from __future__ import annotations
@@ -98,9 +99,15 @@ class _FakeWeb:
             payload["source_path"] = str(src)
         return payload
 
-    def dom_snapshot(self, session_id: str) -> JsonObject:
+    def dom_snapshot(self, session_id: str, out_dir: Path) -> JsonObject:
         self._maybe_fail("dom_snapshot")
-        return {"html_bytes": 10}
+        payload: JsonObject = {"html": "<html></html>", "truncated": False}
+        if self.spill:
+            doc = Path(out_dir) / "dom.html"
+            doc.write_text("<html>big</html>", encoding="utf-8")
+            payload["truncated"] = True
+            payload["html_path"] = str(doc)
+        return payload
 
     def har_export(self, session_id: str, out: Path) -> JsonObject:
         self._maybe_fail("har_export")
@@ -133,7 +140,6 @@ def test_read_passthroughs_delegate_and_wrap_with_session_and_backend(tmp_path: 
             service.web_network_list(session_id, offset=5, limit=10),
             service.web_console(session_id, limit=25),
             service.web_scripts(session_id, offset=1, limit=2),
-            service.web_dom_snapshot(session_id),
         ):
             assert result.ok is True, result.error
             assert result.meta.get("session_id") == session_id
@@ -311,6 +317,45 @@ def test_script_source_maps_a_backend_error(tmp_path: Path) -> None:
         service.close_all()
 
 
+def test_dom_snapshot_registers_a_spilled_document(tmp_path: Path) -> None:
+    service, session_id, _ = _service(tmp_path, spill=True)
+    try:
+        result = service.web_dom_snapshot(session_id)
+        assert result.ok is True, result.error
+        assert result.data is not None
+        # The oversized DOM was written to the artifact area and registered, so
+        # the full document is recoverable rather than lost at the inline clip.
+        assert result.data["truncated"] is True
+        assert "artifact_id" in result.data
+    finally:
+        service.close_all()
+
+
+def test_dom_snapshot_without_a_spill_just_wraps_the_payload(tmp_path: Path) -> None:
+    service, session_id, _ = _service(tmp_path, spill=False)
+    try:
+        result = service.web_dom_snapshot(session_id)
+        assert result.ok is True, result.error
+        assert result.data is not None
+        assert result.data["truncated"] is False
+        assert "html_path" not in result.data
+        assert "artifact_id" not in result.data
+    finally:
+        service.close_all()
+
+
+def test_dom_snapshot_maps_a_backend_error(tmp_path: Path) -> None:
+    service, session_id, _ = _service(
+        tmp_path, raises={"dom_snapshot": WebError("backend_error", "no document")}
+    )
+    try:
+        result = service.web_dom_snapshot(session_id)
+        assert result.ok is False
+        assert result.error is not None and result.error.code == "backend_error"
+    finally:
+        service.close_all()
+
+
 def test_web_status_maps_an_unexpected_fault_to_internal_error(tmp_path: Path) -> None:
     service, session_id, _ = _service(
         tmp_path, raises={"status": RuntimeError("status probe crashed")}
@@ -362,6 +407,20 @@ def test_web_har_export_maps_a_backend_error(tmp_path: Path) -> None:
 def test_web_wrap_turns_an_unexpected_backend_fault_into_internal_error(tmp_path: Path) -> None:
     """A non-WebError raised by a backend op must fail closed as a structured
     envelope, not escape _web_wrap into the RPC loop."""
+    service, session_id, _ = _service(
+        tmp_path, raises={"network_list": RuntimeError("browser crashed")}
+    )
+    try:
+        result = service.web_network_list(session_id)
+        assert result.ok is False
+        assert result.error is not None and result.error.code == "internal_error"
+    finally:
+        service.close_all()
+
+
+def test_dom_snapshot_maps_an_unexpected_fault_to_internal_error(tmp_path: Path) -> None:
+    """dom_snapshot has its own try/except now (not _web_wrap) because it spills;
+    an unexpected backend fault must still fail closed as internal_error."""
     service, session_id, _ = _service(
         tmp_path, raises={"dom_snapshot": RuntimeError("browser crashed")}
     )

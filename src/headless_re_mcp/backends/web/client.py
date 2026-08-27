@@ -961,36 +961,54 @@ class WebBackend:
             result["source_path"] = str(spill)
         return result
 
-    def dom_snapshot(self, session_id: str) -> JsonObject:
+    def dom_snapshot(self, session_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
 
         def work() -> JsonObject:
             try:
-                clipped = handle.page.evaluate(
+                # Bound the transfer in-browser by a character budget equal to the
+                # disk cap: since a UTF-8 byte is never fewer than one JS code
+                # unit, any DOM that would fit the 64 MiB spill has at most that
+                # many characters, so this ceiling only ever clips a document
+                # _spill_text would refuse as too_large anyway -- while keeping a
+                # pathological DOM from materialising unbounded in the driver.
+                snapshot = handle.page.evaluate(
                     """(cap) => {
-                        const html = document.documentElement
-                          ? document.documentElement.outerHTML
-                          : (document.body ? document.body.outerHTML : "");
-                        const text = typeof html === "string" ? html : "";
+                        const root = document.documentElement || document.body;
+                        const raw = root ? root.outerHTML : "";
+                        const text = typeof raw === "string" ? raw : "";
                         return {
                           html: text.length > cap ? text.slice(0, cap) : text,
-                          truncated: text.length > cap
+                          transfer_truncated: text.length > cap
                         };
                     }""",
-                    _MAX_INLINE_BODY,
+                    UNREGISTERED_CAPTURE_MAX_BYTES,
                 )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"dom snapshot failed: {exc}") from exc
-            if not isinstance(clipped, dict):
+            if not isinstance(snapshot, dict):
                 raise WebError("backend_error", "dom snapshot returned no document")
-            html = clipped.get("html")
+            html = snapshot.get("html")
             text = html if isinstance(html, str) else ""
-            return {
+            # Spill like web.network.get / web.script.source: a large SPA's DOM is
+            # available nowhere else, so a 200 KiB inline clip with no recourse
+            # threw away the rest. Inline a bounded preview, write the whole
+            # document to the session artifact area, and hand back its path.
+            inline, spill, cut = _spill_text(
+                text,
+                artifact_dir=artifact_dir,
+                filename=f"dom-{uuid4().hex}.html",
+                kind="dom snapshot",
+            )
+            result: JsonObject = {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
-                "html": text[:_MAX_INLINE_BODY],
-                "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
+                "html": inline,
+                "truncated": cut or bool(snapshot.get("transfer_truncated")),
             }
+            if spill is not None:
+                result["html_path"] = str(spill)
+            return result
 
         return self._runner(handle).call(work)
 
