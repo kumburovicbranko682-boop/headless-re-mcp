@@ -236,3 +236,6 @@ class DeviceAnalysisMixin:
 
     def device_forward(self, serial: str, local: str, remote: str) -> Result[JsonObject]:
         return self._adb_wrap("forward", serial=serial, local=local, remote=remote)
+
+    def device_forwards(self, serial: str) -> Result[JsonObject]:
+        return self._adb_wrap("forwards", serial=serial)

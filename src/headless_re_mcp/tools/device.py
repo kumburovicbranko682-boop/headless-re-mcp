@@ -190,4 +190,20 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_forward(serial, local, remote))
 
+    @tools.tool(name="device.forwards")
+    def device_forwards(serial: str) -> dict[str, Any]:
+        """List the adb forward and reverse tunnels bound to the device.
+
+        The read companion to device.forward: tunnels live on the adb server,
+        so this shows every one bound to the device -- those this agent created
+        and those a person or another tool set up (a frida-server port, a debug
+        socket) -- which device.forward and release alone cannot reveal.
+        Answers with forwards (each carrying local and remote), reverses in the
+        same shape when this adb build can read them (the key is omitted, not
+        empty, when it cannot, so unreadable is not read as none), plus count
+        and has_more so a table capped at 32 per direction is not read as all
+        of them.
+        """
+        return _dump(analysis.device_forwards(serial))
+
     return tools.bindings

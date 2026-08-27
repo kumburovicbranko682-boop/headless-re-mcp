@@ -909,6 +909,50 @@ class AdbBackend:
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
         return {"local": local, "remote": remote}
 
+    def forwards(self, serial: str) -> JsonObject:
+        """List the adb tunnels the server holds for this device.
+
+        forward and reverse tunnels live on the adb server, not in this
+        process, so this shows every one bound to the device -- those this
+        agent created and those a person or another tool set up (a frida-server
+        port, a debug socket) -- which release_forwards alone cannot reveal.
+        """
+        dev = self._device(serial)
+
+        def rows(method_name: str) -> list[JsonObject]:
+            fn = getattr(dev, method_name, None)
+            if not callable(fn):
+                return []
+            try:
+                raw = _call(fn, timeout=_ADB_SHELL_TIMEOUT_S)
+            except AdbError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise AdbError("backend_error", f"{method_name} failed: {exc}") from exc
+            out: list[JsonObject] = []
+            for item in raw or []:
+                out.append(
+                    {
+                        "local": str(getattr(item, "local", "") or ""),
+                        "remote": str(getattr(item, "remote", "") or ""),
+                    }
+                )
+            return out
+
+        forwards = rows("forward_list")
+        result: JsonObject = {"forwards": forwards[:_MAX_FORWARDS]}
+        has_more = len(forwards) > _MAX_FORWARDS
+        # reverse_list is present on modern adbutils; when it is not, omit the
+        # reverses key entirely rather than return an empty list, so "this
+        # adbutils cannot read reverses" is not misread as "no reverse tunnels".
+        if callable(getattr(dev, "reverse_list", None)):
+            reverses = rows("reverse_list")
+            result["reverses"] = reverses[:_MAX_FORWARDS]
+            has_more = has_more or len(reverses) > _MAX_FORWARDS
+        result["count"] = len(result["forwards"]) + len(result.get("reverses", []))
+        result["has_more"] = has_more
+        return result
+
     def release_forwards(self) -> JsonObject:
         """Drop every forward this process created.
 
