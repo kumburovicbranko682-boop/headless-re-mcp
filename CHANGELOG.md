@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 proxy 流的字节计量与 body/header 整形 helper 钉进测试）
+
+- 抓到的流全是不可信的服务端数据,而这条后端把整个流对象留在环里,于是一族纯 helper 负责约束它存什么、
+  回什么:`_content_len`/`_encoded_len`/`_headers_len`/`_flow_stored_bytes` 为内存上限计量一条流的留存开销,
+  遇到行为异常的 part 必须**往多了算**(或安全归零)而非抛错;`_raw_body` 读 body 字节、把惰性解码失败当空
+  body 而非抓取失败;`_emit_body` 描述 body 时绝不回有损解码——上限内的文本内联,否则落成 `.bin` 并标
+  `too_large`/`binary`,免得调用方把替换字符当真字节;`_bounded_headers` 的计数/单值上限已测,但还剩迭代抛错
+  与总字节上限两条边没覆盖。
+- 新增 `tests/unit/test_proxy_pure_helpers.py`(不需 mitmproxy):`_content_len` 读长度或对无 len 对象归零;
+  `_encoded_len` 量 utf-8、`str()` 失败时回 `_MAX_STORED_BODY+1`;`_headers_len` 求和、迭代抛错归零、越
+  `_MAX_STORED_BODY` 即停;`_flow_stored_bytes` 合计 body+元信息+头;`_raw_body` 回字节/空(None、非字节、
+  惰性解码抛错);`_emit_body` 短文本内联、空 body、非 utf-8 落 `binary`、超 `_MAX_INLINE_BODY` 落 `too_large`;
+  `_bounded_headers` 迭代抛错记为整体丢弃、命中总字节上限即停。`proxy/client.py` 中 159-300 的整形/计量区补齐,
+  纯补测、不改行为。
+
 ### 加固（把 web 线的三个文本封顶 helper 钉进测试）
 
 - 浏览器回来的东西全是不可信且可能巨大——一个页面能 `console.log` 整份文档、把 `<title>` 设成一兆字节
