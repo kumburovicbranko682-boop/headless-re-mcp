@@ -81,8 +81,12 @@ def test_web_console_puts_messages_in_console_and_says_when_it_stopped(
     assert len(payload["console"]) == 10
     assert payload["has_more"] is True
     assert payload["dropped"] == 0
+    # total for parity with every other paginated reader: has_more says there
+    # is more, total says how much is buffered so the caller can size a re-read.
+    assert payload["total"] == 25
     doc = _tool_docstring("web.console")
     assert "Answers with console" in doc
+    assert "total" in doc
     assert "has_more" in doc
     assert "dropped" in doc
     assert "text_truncated" in doc
