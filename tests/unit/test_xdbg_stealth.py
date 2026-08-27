@@ -84,6 +84,47 @@ def test_apply_profile_writes_disabled_and_quiets_server(tmp_path) -> None:
     assert "AutostartServer=1" not in text
 
 
+def test_read_current_section_reads_a_utf16_bom_ini(tmp_path) -> None:
+    # ScyllaHide writes scylla_hide.ini as UTF-16 with a BOM on Windows. Reading
+    # it as UTF-8 raises UnicodeDecodeError, which used to slip past the
+    # except-OSError guard and crash instead of taking the utf-16 fallback the
+    # code was written to provide.
+    headless = _plugin_headless(tmp_path, Architecture.X64)
+    layout = layout_for_headless(headless, Architecture.X64)
+    assert layout is not None
+    layout.ini.write_text(
+        "[SETTINGS]\nCurrentProfile=Themida x86/x64\n", encoding="utf-16"
+    )
+    assert layout.ini.read_bytes()[:2] == b"\xff\xfe"
+    assert read_current_section(layout.ini) == "Themida x86/x64"
+
+
+def test_read_current_section_tolerates_a_utf8_bom(tmp_path) -> None:
+    # A UTF-8 BOM used to be folded into the first section header, hiding
+    # [SETTINGS] behind a leading byte and reading back as "no profile set".
+    headless = _plugin_headless(tmp_path, Architecture.X64)
+    layout = layout_for_headless(headless, Architecture.X64)
+    assert layout is not None
+    layout.ini.write_text("[SETTINGS]\nCurrentProfile=Basic\n", encoding="utf-8-sig")
+    assert layout.ini.read_bytes()[:3] == b"\xef\xbb\xbf"
+    assert read_current_section(layout.ini) == "Basic"
+
+
+def test_apply_profile_updates_a_preexisting_utf16_ini(tmp_path) -> None:
+    # A live install already carrying a UTF-16 ini must be updatable, not fatal:
+    # _load_or_seed read it through the same crashing utf-8 path.
+    headless = _plugin_headless(tmp_path, Architecture.X64)
+    layout = layout_for_headless(headless, Architecture.X64)
+    assert layout is not None
+    layout.ini.write_text(
+        "[SETTINGS]\nCurrentProfile=Disabled\n[VMProtect x86/x64]\nDLLNormal=1\n",
+        encoding="utf-16",
+    )
+    applied = apply_profile(layout, "vmp", require_plugin=True)
+    assert applied["section"] == "VMProtect x86/x64"
+    assert read_current_section(layout.ini) == "VMProtect x86/x64"
+
+
 def test_armadillo_rejected_on_x64(tmp_path) -> None:
     headless = _plugin_headless(tmp_path, Architecture.X64)
     layout = layout_for_headless(headless, Architecture.X64)
