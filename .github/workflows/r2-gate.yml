@@ -1,0 +1,64 @@
+# Per-PR radare2 gate — makes the r2 backend's live gate real in CI.
+#
+# The r2 backend's only live gate (test_m11_r2_live_gate.py) needs a Windows PE
+# fixture that is not committed to the repo, so it skips in every clean checkout
+# even when r2 is installed -- the backend has no live gate that actually runs.
+# ci.yml runs unit tests only, and the sole integration workflow is a manual,
+# self-hosted PE job. So nothing ever exercised r2's analysis pipeline end to
+# end. This job installs radare2 and a C compiler and runs a self-contained ELF
+# gate (test_r2_elf_live_gate.py builds its own fixture) so a regression in the
+# whitelist, the r2 invocation, or the JSON enrichment fails here, on the PR.
+#
+# Light and path-scoped: radare2 is an apt package and gcc ships on the runner;
+# no Node, wabt, Java, or browser. Runs only when the r2 backend or its gate
+# changes.
+name: r2-gate
+
+on:
+  pull_request:
+    paths:
+      - "src/headless_re_mcp/backends/r2/**"
+      - "tests/integration/test_r2_elf_live_gate.py"
+      - ".github/workflows/r2-gate.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  r2-gate:
+    # Pinned, not ubuntu-latest: the apt radare2 the gate was validated against
+    # (5.5.0) should not shift when the image alias rolls.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install radare2 + a C compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends radare2 gcc
+
+      - name: Install package (no backend extras needed; the gate drives R2Client)
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+
+      - name: Tool sanity — r2 and a compiler must resolve, not skip the gate
+        # If r2 or gcc is missing the gate skips and the job reads green on zero
+        # coverage. Fail loudly here instead so a broken install cannot pass.
+        run: |
+          r2 -v | head -1
+          gcc --version | head -1
+          python -c "from headless_re_mcp.backends.r2.client import R2Client; assert R2Client().available, 'radare2 not found on PATH'; print('r2 backend available')"
+
+      - name: r2 ELF live gate
+        # -rs prints skip reasons so a skip never reads as a pass.
+        run: |
+          python -m pytest -rs --tb=short --timeout=120 \
+            tests/integration/test_r2_elf_live_gate.py

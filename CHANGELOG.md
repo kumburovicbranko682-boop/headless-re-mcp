@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 变更（radare2 后端补一条真能跑的 ELF live gate，并纳入 CI）
+
+- r2 后端唯一的 live gate（`test_m11_r2_live_gate.py`）依赖一个**未入库**的 Windows PE 夹具
+  （`artifacts/fixtures-x64/headless_fixture.exe`），因此在任何干净检出里——即便装了 r2——都必然
+  跳过：r2 的分析流水线在任何环境都没有真正跑起来过。新增
+  `tests/integration/test_r2_elf_live_gate.py`：用系统 C 编译器现编一个极小 ELF，再驱动
+  `R2Client` 走通 `open` → `aa`/`aflj` → `izj` → `disasm`，断言 r2 真的还原出三个具名函数
+  （`add_numbers`/`mul_numbers`/`main`）及其映射地址（ELF 落 `va`）、字符串表里的标记串，以及
+  `main` 的真实 x86-64 反汇编（对 radare2 5.5.0 实测通过）。Linux 可移植、自带夹具、无外部依赖，
+  r2 或 C 编译器缺席时按「skip != pass」诚实跳过。新增 `.github/workflows/r2-gate.yml`：按 PR 路径
+  触发、apt 装 radare2+gcc、只装 `.[test,dev]` 跑这条 gate——此前 `ci.yml` 只跑单测，唯一集成
+  工作流是手动自托管的 Windows PE job，r2 流水线的回归无人看守。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
