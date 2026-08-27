@@ -117,3 +117,27 @@ def test_an_out_of_range_port_is_refused_before_a_device_is_touched() -> None:
         backend.forward("emulator-5554", "tcp:70000", "tcp:27042")
     assert caught.value.code == "invalid_params"
     assert backend._forwards == []
+
+
+class _RefusingDev:
+    def forward(self, local: str, remote: str) -> bool:
+        del local, remote
+        return False
+
+
+def test_a_forward_refused_by_adbutils_is_not_reported_as_open() -> None:
+    """adbutils returns None on success; an explicit False was still success.
+
+    Measured against AdbBackend.forward: forward() returning False still
+    answered {local, remote}, so an unattended agent talked through a port
+    that was never opened. A False is now a backend error, and the reserved
+    slot is released so a refused forward does not pin the table.
+    """
+    backend = AdbBackend()
+    backend._device = lambda serial: _RefusingDev()  # type: ignore[method-assign]
+    with pytest.raises(AdbError) as caught:
+        backend.forward("emulator-5554", "tcp:27042", "tcp:27042")
+    assert caught.value.code == "backend_error"
+    assert caught.value.message == "forward was refused"
+    assert caught.value.details.get("forwarded") is False
+    assert backend._forwards == []
