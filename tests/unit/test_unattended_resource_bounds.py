@@ -3159,6 +3159,21 @@ class TestDeviceListsDiscloseTruncation:
         result = self._backend(raw).properties("emulator-5554", limit=4)
         assert result["count"] == 4
         assert result["has_more"] is True
+
+    def test_properties_are_the_alphabetical_head_not_print_order(self) -> None:
+        """A cut set kept getprop print order first, then stopped.
+
+        Measured: getprop printed [ro.z]..[ro.a], cap 3 -> the set was
+        ro.z/ro.y/ro.x, so the alphabetically first keys ro.a/ro.b/ro.c were
+        missing and which keys appear depended on device print order rather
+        than being a stable subset.
+        """
+        letters = "zyxwvutsrqponm"
+        raw = "\n".join(f"[ro.{letter}]: [{letter}]" for letter in letters)
+        result = self._backend(raw).properties("emulator-5554", limit=3)
+        assert list(result["properties"]) == ["ro.m", "ro.n", "ro.o"]
+        assert result["count"] == 3
+        assert result["has_more"] is True
         assert "ro.item4" not in result["properties"]
 
     def test_frida_application_list_past_the_cap_says_so(self) -> None:

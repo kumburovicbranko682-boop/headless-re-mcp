@@ -401,17 +401,23 @@ class AdbBackend:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PROPERTIES))
         raw = _device_shell(dev, "getprop")
-        props: dict[str, str] = {}
-        has_more = False
+        parsed: dict[str, str] = {}
         for line in str(raw).splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if not match:
                 continue
-            if len(props) >= capped:
-                has_more = True
-                break
-            props[match.group(1)] = match.group(2)
-        return {"properties": props, "count": len(props), "has_more": has_more}
+            parsed[match.group(1)] = match.group(2)
+        # Sort by key before capping so a cut set is the alphabetical head of
+        # the properties, not whichever ``capped`` getprop happened to print
+        # first -- otherwise which keys survive a cut depends on device print
+        # order rather than being a stable, reproducible subset.
+        page = sorted(parsed)[:capped]
+        props = {key: parsed[key] for key in page}
+        return {
+            "properties": props,
+            "count": len(props),
+            "has_more": len(parsed) > len(page),
+        }
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500
