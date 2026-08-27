@@ -306,6 +306,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   正是上面那些分支当初被加进来要杜绝的误判。现在 `_failure` 也直接识别这八种后端异常，并按 `_as_rpc`
   同一套 `backend_error_is_retryable` 推导 `retryable`：漏写 except 元组的方法退化成正确的结构化信封而非
   假事故，两条路径由构造保证给出一致的信封。
+- **`apk.xrefs` 没有 `offset`，热点方法的调用点翻不到第一页以后**。`apk.classes/methods/strings` 早就是
+  统一的分页形态——把结果收进一个有上限的列表（到 `_MAX_*_COLLECT` 就停并置 `scan_capped`）、`_page_bounds`
+  夹 `offset`/`limit`、回 `count`/`total`/`offset`/`has_more`；唯独 `apk.xrefs` 只有 `limit`、收到页大小就停、
+  也不回 `total`：一个被大量调用的工具/日志方法，其调用点超过一页的部分根本没有办法翻到，`has_more` 之外
+  「这是不是全部调用者」也无从回答。现在 `apk.xrefs` 对齐兄弟工具：调用者收进上限 `_MAX_XREFS_COLLECT`（5000，
+  防止畸形 DEX 把某个方法的调用点堆成无界列表）的列表并在触顶时置 `scan_capped`，`_page_bounds` 夹 `offset`
+  （负值归零，不再尾切）与 `limit`（`le=1000`），回 `count`/`total`/`offset`/`has_more`/`scan_capped`。热点方法
+  的调用点从此可逐页翻完。
 - **抓包记录器跨线程无锁**。它由 mitmproxy 的事件循环线程写、由 MCP 工作线程读，序号自增与
   双容器更新都没有保护。现在全部走同一把锁，并提供 `snapshot()`/`raw()` 只读入口。
 - **`proxy.start` 会为一个根本没起来的代理报成功**。就绪信号在端口绑定之前就置位，端口被占时

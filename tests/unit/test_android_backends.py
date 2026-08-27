@@ -267,6 +267,48 @@ class TestApkXrefsSayWhenTheyStopped:
         assert result["count"] == 10
         assert result["has_more"] is False
 
+    def test_offset_pages_past_the_first_window(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The old xrefs had no offset, so callers of a hot method past the first
+        # page were simply unreachable. Now a second page continues the list.
+        client = self._client(monkeypatch, callers=25)
+        first = client.xrefs(tmp_path / "app.apk", "decrypt", offset=0, limit=10)
+        second = client.xrefs(tmp_path / "app.apk", "decrypt", offset=10, limit=10)
+        third = client.xrefs(tmp_path / "app.apk", "decrypt", offset=20, limit=10)
+
+        assert first["total"] == 25
+        assert first["offset"] == 0
+        assert [caller["class"] for caller in first["callers"]][0] == "Lcom/example/Caller0;"
+        assert second["offset"] == 10
+        assert second["count"] == 10
+        assert second["callers"][0]["class"] == "Lcom/example/Caller10;"
+        assert second["has_more"] is True
+        assert third["count"] == 5
+        assert third["has_more"] is False
+
+    def test_a_negative_offset_is_clamped_not_a_tail_slice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The agent transport skips schema validation, so a negative offset must
+        # be clamped to zero here rather than tail-slicing the caller list.
+        client = self._client(monkeypatch, callers=25)
+        result = client.xrefs(tmp_path / "app.apk", "decrypt", offset=-5, limit=10)
+
+        assert result["offset"] == 0
+        assert result["callers"][0]["class"] == "Lcom/example/Caller0;"
+
+    def test_collection_ceiling_is_disclosed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headless_re_mcp.backends.apk.client import _MAX_XREFS_COLLECT
+
+        client = self._client(monkeypatch, callers=_MAX_XREFS_COLLECT + 50)
+        result = client.xrefs(tmp_path / "app.apk", "decrypt", limit=10)
+
+        assert result["scan_capped"] is True
+        assert result["total"] == _MAX_XREFS_COLLECT
+
 
 class _FakeDexString:
     def __init__(self, value: str) -> None:

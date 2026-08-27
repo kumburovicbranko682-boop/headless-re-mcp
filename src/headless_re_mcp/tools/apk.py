@@ -135,14 +135,19 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_xrefs(
         session_id: str,
         method_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List callers of every method named method_name.
 
-        Answers with callers (class and method), method_name, count, and
-        has_more so a page that filled the limit is not read as the whole list.
+        Answers with callers (class and method), method_name, count, total,
+        offset, and has_more so a page that filled the limit is not read as the
+        whole list, plus scan_capped when the caller collection hit its ceiling
+        (total is then the capped count, not every call site on the device).
         """
-        return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
+        return _dump(
+            analysis.apk_xrefs(session_id, method_name, offset=offset, limit=limit)
+        )
 
     @tools.tool(name="apk.decompile")
     def apk_decompile(
