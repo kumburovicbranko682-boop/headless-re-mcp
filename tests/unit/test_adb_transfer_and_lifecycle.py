@@ -157,6 +157,22 @@ def test_install_rejects_a_missing_apk(tmp_path: Path) -> None:
     assert dev.installed is None
 
 
+def test_install_rejects_a_non_apk_before_the_device_transfer(tmp_path: Path) -> None:
+    """A real file that is not a zip is refused before adb install runs.
+
+    An APK is a zip; ``adb install`` would otherwise push the whole file and let
+    ``pm install`` fail with an opaque device error. The precheck turns that into
+    a precise invalid_params, and the device install is never reached.
+    """
+    not_apk = tmp_path / "notes.txt"
+    not_apk.write_bytes(b"this is a plain text file, not an apk")
+    dev = _FakeDev()
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).install("emulator-5554", str(not_apk))
+    assert excinfo.value.code == "invalid_params"
+    assert dev.installed is None
+
+
 def test_uninstall_confirms_removal_when_pm_path_is_empty() -> None:
     """pm path returning nothing means the package is gone."""
     dev = _FakeDev(pm_path_output="")

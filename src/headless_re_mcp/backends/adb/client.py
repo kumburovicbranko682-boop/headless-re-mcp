@@ -86,6 +86,26 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _require_apk_zip(path: Path) -> None:
+    """Refuse a non-APK before pushing it to the device.
+
+    ``adb install`` transfers the file to the device and runs ``pm install``;
+    an APK is a zip, so a non-zip -- a truncated download, a path pointing at
+    the wrong file, a decoded resource mistaken for the rebuilt apk -- can only
+    fail after the whole transfer, and ``pm`` reports it as an opaque device
+    error rather than the parameter mistake it is. ``zipfile.is_zipfile`` reads
+    only the archive's tail (it does not decompress, so the check itself has no
+    zip-bomb exposure) and refuses it up front, the same fail-fast shape apktool
+    and apksigner use before launching their JVM.
+    """
+    if not zipfile.is_zipfile(path):
+        raise AdbError(
+            "invalid_params",
+            "input is not a valid APK (not a zip archive)",
+            path=str(path),
+        )
+
+
 def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> None:
     """Validate an adb forward endpoint, port range included.
 
@@ -504,6 +524,7 @@ class AdbBackend:
         path = Path(apk_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
+        _require_apk_zip(path)
         dev = self._device(serial)
         try:
             extra = _accepted_kwargs(
