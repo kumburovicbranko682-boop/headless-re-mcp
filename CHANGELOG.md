@@ -244,7 +244,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   经会话把整条静态线跑通——manifest 级的包名、版本、两项权限、四类组件、launcher activity、native ABI、
   证书（未签名），以及 DEX 分析流水线 `AnalyzeAPK`/`get_classes`/`get_methods`/`get_strings`/`get_xref_from`：
   断言列出真实类名、`decrypt ()V` 方法（并验证点分类名→smali 描述符的转换）、DEX 字符串池与空 xref
-  的干净返回（缺 androguard 时 skip≠pass）。
+  的干净返回（缺 androguard 时 skip≠pass）。同一夹具还驱动 jadx 反编译线（此前也无活体覆盖）：跑通
+  `apk.export_sources` 生成 `sources/…/Secret.java`、`apk.decompile` 取回该类的 Java 源码，验证
+  `--output-dir` / `sources/` 目录布局、单类路径解析与退出码处理确实对得上真实 jadx（缺 jadx 时 skip≠pass）。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。

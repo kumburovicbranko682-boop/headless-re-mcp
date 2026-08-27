@@ -346,3 +346,48 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert xrefs.data["callers"] == []
     finally:
         service.close_all()
+
+
+def _jadx_available() -> bool:
+    return AnalysisService().settings.jadx is not None
+
+
+@pytest.mark.integration
+def test_apk_jadx_decompiles_the_dex(tmp_path: Path) -> None:
+    """jadx is a thin subprocess wrapper whose CLI contract had no live test.
+
+    Drive the real decompiler against the fixture DEX and assert the two things
+    an analyst depends on: export_sources produces the expected sources tree,
+    and decompile returns one class's Java text -- proving the --output-dir /
+    sources/ layout, the single-class path resolution, and the exit-code
+    handling all still hold against a real jadx.
+    """
+    if not _androguard_available():
+        pytest.skip("androguard not installed — APK jadx Gate not run (skip != pass)")
+    if not _jadx_available():
+        pytest.skip("jadx not configured — APK jadx Gate not run (skip != pass)")
+    apk = _build_apk(tmp_path / "sample.apk")
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        exported = service.apk_export_sources(session_id, timeout=180.0)
+        assert exported.ok, exported.error
+        assert exported.data["java_file_count"] >= 1
+        assert any(
+            str(name).endswith("Secret.java") for name in exported.data["java_files"]
+        )
+
+        decompiled = service.apk_decompile(
+            session_id, "com.example.headlessre.Secret", timeout=180.0
+        )
+        assert decompiled.ok, decompiled.error
+        assert decompiled.data["class_name"] == "com.example.headlessre.Secret"
+        assert str(decompiled.data["path"]).endswith("Secret.java")
+        source = decompiled.data["source"]
+        assert "class Secret" in source
+        assert "decrypt" in source
+    finally:
+        service.close_all()
