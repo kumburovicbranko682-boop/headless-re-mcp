@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（Frida 超时的 native 调用会无界泄漏 deadline 工作线程）
+
+- Frida 的 native 调用(attach/spawn/Java.perform/脚本读)可能在暂停的调试目标或无 JIT 的进程上
+  永久阻塞。`_run_deadline` 为此把每次调用丢到一个 daemon 线程上跑,超时就**放弃**该线程并回超时——
+  可 native 调用杀不掉,于是每一次超时都留下一条永不退出的线程。长驻服务里这些线程越攒越多,无上限。
+- 现在用一个 `BoundedSemaphore(_MAX_DEADLINE_THREADS=8)` 卡住:`_run_deadline` 开工前非阻塞地取一个
+  槽,取不到(说明 8 条都还卡在各自的 native 调用里)就直接回 `resource_exhausted`,而不是再堆一条
+  线程。槽只在 native 调用**最终返回**时于 `finally` 里释放,故真正卡死的调用会一直占着槽、把后续新活
+  挡在门外,而不是让线程无限增长。线程启动本身若抛异常也会把槽还回去。新增回归覆盖槽耗尽即拒、调用
+  返回后槽被释放、以及并发上限。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
