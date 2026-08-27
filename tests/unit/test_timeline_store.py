@@ -141,6 +141,71 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
 
 
+def test_even_the_truncation_notice_is_refused_when_the_cap_is_tiny(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cap smaller than the truncation notice itself still fails closed.
+
+    The oversize entry is replaced by a short 'truncated' notice; if even that
+    will not fit, the log reports the failure in-band rather than writing a line
+    that would violate the same cap it is enforcing.
+    """
+    monkeypatch.setattr(store, "_MAX_BYTES", 10)
+    path = tmp_path / "timeline.jsonl"
+    entry = store.append_session_timeline(path, event="huge", message="x" * 100)
+    assert entry["event"] == "timeline.entry.truncated"
+    assert "persistence limit is too small" in entry["write_failed"]
+    assert not path.exists()
+
+
+def test_trim_keeps_every_line_when_the_whole_file_fits_the_budget(
+    tmp_path: Path,
+) -> None:
+    # Exercised directly: with the default multi-megabyte budget a handful of
+    # short lines never trips the break, so the trim loop runs to exhaustion.
+    path = tmp_path / "timeline.jsonl"
+    for index in range(3):
+        _append(path, index)
+    new_size = store._trim_timeline(path, reserve=0)
+    events = [json.loads(line)["event"] for line in path.read_text("utf-8").splitlines()]
+    assert events == ["e0000", "e0001", "e0002"]
+    assert new_size == path.stat().st_size
+
+
+def test_trim_reraises_and_removes_the_partial_when_the_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Replacing a file another thread holds open fails on Windows; the trim must
+    # clean up its scratch file and propagate rather than leaving litter behind.
+    path = tmp_path / "timeline.jsonl"
+    for index in range(3):
+        _append(path, index)
+
+    def boom_replace(self: Path, target: Path) -> None:
+        raise OSError("sharing violation")
+
+    monkeypatch.setattr(Path, "replace", boom_replace)
+    with pytest.raises(OSError, match="sharing violation"):
+        store._trim_timeline(path, reserve=0)
+    assert list(tmp_path.glob("*.partial")) == []
+
+
+def test_list_reports_a_read_it_could_not_make(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "timeline.jsonl"
+    _append(path, 0)
+
+    def boom_open(self: Path, *args: object, **kwargs: object) -> object:
+        raise OSError("device gone")
+
+    monkeypatch.setattr(Path, "open", boom_open)
+    listed = store.list_session_timeline(path)
+    assert listed["events"] == []
+    assert listed["read_failed"].startswith("OSError")
+    assert listed["path"] == str(path)
+
+
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
