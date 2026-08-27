@@ -33,10 +33,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   python 进程断言**被注入后读到的事实**，而不只是“调用返回了”：`attach` 对目标 pid 回一个本地设备探针附着；
   `modules` 列出目标已加载的库（含 libc），每个都带真实基址与非零大小；`exports` 解析出 zlib 的
   `inflate/deflate/crc32/adler32/zlibVersion`（挑这个小模块是因为它的导出全在客户端 512 上限之内，libc 的
-  `printf` 反而落在上限之外），每条都带真实地址；`memory_read` 读某模块基址回来正好是 ELF 魔数
-  `7f 45 4c 46`（证明读到的是目标真实地址空间而非桩）；单 pid 护栏对 `pid != allowed_pid` 回
-  `permission_denied`。只在 Linux 跑（断言 ELF/libc 细节；Windows 那半由既有 Windows-only gate 覆盖），
-  缺 frida 模块、或环境禁止注入（容器里 ptrace 被锁）时如实跳过（skip 不等于 pass）。
+  `printf` 反而落在上限之外），每条都带真实地址；  `memory_read` 读某模块基址回来正好是 ELF 魔数
+  `7f 45 4c 46`（证明读到的是目标真实地址空间而非桩）；`hook_template("noop")` 把一段纯 JS
+  （`rpc.exports`）脚本编译并加载进活着的目标（`loaded=True`、`device=local`、`persisted=False`——探针注入，
+  detach 即销毁，不留驻留 hook），证明 frida 不仅能读内存还能注入并运行脚本，而未知模板名在 attach 之前就被
+  `invalid_params` 挡回；单 pid 护栏对 `pid != allowed_pid` 回 `permission_denied`。只在 Linux 跑
+  （断言 ELF/libc 细节；Windows 那半由既有 Windows-only gate 覆盖），缺 frida 模块、或环境禁止注入
+  （容器里 ptrace 被锁）时如实跳过（skip 不等于 pass）。
 
 ### 新增（监控台工作台）
 
