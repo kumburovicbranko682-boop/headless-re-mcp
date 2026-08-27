@@ -541,6 +541,15 @@ class WebBackend:
             )
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
+        except WebError:
+            # A wedged or closed browser is a session-level failure, not a
+            # per-request one. Folding it into body_error returns an ok envelope
+            # for a session that can serve nothing, so the caller reads "this
+            # request had no body" and moves to the next instead of calling
+            # web.close. script_source already re-raises here; match it. A real
+            # body-fetch miss (a redirect/204 with no body, an evicted body)
+            # raises a plain playwright error and stays a soft body_error.
+            raise
         except Exception as exc:  # noqa: BLE001
             return {**entry, "body_error": str(exc)}
         if not isinstance(body, str):
