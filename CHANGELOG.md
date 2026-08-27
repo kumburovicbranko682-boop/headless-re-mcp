@@ -132,6 +132,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   也会在缺字段时按 `function` 是否存在补齐 `found`：`found=false` 明确表示“该地址没有函数”，此时
   空的 `decompiled` 是这个原因而非空函数体。
 
+### 新增回归（ghidra `_export_has_content` 按“模式对应的字段”判定非零退出，由跨字段负载直测固定）
+
+- analyzeHeadless 在 postScript 真写出 JSON 后仍常以非零码退出,故 `_export` 会保留「非零退出但
+  有内容」的负载,只把真的空负载判失败:`if code != 0 and not _export_has_content(payload, mode)`。
+  「算不算有内容」取决于模式——这正是 `_export_has_content` 收 `mode` 的全部意义:`decompile` 看
+  `decompiled` 字符串、其余(functions/symbols/xrefs)看 `items` 列表。既有 ghidra 单测每种模式都只
+  配自己的字段(decompile 只带 `decompiled`、列表只带 `items`),且两条非零退出用例都是*空*负载、只是
+  重复确认抛错,字段*选择*一处未钉:一是**非零退出的 decompile 带非空 `decompiled` 应被保留**——现有
+  那条能反编译出函数体的用例跑在退出 0、根本到不了 `code != 0` 守卫;把函数塌成只看 `items`,decompile
+  负载从无 `items` 键,便被读成空、每次「非零退出但已反编译出真函数」的运行都被当成 backend_error 丢掉。
+  二是**列表模式只认 `items`**——functions 回了空 `items` 就是失败,哪怕负载里搭了个无关的 `decompiled`
+  串也不能算数;放宽成「两字段任一非空即可」,这个「空但非零」的导出就会被读成「零函数的成功」。新增两例
+  用现有夹具从不产生的跨字段负载分别钉住两个方向(退出 1 的 decompile 带函数体仍保留、退出 1 的 functions
+  空 `items` 即便搭了 `decompiled` 仍抛 `backend_error`);两次反向变异各只被其中一例逮到,既有 ghidra 用例
+  全绿。
+
 
 - `error_boundary` 的行内脱敏(异常消息、事故日志、HTTP 500 体、CLI stderr 信封走的同一条
   正则)只覆盖 `api_key`/`token`/`secret`/`password` 与 `Authorization: Bearer`,而
