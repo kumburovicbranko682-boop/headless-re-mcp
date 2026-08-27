@@ -152,6 +152,49 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-wasm-capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install wabt and the package with the browser extra
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wabt
+          wasm2wat --version
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,browser]"
+
+      - name: Install chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: WASM capture gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_wasm_capture_live_gate.py \
+            -rs --tb=short --junitxml=wasm-capture-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("wasm-capture-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # chromium and wabt were just installed, so a skip here means the gate
+          # could not capture or disassemble a real module -- the false-green
+          # "skip != pass" warns about. This is the only place the wasm_only
+          # script filter, the binary body decode and wasm2wat run end to end.
+          if not cases:
+              sys.exit("no wasm-capture gate was collected")
+          if skipped:
+              sys.exit(f"wasm-capture gate skipped despite installed deps: {skipped}")
+          print(f"wasm-capture gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+Web 线的 WebAssembly 主张首次有了端到端真实覆盖。`web.scripts` 的 `wasm_only` 过滤、`network.get`
+的 base64 二进制响应体解码（代码注释里点名 wasm 的那条路径）、以及 jsre 线的 `wasm.wat`，此前没有任何
+测试见过浏览器里的真实模块：没有测试在浏览器里加载过 WebAssembly，过滤与二进制解码只对 mock 跑过，
+wasm2wat 只对非浏览器产物跑过。新增 `tests/integration/test_wasm_capture_live_gate.py`：localhost
+页面 fetch 并实例化一个内嵌的 41 字节真实模块（导出 `add`），console 出现 `wasm_add 12` 证明模块真
+执行了；断言 `wasm_only` 过滤出 `language == WebAssembly`、`wasm://` URL 的脚本，`network.get` 经
+二进制路径落盘的字节与模块逐字节相等，wasm2wat 对同样字节反汇编出 `(export "add"` 与 `i32.add`。
+新增 `linux-wasm-capture` CI job：装 wabt + chromium、跑该 gate 并解析 junitxml，依赖齐备却 skip
+时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
