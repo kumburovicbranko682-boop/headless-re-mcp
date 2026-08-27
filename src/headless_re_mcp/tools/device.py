@@ -138,6 +138,26 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_current_activity(serial))
 
+    @tools.tool(name="device.ps")
+    def device_ps(
+        serial: str,
+        name_filter: str | None = None,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List running processes on the device (a bounded ps -A snapshot).
+
+        Where device.current_activity names only the foreground app, this is
+        the whole process table -- how to find a package's pid, confirm what
+        is running, or spot frida-server or an injected helper. name_filter is
+        a case-insensitive substring matched against the process name in this
+        process (it is not passed to the shell). Answers with processes (user,
+        pid, ppid, name, sorted by pid), count, total, offset, has_more, and
+        scan_capped so a page that filled the limit is not read as the whole
+        table; name_filter echoes back when one was given.
+        """
+        return _dump(analysis.device_ps(serial, name_filter, offset=offset, limit=limit))
+
     @tools.tool(name="device.logcat")
     def device_logcat(
         serial: str, lines: Annotated[int, Field(ge=1, le=5000)] = 200

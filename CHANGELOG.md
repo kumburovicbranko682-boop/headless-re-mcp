@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -42,6 +42,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （tmd/Themida/WinLicense → `themida`）；open/launch 省略参数时按映射自动写 ini。
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
+
+### 新增（`device.ps` 列设备进程表）
+
+- `device.current_activity` 只说得出前台那个包；想找某个包的 pid、确认它是否在跑、或者看一眼设备上
+  有没有 frida-server / 注入进来的 helper，此前没有工具能列进程表。新增只读 `device.ps`：跑一次
+  有界的 `ps -A` 快照，逐行解析 `USER PID PPID … NAME`（跳过表头与 PID/PPID 非数字的行），回
+  `processes`（`user`、`pid`、`ppid`、`name`，按 pid 排序），带 `count`、`total`、`offset`、
+  `has_more` 与 `scan_capped`，使填满 limit 的一页不被当成整张表。`name_filter` 是对进程名的大小写
+  不敏感子串过滤，在本进程里做、**不进 shell**，给出即原样回显。adb 主机端错误按 `backend_error`
+  上报。新增回归测试覆盖表头跳过、name_filter 过滤、按 pid 排序、分页 has_more 与主机错误。
 
 ### 变更（监控台检查器）
 
@@ -522,7 +532,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   字符串/xrefs，jadx CLI 负责 `apk.decompile` 与 `apk.export_sources`。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
-- **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、
+- **设备**：`device.*` 16 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、
   logcat、截图、push/pull、端口转发。**刻意不提供 `device.shell`**——与既有「无
   `dynamic.command`」同一条原则；序列号与包名按严格正则校验，杜绝参数注入。
 - **动态**：Frida 后端从「只能本机、只能一个 pid」推广到设备维度（USB/模拟器/远程），

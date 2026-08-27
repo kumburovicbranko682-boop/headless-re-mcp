@@ -188,6 +188,17 @@ class DeviceAnalysisMixin:
     def device_current_activity(self, serial: str) -> Result[JsonObject]:
         return self._adb_wrap("current_activity", serial=serial)
 
+    def device_ps(
+        self,
+        serial: str,
+        name_filter: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> Result[JsonObject]:
+        return self._adb_wrap(
+            "processes", serial=serial, name_filter=name_filter, offset=offset, limit=limit
+        )
+
     def device_logcat(self, serial: str, lines: int = 200) -> Result[JsonObject]:
         return self._adb_wrap("logcat", serial=serial, lines=lines)
 

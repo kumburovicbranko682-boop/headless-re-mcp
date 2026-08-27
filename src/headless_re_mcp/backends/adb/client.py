@@ -40,6 +40,11 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+# ps -A on a busy device lists hundreds of entries; bound how many are parsed
+# and how many one page returns so a chatty device cannot balloon the reply.
+_MAX_PROCESSES = 8000
+_MAX_PROCESSES_PAGE = 2000
+_MAX_PROCESS_FILTER_CHARS = 128
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -525,6 +530,59 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def processes(
+        self,
+        serial: str,
+        *,
+        name_filter: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> JsonObject:
+        dev = self._device(serial)
+        needle = (name_filter or "").strip()[:_MAX_PROCESS_FILTER_CHARS].lower()
+        raw = _device_shell(dev, ["ps", "-A"])
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "ps failed", output=text[:800])
+        rows: list[JsonObject] = []
+        scan_capped = False
+        for line in text.splitlines():
+            fields = line.split()
+            # toybox ps prints: USER PID PPID VSZ RSS WCHAN ADDR S NAME. Skip the
+            # header and any line that lacks the leading USER/PID/PPID/.../NAME
+            # shape (PID and PPID must be numeric).
+            if len(fields) < 4 or not (fields[1].isdigit() and fields[2].isdigit()):
+                continue
+            name = fields[-1]
+            if needle and needle not in name.lower():
+                continue
+            if len(rows) >= _MAX_PROCESSES:
+                scan_capped = True
+                break
+            rows.append(
+                {
+                    "user": fields[0],
+                    "pid": int(fields[1]),
+                    "ppid": int(fields[2]),
+                    "name": name,
+                }
+            )
+        rows.sort(key=lambda row: row["pid"])
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_PROCESSES_PAGE))
+        window = rows[start : start + cap]
+        result: JsonObject = {
+            "processes": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_capped,
+        }
+        if name_filter is not None:
+            result["name_filter"] = name_filter
+        return result
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
