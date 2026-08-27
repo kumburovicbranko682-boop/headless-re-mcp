@@ -3645,7 +3645,7 @@ class TestAdbHostCallsAreBounded:
         backend._adbutils = FakeAdb
         result = backend.list_devices()
         assert seen["socket_timeout"] == _ADB_PROBE_TIMEOUT_S
-        assert result == {"devices": [], "count": 0, "has_more": False}
+        assert result == {"devices": [], "count": 0, "total": 0, "has_more": False}
 
     def test_list_includes_offline_devices_and_does_not_probe_get_state(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend
