@@ -494,6 +494,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **APK 组件/权限列表和 manifest 截断不说话**。加壳样本可以塞进几千个空组件；manifest
   超过 200k 字符时只切一刀、回包仍像完整 XML。组件与权限封顶并回 `has_more`，manifest
   回 `truncated`。
+- **`apk` 权限/组件/native_libs 是先按 androguard 的迭代顺序切到上限、再对切下来的那截排序**。
+  一旦名字数超过上限，回包里那截「已排序」的列表其实是任意子集——不是读有序列表的调用方
+  以为的字典序前 N，两次解析同一 APK 甚至可能丢掉不同的名字。`_cap_names` 与 `native_libs`
+  改为先对全集排序再截断（这些清单本就已被 androguard 全量物化，排序不引入新的无界读），
+  与分页的 `classes` / `methods` 采集器同序；截断的尾部因此确定、可复现，和 adb 包列表、
+  jadx 目录列表的同类修复一致。
 - **jadx 导出源码列表和 webcrack unpack 文件列表同样切到 2000 条却不说**。旁边虽有
   `java_file_count` / `file_count` 是全量，只看列表的调用方仍会当成完整目录。补上
   `has_more`。

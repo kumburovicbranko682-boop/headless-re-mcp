@@ -6,8 +6,67 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient
+import headless_re_mcp.backends.apk.client as apk_client
+from headless_re_mcp.backends.apk.client import _MAX_MANIFEST_CHARS, ApkClient, _cap_names
 from headless_re_mcp.tools.apk import build_apk_tools
+
+
+def test_cap_names_returns_the_alphabetical_first_when_it_truncates() -> None:
+    """A truncated manifest listing must be the alphabetical-first, deterministic.
+
+    _cap_names collected the first `limit` names in androguard's iteration order
+    and sorted only that slice, so once a manifest carried more than `limit`
+    names the ones shown were an arbitrary subset -- not the alphabetical-first a
+    caller reading a sorted list expects, and two parses could drop different
+    names. Sorting before capping makes the dropped tail deterministic.
+    """
+    names, has_more = _cap_names(["zeta", "yankee", "alpha", "bravo"], 2)
+
+    assert has_more is True
+    assert names == ["alpha", "bravo"]
+
+
+def test_cap_names_sorts_the_full_set_when_it_fits() -> None:
+    names, has_more = _cap_names(["charlie", "alpha", "bravo"], 10)
+
+    assert has_more is False
+    assert names == ["alpha", "bravo", "charlie"]
+
+
+class _FakeNativeApk:
+    def __init__(self, files: list[str]) -> None:
+        self._files = files
+
+    def get_files(self) -> list[str]:
+        return self._files
+
+
+def test_native_libs_returns_the_alphabetical_first_when_it_truncates(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """native_libs sorted only the capped slice, so a big app's list was arbitrary.
+
+    The loop kept the first _MAX_NATIVE_LIBS entries in ZIP order and sorted just
+    those, so an app shipping more libraries than the cap showed whichever .so
+    names happened to come first in the archive -- read as the alphabetical-first
+    because the field is sorted. Sorting before the cap fixes which tail drops.
+    """
+    files = [
+        "lib/x86/libz.so",
+        "lib/x86/liby.so",
+        "lib/x86/liba.so",
+        "assets/data.bin",
+    ]
+    monkeypatch.setattr(apk_client, "_MAX_NATIVE_LIBS", 2)
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _FakeNativeApk(files))
+
+    payload = client.native_libs(tmp_path / "app.apk")
+
+    assert payload["has_more"] is True
+    assert payload["native_libs"] == ["lib/x86/liba.so", "lib/x86/liby.so"]
+    assert payload["count"] == 2
+    assert payload["abis"] == ["x86"]
 
 
 def _tool_docstring(name: str) -> str:

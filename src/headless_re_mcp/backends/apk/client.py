@@ -38,15 +38,22 @@ class ApkError(RuntimeError):
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
-    items: list[str] = []
-    has_more = False
-    for item in values or []:
-        if len(items) >= limit:
-            has_more = True
-            break
-        items.append(str(item))
-    items.sort()
-    return items, has_more
+    """Sort the whole set, then cap -- a truncated listing must be deterministic.
+
+    Collecting the first ``limit`` names in androguard's iteration order and
+    sorting only that subset returned an arbitrary slice whenever a manifest
+    carried more than ``limit`` names: the names shown were not the
+    alphabetical-first ``limit`` a caller reading a sorted list expects, and two
+    parses of the same APK could disagree on which names were dropped. These
+    manifest lists are already fully materialised by androguard, so sort the
+    whole set first and cap the sorted result -- the same order the paginated
+    ``classes`` / ``methods`` collectors already keep.
+    """
+    cap = max(0, int(limit))
+    names = sorted(str(item) for item in (values or []))
+    if len(names) > cap:
+        return names[:cap], True
+    return names, False
 
 
 class _ParsedApk:
@@ -269,9 +276,8 @@ class ApkClient:
 
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        libs: list[str] = []
+        lib_paths: list[str] = []
         abis: set[str] = set()
-        has_more = False
         for name in apk.get_files() or []:
             text = str(name)
             if not text.startswith("lib/"):
@@ -279,11 +285,15 @@ class ApkClient:
             parts = text.split("/")
             if len(parts) >= 3:
                 abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
-                has_more = True
-                continue
-            libs.append(text)
-        libs.sort()
+            lib_paths.append(text)
+        # Sort before capping: capping in ZIP-entry order and sorting only that
+        # slice returned an arbitrary subset once an app shipped more than
+        # _MAX_NATIVE_LIBS libraries, so the ".so" names shown were not the
+        # alphabetical-first the caller reads them as. The entry list is already
+        # resident from the parse, so sorting the whole set adds no unbounded read.
+        lib_paths.sort()
+        has_more = len(lib_paths) > _MAX_NATIVE_LIBS
+        libs = lib_paths[:_MAX_NATIVE_LIBS]
         return {
             "native_libs": libs,
             "abis": sorted(abis),
