@@ -8,8 +8,6 @@ ghidra-wasm-plugin installed) at the same .wasm file.
 
 from __future__ import annotations
 
-import shutil
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -30,34 +28,12 @@ JsonObject = dict[str, Any]
 # js.unpack_bundle writes artifact_root/jsre/unpack-<uuid>/ and never
 # registers it: the tool keys by a file path, and the artifact table needs
 # a session_id. Retention therefore never sees the tree. Measured: 20
-# unpacks of 100 x 10 KiB files left 19.5 MiB that nothing could reclaim.
-_MAX_JSRE_UNPACK_DIRS = 8
-
-
-def prune_jsre_unpack_dirs(root: Path, *, keep: int = _MAX_JSRE_UNPACK_DIRS) -> None:
-    """Drop the oldest unpack trees once the jsre directory is full."""
-    try:
-        dirs = [
-            path
-            for path in root.iterdir()
-            if path.is_dir() and path.name.startswith("unpack-")
-        ]
-    except OSError:
-        return
-    extra = len(dirs) - max(0, keep)
-    if extra <= 0:
-        return
-
-    def _mtime(path: Path) -> int:
-        try:
-            return path.stat().st_mtime_ns
-        except OSError:
-            return 0
-
-    dirs.sort(key=_mtime)
-    for stale in dirs[:extra]:
-        with suppress(OSError):
-            shutil.rmtree(stale)
+# unpacks of 100 x 10 KiB files left 19.5 MiB that nothing could reclaim. The
+# jsre directory itself is the bound, enforced after every unpack -- success or
+# failure -- by prune_capped_dir with the shared JSRE_UNPACK_MAX_ENTRIES /
+# JSRE_UNPACK_MAX_BYTES caps (count *and* bytes: a timed-out unpack raises after
+# webcrack has already written a partial tree, so a dir-count cap alone still
+# leaves those bytes unbounded).
 
 
 def _as_rpc(exc: JsReError) -> XdbgRpcError:
@@ -107,19 +83,23 @@ class JsReAnalysisMixin:
             data = JsClient(getattr(self.settings, "webcrack", None)).unpack_bundle(
                 Path(path), out_dir, timeout=timeout, offset=offset, limit=limit
             )
-            prune_capped_dir(
-                out_dir.parent,
-                max_entries=JSRE_UNPACK_MAX_ENTRIES,
-                max_bytes=JSRE_UNPACK_MAX_BYTES,
-            )
             return _success(data, backend="webcrack")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
         finally:
+            # Bound the unregistered jsre tree on every path, not just success:
+            # a timed-out unpack raises after webcrack has already written a
+            # partial (possibly large) tree, so the byte cap has to run then too.
+            # prune_capped_dir keeps the newest, so a caller that just unpacked
+            # still finds its tree.
             if out_dir is not None:
-                prune_jsre_unpack_dirs(out_dir.parent)
+                prune_capped_dir(
+                    out_dir.parent,
+                    max_entries=JSRE_UNPACK_MAX_ENTRIES,
+                    max_bytes=JSRE_UNPACK_MAX_BYTES,
+                )
 
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:

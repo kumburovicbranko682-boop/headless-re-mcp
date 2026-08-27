@@ -2,39 +2,20 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from headless_re_mcp.core.service_jsre import (
-    _MAX_JSRE_UNPACK_DIRS,
-    JsReAnalysisMixin,
-    prune_jsre_unpack_dirs,
-)
+from headless_re_mcp.backends.jsre import JsReError
+from headless_re_mcp.core.limits import JSRE_UNPACK_MAX_ENTRIES
+from headless_re_mcp.core.service_jsre import JsReAnalysisMixin
 
 
 def _fill_unpack(directory: Path, *, files: int = 100, size: int = 10 * 1024) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     for index in range(files):
         (directory / f"mod-{index}.js").write_bytes(b"x" * size)
-
-
-def test_prune_keeps_only_the_newest_unpack_trees(tmp_path: Path) -> None:
-    root = tmp_path / "jsre"
-    root.mkdir()
-    for index in range(20):
-        directory = root / f"unpack-{index:03d}"
-        _fill_unpack(directory)
-        os.utime(directory, (index + 1, index + 1))
-
-    prune_jsre_unpack_dirs(root, keep=8)
-
-    left = sorted(path.name for path in root.iterdir())
-    assert left == [f"unpack-{index:03d}" for index in range(12, 20)]
-    total = sum(path.stat().st_size for path in root.rglob("*.js"))
-    assert total == 8 * 100 * 10 * 1024
 
 
 class _FakeJs:
@@ -63,7 +44,12 @@ class _Harness(JsReAnalysisMixin):
 def test_an_unpack_loop_cannot_grow_jsre_without_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """20 unpacks of 100 x 10 KiB left 19.5 MiB. Retention never saw them."""
+    """20 unpacks of 100 x 10 KiB left 19.5 MiB. Retention never saw them.
+
+    Assert against the live cap the production path actually enforces
+    (prune_capped_dir with JSRE_UNPACK_MAX_ENTRIES), not a private copy, so a
+    change to the cap moves the guard with it instead of passing by chance.
+    """
     monkeypatch.setattr("headless_re_mcp.core.service_jsre.JsClient", _FakeJs)
     harness = _Harness(tmp_path)
     bundle = tmp_path / "app.js"
@@ -74,9 +60,67 @@ def test_an_unpack_loop_cannot_grow_jsre_without_bound(
 
     root = tmp_path / "jsre"
     dirs = [path for path in root.iterdir() if path.is_dir()]
-    assert len(dirs) == _MAX_JSRE_UNPACK_DIRS
+    assert len(dirs) == JSRE_UNPACK_MAX_ENTRIES
     total = sum(path.stat().st_size for path in root.rglob("*.js"))
-    assert total == _MAX_JSRE_UNPACK_DIRS * 100 * 10 * 1024
+    assert total == JSRE_UNPACK_MAX_ENTRIES * 100 * 10 * 1024
+
+
+class _TimeoutAfterPartialWrite:
+    """webcrack times out only after writing a large partial tree.
+
+    unpack_bundle mkdir's out_dir and runs webcrack; a timeout raises from the
+    run *after* files are on disk. The service must still bound those bytes.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def unpack_bundle(
+        self,
+        path: Path,
+        out_dir: Path,
+        *,
+        timeout: float = 300.0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        del path, timeout, offset, limit
+        _fill_unpack(out_dir, files=10, size=10 * 1024)  # 100 KiB partial tree
+        raise JsReError("timeout", "tool timed out")
+
+
+def test_failed_unpacks_are_bounded_by_bytes_not_just_dir_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run of timed-out unpacks cannot grow jsre past the byte cap.
+
+    Each failed unpack leaves a 100 KiB partial tree. With a 150 KiB byte cap
+    and the default 8-dir count cap, three failures would be 300 KiB across 3
+    dirs -- under the count cap, so a count-only pruner (the old finally) would
+    keep all of it. The byte cap must trim to the newest tree instead, proving
+    prune_capped_dir runs on the failure path too.
+    """
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_jsre.JsClient", _TimeoutAfterPartialWrite
+    )
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_jsre.JSRE_UNPACK_MAX_BYTES", 150 * 1024
+    )
+    harness = _Harness(tmp_path)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    for _ in range(3):
+        result = harness.js_unpack_bundle(str(bundle))
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "timeout"
+
+    root = tmp_path / "jsre"
+    total = sum(path.stat().st_size for path in root.rglob("*.js"))
+    assert total <= 150 * 1024, total
+    # The byte cap trimmed to the single newest partial tree (100 KiB).
+    dirs = [path for path in root.iterdir() if path.is_dir()]
+    assert len(dirs) == 1
 
 
 def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
