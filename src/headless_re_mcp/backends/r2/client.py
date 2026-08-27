@@ -100,11 +100,14 @@ class R2Client:
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
+        # axj lists the whole xref database and ignores the `@` seek, so filter
+        # the dump down to the rows that touch `address` -- otherwise every call,
+        # for any address, returned the same program-wide list.
         cmd = f"axj @ {address}"
         data = self.run(binary, ["aa", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address
-        return enrich_r2_payload(data, binary=binary)
+        return enrich_r2_payload(data, binary=binary, xref_filter_va=address)
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
         if not self.available or self.executable is None:

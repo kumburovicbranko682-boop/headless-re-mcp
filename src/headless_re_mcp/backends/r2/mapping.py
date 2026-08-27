@@ -130,13 +130,32 @@ def _item_va(entry: JsonObject, keys: tuple[str, ...]) -> int | None:
     return None
 
 
+# An xref row names the address it references under different keys across r2
+# versions: modern builds emit ``to``, r2 5.x emits ``addr`` (with ``from`` the
+# origin either way). Match any of them so the address filter is version-proof.
+_XREF_ENDPOINT_KEYS: tuple[str, ...] = ("from", "to", "addr")
+
+
+def _xref_touches(entry: JsonObject, va: int) -> bool:
+    """True when this xref row has ``va`` as either its origin or its target."""
+    return any(_item_va(entry, (key,)) == va for key in _XREF_ENDPOINT_KEYS)
+
+
 def enrich_r2_payload(
     data: JsonObject,
     *,
     binary: Path,
     architecture: Architecture | None = None,
+    xref_filter_va: int | None = None,
 ) -> JsonObject:
-    """Parse *j payloads into items with unified Address fields."""
+    """Parse *j payloads into items with unified Address fields.
+
+    ``xref_filter_va`` narrows an ``axj`` dump (which radare2 emits whole,
+    ignoring the ``@`` seek) to the rows that actually touch that address, so
+    ``r2.xrefs`` answers "to and from address" instead of the entire program's
+    reference table. Filtering happens before the item cap, so a target with
+    many references is never truncated away by unrelated rows.
+    """
     module = binary.name
     pe_arch, image_base = pe_preferred_base(binary)
     arch = architecture or pe_arch
@@ -162,6 +181,12 @@ def enrich_r2_payload(
 
     items: list[JsonObject] = []
     if isinstance(parsed, list):
+        if xref_filter_va is not None:
+            parsed = [
+                entry
+                for entry in parsed
+                if isinstance(entry, dict) and _xref_touches(entry, xref_filter_va)
+            ]
         available = len(parsed)
         for entry in parsed[:_MAX_ITEMS]:
             if not isinstance(entry, dict):
