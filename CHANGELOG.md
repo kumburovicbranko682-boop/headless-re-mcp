@@ -61,6 +61,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（proxy.flow.get 补披露 errored flow 的错误原因）
+
+- errored flow(TLS 握手被拒、上游不可达、请求中途被重置)会被 `error` 钩子留存,`flow.error` 有值、
+  无响应,`proxy.flows` 列表里也带 `error` / `error_msg` 与 null 状态。但 `proxy.flow.get` 详情视图
+  完全忽略 `flow.error`,只回一个 `status: null`、空 body 的响应——一个失败的 flow 看起来就像"请求
+  拿到了空回复",且完全看不出原因(而"这台主机拒绝握手"往往正是逆向会话要找的结论)。现在 flow_get
+  按抓包钩子同样的方式提取并限长错误信息,在顶层补 `error: true` 与 `error_msg`,使列表与详情两个视图
+  一致。回归测试覆盖:无响应 flow 披露错误(status 仍为 null、body 仍为空)、无消息回退为常量、超长消息
+  限长并标 `metadata_truncated`、以及已完成 flow 不会凭空长出 error 字段。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

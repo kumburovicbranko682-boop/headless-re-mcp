@@ -86,7 +86,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         are bounded in count and size; metadata_truncated on request or
         response marks a clipped header map or field. There is no top-level
         headers or body field, and a binary body is never returned as a
-        mojibake body string.
+        mojibake body string. A flow that errored before a response (TLS
+        refused, upstream unreachable, reset mid-request) carries top-level
+        error true and error_msg with a null response status, matching
+        proxy.flows, rather than looking like a blank reply.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from headless_re_mcp.backends.proxy.client import ProxyBackend
+from headless_re_mcp.backends.proxy.client import _MAX_METADATA_BYTES, ProxyBackend
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
@@ -123,6 +123,75 @@ def test_flow_get_spills_a_binary_request_body_too(
     resp = payload["response"]
     assert resp["spill_reason"] == "binary"
     assert Path(req["body_path"]) != Path(resp["body_path"])
+
+
+def test_flow_get_discloses_the_error_of_a_flow_that_never_got_a_response(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """proxy.flows marks an errored flow (error/error_msg, null status); the
+    detail view dropped it, so a failed flow read as a blank reply. Pin that
+    flow_get now carries the same fields, extracted the way the capture does.
+    """
+    request = SimpleNamespace(
+        method="GET",
+        pretty_url="https://blocked.example/x",
+        headers={"accept": "*/*"},
+    )
+    flow = SimpleNamespace(
+        request=request,
+        response=None,
+        error=SimpleNamespace(msg="net::ERR_CONNECTION_REFUSED"),
+    )
+    backend = _backend_with_flow(monkeypatch, flow)
+
+    payload = backend.flow_get("s", "e1", tmp_path)
+
+    assert payload["error"] is True
+    assert payload["error_msg"] == "net::ERR_CONNECTION_REFUSED"
+    # A response-less flow reports a null status and an empty body, not a fake
+    # one, and the error is what says why.
+    assert payload["response"]["status"] is None
+    assert payload["response"]["body"] == ""
+
+
+def test_flow_get_falls_back_and_bounds_the_error_message(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """No message falls back to a constant; an oversized one is bounded and
+    flagged, matching the capture hook."""
+    request = SimpleNamespace(method="GET", pretty_url="https://x/y", headers={})
+    errored = SimpleNamespace(request=request, response=None, error=SimpleNamespace(msg=None))
+    no_msg = _backend_with_flow(monkeypatch, errored)
+    payload = no_msg.flow_get("s", "e2", tmp_path)
+    assert payload["error"] is True
+    assert payload["error_msg"] == "flow error"
+
+    big = _backend_with_flow(
+        monkeypatch,
+        SimpleNamespace(
+            request=request,
+            response=None,
+            error=SimpleNamespace(msg="é" * (_MAX_METADATA_BYTES + 1)),
+        ),
+    )
+    payload = big.flow_get("s", "e3", tmp_path)
+    assert len(str(payload["error_msg"]).encode()) <= _MAX_METADATA_BYTES
+    assert payload["metadata_truncated"] is True
+
+
+def test_flow_get_of_a_completed_flow_carries_no_error_field(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A flow that got a response must not sprout an error field."""
+    request = SimpleNamespace(method="GET", pretty_url="http://x/ok", headers={})
+    response = SimpleNamespace(status_code=204, headers={}, raw_content=b"")
+    backend = _backend_with_flow(
+        monkeypatch, SimpleNamespace(request=request, response=response, error=None)
+    )
+    payload = backend.flow_get("s", "ok", tmp_path)
+    assert "error" not in payload
+    assert "error_msg" not in payload
+    assert payload["response"]["status"] == 204
 
 
 def test_service_registers_a_spilled_flow_body_under_its_part(

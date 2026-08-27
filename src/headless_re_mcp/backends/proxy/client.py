@@ -679,7 +679,26 @@ class ProxyBackend:
         if resp_headers_cut:
             response["metadata_truncated"] = True
         response.update(_emit_body(_raw_body(resp), artifact_dir))
-        return {"id": flow_id, "request": request, "response": response}
+        result: JsonObject = {"id": flow_id, "request": request, "response": response}
+        # An errored flow (TLS handshake refused, upstream unreachable, reset
+        # mid-request) is retained with flow.error set and no response, and
+        # proxy.flows shows error/error_msg with a null status for it. flow_get
+        # dropped that entirely, so the detail view of a failed flow looked like
+        # a request that got a blank reply (status null, empty body) with no
+        # sign of why. Surface the same fields here -- extracted and bounded
+        # exactly as the capture hook does -- so the list and detail views agree.
+        err = getattr(flow, "error", None)
+        if err is not None:
+            msg = getattr(err, "msg", None)
+            # Fall back to a constant rather than str(err) when msg is missing:
+            # the object repr is noise, and a bare "flow error" is honest.
+            message = str(msg) if msg else "flow error"
+            error_text, error_cut = _bounded_metadata(message, _MAX_METADATA_BYTES)
+            result["error"] = True
+            result["error_msg"] = error_text
+            if error_cut:
+                result["metadata_truncated"] = True
+        return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
         inst = self._get(session_id)
