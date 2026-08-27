@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.script.source` 对 WebAssembly 模块不再回一个空字符串）
+
+- `web.wasm.list` 专门列出页面加载的 WebAssembly 模块,可唯一能取内容的 `web.script.source`
+  走 CDP `Debugger.getScriptSource`——而该命令对 wasm 脚本回的 `scriptSource` **恒为空**,模块
+  字节放在另一个 base64 的 `bytecode` 字段里。旧代码只读 `scriptSource`,于是每个 wasm 模块回来
+  都是 `source=""`/`bytes=0`/`truncated=false`,与「一个真的空脚本」逐字节一致:逆向者既拿不到
+  wasm 字节,也毫无线索知道其实有内容被丢在 `bytecode` 里。
+- 现在 `scriptSource` 为空时回退到 `bytecode`:以 base64 交回并置 `base64_encoded=true`(解码即得
+  wasm 二进制),与 `web.network.get` 交回二进制响应体的约定完全一致。大模块照旧经 `_spill_text`
+  溢出到会话制品并回 `source_path`(文件内即那段 base64 文本),service 层照旧登记为
+  `web_script_source` 制品。普通 JavaScript 行为不变:`base64_encoded=false`、`source` 即文本;
+  既无源也无 `bytecode` 的真空脚本仍回 `source=""`/`base64_encoded=false`,不冒充 base64。
+- 新增回归:小 wasm 模块内联其 base64 且逐字节 round-trip 回原始 wasm、超内联上限的 wasm 溢出到
+  `wasm-*.wasm.b64` 且 `source` 只留前缀、JavaScript 不被误标 base64、真空脚本仍据实回空,以及
+  `web.script.source` 描述点名 `base64_encoded` 与 wasm。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
