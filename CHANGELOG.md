@@ -72,6 +72,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   测试同步更正，并新增一条直测：`proxy.start/flows/ca.install_android` 在 `android`/`web` 可见、
   在 `pe` 不可见。
 
+### 修复（web.network 保留重定向链的中间跳，不再只剩末跳）
+
+- HTTP 重定向在 CDP 里复用同一个 requestId：每一跳作为下一条 `Network.requestWillBeSent`
+  到达，其 `redirectResponse` 描述的是**上一跳**的响应——被重定向掉的 URL 从不触发
+  `responseReceived`，它的状态码只存在于这个 `redirectResponse` 里。抓取过去直接用重定向到的
+  新 URL 覆盖旧 entry、且完全忽略 `redirectResponse`，于是 `/start -(302)-> /end (200)` 塌成一条
+  `/end (200)`：读者既看不出发生过重定向，也拿不到那记 302。现把每一跳折进 entry 上的
+  `redirects` 轨迹（各 `{url, status}`），末条仍是最终 URL 与状态、但把途经的跳保留下来；轨迹按
+  `_MAX_REDIRECTS=32` 封顶，避免浏览器仍在解的重定向环把单条 entry 撑爆。折叠逻辑抽成纯函数
+  `_redirect_trail`，配常开单测覆盖首跳/续跳顺序、缺 url 回退到上一跳 url、超长 url 按
+  `_MAX_URL_BYTES` 收敛、以及环封顶。新增 live gate：起一个 `/start` 回 302→`/end`、`/end` 回 200 的
+  临时 HTTP 服务，过真 CDP 浏览器打开 `/start`，断言抓到的请求末端落在 `/end`（200）且
+  `redirects` 轨迹里有 `/start` 的 302 跳。`web.network.list` 文档串同步说明 `redirects` 字段。
+  CI 新增 `linux-web-network-redirect` job 装 Chromium 跑该 gate，skip≠pass 守卫在 Chromium 已装却仍
+  skip 时判失败。
+
 ### 修复（`web.console` 补齐 total 与其余读取器对齐）
 
 - `web.console` 是唯一不回 `total` 的分页读取器——`network.list`、`scripts`、`wasm.list`、

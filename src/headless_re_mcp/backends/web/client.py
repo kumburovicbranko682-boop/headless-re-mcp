@@ -41,6 +41,9 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A redirect chain reuses one requestId; cap the recorded hops so a redirect
+# loop the browser is still unwinding cannot grow one entry without bound.
+_MAX_REDIRECTS = 32
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -84,6 +87,32 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _redirect_trail(
+    prior: JsonObject | None, redirect: JsonObject | None
+) -> list[JsonObject] | None:
+    """Fold a redirect hop into the trail carried on the request entry.
+
+    CDP reuses one requestId across a redirect chain: each hop arrives as a new
+    ``Network.requestWillBeSent`` whose ``redirectResponse`` describes the
+    *previous* URL's response. That status lives only there -- no
+    ``responseReceived`` ever fires for a URL that redirected away -- so
+    overwriting the entry with the redirected-to URL silently erases that a
+    redirect happened and what status it returned. Accumulate ``{url, status}``
+    per hop instead, so ``A -(301)-> B (200)`` keeps the 301 and its URL.
+
+    Returns the trail to store on the new entry (prior hops plus this one), or
+    ``None`` when this request is not continuing a redirect.
+    """
+    if not redirect:
+        return None
+    raw_url = redirect.get("url") or (prior or {}).get("url")
+    hop_url, _ = _bounded_metadata(raw_url, _MAX_URL_BYTES)
+    hop: JsonObject = {"url": hop_url, "status": redirect.get("status")}
+    trail = list((prior or {}).get("redirects") or [])
+    trail.append(hop)
+    return trail[:_MAX_REDIRECTS]
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -465,6 +494,7 @@ class WebBackend:
             resource_type, type_truncated = _bounded_metadata(
                 params.get("type"), _MAX_METADATA_BYTES
             )
+            request_id = str(params.get("requestId"))
             entry: JsonObject = {
                 "requestId": params.get("requestId"),
                 "url": url,
@@ -476,7 +506,11 @@ class WebBackend:
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
             with handle.lock:
-                handle.requests[str(params.get("requestId"))] = entry
+                prior = handle.requests.get(request_id)
+                trail = _redirect_trail(prior, params.get("redirectResponse"))
+                if trail is not None:
+                    entry["redirects"] = trail
+                handle.requests[request_id] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
                     handle.requests.popitem(last=False)
                     handle.requests_dropped += 1
