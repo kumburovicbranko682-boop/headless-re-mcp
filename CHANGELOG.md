@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -518,8 +518,8 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 新增（Android）
 
-- **静态**：`apk.*` 12 个工具，androguard 进程内解析 manifest/权限/证书/组件/DEX 类与方法/
-  字符串/xrefs，jadx CLI 负责 `apk.decompile` 与 `apk.export_sources`。
+- **静态**：`apk.*` 13 个工具，androguard 进程内解析 manifest/权限/证书/组件/DEX 类与方法/
+  DEX 字符串/资源字符串/xrefs，jadx CLI 负责 `apk.decompile` 与 `apk.export_sources`。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
 - **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、
@@ -530,6 +530,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   原来的单 pid 校验是**替换而不是移除**：设备操作改用按会话的「设备 + 已授权 pid 集合」，
   会话必须先连设备、pid 必须由本会话 spawn 得到；PE 会话的本机单 pid 行为逐字未变。
   Android hook 模板并入现有 `frida.hook.template`，仍不接受调用方自带脚本。
+
+### 新增（apk.resource_strings：读 res/values/strings.xml,免去为看字符串资源就跑 apktool 全量解包）
+
+- `apk.strings` 给的是 **DEX 字符串池**;而硬编码的 URL、后端地址、密钥、开关常常藏在**资源字符串**
+  (`res/values/strings.xml`,进 `resources.arsc`)里——两者是不同的东西。此前想看资源字符串,唯一路径是
+  `apk.decode`(apktool 全量解包、起 JVM、落一整棵目录树),为了几条 `<string>` 付出重量级代价,产物还得
+  另行 `artifacts.read`。
+- 新增只读工具 `apk.resource_strings`:用 androguard **进程内**读 `resources.arsc`,取应用自身包(拿不到则
+  取表里第一个包)默认 locale 的 `<string name=…>` 名值对,回 `package`、`strings`(每条 name/value)、
+  `count`/`total`/`offset`/`has_more`/`scan_capped` 与 `has_resources`。分页与 `apk.strings`/`apk.classes`
+  同范式(offset/limit,`_clamp_page` 在后端也夹紧,负 offset 不再变成尾切片);采集上限 5000、单值 2000 字符,
+  越界置 `scan_capped`/截断,名值按 name 排序后再切页。
+- 诚实边界:APK 根本没有 `resources.arsc` 时回 `has_resources=false` 的**空**结果,与"有资源但没声明字符串"
+  清楚区分,而不是报错或凭空说没有;androguard 解析抛错按 `backend_error` 上抛。解析走 ElementTree**按字节**
+  解(androguard 输出带编码声明,按 str 解会抛),文档无 DOCTYPE/实体定义,字符串值是纯文本、无实体展开,
+  故没有 billion-laughs 面;`itertext()` 连带 `<b>`/`<i>` 内嵌样式里的文本一并取出,不丢字。
+- 工具计数 265 → **266**(只读 148 → 149,写不变);`catalog.py` 计数守卫、MCP 工具面全集、
+  `apk.*` offset 模式清单(`test_apk_offset_schema`)、`test_tool_catalog_agent` / `test_workspace_profiles`
+  及 README 三处计数同步更新。新增回归(以假 ARSC 驱动,不需真机/真样本):名值对被解析并按 name 排序分页、
+  分页越界与 `has_more`、无 `resources.arsc` 时 `has_resources=false` 的空结果、样式内嵌文本被 `itertext` 取全。
 
 ### 新增（Web）
 

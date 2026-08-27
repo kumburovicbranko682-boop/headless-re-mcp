@@ -9,6 +9,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 from __future__ import annotations
 
 import threading
+import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
@@ -20,6 +21,7 @@ JsonObject = dict[str, Any]
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
+_MAX_RESOURCE_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
@@ -33,6 +35,7 @@ _MAX_MANIFEST_CHARS = 200_000
 _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
+_MAX_RESOURCE_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
 
 
@@ -54,6 +57,41 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+def _parse_string_resources(raw: Any, *, cap: int) -> tuple[list[tuple[str, str]], bool]:
+    """Pull (name, value) pairs out of an androguard-emitted <resources> tree.
+
+    androguard serializes the ARSC string table back to a small XML document;
+    it carries an encoding declaration, so ElementTree must parse the bytes
+    (parsing a str with a declaration raises). There is no DOCTYPE and no entity
+    definitions, so string values -- attacker-controlled text inside the APK --
+    are literal text with no expansion, not a billion-laughs vector.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        data: bytes = bytes(raw)
+    else:
+        data = str(raw).encode("utf-8", "replace")
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return [], False
+    pairs: list[tuple[str, str]] = []
+    scan_more = False
+    for element in root:
+        tag = element.tag if isinstance(element.tag, str) else ""
+        if tag != "string":
+            continue
+        name = element.get("name")
+        if not name:
+            continue
+        if len(pairs) >= cap:
+            scan_more = True
+            break
+        # itertext() keeps text inside styled spans (<b>, <i>) that .text drops.
+        value = "".join(element.itertext())[:_MAX_STRING_LEN]
+        pairs.append((str(name), value))
+    return pairs, scan_more
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -415,6 +453,55 @@ class ApkClient:
             "offset": start,
             "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
+        }
+
+    def resource_strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        apk = self._apk(path)
+        try:
+            arsc = apk.get_android_resources()
+        except Exception as exc:  # noqa: BLE001
+            raise ApkError("backend_error", f"failed to read resources: {exc}") from exc
+        if arsc is None:
+            # An APK can ship without a resources.arsc. That is an honest empty
+            # answer with has_resources False, not a backend error and not "the
+            # app declares no string resources".
+            return {
+                "package": None,
+                "strings": [],
+                "count": 0,
+                "total": 0,
+                "offset": max(0, int(offset)),
+                "has_more": False,
+                "scan_capped": False,
+                "has_resources": False,
+            }
+        try:
+            names = arsc.get_packages_names() or []
+        except Exception:  # noqa: BLE001 - older/edge ARSC tables vary
+            names = []
+        # Prefer the app's own package; a resources table can carry several.
+        app_pkg = apk.get_package()
+        package = app_pkg if app_pkg in names else (names[0] if names else None)
+        pairs: list[tuple[str, str]] = []
+        scan_more = False
+        if package is not None:
+            try:
+                raw = arsc.get_string_resources(package)
+            except Exception as exc:  # noqa: BLE001
+                raise ApkError("backend_error", f"failed to read string resources: {exc}") from exc
+            pairs, scan_more = _parse_string_resources(raw, cap=_MAX_RESOURCE_STRINGS_COLLECT)
+        pairs.sort(key=lambda kv: kv[0])
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_RESOURCE_STRINGS_PAGE)
+        window = pairs[start : start + cap]
+        return {
+            "package": package,
+            "strings": [{"name": name, "value": value} for name, value in window],
+            "count": len(window),
+            "total": len(pairs),
+            "offset": start,
+            "has_more": start + len(window) < len(pairs),
+            "scan_capped": scan_more,
+            "has_resources": True,
         }
 
     def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:

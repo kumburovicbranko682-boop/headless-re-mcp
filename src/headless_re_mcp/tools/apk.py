@@ -132,6 +132,28 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.resource_strings")
+    def apk_resource_strings(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """List string resources (res/values/strings.xml) as name/value pairs.
+
+        These are the app's resource strings -- hardcoded URLs, endpoints, keys
+        and config often live here -- not the DEX string pool apk.strings
+        returns. Read from resources.arsc in-process, so no apktool decode is
+        needed. Answers with package, strings (each name and value), count,
+        total, offset, has_more, scan_capped and has_resources. has_resources
+        is false when the APK ships no resources.arsc at all, which is not the
+        same as an app that declares no strings. Values are the default locale
+        and capped in length; read total and has_more rather than assuming the
+        page is the whole table. There is no items or values field.
+        """
+        return _dump(
+            analysis.apk_resource_strings(session_id, offset=offset, limit=limit)
+        )
+
     @tools.tool(name="apk.xrefs")
     def apk_xrefs(
         session_id: str,
