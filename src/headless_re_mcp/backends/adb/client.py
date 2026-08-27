@@ -14,6 +14,7 @@ import re
 import shutil
 import stat
 import threading
+import time
 import zipfile
 from inspect import Parameter, signature
 from pathlib import Path
@@ -39,6 +40,11 @@ _MAX_FORWARDS = 32
 _ADB_SHELL_TIMEOUT_S = 30.0
 _ADB_PROBE_TIMEOUT_S = 8.0
 _ADB_TRANSFER_TIMEOUT_S = 120.0
+# monkey returns as soon as it injects the launch intent; the activity it starts
+# reaches the foreground a beat later. Poll app_current for up to this long so a
+# launch that in fact succeeded is not reported as launched:false.
+_LAUNCH_SETTLE_S = 3.0
+_LAUNCH_POLL_S = 0.25
 # adbutils open_transport defaults to 600s. That is a hang, not a deadline.
 _ADB_TRANSPORT_TIMEOUT_S = _ADB_TRANSFER_TIMEOUT_S
 _PACKAGE_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+){1,10}")
@@ -510,14 +516,30 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
-        try:
-            current = _call(dev.app_current, timeout=_ADB_PROBE_TIMEOUT_S)
-            foreground = getattr(current, "package", None)
-        except Exception as exc:  # noqa: BLE001
+        # A single immediate app_current read races the async launch and reports
+        # launched:false for a launch that succeeded. Poll until the target is
+        # foreground or the settle budget runs out, returning as soon as it wins.
+        deadline = time.monotonic() + _LAUNCH_SETTLE_S
+        foreground: str | None = None
+        read_ok = False
+        last_error: Exception | None = None
+        while True:
+            try:
+                current = _call(dev.app_current, timeout=_ADB_PROBE_TIMEOUT_S)
+                foreground = getattr(current, "package", None)
+                read_ok = True
+            except Exception as exc:  # noqa: BLE001 - a probe read failure is soft here
+                last_error = exc
+            if read_ok and foreground == pkg:
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_LAUNCH_POLL_S)
+        if not read_ok:
             return {
                 "launched": None,
                 "package": pkg,
-                "note": f"monkey ran; could not read foreground ({exc})",
+                "note": f"monkey ran; could not read foreground ({last_error})",
             }
         return {
             "launched": foreground == pkg,
