@@ -262,8 +262,23 @@ class ApkClient:
                 files_more = True
                 break
             sig_files.append(str(name))
+        # get_signature_names() above only lists the META-INF entries; parsing
+        # the PKCS7/X.509 in them is deferred to get_certificates(), which is
+        # where androguard actually raises on a malformed or unusual signing
+        # block (odd ASN.1, a v2/v3 scheme it cannot decode) -- precisely the
+        # hostile APKs this line exists to look at. Unwrapped, that raise
+        # reached the service's BaseException arm as internal_error plus a
+        # logged incident; a certificate that will not parse is a backend
+        # outcome, so name it the way the parse paths and every sibling backend
+        # already do.
+        try:
+            parsed_certs = list(apk.get_certificates())
+        except Exception as exc:  # noqa: BLE001 - androguard raises many asn1 types
+            raise ApkError(
+                "backend_error", f"failed to parse certificates: {exc}"
+            ) from exc
         certs_more = False
-        for cert in apk.get_certificates():
+        for cert in parsed_certs:
             if len(items) >= _MAX_CERTIFICATES:
                 certs_more = True
                 break

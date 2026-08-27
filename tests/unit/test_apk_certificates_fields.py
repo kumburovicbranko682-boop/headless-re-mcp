@@ -5,7 +5,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from headless_re_mcp.backends.apk.client import ApkClient
+import pytest
+
+from headless_re_mcp.backends.apk.client import ApkClient, ApkError
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -66,3 +68,35 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+
+
+class _UnparsableCertApk:
+    """A parsed APK whose signature block androguard cannot decode.
+
+    get_signature_names lists the META-INF entries fine; the raise is deferred
+    to get_certificates(), which is where androguard fails on a malformed or
+    unusual PKCS7/X.509 block -- the hostile-APK case this line targets.
+    """
+
+    def get_signature_names(self) -> list[str]:
+        return ["META-INF/CERT.RSA"]
+
+    def get_certificates(self) -> list[object]:
+        raise ValueError("asn1crypto: invalid certificate structure")
+
+
+def test_apk_certificates_maps_a_signature_parse_failure_to_backend_error() -> None:
+    """A certificate that will not parse is a backend outcome, not an incident.
+
+    Unwrapped, get_certificates() raising reached the service's BaseException
+    arm as internal_error plus a logged incident -- a malformed signer read as
+    a fault in this process.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _UnparsableCertApk()  # type: ignore[method-assign]
+
+    with pytest.raises(ApkError) as caught:
+        client.certificates(Path("dummy.apk"))
+
+    assert caught.value.code == "backend_error"
+    assert "failed to parse certificates" in caught.value.message
