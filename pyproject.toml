@@ -86,6 +86,16 @@ exclude = [
 testpaths = ["tests"]
 addopts = "-ra"
 asyncio_default_fixture_loop_scope = "function"
+# Backstop for hangs pytest-timeout cannot interrupt: its thread method needs
+# the GIL, so a test stuck inside a C call (ctypes, blocking wait) hangs the
+# whole run until the CI job deadline force-kills the runner and the log of
+# the hung step is lost with it. faulthandler's watchdog is a C-level timer
+# that fires without the GIL: after 300s it dumps every thread's stack and
+# exits, so the run fails *with* the stack trace naming the stuck test. 300s
+# sits above the 120s per-test budget CI passes to pytest-timeout, so the
+# friendlier per-test report still wins whenever it is able to fire.
+faulthandler_timeout = 300
+faulthandler_exit_on_timeout = true
 markers = [
   "integration: requires a locally installed analysis backend",
   "headless: verifies no analyzer window is created",
