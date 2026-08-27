@@ -273,6 +273,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_params`、超限封到 schema 上限（120s）。补回归测试钉住负超时被干净拒绝且不 wedge 活
   会话（随后正常导航仍可用）、巨大超时被封到上限。
 
+### 修复（`frida.hook.template` 在设备会话关闭后仍会注入钩子）
+
+- close 只翻状态、不清 `frida_authorized` 元数据，已关闭会话仍可解析；其它设备 frida 操作都经
+  `_frida_auth` 的开放态检查把关，唯独 hook.template 直接从元数据取 pid，于是一次迟到的调用会
+  把脚本注入一个已消失会话的设备进程。现在设备分支也拒绝 CLOSING/CLOSED/FAILED 状态（本地 PE
+  分支本就被 `_require_debuggee_pid` 挡住）。
+
 ### 修复（jadx 部分反编译失败不再伪装成完整源码树）
 
 - `apk.export_sources` / `apk.decompile` 走 jadx，而 jadx 常在某几个类反编译失败时以非零退出收场，
@@ -410,6 +417,29 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `not_found`（远端路径可能不存在）。这个判定与 adbutils 版本无关：拉取成功的普通文件必然落地，
   空的合法远端文件仍会作为 0 字节正常返回。
 
+### 修复（`frida.java.methods` 分不清「类没加载」与「类无自有方法」)
+
+- `frida.java.methods` 此前只回一个方法名数组。脚本里 `Java.use(className)` 对未加载的类会抛异常,
+  异常冒出 `Java.perform` 后被 Python 的通用 `except` 兜成 `backend_error`;而**加载了但没有自有方法**
+  (方法全继承自父类)的类则正常回空数组。于是「类名写错/没加载」既可能变成一条泛化后端错误、
+  也可能——取决于版本与时序——与「类在、但自有方法为空」的空数组无从分辨。无人值守的 agent 据此
+  会把一个根本没加载的类读成「这个类没有方法」。
+- 现在与兄弟接口 `frida.exports` 的 `found` 一致:脚本侧 `methods` 改为回 `{found, methods}`,
+  `Java.use` 失败即 `found=false`、`methods=[]`;成功则 `found=true`。据此,`found=false`+空列表明确
+  读作「类未加载/类名不解析」,`found=true`+空列表读作「类在,但不声明自有方法」。分页 `has_more` 行为不变。
+- Python 侧解析与 `modules` 同款:优先按 `{found, methods}` 字典解读,同时容忍旧的裸数组形状
+  (裸数组按 `found=true` 处理),脚本与 Python 版本错配时不炸。
+- 新增回归:未加载类回 `found=false`/空列表、已加载有方法类 `found=true` 且满页 `has_more=true`、
+  已加载无自有方法类 `found=true`+空列表,以及裸数组形状仍被容忍并报 `found=true`。
+  `frida.java.methods` 描述点名 `found`。
+
+### 修复（WASM 输入校验）
+
+- `wasm.wat` / `wasm.info` 现在在派生 `wasm2wat` / `wasm-objdump` 之前先核对四字节
+  `\0asm` 魔数:非 WASM 文件（误传的 PE、文本、抓包下来的 HTML 响应等）过去会把子进程
+  拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
+  `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
+  `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
@@ -749,6 +779,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **Scylla 探针超时仍报 READY**。GUI 起得来但从不退出，doctor 会把可选工具
   标成可用。超时现在是 `timeout_after_start` 且 `ok=False`。
 - **`proxy.ca.install_android` 在会话关闭后仍会 push 证书**。开关会话前后都检查状态。
+- **`frida.spawn` 在会话关闭到一半时仍报成功并写回 pid**。`frida.device.connect` 与
+  `frida.server.ensure` 触碰设备后都会复查会话状态，唯独 spawn 少了这一步：一次 spawn 中途
+  关闭会话，仍会把刚 spawn 出来的 pid 写进（已关闭的）会话元数据并返回 ok=True，让一个已死
+  会话被记成持有一个活着的设备进程。现在 spawn/resume 之后也复查状态，关闭时改报 invalid_state
+  且不落 `frida_authorized`（设备侧进程无论如何已经起来，这里只保证不把它记到死会话名下）。
 
 同一轮审计在核心侧（与本次新后端无关，早已存在）查出三处同类问题：
 
@@ -982,6 +1017,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`frida.server.ensure` 在 su 命令返回后就报 `running: True`**，并不再看 ps。启动器
   成功而 frida-server 立刻退出时，调用方会以为钩子已经能连上。启动后再查一次进程表，
   看不见就如实回 `running: False`。
+- **`frida.server.ensure` 把 frida-server 绑到 `0.0.0.0`**，于是每次启动都把这条 root 级
+  控制通道（无鉴权）暴露给设备能路由到的所有接口——同网段任何主机都能连上做插桩。改为
+  默认绑回环 `127.0.0.1`：USB/adb 传输与 `adb forward` 照常可达（本机模拟器、USB 真机就是
+  这么驱动的），仅靠网络路由到设备的主机则连不上。确需按设备 IP 远程连接时显式传
+  `bind_host="0.0.0.0"` 才放开。该值会进入 `su -c '…'` 命令行，写进去前按严格主机字符集
+  校验，带冒号、空格或 shell 元字符一律拒绝而不是照跑。
 - **并发的 `proxy.start` / `web.open` 会各起一份实例**。检查「已经有了」和写入跟踪表
   不在同一把锁里，两个工作线程会各自绑定端口或拉起 Chromium，后写入的那份把先起来的
   弄丢，泄漏到进程退出。现在先在表里占位再启动，失败或中途被关则清掉占位并回收。
