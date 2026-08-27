@@ -55,6 +55,31 @@ class _FakeJs:
         return {"output_dir": str(out_dir), "file_count": 100, "files": []}
 
 
+class _SpillingJs:
+    """Stands in for webcrack: spills a big file into spill_dir like a real cut."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def deobfuscate(
+        self,
+        path: Path,
+        *,
+        timeout: float = 120.0,
+        spill_dir: Path | None = None,
+    ) -> dict[str, object]:
+        del path, timeout
+        result: dict[str, object] = {"code": "x", "truncated": True, "bytes": 5 * 1024 * 1024}
+        if spill_dir is not None:
+            spill_dir.mkdir(parents=True, exist_ok=True)
+            import uuid
+
+            out = spill_dir / f"code-{uuid.uuid4().hex}.txt"
+            out.write_bytes(b"x" * (5 * 1024 * 1024))
+            result["code_path"] = str(out)
+        return result
+
+
 class _Harness(JsReAnalysisMixin):
     def __init__(self, root: Path) -> None:
         self.settings = SimpleNamespace(artifact_root=root, webcrack=None)
@@ -79,6 +104,38 @@ def test_an_unpack_loop_cannot_grow_jsre_without_bound(
     assert total == _MAX_JSRE_UNPACK_DIRS * 100 * 10 * 1024
 
 
+def test_deobfuscate_spills_land_under_jsre_and_stay_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cut deobfuscate now writes a file retention cannot see by itself.
+
+    The spill is keyed by a throwaway name, not a session id, so the artifact
+    walker never reaches it -- exactly the leak the unpack trees had. The
+    service prunes the jsre root after each call, so a loop of large cuts is
+    bounded rather than growing for the life of the process.
+    """
+    from headless_re_mcp.core.limits import JSRE_UNPACK_MAX_ENTRIES
+
+    monkeypatch.setattr("headless_re_mcp.core.service_jsre.JsClient", _SpillingJs)
+    harness = _Harness(tmp_path)
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+
+    first = harness.js_deobfuscate(str(src))
+    assert first.ok is True
+    assert first.data is not None
+    spilled = Path(str(first.data["code_path"]))
+    assert spilled.parent == tmp_path / "jsre"
+    assert spilled.is_file()
+
+    for _ in range(20):
+        assert harness.js_deobfuscate(str(src)).ok is True
+
+    root = tmp_path / "jsre"
+    entries = list(root.iterdir())
+    assert len(entries) <= JSRE_UNPACK_MAX_ENTRIES
+
+
 def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -89,13 +146,13 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     from headless_re_mcp.backends.jsre import client as jsre_client
     from headless_re_mcp.backends.jsre.client import JsClient
 
-    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int, bool]:
         del timeout
         out_dir = Path(cmd[cmd.index("-o") + 1])
         if not any(out_dir.iterdir()):
             for index in range(250):
                 (out_dir / f"mod-{index:03d}.js").write_text("x", encoding="utf-8")
-        return "", "", 0
+        return "", "", 0, False
 
     monkeypatch.setattr(jsre_client, "_run", fake_run)
     bundle = tmp_path / "app.js"
@@ -128,13 +185,13 @@ def test_bounded_unpack_listing_finishes_at_the_last_readable_page(
 
     monkeypatch.setattr(jsre_client, "_MAX_COUNTED_FILES", 5)
 
-    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int, bool]:
         del timeout
         out_dir = Path(cmd[cmd.index("-o") + 1])
         if not any(out_dir.iterdir()):
             for index in range(files_written):
                 (out_dir / f"mod-{index}.js").write_text("x", encoding="utf-8")
-        return "", "", 0
+        return "", "", 0, False
 
     monkeypatch.setattr(jsre_client, "_run", fake_run)
     bundle = tmp_path / "app.js"

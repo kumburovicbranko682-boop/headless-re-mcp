@@ -10,8 +10,10 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 
@@ -93,7 +95,7 @@ def _bounded_timeout(timeout: float, cap: float) -> float:
     return min(float(timeout), cap)
 
 
-def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int, bool]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = run_bounded(cmd, timeout=timeout, creationflags=creationflags)
@@ -107,17 +109,61 @@ def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
         raise JsReError("backend_error", f"failed to launch {cmd[0]}: {exc}") from exc
     stdout = completed.stdout.decode("utf-8", errors="replace")
     stderr = completed.stderr.decode("utf-8", errors="replace")
-    return stdout, stderr, int(completed.returncode)
+    return stdout, stderr, int(completed.returncode), bool(completed.stdout_truncated)
 
 
-def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
+def _write_spill(spill_dir: Path, filename: str, payload: bytes) -> Path | None:
+    """Write the whole payload beside the inline preview, or None on failure.
+
+    The spill file is at most run_bounded's per-stream cap (a few MiB), so it is
+    bounded; the caller keys it under the jsre artifact root, which retention
+    prunes. A write that fails degrades to no path rather than to an error --
+    the inline preview is still returned.
+    """
+    try:
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        out = spill_dir / filename
+        out.write_bytes(payload)
+    except OSError:
+        with suppress(OSError):
+            (spill_dir / filename).unlink()
+        return None
+    return out
+
+
+def _bounded_output(
+    text: str,
+    key: str,
+    *,
+    include_bytes: bool,
+    stream_truncated: bool = False,
+    spill_dir: Path | None = None,
+    spill_ext: str = "txt",
+) -> JsonObject:
+    """Inline a bounded prefix and, when it was cut, spill the whole payload.
+
+    ``truncated`` says the inline ``key`` text was cut at the inline cap. When
+    that happens and a ``spill_dir`` is given, the full output is written to
+    ``<key>-<uuid>.<spill_ext>`` there and its path returned as ``<key>_path``
+    so the caller can still read the whole thing -- the single-file js.*/wasm.*
+    tools otherwise had no recourse past the 400 KB inline cut. ``capture_
+    truncated`` is a distinct, harder stop: the child's output overran
+    run_bounded's per-stream cap, so even the spilled file is only a prefix.
+    """
     payload = text.encode("utf-8", errors="replace")
+    over_inline = len(payload) > _MAX_INLINE
     result: JsonObject = {
         key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
-        "truncated": len(payload) > _MAX_INLINE,
+        "truncated": over_inline,
     }
     if include_bytes:
         result["bytes"] = len(payload)
+    if stream_truncated:
+        result["capture_truncated"] = True
+    if over_inline and spill_dir is not None:
+        spilled = _write_spill(spill_dir, f"{key}-{uuid4().hex}.{spill_ext}", payload)
+        if spilled is not None:
+            result[f"{key}_path"] = str(spilled)
     return result
 
 
@@ -138,9 +184,11 @@ class JsClient:
             )
         return _require_existing_file(path, missing="input file not found")
 
-    def deobfuscate(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def deobfuscate(
+        self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path)
-        stdout, stderr, code = _run(
+        stdout, stderr, code, cut = _run(
             [str(self.executable), str(resolved)],
             timeout=_bounded_timeout(timeout, _MAX_TOOL_TIMEOUT_S),
         )
@@ -148,11 +196,15 @@ class JsClient:
             raise JsReError(
                 "backend_error", "webcrack failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "code", include_bytes=True)
+        return _bounded_output(
+            stdout, "code", include_bytes=True, stream_truncated=cut, spill_dir=spill_dir
+        )
 
-    def beautify(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def beautify(
+        self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
         # webcrack always unminifies; expose it under a formatting-focused name.
-        return self.deobfuscate(path, timeout=timeout)
+        return self.deobfuscate(path, timeout=timeout, spill_dir=spill_dir)
 
     def unpack_bundle(
         self,
@@ -165,7 +217,7 @@ class JsClient:
     ) -> JsonObject:
         resolved = self._require_input(path)
         out_dir.mkdir(parents=True, exist_ok=True)
-        stdout, stderr, code = _run(
+        stdout, stderr, code, _cut = _run(
             [str(self.executable), str(resolved), "-o", str(out_dir)],
             timeout=_bounded_timeout(timeout, _MAX_UNPACK_TIMEOUT_S),
         )
@@ -208,10 +260,12 @@ class WasmClient:
             raise JsReError("capability_unavailable", f"{name} (wabt) is not configured")
         return _require_existing_file(path, missing="wasm file not found")
 
-    def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def wat(
+        self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
-        stdout, stderr, code = _run(
+        stdout, stderr, code, cut = _run(
             [str(self._wasm2wat), str(resolved)],
             timeout=_bounded_timeout(timeout, _MAX_TOOL_TIMEOUT_S),
         )
@@ -219,12 +273,21 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "wat", include_bytes=True)
+        return _bounded_output(
+            stdout,
+            "wat",
+            include_bytes=True,
+            stream_truncated=cut,
+            spill_dir=spill_dir,
+            spill_ext="wat",
+        )
 
-    def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def info(
+        self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
         assert self._objdump is not None
-        stdout, stderr, code = _run(
+        stdout, stderr, code, cut = _run(
             [str(self._objdump), "-h", "-x", str(resolved)],
             timeout=_bounded_timeout(timeout, _MAX_TOOL_TIMEOUT_S),
         )
@@ -232,7 +295,9 @@ class WasmClient:
             raise JsReError(
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
-        return _bounded_output(stdout, "objdump", include_bytes=False)
+        return _bounded_output(
+            stdout, "objdump", include_bytes=False, stream_truncated=cut, spill_dir=spill_dir
+        )
 
 
 def _discover_webcrack() -> Path | None:

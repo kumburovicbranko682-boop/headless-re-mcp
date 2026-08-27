@@ -140,6 +140,149 @@ def test_js_deobfuscate_applies_inline_limit_to_encoded_bytes(
     assert len(str(payload["code"]).encode("utf-8")) <= 5
 
 
+def test_js_deobfuscate_spills_the_whole_output_when_the_inline_buffer_is_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cut past _MAX_INLINE used to lose the tail with no way to get it.
+
+    With a spill_dir the whole payload is written beside the preview and its
+    path returned as code_path, so the part past the inline cap is still
+    readable. Without a cut, no file is written.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    body = "z" * 40
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    spill = tmp_path / "jsre"
+    monkeypatch.setattr(mod, "_MAX_INLINE", 10)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src, spill_dir=spill)
+
+    assert payload["truncated"] is True
+    assert payload["code"] == "z" * 10
+    assert payload["bytes"] == 40
+    assert "code_path" in payload
+    written = Path(payload["code_path"])
+    assert written.parent == spill
+    assert written.read_text(encoding="utf-8") == body
+    assert "capture_truncated" not in payload
+
+
+def test_js_deobfuscate_does_not_spill_when_it_fits_inline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A small output stays inline: no artifact, no code_path."""
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, b"short", b"")
+
+    spill = tmp_path / "jsre"
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src, spill_dir=spill)
+
+    assert payload["truncated"] is False
+    assert "code_path" not in payload
+    assert not spill.exists() or not any(spill.iterdir())
+
+
+def test_js_deobfuscate_flags_capture_truncated_when_the_stream_cap_was_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_bounded caps each stream; a spilled prefix must not read as whole.
+
+    When the child overran that cap, even the spilled file is a prefix, so the
+    reply carries capture_truncated to say so rather than let the file be taken
+    for the complete output.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    body = "z" * 40
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"", stdout_truncated=True)
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 10)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = JsClient(tool).deobfuscate(src, spill_dir=tmp_path / "jsre")
+
+    assert payload["capture_truncated"] is True
+    assert payload["truncated"] is True
+    assert "code_path" in payload
+
+
+def test_wasm_wat_spills_to_a_wat_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wat_path carries the whole listing with a .wat suffix when cut."""
+    from headless_re_mcp.backends.jsre import client as mod
+    from headless_re_mcp.backends.jsre.client import WasmClient
+
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "(module)" * 20
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    spill = tmp_path / "jsre"
+    monkeypatch.setattr(mod, "_MAX_INLINE", 8)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).wat(module, spill_dir=spill)
+
+    assert payload["truncated"] is True
+    assert "wat_path" in payload
+    written = Path(payload["wat_path"])
+    assert written.suffix == ".wat"
+    assert written.read_text(encoding="utf-8") == body
+
+
+def test_wasm_info_spills_to_objdump_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """objdump_path carries the whole dump when the inline buffer is cut."""
+    from headless_re_mcp.backends.jsre import client as mod
+    from headless_re_mcp.backends.jsre.client import WasmClient
+
+    tool = tmp_path / "wasm-objdump.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "Section .text\n" * 20
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    spill = tmp_path / "jsre"
+    monkeypatch.setattr(mod, "_MAX_INLINE", 8)
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).info(module, spill_dir=spill)
+
+    assert payload["truncated"] is True
+    assert "objdump_path" in payload
+    assert Path(payload["objdump_path"]).read_text(encoding="utf-8") == body
+
+
 def test_js_beautify_names_bytes_not_size(tmp_path: Path) -> None:
     """The catalog repeated code/truncated and never named bytes.
 
@@ -179,6 +322,13 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "too_large" in _tool_docstring("js.deobfuscate")
     assert "too_large" in _tool_docstring("js.unpack_bundle")
     assert "too_large" in _tool_docstring("wasm.info")
+    # The spill path and the harder stream cut must be named so a cut reply is
+    # recoverable rather than a dead end.
+    assert "code_path" in _tool_docstring("js.deobfuscate")
+    assert "code_path" in _tool_docstring("js.beautify")
+    assert "capture_truncated" in _tool_docstring("js.deobfuscate")
+    assert "wat_path" in _tool_docstring("wasm.wat")
+    assert "objdump_path" in _tool_docstring("wasm.info")
 
 
 def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:

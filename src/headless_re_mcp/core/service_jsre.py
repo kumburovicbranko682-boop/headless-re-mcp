@@ -72,32 +72,49 @@ def _as_rpc(exc: JsReError) -> XdbgRpcError:
 class JsReAnalysisMixin:
     settings: Settings
 
-    def _jsre_out_dir(self, name: str) -> Path:
+    def _jsre_root(self) -> Path:
         root = self.settings.artifact_root.expanduser().resolve() / "jsre"
         root.mkdir(parents=True, exist_ok=True)
-        return root / f"{name}-{uuid4().hex}"
+        return root
+
+    def _jsre_out_dir(self, name: str) -> Path:
+        return self._jsre_root() / f"{name}-{uuid4().hex}"
 
     def js_deobfuscate(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
+        root: Path | None = None
         try:
+            root = self._jsre_root()
             data = JsClient(getattr(self.settings, "webcrack", None)).deobfuscate(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=root
             )
             return _success(data, backend="webcrack")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+        finally:
+            if root is not None:
+                prune_capped_dir(
+                    root, max_entries=JSRE_UNPACK_MAX_ENTRIES, max_bytes=JSRE_UNPACK_MAX_BYTES
+                )
 
     def js_beautify(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
+        root: Path | None = None
         try:
+            root = self._jsre_root()
             data = JsClient(getattr(self.settings, "webcrack", None)).beautify(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=root
             )
             return _success(data, backend="webcrack")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+        finally:
+            if root is not None:
+                prune_capped_dir(
+                    root, max_entries=JSRE_UNPACK_MAX_ENTRIES, max_bytes=JSRE_UNPACK_MAX_BYTES
+                )
 
     def js_unpack_bundle(
         self,
@@ -127,23 +144,37 @@ class JsReAnalysisMixin:
                 prune_jsre_unpack_dirs(out_dir.parent)
 
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
+        root: Path | None = None
         try:
+            root = self._jsre_root()
             data = WasmClient(getattr(self.settings, "wabt", None)).wat(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=root
             )
             return _success(data, backend="wabt")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+        finally:
+            if root is not None:
+                prune_capped_dir(
+                    root, max_entries=JSRE_UNPACK_MAX_ENTRIES, max_bytes=JSRE_UNPACK_MAX_BYTES
+                )
 
     def wasm_info(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
+        root: Path | None = None
         try:
+            root = self._jsre_root()
             data = WasmClient(getattr(self.settings, "wabt", None)).info(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_dir=root
             )
             return _success(data, backend="wabt")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+        finally:
+            if root is not None:
+                prune_capped_dir(
+                    root, max_entries=JSRE_UNPACK_MAX_ENTRIES, max_bytes=JSRE_UNPACK_MAX_BYTES
+                )

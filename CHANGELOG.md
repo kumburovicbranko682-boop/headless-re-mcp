@@ -384,6 +384,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   或已被清出记 `not_found`；对着一个 JavaScript scriptId 调用是 `invalid_params`；超过抓包容量上限的模块
   `too_large`。它是 `web.script.source` 的二进制孪生（同样按 scriptId 取单个脚本的内容供分析），故归入只读；
   工具面因此从 265 增至 266（149 只读 / 117 写）。
+- **`js.deobfuscate/beautify`、`wasm.wat`、`wasm.info` 过了 400 KB 内联上限就把尾巴丢了，且 `run_bounded` 的
+  单流上限处还有一层没人说的静默截断**——`web.dom.snapshot` 早已改成溢出到制品，唯独这几个可移植单文件工具还停在
+  「切到 400 KB、置 `truncated`、剩下的没了」。可 WAT 文本天然比 `.wasm` 字节大好几倍（`wasm2wat` 输出常达输入的数倍），
+  一个真实模块几乎必然撞上内联上限，于是 `web.wasm.get` → `wasm.wat` 这条刚搭好的桥拿回来的照样是残缺前缀；
+  `wasm-objdump -x` 列全部函数/导入/导出时同理。更深一层：`run_bounded` 对每条流有 8 MiB 硬上限（`DEFAULT_MAX_OUTPUT`）
+  并回 `stdout_truncated`，但 `_run` 过去把这个标志直接丢掉——子进程真吐超过 8 MiB 时连捕获都被悄悄砍了、无人知晓。
+  现在 `_bounded_output` 对齐 DOM 快照的溢出范式：内联仍是 `_MAX_INLINE` 前缀、`truncated` 语义不变，但一旦被切且
+  调用方给了 `spill_dir`，就把**完整**载荷写到 `<key>-<uuid>.<ext>`（`code-*.txt` / `wat-*.wat` / `objdump-*.txt`）并回
+  `code_path`/`wat_path`/`objdump_path`，尾巴因此可读；服务层把落盘目录设为 jsre 制品根、每次调用后按
+  `JSRE_UNPACK_MAX_ENTRIES`/`JSRE_UNPACK_MAX_BYTES` 走 `prune_capped_dir` 有界回收（与 unpack 树同一套，避免这些不进
+  artifact 表的溢出文件无限增长）。另加 `capture_truncated`：当子进程输出连 8 MiB 单流上限都撑破时置位，明确告知
+  「连这份落盘文件也只是前缀」，而非让调用方把一个静默截断的文件读成完整输出。输出落在内联上限内时行为不变
+  （无 `_path`、`truncated=False`、无 `capture_truncated`）。
 - **`web.console` 收得到 `console.*`，却漏掉未捕获异常与未处理的 Promise 拒绝——正是逆向最想看的那类失败**。
   控制台环形缓冲只挂了 `Runtime.consoleAPICalled`，而一个逃逸的 `throw`（反篡改检查抛错、混淆代码在某处崩掉）
   或一个 unhandled rejection 走的是 `Runtime.exceptionThrown` 这条独立事件——DevTools 控制台照样显示，我们却
