@@ -178,7 +178,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   等于源站所served、截图文件非空、HAR 至少一条、导航后 URL/标题切换。id 一律在导航前使用——刷新会按
   设计作废旧 id。另补 `web.dom_snapshot` 的实测:`test_web_re_gate` 只在 `data:` 页上验过标题、从不换页,
   这里断言快照的标题/正文文本对得上真源站的第一页,导航到第二页后再取一次、断言快照跟着换到了新文档
-  (证明拿到的是活 DOM、不是初始 HTML)。缺 Playwright/浏览器时如实 skip(skip 不等于 pass)。
+  (证明拿到的是活 DOM、不是初始 HTML)。再补 `web.wasm.list` 的实测:该列表是 `web.scripts` 按
+  `scriptLanguage == WebAssembly` 过滤 `Debugger.scriptParsed` 得来的,此前 wasm 分支无真机覆盖——语言打标
+  一旦断掉,JS 脚本照常回而 wasm 列表会静默变空。测试让页面 `WebAssembly.instantiate` 一个手搓的单函数
+  模块(magic + `()->i32` 类型 + 导出 `f` 返回 i32.const 42,内联字节、免 wat2wasm 也免 fetch 竞态),轮询到
+  它作为 `language==WebAssembly` 的脚本出现——命中即证明 Chromium 真解析了 wasm、而非过滤器空跑。
+  缺 Playwright/浏览器时如实 skip(skip 不等于 pass)。
 
 ### 新增（Linux 便携后端 Gate 的 CI 通路）
 

@@ -39,10 +39,32 @@ _INDEX = (
 _APP_JS = b"console.log('app loaded'); window.__gate = 1234;"
 _PAGE_TWO = b"<html><head><title>page-two</title></head><body>page two</body></html>"
 
+# A minimal but real WebAssembly module -- header, a () -> i32 type, one
+# function exported as "f" returning i32.const 42 -- hand-assembled so the gate
+# needs no wat2wasm. A module with actual code is what makes Chromium emit
+# ``Debugger.scriptParsed`` with ``scriptLanguage: WebAssembly``; an empty
+# (codeless) module may never be reported as a script.
+_WASM = bytes.fromhex(
+    "0061736d01000000"  # magic + version
+    "0105016000017f"  # type section: one () -> i32
+    "03020100"  # function section: one func of type 0
+    "07050101660000"  # export section: "f" = func 0
+    "0a06010400412a0b"  # code section: i32.const 42; end
+)
+# Instantiated from inline bytes (not fetched) so there is no streaming/network
+# race between page load and the module being compiled.
+_WASM_PAGE = (
+    b"<html><head><title>wasm-gate</title></head><body>wasm host"
+    b"<script>WebAssembly.instantiate(Uint8Array.from("
+    + str(list(_WASM)).encode()
+    + b")).then(r => { window.__w = r.instance.exports.f(); });</script></body></html>"
+)
+
 _ROUTES = {
     "/index.html": ("text/html", _INDEX),
     "/app.js": ("application/javascript", _APP_JS),
     "/two.html": ("text/html", _PAGE_TWO),
+    "/wasm.html": ("text/html", _WASM_PAGE),
 }
 
 
@@ -182,6 +204,49 @@ def test_web_reads_network_body_script_source_screenshot_and_har(
             assert dom_two.ok, dom_two.error
             assert dom_two.data["title"] == "page-two"
             assert "page two" in str(dom_two.data["html"])
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_web_wasm_list_reports_an_instantiated_module(origin: str, tmp_path: Path) -> None:
+    """A WebAssembly module the page compiles must surface in ``web.wasm.list``.
+
+    That list is ``web.scripts`` filtered to ``scriptLanguage == WebAssembly``
+    from ``Debugger.scriptParsed``; nothing else exercises the wasm branch live,
+    so a break in the language tagging would silently return an empty list while
+    JavaScript scripts still came back. The page instantiates a real one-function
+    module, so a hit proves Chromium parsed actual wasm, not merely that the
+    filter ran.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web dynamic Gate not run (skip != pass)")
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(f"{origin}/wasm.html", target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                "chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+
+            def wasm_scripts() -> list[dict[str, Any]]:
+                listed = service.web_wasm_list(session_id)
+                assert listed.ok, listed.error
+                return list(listed.data["scripts"])
+
+            scripts = _poll(wasm_scripts, lambda found: bool(found))
+            assert scripts, "the instantiated wasm module was never reported as a script"
+            assert all(str(s.get("language")).lower() == "webassembly" for s in scripts), scripts
+            assert all(str(s.get("scriptId")) for s in scripts), "wasm script missing an id"
         finally:
             service.web_close(session_id)
     finally:
