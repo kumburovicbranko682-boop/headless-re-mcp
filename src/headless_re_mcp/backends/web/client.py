@@ -63,6 +63,11 @@ _MAX_STORAGE_VALUE_CHARS = 16 * 1024
 # Kept in the per-request entry but stripped from network.list rows so a page of
 # the list stays cheap; network.get returns them in full.
 _HEADER_KEYS = ("request_headers", "response_headers")
+# network.stats returns the top hosts and content types rather than every one; a
+# single page can touch hundreds of distinct hosts (ad/analytics/CDN fan-out),
+# and the summary is for triage, not a second full listing.
+_MAX_STATS_HOSTS = 50
+_MAX_STATS_CONTENT_TYPES = 50
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -873,6 +878,76 @@ class WebBackend:
             result["filtered"] = True
             result["unfiltered_total"] = unfiltered_total
         return result
+
+    def network_stats(self, session_id: str) -> JsonObject:
+        """Fold the whole request capture into a triage summary.
+
+        network.list is a paged listing; on a page with hundreds of requests a
+        caller had to walk every page to learn what hosts, methods, statuses,
+        resource types and content types are present before it could sensibly
+        filter. This folds the ring once into counts: by method, by status class
+        (2xx/4xx/...), by resource type, the top hosts and content types (capped,
+        with the distinct totals so a trimmed list is visible), and how many
+        requests failed, carried a request body, finished, or have no status yet.
+        dropped mirrors network.list: the ring evictions the summary can no
+        longer see.
+        """
+        handle = self._get(session_id)
+        with handle.lock:
+            items = list(handle.requests.values())
+            dropped = handle.requests_dropped
+        by_method: dict[str, int] = {}
+        by_status_class: dict[str, int] = {}
+        by_resource_type: dict[str, int] = {}
+        host_counts: dict[str, int] = {}
+        content_counts: dict[str, int] = {}
+        failed = with_request_body = finished = no_status = 0
+        for entry in items:
+            method = (str(entry.get("method", "") or "")).upper() or "UNKNOWN"
+            by_method[method] = by_method.get(method, 0) + 1
+            status = entry.get("status")
+            if isinstance(status, int):
+                cls = f"{status // 100}xx"
+                by_status_class[cls] = by_status_class.get(cls, 0) + 1
+            else:
+                no_status += 1
+            rtype = str(entry.get("resourceType", "") or "")
+            if rtype:
+                by_resource_type[rtype] = by_resource_type.get(rtype, 0) + 1
+            host = urlsplit(str(entry.get("url", "") or "")).netloc
+            if host:
+                host_counts[host] = host_counts.get(host, 0) + 1
+            # Drop the ``; charset=...`` parameter so the same media type is one
+            # bucket, not several.
+            ctype = str(entry.get("mimeType", "") or "").split(";")[0].strip().lower()
+            if ctype:
+                content_counts[ctype] = content_counts.get(ctype, 0) + 1
+            if entry.get("failed"):
+                failed += 1
+            if entry.get("has_request_body"):
+                with_request_body += 1
+            if entry.get("finished"):
+                finished += 1
+
+        def _top(counts: dict[str, int], key: str, cap: int) -> list[JsonObject]:
+            ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            return [{key: name, "count": count} for name, count in ranked[:cap]]
+
+        return {
+            "total": len(items),
+            "dropped": dropped,
+            "by_method": by_method,
+            "by_status_class": by_status_class,
+            "by_resource_type": by_resource_type,
+            "top_hosts": _top(host_counts, "host", _MAX_STATS_HOSTS),
+            "host_count": len(host_counts),
+            "top_content_types": _top(content_counts, "content_type", _MAX_STATS_CONTENT_TYPES),
+            "content_type_count": len(content_counts),
+            "failed": failed,
+            "with_request_body": with_request_body,
+            "finished": finished,
+            "no_status": no_status,
+        }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)

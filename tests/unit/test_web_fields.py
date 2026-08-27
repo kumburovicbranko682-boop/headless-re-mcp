@@ -209,6 +209,94 @@ def test_web_network_list_filters_narrow_the_capture(monkeypatch: Any) -> None:
     assert "unfiltered_total" in doc
 
 
+def test_web_network_stats_folds_the_capture_into_a_summary(monkeypatch: Any) -> None:
+    """A busy page's capture must summarize by method/status/type/host/content.
+
+    network.list is a paged listing; before filtering, a caller wants to know
+    what the capture holds. Drive mixed traffic and assert the aggregate: method
+    counts, status classes, resource-type counts, ranked hosts, merged content
+    types, and the failed/with_request_body/finished/no_status tallies.
+    """
+    rows = [
+        {"requestId": "1", "url": "https://app.example/index.html", "method": "GET",
+         "resourceType": "Document", "status": 200, "mimeType": "text/html; charset=utf-8",
+         "finished": True},
+        {"requestId": "2", "url": "https://cdn.example/app.js", "method": "GET",
+         "resourceType": "Script", "status": 200, "mimeType": "application/javascript",
+         "finished": True},
+        {"requestId": "3", "url": "https://api.example/login", "method": "POST",
+         "resourceType": "XHR", "status": 401, "mimeType": "application/json",
+         "has_request_body": True, "finished": True},
+        {"requestId": "4", "url": "https://api.example/me", "method": "GET",
+         "resourceType": "XHR", "status": 500, "mimeType": "application/json",
+         "finished": True},
+        {"requestId": "5", "url": "https://cdn.example/pixel.gif", "method": "GET",
+         "resourceType": "Image", "status": None, "failed": True,
+         "error_text": "net::ERR_BLOCKED_BY_CLIENT"},
+    ]
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _MixedNetworkHandle(rows, dropped=4))
+    stats = backend.network_stats("s")
+
+    assert stats["total"] == 5
+    assert stats["dropped"] == 4
+    assert stats["by_method"] == {"GET": 4, "POST": 1}
+    assert stats["by_status_class"] == {"2xx": 2, "4xx": 1, "5xx": 1}
+    assert stats["no_status"] == 1
+    assert stats["by_resource_type"] == {"Document": 1, "Script": 1, "XHR": 2, "Image": 1}
+    assert stats["failed"] == 1
+    assert stats["with_request_body"] == 1
+    assert stats["finished"] == 4
+    # Hosts come from the URL netloc and rank by count; cdn/api lead with two each.
+    host_counts = {row["host"]: row["count"] for row in stats["top_hosts"]}
+    assert host_counts["cdn.example"] == 2
+    assert host_counts["api.example"] == 2
+    assert host_counts["app.example"] == 1
+    assert stats["host_count"] == 3
+    # "application/json" merges across the two XHRs; the charset param is dropped.
+    ctype_counts = {row["content_type"]: row["count"] for row in stats["top_content_types"]}
+    assert ctype_counts["application/json"] == 2
+    assert ctype_counts["text/html"] == 1
+    assert stats["content_type_count"] == 3
+    # The summary is not a second listing.
+    assert "requests" not in stats
+    assert "flows" not in stats
+
+    doc = _tool_docstring("web.network.stats")
+    assert "by_method" in doc
+    assert "by_status_class" in doc
+    assert "by_resource_type" in doc
+    assert "top_hosts" in doc
+    assert "no_status" in doc
+    assert "dropped" in doc
+
+
+def test_web_network_stats_caps_the_top_lists_but_counts_all(monkeypatch: Any) -> None:
+    """Hundreds of hosts must not turn the summary into a second full listing.
+
+    Feed more distinct hosts than the cap and assert top_hosts is trimmed while
+    host_count still reports every distinct host, so a trimmed list is read as
+    trimmed rather than the whole picture.
+    """
+    from headless_re_mcp.backends.web.client import _MAX_STATS_HOSTS
+
+    hosts = _MAX_STATS_HOSTS + 5
+    rows = [
+        {"requestId": str(index), "url": f"https://h{index}.example/x", "method": "GET",
+         "resourceType": "XHR", "status": 200, "mimeType": "application/json"}
+        for index in range(hosts)
+    ]
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _MixedNetworkHandle(rows))
+    stats = backend.network_stats("s")
+
+    assert len(stats["top_hosts"]) == _MAX_STATS_HOSTS
+    assert stats["host_count"] == hosts
+    assert all(row["count"] == 1 for row in stats["top_hosts"])
+    assert len(stats["top_content_types"]) == 1
+    assert stats["content_type_count"] == 1
+
+
 def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     class _Cdp:
         def __init__(self) -> None:

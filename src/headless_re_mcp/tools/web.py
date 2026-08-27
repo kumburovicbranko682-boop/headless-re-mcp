@@ -116,6 +116,26 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="web.network.stats")
+    def web_network_stats(session_id: str) -> dict[str, Any]:
+        """Fold the whole request capture into a triage summary.
+
+        web.network.list is a paged listing; this folds the ring once so a
+        caller can see what a busy page's capture holds before deciding what to
+        filter for. Answers with total, by_method (a count per HTTP method),
+        by_status_class (a count per 2xx/3xx/4xx/5xx; requests with no status
+        yet are not counted here and show up in no_status instead),
+        by_resource_type (a count per xhr/fetch/script/document/image/...),
+        top_hosts and top_content_types (each a list of {host|content_type,
+        count}, ranked and capped at 50 with host_count/content_type_count
+        giving the distinct totals so a trimmed list is visible), and the counts
+        failed, with_request_body, finished and no_status. dropped is the
+        ring-eviction count, same as web.network.list. There is no requests,
+        items or flows field here -- use web.network.list to list (and to
+        filter), this to summarize.
+        """
+        return _dump(analysis.web_network_stats(session_id))
+
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
         """Fetch one request's bodies (large bodies spill to an artifact).

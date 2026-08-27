@@ -411,6 +411,29 @@ def test_web_cdp_captures_network_and_script_source() -> None:
             assert any(
                 str(row.get("url", "")).endswith("/data.json") for row in typed.data["requests"]
             ), f"resource_type={data_type} did not surface /data.json"
+
+            # The triage summary must fold the same live capture into counts a
+            # caller reads before filtering. It has to agree with the listing:
+            # the same total, at least one GET and one POST, both API responses
+            # (401 login / whatever) accounted for, the POST body tallied, and
+            # the origin host ranked -- without a per-request listing on it.
+            summary = service.web_network_stats(session_id)
+            assert summary.ok, summary.error
+            sdata = summary.data
+            assert sdata["total"] == full_total
+            assert sdata["by_method"].get("GET", 0) >= 1
+            assert sdata["by_method"].get("POST", 0) >= 1
+            # Every recorded method count must sum to the total the listing saw.
+            assert sum(sdata["by_method"].values()) == full_total
+            assert sdata["with_request_body"] >= 1
+            summary_hosts = {row["host"] for row in sdata["top_hosts"]}
+            assert any(host.startswith("127.0.0.1") for host in summary_hosts), (
+                f"the origin host was not ranked in the summary: {summary_hosts}"
+            )
+            assert sdata["host_count"] >= 1
+            # A summary is not a second listing.
+            assert "requests" not in sdata
+            assert "flows" not in sdata
         finally:
             service.close_all()
 

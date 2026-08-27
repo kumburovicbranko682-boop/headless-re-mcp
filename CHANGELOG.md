@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **274（155 只读 / 119 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **275（156 只读 / 119 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -368,6 +368,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   折叠大小写并锁定该调用、`resource_type` 按 CDP 实际标注的类型收窄且非该类型的请求被排除，并核对 `filtered`/
   `unfiltered_total`（缺浏览器时 skip≠pass）；单测覆盖五种过滤器与组合、`total` 报命中数、`dropped` 留全量、以及
   无过滤器不多出字段。
+- **过滤之前，得先知道抓包里到底有什么——但 `web.network.list` 只能整页翻着看**。与代理线的 `proxy.stats` 对齐，新增
+  只读的 `web.network.stats`：把整条请求环折叠一次成三角摘要，一眼看清该往哪过滤。回 `total`、`by_method`（每个 HTTP
+  方法一个计数）、`by_status_class`（每个 2xx/3xx/4xx/5xx 一个计数；尚无状态的请求不计入这里，改计入 `no_status`）、
+  `by_resource_type`（每个 xhr/fetch/script/document/image… 一个计数）、`top_hosts` 与 `top_content_types`（各为
+  `{host|content_type, count}` 列表，按计数排序、上限 50，另回 `host_count`/`content_type_count` 给出去重总数，好让
+  截断的列表被读成截断而非全貌），以及 `failed`/`with_request_body`/`finished`/`no_status` 计数；`dropped` 同
+  `web.network.list` 为整环淘汰量。host 取自 URL 的 netloc，content type 取自 `mimeType` 并归一掉 `; charset=…`。
+  摘要上没有 `requests`/`items`/`flows` 逐条字段——列表用 `web.network.list`、汇总用本工具。活体门用同一混合抓包断言
+  摘要与列表口径一致（同 `total`、方法计数求和等于 `total`、POST 体计入 `with_request_body`、源主机进入 `top_hosts`），
+  且摘要上无逐条列表（缺浏览器时 skip≠pass）；单测覆盖方法/状态类/资源类型/主机/内容类型的聚合与合并、以及 top 列表
+  按上限截断而 `host_count` 仍报全量。该工具计入读效果，工具面因此 274→275。
 - **`apk.strings` 只能整页翻，找一个 URL/密钥要人肉翻完整个 DEX**。列表此前只有分页；要在一个大 app 的几万条常量里
   定位某个域名、`api_key`/token 标记、或某个加密常量，只能一页页翻，而收集上限是 5000 条去重字符串——真正想找的那条
   可能就在这 5000 条之外，无过滤扫描到上限就停了，永远够不着。给 `apk.strings` 加可选 `contains`（大小写不敏感子串），
