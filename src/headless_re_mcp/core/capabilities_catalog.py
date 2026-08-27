@@ -116,8 +116,16 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "apk.apktool",
         "backend": "apk",
         "status_probe": "apktool",
-        "tools": ["apk.decode", "apk.repack", "apk.sign"],
-        "summary": "apktool decode/rebuild plus apksigner re-signing (requires a JRE)",
+        "tools": ["apk.decode", "apk.repack"],
+        "summary": "apktool decode/rebuild (requires a JRE)",
+        "optional": True,
+    },
+    {
+        "id": "apk.apksigner",
+        "backend": "apk",
+        "status_probe": "apksigner",
+        "tools": ["apk.sign"],
+        "summary": "APK re-signing via apksigner (requires a JRE)",
         "optional": True,
     },
     {

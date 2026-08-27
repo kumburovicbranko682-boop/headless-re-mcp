@@ -48,6 +48,34 @@ def test_every_status_probe_matches_a_real_doctor_probe() -> None:
     assert not stale, f"capability catalog names probes doctor does not emit: {stale}"
 
 
+def test_no_tool_is_advertised_by_more_than_one_capability() -> None:
+    # Each capability reports a single readiness status from its one probe, so a
+    # tool advertised by two capabilities would carry two (possibly conflicting)
+    # readiness signals. Keep every tool owned by exactly one capability.
+    owners: dict[str, list[str]] = {}
+    for cap in _CORE_CAPABILITIES:
+        for tool in cap["tools"]:
+            owners.setdefault(tool, []).append(cap["id"])
+    shared = {tool: ids for tool, ids in owners.items() if len(ids) > 1}
+    assert not shared, f"tools advertised by multiple capabilities: {shared}"
+
+
+def test_apk_signing_is_gated_on_the_apksigner_probe() -> None:
+    # apk.sign shells out to apksigner, which doctor probes independently of
+    # apktool. Gating it on the apktool probe would report signing as ready on a
+    # box that has apktool but no apksigner. Pin it to the apksigner probe.
+    by_tool = {
+        tool: cap
+        for cap in _CORE_CAPABILITIES
+        for tool in cap["tools"]
+    }
+    assert "apk.sign" in by_tool, "apk.sign is no longer advertised by any capability"
+    assert by_tool["apk.sign"]["status_probe"] == "apksigner"
+
+    apktool_cap = next(cap for cap in _CORE_CAPABILITIES if cap["id"] == "apk.apktool")
+    assert "apk.sign" not in apktool_cap["tools"]
+
+
 def test_each_capability_has_the_required_shape_and_a_unique_id() -> None:
     seen: set[str] = set()
     for cap in _CORE_CAPABILITIES:

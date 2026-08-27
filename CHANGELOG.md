@@ -636,6 +636,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   报成 `missing` 且不报错。新增契约断言每个宣传的工具名都是真实 MCP 工具、每个 `status_probe`
   都是真实 doctor 探针、id 唯一且形状完整,并用打桩 doctor 验证状态映射(ready/missing、无探针恒
   ready、缺失探针回退 missing)与 backend/status 两个过滤器。
+- **`apk.sign` 的能力就绪按错探针上报**：`apk.sign` 走的是 apksigner(doctor 有独立
+  `apksigner` 探针),但它此前被并进 `apk.apktool` 能力,就绪只看 `apktool` 探针——装了 apktool
+  却没 apksigner 的机器上,`capabilities` / `describe_capability` 会把签名报成 ready。现把
+  `apk.sign` 拆到独立的 `apk.apksigner` 能力(探针 `apksigner`),`apk.apktool` 只留
+  `apk.decode/repack`;并新增回归钉死签名能力必须由 apksigner 探针把关,以及每个工具至多归属一个
+  能力(避免同一工具带两个可能冲突的就绪信号)。
 - **asyncio 异常钩子首次落测**：进程/线程/unraisable 三个钩子早有测试,唯独 asyncio 的
   没有——没人 await 的任务失败经 loop 异常处理器上报,我们的处理器必须把事故写进 incident 日志
   (走同一个脱敏器,`api_key=...` 不落盘)、loop 交来无异常对象的上下文(回调错误就是这样)时
