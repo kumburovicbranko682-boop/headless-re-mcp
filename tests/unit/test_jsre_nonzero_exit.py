@@ -158,6 +158,58 @@ def test_wasm_wat_surfaces_a_nonzero_exit_with_partial_output(tmp_path: Path) ->
     assert payload["tool_failed"] is True
 
 
+def test_wasm_wat_raises_when_nonzero_and_nothing_printed(tmp_path: Path) -> None:
+    """A wasm2wat that dies with no output is a failure, not an empty module.
+
+    The partial-output path keeps whatever wasm2wat emitted, but a non-zero exit
+    that printed nothing has no ``wat`` to return -- surfacing ``{wat: ""}`` with
+    a tool_failed flag would read as a module that disassembles to nothing. Like
+    deobfuscate, that collapses to a backend_error carrying the exit code, the
+    honest "the tool failed and produced no output" answer.
+    """
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(4, b"", b"fatal: cannot read module")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        WasmClient(tool).wat(module)
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.details.get("exit_code") == 4
+
+
+def test_wasm_info_raises_when_nonzero_and_nothing_printed(tmp_path: Path) -> None:
+    """A wasm-objdump that dies with no output is a failure, not empty sections.
+
+    Same contract as wat: no printed sections plus a non-zero exit is a
+    backend_error, not an ``objdump: ""`` a caller reads as a module with no
+    sections to show.
+    """
+    tool = tmp_path / "wasm-objdump.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(5, b"", b"error: invalid magic")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        pytest.raises(JsReError) as caught,
+    ):
+        WasmClient(tool).info(module)
+
+    assert caught.value.code == "backend_error"
+    assert caught.value.details.get("exit_code") == 5
+
+
 def test_surfaced_stderr_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from headless_re_mcp.backends.jsre import client as mod
 
