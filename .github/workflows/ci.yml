@@ -197,6 +197,22 @@ jobs:
           apktool --version
           python -m pytest tests/integration/test_android_re_gate.py -q -rs --tb=short -k apktool
 
+      - name: Frida injection-machinery gate
+        # frida's device-aware Android ops (frida.java.classes/methods and the
+        # hook templates) need a real device, but they share the exact
+        # create_script/load/exports_sync machinery with the local ops -- which
+        # run here by attaching to a child process the test spawns. This gate
+        # caught frida 17 dropping the legacy byte-array read global (which
+        # silently broke frida.memory.read), so it guards that machinery against
+        # version drift. It also proves the local ops normalise a failed script
+        # to a backend_error envelope instead of leaking a raw RPCException that
+        # the service files as internal_error. On a runner that forbids ptrace
+        # attach the gate skips with a reason rather than passing vacuously.
+        run: |
+          python -m pip install "frida>=16.5"
+          python -c "import frida; print('frida', frida.__version__)"
+          python -m pytest tests/integration/test_frida_inject_gate.py -q -rs --tb=short
+
       - name: Doctor and core service smoke
         run: |
           python -m headless_re_mcp doctor --json --strict

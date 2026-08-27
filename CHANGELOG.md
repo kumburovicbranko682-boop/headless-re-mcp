@@ -297,6 +297,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   按版本增删 `--use-aapt2`。此外用真实 jadx/apktool 把两条线的错误/边界路径(找不到的类、路径逃逸、空类名、
   超时、export_sources、no_resources 解码、未 decode 先 repack、缺 apksigner、越界 decoded_dir)全跑了一遍,
   确认每一种失败都回结构化信封、无 `internal_error` 泄漏。
+- **frida 注入机制修掉一个真实缺陷,并首次进 CI 真跑**。frida 的设备侧 Android 操作
+  (`frida.java.classes/methods`、hook 模板)要真机,但它们与本地操作共用同一套
+  `create_script` / `load` / `exports_sync` 注入机制——而本地操作在 Linux 上对一个自己 spawn 的
+  子进程 attach 即可真跑。据此把这套机制端到端驱动了一遍,发现**两个真实问题**:①`frida.memory.read`
+  在 frida 17 上彻底坏了——注入脚本用的 `Memory.readByteArray` 全局在 17.x 被移除,调用直接
+  `TypeError: not a function`;改用受支持的 `ptr(addr).readByteArray(size)`(空指针/不可读页返回
+  null,显式抛错)。②本地 `modules`/`exports`/`memory_read` **不包异常**:脚本 load 或 RPC 失败会把
+  裸 `RPCException` 抛出客户端,被服务层的 `except BaseException` 记成假的 `internal_error` 事故——
+  而设备侧同类操作早已把这类失败规整成 `backend_error`。新增 `_in_local_script` 让本地路径也走同一
+  结构化信封契约(FridaError 原样透传、其余规整为 `backend_error`、超时归 `timeout`,退出前必 detach)。
+  新增单测(伪造 session/script,无需真 frida)钉住这次收敛与那处脚本 API;新增 `test_frida_inject_gate.py`
+  对本地子进程做真实 attach + 注入:枚举模块、读主模块基址 8 字节、枚举 libc 导出、读空页得 `backend_error`、
+  载入 noop 模板。CI `linux-quality` 新增一步(装 `frida>=16.5` 并 import 自检),ptrace 被内核禁掉的
+  runner 上带原因跳过(skip != pass)。这条注入机制正是 Android 动态线所依赖的,在 CI 里钉住可防 frida
+  版本漂移再次悄悄弄坏它。
 - **Web CDP(Playwright 浏览器)线进 CI 真跑,单独成一个作业**。浏览器抓取路径此前修过真实缺陷
   (高层 console 事件每次导航泄漏一批 OS 句柄;Playwright 的线程亲和性),这些单测替代不了——必须
   驱动一个活的 CDP 会话。新增 `web-cdp-gate` 作业:装 `.[browser]` 后

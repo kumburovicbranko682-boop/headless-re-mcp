@@ -117,7 +117,13 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // frida 17 removed the legacy global byte-array reader; the NativePointer
+    // method is the supported spelling and returns null for unreadable pages.
+    var buf = ptr(address).readByteArray(size);
+    if (buf === null) {
+      throw new Error('unreadable memory at ' + address);
+    }
+    return Array.from(new Uint8Array(buf));
   }
 };
 """
@@ -315,12 +321,40 @@ class FridaClient:
             with contextlib.suppress(Exception):
                 session.detach()
 
-    def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
-        self._require(pid, allowed_pid)
+    def _in_local_script(
+        self, pid: int, what: str, body: Callable[[Any], T]
+    ) -> T:
+        """Attach locally, run ``body`` against a loaded enum script, detach.
+
+        The device-aware ops already map a failed ``script.load()`` / RPC call to
+        a ``backend_error`` envelope; the local ops used to let those raw frida
+        exceptions (e.g. ``RPCException`` when a target exits mid-call, or a
+        frida API drift like the removed ``Memory.readByteArray``) escape, where
+        the service files them as a false ``internal_error`` incident. This keeps
+        the local path on the same structured-envelope contract.
+        """
         session = self._attach_local(pid)
         try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
+            try:
+                script = session.create_script(_ENUM_SCRIPT)
+                script.load()
+                return body(script)
+            except FridaError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - normalised below
+                if _is_timeout(exc):
+                    raise _timeout_error(_PROBE_TIMEOUT_S) from exc
+                raise FridaError(
+                    "backend_error", f"frida {what} failed: {exc}", pid=pid
+                ) from exc
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
+    def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
+        self._require(pid, allowed_pid)
+
+        def body(script: Any) -> JsonObject:
             capped = max(1, min(int(limit), 256))
             raw = script.exports_sync.modules(capped)
             if isinstance(raw, dict):
@@ -345,9 +379,8 @@ class FridaClient:
                 "total": total,
                 "has_more": total > len(items),
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._in_local_script(pid, "modules", body)
 
     def exports(
         self,
@@ -361,10 +394,8 @@ class FridaClient:
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
         capped = max(1, min(int(limit), 512))
-        session = self._attach_local(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
+
+        def body(script: Any) -> JsonObject:
             raw = script.exports_sync.exports(module_name.strip(), capped + 1)
             if not isinstance(raw, dict):
                 raise FridaError("backend_error", "unexpected frida exports payload")
@@ -388,9 +419,8 @@ class FridaClient:
                 "count": len(items),
                 "has_more": has_more,
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._in_local_script(pid, "exports", body)
 
     def memory_read(
         self, pid: int, address: int, size: int, *, allowed_pid: int
@@ -398,10 +428,8 @@ class FridaClient:
         self._require(pid, allowed_pid)
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
-        session = self._attach_local(pid)
-        try:
-            script = session.create_script(_ENUM_SCRIPT)
-            script.load()
+
+        def body(script: Any) -> JsonObject:
             data = bytes(script.exports_sync.read(int(address), int(size)))
             return {
                 "address": address,
@@ -409,9 +437,8 @@ class FridaClient:
                 "encoding": "hex",
                 "data": data.hex(),
             }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+
+        return self._in_local_script(pid, "memory read", body)
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:

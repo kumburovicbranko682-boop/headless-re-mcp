@@ -482,6 +482,88 @@ class TestApktoolBuildPicksAaptForTheVersion:
         assert "--use-aapt2" not in cmd
 
 
+class TestFridaLocalScriptWrapsBackendFailures:
+    """The local frida ops used to let a raw script/RPC failure escape, which the
+    service files as a false internal_error. They must return a backend_error
+    envelope like the device-aware ops already do."""
+
+    class _FakeScript:
+        def __init__(self, on_load: Any = None, exports: Any = None) -> None:
+            self._on_load = on_load
+            self.exports_sync = exports
+
+        def load(self) -> None:
+            if self._on_load is not None:
+                self._on_load()
+
+    class _FakeSession:
+        def __init__(self, script: Any) -> None:
+            self._script = script
+            self.detached = False
+
+        def create_script(self, _source: str) -> Any:
+            return self._script
+
+        def detach(self) -> None:
+            self.detached = True
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, session: Any) -> FridaClient:
+        client = FridaClient()
+        client._available = True
+        client._frida = object()
+        monkeypatch.setattr(client, "_attach_local", lambda _pid, **_kw: session)
+        return client
+
+    def test_enum_script_uses_the_supported_read_api(self) -> None:
+        from headless_re_mcp.backends.frida.client import _ENUM_SCRIPT
+
+        # frida 17 removed the Memory.readByteArray global; a regression back to
+        # it silently breaks frida.memory.read.
+        assert "readByteArray" in _ENUM_SCRIPT
+        assert "Memory.readByteArray" not in _ENUM_SCRIPT
+
+    def test_a_raw_script_load_failure_becomes_backend_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def boom() -> None:
+            raise RuntimeError("script load exploded")
+
+        session = self._FakeSession(self._FakeScript(on_load=boom))
+        client = self._client(monkeypatch, session)
+        with pytest.raises(FridaError) as info:
+            client.modules(123, allowed_pid=123)
+        assert info.value.code == "backend_error"
+        assert session.detached is True
+
+    def test_a_raw_rpc_failure_in_memory_read_becomes_backend_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Exports:
+            def read(self, _addr: int, _size: int) -> Any:
+                raise RuntimeError("RPCException: TypeError: not a function")
+
+        session = self._FakeSession(self._FakeScript(exports=_Exports()))
+        client = self._client(monkeypatch, session)
+        with pytest.raises(FridaError) as info:
+            client.memory_read(123, 0x1000, 8, allowed_pid=123)
+        assert info.value.code == "backend_error"
+        assert session.detached is True
+
+    def test_a_fridaerror_from_the_body_passes_through_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Exports:
+            def exports(self, _name: str, _limit: int) -> Any:
+                return "not a dict"
+
+        session = self._FakeSession(self._FakeScript(exports=_Exports()))
+        client = self._client(monkeypatch, session)
+        with pytest.raises(FridaError) as info:
+            client.exports(123, "libc.so.6", allowed_pid=123)
+        assert info.value.code == "backend_error"
+        assert "unexpected frida exports payload" in info.value.message
+
+
 class TestPeOnlyToolsRefuseApkSessions:
     def test_detect_dotnet_and_unpack_return_target_mismatch(self, tmp_path: Path) -> None:
         from dataclasses import replace
