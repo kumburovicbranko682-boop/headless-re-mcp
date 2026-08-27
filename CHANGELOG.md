@@ -524,6 +524,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`unpack.verify` 在 APK 会话上仍会解析产物树里的 PE**。先 `require_pe()`。
 - **敌意 `NumberOfSections=0xFFFF` 会按节数分配重建头**。超过 96 节直接拒绝。
   导入名按描述符 + ILT（原地 IAT 时不再加上一份 IAT 长度）落盘。
+- **近 4 GiB 的 `SizeOfImage` / 节 VA 让重建以裸 `struct.error` 崩出**。`remap_dump_to_file`
+  把各节 `VirtualAddress + VirtualSize` 对齐后写进 u32 的 `SizeOfImage`，`rebuild_imports`
+  又把新导入节放在 `align(SizeOfImage)` 处、并据此写下每个描述符与 thunk 的 RVA——
+  这些字段都来自转储自报的头，一个逼近 4 GiB 上限的值对齐后越过 u32，`struct.pack_into`
+  抛出的 `struct.error` 不是 `ValueError`，服务信封便记成事故 `internal_error`，而不是同
+  模块其他不可用头给出的干净 `invalid_request`。现在两处都在打包前校验对齐后的
+  `SizeOfImage` / 新节 RVA 是否仍装得下 u32，越界即按名拒绝；诚实的转储照旧重建。
 - **工作流导航在等的时候，第二次 `events.read` 会把游标拆开**，再被映射成会拆掉
   x64dbg 的 `rpc_protocol_error`。导航等待时只读持久日志；游标不一致改报
   `event_cursor_inconsistent`。

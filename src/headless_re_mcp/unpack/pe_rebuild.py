@@ -330,6 +330,16 @@ def remap_dump_to_file(
     struct.pack_into("<I", out, opt + 60, size_of_headers)
     last_va = max(int(s["virtual_address"]) + max(int(s["virtual_size"]), 1) for s in sections)
     size_of_image = _align(last_va, section_alignment)
+    # last_va sums a section's VirtualAddress and VirtualSize, both u32 fields the
+    # dump controls, so a section declaring a near-4 GiB VA or size aligns past the
+    # u32 SizeOfImage field and struct.pack_into raises a bare struct.error -- not
+    # a ValueError, so the service envelope files it as an internal_error incident
+    # instead of the named refusal every other unusable header here produces.
+    if size_of_image > 0xFFFFFFFF:
+        raise PeRebuildError(
+            f"sections span to RVA {last_va:#x}, whose aligned SizeOfImage does not fit the "
+            "32-bit field a PE uses; the dump's section table is not usable for a rebuild"
+        )
     struct.pack_into("<I", out, opt + 56, size_of_image)
     report.changes.append(f"SizeOfHeaders={size_of_headers:#x}")
     report.changes.append(f"SizeOfImage={size_of_image:#x}")
@@ -497,6 +507,20 @@ def rebuild_imports(
 
     section_payload = bytearray(names_off + len(name_blob))
 
+    # Every RVA written below -- import descriptors, ILT/IAT thunks, the hint/name
+    # RVAs -- is new_va plus an offset into this payload, and each is packed as a
+    # u32. new_va comes from the dump's own SizeOfImage, so a header near the 4 GiB
+    # ceiling aligns past what a PE RVA can address and struct.pack_into raises a
+    # bare struct.error -- not a ValueError, so the envelope files it as an
+    # internal_error incident instead of the named refusal remap_dump_to_file
+    # already gives for unusable headers.
+    new_image_size = _align(new_va + len(section_payload), section_alignment)
+    if new_image_size > 0xFFFFFFFF:
+        raise PeRebuildError(
+            f"appending an import section at RVA {new_va:#x} would push SizeOfImage past the "
+            "4 GiB a PE RVA can address; the image's SizeOfImage is not usable for a rebuild"
+        )
+
     ilt_cursor = descriptor_size
     iat_cursor = descriptor_size + ilt_size
     in_place_cursor = 0
@@ -591,7 +615,6 @@ def rebuild_imports(
     struct.pack_into("<I", out, new_section_off + 36,
                      _IMAGE_SCN_CNT_INITIALIZED_DATA | _IMAGE_SCN_MEM_READ | _IMAGE_SCN_MEM_WRITE)
 
-    new_image_size = _align(new_va + len(section_payload), section_alignment)
     struct.pack_into("<I", out, pe_offset + 24 + 56, new_image_size)
 
     # Point import + IAT directories at new section.

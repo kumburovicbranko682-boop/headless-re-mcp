@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.unpack.pe_rebuild import MAX_SECTIONS, PeRebuildError, remap_dump_to_file
+from headless_re_mcp.unpack.pe_rebuild import (
+    MAX_SECTIONS,
+    PeRebuildError,
+    rebuild_imports,
+    remap_dump_to_file,
+)
 
 FIXTURE = Path(__file__).resolve().parents[2] / "artifacts" / "fixtures-x64" / "console_fixture.exe"
 
@@ -113,8 +118,6 @@ def test_the_import_rebuild_reads_the_same_headers_and_needs_the_same_bound() ->
     peaked at 5 GB of heap on the way there, which is enough to take the
     machine with it.
     """
-    from headless_re_mcp.unpack.pe_rebuild import rebuild_imports
-
     optional, _table = _offsets()
     entries = [
         {"kind": "api", "module": "kernel32.dll", "name": "GetProcAddress", "thunk_rva": 0x3000},
@@ -226,3 +229,86 @@ def test_overlapping_sections_that_multiply_the_dump_are_refused() -> None:
 
     assert "section table" in str(caught.value)
     assert time.perf_counter() - started < 5.0, "and refused before the copies"
+
+
+def _minimal_rebuildable_pe(
+    *,
+    size_of_image: int = 0x4000,
+    section_va: int = 0x1000,
+    section_vsize: int = 0x400,
+) -> bytes:
+    """A small but structurally complete PE32 both rebuild entry points accept.
+
+    SizeOfHeaders leaves room for one appended section, NumberOfRvaAndSizes is the
+    full 16, and a single executable section is present -- enough for
+    remap_dump_to_file and rebuild_imports to run to completion on honest values,
+    and to overflow the u32 SizeOfImage / new-section RVA on hostile ones.
+    """
+    pe_offset = 0x80
+    optional_size = 0xE0
+    file_header = pe_offset + 4
+    optional = file_header + 20
+    table = optional + optional_size
+    size_of_headers = 0x400
+    data = bytearray(size_of_headers + 0x800)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, pe_offset)
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    struct.pack_into("<H", data, file_header, 0x14C)  # machine x86
+    struct.pack_into("<H", data, file_header + 2, 1)  # one section
+    struct.pack_into("<H", data, file_header + 16, optional_size)
+    struct.pack_into("<H", data, optional, 0x10B)  # PE32
+    struct.pack_into("<I", data, optional + 16, 0x1000)  # AddressOfEntryPoint
+    struct.pack_into("<I", data, optional + 28, 0x400000)  # ImageBase
+    struct.pack_into("<I", data, optional + 32, 0x1000)  # SectionAlignment
+    struct.pack_into("<I", data, optional + 36, 0x200)  # FileAlignment
+    struct.pack_into("<I", data, optional + 56, size_of_image)
+    struct.pack_into("<I", data, optional + 60, size_of_headers)
+    struct.pack_into("<H", data, optional + 68, 3)  # subsystem
+    struct.pack_into("<I", data, optional + 92, 16)  # NumberOfRvaAndSizes
+    off = table
+    data[off : off + 8] = b".text\0\0\0"
+    struct.pack_into("<I", data, off + 8, section_vsize)  # VirtualSize
+    struct.pack_into("<I", data, off + 12, section_va)  # VirtualAddress
+    struct.pack_into("<I", data, off + 16, 0x200)  # SizeOfRawData
+    struct.pack_into("<I", data, off + 20, size_of_headers)  # PointerToRawData
+    struct.pack_into("<I", data, off + 36, 0x60000020)  # exec | read | code
+    return bytes(data)
+
+
+def test_remap_refuses_a_section_span_that_overflows_sizeofimage() -> None:
+    """VirtualAddress + VirtualSize are u32 fields the dump controls.
+
+    A section declaring a near-4 GiB VA and size aligns past the u32 SizeOfImage
+    field, and struct.pack_into used to raise a bare struct.error -- not a
+    ValueError, so the service envelope filed it as an internal_error incident
+    instead of the named refusal every other unusable header here reports. The
+    honest layout the same helper builds still rebuilds.
+    """
+    dump = _minimal_rebuildable_pe(section_va=0xFFFFF000, section_vsize=0xFFFFF000)
+
+    with pytest.raises(PeRebuildError) as caught:
+        remap_dump_to_file(dump)
+
+    assert isinstance(caught.value, ValueError)
+    assert "SizeOfImage" in str(caught.value)
+    assert len(remap_dump_to_file(_minimal_rebuildable_pe())[0]) > 0
+
+
+def test_import_rebuild_refuses_a_sizeofimage_that_overflows_the_new_section_rva() -> None:
+    """The appended import section is placed at align(SizeOfImage) and packed as u32.
+
+    A SizeOfImage near the 4 GiB ceiling pushes that RVA -- and every descriptor
+    and thunk RVA derived from it -- past what the u32 field holds. That was a
+    bare struct.error from deep inside the descriptor write; it is a named
+    PeRebuildError now, while an honest SizeOfImage still produces a rebuilt image.
+    """
+    entries = [{"kind": "api", "module": "kernel32.dll", "name": "GetProcAddress"}]
+
+    with pytest.raises(PeRebuildError) as caught:
+        rebuild_imports(_minimal_rebuildable_pe(size_of_image=0xFFFFFF01), entries)
+
+    assert isinstance(caught.value, ValueError)
+    assert "SizeOfImage" in str(caught.value)
+    rebuilt, _report = rebuild_imports(_minimal_rebuildable_pe(), entries)
+    assert len(rebuilt) > 0
