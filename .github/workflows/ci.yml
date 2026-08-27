@@ -295,6 +295,7 @@ jobs:
             tests/integration/test_m11_frida_r2_crosscheck_gate.py \
             tests/integration/test_m11_ghidra_live_gate.py \
             tests/integration/test_m11_ghidra_arch_gate.py \
+            tests/integration/test_m11_ghidra_arm32_gate.py \
             tests/integration/test_android_re_gate.py \
             tests/integration/test_android_tools_gate.py \
             tests/integration/test_android_dex_gate.py \
