@@ -8,7 +8,13 @@ import json
 from ghidra.app.decompiler import DecompInterface
 from ghidra.util.task import ConsoleTaskMonitor
 
-mode = ARGS[0] if ARGS else "functions"
+# analyzeHeadless -postScript arguments arrive via the injected getScriptArgs()
+# helper, not a bare ARGS global. Referencing ARGS directly raised
+# "NameError: name 'ARGS' is not defined" the moment the script actually ran, so
+# every functions/symbols/xrefs/decompile export died before reading a mode.
+ARGS = getScriptArgs()
+
+mode = ARGS[0] if len(ARGS) > 0 else "functions"
 out_path = ARGS[1] if len(ARGS) > 1 else None
 limit = 256
 try:

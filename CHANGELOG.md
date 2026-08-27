@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+Ghidra 线（`ghidra.functions` / `symbols` / `xrefs` / `decompile`）首次有了对真实 `analyzeHeadless` 的执行覆盖，
+并借此修掉两个让整条线在真机上直接失效的 bug。此前唯一的集成测试只覆盖降级路径（未配置时 `capability_unavailable`）
+与计划工具清单，导出流水线（postScript `ExportJson.py`、它写出的 JSON、以及“analyzeHeadless 非零退出但已写出内容
+即视为成功”的判定）只对 mock 跑过。第一次真正拉起来就暴露了两点：其一，启动器发现按 `analyzeHeadless.bat` 优先——
+Ghidra 同时装两个启动器，于是 Linux 上选中了不可执行的 Windows `.bat`，每次调用都以 Popen 的 PermissionError 收场；
+其二，`ExportJson.py` 从一个 Ghidra 根本不注入的裸 `ARGS` 全局读参数，脚本一旦真跑就抛 `NameError: name 'ARGS' is
+not defined`，必须改用 `getScriptArgs()`。两者均已修复：启动器发现改为按平台优选（Linux 选无扩展名的 POSIX 脚本、
+Windows 选 `.bat`，另一个降级为兜底，并加了 hermetic 单测钉住），`ExportJson.py` 改用 `getScriptArgs()`。新增
+`tests/integration/test_ghidra_headless_live_gate.py`：编译一个带具名函数与独特字符串的小 ELF，驱动真实客户端走完整
+面——按名字找回 `add_numbers`/`multiply`/`main`，经 xrefs 找到 `main` 对 `add_numbers` 的调用，并把 `add_numbers`
+的算术（`return param_1 + param_2;`）与 `main` 里的标记串反编译回来。覆盖以 Jython 跑 `.py` postScript 的 Ghidra
+（≤ 11.2，即 `ExportJson.py` 标注的 `@runtime Jython`）；Ghidra 11.3 起移除 Jython、改用 PyGhidra（需 CPython 宿主
+JVM 的另一种启动模型），那是单独的后续项，已在 docstring 说明，避免把 green 误读成“最新 Ghidra 也能跑”。新增
+`linux-ghidra-headless` CI job：装 JDK 21 + Ghidra 11.2.1、跑该 gate 并解析 junitxml，Ghidra 已装却 skip 时判失败
+（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

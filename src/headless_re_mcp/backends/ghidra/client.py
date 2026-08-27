@@ -356,13 +356,18 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
-        candidate = home / rel
-        if candidate.is_file():
-            return candidate
+    # Ghidra ships both launchers side by side: analyzeHeadless.bat (Windows) and
+    # analyzeHeadless (the POSIX shell script). Probing .bat first returned the
+    # Windows launcher on Linux, where it is not executable, so every Ghidra call
+    # died with a PermissionError from Popen. Prefer the launcher for this OS so
+    # the .bat is only chosen on Windows.
+    if os.name == "nt":
+        names = ("analyzeHeadless.bat", "analyzeHeadless")
+    else:
+        names = ("analyzeHeadless", "analyzeHeadless.bat")
+    for name in names:
+        for rel in (f"support/{name}", name):
+            candidate = home / rel
+            if candidate.is_file():
+                return candidate
     return None

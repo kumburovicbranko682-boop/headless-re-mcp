@@ -99,6 +99,35 @@ def test_ghidra_preserves_operator_java_tool_options(
     assert opts.index("-Xmx2G") < opts.index("-Xmx8G")
 
 
+def test_ghidra_prefers_the_platform_launcher_when_both_are_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ghidra ships analyzeHeadless (POSIX) and analyzeHeadless.bat side by side.
+
+    Probing the .bat first returned the Windows launcher on Linux, where it is not
+    executable, so every call died with a PermissionError from Popen. Pin that the
+    OS-appropriate launcher wins when both exist, while the other stays a fallback.
+    """
+    home = tmp_path / "ghidra"
+    support = home / "support"
+    support.mkdir(parents=True)
+    posix = support / "analyzeHeadless"
+    windows = support / "analyzeHeadless.bat"
+    posix.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    windows.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(home) == posix
+
+    monkeypatch.setattr(ghidra_client.os, "name", "nt")
+    assert ghidra_client._find_analyze_headless(home) == windows
+
+    # With only the .bat present, it is still selected as a fallback on POSIX.
+    posix.unlink()
+    monkeypatch.setattr(ghidra_client.os, "name", "posix")
+    assert ghidra_client._find_analyze_headless(home) == windows
+
+
 def test_ghidra_analyze_deletes_the_project_other_tools_cannot_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
