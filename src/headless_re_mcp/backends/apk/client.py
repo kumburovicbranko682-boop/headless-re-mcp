@@ -26,6 +26,10 @@ _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
+# Collect past the page cap so a truncated name listing is the true
+# alphabetical prefix rather than an arbitrary slice of androguard's manifest
+# order; bound the scan so a crafted manifest cannot grow the sort without limit.
+_MAX_NAME_SCAN = 10_000
 _MAX_MANIFEST_CHARS = 200_000
 # Page ceilings, kept equal to the apk.* tool schema maxima so the MCP path
 # (schema-validated) and the agent/OpenAI paths (clamped here) agree on the
@@ -45,15 +49,28 @@ class ApkError(RuntimeError):
 
 
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
-    items: list[str] = []
-    has_more = False
+    """Sorted names capped to ``limit`` as the true alphabetical prefix.
+
+    Collect and sort before applying ``limit``. Capping androguard's manifest
+    order first and sorting the slice returned an arbitrary subset that only
+    looked sorted: a large app with more than ``limit`` activities (or
+    permissions) dropped whichever names the manifest happened to list past the
+    cap, not the alphabetical tail, so scanning the "sorted" reply for a
+    component inside the returned range could miss one that was silently cut,
+    and ``has_more`` read as "more after the last name" when the gap was really
+    in the middle. The sibling ``classes``/``methods``/``strings`` readers
+    already collect-then-sort-then-window; this matches them.
+    """
+    names: list[str] = []
+    scan_capped = False
     for item in values or []:
-        if len(items) >= limit:
-            has_more = True
+        if len(names) >= _MAX_NAME_SCAN:
+            scan_capped = True
             break
-        items.append(str(item))
-    items.sort()
-    return items, has_more
+        names.append(str(item))
+    names.sort()
+    has_more = scan_capped or len(names) > limit
+    return names[:limit], has_more
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -306,7 +323,7 @@ class ApkClient:
         apk = self._apk(path)
         libs: list[str] = []
         abis: set[str] = set()
-        has_more = False
+        scan_capped = False
         for name in apk.get_files() or []:
             text = str(name)
             if not text.startswith("lib/"):
@@ -314,16 +331,22 @@ class ApkClient:
             parts = text.split("/")
             if len(parts) >= 3:
                 abis.add(parts[1])
-            if len(libs) >= _MAX_NATIVE_LIBS:
-                has_more = True
+            # Keep scanning past the collection cap so abis reflects every ABI,
+            # but bound the retained list so a crafted APK cannot grow it.
+            if len(libs) >= _MAX_NAME_SCAN:
+                scan_capped = True
                 continue
             libs.append(text)
+        # Sort the whole collection before paging so the returned page is the
+        # alphabetical prefix, not an arbitrary slice of the zip's file order
+        # that only looked sorted -- the same fix as _cap_names above.
         libs.sort()
+        page = libs[:_MAX_NATIVE_LIBS]
         return {
-            "native_libs": libs,
+            "native_libs": page,
             "abis": sorted(abis),
-            "count": len(libs),
-            "has_more": has_more,
+            "count": len(page),
+            "has_more": scan_capped or len(libs) > _MAX_NATIVE_LIBS,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
