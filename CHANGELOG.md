@@ -49,6 +49,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（APK 分页读取未夹紧 offset/limit）
+
+- `apk.classes` / `apk.methods` / `apk.strings` 直接用 `names[offset:offset+limit]` 切片，未像姊妹
+  读取 `web.network_list` / `proxy.flows` 那样夹紧两端。最尖锐的是负 `limit`：`names[0:-1]` 会返
+  回几乎整份扫描结果——与调用方想要的一小页恰恰相反；负 `offset` 则从尾部索引并让 `has_more`
+  失真。新增共享的 `_page_bounds` 把 `offset` 夹到 ≥0、`limit` 夹到 `1.._MAX_PAGE`（1000），并回
+  显实际使用的 `offset`；`apk.xrefs` 同样补上上限。`tests/unit/test_apk_fields.py` 钉住负值与超
+  大页都不再击穿分页上限。
+
 ### 修复（proxy.export_har 无界写盘）
 
 - `proxy.export_har` 过去把整份捕获环里的 flow 摘要一股脑 `json.dumps` 写盘，没有任何大小上
