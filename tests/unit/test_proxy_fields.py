@@ -226,7 +226,12 @@ def test_proxy_export_har_names_path_and_entry_count(
     assert "har" not in payload
     assert "output" not in payload
     assert payload["entry_count"] == 4
+    assert payload["total"] == 4
+    assert payload["truncated"] is False
+    assert payload["dropped"] == 0
     assert payload["path"].endswith("capture.har")
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+    assert "total" in doc
+    assert "dropped" in doc

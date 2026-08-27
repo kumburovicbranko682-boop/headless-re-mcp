@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
+
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
 _REPLAY_WAIT_S = 15.0
@@ -174,6 +176,19 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _ring_dropped(items: list[JsonObject]) -> int:
+    """Flows the ring evicted: highest seq seen minus summaries still held.
+
+    ``seq`` is a monotonic per-response counter, so the newest summary's seq is
+    the total ever recorded; subtracting how many remain is the eviction count.
+    Shared by ``flows`` and ``export_har`` so the two never disagree about how
+    much of the capture is gone.
+    """
+    if not items:
+        return 0
+    return max(0, int(items[-1].get("seq") or 0) - len(items))
 
 
 class _FlowRecorder:
@@ -464,16 +479,13 @@ class ProxyBackend:
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]
-        dropped = 0
-        if items:
-            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
         return {
             "flows": window,
             "count": len(window),
             "total": len(items),
             "offset": start,
             "has_more": start + len(window) < len(items),
-            "dropped": dropped,
+            "dropped": _ring_dropped(items),
         }
 
     def flow_get(self, session_id: str, flow_id: str, artifact_dir: Path) -> JsonObject:
@@ -564,6 +576,13 @@ class ProxyBackend:
         inst = self._get(session_id)
         import json
 
+        items = inst.recorder.snapshot()
+        # Two independent losses reach a HAR and both are reported, matching
+        # web.har.export. ``dropped`` is ring eviction: flows the capture buffer
+        # shed while running, so they were never candidates for this export.
+        # ``total`` is what the ring still held; dropping any of those to fit the
+        # capture cap is a second loss, marked by ``truncated``.
+        dropped = _ring_dropped(items)
         entries = [
             {
                 "request": {"method": f.get("method"), "url": f.get("url")},
@@ -572,14 +591,44 @@ class ProxyBackend:
                     "content": {"mimeType": f.get("content_type") or ""},
                 },
             }
-            for f in inst.recorder.snapshot()
+            for f in items
         ]
+        total = len(entries)
         har = {
             "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        text = json.dumps(har, ensure_ascii=False)
+        truncated = False
+        encoded = text.encode("utf-8")
+        # Bound the file the way the browser-side exporter does: the ring holds
+        # up to 2000 flows and a single URL can be 16 KB, so an unbounded dump
+        # could land tens of megabytes on disk before retention runs. Drop the
+        # newest summaries until it fits rather than writing whatever the ring
+        # happens to hold.
+        while entries and len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            drop = max(1, len(entries) // 8)
+            del entries[-drop:]
+            har["log"]["entries"] = entries
+            text = json.dumps(har, ensure_ascii=False)
+            encoded = text.encode("utf-8")
+            truncated = True
+        if len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+            raise ProxyError(
+                "too_large",
+                "HAR export exceeds capture cap",
+                size=len(encoded),
+                cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
+        out_path.write_text(text, encoding="utf-8")
+        return {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "total": total,
+            "truncated": truncated,
+            "dropped": dropped,
+            "size": len(encoded),
+        }
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):

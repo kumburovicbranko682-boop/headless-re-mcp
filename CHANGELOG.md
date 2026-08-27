@@ -60,6 +60,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（`proxy.export_har` 不再无上限落盘、也不再把丢失的流量藏起来）
+
+- mitmproxy 侧的 HAR 导出此前把抓取环里的内容**整份无上限**写进制品:环可存 2000 条流、
+  单条 URL 上限就有 16 KB,一次导出足以在保留策略跑起来前往磁盘拍下数十兆字节。浏览器侧的
+  `web.har.export` 早有 `UNREGISTERED_CAPTURE_MAX_BYTES` 上限并在超限时丢尾/拒绝,唯独这条兄弟通道没有。
+- 同时它只回 `entry_count`,对损失只字不提——而抓取环明明按条数与字节双重淘汰旧流(`proxy.flows`
+  已用 `dropped` 交代淘汰数)。无人值守的 agent 会把「只剩尾巴」的 HAR 读成完整流量记录。
+- 现在与 `web.har.export` 对齐:回包新增 `total`(导出时环内仍在的流数)、`truncated`(为拟合上限
+  从尾部丢了条目,此时 `entry_count < total`)、`dropped`(环淘汰数,一笔从未进入本次导出的损失)、
+  `size`(写出字节数);超上限时按 1/8 递减丢尾直至拟合,连空骨架都放不下才 `too_large` 拒绝。
+  单条大到一进去就超限时,落成一份空但据实标注的 HAR(`total=1`/`entry_count=0`/`truncated=true`)。
+- 环淘汰的计数逻辑抽成共享的 `_ring_dropped`,`proxy.flows` 与 `proxy.export_har` 共用一处,
+  两个视图对「丢了多少」永不打架。
+- 新增回归:环淘汰独立现于 `dropped`;超上限尾部丢弃据实量化且写出文件条数与 `entry_count` 逐条一致;
+  单条超限落成空但标注的 HAR;`flows` 与 `export_har` 的 `dropped` 恒等。`proxy.export_har`
+  描述点名 `total` / `truncated` / `dropped`。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
