@@ -70,3 +70,71 @@ def test_web_network_get_names_body_truncated_not_truncated(
     doc = _tool_docstring("web.network.get")
     assert "body_truncated" in doc
     assert "body_path" in doc
+
+
+class _CdpBodies:
+    """Serves a response body and a request payload for the same request."""
+
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "Network.getRequestPostData":
+            return {"postData": '{"user":"alice","token":"s3cr3t"}'}
+        return {"body": '{"ok":true}', "base64Encoded": False}
+
+
+class _HandleWithBody:
+    lock = Lock()
+    requests = {"r1": {"requestId": "r1", "url": "https://x", "has_request_body": True}}
+    cdp = _CdpBodies()
+
+
+class _CdpNoPostData:
+    """Response body only; the browser no longer retains the payload."""
+
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "Network.getRequestPostData":
+            raise RuntimeError("No resource with given identifier found")
+        return {"body": '{"ok":true}', "base64Encoded": False}
+
+
+class _HandleLostBody:
+    lock = Lock()
+    requests = {"r1": {"requestId": "r1", "url": "https://x", "has_request_body": True}}
+    cdp = _CdpNoPostData()
+
+
+class _HandleNoBody:
+    lock = Lock()
+    requests = {"r1": {"requestId": "r1", "url": "https://x"}}
+    cdp = _CdpBodies()
+
+
+def test_web_network_get_returns_the_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """The request payload used to be dropped, leaving only the response.
+
+    Measured: a request flagged as carrying a body comes back with
+    request_body (the sent JSON) and request_body_truncated alongside the
+    response body; a GET with no body has no request_body key; and a payload
+    the browser has since evicted lands as request_body_error, not a crash.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+
+    monkeypatch.setattr(backend, "_get", lambda session_id: _HandleWithBody())
+    payload = backend.network_get("s", "r1", tmp_path)
+    assert payload["request_body"] == '{"user":"alice","token":"s3cr3t"}'
+    assert payload["request_body_truncated"] is False
+    assert "request_body_path" not in payload
+    assert payload["body"] == '{"ok":true}'
+
+    monkeypatch.setattr(backend, "_get", lambda session_id: _HandleNoBody())
+    plain = backend.network_get("s", "r1", tmp_path)
+    assert "request_body" not in plain
+    assert "request_body_error" not in plain
+
+    monkeypatch.setattr(backend, "_get", lambda session_id: _HandleLostBody())
+    lost = backend.network_get("s", "r1", tmp_path)
+    assert "request_body" not in lost
+    assert "identifier" in lost["request_body_error"]
+
+    doc = _tool_docstring("web.network.get")
+    assert "request_body" in doc

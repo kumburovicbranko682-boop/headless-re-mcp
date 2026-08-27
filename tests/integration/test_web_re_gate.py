@@ -29,10 +29,13 @@ _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
 # not just the top document a data: URL would give.
 _LOCAL_APP_JS = b"window.__probe = function () { return 42; };\nconsole.log('app-loaded');\n"
 _LOCAL_DATA_JSON = b'{"marker":"webre-gate","n":123}'
+_LOCAL_POST_BODY = '{"user":"alice","token":"s3cr3t"}'
 _LOCAL_PAGE = (
     b"<!doctype html><html><head><title>gate-local</title>"
     b'<script src="/app.js"></script>'
-    b"<script>fetch('/data.json').then(r=>r.json()).then(j=>console.log('got',j.marker));</script>"
+    b"<script>fetch('/data.json').then(r=>r.json()).then(j=>console.log('got',j.marker));"
+    b"fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},"
+    b"body:JSON.stringify({user:'alice',token:'s3cr3t'})}).then(r=>r.text());</script>"
     b"</head><body>hello</body></html>"
 )
 
@@ -55,6 +58,16 @@ def _local_site() -> Iterator[str]:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            length = int(self.headers.get("Content-Length", "0"))
+            self.rfile.read(length)
+            reply = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
 
     server = HTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -212,6 +225,23 @@ def test_web_cdp_captures_network_and_script_source() -> None:
             body = service.web_network_get(session_id, request["requestId"])
             assert body.ok, body.error
             assert body.data["body"] == _LOCAL_DATA_JSON.decode("utf-8")
+
+            # The POST payload the page sent is what an API reverser is after;
+            # assert network_get hands back the request body, not just responses.
+            def _login_request() -> dict[str, Any] | None:
+                listing = service.web_network_list(session_id, limit=1000)
+                assert listing.ok, listing.error
+                for candidate in listing.data["requests"]:
+                    if str(candidate.get("url", "")).endswith("/api/login"):
+                        return candidate
+                return None
+
+            login = _poll(_login_request)
+            assert login is not None, "the POST /api/login request was never captured"
+            posted = service.web_network_get(session_id, login["requestId"])
+            assert posted.ok, posted.error
+            assert posted.data["method"] == "POST"
+            assert posted.data.get("request_body") == _LOCAL_POST_BODY
         finally:
             service.close_all()
 

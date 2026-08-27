@@ -399,6 +399,11 @@ class WebBackend:
                 "status": None,
                 "mimeType": None,
             }
+            # The body itself is fetched on demand in network_get (it can be
+            # large, and there are up to _MAX_REQUESTS of these); record only
+            # that one exists so the fetch is not attempted on plain GETs.
+            if req.get("hasPostData") or req.get("postData") is not None:
+                entry["has_request_body"] = True
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
             with handle.lock:
@@ -556,6 +561,31 @@ class WebBackend:
         if spill is not None:
             result["body_path"] = str(spill)
         result["base64_encoded"] = base64_encoded
+        # The request payload (an XHR/fetch JSON body, a form POST) is often the
+        # point of the capture; fetch it too when the request carried one, inline
+        # when small and spilled when large, mirroring the response body.
+        if entry.get("has_request_body"):
+            try:
+                sent = self._runner(handle).call(
+                    lambda: handle.cdp.send(
+                        "Network.getRequestPostData", {"requestId": request_id}
+                    )
+                )
+                req_body = sent.get("postData", "")
+                if not isinstance(req_body, str):
+                    req_body = str(req_body)
+                r_inline, r_spill, r_cut = _spill_text(
+                    req_body,
+                    artifact_dir=artifact_dir,
+                    filename=f"reqbody-{uuid4().hex}.bin",
+                    kind="request body",
+                )
+                result["request_body"] = r_inline
+                result["request_body_truncated"] = r_cut
+                if r_spill is not None:
+                    result["request_body_path"] = str(r_spill)
+            except Exception as exc:  # noqa: BLE001 - a missing body is not fatal
+                result["request_body_error"] = str(exc)
         return result
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:

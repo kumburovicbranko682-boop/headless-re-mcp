@@ -79,12 +79,14 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
-        """Fetch one request's response body (large bodies spill to an artifact).
+        """Fetch one request's bodies (large bodies spill to an artifact).
 
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
-        not truncated. A body over the capture cap is refused rather than
-        written to disk.
+        not truncated. When the request carried a payload (an XHR/fetch body, a
+        form POST) it comes back as request_body, with request_body_truncated
+        and request_body_path following the same rules; request_body_error
+        replaces it when the browser no longer retains the payload.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 

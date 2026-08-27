@@ -132,16 +132,20 @@ class WebAnalysisMixin:
     def web_network_get(self, session_id: str, request_id: str) -> Result[JsonObject]:
         try:
             data = self._web.network_get(session_id, request_id, self._web_artifact_dir(session_id))
-            spill = data.get("body_path")
-            if isinstance(spill, str):
-                data = _register_capture(
-                    self,
-                    session_id,
-                    Path(spill),
-                    kind="web_response_body",
-                    source="web.network.get",
-                    payload=data,
-                )
+            for spill_key, kind in (
+                ("body_path", "web_response_body"),
+                ("request_body_path", "web_request_body"),
+            ):
+                spill = data.get(spill_key)
+                if isinstance(spill, str):
+                    data = _register_capture(
+                        self,
+                        session_id,
+                        Path(spill),
+                        kind=kind,
+                        source="web.network.get",
+                        payload=data,
+                    )
             return _success(data, session_id=session_id, backend="web")
         except WebError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
