@@ -311,6 +311,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「已 bind 但从不 listen」的回环端口（内核直接拒连）发一次请求，断言该 flow 被标 `failed`、带非空 `error`、
   `status` 为 null、且 `flow.get` 如实回报失败（缺 mitmproxy 时 skip≠pass）；单测直接驱动 `error`，覆盖新建失败行、
   `flow.get` 透出失败、以及「响应后再报错只标注不重复建行」。
+- **`web.network.get` 把二进制响应体当基64文本落盘，`body_path` 里根本不是那份资源**。CDP 的
+  `Network.getResponseBody` 对图片/字体/wasm/protobuf/任何 gzip 或非文本响应回 `base64Encoded=true`、`body`
+  是基64字符串——过去代码只把这串基64当普通文本走 `_spill_text` 写进 `body-*.bin`，于是 `body_path` 存的是基64、
+  不是解码后的字节：谁读回它去存图、解 protobuf、把模块喂给 `wasm.*`，拿到的都是错的（与早先修掉的 wasm bytecode
+  同类问题）。现在 `base64_encoded` 为真时先 `b64decode` 再按**字节**落盘（复用 `_spill_bytes`，同 wasm 模块处理），
+  `body_path` 是解码后的真实字节、`body_bytes` 是其长度、`body` 置空（本就不是文本）、另给有界的 `body_base64`
+  预览（`body_base64_truncated` 标记裁剪）；解码失败则 `body` 空并记 `body_error`。文本响应路径不变。活体门用本地
+  站点发一个 `image/png` 响应，断言 `web.network.get` 的 `body_path` 读回的字节与原图逐字节相等、`body_bytes` 正确、
+  `body` 为空（缺浏览器时 skip≠pass）；单测直接驱动 base64 响应，校验落盘字节、`body_bytes` 与基64预览可解回原字节。
 - **`apk.components` 只给四类组件的名字清单，攻击面无从判断**。活动/服务/接收器/提供者过去只回名字，
   分析者拿到列表却看不出哪些能被其它应用触达——而「哪些组件对外暴露」正是 Android 攻击面三连问的第一问。
   过去只能自己再去拉一遍 `apk.manifest` 原文、手动数 `android:exported` 与 `<intent-filter>`。现在

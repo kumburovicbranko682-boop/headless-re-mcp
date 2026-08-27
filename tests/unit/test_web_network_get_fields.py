@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -138,3 +139,53 @@ def test_web_network_get_returns_the_request_body(tmp_path: Path, monkeypatch: A
 
     doc = _tool_docstring("web.network.get")
     assert "request_body" in doc
+
+
+_BINARY_BODY = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
+
+
+class _CdpBinaryBody:
+    """Serves a binary response the way CDP does: base64 text + a flag."""
+
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "body": base64.b64encode(_BINARY_BODY).decode("ascii"),
+            "base64Encoded": True,
+        }
+
+
+class _HandleBinary:
+    lock = Lock()
+    requests = {"r1": {"requestId": "r1", "url": "https://x/logo.png"}}
+    cdp = _CdpBinaryBody()
+
+
+def test_web_network_get_decodes_a_binary_response_to_real_bytes(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A base64 response must land as the resource, not as base64 text.
+
+    body_path used to hold the base64 string CDP returned, so saving an image
+    or feeding a wasm/protobuf body downstream got the wrong bytes. Now the
+    spilled file is the decoded payload, body_bytes is its true length, and a
+    bounded base64 preview stands in for the (non-text) body.
+    """
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    monkeypatch.setattr(backend, "_get", lambda session_id: _HandleBinary())
+
+    payload = backend.network_get("s", "r1", tmp_path)
+    assert payload["base64_encoded"] is True
+    assert payload["body"] == ""
+    assert payload["body_bytes"] == len(_BINARY_BODY)
+    assert payload["body_base64_truncated"] is False
+    # The preview decodes back to the head of the resource...
+    assert base64.b64decode(payload["body_base64"]) == _BINARY_BODY
+    # ...and the spilled artifact is the decoded bytes, not base64 text.
+    spilled = Path(str(payload["body_path"]))
+    assert spilled.is_file()
+    assert spilled.read_bytes() == _BINARY_BODY
+
+    doc = _tool_docstring("web.network.get")
+    assert "body_bytes" in doc
+    assert "body_base64" in doc

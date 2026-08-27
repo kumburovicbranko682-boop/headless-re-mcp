@@ -33,10 +33,14 @@ _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
 _LOCAL_APP_JS = b"window.__probe = function () { return 42; };\nconsole.log('app-loaded');\n"
 _LOCAL_DATA_JSON = b'{"marker":"webre-gate","n":123}'
 _LOCAL_POST_BODY = '{"user":"alice","token":"s3cr3t"}'
+# A tiny non-text response (PNG magic + a byte run including 0x89/0x1a/0x00) so
+# CDP reports it base64Encoded and network.get has to decode it back to bytes.
+_LOCAL_PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
 _LOCAL_PAGE = (
     b"<!doctype html><html><head><title>gate-local</title>"
     b'<script src="/app.js"></script>'
     b"<script>fetch('/data.json').then(r=>r.json()).then(j=>console.log('got',j.marker));"
+    b"fetch('/logo.png').then(r=>r.arrayBuffer());"
     b"fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},"
     b"body:JSON.stringify({user:'alice',token:'s3cr3t'})}).then(r=>r.text());</script>"
     b"</head><body>hello</body></html>"
@@ -56,6 +60,8 @@ def _local_site() -> Iterator[str]:
             elif self.path.startswith("/data.json"):
                 body, ctype = _LOCAL_DATA_JSON, "application/json"
                 marker = True
+            elif self.path.startswith("/logo.png"):
+                body, ctype = _LOCAL_PNG, "image/png"
             else:
                 body, ctype = _LOCAL_PAGE, "text/html"
             self.send_response(200)
@@ -307,6 +313,28 @@ def test_web_cdp_captures_network_and_script_source() -> None:
                 str(k).lower(): str(v) for k, v in posted.data.get("request_headers", {}).items()
             }
             assert "json" in req_headers.get("content-type", "")
+
+            # A binary response (image/png) comes over CDP as base64 text; the
+            # captured body_path must be the decoded PNG bytes, not the base64
+            # string -- otherwise saving or re-analysing the resource is broken.
+            def _png_request() -> dict[str, Any] | None:
+                listing = service.web_network_list(session_id, limit=1000)
+                assert listing.ok, listing.error
+                for candidate in listing.data["requests"]:
+                    if str(candidate.get("url", "")).endswith("/logo.png"):
+                        return candidate
+                return None
+
+            png = _poll(_png_request)
+            assert png is not None, "the /logo.png request was never captured"
+            got = service.web_network_get(session_id, png["requestId"])
+            assert got.ok, got.error
+            assert got.data["base64_encoded"] is True
+            assert got.data["body"] == ""
+            assert got.data["body_bytes"] == len(_LOCAL_PNG)
+            png_path = got.data.get("body_path")
+            assert isinstance(png_path, str), "a binary body must always spill to a file"
+            assert Path(png_path).read_bytes() == _LOCAL_PNG
         finally:
             service.close_all()
 

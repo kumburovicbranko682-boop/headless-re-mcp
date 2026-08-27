@@ -694,18 +694,50 @@ class WebBackend:
             return {**entry, "body_error": str(exc)}
         if not isinstance(body, str):
             body = str(body)
-        inline, spill, cut = _spill_text(
-            body,
-            artifact_dir=artifact_dir,
-            filename=f"body-{uuid4().hex}.bin",
-            kind="response body",
-        )
         result = dict(entry)
-        result["body"] = inline
-        result["body_truncated"] = cut
-        if spill is not None:
-            result["body_path"] = str(spill)
         result["base64_encoded"] = base64_encoded
+        if base64_encoded:
+            # CDP returns a binary response (image, font, wasm, protobuf, any
+            # gzip'd or non-text body) as base64 text. Spilling that text into
+            # a .bin file -- as this did -- meant body_path held base64, not the
+            # resource: anything that read it back (save the image, parse the
+            # protobuf, feed the module to wasm.*) got the wrong bytes. Decode
+            # first and spill the *bytes*, mirroring the wasm-module handling.
+            try:
+                raw = base64.b64decode(body, validate=False)
+            except (ValueError, binascii.Error) as exc:
+                result["body"] = ""
+                result["body_truncated"] = False
+                result["body_error"] = f"failed to decode base64 body: {exc}"
+            else:
+                size, out = _spill_bytes(
+                    raw,
+                    artifact_dir=artifact_dir,
+                    filename=f"body-{uuid4().hex}.bin",
+                    kind="response body",
+                )
+                result["body_path"] = str(out)
+                result["body_bytes"] = size
+                # A bounded base64 preview keeps a small binary inspectable
+                # inline without a second read; body itself stays empty because
+                # the payload is not text.
+                result["body"] = ""
+                result["body_base64"] = base64.b64encode(
+                    raw[:_MAX_INLINE_BODY]
+                ).decode("ascii")
+                result["body_base64_truncated"] = size > _MAX_INLINE_BODY
+                result["body_truncated"] = False
+        else:
+            inline, spill, cut = _spill_text(
+                body,
+                artifact_dir=artifact_dir,
+                filename=f"body-{uuid4().hex}.bin",
+                kind="response body",
+            )
+            result["body"] = inline
+            result["body_truncated"] = cut
+            if spill is not None:
+                result["body_path"] = str(spill)
         # The request payload (an XHR/fetch JSON body, a form POST) is often the
         # point of the capture; fetch it too when the request carried one, inline
         # when small and spilled when large, mirroring the response body.

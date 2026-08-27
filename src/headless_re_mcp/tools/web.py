@@ -89,10 +89,15 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
-        not truncated. When the request carried a payload (an XHR/fetch body, a
-        form POST) it comes back as request_body, with request_body_truncated
-        and request_body_path following the same rules; request_body_error
-        replaces it when the browser no longer retains the payload.
+        not truncated. A binary response (base64_encoded true: image, font,
+        wasm, protobuf, any gzip'd body) is decoded to its real bytes: body is
+        empty, body_path always holds the decoded bytes (not base64), body_bytes
+        is the decoded length, and body_base64 carries a bounded base64 preview
+        (body_base64_truncated when the preview was cut). When the request
+        carried a payload (an XHR/fetch body, a form POST) it comes back as
+        request_body, with request_body_truncated and request_body_path
+        following the same rules; request_body_error replaces it when the
+        browser no longer retains the payload.
 
         Both sides' headers come back as request_headers and response_headers
         (bounded maps: auth, cookies, content type, CORS), the metadata an API
