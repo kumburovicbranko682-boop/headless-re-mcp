@@ -947,6 +947,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   或坏 pass 伪造不出来;并新增 `js.unpack_bundle` 的端到端 gate,断言 webcrack 确实写出了
   `deobfuscated.js`(正是 `--force` 修复的 live 守卫)。另加静态单测钉住解包命令必带 `--force`,让没装
   webcrack 的 CI 也能挡住回归。
+- **jadx 反编译路径补上真实 live 覆盖**。`apk.export_sources`/`apk.decompile` 此前无 live 覆盖——Android
+  RE gate 只造一个合成 APK、断言结构化降级,于是「jadx 改了输出布局」这类漂移抓不到:客户端从
+  `<out>/sources/...` 读反编译出的 Java,并把类名映射成 `sources/<包>/<类>.java`,两处都是只有真跑才验证得了
+  的布局约定。jadx 除 Dalvik 外也吃 JVM 字节码,故新增 gate 用 javac 编一个极小的 `com.example.Sample`、打成
+  jar 后交给 jadx:`export_sources` 必须列出 `sources/com/example/Sample.java`,`decompile("com.example.Sample")`
+  必须回出该类源码(含一个原样保留的标记串,选错文件或空读都伪造不出来,顺带钉住类名→路径映射)。gate 像
+  服务一样从 settings/PATH 解析 jadx,缺 jadx 或缺 JDK 时干净 skip(skip≠pass)。已在 jadx 1.5.6 + JDK 21 实测
+  通过,`sources/` 布局成立,故客户端无需改动。
 
 ### 变更（Android 后端清理）
 
