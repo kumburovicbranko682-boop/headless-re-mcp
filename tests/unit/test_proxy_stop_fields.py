@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Any
 
 from headless_re_mcp.backends.proxy.client import ProxyBackend, _ProxyInstance
 from headless_re_mcp.tools.proxy import build_proxy_tools
