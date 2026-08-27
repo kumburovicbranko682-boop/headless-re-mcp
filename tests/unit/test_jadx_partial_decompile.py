@@ -12,6 +12,7 @@ run that wrote nothing still raises.
 from __future__ import annotations
 
 import ast
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,10 @@ def _jadx(tmp_path: Path) -> tuple[JadxClient, Path, Path]:
     tool = tmp_path / "jadx"
     tool.write_text("#!/bin/sh\n", encoding="utf-8")
     apk = tmp_path / "app.apk"
-    apk.write_bytes(b"PK\x03\x04")
+    # A real (tiny) zip: _run now refuses a non-zip APK before the JVM launch,
+    # so the bare "PK\x03\x04" magic no longer stands in for an archive here.
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"manifest")
     out = tmp_path / "out"
     return JadxClient(tool), apk, out
 
@@ -145,6 +149,34 @@ def test_surfaced_stderr_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         payload = client.export_sources(apk, out)
 
     assert payload["stderr"] == "e" * 16
+
+
+def test_export_sources_refuses_a_non_zip_apk_before_launching_jadx(tmp_path: Path) -> None:
+    """A non-zip APK is invalid_params, refused before the JVM starts.
+
+    jadx only ever decompiles an APK-kind session target, but the on-disk file
+    is not re-checked against the session sha before the call, so a swapped or
+    suffix-only-detected file can reach jadx as a non-zip. Handed one it still
+    started a JVM and failed with "jadx produced no sources"; the precheck turns
+    that into a precise invalid_params up front, the same guard apktool applies.
+    """
+    tool = tmp_path / "jadx"
+    tool.write_text("#!/bin/sh\n", encoding="utf-8")
+    apk = tmp_path / "app.apk"
+    apk.write_bytes(b"this is a truncated download, not a zip archive")
+    out = tmp_path / "out"
+    client = JadxClient(tool)
+
+    def _must_not_run(cmd: list[str], **kwargs: Any) -> Completed:
+        raise AssertionError("run_bounded ran for a non-zip APK")
+
+    with (
+        patch("headless_re_mcp.backends.jadx.client.run_bounded", _must_not_run),
+        pytest.raises(JadxError) as caught,
+    ):
+        client.export_sources(apk, out)
+    assert caught.value.code == "invalid_params"
+    assert not out.exists()
 
 
 def test_docstrings_name_the_partial_failure_fields() -> None:

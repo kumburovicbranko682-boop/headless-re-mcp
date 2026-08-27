@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -199,6 +200,22 @@ class JadxClient:
             raise JadxError("capability_unavailable", "jadx is not configured")
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
+        # Refuse a non-zip APK before launching the JVM. jadx here only ever
+        # decompiles an APK-kind session target, but the on-disk file is not
+        # re-checked against the session sha before this call, so a file swapped
+        # after session creation (or an APK detected by suffix alone) can reach
+        # jadx as a non-zip. Handed one, jadx still starts a JVM and only then
+        # fails -- surfacing here as "jadx produced no sources" after paying the
+        # startup cost. is_zipfile reads only the archive tail (no
+        # decompression, so no zip-bomb exposure) and turns that into a precise
+        # invalid_params up front, the same guard apktool d/apksigner apply to
+        # the same session APK.
+        if not zipfile.is_zipfile(apk):
+            raise JadxError(
+                "invalid_params",
+                "input is not a valid APK (not a zip archive)",
+                path=str(apk),
+            )
         out_dir.mkdir(parents=True, exist_ok=True)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [str(self.executable), *extra, str(apk)]
