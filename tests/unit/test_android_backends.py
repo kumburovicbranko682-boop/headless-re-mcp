@@ -322,10 +322,39 @@ class TestAdbArgumentValidation:
     def test_valid_package_names_pass(self, package: str) -> None:
         assert _check_package(package) == package
 
-    def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
+    def test_missing_adbutils_degrades_instead_of_raising_import_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The degradation guard matters most where adbutils *is* installed (the
+        # CI android lane), so skipping there left it untested exactly where it
+        # would regress. Simulate the absent module instead, the way the frida
+        # authorization tests do, so the contract runs unconditionally: a
+        # missing adbutils yields capability_unavailable, never an ImportError.
         backend = AdbBackend()
-        if backend.available:
-            pytest.skip("adbutils installed — degradation path not exercised (skip != pass)")
+        monkeypatch.setattr(backend, "_available", False)
+        monkeypatch.setattr(backend, "_adbutils", None)
+        with pytest.raises(AdbError) as info:
+            backend.list_devices()
+        assert info.value.code == "capability_unavailable"
+
+    def test_adbutils_import_failure_degrades_at_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Prove the __init__ path itself: an adbutils whose import raises must
+        # leave the backend unavailable rather than propagating, so readiness is
+        # never blocked by a broken optional dependency.
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _boom(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "adbutils":
+                raise ImportError("simulated missing adbutils")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _boom)
+        backend = AdbBackend()
+        assert backend.available is False
         with pytest.raises(AdbError) as info:
             backend.list_devices()
         assert info.value.code == "capability_unavailable"
