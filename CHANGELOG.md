@@ -70,6 +70,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（provider 快照式并行工具调用因缺 index 而挤成一条、参数拼接成非法 JSON 使整轮失败）
+
+- OpenAI 兼容 provider 在流式装配工具调用时用 `int(raw_call.get("index", 0))` 定位分片。可
+  `index` 是「流式增量」独有的字段：当 provider 把整轮助手消息一次性放进 `message.tool_calls`
+  快照（不少代理/模型对并行工具调用就是这么发的）时并不带 `index`，于是每一条并行调用都落到 0 号
+  槽——id 被拼成 `c1c2`、name 拼成 `ab`、arguments 拼成 `{...}{...}` 这种前后两个对象的非法
+  JSON，最终在 `json.loads` 处抛 `provider emitted invalid tool arguments at index 0`，把整轮
+  （乃至整个 run）打挂。此前的快照测试只覆盖了「单条且带 index」，没暴露这个并行路径。现当某条工具
+  调用没有整型 `index` 时按它在列表中的位置兜底分槽：并行快照的多条调用因此各占一槽互不污染；而单条
+  增量续传（每个 chunk 只含一条、位置恒为 0）仍归并到 0 号槽、行为不变；显式 `index` 始终优先。
+  新增回归覆盖「快照里两条并行调用、均无 index」应还原成两条独立、参数正确的工具调用。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

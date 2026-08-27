@@ -268,6 +268,67 @@ async def test_stream_counts_reasoning_usage_and_message_snapshots(
 
 
 @pytest.mark.asyncio
+async def test_parallel_snapshot_tool_calls_without_index_stay_separate(
+    tmp_path: Path,
+) -> None:
+    """A message snapshot carrying parallel calls must not collapse into one.
+
+    ``index`` is a streaming-delta-only field; a provider that delivers the
+    whole assistant turn in one ``message.tool_calls`` array omits it. The old
+    ``get("index", 0)`` then keyed every parallel call to slot 0, splicing their
+    ids/names and concatenating their arguments into ``{...}{...}`` -- invalid
+    JSON that failed the entire turn with "invalid tool arguments at index 0".
+    """
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        chunk = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "type": "function",
+                                "function": {
+                                    "name": "static.functions",
+                                    "arguments": {"session_id": "s"},
+                                },
+                            },
+                            {
+                                "id": "c2",
+                                "type": "function",
+                                "function": {
+                                    "name": "static.strings",
+                                    "arguments": {"session_id": "s"},
+                                },
+                            },
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+        body = f"data: {json.dumps(chunk, separators=(',', ':'))}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    calls = events[-1].tool_calls
+    assert [(call.id, call.name, call.arguments) for call in calls] == [
+        ("c1", "static.functions", {"session_id": "s"}),
+        ("c2", "static.strings", {"session_id": "s"}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_json_lines_without_sse_prefix_still_stream(tmp_path: Path) -> None:
     del tmp_path
 

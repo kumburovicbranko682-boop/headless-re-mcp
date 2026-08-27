@@ -134,10 +134,25 @@ def _ingest_tool_calls(
     if not isinstance(calls, list):
         return tool_buffer_bytes, []
     pieces: list[str] = []
+    auto_index = 0
     for raw_call in calls:
         if not isinstance(raw_call, dict):
             continue
-        index = int(raw_call.get("index", 0))
+        raw_index = raw_call.get("index")
+        # ``index`` is a streaming-delta-only field. A ``message.tool_calls``
+        # snapshot -- what a provider sends when it delivers the whole assistant
+        # turn in one chunk instead of incrementally -- omits it, so every
+        # parallel call defaulted to 0, concatenated into one fragment and came
+        # back as a single tool call with a spliced id/name and invalid (two
+        # objects back to back) arguments, failing the whole turn. Fall back to
+        # the call's position so parallel snapshot calls keep distinct slots;
+        # a single-element continuation chunk still lands on position 0 and
+        # accumulates as before, and an explicit index always wins.
+        if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+            index = auto_index
+        else:
+            index = raw_index
+        auto_index += 1
         if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
             raise ValueError(
                 "provider tool-call count exceeded "
