@@ -803,6 +803,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `ok`(单个 bool,不撑破预算):截断的成功仍报成功、截断的失败仍报失败。补测:截断的成功/失败各自保留
   `ok`、非信封负载不无中生有出 `ok`、orchestrator 的 `tool.completed` 对超限成功记 `ok=True`,并把 MCP
   预算测里那条精确字节断言更新到 16494。
+- **provider 因 token 上限截断的最终答复被当成完整答复**。provider 一直把 `finish_reason` 透传到
+  `completed` 事件(`finish_reason="length"` 表示模型被输出 token 上限从中途掐断),但 orchestrator
+  从不读它:一段被 token 上限截断的最终答复会和自然收尾一样被记成干净的 `run.completed`。这正是
+  "provider 流没有 completed 事件就失败"那道护栏要拦的同一种谎——把半截工作报成完成。现在 orchestrator
+  捕获 `finish_reason`:`llm.completed` 事件带上它;当最终答复无工具调用且 `finish_reason=="length"` 时,
+  仍保留这段半截文本并照常收尾(不丢答复、mission 因目标未达而自然续跑),但 `run.completed` 带
+  `finish_reason="length"` 与 `truncated=True`,让审计与监控台看得出这段答复被掐断。补测:length 截断的
+  最终答复保留文本、`run.completed`/`llm.completed` 都带截断信号,自然收尾则无 `truncated` 标志。
 - **Cursor 下划线别名解析 + 全表面无碰撞**：Cursor 以 `static_functions` 调用而 catalog 注册的是
   `static.functions`,`install_cursor_underscore_aliases` 在 `get_tool` 处解析且不新增 ListTools 项。
   它用普通 dict 建下划线→点名映射,两个折叠成同一下划线形的点名会互相静默覆盖(OpenAI 桥接对这类

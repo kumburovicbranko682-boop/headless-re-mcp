@@ -529,6 +529,77 @@ async def test_a_provider_stream_that_ends_without_completion_fails_the_run(
 
 
 @pytest.mark.asyncio
+async def test_a_length_capped_final_answer_is_recorded_as_truncated(
+    tmp_path: Path,
+) -> None:
+    """A final answer cut off at the provider's token cap is not the whole one.
+
+    finish_reason="length" means the provider stopped the model mid-answer. The
+    run did end and the partial text is worth keeping, but recording it as a
+    plain completion reads a cut-off answer as finished work -- the same lie the
+    missing-completed-event guard refuses. The terminal event has to say so.
+    """
+
+    class LengthCappedProvider(FakeProvider):
+        async def _events(self) -> AsyncIterator[ProviderEvent]:
+            yield ProviderEvent("text_delta", text="half a thou")
+            yield ProviderEvent("completed", tool_calls=(), finish_reason="length")
+
+    store = AgentStore(tmp_path / "length.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "explain at length")
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path / "length-config"),
+        provider_factory=lambda _: LengthCappedProvider([]),
+    )
+
+    run = await runner.start_run(thread.id)
+    status = await _wait_status(store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED})
+    assert status is RunStatus.COMPLETED
+
+    # The partial answer is kept, not discarded.
+    assistants = [
+        message.content
+        for message in store.list_messages(thread.id)
+        if message.role == "assistant"
+    ]
+    assert assistants == ["half a thou"]
+
+    events = store.list_events(run["id"])
+    completed = next(event for event in events if event.type == "run.completed")
+    assert completed.data["finish_reason"] == "length"
+    assert completed.data["truncated"] is True
+    llm_completed = next(event for event in events if event.type == "llm.completed")
+    assert llm_completed.data["finish_reason"] == "length"
+
+
+@pytest.mark.asyncio
+async def test_a_natural_stop_completes_without_a_truncation_flag(
+    tmp_path: Path,
+) -> None:
+    """The ordinary case must stay clean: no finish_reason=length, no flag."""
+    store = AgentStore(tmp_path / "natural.db")
+    thread = store.create_thread()
+    store.add_message(thread.id, "user", "hi")
+    runner = AgentOrchestrator(
+        store,
+        CommandCatalog([_single_spec(lambda: {"ok": True})]),
+        _configs(tmp_path / "natural-config"),
+        provider_factory=lambda _: FakeProvider([()]),
+    )
+    run = await runner.start_run(thread.id)
+    assert await _wait_status(
+        store, run["id"], {RunStatus.COMPLETED, RunStatus.FAILED}
+    ) is RunStatus.COMPLETED
+    completed = next(
+        event for event in store.list_events(run["id"]) if event.type == "run.completed"
+    )
+    assert "truncated" not in completed.data
+
+
+@pytest.mark.asyncio
 async def test_max_rounds_and_oversized_tool_result_are_bounded(tmp_path: Path) -> None:
     calls = [
         (ProviderToolCall(f"call-{index}", "test.tool", {}),)

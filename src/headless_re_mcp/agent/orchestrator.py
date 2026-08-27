@@ -404,6 +404,7 @@ class AgentOrchestrator:
             pending_reasoning: list[str] = []
             pending_reasoning_chars = 0
             completed_calls: tuple[ProviderToolCall, ...] = ()
+            finish_reason: str | None = None
             stream_completed = False
             if self._check_cancelled(run_id):
                 await self._finish_cancel(run_id)
@@ -454,13 +455,20 @@ class AgentOrchestrator:
                 elif event.type == "completed":
                     stream_completed = True
                     completed_calls = event.tool_calls
+                    finish_reason = event.finish_reason
                     if event.output_tokens is not None:
                         meter.set_provider_tokens(event.output_tokens)
             self._flush_message_delta(run_id, pending_delta)
             self._flush_reasoning_delta(run_id, pending_reasoning)
             meter.flush(force=True)
             self.store.append_event(
-                run_id, "llm.completed", {"round": round_index + 1, "tokens": meter.tokens}
+                run_id,
+                "llm.completed",
+                {
+                    "round": round_index + 1,
+                    "tokens": meter.tokens,
+                    "finish_reason": finish_reason,
+                },
             )
             if not stream_completed:
                 # A clean iterator EOF is not proof that the remote answer was
@@ -477,8 +485,17 @@ class AgentOrchestrator:
                 await self._finish_failure(run_id, RUN_ROUNDS_EXHAUSTED, event="run.failed")
                 return
             if not completed_calls:
+                completion: JsonObject = {"status": RunStatus.COMPLETED.value}
+                if finish_reason == "length":
+                    # The provider hit its output-token cap mid-answer. The run
+                    # did end and the partial text is worth keeping, but filing
+                    # it as a plain completion reads a cut-off answer as the whole
+                    # one -- the same thing the missing-completed-event guard
+                    # above refuses. Say so in the terminal event.
+                    completion["finish_reason"] = finish_reason
+                    completion["truncated"] = True
                 self.store.transition(run_id, RunStatus.COMPLETED)
-                self.store.append_event(run_id, "run.completed", {"status": RunStatus.COMPLETED.value})
+                self.store.append_event(run_id, "run.completed", completion)
                 return
             assistant_tool_calls = []
             for call in completed_calls:
