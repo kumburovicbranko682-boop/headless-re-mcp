@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（监控台事件流按 seq 排序会把新一轮 run 插进上一轮里）
+
+- `webui` 的 `agent/state.ts` reducer 收到每个 run 事件后，按 `a.seq - b.seq` 对累积的
+  `state.events` 排序。但 `seq` 是**每轮 run 从 1 重新计数**的，只在一轮内单调。同一线程里连着
+  跑第二轮时（既有测试 “does not drop earlier run events” 已确认事件跨轮累积），纯 seq 排序会把
+  第二轮的 `1..n` 和第一轮的交错成 `r1#1, r2#1, r1#2, r2#2`。`RunProgress.computeRunMetrics`
+  是按数组顺序配对 llm/tool 跨度、计轮次与步数的状态机，交错后指标算乱；200 条上限也在按 seq 排完
+  后 `slice(-200)`，跨轮时留下的是任意子集而非最近若干轮。
+- 现改为先按每个 `run_id` **首次出现的次序**分组（run 是一轮接一轮跑的，回放与实时流都保证一轮的
+  事件先于下一轮到达），再按 run 内的 `seq` 排。一轮内乱序到达仍被 seq 归位（原 “orders replayed
+  events” 测试不变），迟到的旧轮事件也会落回自己那一轮而不是排到队尾。
+- 新增两条 reducer 直测：两轮事件不再被 seq 交错、迟到的旧轮 `seq=1` 落回本轮组内；两条在修复前
+  分别以交错顺序失败。前端 65 条测试与 `tsc --noEmit` 均通过。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

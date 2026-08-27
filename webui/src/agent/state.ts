@@ -79,7 +79,22 @@ export function reducer(state: AgentState, action: AgentAction): AgentState {
     case "approval_done": return { ...state, approvals: state.approvals.filter((item) => item.tool_call_id !== action.toolCallId) };
     case "event": {
       if (state.events.some((item) => item.seq === action.event.seq && item.run_id === action.event.run_id)) return state;
-      const events = capEvents([...state.events, action.event].sort((a, b) => a.seq - b.seq));
+      // seq restarts at 1 for every run, so it orders events only *within* one
+      // run. Runs execute one after another, and both the history replay and the
+      // live stream deliver a run's events before the next run's, so order runs
+      // by when each first appears and then by seq inside a run. Sorting by seq
+      // alone interleaved a new run's 1..n with the previous run's, which
+      // corrupts the RunProgress metrics (it pairs llm/tool spans by array order)
+      // and makes the 200-event cap keep an arbitrary cross-run subset.
+      const merged = [...state.events, action.event];
+      const runOrder = new Map<string, number>();
+      for (const item of merged) if (!runOrder.has(item.run_id)) runOrder.set(item.run_id, runOrder.size);
+      const events = capEvents(
+        merged.sort((a, b) => {
+          const runDelta = (runOrder.get(a.run_id) ?? 0) - (runOrder.get(b.run_id) ?? 0);
+          return runDelta !== 0 ? runDelta : a.seq - b.seq;
+        }),
+      );
       if (action.event.type === "message.delta") {
         return { ...state, events, streamingText: state.streamingText + String(action.event.data.delta ?? "") };
       }

@@ -34,6 +34,41 @@ describe("agent reducer", () => {
     expect(state.events).toHaveLength(1);
     expect(state.activeRun).toBe("r2");
   });
+  it("keeps a new run's events after the previous run's, not interleaved by seq", () => {
+    // seq restarts at 1 per run, so a plain seq sort would order these as
+    // r1#1, r2#1, r1#2, r2#2 -- interleaving the second run into the first and
+    // corrupting the ordered walk RunProgress does over the accumulated list.
+    const events = [
+      { run_id: "r1", seq: 1, type: "run.started", data: {}, created_at: "" },
+      { run_id: "r1", seq: 2, type: "llm.started", data: { round: 1 }, created_at: "" },
+      { run_id: "r2", seq: 1, type: "run.started", data: {}, created_at: "" },
+      { run_id: "r2", seq: 2, type: "llm.started", data: { round: 1 }, created_at: "" },
+    ];
+    let state = initialState;
+    for (const event of events) state = reducer(state, { type: "event", event });
+    expect(state.events.map((item) => `${item.run_id}#${item.seq}`)).toEqual([
+      "r1#1",
+      "r1#2",
+      "r2#1",
+      "r2#2",
+    ]);
+  });
+  it("places a late replayed event inside its own run, not at the tail", () => {
+    // A run's seq-1 arriving after a later run has begun must still sort into
+    // its own run's group by seq rather than after the newer run.
+    const arrivals = [
+      { run_id: "r1", seq: 2, type: "llm.started", data: {}, created_at: "" },
+      { run_id: "r2", seq: 1, type: "run.started", data: {}, created_at: "" },
+      { run_id: "r1", seq: 1, type: "run.started", data: {}, created_at: "" },
+    ];
+    let state = initialState;
+    for (const event of arrivals) state = reducer(state, { type: "event", event });
+    expect(state.events.map((item) => `${item.run_id}#${item.seq}`)).toEqual([
+      "r1#1",
+      "r1#2",
+      "r2#1",
+    ]);
+  });
   it("creates an approval card from a required event", () => {
     const event = { run_id: "r", seq: 3, type: "approval.required", data: { tool_call_id: "c", name: "dynamic.resume", args_sha256: "a".repeat(64), effects: ["state_change"], arguments: { session_id: "s" } }, created_at: "" };
     const state = reducer(initialState, { type: "event", event });
