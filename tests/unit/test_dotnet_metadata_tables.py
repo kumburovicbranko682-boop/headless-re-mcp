@@ -11,7 +11,11 @@ Module, TypeDef, Field, MethodDef (tiny IL body) and Assembly tables plus a
 from __future__ import annotations
 
 import struct
+import time
+import tracemalloc
 from pathlib import Path
+
+import pytest
 
 from headless_re_mcp.dotnet.clr_inspect import inspect_dotnet
 from headless_re_mcp.dotnet.metadata_enum import (
@@ -33,7 +37,7 @@ def _build_strings_heap() -> tuple[bytes, dict[str, int]]:
     return bytes(heap), indexes
 
 
-def _build_tables_stream(idx: dict[str, int]) -> bytes:
+def _build_tables_stream(idx: dict[str, int], *, typedef_declared: int = 1) -> bytes:
     tables = bytearray()
     # reserved(4), major, minor, heap_sizes (all 2-byte heap indexes), reserved
     tables += struct.pack("<IBBBB", 0, 2, 0, 0x00, 1)
@@ -41,7 +45,9 @@ def _build_tables_stream(idx: dict[str, int]) -> bytes:
         (1 << 0x00) | (1 << 0x02) | (1 << 0x04) | (1 << 0x06) | (1 << 0x0A) | (1 << 0x20)
     )
     tables += struct.pack("<QQ", valid, 0)
-    tables += struct.pack("<IIIIII", 1, 1, 1, 1, 1, 1)  # one row per present table
+    # Row counts in ascending table order; TypeDef's declared count is overridable
+    # so a crafted file can claim far more rows than the stream actually holds.
+    tables += struct.pack("<IIIIII", 1, typedef_declared, 1, 1, 1, 1)
     # Module: Generation, Name, Mvid, EncId, EncBaseId
     tables += struct.pack("<HHHHH", 0, idx["MyModule.exe"], 1, 0, 0)
     # TypeDef: Flags, Name, Namespace, Extends, FieldList, MethodList
@@ -57,9 +63,9 @@ def _build_tables_stream(idx: dict[str, int]) -> bytes:
     return bytes(tables)
 
 
-def _build_metadata_root() -> bytes:
+def _build_metadata_root(*, typedef_declared: int = 1) -> bytes:
     strings_heap, idx = _build_strings_heap()
-    tables = _build_tables_stream(idx)
+    tables = _build_tables_stream(idx, typedef_declared=typedef_declared)
     version = b"v4.0.30319\0"
     version_padded = version + b"\0" * ((4 - len(version) % 4) % 4)
     root = bytearray()
@@ -78,7 +84,7 @@ def _build_metadata_root() -> bytes:
     return bytes(root)
 
 
-def _write_clr_with_tables(path: Path) -> None:
+def _write_clr_with_tables(path: Path, *, typedef_declared: int = 1) -> None:
     """PE64 with COR20 + BSJB metadata carrying real table rows in .text."""
     image = bytearray(0x1000)
     pe_offset = 0x80
@@ -103,7 +109,7 @@ def _write_clr_with_tables(path: Path) -> None:
     struct.pack_into("<IIII", image, section + 8, 0x800, 0x1000, 0x800, 0x200)
     struct.pack_into("<I", image, section + 36, 0x60000020)
 
-    metadata = _build_metadata_root()
+    metadata = _build_metadata_root(typedef_declared=typedef_declared)
     # COR20 at file 0x300 / RVA 0x1100
     cor_off = 0x300
     struct.pack_into("<I", image, cor_off, 72)
@@ -183,3 +189,29 @@ def test_inspect_reports_module_and_assembly_names(tmp_path: Path) -> None:
     assert stats.type_count == 1
     assert stats.method_count == 1
     assert stats.field_count == 1
+
+
+@pytest.mark.parametrize("declared", [0x7FFFFFFF, 0xFFFFFFFF])
+def test_declared_typedef_rows_cannot_exceed_the_stream(declared: int, tmp_path: Path) -> None:
+    """A crafted row count must not drive unbounded materialisation.
+
+    The sibling test_metadata_hostile_tables.py mutates a real managed DLL to
+    prove `_rows_the_stream_can_hold` caps this, but it skips wherever that DLL
+    is absent (this environment included), so the DoS guard had no active test
+    here. The synthetic assembly reproduces it: a TypeDef table declaring two
+    billion rows still enumerates in bounded time and heap from a tiny file.
+    """
+    binary = tmp_path / "hostile.exe"
+    _write_clr_with_tables(binary, typedef_declared=declared)
+
+    tracemalloc.start()
+    started = time.perf_counter()
+    page = enumerate_metadata(binary, "types", limit=20)
+    elapsed = time.perf_counter() - started
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 5.0, f"{declared:#x} rows took {elapsed:.1f}s"
+    assert peak < 64 * 1024 * 1024, f"{declared:#x} rows took {peak / 1024 / 1024:.0f} MB"
+    assert page.total < 100_000, f"reported {page.total} rows from a tiny file"
+    assert len(page.items) <= 20
