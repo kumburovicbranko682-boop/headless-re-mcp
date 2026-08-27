@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（抓包线首次有真流量的录制/回放/HAR 实测 Gate）
+
+- 抓包（mitmproxy）此前的现场 gate 只证明**进程契约**——start 绑定端口、stop 释放端口、占用端口
+  拒绝启动——全程一个字节都没经过代理，`flow_count` 恒为 0，于是代理存在的意义（把一次交换录下来
+  再交回去）从未被实测。新增 `tests/integration/test_proxy_capture_gate.py` 驱动真实工具面
+  （`proxy.start` → `proxy.flows` → `proxy.flow.get` → `proxy.export_har` → `proxy.replay`），
+  对一个临时本地源站发一次经代理的 POST，逐项断言抓包确实握着发出去的请求与收回来的响应：
+  摘要按真实 method/完整 URL/上游状态/内容类型列出该流；`flow.get` 逐字节还原被 POST 的请求体
+  与源站返回的响应体（证明抓的是整次交换，而非只有头部草图）；HAR 导出把该流作为真实条目带出；
+  `replay` 重新发出被抓的请求、源站逐字节再收到一次；上游拒连的交换也照样被记录，标为 error 且
+  status 为 null——因为「这个域根本不应答」本身就是发现。用明文 HTTP，代理不拦截 TLS，故 gate
+  无需任何 CA 信任配置；缺 mitmproxy 时如实跳过（skip 不等于 pass）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
