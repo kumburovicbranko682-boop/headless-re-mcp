@@ -646,6 +646,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`device.install` / `uninstall` / `force_stop` 同样把 adb 返回当成成功**。装包不查
   `pm path`、卸包不看包是否还在、强停不看 pidof，无人值守循环会以为应用已经装上、卸掉或
   停掉。现在对照设备侧状态回 `installed` / `uninstalled` / `stopped`（核不上就 `null`）。
+- **`device.current_activity` 在 `app_current()` 返回 None 时仍回 `{package: None,
+  activity: None}`**。dumpsys 读失败被无人值守的 agent 当成「前台没有应用」这一事实，而不是
+  一次失败的读取。现在读不出包名记为 `backend_error`，真实的包名/activity 组合行为不变。
 - **`device.list` 对每个设备再调一次 `get_state`**。adbutils 的 `open_transport` 默认等
   600 秒，假死的 adb server 会把工作线程占满十分钟；而且 `device_list()` 只回在线设备，
   offline 看起来像「没有这台设备」。改为一次 `host:devices`（带 socket 超时），offline 也

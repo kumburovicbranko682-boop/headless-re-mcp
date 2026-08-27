@@ -561,10 +561,19 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
-        return {
-            "package": getattr(current, "package", None),
-            "activity": getattr(current, "activity", None),
-        }
+        package = getattr(current, "package", None) if current is not None else None
+        activity = getattr(current, "activity", None) if current is not None else None
+        # Measured: app_current() returning None still answered
+        # {package: None, activity: None} as success, so an agent treated a
+        # failed dumpsys as an empty foreground rather than a read that failed.
+        if not package:
+            raise AdbError(
+                "backend_error",
+                "failed to read current activity",
+                package=package or None,
+                activity=activity or None,
+            )
+        return {"package": package, "activity": activity}
 
     def logcat(self, serial: str, *, lines: int = 200) -> JsonObject:
         dev = self._device(serial)
