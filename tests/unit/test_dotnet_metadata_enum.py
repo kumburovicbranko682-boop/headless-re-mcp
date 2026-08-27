@@ -92,6 +92,65 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
     assert partial is False
 
 
+def test_il_fe_prefixed_opcodes_consume_their_operand_and_stay_aligned() -> None:
+    """0xFE two-byte opcodes must be sized, or the method body desyncs.
+
+    0xFE is the prefix for a whole family of real opcodes -- ceq/cgt/clt behind
+    every comparison, ldloc/stloc long forms, ldftn for delegates, initobj for
+    value types, constrained. before a generic virtual call. The decoder used
+    to emit a bare one-byte ``prefix.fe`` and step a single byte, so the actual
+    second opcode byte was re-read as a primary opcode and any operand it
+    carried (a 4-byte token, a 2-byte local index) became further phantom
+    instructions -- the same one-byte shear the missing ldc.i4.s caused, and
+    here it can forge a ``call``/``newobj`` token out of a ldloc index. Sizing
+    each 0xFE opcode keeps the stream aligned: ``ldloc 0x1234`` reads its u16,
+    ``ldftn <tok>`` its 4-byte token, and the trailing ``call`` lands on the
+    real token rather than on the middle of the one before it.
+    """
+    il = (
+        bytes([0xFE, 0x0C])
+        + (0x1234).to_bytes(2, "little")  # ldloc 0x1234 (u16 index)
+        + bytes([0xFE, 0x01])  # ceq (no operand)
+        + bytes([0xFE, 0x06])
+        + (0x0A000002).to_bytes(4, "little")  # ldftn <method token>
+        + bytes([0xFE, 0x16])
+        + (0x1B000003).to_bytes(4, "little")  # constrained. <type token>
+        + bytes([0x28])
+        + (0x0A000001).to_bytes(4, "little")  # call token -- only aligned if all sized
+        + bytes([0x2A])  # ret
+    )
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    decoded = [(insn["mnemonic"], insn["operand"]) for insn in instructions]
+    assert decoded == [
+        ("ldloc", 0x1234),
+        ("ceq", None),
+        ("ldftn", 0x0A000002),
+        ("constrained.", 0x1B000003),
+        ("call", 0x0A000001),
+        ("ret", None),
+    ]
+    assert partial is False
+
+
+def test_il_unknown_fe_second_byte_steps_past_both_bytes() -> None:
+    """An unused 0xFE slot must not re-read its second byte as a primary opcode.
+
+    0xFE 0x08 is unused in the standard map. The decoder cannot size a possible
+    operand for something it does not know, so it steps past both the prefix and
+    the second byte and flags the disassembly partial, rather than advancing one
+    byte and letting 0x08 (ldloc.2) desync the tail.
+    """
+    il = bytes([0xFE, 0x08]) + bytes([0x2A])  # unknown fe op, then ret
+
+    instructions, partial = _disassemble_il(il, max_insns=16)
+
+    decoded = [(insn["mnemonic"], insn["operand"]) for insn in instructions]
+    assert decoded == [("fe_08", None), ("ret", None)]
+    assert partial is True
+
+
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     binary = tmp_path / "empty_tables.exe"
     _write_minimal_clr(binary)

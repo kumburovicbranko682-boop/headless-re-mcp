@@ -82,6 +82,47 @@ _SIGNED_OPERANDS: Final[frozenset[str]] = frozenset(
     {"br.s", "brfalse.s", "brtrue.s", "br", "brfalse", "brtrue", "ldc.i4"}
 )
 
+# The 0xFE-prefixed two-byte opcodes (ECMA-335 Partition III / coreclr
+# opcode.def), keyed by the *second* byte, mapped to (mnemonic, operand_len).
+# Every operand here is unsigned -- a metadata token (ldftn/ldvirtftn/initobj/
+# constrained./sizeof, 4 bytes), a u16 local/argument index (ldarg..stloc,
+# 2 bytes), or a u8 alignment hint (unaligned., 1 byte) -- so none belong in
+# _SIGNED_OPERANDS. Decoding these keeps the stream aligned: 0xFE used to be
+# emitted as a bare one-byte "prefix.fe" that left the real second opcode byte
+# to be re-read as a primary opcode, desyncing the rest of the method (the same
+# failure the ldc.i4.s omission caused) and letting misaligned bytes masquerade
+# as call/newobj tokens in the xref harvest. Unused slots (0x08, 0x10, 0x19,
+# 0x1B, 0x1F+) are intentionally absent and fall to the conservative path.
+_FE_OPCODES: Final[dict[int, tuple[str, int]]] = {
+    0x00: ("arglist", 0),
+    0x01: ("ceq", 0),
+    0x02: ("cgt", 0),
+    0x03: ("cgt.un", 0),
+    0x04: ("clt", 0),
+    0x05: ("clt.un", 0),
+    0x06: ("ldftn", 4),
+    0x07: ("ldvirtftn", 4),
+    0x09: ("ldarg", 2),
+    0x0A: ("ldarga", 2),
+    0x0B: ("starg", 2),
+    0x0C: ("ldloc", 2),
+    0x0D: ("ldloca", 2),
+    0x0E: ("stloc", 2),
+    0x0F: ("localloc", 0),
+    0x11: ("endfilter", 0),
+    0x12: ("unaligned.", 1),
+    0x13: ("volatile.", 0),
+    0x14: ("tail.", 0),
+    0x15: ("initobj", 4),
+    0x16: ("constrained.", 4),
+    0x17: ("cpblk", 0),
+    0x18: ("initblk", 0),
+    0x1A: ("rethrow", 0),
+    0x1C: ("sizeof", 4),
+    0x1D: ("refanytype", 0),
+    0x1E: ("readonly.", 0),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class Page:
@@ -692,9 +733,32 @@ def _disassemble_il(il: bytes, *, max_insns: int) -> tuple[list[JsonObject], boo
         start = i
         op = il[i]
         if op == 0xFE:
-            rebuilt.append({"ip": start, "mnemonic": "prefix.fe", "operand": None})
-            i += 1
-            partial = True
+            if i + 1 >= len(il):
+                # Prefix byte with no second byte to name: truncated body.
+                rebuilt.append({"ip": start, "mnemonic": "prefix.fe", "operand": None})
+                i += 1
+                partial = True
+                break
+            second = il[i + 1]
+            fe_info = _FE_OPCODES.get(second)
+            if fe_info is None:
+                # An unused or non-standard second byte: we cannot size a
+                # possible operand, so step past *both* bytes (never re-reading
+                # the second as a primary opcode) and flag the tail as partial.
+                rebuilt.append({"ip": start, "mnemonic": f"fe_{second:02x}", "operand": None})
+                i += 2
+                partial = True
+                continue
+            fe_name, fe_imm = fe_info
+            i += 2
+            fe_operand: int | None = None
+            if fe_imm:
+                if i + fe_imm > len(il):
+                    partial = True
+                    break
+                fe_operand = int.from_bytes(il[i : i + fe_imm], "little", signed=False)
+                i += fe_imm
+            rebuilt.append({"ip": start, "mnemonic": fe_name, "operand": fe_operand})
             continue
         info = _OPCODES.get(op)
         if info is None:

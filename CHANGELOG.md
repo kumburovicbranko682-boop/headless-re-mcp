@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dotnet.il` 遇 `0xFE` 两字节操作码只前进一字节导致方法体整体错位）
+
+- IL 里 `0xFE` 是一整族真实操作码的前缀：几乎每个比较背后的 `ceq`/`cgt`/`clt`、`ldloc`/`stloc`
+  长形式、委托用的 `ldftn`/`ldvirtftn`、值类型的 `initobj`、泛型虚调用前的 `constrained.` 等。
+  反汇编器过去把 `0xFE` 当成一个裸的单字节 `prefix.fe` 发出、只前进 1 字节,于是真正的第二个
+  操作码字节被当作下一条主操作码重读,它自带的操作数(`ldftn` 的 4 字节 token、`ldloc` 的 2 字节
+  局部索引等)又被解成后续指令——与漏认 `ldc.i4.s` 同样的错位一字节,方法体后半段解成乱码,更会
+  用错位字节伪造出 `call`/`newobj` token 污染 xref 采集。现按 ECMA-335 / coreclr `opcode.def` 补齐
+  `_FE_OPCODES`(第二字节 → 助记符+操作数长度,全部无符号:token 4 字节、局部/参数索引 2 字节、
+  `unaligned.` 对齐提示 1 字节),正确消费操作数、保持流对齐;未使用的第二字节(0x08/0x10/0x19/0x1B/0x1F+)
+  跨过两字节并标记 partial,绝不把第二字节重读成主操作码。新增直测:`ldloc 0x1234; ceq; ldftn <tok>;
+  constrained. <tok>; call <tok>; ret` 全部按各自长度解出且末尾 `call`/`ret` 仍对齐;未知 `0xFE 0x08`
+  跨过两字节、标 partial。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
