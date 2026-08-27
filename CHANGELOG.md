@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（apk 分页在后端层夹紧 offset/limit）
+
+- `apk.classes` / `apk.methods` / `apk.strings` 的后端此前用原始 `names[offset:offset+limit]`
+  分页。工具 schema 已挡下负 offset（`minimum: 0`），但后端也被不经 pydantic 的内部调用者触达,
+  而切片正发生在后端:`offset=-1` 会变成尾部切片（把 DEX 末尾当成第 0 页），回传的 `offset` 与
+  `has_more` 于是描述一个从未被请求的页。后端自己的 `xrefs` 早已用 `max(1, int(limit))` 夹紧;现让
+  这三个分页方法与之（以及 web/proxy 的列表后端）对齐:`start = max(0, int(offset))`、
+  `count = max(1, int(limit))`,并回传夹紧后的 `offset`。经工具路径的合法分页行为不变（schema 早已
+  保证入参在界内）,仅修正直连/内部调用者的越界入参。补后端级回归测试钉住负 offset 归零、`limit=0`
+  至少回一行,以及正常分页不受影响。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
