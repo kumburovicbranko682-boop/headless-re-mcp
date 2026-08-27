@@ -399,7 +399,12 @@ def _capture_process(
     # start_new_session (POSIX) makes the process its own group leader, so the
     # group id is its pid. Used to reap a child a wrapper detached and left
     # behind after the process itself exited, when the ppid walk sees nothing.
-    group_id = int(process.pid) if os.name != "nt" and process.pid else 0
+    group_pid = getattr(process, "pid", None)
+    group_id = (
+        int(group_pid)
+        if os.name != "nt" and isinstance(group_pid, int) and group_pid > 0
+        else 0
+    )
 
     observed: set[str] = set()
     stop_monitor = Event()
