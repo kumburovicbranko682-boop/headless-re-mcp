@@ -175,6 +175,108 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert script["metadata_truncated"] is True
 
 
+class _Cdp:
+    """Records the handlers _wire_events registers so a test can drive them."""
+
+    def __init__(self) -> None:
+        self.handlers: dict[str, Any] = {}
+
+    def send(self, method: str) -> None:
+        del method
+
+    def on(self, event: str, handler: Any) -> None:
+        self.handlers[event] = handler
+
+
+def test_web_loading_failed_marks_the_request_as_error() -> None:
+    """A failed request must be distinguishable from one still in flight.
+
+    CDP fires Network.loadingFailed (not responseReceived) for a request that
+    never completes -- DNS failure, refused connection, TLS error, blocked.
+    Only requestWillBeSent/responseReceived were wired, so a failed request kept
+    status null forever, reading identical to a pending one. Mirror the proxy
+    recorder: error=true and error_msg, status still null, while a completed
+    request keeps its numeric status and no error field.
+    """
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "r-fail", "request": {"url": "https://x/1", "method": "GET"}, "type": "XHR"}
+    )
+    cdp.handlers["Network.loadingFailed"](
+        {"requestId": "r-fail", "errorText": "net::ERR_NAME_NOT_RESOLVED"}
+    )
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "r-ok", "request": {"url": "https://x/2", "method": "GET"}, "type": "XHR"}
+    )
+    cdp.handlers["Network.responseReceived"](
+        {"requestId": "r-ok", "response": {"status": 200, "mimeType": "text/html"}}
+    )
+
+    failed = handle.requests["r-fail"]
+    assert failed["error"] is True
+    assert failed["error_msg"] == "net::ERR_NAME_NOT_RESOLVED"
+    # A failed request has no HTTP status; that null plus error is the signal.
+    assert failed["status"] is None
+
+    ok = handle.requests["r-ok"]
+    assert "error" not in ok
+    assert ok["status"] == 200
+
+    doc = _tool_docstring("web.network.list")
+    assert "error=true" in doc
+    assert "error_msg" in doc
+
+
+def test_web_loading_failed_handles_blocked_bounds_and_unknown_ids() -> None:
+    """A blocked reason is surfaced, oversized text is bounded, ghosts are safe.
+
+    errorText can be empty for a CSP/mixed-content block, so blockedReason is
+    folded into error_msg; the message is bounded like every other summary
+    field; and a loadingFailed for a request already evicted from the ring must
+    not raise or resurrect an entry.
+    """
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r-blocked",
+            "request": {"url": "https://x/1", "method": "GET"},
+            "type": "XHR",
+        }
+    )
+    cdp.handlers["Network.loadingFailed"](
+        {"requestId": "r-blocked", "errorText": "", "blockedReason": "csp"}
+    )
+    blocked = handle.requests["r-blocked"]
+    assert blocked["error"] is True
+    assert "blocked: csp" in str(blocked["error_msg"])
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r-huge",
+            "request": {"url": "https://x/2", "method": "GET"},
+            "type": "XHR",
+        }
+    )
+    cdp.handlers["Network.loadingFailed"](
+        {"requestId": "r-huge", "errorText": "é" * (_MAX_METADATA_BYTES + 1)}
+    )
+    huge = handle.requests["r-huge"]
+    assert len(str(huge["error_msg"]).encode()) <= _MAX_METADATA_BYTES
+    assert huge["metadata_truncated"] is True
+
+    # A loadingFailed for an id that was never recorded must be a no-op.
+    cdp.handlers["Network.loadingFailed"]({"requestId": "ghost", "errorText": "x"})
+    assert "ghost" not in handle.requests
+
+
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     monkeypatch: Any,
 ) -> None:

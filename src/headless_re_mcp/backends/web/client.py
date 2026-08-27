@@ -494,6 +494,30 @@ class WebBackend:
                     if mime_truncated:
                         entry["metadata_truncated"] = True
 
+        def on_loading_failed(params: JsonObject) -> None:
+            # CDP fires loadingFailed (not responseReceived) when a request
+            # never completes -- DNS failure, connection refused, TLS error,
+            # blocked by CSP/mixed-content. Only requestWillBeSent and
+            # responseReceived were wired, so such a request kept status null
+            # forever, indistinguishable from one still in flight. Mark it
+            # error/error_msg -- the proxy recorder's convention -- so a failed
+            # request stays visible and distinct from a completed one (numeric
+            # status) and a pending one (status null, no error).
+            reason = params.get("errorText")
+            blocked = params.get("blockedReason")
+            if blocked:
+                reason = f"{reason} (blocked: {blocked})" if reason else f"blocked: {blocked}"
+            if not reason:
+                reason = "canceled" if params.get("canceled") else "request failed"
+            error_msg, error_truncated = _bounded_metadata(reason, _MAX_METADATA_BYTES)
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is not None:
+                    entry["error"] = True
+                    entry["error_msg"] = error_msg
+                    if error_truncated:
+                        entry["metadata_truncated"] = True
+
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
             language, language_truncated = _bounded_metadata(
@@ -530,6 +554,7 @@ class WebBackend:
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.loadingFailed", on_loading_failed)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,
