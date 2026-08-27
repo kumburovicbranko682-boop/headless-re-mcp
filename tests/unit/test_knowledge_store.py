@@ -92,6 +92,55 @@ def test_knowledge_filters_by_kind_and_session(repository: Any) -> None:
     assert only_api["entries"][0]["value"] == {"module": "kernel32"}
 
 
+def test_kinds_breakdown_is_session_wide_not_just_the_page(repository: Any) -> None:
+    """kinds sits beside the session-wide total, so it must describe the session.
+
+    Entries sort by kind, so a page smaller than the session used to report a
+    single kind: three api rows fill a limit-2 page and the breakdown read
+    {api: 2}, hiding the function and struct facts the session also held. A
+    caller that keyed its next step off that read the session as api-only.
+    """
+    for key in ("a", "b", "c"):
+        repository.record_knowledge(session_id="s1", kind="api", key=key, value={})
+    repository.record_knowledge(session_id="s1", kind="function", key="f", value={})
+    repository.record_knowledge(session_id="s1", kind="struct", key="s", value={})
+
+    page = repository.list_knowledge("s1", offset=0, limit=2)
+
+    assert page["count"] == 2
+    assert page["has_more"] is True
+    # The page holds only api rows (kind ASC), but kinds is the whole session.
+    assert {entry["kind"] for entry in page["entries"]} == {"api"}
+    assert page["kinds"] == {"api": 3, "function": 1, "struct": 1}
+    assert "kinds_truncated" not in page
+
+    only_api = repository.list_knowledge("s1", kind="api")
+    assert only_api["kinds"] == {"api": 3}
+
+
+def test_kinds_breakdown_is_bounded_and_says_when_it_truncated(
+    repository: Any, monkeypatch: Any
+) -> None:
+    """A pathological set of distinct kinds must not grow one reply without bound.
+
+    The whole-session breakdown is capped, and the cap is said out loud rather
+    than dropping the tail silently the way the section it feeds warns against.
+    """
+    from headless_re_mcp.core.store import sqlite_store
+
+    monkeypatch.setattr(sqlite_store, "KNOWLEDGE_KINDS_MAX", 2)
+    for index in range(4):
+        repository.record_knowledge(
+            session_id="s1", kind=f"k{index}", key="x", value={}
+        )
+
+    listing = repository.list_knowledge("s1")
+
+    assert listing["total"] == 4
+    assert len(listing["kinds"]) == 2
+    assert listing["kinds_truncated"] is True
+
+
 def test_knowledge_paginates(repository: Any) -> None:
     for index in range(5):
         repository.record_knowledge(

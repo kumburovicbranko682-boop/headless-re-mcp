@@ -299,7 +299,10 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Read accumulated analysis facts for a session, optionally one kind.
 
         Answers with entries (each: session_id, kind, key, value, created_at,
-        updated_at), plus count, total, offset, limit, has_more and kinds.
+        updated_at), plus count, total, offset, limit, has_more and kinds. kinds
+        is the session-wide count of findings per kind, not just this page, so
+        it stays meaningful while you page; kinds_truncated is set when the
+        session holds more distinct kinds than the breakdown lists.
         """
         return _dump(
             analysis.knowledge_query(

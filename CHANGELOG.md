@@ -1022,6 +1022,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不掉；无人值守循环每轮换一个本地端口，表和 server 一起涨。满 32 条后拒绝新的转发。
 - **`frida.modules` 会把目标进程的全部模块序列化进这一次 RPC**。Python 侧再截断。改为在
   脚本里按 limit 停，并带回 `total`。
+- **`knowledge.query` 的 `kinds` 分布只统计当前这一页，却摆在会话级的 `total` 旁边**。回包里
+  `total` 是整会话的发现总数，而 `kinds`（按 kind 的计数）只数了这一页——偏偏发现是按 `kind` 排序
+  分页的，于是一个多 kind 的会话，首页（默认 100 条）若被某个 kind 占满，`kinds` 就读成「本会话只有
+  这一个 kind」。据此判断「这个会话记了哪些类别的发现」的调用方会被误导，把一整会话看成单一 kind。
+  现在 `kinds` 改为整会话统计（带 kind 过滤时即该 kind 的总数），与 `total` 同源，翻页也不再变脸；
+  为不让病态地记了上千个不同 kind 的会话把单次回包撑大，桶数以 `KNOWLEDGE_KINDS_MAX` 兜底（远高于
+  单页上限，正常会话永远取全），超出即补 `kinds_truncated`，而不是把尾巴悄悄剪掉。sqlite 与内存两个
+  实现同改，共用 `capped_kind_counts`。
 
 ### 新增（项目文档）
 

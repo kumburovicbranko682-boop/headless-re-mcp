@@ -18,6 +18,7 @@ from headless_re_mcp.core.store.sqlite_store import (
     CLOSED_SESSION_RETAINED,
     KNOWLEDGE_RETAINED_PER_SESSION,
     TIMELINE_RETAINED_PER_SESSION,
+    capped_kind_counts,
     encode_knowledge_value,
     redact_audit_payload,
 )
@@ -840,11 +841,15 @@ class InMemoryAnalysisRepository:
         entries.sort(key=lambda item: (str(item["kind"]), str(item["key"])))
         total = len(entries)
         page = entries[offset : offset + limit]
-        kinds: dict[str, int] = {}
-        for item in page:
+        # Session-wide, not from the page: entries sort by kind, so a first page
+        # smaller than the session would otherwise report a single kind for a
+        # many-kind session. Match the sqlite store's GROUP BY.
+        full_counts: dict[str, int] = {}
+        for item in entries:
             name = str(item["kind"])
-            kinds[name] = kinds.get(name, 0) + 1
-        return {
+            full_counts[name] = full_counts.get(name, 0) + 1
+        kinds, kinds_truncated = capped_kind_counts(full_counts.items())
+        result: JsonObject = {
             "session_id": session_id,
             "entries": page,
             "count": len(page),
@@ -854,6 +859,9 @@ class InMemoryAnalysisRepository:
             "has_more": offset + len(page) < total,
             "kinds": kinds,
         }
+        if kinds_truncated:
+            result["kinds_truncated"] = True
+        return result
 
     def persist_unpack_state(
         self,

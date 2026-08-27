@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,6 +81,16 @@ AUDIT_RETAINED_ROWS = 50_000
 # table itself was not.
 KNOWLEDGE_RETAINED_PER_SESSION = 10_000
 
+# knowledge.query returns a `kinds` breakdown beside the session-wide `total`.
+# Computing it from the returned page misrepresented the session: entries are
+# ordered by kind, so the first page of a many-kind session reported a single
+# kind. It is computed over the whole session instead, but bounded to this many
+# buckets so a caller that recorded thousands of distinct kinds cannot inflate
+# one reply without limit; the cap sits above the largest page so a normal
+# session's breakdown is always complete, and kinds_truncated says when the tail
+# was dropped rather than cutting it silently.
+KNOWLEDGE_KINDS_MAX = 1000
+
 # The in-memory registry keeps 64 closed sessions. The sqlite row was never
 # collected, so every session ever opened stayed in the database after the
 # registry had forgotten it. Measured at 800 closed rows: 225 KB and still
@@ -147,6 +157,24 @@ def redact_audit_payload(value: JsonObject) -> JsonObject:
     """Return an audit-safe copy while preserving the historical mask."""
     redacted = redact(value, mask="***")
     return redacted if isinstance(redacted, dict) else {}
+
+
+def capped_kind_counts(pairs: Iterable[tuple[Any, Any]]) -> tuple[dict[str, int], bool]:
+    """Session-wide kind->count for knowledge.query, bounded to a cap.
+
+    Both stores compute this over the whole session (not the returned page) so
+    the breakdown that rides beside `total` stays honest while a caller pages;
+    the largest buckets are kept (count desc, then kind asc for a stable
+    tie-break) and the boolean says whether the tail was dropped, so a
+    pathological set of distinct kinds cannot grow one reply without bound and
+    the trim is never silent.
+    """
+    ranked = sorted(
+        ((str(name), int(count)) for name, count in pairs),
+        key=lambda item: (-item[1], item[0]),
+    )
+    truncated = len(ranked) > KNOWLEDGE_KINDS_MAX
+    return {name: count for name, count in ranked[:KNOWLEDGE_KINDS_MAX]}, truncated
 
 
 class SessionStore:
@@ -618,6 +646,14 @@ class SessionStore:
                     "SELECT COUNT(*) AS c FROM knowledge WHERE session_id=? AND kind=?",
                     (session_id, kind),
                 ).fetchone()["c"]
+                # Session-wide, not from the page below: entries are ordered by
+                # kind, so a first page smaller than the session reported one
+                # kind for a many-kind session.
+                kind_rows = conn.execute(
+                    "SELECT kind, COUNT(*) AS c FROM knowledge"
+                    " WHERE session_id=? AND kind=? GROUP BY kind",
+                    (session_id, kind),
+                ).fetchall()
                 rows = conn.execute(
                     "SELECT * FROM knowledge WHERE session_id=? AND kind=?"
                     " ORDER BY kind ASC, key ASC LIMIT ? OFFSET ?",
@@ -628,23 +664,28 @@ class SessionStore:
                     "SELECT COUNT(*) AS c FROM knowledge WHERE session_id=?",
                     (session_id,),
                 ).fetchone()["c"]
+                kind_rows = conn.execute(
+                    "SELECT kind, COUNT(*) AS c FROM knowledge"
+                    " WHERE session_id=? GROUP BY kind",
+                    (session_id,),
+                ).fetchall()
                 rows = conn.execute(
                     "SELECT * FROM knowledge WHERE session_id=?"
                     " ORDER BY kind ASC, key ASC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
         entries: list[JsonObject] = []
-        kinds: dict[str, int] = {}
         for row in rows:
             item = dict(row)
             raw = item.get("value")
             if isinstance(raw, str):
                 with suppress(json.JSONDecodeError):
                     item["value"] = json.loads(raw)
-            name = str(item["kind"])
-            kinds[name] = kinds.get(name, 0) + 1
             entries.append(item)
-        return {
+        kinds, kinds_truncated = capped_kind_counts(
+            (row["kind"], row["c"]) for row in kind_rows
+        )
+        result: JsonObject = {
             "session_id": session_id,
             "entries": entries,
             "count": len(entries),
@@ -654,6 +695,9 @@ class SessionStore:
             "has_more": offset + len(entries) < int(total),
             "kinds": kinds,
         }
+        if kinds_truncated:
+            result["kinds_truncated"] = True
+        return result
 
     def gc_artifacts(self, *, max_total_bytes: int) -> JsonObject:
         """Collect oldest-first until the budget is met, skipping what is in use.
