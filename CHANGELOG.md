@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（.NET 元数据表行长算错，越过 AssemblyRef 后错位丢资源）
+
+- `dotnet/metadata_enum.py` 按 ECMA-335 II.22 逐表累加行长来定位某张表的起点，因此任何一张在目标表之前的表若行长算错，后续每一行都会从错误字节解码——名字、token、RVA、资源偏移全都自信地读错。`_table_row_size` 有多处行长与规范不符：
+  - **AssemblyRef（0x23）套用了 Assembly（0x20）的布局**——多了一个并不存在的开头 `HashAlgId`、又漏掉结尾的 `HashValue` blob。在常见的 2 字节 blob 堆下每行多算 2 字节；AssemblyRef 几乎每个程序集都有、且排在 ManifestResource（0x28）之前，于是 `dotnet.metadata` 的 resources 列举越过其真实行数、把资源整条丢掉（合成用例里 `_table_start(0x28)` 从应为 40 变成 44，资源列举返回空）。这是唯一会命中普通输入的一处；下面几处仅在编码/简单索引恰好都是 2 字节时被掩盖，因此一直没被发现。
+  - InterfaceImpl（0x09）把 Interface 列当成简单 MethodDef 索引，实为 TypeDefOrRef 编码索引。
+  - MethodSemantics（0x18）把 Method 列当成 MethodDefOrRef 编码索引，实为简单 MethodDef 索引。
+  - File（0x26）把 HashValue 列当成 Implementation 编码索引，实为 Blob 索引。
+  - MethodSpec（0x2B）与 GenericParamConstraint（0x2C）两张表的布局写反了。
+- 新增 `tests/unit/test_dotnet_metadata_table_sizes.py`（6 项），每项都挑选能让“错误公式”与“正确公式”取值分叉的行数，因此对旧代码为红：直接固化上述五张表的 ECMA 行长，并端到端验证 AssemblyRef 之后 ManifestResource 的起点与资源解码正确。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
