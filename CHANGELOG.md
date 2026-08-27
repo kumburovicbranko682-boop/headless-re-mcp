@@ -978,8 +978,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   loguru 默认 handler 再全局加一个 stderr handler(等于重配整个 logger,不只是 androguard)。实测一次
   `classes()` 的 androguard stderr 行数 155→0。新增单测钉住这次 disable 调用(只需 loguru、不需真 APK),live
   gate 也加断言:真跑一次 `AnalyzeAPK` 不产生任何 androguard 记录;gate 里旧的、会全局重配的 `set_log` 辅助已移除。
-
-### 变更（Android 后端清理）
+- **`apk.certificates` 把证书主体/签发者当对象 repr 吐出来,而不是可读的 DN**。androguard 4.x 回的是
+  asn1crypto `x509` 证书,其 `subject`/`issuer` 是 `x509.Name` 对象,`str(name)` 是
+  `<asn1crypto.x509.Name 0x.. b'0<1\x0b0\t..'>` 这种对象 repr;而客户端此前正是 `str(getattr(cert, "subject"))`,
+  于是「这个 APK 是谁签的」——证书读取存在的唯一意义——回来的是一坨没法看的 repr。改用 `Name.human_friendly`
+  渲染成可读 DN(`Common Name: .., Organization: ..`),对没有该属性的证书形态(更老的 androguard、或本就是字符串)
+  回退到 `str`,并把「属性访问抛异常」当作没有、以免一个古怪证书把整个字段清空。新增静态单测(用替身对象钉住可读路径
+  与两条回退,不需 androguard、不需真 APK);详见下方 gate 条目的 live 覆盖。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。

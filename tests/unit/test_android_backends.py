@@ -325,6 +325,47 @@ class TestApkClientSilencesAndroguardLogs:
         assert calls == ["androguard"]
 
 
+class TestApkCertificateNamesAreReadable:
+    """certificates() must render a DN, not an asn1crypto object repr.
+
+    androguard 4.x returns asn1crypto x509 certs whose subject/issuer are
+    ``x509.Name`` objects; ``str(name)`` is ``<asn1crypto.x509.Name 0x.. b'..'>``,
+    so the old ``str(cert.subject)`` shipped that repr as the answer to "who
+    signed this APK". The client now reads ``Name.human_friendly``. Pin it with
+    stand-in objects (no androguard, no real APK needed) so the readable path and
+    both fallbacks stay covered.
+    """
+
+    def test_human_friendly_name_is_preferred(self) -> None:
+        from headless_re_mcp.backends.apk.client import _readable_name
+
+        class _Name:
+            human_friendly = "Common Name: Gate, Organization: HeadlessRE"
+
+            def __str__(self) -> str:  # the repr we must not emit
+                return "<asn1crypto.x509.Name 0xdead b'0<1..'>"
+
+        assert _readable_name(_Name()) == "Common Name: Gate, Organization: HeadlessRE"
+
+    def test_falls_back_to_str_without_human_friendly(self) -> None:
+        from headless_re_mcp.backends.apk.client import _readable_name
+
+        assert _readable_name("CN=already a string") == "CN=already a string"
+
+    def test_raising_human_friendly_falls_back_to_str(self) -> None:
+        from headless_re_mcp.backends.apk.client import _readable_name
+
+        class _Raises:
+            @property
+            def human_friendly(self) -> str:
+                raise RuntimeError("boom")
+
+            def __str__(self) -> str:
+                return "fallback-dn"
+
+        assert _readable_name(_Raises()) == "fallback-dn"
+
+
 class TestApkClassification:
     def test_apk_is_detected_by_extension_and_by_content(self, tmp_path: Path) -> None:
         named = _apk(tmp_path / "app.apk")

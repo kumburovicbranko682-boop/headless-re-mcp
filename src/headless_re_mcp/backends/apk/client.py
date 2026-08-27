@@ -85,6 +85,28 @@ def _safe_attr(getter: Any) -> Any:
         return None
 
 
+def _readable_name(value: Any) -> str:
+    """Render a certificate subject/issuer as a readable distinguished name.
+
+    androguard 4.x hands back asn1crypto ``x509`` certificates, whose ``subject``
+    and ``issuer`` are ``x509.Name`` objects. ``str(name)`` on those is an object
+    repr -- ``<asn1crypto.x509.Name 0x.. b'0<1\\x0b0\\t..'>`` -- so the previous
+    ``str(getattr(cert, "subject"))`` shipped that raw repr to any caller asking
+    who signed an APK, i.e. the one thing a certificate read exists to answer came
+    back unreadable. ``Name.human_friendly`` renders the DN ("Common Name: .. ,
+    Organization: .."). Fall back to ``str`` for any cert shape (older androguard,
+    a plain string) that has no such attribute, and treat a raising property as
+    absent so one odd cert cannot blank the field.
+    """
+    try:
+        human = value.human_friendly
+    except Exception:  # noqa: BLE001 - property access varies by object
+        human = None
+    if isinstance(human, str) and human:
+        return human
+    return str(value)
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -294,8 +316,8 @@ class ApkClient:
             try:
                 items.append(
                     {
-                        "subject": str(getattr(cert, "subject", "")),
-                        "issuer": str(getattr(cert, "issuer", "")),
+                        "subject": _readable_name(getattr(cert, "subject", "")),
+                        "issuer": _readable_name(getattr(cert, "issuer", "")),
                         "serial": str(getattr(cert, "serial_number", "")),
                         "sha256": cert.sha256_fingerprint
                         if hasattr(cert, "sha256_fingerprint")
