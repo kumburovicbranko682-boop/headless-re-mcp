@@ -14,6 +14,8 @@ a session is funnelled onto that session's own thread -- see ``_Runner``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import queue
 import threading
@@ -25,6 +27,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.har import har_entry, serialize_har
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -42,6 +45,9 @@ _MAX_METADATA_BYTES = 1024
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
 _CALL_TIMEOUT = 60.0
+# Ceiling for a caller-supplied navigation timeout, matching the web.open /
+# web.navigate tool schema (``0 < timeout <= 120``). See ``_bound_nav_timeout``.
+_MAX_NAV_TIMEOUT_S = 120.0
 _OPENING = object()
 
 
@@ -51,6 +57,25 @@ class WebError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _bound_nav_timeout(timeout: float) -> float:
+    """Clamp a caller navigation timeout at the backend boundary.
+
+    The tool schema declares ``0 < timeout <= 120``, but the agent transport
+    invokes handlers straight from model arguments with no schema enforcement
+    (``CommandCatalog.invoke`` -> ``spec.handler(**arguments)``), the same gap
+    frida guards with ``_bound_timeout``. A non-positive value would reach
+    ``Future.result(timeout<=0)``, which returns immediately and flips the
+    runner to ``_wedged`` -- bricking a healthy session until ``web.close`` --
+    while a huge one would park the session thread and a pool worker for as long
+    as the page took. Reject the first and cap the second before any work is
+    queued, so a stray timeout can never wedge a live browser.
+    """
+    value = float(timeout)
+    if value <= 0:
+        raise WebError("invalid_params", "timeout must be positive")
+    return min(value, _MAX_NAV_TIMEOUT_S)
 
 
 def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
@@ -146,6 +171,48 @@ def _spill_text(
         )
     preview = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
     return preview, out, True
+
+
+def _spill_bytes(
+    raw: bytes,
+    *,
+    artifact_dir: Path,
+    filename: str,
+    kind: str,
+) -> Path:
+    """Write raw bytes to a session artifact, refusing over the capture cap.
+
+    The bytes counterpart of ``_spill_text``: a binary response body cannot be
+    represented as JSON text, so it always goes to disk. The cap is measured on
+    the real bytes, not on a base64 expansion of them.
+    """
+    if len(raw) > UNREGISTERED_CAPTURE_MAX_BYTES:
+        raise WebError(
+            "too_large",
+            f"{kind} exceeds capture cap",
+            size=len(raw),
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+    ):
+        raise WebError("invalid_params", f"invalid {kind} artifact filename")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    out = artifact_dir / filename
+    out.write_bytes(raw)
+    written, over = capped_file_size(out, cap=UNREGISTERED_CAPTURE_MAX_BYTES)
+    if over:
+        raise WebError(
+            "too_large",
+            f"{kind} exceeds capture cap",
+            size=written,
+            cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+        )
+    return out
 
 
 class _Runner:
@@ -307,6 +374,7 @@ class WebBackend:
         self, session_id: str, url: str, *, headless: bool = True, timeout: float = 30.0
     ) -> JsonObject:
         self._check_available()
+        timeout = _bound_nav_timeout(timeout)
 
         with self._lock:
             if session_id in self._sessions:
@@ -337,8 +405,11 @@ class WebBackend:
                 handle = _WebSession(pw, browser, context, page, cdp)
                 handle.driver_pid = pid
                 self._wire_events(handle)
+                response = None
                 if url:
-                    page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                    response = page.goto(
+                        url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
+                    )
                 # Summarised here rather than by a second call: between the two,
                 # a browser exists that no session yet refers to, and a failure
                 # in that window would leave it with nothing able to close it.
@@ -348,6 +419,9 @@ class WebBackend:
                     "title": _safe_title(page),
                     "headless": headless,
                 }
+                status = _response_status(response)
+                if status is not None:
+                    summary["status"] = status
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     pw.stop()
@@ -466,16 +540,23 @@ class WebBackend:
 
     def navigate(self, session_id: str, url: str, *, timeout: float = 30.0) -> JsonObject:
         handle = self._get(session_id)
+        timeout = _bound_nav_timeout(timeout)
 
         def work() -> JsonObject:
             try:
-                handle.page.goto(url, timeout=timeout * 1000.0, wait_until="domcontentloaded")
+                response = handle.page.goto(
+                    url, timeout=timeout * 1000.0, wait_until="domcontentloaded"
+                )
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"navigation failed: {exc}", url=url) from exc
-            return {
+            result: JsonObject = {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
             }
+            status = _response_status(response)
+            if status is not None:
+                result["status"] = status
+            return result
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)
 
@@ -541,9 +622,43 @@ class WebBackend:
             body = resp.get("body", "")
             base64_encoded = bool(resp.get("base64Encoded"))
         except Exception as exc:  # noqa: BLE001
-            return {**entry, "body_error": str(exc)}
+            # CDP has no body for some requests -- a redirect, or a body already
+            # evicted from its cache. Keep the documented shape (empty body, not
+            # base64, not truncated) with body_error explaining why, so a caller
+            # reading result["body"] does not hit a missing key on this path.
+            return {
+                **entry,
+                "body": "",
+                "base64_encoded": False,
+                "body_truncated": False,
+                "body_error": str(exc),
+            }
         if not isinstance(body, str):
             body = str(body)
+        if base64_encoded:
+            # CDP returns base64 for a binary body (image, font, wasm...). The
+            # earlier code fed that base64 *string* to the text spill, so a large
+            # binary body wrote base64 into the .bin artifact -- not the bytes a
+            # caller opening body_path expects -- and measured the cap against
+            # the ~33% larger base64. Decode once, cap on the real size, and
+            # spill the actual bytes; a binary body is never inlined as text.
+            try:
+                raw = base64.b64decode(body, validate=False)
+            except (ValueError, binascii.Error) as exc:
+                return {**entry, "body_error": f"response body was not valid base64: {exc}"}
+            spill_path = _spill_bytes(
+                raw,
+                artifact_dir=artifact_dir,
+                filename=f"body-{uuid4().hex}.bin",
+                kind="response body",
+            )
+            result = dict(entry)
+            result["body"] = ""
+            result["body_truncated"] = False
+            result["body_path"] = str(spill_path)
+            result["body_bytes"] = len(raw)
+            result["base64_encoded"] = True
+            return result
         inline, spill, cut = _spill_text(
             body,
             artifact_dir=artifact_dir,
@@ -555,7 +670,7 @@ class WebBackend:
         result["body_truncated"] = cut
         if spill is not None:
             result["body_path"] = str(spill)
-        result["base64_encoded"] = base64_encoded
+        result["base64_encoded"] = False
         return result
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
@@ -564,10 +679,16 @@ class WebBackend:
         with handle.lock:
             held = list(handle.console)
             dropped = handle.console_dropped
+        # Newest tail, and total for parity with every other paginated reader:
+        # has_more alone says "there is more", total says how much is buffered,
+        # so a caller can size its next limit instead of guessing. No offset is
+        # needed here -- the max limit equals the ring capacity, so one call can
+        # return the whole buffer.
         page = held[-capped:]
         return {
             "console": page,
             "count": len(page),
+            "total": len(held),
             "has_more": len(held) > capped,
             "dropped": dropped,
         }
@@ -686,45 +807,30 @@ class WebBackend:
         handle = self._get(session_id)
         with handle.lock:
             entries = [
-                {
-                    "request": {"method": e.get("method"), "url": e.get("url")},
-                    "response": {
-                        "status": e.get("status") or 0,
-                        "content": {"mimeType": e.get("mimeType") or ""},
-                    },
-                    "_resourceType": e.get("resourceType"),
-                }
+                har_entry(
+                    method=e.get("method"),
+                    url=e.get("url"),
+                    status=e.get("status"),
+                    mime_type=e.get("mimeType") or "",
+                    resource_type=e.get("resourceType"),
+                )
                 for e in handle.requests.values()
             ]
-        import json
-
-        har = {
-            "log": {"version": "1.2", "creator": {"name": "headless-re-mcp"}, "entries": entries}
-        }
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        text = json.dumps(har, ensure_ascii=False)
-        truncated = False
-        encoded = text.encode("utf-8")
-        while entries and len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
-            drop = max(1, len(entries) // 8)
-            del entries[-drop:]
-            har["log"]["entries"] = entries
-            text = json.dumps(har, ensure_ascii=False)
-            encoded = text.encode("utf-8")
-            truncated = True
-        if len(encoded) > UNREGISTERED_CAPTURE_MAX_BYTES:
+        serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
+        if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
             raise WebError(
                 "too_large",
                 "HAR export exceeds capture cap",
-                size=len(encoded),
+                size=serialized.size,
                 cap=UNREGISTERED_CAPTURE_MAX_BYTES,
             )
-        out_path.write_text(text, encoding="utf-8")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(serialized.text, encoding="utf-8")
         return {
             "path": str(out_path),
-            "entry_count": len(entries),
-            "truncated": truncated,
-            "size": len(encoded),
+            "entry_count": serialized.entry_count,
+            "truncated": serialized.truncated,
+            "size": serialized.size,
         }
 
     def close_all(self) -> None:
@@ -740,6 +846,24 @@ def _safe_title(page: Any) -> str:
         return _bounded_metadata(page.title(), _MAX_METADATA_BYTES)[0]
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _response_status(response: Any) -> int | None:
+    """HTTP status of a navigation, or None when it produced no response.
+
+    page.goto only raises for transport failures (DNS, refused, timeout); a
+    4xx/5xx main document resolves normally, so without surfacing this a
+    navigation onto an error page reports the same success as a real hit. goto
+    also returns None for about:blank and same-document navigations, which is
+    an absent status rather than a failure.
+    """
+    if response is None:
+        return None
+    try:
+        status = response.status
+    except Exception:  # noqa: BLE001
+        return None
+    return status if isinstance(status, int) else None
 
 
 def _playwright_driver_pid(playwright: Any) -> int | None:

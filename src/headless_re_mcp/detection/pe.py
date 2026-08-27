@@ -24,6 +24,7 @@ from headless_re_mcp.detection.models import (
 )
 
 _DEFAULT_MAX_FILE_SIZE = 256 * 1024 * 1024
+_READ_CHUNK_BYTES = 1024 * 1024
 _MAX_SECTIONS = 96
 _MAX_IMPORT_LIBRARIES = 256
 _MAX_IMPORT_FUNCTIONS = 16_384
@@ -111,14 +112,34 @@ class _Layout:
 def _read_pe_bytes(
     path: Path, max_file_size: int = _DEFAULT_MAX_FILE_SIZE
 ) -> bytes:
-    """Read at most the scanner's input budget, including under file growth."""
+    """Read at most the scanner's input budget, including under file growth.
+
+    The budget is ``max_file_size + 1`` so an input sitting exactly at or past
+    the limit is still seen and refused, and ``stat()`` is deliberately not
+    trusted because the file can grow between the check and the read. The read
+    is chunked rather than a single ``read(max_file_size + 1)``: a buffered
+    ``read(n)`` pre-allocates all ``n`` bytes before shrinking, so the one-shot
+    form spiked the whole budget -- 256 MiB at the default cap -- of transient
+    heap on every scan whatever the file's real size, and scan_pe runs on every
+    binary and twice per .NET enumeration. A short read means EOF on a regular
+    file, so a file under one chunk still costs a single ``read`` of exactly the
+    budget (the I/O bound is unchanged); only a file large enough to fill a
+    chunk pays for more, and never more than the bytes actually present.
+    """
+    budget = max_file_size + 1
+    buffer = bytearray()
     with path.open("rb") as stream:
-        data = stream.read(max_file_size + 1)
-    if len(data) > max_file_size:
+        while len(buffer) < budget:
+            want = min(_READ_CHUNK_BYTES, budget - len(buffer))
+            chunk = stream.read(want)
+            buffer.extend(chunk)
+            if len(chunk) < want:
+                break
+    if len(buffer) > max_file_size:
         raise PeFormatError(
             f"input exceeds the {max_file_size}-byte built-in scan limit: {path}"
         )
-    return data
+    return bytes(buffer)
 
 
 def scan_pe(

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -77,6 +78,43 @@ class TestAdbArgumentValidation:
         with pytest.raises(AdbError) as info:
             backend.list_devices()
         assert info.value.code == "capability_unavailable"
+
+
+class TestDevicePullSaysWhenNothingLanded:
+    """adb sync can report a clean pull yet write no file for a missing remote."""
+
+    def _backend(self, monkeypatch: pytest.MonkeyPatch, *, write: bool) -> AdbBackend:
+        backend = AdbBackend()
+
+        class _Sync:
+            def stat(self, remote: str, **_: Any) -> Any:
+                return SimpleNamespace(mode=0o100644, size=4)
+
+            def pull(self, remote: str, local: str, **_: Any) -> None:
+                if write:
+                    Path(local).write_bytes(b"data")
+
+        fake = SimpleNamespace(sync=_Sync())
+        monkeypatch.setattr(backend, "_device", lambda serial: fake)
+        return backend
+
+    def test_a_pull_that_wrote_no_file_is_reported_not_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = self._backend(monkeypatch, write=False)
+        with pytest.raises(AdbError) as info:
+            backend.pull("emulator-5554", "/sdcard/missing.bin", tmp_path / "out.bin")
+        assert info.value.code == "not_found"
+        assert not (tmp_path / "out.bin").exists()
+
+    def test_a_pull_that_wrote_a_file_returns_its_size(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = self._backend(monkeypatch, write=True)
+        payload = backend.pull("emulator-5554", "/sdcard/report.bin", tmp_path / "out.bin")
+        assert payload["size"] == 4
+        assert payload["remote"] == "/sdcard/report.bin"
+        assert Path(payload["local"]).is_file()
 
 
 class TestFridaTargetAuthorization:
