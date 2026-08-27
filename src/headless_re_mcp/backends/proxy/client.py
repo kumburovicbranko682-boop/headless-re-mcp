@@ -60,6 +60,65 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
+# mitmproxy's ``ctx`` is a plain module global that ``Master.__init__`` resets
+# *before* the new master's addons have registered their options. Two masters
+# in one process therefore race: a running master's hooks can land on the
+# half-built foreign Options and crash ("No such option: rfile"). Holding this
+# lock from construction until the running-hook chain has completed keeps the
+# hazard windows from overlapping. Steady-state cross-reads remain (ctx points
+# at the newest master), but by then every Options is fully registered and the
+# schemas are identical, so reads cannot crash.
+_START_SERIALIZER = threading.Lock()
+
+# DumpMaster bundles addons that implement mitmdump's *CLI* semantics; run in
+# process they can each kill a healthy capture:
+#   - keepserving / readfilestdin read ``ctx.options.rfile`` in running(),
+#     which is the crash site of the ctx race above,
+#   - errorcheck installs a process-wide ERROR-level root logging handler and
+#     ``sys.exit(1)``s the master when *any* component of the process logs an
+#     error during its startup window -- including a different master or an
+#     unrelated failing tool.
+# None of them serve an embedded proxy: we never set rfile or the replay
+# options, and startup failure is already surfaced by the readiness probe.
+_DUMP_CLI_ADDONS = ("keepserving", "readfilestdin", "errorcheck")
+
+
+def _strip_dump_cli_addons(master: Any) -> None:
+    """Remove DumpMaster's CLI-only addons; see ``_DUMP_CLI_ADDONS`` for why."""
+    for name in _DUMP_CLI_ADDONS:
+        addon = None
+        with contextlib.suppress(Exception):
+            addon = master.addons.get(name)
+        if addon is None:
+            continue
+        with contextlib.suppress(Exception):
+            master.addons.remove(addon)
+        # errorcheck installs its root-logger handler in its constructor and
+        # normally detaches it inside Master.run(); once the addon is removed
+        # that never runs, and a stale handler would buffer every ERROR record
+        # in the process for the rest of its lifetime.
+        finish = getattr(addon, "finish", None)
+        if callable(finish):
+            with contextlib.suppress(Exception):
+                finish()
+
+
+class _RunningSignal:
+    """Addon that reports when the master's running-hook chain has completed.
+
+    Appended after every other addon, so mitmproxy invokes it last: once set,
+    all earlier running() hooks -- the ones that read the shared ``ctx`` -- have
+    already run. ``start()`` holds ``_START_SERIALIZER`` until this fires, which
+    is what actually closes the cross-master ctx race.
+    """
+
+    def __init__(self) -> None:
+        self.reached = threading.Event()
+
+    def running(self) -> None:
+        self.reached.set()
+
+
 def _close_proxy_servers(
     master: Any, loop: asyncio.AbstractEventLoop, timeout: float = 10.0
 ) -> None:
@@ -306,6 +365,7 @@ class _ProxyInstance:
         self.host = host
         self.port = port
         self.recorder = _FlowRecorder()
+        self._running_signal = _RunningSignal()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._master: Any = None
@@ -318,7 +378,17 @@ class _ProxyInstance:
         Reaching mitmproxy's run() is not the same as having bound the port: a
         busy port fails a moment later, and reporting "running" for a proxy that
         is about to die is how an unattended capture silently records nothing.
+
+        Serialized process-wide: mitmproxy's ctx globals make a master's
+        construction-to-running window hazardous to every other master (see
+        ``_START_SERIALIZER``), and ``setup_servers`` reads the *shared*
+        ``ctx.options.mode`` -- two masters starting at once can bind each
+        other's port. Starts are quick, so the serialization is invisible.
         """
+        with _START_SERIALIZER:
+            self._locked_start(timeout)
+
+    def _locked_start(self, timeout: float) -> None:
         # Refuse up front if the port is already taken -- typically a proxy this
         # service leaked on a previous run. Without this the readiness probe
         # below would see the foreign listener and call it success, which is the
@@ -341,7 +411,11 @@ class _ProxyInstance:
                 raise ProxyError("backend_error", f"mitmproxy failed to start: {self._error}")
             if not self._thread.is_alive():
                 raise ProxyError("backend_error", "mitmproxy exited during startup")
-            if _port_accepts(self.host, self.port):
+            # Both conditions, not just the port: the socket accepts as soon as
+            # setup_servers finishes, but the running-hook chain -- the part
+            # that reads the shared ctx -- runs after that, and the start lock
+            # must be held until it has completed.
+            if self._running_signal.reached.is_set() and _port_accepts(self.host, self.port):
                 return
             time.sleep(0.05)
         self.stop()
@@ -367,7 +441,10 @@ class _ProxyInstance:
                 master = DumpMaster(opts, loop=loop, with_termlog=False, with_dumper=False)
             except TypeError:
                 master = DumpMaster(opts)
-            master.addons.add(self.recorder)
+            _strip_dump_cli_addons(master)
+            # The signal goes in last so its running() fires after every other
+            # addon's: that is what makes it mean "the hazard window is over".
+            master.addons.add(self.recorder, self._running_signal)
             self._master = master
             self._started.set()
             loop.run_until_complete(master.run())

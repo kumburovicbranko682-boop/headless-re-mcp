@@ -464,6 +464,120 @@ class TestProxyStopReleasesTheListeningSocket:
         assert source.index("_close_proxy_servers(") < source.index("master.shutdown")
 
 
+class TestProxyMasterSurvivesLifeAsAnEmbeddedProxy:
+    """DumpMaster ships mitmdump's CLI addons, and each of them can kill a
+    healthy in-process capture: keepserving/readfilestdin read the shared
+    ``ctx.options.rfile`` in their running() hook (which crashes when another
+    master is mid-construction and ctx points at its half-built Options), and
+    errorcheck installs a process-wide ERROR-level root handler that
+    ``sys.exit(1)``s the master when *anything* in the process logs an error
+    during its startup window. These pin that the client strips all three and
+    serializes the hazardous construction-to-running window across masters.
+    """
+
+    def _dump_master(self, removed: list[str], finished: list[str]) -> Any:
+        from types import SimpleNamespace
+
+        class _ErrorCheck:
+            def finish(self) -> None:
+                finished.append("errorcheck")
+
+        addons = {
+            "keepserving": SimpleNamespace(),
+            "readfilestdin": SimpleNamespace(),
+            "errorcheck": _ErrorCheck(),
+            "proxyserver": SimpleNamespace(),
+        }
+
+        def remove(addon: Any) -> None:
+            for name, known in list(addons.items()):
+                if known is addon:
+                    removed.append(name)
+                    del addons[name]
+
+        return SimpleNamespace(
+            addons=SimpleNamespace(get=addons.get, remove=remove)
+        )
+
+    def test_strip_removes_every_cli_addon_and_detaches_errorchecks_handler(
+        self,
+    ) -> None:
+        from headless_re_mcp.backends.proxy.client import _strip_dump_cli_addons
+
+        removed: list[str] = []
+        finished: list[str] = []
+        master = self._dump_master(removed, finished)
+        _strip_dump_cli_addons(master)
+        assert sorted(removed) == ["errorcheck", "keepserving", "readfilestdin"]
+        # errorcheck's root-logger handler is installed in its constructor and
+        # only Master.run() would detach it; once the addon is removed, the
+        # strip has to do that or the handler leaks for the process lifetime.
+        assert finished == ["errorcheck"]
+
+    def test_strip_leaves_the_proxyserver_alone(self) -> None:
+        from headless_re_mcp.backends.proxy.client import _strip_dump_cli_addons
+
+        removed: list[str] = []
+        master = self._dump_master(removed, [])
+        _strip_dump_cli_addons(master)
+        assert "proxyserver" not in removed
+
+    def test_strip_tolerates_a_master_without_the_cli_addons(self) -> None:
+        from types import SimpleNamespace
+
+        from headless_re_mcp.backends.proxy.client import _strip_dump_cli_addons
+
+        # A future mitmproxy that no longer bundles these addons must not make
+        # startup raise; the strip is defense, not a requirement.
+        lean = SimpleNamespace(addons=SimpleNamespace(get=lambda name: None))
+        _strip_dump_cli_addons(lean)
+
+    def test_run_strips_cli_addons_before_registering_our_own(self) -> None:
+        """The window between construction and strip must not widen: the strip
+        has to happen inside _run, right after the master exists and before the
+        recorder/signal go in."""
+        import inspect
+
+        from headless_re_mcp.backends.proxy import client as proxy_client
+
+        source = inspect.getsource(proxy_client._ProxyInstance._run)
+        assert "_strip_dump_cli_addons(" in source
+        assert source.index("_strip_dump_cli_addons(") < source.index("addons.add")
+
+    def test_start_serializes_the_construction_to_running_window(self) -> None:
+        """Master.__init__ resets the process-global ctx before options are
+        registered, and setup_servers reads the *shared* ctx.options.mode: two
+        unserialized starts can crash each other's hooks or bind each other's
+        port."""
+        import inspect
+
+        from headless_re_mcp.backends.proxy import client as proxy_client
+
+        source = inspect.getsource(proxy_client._ProxyInstance.start)
+        assert "with _START_SERIALIZER" in source
+
+    def test_readiness_waits_for_the_running_hook_chain_not_just_the_port(
+        self,
+    ) -> None:
+        """The socket accepts as soon as setup_servers finishes, but the hooks
+        that read the shared ctx run after that; releasing the start lock on
+        port-accept alone would reopen the race the lock exists to close."""
+        import inspect
+
+        from headless_re_mcp.backends.proxy import client as proxy_client
+
+        source = inspect.getsource(proxy_client._ProxyInstance._locked_start)
+        assert "_running_signal.reached.is_set()" in source
+
+    def test_running_signal_reports_the_hook(self) -> None:
+        from headless_re_mcp.backends.proxy.client import _RunningSignal
+
+        signal = _RunningSignal()
+        assert not signal.reached.is_set()
+        signal.running()
+        assert signal.reached.is_set()
+
+
 class TestConcurrentStartDoesNotLeakABackend:
     def test_two_proxy_starts_for_one_session_only_keep_one_instance(
         self, monkeypatch: Any
