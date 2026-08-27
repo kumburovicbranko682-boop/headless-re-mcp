@@ -12,6 +12,7 @@ from headless_re_mcp.core.events import DebugEvent, DebugEventBatch
 from headless_re_mcp.core.models import (
     BackendKind,
     ModuleSelector,
+    Result,
     Session,
     SessionState,
 )
@@ -945,6 +946,89 @@ def test_dynamic_events_require_live_backend_and_validate_bounds(tmp_path: Path)
     closed = service.dynamic_events(session_id)
     assert not closed.ok and closed.error is not None
     assert closed.error.code == "invalid_request"
+
+
+def test_dynamic_events_times_out_acquiring_a_busy_runtime_lock(tmp_path: Path) -> None:
+    """A 100 ms event poll queued indefinitely behind another runtime owner."""
+    from threading import Event, Thread
+
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    runtime = service._runtime(session_id, BackendKind.X64DBG)
+    lock_held = Event()
+    release_lock = Event()
+
+    def hold_runtime_lock() -> None:
+        with runtime.lock:
+            lock_held.set()
+            assert release_lock.wait(2)
+
+    blocker = Thread(target=hold_runtime_lock, daemon=True)
+    blocker.start()
+    assert lock_held.wait(1)
+    outcomes: list[Result[JsonObject]] = []
+    poll = Thread(
+        target=lambda: outcomes.append(service.dynamic_events(session_id, timeout=0.1)),
+        daemon=True,
+    )
+    poll.start()
+    poll.join(timeout=0.4)
+    returned_within_bound = not poll.is_alive()
+    release_lock.set()
+    blocker.join(timeout=2)
+    poll.join(timeout=2)
+
+    assert returned_within_bound, "dynamic.events remained blocked acquiring the runtime lock"
+    (result,) = outcomes
+    assert not result.ok and result.error is not None
+    assert result.error.code == "timeout"
+    assert result.error.retryable is True
+
+
+class ClockBurningEventWorker(FakeDynamicWorker):
+    """Burns simulated seconds inside each native read so budgets are visible."""
+
+    def __init__(self, clock: dict[str, float]) -> None:
+        super().__init__()
+        self.clock = clock
+
+    def read_events(
+        self,
+        cursor: int,
+        *,
+        limit: int = 100,
+        timeout: float = 10.0,
+    ) -> DebugEventBatch:
+        batch = super().read_events(cursor, limit=limit, timeout=timeout)
+        self.clock["now"] += 4.0
+        return batch
+
+
+def test_dynamic_events_long_poll_only_gets_the_remaining_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The native long poll must not re-spend time the poll already used."""
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    clock = {"now": 0.0}
+    worker = ClockBurningEventWorker(clock)
+    worker.current_state = _state("paused")
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+    monkeypatch.setattr("headless_re_mcp.core.service.monotonic", lambda: clock["now"])
+
+    polled = service.dynamic_events(session_id, timeout=10.0)
+
+    assert polled.ok, polled.error
+    # The 50 ms catch-up drain burns 4 simulated seconds, so the long poll may
+    # only wait for the 6 that remain of the 10-second budget, not a fresh 10.
+    assert [read[2] for read in worker.event_reads] == [0.05, 6.0]
 
 
 def test_fatal_event_protocol_error_invalidates_runtime(tmp_path: Path) -> None:

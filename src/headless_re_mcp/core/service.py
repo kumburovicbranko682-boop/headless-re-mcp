@@ -1282,9 +1282,20 @@ class AnalysisService(
                 ValueError("timeout must be greater than 0 and at most 30 seconds"),
                 session_id=session_id,
             )
+        # The poll budget starts before the lock, not after: a 100 ms peek used
+        # to queue indefinitely behind a 30-second run-control call that owned
+        # the runtime, blocked on a wait the caller never asked to share.
+        deadline = monotonic() + float(timeout)
         try:
             runtime = self._runtime(session_id, BackendKind.X64DBG)
-            with runtime.lock:
+            if not runtime.lock.acquire(timeout=max(0.0, deadline - monotonic())):
+                raise XdbgRpcError(
+                    "timeout",
+                    "dynamic.events timed out acquiring the runtime lock",
+                    details={"timeout_seconds": float(timeout)},
+                    retryable=True,
+                )
+            try:
                 self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
                 if "events.read" not in runtime.worker.capabilities:
                     raise XdbgRpcError(
@@ -1330,15 +1341,19 @@ class AnalysisService(
                     )
                     served = event_log.read_after(cursor.value, limit=limit)
                     if not served.batch.events and not served.unrecovered_gap:
-                        # Long-poll once for new native events, then serve from log.
-                        drain_native_into_log(
-                            dynamic,
-                            drain_cursor,
-                            event_log,
-                            timeout=float(timeout),
-                            max_rounds=1,
-                        )
-                        served = event_log.read_after(cursor.value, limit=limit)
+                        # Long-poll once for new native events, then serve from
+                        # the log.  Only the wall-clock remainder is spent here;
+                        # the lock wait above already consumed part of the budget.
+                        poll_remaining = deadline - monotonic()
+                        if poll_remaining > 0:
+                            drain_native_into_log(
+                                dynamic,
+                                drain_cursor,
+                                event_log,
+                                timeout=poll_remaining,
+                                max_rounds=1,
+                            )
+                            served = event_log.read_after(cursor.value, limit=limit)
                 batch = served.batch
                 if not waiting:
                     try:
@@ -1366,6 +1381,8 @@ class AnalysisService(
                 payload["durable_log"] = True
                 payload["replayed_from_store"] = bool(batch.events) and batch.dropped == 0
                 payload["unrecovered_gap"] = served.unrecovered_gap
+            finally:
+                runtime.lock.release()
             result = _success(
                 payload,
                 session_id=session_id,
