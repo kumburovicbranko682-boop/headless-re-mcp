@@ -260,10 +260,11 @@ def test_disassemble_fat_method_body(tmp_path: Path) -> None:
 def test_disassemble_il_marks_incomplete_decodes_partial() -> None:
     """The disassembler must not present an incomplete decode as complete.
 
-    An agent acts on whether the listing is whole, so a two-byte-opcode
-    prefix, an operand that runs off the end, and hitting the instruction cap
-    each have to set partial; an unknown single byte is emitted opaquely
-    instead of guessed at.
+    An agent acts on whether the listing is whole, so a two-byte-opcode prefix,
+    an operand that runs off the end, hitting the instruction cap, and an opcode
+    outside the curated subset each have to set partial. The last case matters
+    because an unmodeled opcode may carry an operand the decoder cannot measure,
+    which would desync the rest of the listing while it still looked complete.
     """
     # 0xFE is the two-byte-opcode prefix: recorded opaquely and flagged partial.
     insns, partial = _disassemble_il(bytes([0xFE, 0x1D]), max_insns=16)
@@ -271,8 +272,20 @@ def test_disassemble_il_marks_incomplete_decodes_partial() -> None:
     assert partial is True
 
     # Unknown single-byte opcode: emitted as op_<hex>, not guessed, no crash.
+    # It must also flag partial: the subset cannot tell an operand-carrying
+    # unknown from a bare one, so positions after it are not guaranteed.
     insns, partial = _disassemble_il(bytes([0xFD]), max_insns=16)
     assert insns[0]["mnemonic"] == "op_fd"
+    assert partial is True
+
+    # ldc.i8 (0x21) is outside the curated subset and carries an 8-byte operand.
+    # Decoding its operand bytes as opcodes would desync into a plausible-looking
+    # "ldc.i4.0; ...; ret" tail; the listing must instead be flagged partial so
+    # the clean-looking decode is not presented as the whole method.
+    body = bytes([0x21, 0x2A, 0, 0, 0, 0, 0, 0, 0, 0x2A])  # ldc.i8 <8 bytes>; ret
+    insns, partial = _disassemble_il(body, max_insns=16)
+    assert insns[0]["mnemonic"] == "op_21"
+    assert partial is True
 
     # ldc.i4 (0x20) needs a 4-byte operand; only two are present -> partial,
     # and no bogus instruction is emitted from the short tail.

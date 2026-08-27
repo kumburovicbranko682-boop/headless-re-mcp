@@ -82,7 +82,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   名称/偏移/标志逐字节正确（旧公式下该测试读到错位数据即失败）；小夹具无法逼出的
   0x18/0x26 分歧则由 `table_row_size` 的直接单元断言把守。
 
-### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
+### 修复（IL 反汇编遇未建模操作码后把错位残留当成完整反汇编）
+
+- `metadata_enum._disassemble_il` 用的是一份精选操作码子集，遇到子集外的操作码时只把该字节
+  透明地记成 `op_<hex>` 便继续，却不置 `partial`。但子集外的操作码可能带有反汇编器无从量度
+  的操作数——`switch`、`ldc.i8`、`calli`、各 `.s` 短格式等——此时其操作数字节会被当成后续指令
+  解码，从该点起整段列表都不可信，偏偏仍以 `partial=False`（“完整”）呈现。例如 `ldc.i8 <8 字节>;
+  ret` 会被解成一串看似合理、以 `ret` 收尾的“干净”指令。反汇编器无法区分带操作数与不带操作数
+  的未知操作码，也就无法判断是否已错位，故与上方 0xFE 两字节前缀前缀同一处理：透明记录该字节
+  并把整段标记为 `partial`，不再把可能错位的尾部谎报成完整解码。此前脂肪头截断、操作数越界、
+  指令上限都会置 `partial`，唯独未知操作码这条路径不置，属同类“诚实性”缺口。
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
   作为输出路径，指望它触发 `run_scylla` 的“output_path must differ from input_path”守卫。
