@@ -75,12 +75,24 @@ def _event_tail(
         }
     try:
         latest = int(log.latest_sequence)
-        batch = log.read_after(max(0, latest - limit), limit=limit).batch
+        window_start = max(0, latest - limit)
+        batch = log.read_after(window_start, limit=limit).batch
     except BaseException as exc:  # noqa: BLE001 - a frame has to render regardless
         return None, {"code": "events_unavailable", "message": str(exc)}
     return {
         "events": [event.to_dict() for event in batch.events],
         "next_cursor": batch.next_cursor,
+        # latest_sequence is the stream's high-water mark: how many events this
+        # session emitted, of which the frame shows only the newest window.
+        # Surfacing just the events read as the whole stream on a busy session.
+        "total": batch.latest_sequence,
+        # window_start > 0 means the read began past sequence 1, so older events
+        # exist before this frame.
+        "truncated": window_start > 0,
+        # Events overwritten in the native ring before drain could copy them are
+        # gone, not merely off-window. A panel that hid this drew a clean stream
+        # over a hole.
+        "dropped_total": batch.dropped_total,
     }, None
 
 
@@ -195,6 +207,9 @@ def build_monitor_snapshot(
         "events": {
             "items": (events_payload or {}).get("events") or [],
             "next_cursor": (events_payload or {}).get("next_cursor"),
+            "total": (events_payload or {}).get("total", 0),
+            "truncated": bool((events_payload or {}).get("truncated", False)),
+            "dropped_total": (events_payload or {}).get("dropped_total", 0),
             "error": events_error,
         },
         "artifacts": {
