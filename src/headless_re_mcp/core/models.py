@@ -12,12 +12,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class Architecture(StrEnum):
     X86 = "x86"
     X64 = "x64"
-    # ARM members exist to *label* ELF sessions the static backends (radare2,
-    # Ghidra) analyze cross-platform. They never reach the PE/x64dbg code, which
-    # branches ``if X86 else <64-bit>``: x64dbg refuses non-PE targets, PE
-    # detection only ever yields X86/X64, and the r2 mapping derives arch from
-    # the PE header (None for ELF). So a session may be labelled ARM/ARM64, but
-    # no 64-bit-vs-32-bit PE branch is asked to interpret those values.
+    # ARM members exist to *label* ELF and Mach-O sessions the static backends
+    # (radare2, Ghidra) analyze cross-platform. They never reach the PE/x64dbg
+    # code, which branches ``if X86 else <64-bit>``: x64dbg refuses non-PE
+    # targets, PE detection only ever yields X86/X64, and the r2 mapping derives
+    # arch from the container header (None for a machine the enum cannot name).
+    # So a session may be labelled ARM/ARM64, but no 64-bit-vs-32-bit PE branch
+    # is asked to interpret those values.
     ARM = "arm"
     ARM64 = "arm64"
 
@@ -50,16 +51,18 @@ class TargetKind(StrEnum):
     """What kind of artifact a session is bound to.
 
     The debugger-oriented tools assume a local PE with a known machine type.
-    ELF targets are the other local-binary kind: the cross-platform static
-    backends (radare2, Ghidra) analyze them the same way, but they carry no PE
-    ImageBase or machine word, so PE-only tools refuse them explicitly. Android
-    and browser targets share the session lifecycle, artifacts and knowledge
-    store but cannot answer binary questions at all, so every tool that needs a
-    local binary says so explicitly rather than failing deep inside a backend.
+    ELF and Mach-O targets are the other local-binary kinds: the cross-platform
+    static backends (radare2, Ghidra) analyze all three the same way, but a
+    non-PE binary carries no PE ImageBase or machine word, so PE-only tools
+    refuse them explicitly. Android and browser targets share the session
+    lifecycle, artifacts and knowledge store but cannot answer binary questions
+    at all, so every tool that needs a local binary says so explicitly rather
+    than failing deep inside a backend.
     """
 
     PE = "pe"
     ELF = "elf"
+    MACHO = "macho"
     APK = "apk"
     WEB = "web"
 
@@ -193,7 +196,7 @@ class Session(BaseModel):
         if self.binary is None:
             raise TargetMismatch(
                 f"session target {self.target.value} is not backed by a local file",
-                expected=(TargetKind.PE, TargetKind.ELF, TargetKind.APK),
+                expected=(TargetKind.PE, TargetKind.ELF, TargetKind.MACHO, TargetKind.APK),
                 actual=self.target,
             )
         return self.binary

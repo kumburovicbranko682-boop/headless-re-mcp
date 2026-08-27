@@ -122,6 +122,8 @@ class SessionRegistry:
                 architecture = detect_pe_architecture(path)
             elif kind is TargetKind.ELF:
                 architecture = detect_elf_architecture(path)
+            elif kind is TargetKind.MACHO:
+                architecture = detect_macho_architecture(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             session = Session(
@@ -364,6 +366,18 @@ _APK_MANIFEST = "AndroidManifest.xml"
 # Enough for every magic number below without pulling a large header into memory.
 _MAGIC_BYTES = 8
 
+# The four thin Mach-O magics as they appear as the first bytes on disk, mapped
+# to (is_64_bit, field byte order). Little-endian targets (x86*/arm*) store the
+# magic byte-reversed (CF FA ED FE); big-endian ones (PowerPC) store it as
+# written. Fat/universal binaries (0xCAFEBABE) are intentionally absent: that
+# magic collides with Java class files and a fat file has no single header.
+_MACHO_MAGICS: dict[bytes, tuple[bool, Literal["big", "little"]]] = {
+    b"\xcf\xfa\xed\xfe": (True, "little"),
+    b"\xce\xfa\xed\xfe": (False, "little"),
+    b"\xfe\xed\xfa\xcf": (True, "big"),
+    b"\xfe\xed\xfa\xce": (False, "big"),
+}
+
 
 def is_http_url(reference: str) -> bool:
     return reference.lower().startswith(("http://", "https://"))
@@ -395,6 +409,8 @@ def classify_target(reference: str | Path) -> TargetKind:
         return TargetKind.PE
     if magic.startswith(b"\x7fELF"):
         return TargetKind.ELF
+    if magic[:4] in _MACHO_MAGICS:
+        return TargetKind.MACHO
     if magic.startswith(b"\x00asm"):
         return TargetKind.WEB
     if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
@@ -496,3 +512,38 @@ def detect_elf_architecture(path: Path) -> Architecture | None:
     endian: Literal["big", "little"] = "big" if header[5] == 2 else "little"
     machine = int.from_bytes(header[18:20], endian)
     return _ELF_MACHINE_TO_ARCH.get(machine)
+
+
+# Mach-O cpu_type (mach/machine.h) the Architecture enum can name. The
+# CPU_ARCH_ABI64 bit (0x0100_0000) marks the 64-bit variants of the same base
+# type. A cputype outside this map (PowerPC, ...) still opens as a working
+# Mach-O session with no label, exactly like the ELF path.
+_MACHO_CPUTYPE_TO_ARCH = {
+    0x00000007: Architecture.X86,
+    0x01000007: Architecture.X64,
+    0x0000000C: Architecture.ARM,
+    0x0100000C: Architecture.ARM64,
+}
+
+
+def detect_macho_architecture(path: Path) -> Architecture | None:
+    """Name a thin Mach-O's architecture from its header, or None.
+
+    Like ``detect_elf_architecture`` this never raises: ``classify_target`` only
+    routes files whose first bytes are a thin Mach-O magic here, and a cputype
+    the enum cannot name (PowerPC, ...) must still open as a working Mach-O
+    session -- radare2 and Ghidra read the true architecture themselves. The
+    cputype is read in the byte order the magic declares, so a big-endian
+    (PowerPC) Mach-O is decoded correctly rather than byte-swapped.
+    """
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(8)
+    except OSError:
+        return None
+    order = _MACHO_MAGICS.get(header[:4])
+    if order is None or len(header) < 8:
+        return None
+    _is64, endian = order
+    cputype = int.from_bytes(header[4:8], endian)
+    return _MACHO_CPUTYPE_TO_ARCH.get(cputype)

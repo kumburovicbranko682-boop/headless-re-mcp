@@ -13,8 +13,8 @@ and a companion object is added beside it (``entry_address`` for ``entry``,
 ``from_address``/``to_address`` for the xref endpoints -- the same names r2
 uses -- and ``address_detail`` for symbols, whose field is literally
 ``address`` and so cannot host the object without shadowing the string). The
-PE/ELF header parsers are shared from the r2 mapping module rather than
-duplicated: they are format-level helpers, not r2-specific.
+PE/ELF/Mach-O base derivation is shared from the r2 mapping module rather than
+duplicated: it is a format-level helper, not r2-specific.
 """
 
 from __future__ import annotations
@@ -24,8 +24,7 @@ from typing import Any
 
 from headless_re_mcp.backends.r2.mapping import (
     address_dict,
-    elf_preferred_base,
-    pe_preferred_base,
+    preferred_base,
 )
 
 JsonObject = dict[str, Any]
@@ -68,11 +67,9 @@ def enrich_ghidra_payload(payload: JsonObject, *, binary: Path) -> JsonObject:
     objects, exactly as the r2 mapping does.
     """
     module = binary.name
-    arch, image_base = pe_preferred_base(binary)
-    # A PE parse that found neither arch nor base means this is not a PE; fall
-    # back to the ELF header. A PE that named its arch keeps PE semantics.
-    if arch is None and image_base is None:
-        arch, image_base = elf_preferred_base(binary)
+    # PE, then ELF, then Mach-O -- the shared chain the r2 backend uses, so both
+    # engines resolve the same base and architecture for one binary.
+    arch, image_base = preferred_base(binary)
 
     out = dict(payload)
     out["module"] = module

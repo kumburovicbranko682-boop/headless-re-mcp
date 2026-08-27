@@ -23,6 +23,24 @@ _ELF_MACHINE_TO_ARCH = {
     0xB7: Architecture.ARM64,
 }
 
+# Mach-O cpu_type -> Architecture and the four thin magics -> (is64, endianness),
+# mirroring session.detect_macho_architecture; kept local so this backend module
+# stays decoupled from the session layer, as with the ELF table above.
+_MACHO_CPUTYPE_TO_ARCH = {
+    0x00000007: Architecture.X86,
+    0x01000007: Architecture.X64,
+    0x0000000C: Architecture.ARM,
+    0x0100000C: Architecture.ARM64,
+}
+_MACHO_MAGICS: dict[bytes, tuple[bool, Literal["big", "little"]]] = {
+    b"\xcf\xfa\xed\xfe": (True, "little"),
+    b"\xce\xfa\xed\xfe": (False, "little"),
+    b"\xfe\xed\xfa\xcf": (True, "big"),
+    b"\xfe\xed\xfa\xce": (False, "big"),
+}
+_MACHO_LC_SEGMENT = 0x01
+_MACHO_LC_SEGMENT_64 = 0x19
+
 
 def pe_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
     """Read PE preferred ImageBase without spawning r2.
@@ -135,6 +153,92 @@ def elf_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
     return arch, base
 
 
+def macho_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
+    """Read a thin Mach-O's load base and architecture without spawning r2.
+
+    The Mach-O counterpart of ``pe_preferred_base``/``elf_preferred_base``: the
+    load base is the vmaddr of the segment that maps the mach header (fileoff 0,
+    non-empty, and not ``__PAGEZERO``), which matches radare2's ``$B`` -- verified
+    0x100000000 for a standard 64-bit executable, and 0 for a PIE image -- so
+    ``va - base`` yields an rva consistent with the addresses r2 reports.
+    ``__PAGEZERO`` sits at vmaddr 0 and would otherwise drag the base to 0, so it
+    is skipped. Fat/universal (0xCAFEBABE) binaries are declined: that magic
+    collides with Java class files and a fat file has no single base until an
+    architecture is picked. Either half of the pair may be None.
+    """
+    try:
+        with binary.open("rb") as stream:
+            head = stream.read(32)
+            order = _MACHO_MAGICS.get(head[:4])
+            if order is None or len(head) < 24:
+                return None, None
+            is64, endian = order
+            arch = _MACHO_CPUTYPE_TO_ARCH.get(int.from_bytes(head[4:8], endian))
+            ncmds = int.from_bytes(head[16:20], endian)
+            sizeofcmds = int.from_bytes(head[20:24], endian)
+            if ncmds <= 0 or not 0 < sizeofcmds <= _MAX_HEADER:
+                return arch, None
+            stream.seek(32 if is64 else 28)
+            commands = stream.read(sizeofcmds)
+    except OSError:
+        return None, None
+    if len(commands) < sizeofcmds:
+        return arch, None
+    seg_cmd = _MACHO_LC_SEGMENT_64 if is64 else _MACHO_LC_SEGMENT
+    vaddr_size = 8 if is64 else 4
+    vmaddr_off = 24  # cmd(4) + cmdsize(4) + segname(16)
+    fileoff_off = vmaddr_off + 2 * vaddr_size  # past vmaddr + vmsize
+    header_base: int | None = None
+    min_base: int | None = None
+    offset = 0
+    for _ in range(ncmds):
+        if offset + 8 > len(commands):
+            break
+        cmd = int.from_bytes(commands[offset : offset + 4], endian)
+        cmdsize = int.from_bytes(commands[offset + 4 : offset + 8], endian)
+        if cmdsize <= 0 or offset + cmdsize > len(commands):
+            break
+        if cmd == seg_cmd and cmdsize >= fileoff_off + 2 * vaddr_size:
+            segname = commands[offset + 8 : offset + 24].split(b"\x00", 1)[0]
+            vmaddr = int.from_bytes(
+                commands[offset + vmaddr_off : offset + vmaddr_off + vaddr_size], endian
+            )
+            fileoff = int.from_bytes(
+                commands[offset + fileoff_off : offset + fileoff_off + vaddr_size], endian
+            )
+            filesize = int.from_bytes(
+                commands[
+                    offset + fileoff_off + vaddr_size : offset + fileoff_off + 2 * vaddr_size
+                ],
+                endian,
+            )
+            if segname != b"__PAGEZERO" and filesize > 0:
+                min_base = vmaddr if min_base is None else min(min_base, vmaddr)
+                if fileoff == 0:
+                    header_base = vmaddr if header_base is None else min(header_base, vmaddr)
+        offset += cmdsize
+    return arch, header_base if header_base is not None else min_base
+
+
+def preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
+    """Best-effort (architecture, load base) for a local binary.
+
+    Tries each supported container in turn: a PE parse that named neither an
+    arch nor a base is not a PE, so fall through to ELF, then to Mach-O. The
+    first container that recognises the header wins -- a recognised binary whose
+    base is merely unresolvable (e.g. an arch the enum cannot name) stops the
+    chain rather than being reparsed as another format. Both halves may be None
+    for an unknown container.
+    """
+    arch, base = pe_preferred_base(binary)
+    if arch is not None or base is not None:
+        return arch, base
+    arch, base = elf_preferred_base(binary)
+    if arch is not None or base is not None:
+        return arch, base
+    return macho_preferred_base(binary)
+
+
 def address_dict(
     va: int | None,
     *,
@@ -201,13 +305,10 @@ def enrich_r2_payload(
 ) -> JsonObject:
     """Parse *j payloads into items with unified Address fields."""
     module = binary.name
-    detected_arch, image_base = pe_preferred_base(binary)
-    # A PE parse that found nothing (no arch and no base) means this is not a
-    # PE; fall back to the ELF header so ELF addresses gain rva/module/arch too
-    # instead of staying va-only. A PE that named its arch but not its base is
-    # still a PE and must not be reparsed as ELF.
-    if detected_arch is None and image_base is None:
-        detected_arch, image_base = elf_preferred_base(binary)
+    # PE, then ELF, then Mach-O: a non-PE binary still gains rva/module/arch
+    # instead of staying va-only, and the first container to recognise the
+    # header wins (see preferred_base).
+    detected_arch, image_base = preferred_base(binary)
     arch = architecture or detected_arch
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
