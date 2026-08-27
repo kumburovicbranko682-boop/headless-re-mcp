@@ -123,6 +123,43 @@ def test_parse_r2_json_keeps_the_whole_list_when_opcodes_contain_brackets() -> N
     assert parsed[1]["opcode"] == "ret"
 
 
+def test_parse_r2_json_does_not_go_quadratic_on_a_bracket_dense_reply() -> None:
+    """A truncated pdj reply is full of ``[`` inside operands and never parses.
+
+    r2 output is bounded at a megabyte, not kept small, and ``raw_decode(text,
+    index)`` makes the JSONDecodeError constructor count the line/column from
+    the buffer start, so trying every ``[`` / ``{`` is O(n^2). Measured on a
+    915 KiB reply that never forms a JSON value: 5.4s of pure CPU after the
+    subprocess already exited, quadrupling per doubling. The scan is capped, so
+    the same reply is refused in well under a second and still reads as
+    unparsed -- exactly as an unparseable one already did.
+    """
+    import time
+
+    lines = [f"mov eax, dword [rbp - 0x{i:x}] ; {{note}}" for i in range(40_000)]
+    raw = "junk banner\n" + "\n".join(lines)
+    assert len(raw) > 1_000_000
+    started = time.perf_counter()
+    parsed = parse_r2_json(raw)
+    elapsed = time.perf_counter() - started
+    assert parsed is None
+    assert elapsed < 1.0, f"bracket-dense scan took {elapsed:.2f}s"
+
+
+def test_parse_r2_json_finds_the_document_after_an_analysis_preamble() -> None:
+    """The scan cap must clear r2's ``[x] Analyze ...`` progress lines.
+
+    aa prints a short bracketed preamble before the JSON command's output, so
+    the real document's opening bracket is a handful of candidates in. The cap
+    sits far above that: the payload is still found.
+    """
+    preamble = "[x] Analyze all flags\n[x] Analyze function calls\n[x] Emulate\n"
+    document = json.dumps([{"offset": 0x1000, "name": "entry0"}])
+    parsed = parse_r2_json(preamble + document)
+    assert isinstance(parsed, list)
+    assert parsed[0]["name"] == "entry0"
+
+
 def test_address_dict_with_rva() -> None:
     mapped = address_dict(
         0x140001000,

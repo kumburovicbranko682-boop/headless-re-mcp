@@ -8,6 +8,19 @@ from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# r2 -q0 emits the JSON document after at most a short analysis-progress
+# preamble (the "[x] Analyze ..." lines), so a real payload's opening bracket
+# is among the first handful of '[' / '{' characters. Past that, every extra
+# candidate is a bracket buried in disassembly operands ("dword [rbp - 0x10]")
+# or a string, and trying each one is quadratic: raw_decode(text, index) makes
+# the JSONDecodeError constructor count the line/column from the buffer start,
+# so a failed candidate costs O(len). This runs after capture, outside the
+# subprocess timeout, on stdout that is only bounded (1 MiB), not small.
+# Measured on a 915 KiB bracket-dense reply that never parses: 5.4s of pure
+# CPU, quadrupling per doubling. Cap the scan far above any real preamble and
+# a flood becomes linear; a document whose bracket sits past the cap reads as
+# unparsed, exactly as an unparseable one already did.
+_MAX_JSON_SCAN_CANDIDATES = 256
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -106,12 +119,19 @@ def parse_r2_json(raw: str) -> Any | None:
     if not text:
         return None
     decoder = json.JSONDecoder()
+    attempts = 0
     for index, char in enumerate(text):
         if char not in "[{":
             continue
+        if attempts >= _MAX_JSON_SCAN_CANDIDATES:
+            break
+        attempts += 1
         try:
             value, _end = decoder.raw_decode(text, index)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, RecursionError):
+            # RecursionError joins the set because a deeply nested hostile
+            # candidate raises it out of the C decoder rather than a
+            # JSONDecodeError; either way this brace was not the document.
             continue
         return value
     return None
