@@ -94,7 +94,18 @@ class R2Client:
         data = dict(data)
         data["address"] = address
         data["count"] = count
-        return enrich_r2_payload(data, binary=binary)
+        result = enrich_r2_payload(data, binary=binary)
+        # r2 does not fail on an unmapped or non-code address: it reads the hole
+        # as 0xff and returns `count` instructions all typed "invalid", which
+        # otherwise pass through looking like a real disassembly. Count them so
+        # invalid_count == count says "nothing decodable here" (unmapped,
+        # misspelled, or not code) rather than letting the filler read as code.
+        items = result.get("items")
+        if isinstance(items, list):
+            result["invalid_count"] = sum(
+                1 for item in items if isinstance(item, dict) and item.get("type") == "invalid"
+            )
+        return result
 
     def xrefs(
         self,

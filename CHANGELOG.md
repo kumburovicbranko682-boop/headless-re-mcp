@@ -146,6 +146,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `xrefs_to`/`xrefs_from`/`direction`/`from_address`/`to_address` 正确;描述点名 axtj/axfj/direction 与
   “ignores the address”;白名单放行 `ax[tf]j @ addr` 且拒绝裸 `axtj`/`axfj`。
 
+### 修复（r2.disasm 把坏地址的 0xff 填充当成真指令）
+
+- `r2.disasm` 在给定地址不可映射（拼错、越界、非代码）时不会报错:radare2 5.5.0 实测会把该处按 0xff
+  读出,返回**满 count 条** `{"bytes":"ff","type":"invalid"}` 的“指令”。这些填充过去原样透传,
+  `count` 照常为请求条数,读起来和一次正常反汇编毫无二致,无人值守的一遍会把无效字节记成代码。现由
+  客户端统计返回项中 `type=="invalid"` 的条数,新增 `invalid_count`:`invalid_count == count` 即表示该
+  地址没有可解码的代码。已实测合法代码地址（含 `type=="null"` 的 endbr64 这类有效指令）与合法但非代码
+  的已映射数据地址 `invalid_count` 均为 0,只有真正未映射的 0xff 区才计数,信号可靠。工具描述同步点名
+  `invalid_count` 及其含义。补测:坏地址回 `invalid_count==count`、真实指令回 0、描述点名
+  `invalid_count` 与 `invalid_count == count`。
+
 ### 修复（jadx 部分反编译不再冒充完整源码树）
 
 - `apk.export_sources` / `apk.decompile`（jadx）过去丢弃 `_run` 的返回值；jadx 在部分反编译失败时

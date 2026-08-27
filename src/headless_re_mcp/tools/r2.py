@@ -110,8 +110,13 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Disassemble count instructions at address, as radare2 decodes them.
 
         Answers with items holding those instructions, plus address
-        (va/rva/module), address_va (the integer that was asked) and count.
-        There is no integer address field.
+        (va/rva/module), address_va (the integer that was asked), count and
+        invalid_count. There is no integer address field. radare2 does not
+        error on a bad address: it reads unmapped memory as 0xff and returns
+        count instructions all typed "invalid", so invalid_count is how many of
+        them it could not decode. invalid_count == count means the address held
+        no decodable code -- unmapped, misspelled, or not code -- not that the
+        bytes there are real instructions.
         """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 
