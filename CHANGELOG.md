@@ -78,6 +78,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   再显式点关闭。reload 后运行不带选中线程恢复,最终助手文本只在流式期出现、不落 transcript,故改为
   断言批准卡消失(决策已受理)加 SSE 从保存游标 `after=` 重连。
 
+### 新增（r2 便携后端在 Linux/macOS 的实测 Gate）
+
+- **portable static（r2）此前在 Linux/macOS 完全没有实测覆盖**:唯一的 `test_m11_r2_live_address_mapping`
+  只认 Windows PE 夹具 `headless_fixture.exe`,在非 Windows 上永远 skip,于是 ELF 目标上「无 PE ImageBase
+  就只给裸 va、不臆造 rva/module」这条 `enrich_r2_payload` 分支的回归能在 Linux 上一路绿灯溜过——而 Linux
+  已被列为一等 core 平台。新增 `test_m11_r2_live_elf_maps_functions_disasm_and_xrefs`:用系统 C 编译器
+  (`cc`/`gcc`/`clang`)现编一个便携小夹具(无 OS 头,Linux 出 ELF、macOS 出 Mach-O),对同一个 `R2Client`
+  跑 `aflj`/`pdj`/`axj`,断言函数/反汇编/xref 都解析成功且地址是纯 va(显式断言 ELF 上不出现 rva/module)。
+  没有 r2 或没有编译器时如实 skip(skip 不等于 pass),不落任何提交产物。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
