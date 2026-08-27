@@ -29,6 +29,8 @@ _MODULES = [
     "headless_re_mcp.tools.proxy",
     "headless_re_mcp.tools.r2",
     "headless_re_mcp.tools.ghidra",
+    # The work-direction selector that gates the Android/Web tool surface.
+    "headless_re_mcp.tools.workspace",
 ]
 
 
