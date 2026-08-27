@@ -390,11 +390,16 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 79 passed / 13 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
-- 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
-  wabt（1）、以及 2 个有文档说明的故意跳过
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、
+  WASM 检查（wat/info 真实反汇编、非模块与缺文件各自的错误码、缺 wabt 时降级为 capability_unavailable））
+- 13 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
+  wabt（5，本轮新增的 WASM 真跑 Gate 在无 wabt 的这台机器上如实跳过）、以及 2 个有文档说明的故意跳过
+- WASM 那条线本轮补了真跑证据：在一台 `apt install wabt`（1.0.34）后的 Linux 上，`wasm.wat` / `wasm.info`
+  对提交进仓的多段模块夹具（`fixtures/web/gate_module.wasm`，含 import/memory/global/data/三个导出函数）
+  给出真实的 wat 文本与 objdump 段表；非模块文件被前置魔数检查挡下返回 `invalid_params`、缺文件返回
+  `not_found`、清空 PATH 后整条服务调用降级为 `capability_unavailable` 而非崩溃——全部 5 个用例在本机通过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
   结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
   校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。

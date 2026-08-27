@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（WASM 检查 Gate 在 Linux 真跑）
+
+- Web 线的 WebAssembly 面（`wasm.wat` / `wasm.info`）此前集成层只有一条极薄的检查：空的
+  `\0asm\x01` 头经 `wasm2wat` 往返、断言输出里有 `(module`。它从不碰 `wasm.info`、看不到任何真实
+  段、也不验证服务把后端拒绝映射成哪个错误码。新增 `tests/integration/test_wasm_inspection_gate.py`
+  与提交进仓的多段模块夹具 `fixtures/web/gate_module.wasm`（附可复现的 `gate_module.wat`；含
+  import、memory、mutable global、data 段与 add/bump/greet 三个导出函数），端到端穿过
+  `AnalysisService` 证明：`wasm.wat` 还原出带上述结构与 `headless-re` 标记串的真实 wat 文本、
+  `bytes` 与文本长度一致且 `truncated` 为假；`wasm.info` 列出 Type/Import/Function/Table/Memory/
+  Global/Export/Code/Data 九个段以及 `<add>`/`<bump>`/`<greet>` 与 `env.log` 符号；非 WASM 文件被
+  前置魔数检查挡下返回 `invalid_params`、缺文件返回 `not_found`；清空 PATH 后整条服务调用降级为
+  `capability_unavailable` 而非崩溃。真跑用例在无 wabt 的机器上如实跳过（skip 不等于 pass），
+  本轮在 `apt install wabt`（1.0.34）后的 Linux 上 5 个用例全部通过。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
