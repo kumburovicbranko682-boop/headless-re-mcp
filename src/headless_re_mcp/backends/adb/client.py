@@ -40,6 +40,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_FEATURES = 1000
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -495,6 +496,40 @@ class AdbBackend:
                 break
             props[match.group(1)] = match.group(2)
         return {"properties": props, "count": len(props), "has_more": has_more}
+
+    def features(self, serial: str, *, limit: int = 500) -> JsonObject:
+        """List device hardware/software features via ``pm list features``.
+
+        A different fact from packages (installed apps): the platform
+        capabilities an app can gate on -- android.hardware.telephony,
+        android.software.webview, and the versioned ones such as
+        reqGlEsVersion=196610 -- so an RE session can tell why a feature-gated
+        code path is or is not reachable on this device. Each ``feature:<name>``
+        line becomes one entry (the token after ``feature:`` verbatim, so the
+        versioned name=value entries are preserved), sorted and capped with
+        has_more. An adb error line (a dead or offline device) is a failure,
+        not an empty feature set.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_FEATURES))
+        raw = _device_shell(dev, "pm list features")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "pm list features failed", output=text[:800])
+        features: list[str] = []
+        has_more = False
+        for line in text.splitlines():
+            if not line.startswith("feature:"):
+                continue
+            name = line.split(":", 1)[1].strip()
+            if not name:
+                continue
+            if len(features) >= capped:
+                has_more = True
+                break
+            features.append(name)
+        features.sort()
+        return {"features": features, "count": len(features), "has_more": has_more}
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500

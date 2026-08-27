@@ -71,6 +71,21 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.features")
+    def device_features(
+        serial: str, limit: Annotated[int, Field(ge=1, le=1000)] = 500
+    ) -> dict[str, Any]:
+        """List device hardware/software features (pm list features).
+
+        A different fact from device.packages (installed apps): the platform
+        capabilities an app can gate on (android.hardware.telephony,
+        android.software.webview, versioned ones like reqGlEsVersion=196610).
+        Answers with features, count, and has_more so a page that filled the cap
+        is not read as every feature. There is no items field. An adb error line
+        (a dead or offline device) is a failure, not an empty feature set.
+        """
+        return _dump(analysis.device_features(serial, limit=limit))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,
