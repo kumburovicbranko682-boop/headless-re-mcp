@@ -126,6 +126,11 @@ def test_android_apk_dex_analysis_happy_path() -> None:
         assert classes.ok, classes.error
         assert "Lcom/example/headless/Sample;" in classes.data["classes"]
 
+        # The stdlib DEX reader resolves the same defined class androguard does,
+        # in dotted form (the descriptor Lcom/.../Sample; without its L...; wrap).
+        tool_free = created.data["session"]["metadata"]["apk"]["dex"]["classes"]
+        assert "com.example.headless.Sample" in tool_free
+
         methods = service.apk_methods(session_id, "com.example.headless.Sample")
         assert methods.ok, methods.error
         assert "getSecret" in [m["name"] for m in methods.data["methods"]]

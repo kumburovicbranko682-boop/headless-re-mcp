@@ -204,6 +204,35 @@ class TestDexFactsWithoutAndroguard:
         assert dex["class_count"] == 1
         assert dex["method_count"] == 1
         assert dex["string_count"] == 7
+        # The defined class name is resolved from the id tables, not just counted.
+        assert dex["classes"] == ["com.example.headless.Sample"]
+
+    def test_class_names_are_empty_when_only_the_header_is_present(self, tmp_path: Path) -> None:
+        # _dex_header carries no id tables, so the class-name walk finds nothing
+        # and the facts still carry the counts. Bounds checks must not raise.
+        path = tmp_path / "headeronly.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("classes.dex", _dex_header(b"035", 3, 2, 1))
+        dex = describe_apk(path)["apk"]["dex"]
+        assert dex["class_count"] == 1
+        assert dex["classes"] == []
+
+    def test_descriptor_conversion_and_string_reading(self) -> None:
+        from headless_re_mcp.core.session import _dex_descriptor_to_name, _dex_read_mutf8
+
+        assert _dex_descriptor_to_name("Lcom/example/headless/Sample;") == (
+            "com.example.headless.Sample"
+        )
+        assert _dex_descriptor_to_name("Lorg/A;") == "org.A"
+        # A primitive or array descriptor is not a class type and passes through.
+        assert _dex_descriptor_to_name("[I") == "[I"
+        assert _dex_descriptor_to_name("I") == "I"
+        # A DEX string is a uleb128 length prefix then MUTF-8 bytes to a NUL.
+        buffer = b"\x1dLcom/example/headless/Sample;\x00trailing"
+        assert _dex_read_mutf8(buffer, 0) == "Lcom/example/headless/Sample;"
+        # An out-of-range offset is refused, not indexed past the end.
+        assert _dex_read_mutf8(buffer, 999) is None
 
     def test_sums_counts_and_collects_versions_across_multidex(self, tmp_path: Path) -> None:
         path = tmp_path / "multidex.apk"

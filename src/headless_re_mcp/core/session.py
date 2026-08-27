@@ -427,6 +427,14 @@ _DEX_MAX_FILES = 256
 # u32 fields; a real DEX stays well under this, so a larger value is a corrupt
 # header we refuse rather than sum into a nonsense total.
 _DEX_MAX_COUNT = 64_000_000
+# The header counts are read from just 0x70 bytes, but the *names* of defined
+# classes live in the string/type/class-def tables, so surfacing them means
+# reading the member. The whole APK is already hashed at session creation, so
+# this only bounds a single member (skip names for anything larger), the
+# per-member class walk, and the package-wide sample the facts carry.
+_DEX_MAX_BYTES = 32 * 1024 * 1024
+_DEX_MAX_NAMES = 8192
+_DEX_MAX_TOTAL_NAMES = 512
 
 
 def is_http_url(reference: str) -> bool:
@@ -513,25 +521,32 @@ def describe_apk(path: Path) -> dict[str, Any]:
 
 
 def _apk_dex_facts(path: Path) -> dict[str, Any]:
-    """Sum the DEX header counts across every ``*.dex`` in the package, or {}.
+    """DEX header counts across every ``*.dex``, plus a sample of class names.
 
-    Reads only each member's 0x70-byte header. Fail-closed: an unreadable member
-    or an implausible header is skipped, and a package with no readable DEX
-    header yields {} rather than raising.
+    The counts come from each member's 0x70-byte header; the defined-class names
+    need the member's tables, so a member up to 32 MiB is read in full for them
+    and larger ones contribute counts only. Fail-closed: an unreadable member or
+    an implausible header is skipped, and a package with no readable DEX header
+    yields {} rather than raising.
     """
     versions: set[str] = set()
     class_count = method_count = string_count = 0
+    class_names: set[str] = set()
     found = False
     try:
         with zipfile.ZipFile(path) as archive:
             dex_names = sorted(n for n in archive.namelist() if n.endswith(".dex"))
             for name in dex_names[:_DEX_MAX_FILES]:
                 try:
+                    info = archive.getinfo(name)
+                    read_cap = (
+                        _DEX_HEADER_SIZE if info.file_size > _DEX_MAX_BYTES else _DEX_MAX_BYTES
+                    )
                     with archive.open(name) as handle:
-                        header = handle.read(_DEX_HEADER_SIZE)
-                except (OSError, zipfile.BadZipFile):
+                        data = handle.read(read_cap)
+                except (OSError, zipfile.BadZipFile, KeyError):
                     continue
-                facts = _parse_dex_header(header)
+                facts = _parse_dex_header(data[:_DEX_HEADER_SIZE])
                 if facts is None:
                     continue
                 found = True
@@ -539,6 +554,11 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
                 string_count += facts["string_count"]
                 method_count += facts["method_count"]
                 class_count += facts["class_count"]
+                if len(data) > _DEX_HEADER_SIZE and len(class_names) < _DEX_MAX_TOTAL_NAMES:
+                    for cname in _dex_class_names(data, facts):
+                        class_names.add(cname)
+                        if len(class_names) >= _DEX_MAX_TOTAL_NAMES:
+                            break
     except (OSError, zipfile.BadZipFile):
         return {}
     if not found:
@@ -548,6 +568,7 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
         "class_count": class_count,
         "method_count": method_count,
         "string_count": string_count,
+        "classes": sorted(class_names),
     }
 
 
@@ -564,9 +585,69 @@ def _parse_dex_header(header: bytes) -> dict[str, Any] | None:
     return {
         "version": header[4:7].decode("ascii", errors="replace"),
         "string_count": string_count,
+        "string_ids_off": int.from_bytes(header[60:64], "little"),
+        "type_count": int.from_bytes(header[64:68], "little"),
+        "type_ids_off": int.from_bytes(header[68:72], "little"),
         "method_count": method_count,
         "class_count": class_count,
+        "class_defs_off": int.from_bytes(header[100:104], "little"),
     }
+
+
+def _dex_class_names(data: bytes, header: dict[str, Any]) -> list[str]:
+    """Resolve the defined classes' names from the DEX id tables.
+
+    Each class_def's first u32 is a type index; that type's descriptor index
+    points into the string table, whose entry is a MUTF-8 string. Every lookup
+    is bounds-checked, so a corrupt index is skipped rather than raising.
+    """
+    string_ids_off = header["string_ids_off"]
+    string_ids_size = header["string_count"]
+    type_ids_off = header["type_ids_off"]
+    type_ids_size = header["type_count"]
+    class_defs_off = header["class_defs_off"]
+    class_defs_size = header["class_count"]
+    names: list[str] = []
+    for i in range(min(class_defs_size, _DEX_MAX_NAMES)):
+        cd = class_defs_off + i * 32
+        if cd + 4 > len(data):
+            break
+        type_idx = int.from_bytes(data[cd : cd + 4], "little")
+        if type_idx >= type_ids_size:
+            continue
+        t = type_ids_off + type_idx * 4
+        if t + 4 > len(data):
+            continue
+        desc_idx = int.from_bytes(data[t : t + 4], "little")
+        if desc_idx >= string_ids_size:
+            continue
+        s = string_ids_off + desc_idx * 4
+        if s + 4 > len(data):
+            continue
+        descriptor = _dex_read_mutf8(data, int.from_bytes(data[s : s + 4], "little"))
+        if descriptor:
+            names.append(_dex_descriptor_to_name(descriptor))
+    return names
+
+
+def _dex_read_mutf8(data: bytes, offset: int) -> str | None:
+    """Read a DEX string: a uleb128 length prefix then MUTF-8 bytes to a NUL."""
+    if not 0 <= offset < len(data):
+        return None
+    _, pos, ok = _read_leb_u32(data, offset)  # utf-16 unit count; the NUL bounds the bytes
+    if not ok:
+        return None
+    end = data.find(b"\x00", pos)
+    if end < 0:
+        end = len(data)
+    return data[pos:end].decode("utf-8", errors="replace")
+
+
+def _dex_descriptor_to_name(descriptor: str) -> str:
+    """``Lcom/example/Foo;`` -> ``com.example.Foo``; other shapes pass through."""
+    if len(descriptor) >= 3 and descriptor[0] == "L" and descriptor[-1] == ";":
+        return descriptor[1:-1].replace("/", ".")
+    return descriptor
 
 
 def _apk_manifest_facts_from_apk(path: Path) -> dict[str, Any]:
