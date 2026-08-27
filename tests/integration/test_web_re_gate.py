@@ -89,8 +89,17 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
     try:
         result = service.js_deobfuscate(str(_JS_FIXTURE))
         assert result.ok, result.error
-        assert isinstance(result.data["code"], str)
+        code = result.data["code"]
+        assert isinstance(code, str)
         assert result.data["bytes"] > 0
+        # The fixture hides "H3adl3ss" as \x-escapes inside a rotated string
+        # array; recovering it is webcrack's whole job. Asserting only bytes>0
+        # would pass on a no-op that deobfuscated nothing. The marker never
+        # appears as plain text in the input (guarded here so a fixture edit
+        # cannot quietly weaken the check), so its presence in the output proves
+        # real string decoding happened.
+        assert "H3adl3ss" not in _JS_FIXTURE.read_text(encoding="utf-8")
+        assert "H3adl3ss" in code
     finally:
         service.close_all()
 
