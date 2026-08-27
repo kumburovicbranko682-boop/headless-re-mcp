@@ -127,6 +127,36 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（续跑任务因重放的孤儿 tool 消息被 provider 400 拒绝）
+
+- 一个 mission 跨多个 bounded run 承接，每个 run 都在同一线程上从 store 重建。store 把一次 run 的
+  工具结果存成只带 `tool_call_id` 的 `role="tool"` 行，而命名这些 id 的 assistant `tool_calls`
+  从不落库（没有对应列）。在 mission 的下一个 run 上原样重放时，每个这样的行都是孤儿：一条前面
+  没有 assistant `tool_calls` 的 tool 消息，OpenAI 兼容 API 直接 400。于是第二个 run 失败、调度器
+  据此把整个 mission 记为失败——只要第一个 run 调过工具（几乎必然），多 run 机制就死在第二个 run。
+  既有测试没能发现，是因为其假 provider 忽略收到的消息，只有真实端点才校验 tool-call 配对。
+- `rebuild_provider_messages()` 补回 store 丢掉的东西：一串连续的 tool 行是某个 assistant 轮的应答，
+  于是在其前面放一条恰好提供这些 id 的 assistant 消息——原轮有可见文本时并入该文本，没有时插入
+  一条无内容的 assistant 轮来承载。合成的调用名足矣，因为 provider 只校验历史 tool 消息按 id 应答
+  了前面的调用，不校验该调用的函数是否仍存在。orchestrator 在压缩前先跑它，压缩自带的孤儿守卫
+  随后在发送线上兜底。
+- 新增单测覆盖 `rebuild_provider_messages`（并入文本、无文本时插入、多调用轮、保留期截断的前导
+  tool 行、缺 id、纯文本不动、经压缩后仍成立），以及一个通过“遇孤儿即 400”的 provider 驱动的
+  端到端两-run 场景——修复前失败、修复后通过。
+
+### 修复（上下文压缩留下无应答的 tool_calls，请求被 provider 400 拒绝）
+
+- `compact_messages` 的尾部选取会丢弃缩减后仍超预算的最新消息——这个位置恰好总是工具结果：
+  其内容按 JSON 编码后计量，转义密集的输出（结果本身就是 JSON 字符串化进 content 的，逆向
+  分析输出还常带控制字符，后者编码后膨胀六倍）在内容被裁到预算一半后编码长度仍越界。发起
+  该调用的 assistant 轮很小、总能留下，于是发往 provider 的请求带着一个没有任何 tool 消息
+  应答的 `tool_calls` id——这正是尾部开头剥离孤儿 tool 消息所防的镜像情形，OpenAI 兼容 API
+  同样直接 400，调度器把这次 400 记成任务失败。并行调用只丢其一时同样触发（一真一缺）。
+  现压缩后对尾部补一条存根 tool 消息应答每个悬空 id（内容注明“结果过大已省略”），保留
+  assistant 轮曾发起调用的事实与幸存的真实结果；省略计数在补存根前统计，不因此虚减。
+  新增三条直测：单调用被丢后有存根应答、双调用只补缺的那条且真实结果原样保留、
+  全部有应答时不加任何存根。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
