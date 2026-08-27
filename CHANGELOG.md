@@ -34,6 +34,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `FridaError`(如 `permission_denied`)原样重抛、code 不被压平,原始异常变为消息含“was killed”的\
   `backend_error`,同步超时变为 `timeout`,三条都先杀进程。frida/client.py 的 spawn 失败/清理支\
   (729-744)由此覆盖(其余未覆盖行为为 device 会话真实 frida 路径或防御性外层分支)。(纯测试补充,无行为变更。)
+- 同时补齐 device 路径(`java_enumerate` / `hook_template_device`)的超时分类:此前只钉了“attach 同步\
+  超时报 timeout”一条,新增“枚举 RPC 超时”“hook 的 attach 同步超时”“脚本 load 超时”三条变体——它们\
+  分别命中外层与内层的 `_is_timeout` 分支,证明卡死的枚举/挂钩被归为 `timeout`(而非泛化的\
+  `backend_error`)且 `finally` 仍会 detach 会话,不在目标进程里留下常驻 agent。
 
 ### 测试（钉住 ensure_frida_server 的 root push/launch 降级诚实与 forward 已分类错误的回滚，不依赖 adbutils）
 

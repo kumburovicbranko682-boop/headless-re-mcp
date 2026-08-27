@@ -227,3 +227,73 @@ def test_java_enumerate_reports_a_synchronous_frida_timeout_as_timeout() -> None
     with pytest.raises(FridaError) as caught:
         client.java_enumerate("usb", 4242, allowed_pids={4242}, mode="classes")
     assert caught.value.code == "timeout"
+
+
+def test_java_enumerate_reports_an_rpc_timeout_as_timeout_and_detaches() -> None:
+    """The enumeration RPC (not just the attach) timing out is a timeout too.
+
+    An RPC fault escapes past the inner attach guard to the outer handler, which
+    the plain-fault test proves becomes backend_error. This pins the other outer
+    branch: a timeout-shaped RPC fault maps to 'timeout', and the finally still
+    detaches -- a wedged enumeration must not leave the agent resident."""
+
+    class _SlowApi:
+        def classes(self, name_filter: str, count: int) -> list[str]:
+            raise RuntimeError("frida: rpc timed out")
+
+    device = _Device(api=_SlowApi())
+    client = _client(device)
+    with pytest.raises(FridaError) as caught:
+        client.java_enumerate("usb", 4242, allowed_pids={4242}, mode="classes")
+    assert caught.value.code == "timeout"
+    assert device.session is not None and device.session.detached is True
+
+
+def test_hook_template_device_reports_a_synchronous_attach_timeout_as_timeout() -> None:
+    """hook_template_device's attach timing out synchronously is a timeout, the
+    same source java_enumerate pins -- not the backend_error a bare fault gives."""
+    device = _Device(attach_error=RuntimeError("frida: attach timed out"))
+    client = _client(device)
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device("usb", 4242, "noop", allowed_pids={4242})
+    assert caught.value.code == "timeout"
+
+
+def test_hook_template_device_reports_a_script_load_timeout_as_timeout_and_detaches() -> None:
+    """A script load that times out (not merely fails) is a timeout at the outer
+    handler, and the finally still detaches -- the timeout counterpart of the
+    script-load backend_error case, so a wedged load leaves no resident session."""
+
+    class _SlowScript:
+        exports_sync = object()
+
+        def load(self) -> None:
+            raise RuntimeError("frida: script load timed out")
+
+    class _SlowSession:
+        def __init__(self) -> None:
+            self.detached = False
+
+        def create_script(self, source: str) -> _SlowScript:
+            assert source
+            return _SlowScript()
+
+        def detach(self) -> None:
+            self.detached = True
+
+    class _Dev:
+        def __init__(self) -> None:
+            self.session = _SlowSession()
+
+        def attach(self, pid: int) -> _SlowSession:
+            return self.session
+
+    device = _Dev()
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: device  # type: ignore[method-assign]
+    with pytest.raises(FridaError) as caught:
+        client.hook_template_device("usb", 4242, "noop", allowed_pids={4242})
+    assert caught.value.code == "timeout"
+    assert device.session.detached is True
