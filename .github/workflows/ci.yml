@@ -152,6 +152,42 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-web-navigate:
+    # Drives web.navigate against a real headless Chromium: open a page, navigate
+    # to a second one, and prove the capture the session wired at open survives
+    # the navigation and accumulates both pages' requests. web.open is exercised
+    # elsewhere; this is the only job that runs the navigate tool end to end.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,browser]"
+
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+
+      - name: web.navigate live gate (skip != pass)
+        # The gate skips honestly when Playwright/Chromium is missing. This job
+        # installs both, so a skip here is a real regression -- treat it as a
+        # failure rather than a green run that tested nothing.
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          python -m pytest tests/integration/test_web_navigate_live_gate.py \
+            -q -rs -p no:cacheprovider --tb=short | tee web_navigate_gate.log
+          if grep -qiE "skipped" web_navigate_gate.log; then
+            echo "::error::web.navigate gate skipped — Playwright/Chromium missing in CI"
+            exit 1
+          fi
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

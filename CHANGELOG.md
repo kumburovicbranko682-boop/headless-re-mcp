@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（`web.navigate` 实机 gate：导航复用会话、跨导航持续抓包）
+
+- **`web.navigate` 从未被任何实机 gate 跑过**。所有 Web 抓取 gate 都只驱动 `web.open`
+  （open 自己会做首个 `page.goto`），而 `web.navigate` 是把**已经打开**的会话导到新 URL 的
+  另一支工具：它复用同一个 page 以及 open 时挂上的 CDP 监听，因此“抓包在导航后仍然存活、
+  并累计两个页面的请求”这一关键性质，任何只跑 open 的测试都看不到。
+- 新增 `tests/integration/test_web_navigate_live_gate.py`：本地 HTTP server 提供两页、各拉一个
+  不同子资源，`WebBackend.open` 打开 A 页后 `navigate` 到 B 页，断言每次调用都回报落地的 URL、
+  标题与 HTTP 200；随后读 `network_list`，断言**两页**的请求都在（`/a`+`res_a.js` 与
+  `/b`+`res_b.js`），证明导航复用了会话且抓包未随新页重置或脱钩。另有一例把会话导到 server
+  拒绝的路由，钉住“4xx/5xx 仍算导航、以 `status` 而非报错作答”的既有契约。
+- Skip != pass：Playwright 或其 Chromium 缺失时按原因显式 skip。新增 CI job `linux-web-navigate`
+  安装 `.[test,dev,web,browser]` 并 `playwright install --with-deps chromium`，跑该 gate；带
+  skip 守卫，CI 里一旦 skip 即判失败，杜绝“装了浏览器却什么都没测”的假绿。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
