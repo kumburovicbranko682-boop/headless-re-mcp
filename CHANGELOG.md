@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+Android 静态分析线（androguard）首次有了真实执行覆盖。此前所有 Android 测试都用**合成**
+压缩包（伪造的、非 AXML 的 manifest）只断言缺工具/坏文件时优雅降级，从没证明过 androguard
+能解析一个真正的 APK 并恢复出真实信息。新增 `tests/integration/test_android_re_live_gate.py`：
+用 Android SDK 现场造一个最小但合法的 APK（aapt2 把 manifest 编成二进制 AXML、d8 产出真实
+classes.dex、apksigner 签名），再直接驱动 `ApkClient`（apk.* 工具用的同一个客户端），断言
+恢复出包名、声明的权限、Activity、manifest、DEX 类与我们编译进去的方法（`addNumbers` /
+`greet`）以及签名证书。javac 用 `--release 11` 编译，避免 CI 的新 JDK（如 21 的 class 版本 65）
+被 build-tools 的 d8 拒绝。新增 `linux-android` CI job：装 Temurin 21 + Android SDK
+（build-tools;34.0.0、platforms;android-34）+ `.[android]`，跑该 gate 并解析 junitxml，
+SDK/androguard 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

@@ -152,6 +152,57 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          # javac + keytool build and sign the fixture APK; --release 11 in the
+          # gate keeps the bytecode within what build-tools' d8 accepts.
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install build-tools and a platform
+        run: sdkmanager "build-tools;34.0.0" "platforms;android-34"
+
+      - name: Install package with android extra
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,android]"
+
+      - name: androguard gate runs for real (skip != pass)
+        run: |
+          python -c "import androguard; print('androguard', androguard.__version__)"
+          python -m pytest tests/integration/test_android_re_live_gate.py \
+            -rs --tb=short --junitxml=android-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("android-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # The SDK, a JDK and androguard were all just installed, so a skip here
+          # means the gate could not reach them -- the false-green "skip != pass"
+          # warns about. This is the only test that ever runs androguard end to
+          # end over a genuine APK.
+          if not cases:
+              sys.exit("no android gate was collected")
+          if skipped:
+              sys.exit(f"android gate skipped despite an installed SDK/androguard: {skipped}")
+          print(f"android gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
