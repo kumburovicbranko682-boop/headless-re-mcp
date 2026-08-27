@@ -156,6 +156,35 @@ class TestFridaTargetAuthorization:
         assert "android_ssl_unpin" in info.value.details["allowed"]
 
 
+class TestFridaMemoryReadBounds:
+    """A negative address must be refused before it reaches Frida's ptr()."""
+
+    def _client(self) -> Any:
+        # The address check runs before _attach_local, so a stubbed availability
+        # lets it be exercised without frida installed (the dummy is never used).
+        client = FridaClient()
+        client._available = True
+        client._frida = object()
+        return client
+
+    def test_negative_address_is_refused(self) -> None:
+        client = self._client()
+        with pytest.raises(FridaError) as info:
+            client.memory_read(1, -1, 16, allowed_pid=1)
+        assert info.value.code == "invalid_params"
+
+    def test_a_valid_looking_address_passes_the_bounds_check(self) -> None:
+        """A non-negative address clears the guard and only then needs a session.
+
+        With no real frida the attach fails, but the failure is no longer the
+        address bounds check -- proving the guard is a floor, not a wall.
+        """
+        client = self._client()
+        with pytest.raises(FridaError) as info:
+            client.memory_read(1, 0x1000, 16, allowed_pid=1)
+        assert info.value.code != "invalid_params"
+
+
 class _FakeScript:
     def __init__(self) -> None:
         self.loaded = False
