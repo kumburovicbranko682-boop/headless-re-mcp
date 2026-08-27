@@ -152,6 +152,22 @@ def _device_shell(dev: Any, args: str | list[str], *, timeout: float = _ADB_SHEL
     return str(raw)
 
 
+def _is_host_error_output(text: str) -> bool:
+    """Whether adb handed back only host-error text instead of a real result.
+
+    adbutils' ``shell`` can return the adb host's own ``error:`` / ``adb:``
+    message as stdout rather than raising, so a dead or offline device answers
+    a text command with an error string. A reply whose every non-blank line is
+    such a line is a failure, not an empty-but-successful result. A real result
+    -- even a logcat line that merely mentions "error" -- has at least one line
+    that does not start with those prefixes.
+    """
+    captured = [line for line in text.splitlines() if line.strip()]
+    return bool(captured) and all(
+        line.lstrip().lower().startswith(("error:", "adb:")) for line in captured
+    )
+
+
 def _call(method: Any, *args: Any, timeout: float | None = None, **kwargs: Any) -> Any:
     """Invoke an adbutils method, passing timeout when the signature allows it."""
     extra = dict(kwargs)
@@ -437,9 +453,12 @@ class AdbBackend:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PROPERTIES))
         raw = _device_shell(dev, "getprop")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "getprop failed", output=text[:800])
         props: dict[str, str] = {}
         has_more = False
-        for line in str(raw).splitlines():
+        for line in text.splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if not match:
                 continue
@@ -456,9 +475,12 @@ class AdbBackend:
         capped = max(1, min(int(limit), _MAX_PACKAGES))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "pm list failed", output=text[:800])
         pkgs: list[str] = []
         has_more = False
-        for line in str(raw).splitlines():
+        for line in text.splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
@@ -607,6 +629,8 @@ class AdbBackend:
         capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
         raw = _device_shell(dev, ["logcat", "-d", "-t", str(capped)])
         text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "logcat failed", output=text[:800])
         truncated = len(text) > _MAX_LOGCAT_CHARS
         if truncated:
             text = text[-_MAX_LOGCAT_CHARS:]

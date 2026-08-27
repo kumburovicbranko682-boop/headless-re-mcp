@@ -291,9 +291,81 @@ def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() 
     assert payload["count"] == 10
     assert len(payload["methods"]) == 10
     assert payload["has_more"] is True
+    # A bare-array script shape is tolerated and reported as found.
+    assert payload["found"] is True
     doc = _tool_docstring("frida.java.methods")
     assert "Answers with methods" in doc
     assert "has_more" in doc
+    assert "found" in doc
+
+
+class _JavaApiFound:
+    """Newer script shape: methods() returns {found, methods}."""
+
+    def __init__(self, *, found: bool, count: int) -> None:
+        self._found = found
+        self._count = count
+
+    def methods(self, class_name: str, limit: int) -> dict[str, Any]:
+        del class_name, limit
+        return {
+            "found": self._found,
+            "methods": [f"m{index}" for index in range(self._count)],
+        }
+
+
+def _java_client_returning(api: object) -> FridaClient:
+    script = type("_S", (), {"exports_sync": api, "load": lambda self: None})()
+    session = type(
+        "_Sess",
+        (),
+        {"create_script": lambda self, source: script, "detach": lambda self: None},
+    )()
+    device = type("_Dev", (), {"attach": lambda self, pid: session})()
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: device  # type: ignore[method-assign]
+    return client
+
+
+def test_frida_java_methods_reports_a_class_that_is_not_loaded_as_not_found() -> None:
+    """found false with an empty list means the class name did not resolve.
+
+    An unattended agent that read only the empty list would conclude the class
+    has no methods, when in truth it was never loaded on the target.
+    """
+    client = _java_client_returning(_JavaApiFound(found=False, count=0))
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Nope", limit=10
+    )
+    assert payload["found"] is False
+    assert payload["methods"] == []
+    assert payload["count"] == 0
+    assert payload["has_more"] is False
+
+
+def test_frida_java_methods_reports_a_loaded_class_with_methods_as_found() -> None:
+    """found true with a full page still paginates via has_more."""
+    client = _java_client_returning(_JavaApiFound(found=True, count=11))
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Foo", limit=10
+    )
+    assert payload["found"] is True
+    assert payload["count"] == 10
+    assert payload["has_more"] is True
+
+
+def test_frida_java_methods_reports_a_loaded_class_with_no_methods_as_found() -> None:
+    """found true with an empty list: loaded, but declares none of its own."""
+    client = _java_client_returning(_JavaApiFound(found=True, count=0))
+    payload = client.java_enumerate(
+        None, 1, allowed_pids={1}, mode="methods", class_name="Marker", limit=10
+    )
+    assert payload["found"] is True
+    assert payload["methods"] == []
+    assert payload["count"] == 0
+    assert payload["has_more"] is False
 
 
 class _SpawnDevice:
