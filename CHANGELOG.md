@@ -184,6 +184,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   逐个 `await ServerInstance.stop()` 显式关掉监听 socket，再走上面的任务取消与循环关闭。
   `tests/integration/test_proxy_lifecycle_gate.py` 会真实起停并断言端口确实被释放；
   `tests/unit/test_proxy_server_teardown.py` 不依赖装上 mitmproxy 也能钉住这条收尾。
+- **并发起两个抓包会伪报「mitmproxy failed to start」**。mitmproxy 把 addon 上下文存在进程级模块
+  全局里(`Master.__init__` 做 `mitmproxy.ctx.options = self.options`),所以后一个 master 一构造就
+  把这个全局改指向自己那份尚未 `load()` 完的 options,而前一个 master 启动阶段的 `running` 钩子
+  正好读 `ctx.options.rfile`——`ReadFile.load()` 还没注册 `rfile`,抛 `AttributeError`。它被
+  mitmproxy 的 `safecall` 吞掉却仍被**记进日志**,再被 `errorcheck` addon 升级成致命退出,于是另一路
+  毫不相干的 `proxy.start` 就以「mitmproxy failed to start: 1」失败。而 `proxyserver` 是在
+  `running` 之前的 `setup_servers` 里绑好端口的,所以「端口可连」早于 `running` 发生、不足以判定启动
+  完成。现新增进程级 `_STARTUP_LOCK`,把「构造→listening→`running` 跑完」这段对 ctx 敏感的启动窗口
+  串行化:额外挂一个排在最后的 `_ready` addon,其 `running` 钩子置事件,`start()` 等到该事件置位且端口
+  可连才释放锁。抓包起来之后彼此不再共享 ctx,故多路抓包仍可并发运行。4 路 barrier 压测下,修复前
+  ~9/24 起动会中招,修复后 0/24;`tests/integration/test_proxy_lifecycle_gate.py` 新增并发起动 gate 钉住。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
