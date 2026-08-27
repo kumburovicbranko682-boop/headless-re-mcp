@@ -13,6 +13,7 @@
 
 import java.io.FileWriter;
 import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -144,7 +145,13 @@ public class ExportJson extends GhidraScript {
 
         String json = new Gson().toJson(payload);
         if (outPath != null) {
-            try (Writer writer = new FileWriter(outPath)) {
+            // Force UTF-8: the client reads this file back as UTF-8, but the
+            // no-arg FileWriter writes in the JVM's default charset, so on a
+            // non-UTF-8 host locale (or a Windows Ghidra box) a non-ASCII symbol
+            // name or a decompiled string with such bytes would be written in a
+            // different encoding and fail the client's decode as "export JSON
+            // invalid". Pinning UTF-8 here makes writer and reader agree.
+            try (Writer writer = new FileWriter(outPath, StandardCharsets.UTF_8)) {
                 writer.write(json);
             }
         } else {

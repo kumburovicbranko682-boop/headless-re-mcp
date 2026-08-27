@@ -36,7 +36,10 @@ gate 与 CI，并修掉两处只有在真后端下才暴露的缺陷。全部 ga
   GhidraScript：Java 是 Ghidra 原生脚本语言，不依赖任何解释器扩展，在 11.3+/12.x 上都能跑。
   同时把 launcher 发现改为平台感知（POSIX 取无扩展名的 `analyzeHeadless`，Windows 取 `.bat`），
   否则 Linux 会挑到不可执行的 `.bat` 而 `PermissionError`。新增 `test_ghidra_live_gate.py` 对本地
-  编出的 ELF 跑 functions/symbols 提取与具名函数反编译。
+  编出的 ELF 跑 functions/symbols 提取与具名函数反编译。`ExportJson.java` 写文件用
+  `FileWriter(path, StandardCharsets.UTF_8)` 显式锁定 UTF-8：客户端固定按 UTF-8 读回，而无参
+  `FileWriter` 用的是 JVM 默认字符集，非 UTF-8 locale（或 Windows Ghidra 宿主）下一个含非 ASCII
+  的符号名或反编译串会以别的编码写出、令客户端解码为“export JSON invalid”，锁定后读写两端一致。
 - **`web.network_get` 把 `WebError` 原样上抛，而不是吞成软 `body_error`。** CDP 取不到某条请求的
   响应体（重定向、缓存已淘汰）本该降级为 `body_error` 说明；但同一个 `except` 连会话已卡死/超时
   抛出的 `WebError` 也一并吞了，于是浏览器线程整个 wedge 时，调用方看到的是“这条请求没有 body”的
