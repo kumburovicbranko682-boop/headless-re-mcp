@@ -674,6 +674,13 @@ def _read_method_body(meta: _MetaCtx, rva: int, *, max_bytes: int) -> JsonObject
     truncated = code_size > max_bytes
     take = min(code_size, max_bytes)
     il = data[il_start : il_start + take]
+    if len(il) < take:
+        # code_size is a number out of the sample, and here it runs past the
+        # end of the file, so the slice silently came back short. Without this
+        # the reply showed the bytes that existed with partial=False, and a
+        # body cut off at EOF -- a cheap way to hide the tail of a method from
+        # exactly this tool -- read as a complete disassembly.
+        truncated = True
     return {"header": header, "il": il, "il_len": code_size, "truncated": truncated}
 
 
