@@ -548,6 +548,68 @@ def test_frida_java_perform_times_out_and_detaches_the_probe() -> None:
     assert state["detached"] is True
 
 
+def test_frida_resolve_device_times_out_on_a_wedged_usb_lookup(monkeypatch: Any) -> None:
+    """A USB lookup that never returns used to hold the worker forever.
+
+    Measured: get_usb_device(timeout=5) that slept 10s still returned only
+    after 10.000s -- frida's timeout= kwarg is not a deadline this side can
+    enforce. spawn / applications resolve the device before their own
+    deadline starts, so the lookup now shares the daemon-thread deadline and
+    raises timeout instead of wedging.
+    """
+    monkeypatch.setattr("headless_re_mcp.backends.frida.client._PROBE_TIMEOUT_S", 0.2)
+
+    class _WedgedFrida:
+        def get_usb_device(self, timeout: int = 0) -> Any:
+            del timeout
+            time.sleep(10)
+            return object()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _WedgedFrida()
+    started = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client._resolve_device("usb")
+    assert time.monotonic() - started < 2.0
+    assert caught.value.code == "timeout"
+
+
+def test_frida_add_remote_device_times_out_on_a_wedged_endpoint(
+    monkeypatch: Any,
+) -> None:
+    """A host:port add that never returns used to hold the worker forever.
+
+    Measured: add_remote_device that slept 10s still returned only after
+    10.000s. The add now shares the daemon-thread deadline and raises
+    timeout instead of holding the worker until the process dies.
+    """
+    monkeypatch.setattr("headless_re_mcp.backends.frida.client._PROBE_TIMEOUT_S", 0.2)
+
+    class _Manager:
+        def get_device(self, endpoint: str, timeout: int = 0) -> Any:
+            del endpoint, timeout
+            raise RuntimeError("not registered")
+
+        def add_remote_device(self, endpoint: str) -> Any:
+            del endpoint
+            time.sleep(10)
+            return object()
+
+    class _WedgedFrida:
+        def get_device_manager(self) -> _Manager:
+            return _Manager()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _WedgedFrida()
+    started = time.monotonic()
+    with pytest.raises(FridaError) as caught:
+        client.add_remote_device("127.0.0.1:27042")
+    assert time.monotonic() - started < 2.0
+    assert caught.value.code == "timeout"
+
+
 def test_frida_device_connect_names_connected_and_device(monkeypatch: Any) -> None:
     """The catalog said bind a device and never named the payload.
 
