@@ -520,10 +520,26 @@ class ExtAnalysisMixin(UiDriveMixin):
 
     def frida_hook_template(self, session_id: str, template: str = "noop") -> Result[JsonObject]:
         try:
+            # Every other device frida op (spawn, java.*, applications) refuses a
+            # session that is closing or closed via _require_open_session. This
+            # one read frida_authorized straight from metadata, which _save_auth
+            # writes and close never clears, so a retained CLOSED session that had
+            # connected a device would still inject a hook into its authorised
+            # pid -- the mutation test_frida_closed_session guards against for
+            # connect and server.ensure. Gate it the same way before either path.
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"frida.hook.template cannot run in {session.state.value} state"
+                )
             client = FridaClient()
             # A device-connected session (APK/web) hooks its authorised device
             # pid; a PE session keeps the local single-pid behaviour unchanged.
-            auth = self.registry.get(session_id).metadata.get("frida_authorized")
+            auth = session.metadata.get("frida_authorized")
             if isinstance(auth, dict) and auth.get("pids"):
                 pid = int(auth["pids"][-1])
                 data = client.hook_template_device(

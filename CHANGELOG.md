@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（frida.hook.template 会对已关闭会话的设备注入）
+
+- `frida.hook.template` 的设备分支直接从会话 metadata 读 `frida_authorized` 里的授权
+  pid，而 `_save_auth` 写入这条记录、关闭会话时从不清除它。设备侧其余 frida 工具
+  （`frida.spawn`、`frida.java.*`、`frida.applications`）都经 `_require_open_session`
+  拒绝 `closing`/`closed`/`failed` 会话，唯独 hook.template 少了这道闸：一个连过设备、
+  spawn 过进程后又被关闭的会话，其 metadata 仍带着授权 pid，晚到的 hook.template 会照旧
+  attach 目标进程并加载脚本——正是 `test_frida_closed_session` 为 `device.connect` 与
+  `server.ensure` 守住的那类“对无主设备的改动”。现在两条分支之前先做同样的开态校验，
+  并补一条直测：已关闭会话上的 `frida.hook.template` 报 `invalid_request`、不再注入。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

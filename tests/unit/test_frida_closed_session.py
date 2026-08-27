@@ -44,6 +44,22 @@ class _TrackingAdb:
         return {"ensured": True, "running": True, "pushed": False, "port": port}
 
 
+class _TrackingHookFrida:
+    hooks = 0
+
+    def hook_template_device(
+        self, device_id: str | None, pid: int, template: str, *, allowed_pids: Any
+    ) -> dict[str, Any]:
+        del device_id, pid, template, allowed_pids
+        _TrackingHookFrida.hooks += 1
+        return {"loaded": True, "persisted": False}
+
+    def hook_template(self, pid: int, template: str, *, allowed_pid: int) -> dict[str, Any]:
+        del pid, template, allowed_pid
+        _TrackingHookFrida.hooks += 1
+        return {"loaded": True, "persisted": False}
+
+
 def test_frida_device_connect_on_a_closed_session_does_not_bind(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -140,5 +156,47 @@ def test_frida_server_ensure_does_not_report_success_if_the_session_closes_durin
         assert result.error is not None
         assert result.error.code == "invalid_request"
         assert "closed" in result.error.message
+    finally:
+        service.close_all()
+
+
+def test_frida_hook_template_on_a_closed_session_does_not_inject(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A retained CLOSED session still carried frida_authorized, so a late hook injected.
+
+    frida.hook.template's device branch reads the authorised pid straight from
+    session metadata. _save_auth writes that record and close never clears it,
+    so before this the one device frida op without an open-session guard would
+    attach and load a script on the authorised device pid after the session was
+    closed -- the same device mutation connect and server.ensure already refuse.
+    """
+    _TrackingHookFrida.hooks = 0
+    monkeypatch.setattr(
+        "headless_re_mcp.core.service_ext.FridaClient",
+        lambda *args, **kwargs: _TrackingHookFrida(),
+    )
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    binary = tmp_path / "sample.exe"
+    _write_minimal_pe(binary)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        # An authorisation a live device.connect + spawn would have written.
+        service.registry.update_metadata(
+            session_id,
+            {"frida_authorized": {"device_id": "usb", "pids": [4321], "packages": ["com.example"]}},
+        )
+        closed = service.close_session(session_id)
+        assert closed.ok, closed.error
+
+        result = service.frida_hook_template(session_id, template="noop")
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_request"
+        assert "closed" in result.error.message
+        assert _TrackingHookFrida.hooks == 0
     finally:
         service.close_all()
