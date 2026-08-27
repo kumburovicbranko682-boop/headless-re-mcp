@@ -7,7 +7,7 @@ import json
 import re
 import zipfile
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -445,6 +445,21 @@ _ELF_MAX_STRTAB = 4 * 1024 * 1024
 # DT_NEEDED: the name a shared object declares for itself, present only on a
 # library, so it also separates a real .so from a PIE executable (both ET_DYN).
 _NT_GNU_BUILD_ID = 3
+# The GNU ABI-tag note (NT_GNU_ABI_TAG): the OS the image targets and the
+# minimum kernel version it needs -- the ELF counterpart to Mach-O's
+# LC_BUILD_VERSION platform/min_os. readelf -n prints the same "OS: Linux,
+# ABI: x.y.z", so the toolchain gate can cross-check it. Every gcc/clang build
+# carries it, so it is a reliable "which Unix, how old a kernel" triage fact.
+_NT_GNU_ABI_TAG = 1
+_ELF_ABI_OS = {
+    0: "linux",
+    1: "hurd",
+    2: "solaris",
+    3: "freebsd",
+    4: "netbsd",
+    5: "syllable",
+    6: "nacl",
+}
 _ELF_MAX_NOTE_BYTES = 64 * 1024
 _ELF_MAX_NOTES = 256
 _ELF_BUILD_ID_MAX = 64
@@ -2201,6 +2216,12 @@ def _elf_layout_facts(
         build_id = _elf_build_id(stream, order, program["notes"])
         if build_id is not None:
             facts["build_id"] = build_id
+        # Target OS and minimum kernel from the GNU ABI-tag note -- the ELF
+        # analogue of Mach-O's platform/min_os, cross-checked against readelf -n.
+        abi_os, min_kernel = _elf_abi_tag(stream, order, program["notes"])
+        if abi_os is not None:
+            facts["abi_os"] = abi_os
+            facts["min_kernel"] = min_kernel
     stripped = _elf_is_stripped(stream, order, bits, shoff, shentsize, shnum)
     if stripped is not None:
         facts["stripped"] = stripped
@@ -2431,15 +2452,15 @@ def _elf_dynamic_names(
     }
 
 
-def _elf_build_id(
+def _elf_iter_notes(
     stream: BinaryIO, order: str, notes: list[tuple[int, int]]
-) -> str | None:
-    """The GNU build-id (hex) from a PT_NOTE segment, or None if absent.
+) -> Iterator[tuple[int, bytes, bytes]]:
+    """Yield ``(type, name, descriptor)`` for each PT_NOTE record.
 
     A note record is namesz/descsz/type words then the (4-aligned) name and
-    descriptor; the build-id is the descriptor of the ``GNU`` note of type
-    NT_GNU_BUILD_ID. Bounded by the note count and each segment's already-capped
-    size, and fail-closed: a malformed record stops the scan rather than raising.
+    descriptor. Bounded by the note count and each segment's already-capped
+    size, and fail-closed: a malformed record stops the scan for that segment
+    rather than raising.
     """
     for note_off, note_sz in notes:
         stream.seek(note_off)
@@ -2458,10 +2479,41 @@ def _elf_build_id(
             if desc_end > len(blob):
                 break
             name = blob[name_start:name_end].split(b"\x00", 1)[0]
-            if ntype == _NT_GNU_BUILD_ID and name == b"GNU" and 0 < descsz <= _ELF_BUILD_ID_MAX:
-                return blob[desc_start:desc_end].hex()
+            yield ntype, name, blob[desc_start:desc_end]
             pos = desc_end + (-descsz % 4)
+
+
+def _elf_build_id(
+    stream: BinaryIO, order: str, notes: list[tuple[int, int]]
+) -> str | None:
+    """The GNU build-id (hex) from a PT_NOTE segment, or None if absent.
+
+    The build-id is the descriptor of the ``GNU`` note of type NT_GNU_BUILD_ID.
+    """
+    for ntype, name, desc in _elf_iter_notes(stream, order, notes):
+        if ntype == _NT_GNU_BUILD_ID and name == b"GNU" and 0 < len(desc) <= _ELF_BUILD_ID_MAX:
+            return desc.hex()
     return None
+
+
+def _elf_abi_tag(
+    stream: BinaryIO, order: str, notes: list[tuple[int, int]]
+) -> tuple[str | None, str | None]:
+    """``(abi_os, min_kernel)`` from the GNU ABI-tag note, or ``(None, None)``.
+
+    NT_GNU_ABI_TAG's descriptor is four u32s: an OS id then the minimum kernel
+    version (major, minor, subminor). This is the ELF counterpart to Mach-O's
+    LC_BUILD_VERSION -- which Unix the image targets and how old a kernel it
+    tolerates -- and readelf -n decodes it identically ("OS: Linux, ABI: 3.2.0").
+    """
+    for ntype, name, desc in _elf_iter_notes(stream, order, notes):
+        if ntype == _NT_GNU_ABI_TAG and name == b"GNU" and len(desc) >= 16:
+            os_id = int.from_bytes(desc[0:4], order)  # type: ignore[arg-type]
+            major = int.from_bytes(desc[4:8], order)  # type: ignore[arg-type]
+            minor = int.from_bytes(desc[8:12], order)  # type: ignore[arg-type]
+            sub = int.from_bytes(desc[12:16], order)  # type: ignore[arg-type]
+            return _ELF_ABI_OS.get(os_id, f"os_{os_id}"), f"{major}.{minor}.{sub}"
+    return None, None
 
 
 def _elf_is_stripped(

@@ -1,18 +1,24 @@
-"""Native search paths (ELF DT_RPATH/DT_RUNPATH, Mach-O LC_RPATH) vs binutils/llvm.
+"""Native platform/search-path facts vs binutils/llvm on real toolchain output.
 
-The baked-in library search path is a first-order hijack/supply-chain triage
-fact: a writable or relative entry lets an attacker plant a library the loader
-picks up. The other native gates cross-check the stdlib reader against radare2
-on system binaries, but system binaries almost never carry a search path, so
-the positive case needs binaries that do. For ELF this gate builds them with
-the real toolchain: gcc links a probe with a known rpath (old tags) and another
-with a known runpath (new tags), the session's tool-free facts must name those
-exact paths, and readelf -d -- binutils' independent decoder of the same
-dynamic table -- must agree entry for entry. For Mach-O the committed fixture
-carries an LC_RPATH, and llvm-objdump --macho (LLVM's independent Mach-O
-decoder, strict enough to have rejected the fixture's earlier 4-byte-aligned
-load commands) must report the same path. skip != pass when a tool is missing;
-gcc/readelf ship with the CI runner and llvm is installed on the Linux lane.
+Two triage themes the other native gates cannot cover from system binaries:
+
+- Search paths (ELF DT_RPATH/DT_RUNPATH, Mach-O LC_RPATH) -- a first-order
+  hijack/supply-chain fact, since a writable or relative entry lets an attacker
+  plant a library the loader picks up. System binaries almost never carry one,
+  so the positive case needs binaries that do: gcc links an ELF probe with a
+  known rpath (old tags) and another with a known runpath (new tags), and
+  readelf -d must agree entry for entry; the committed Mach-O fixture carries
+  an LC_RPATH that llvm-objdump --macho (LLVM's independent, strict Mach-O
+  decoder, which rejected the fixture's earlier 4-byte-aligned load commands)
+  must report identically.
+- Target platform / minimum system version (ELF NT_GNU_ABI_TAG, Mach-O
+  LC_BUILD_VERSION) -- which Unix and how old a kernel/OS. A plain gcc link
+  carries the ABI-tag note readelf -n decodes as "OS: Linux, ABI: x.y.z", and
+  the fixture's LC_BUILD_VERSION is what the r2 gate checks against radare2's
+  os line; here llvm-objdump confirms its platform/minos/sdk.
+
+skip != pass when a tool is missing; gcc/readelf ship with the CI runner and
+llvm is installed on the Linux lane.
 """
 
 from __future__ import annotations
@@ -32,6 +38,8 @@ _MACHO_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "native" / "
 # readelf -d prints e.g. " 0x...f (RPATH)  Library rpath: [/opt/lib:$ORIGIN]".
 _READELF_RPATH_RE = re.compile(r"\(RPATH\)\s+Library rpath: \[([^\]]*)\]")
 _READELF_RUNPATH_RE = re.compile(r"\(RUNPATH\)\s+Library runpath: \[([^\]]*)\]")
+# readelf -n prints the GNU ABI tag as "    OS: Linux, ABI: 3.2.0".
+_READELF_ABI_RE = re.compile(r"OS: (\w+), ABI: (\d+\.\d+\.\d+)")
 
 # llvm-objdump --macho --all-headers prints the LC_BUILD_VERSION block as
 # "cmd LC_BUILD_VERSION" followed by platform/sdk/minos lines.
@@ -132,6 +140,40 @@ def test_elf_search_paths_agree_with_readelf(tmp_path: Path) -> None:
             assert facts["entry"] > 0
     finally:
         for session_id in sessions:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_elf_abi_tag_agrees_with_readelf(tmp_path: Path) -> None:
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — ABI-tag gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — ABI-tag gate not run (skip != pass)")
+
+    # A plain link carries the GNU ABI-tag note every toolchain emits.
+    probe = _compile_probe(gcc, tmp_path, "probe_abi")
+    result = subprocess.run(
+        [readelf, "-n", str(probe)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    match = _READELF_ABI_RE.search(result.stdout)
+    if match is None:
+        pytest.skip("toolchain emitted no ABI-tag note — gate not run (skip != pass)")
+    readelf_os = match.group(1).lower()
+    readelf_kernel = match.group(2)
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, probe)
+        # The tool-free ABI-tag walk and readelf -n decode the same note into
+        # the same OS name and minimum kernel version.
+        assert native["abi_os"] == readelf_os
+        assert native["min_kernel"] == readelf_kernel
+    finally:
+        if session_id is not None:
             service.close_session(session_id)
 
 

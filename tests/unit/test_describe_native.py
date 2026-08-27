@@ -352,6 +352,34 @@ def _elf64_shared_with_soname_and_build_id() -> bytes:
     return ehdr + program + strtab + note + dyn
 
 
+def _elf_note(ntype: int, name: bytes, desc: bytes) -> bytes:
+    namesz = len(name) + 1  # the reader counts the trailing NUL in namesz
+    padded_name = (name + b"\x00").ljust((namesz + 3) & ~3, b"\x00")
+    padded_desc = desc.ljust((len(desc) + 3) & ~3, b"\x00")
+    return (
+        namesz.to_bytes(4, "little")
+        + len(desc).to_bytes(4, "little")
+        + ntype.to_bytes(4, "little")
+        + padded_name
+        + padded_desc
+    )
+
+
+def _abi_note(os_id: int, major: int, minor: int, sub: int) -> bytes:
+    # NT_GNU_ABI_TAG (type 1): os id then the min kernel major/minor/subminor.
+    desc = b"".join(v.to_bytes(4, "little") for v in (os_id, major, minor, sub))
+    return _elf_note(1, b"GNU", desc)
+
+
+def _elf64_with_notes(note: bytes) -> bytes:
+    """An ELF whose single PT_NOTE segment carries ``note`` (read by file offset)."""
+    ph_off = 64
+    note_off = ph_off + 56  # one program header precedes the note bytes
+    program = _phdr64(4, note_off, len(note))  # PT_NOTE
+    ehdr = _ehdr64(3, phoff=ph_off, phnum=1, shoff=0, shnum=0)
+    return ehdr + program + note
+
+
 def _elf64_static_with_symtab() -> bytes:
     ph_off = 64
     sh_off = ph_off + 56  # one program header
@@ -569,6 +597,49 @@ def test_soname_and_build_id_from_a_shared_object(tmp_path: Path) -> None:
     assert facts["needed"] == ["libc.so.6"]
     # The GNU build-id from the PT_NOTE record, hex-encoded.
     assert facts["build_id"] == "deadbeef01020304"
+
+
+def test_abi_tag_reports_target_os_and_min_kernel(tmp_path: Path) -> None:
+    # NT_GNU_ABI_TAG is the ELF LC_BUILD_VERSION: which Unix, how old a kernel.
+    # readelf -n decodes this same note as "OS: Linux, ABI: 3.2.0".
+    path = _write(tmp_path, "a.bin", _elf64_with_notes(_abi_note(0, 3, 2, 0)))
+    facts = describe_native(path)["native"]
+    assert facts["abi_os"] == "linux"
+    assert facts["min_kernel"] == "3.2.0"
+
+
+def test_abi_tag_and_build_id_parse_from_the_same_segment(tmp_path: Path) -> None:
+    # Both facts come from PT_NOTE records; a real image carries the two in one
+    # segment, so the shared walk must surface both, whichever comes first.
+    build = _elf_note(3, b"GNU", bytes([0xAB, 0xCD, 0xEF, 0x01]))  # NT_GNU_BUILD_ID
+    path = _write(tmp_path, "a.bin", _elf64_with_notes(build + _abi_note(3, 12, 1, 0)))
+    facts = describe_native(path)["native"]
+    assert facts["build_id"] == "abcdef01"
+    assert facts["abi_os"] == "freebsd"
+    assert facts["min_kernel"] == "12.1.0"
+
+
+def test_abi_tag_unknown_os_is_reported_by_number(tmp_path: Path) -> None:
+    path = _write(tmp_path, "a.bin", _elf64_with_notes(_abi_note(99, 1, 0, 0)))
+    facts = describe_native(path)["native"]
+    assert facts["abi_os"] == "os_99"
+    assert facts["min_kernel"] == "1.0.0"
+
+
+def test_abi_tag_absent_leaves_the_facts_out(tmp_path: Path) -> None:
+    # A build-id-only PT_NOTE carries no ABI tag, so those facts stay absent.
+    build = _elf_note(3, b"GNU", bytes([0x01, 0x02, 0x03, 0x04]))
+    facts = describe_native(_write(tmp_path, "a.bin", _elf64_with_notes(build)))["native"]
+    assert "abi_os" not in facts
+    assert "min_kernel" not in facts
+
+
+def test_abi_tag_with_a_truncated_descriptor_is_ignored(tmp_path: Path) -> None:
+    # A descriptor shorter than the four u32s it promises cannot be trusted;
+    # the note is skipped rather than read past its end.
+    short = _elf_note(1, b"GNU", bytes(8))  # only two of the four words
+    facts = describe_native(_write(tmp_path, "a.bin", _elf64_with_notes(short)))["native"]
+    assert "abi_os" not in facts
 
 
 def test_static_unstripped_facts_from_section_headers(tmp_path: Path) -> None:
