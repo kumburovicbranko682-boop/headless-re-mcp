@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`/api/artifacts/{id}/file` 直接在浏览器打开时会渲染不可信抓取内容）
+
+- 制品是从被分析样本里抓来的——页面 DOM、代理录制的响应体、反编译源码——字节不可信。原路由用
+  一个裸 `FileResponse(resolved)` 返回，内容类型由文件名猜测：一个存成 `.html` / `.svg` 的抓取
+  会分别以 `text/html` / `image/svg+xml` 送达，在浏览器里直接渲染。而监控台是同源的本机回环页面、
+  已带着有效的 bootstrap cookie，于是操作员直接打开 `/api/artifacts/{id}/file?token=…` 就可能让样本里
+  的脚本在已认证的控制台源里执行、进而驱动写接口——一个存储型 XSS 到控制台接管的链路。兄弟路由
+  `web/preview` 与 `virtual-desktop/frame` 早已发 `X-Content-Type-Options: nosniff`，唯独这个通用读取
+  没有。现固定为惰性的 `application/octet-stream`、加 `nosniff` 禁止嗅探、并通过 `filename=` 强制
+  `Content-Disposition: attachment`，使直接导航变成下载而非渲染，同时补 `Cache-Control: no-store`。
+  SPA 里唯一的读取方本就以 blob 形式抓取再另存，行为不变。新增测试：以名为 `.html`、内含 `<script>`
+  的抓取断言响应为 octet-stream、带 nosniff、且 disposition 为 attachment。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

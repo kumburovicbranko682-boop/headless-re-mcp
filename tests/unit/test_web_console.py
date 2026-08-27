@@ -389,6 +389,46 @@ def test_artifact_download_serves_only_real_files_under_the_root(
     assert missing.json()["detail"] == "artifact_missing"
 
 
+def test_artifact_download_never_renders_untrusted_capture_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A captured artifact must download, never render, in the console origin.
+
+    Artifacts are lifted straight from the sample under analysis -- a page DOM,
+    a proxy-recorded response body, a decompiled source. Served with a guessed
+    content type and no attachment disposition, one stored as .html or .svg
+    renders as markup in this loopback console's origin, where a valid
+    bootstrap cookie is already scoped, so a hostile sample becomes script
+    driving the authenticated API. The route must pin an inert content type,
+    forbid MIME sniffing, and force a download disposition regardless of the
+    stored extension.
+    """
+    from headless_re_mcp.core.models import Result
+
+    settings = _settings(tmp_path)
+    service = AnalysisService(settings)
+    token = "test-token-value-0123456789abcdef"
+    client = TestClient(create_app(service, token=token, settings=settings))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # A capture named .html with script inside is the exact hostile shape: a
+    # bare FileResponse would answer text/html and the browser would run it.
+    hostile = settings.artifact_root / "capture.html"
+    hostile.parent.mkdir(parents=True, exist_ok=True)
+    hostile.write_bytes(b"<script>parent.steal()</script>")
+
+    def describe(self: AnalysisService, artifact_id: str) -> Result:
+        return Result(ok=True, data={"artifact": {"id": artifact_id, "path": str(hostile)}})
+
+    monkeypatch.setattr(AnalysisService, "artifacts_describe", describe)
+    served = client.get("/api/artifacts/cap/file", headers=headers)
+    assert served.status_code == 200
+    assert served.content == b"<script>parent.steal()</script>"
+    assert served.headers["content-type"] == "application/octet-stream"
+    assert served.headers["x-content-type-options"] == "nosniff"
+    assert served.headers["content-disposition"].startswith("attachment")
+
+
 def test_web_preview_refuses_a_path_outside_the_artifact_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
