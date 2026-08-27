@@ -258,6 +258,40 @@ def test_import_path_imports_valid_markdown(tmp_path: Path) -> None:
     assert result["current"].startswith("field-notes-")
 
 
+@pytest.mark.parametrize(
+    "title",
+    ["_draft", "__init__", "_", "_海鸥笔记", "---", "。。。"],
+    ids=["lead-underscore", "dunder", "bare-underscore", "cjk-lead-underscore", "dashes", "cjk-only"],
+)
+def test_slug_ids_pass_the_store_validator(title: str) -> None:
+    # _slug feeds _body_path, whose _PERSONA_ID_RE demands an alphanumeric first
+    # char. A stem that reduced to a leading "_"/"-" (or an all-punctuation
+    # title) used to yield an id its own validator rejected.
+    slug = personas_module._slug(title, "some body")
+    assert personas_module._PERSONA_ID_RE.fullmatch(slug), slug
+
+
+def test_import_markdown_accepts_underscore_leading_titles(tmp_path: Path) -> None:
+    # Regression: import_markdown raised ValueError("persona_id_invalid") for a
+    # title like "_draft" because _slug kept the leading underscore.
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+    result = store.import_markdown(title="_draft", body="# scratch\nkeep hashes")
+    persona_id = result["current"]
+    assert persona_id.startswith("draft-")
+    assert store.current_id() == persona_id
+    assert "keep hashes" in store.prompt_for(persona_id)
+
+
+def test_import_path_accepts_underscore_leading_filename(tmp_path: Path) -> None:
+    # import_path derives the title from the file stem, so a file named
+    # "_notes.md" hit the same rejected-id path before the fix.
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+    source = tmp_path / "_notes.md"
+    source.write_text("# private\nterse", encoding="utf-8")
+    result = store.import_path(source)
+    assert result["current"].startswith("notes-")
+
+
 def test_delete_refuses_builtin_ids(tmp_path: Path) -> None:
     store = PersonaStore(tmp_path / "personas", seed_paths=())
     with pytest.raises(ValueError, match="persona_builtin"):

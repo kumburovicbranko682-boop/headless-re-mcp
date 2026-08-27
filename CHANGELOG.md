@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（导入以下划线开头的 persona 被自己的校验器拒成 persona_id_invalid）
+
+- 本机 markdown persona 的 `_slug()` 由标题派生 id：把非 `[A-Za-z0-9_-]` 折成 `-`、
+  `.strip("-")` 去掉首尾横线、拼上正文摘要。但 `_PERSONA_ID_RE`（`_body_path` 与之同源）
+  要求 id **首字符为字母或数字**，而 `strip("-")` 不动下划线——于是标题 `_draft`、`__init__`
+  折出的 stem 仍以 `_` 打头（`_海鸥笔记` 折成 `_-`、`strip("-")` 后剩 `_`），拼成的 id 被
+  `_body_path` 当场 `ValueError("persona_id_invalid")` 拒绝。这条路径完全可达：
+  `import_path` 用文件名 stem 作标题，导入一个名为 `_notes.md` / `_draft.md` 的合法
+  markdown 就会被路由翻成一个语焉不详的 400 `persona_id_invalid`，尽管内容毫无问题。
+  现把 `strip("-")` 改为 `strip("-_")`：首尾的 `_`/`-` 一并去掉，首字符必为字母数字
+  （或 stem 清空后回落 `persona`），`_slug` 从此只产出自身校验器接受的 id。
+- 新增六条参数化直测断言 `_slug` 对下划线开头、纯下划线、CJK-前导下划线、纯标点等标题
+  产出的 id 都过 `_PERSONA_ID_RE`；另加两条：`import_markdown(title="_draft")` 与
+  `import_path("_notes.md")` 现在都成功且落成 `draft-*` / `notes-*`。修复前这些用例在
+  `_body_path` 处以 `persona_id_invalid` 失败。相关 persona 测试、ruff、mypy 均通过。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

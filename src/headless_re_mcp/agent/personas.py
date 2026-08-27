@@ -44,7 +44,12 @@ SEAGULL_SEED_PATHS = (
 
 
 def _slug(title: str, body: str) -> str:
-    stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", Path(title).stem).strip("-").lower()[:40]
+    # Strip leading/trailing "_" as well as "-": _PERSONA_ID_RE (and _body_path
+    # with it) require the first character to be alphanumeric, so a title like
+    # "_draft" or a file named "_notes.md" -- import_path uses the stem as the
+    # title -- otherwise produced an id its own validator rejected, turning a
+    # valid import into a confusing "persona_id_invalid" 400.
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", Path(title).stem).strip("-_").lower()[:40]
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:8]
     return f"{stem or 'persona'}-{digest}"
 
