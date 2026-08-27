@@ -60,6 +60,43 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
+def _close_proxy_servers(master: Any, loop: asyncio.AbstractEventLoop | None) -> None:
+    """Stop the Proxyserver addon's listeners so the port is actually released.
+
+    Reaching the end of ``master.run()`` (via ``master.shutdown()``) stops the
+    loop but does not close the proxy's listening sockets: in mitmproxy's
+    embedded model they belong to the Proxyserver addon's ``ServerInstance``
+    objects, which are not the accept *task* the loop teardown cancels. Closing
+    the loop then abandons the bound socket at the OS level, so ``stop()``
+    reports success while the port stays taken and the next capture cannot
+    rebind. ``_shutdown_loop`` alone was enough on the mitmproxy version where
+    the accept was a cancellable task; from 12.x it is not, so each server is
+    stopped explicitly here.
+
+    Defensive across versions: a mitmproxy without this addon shape simply has
+    nothing to stop and falls through to the loop teardown unchanged.
+    """
+    if master is None or loop is None or loop.is_closed():
+        return
+    proxyserver = None
+    with contextlib.suppress(Exception):
+        proxyserver = master.addons.get("proxyserver")
+    servers = getattr(proxyserver, "servers", None)
+    if servers is None:
+        return
+
+    async def _stop_all() -> None:
+        for server in list(servers):
+            stop = getattr(server, "stop", None)
+            if stop is None:
+                continue
+            with contextlib.suppress(Exception):
+                await stop()
+
+    with contextlib.suppress(Exception):
+        loop.run_until_complete(_stop_all())
+
+
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
     """True when something is listening and accepting on host:port."""
     with contextlib.suppress(OSError), socket.socket() as probe:
@@ -345,11 +382,13 @@ class _ProxyInstance:
             self._error = exc
             self._started.set()
         finally:
-            # Closing the loop outright abandons mitmproxy's still-pending
-            # accept task, which leaves the listening socket open at the OS
-            # level: stop() would appear to work while the port stayed bound
-            # and the next capture could never start. Unwind the tasks first.
+            # Closing the loop outright abandons mitmproxy's listening socket at
+            # the OS level: stop() would appear to work while the port stayed
+            # bound and the next capture could never start. Stop the proxy's
+            # servers explicitly first (their sockets survive task cancellation
+            # from mitmproxy 12.x on), then unwind whatever tasks remain.
             if loop is not None:
+                _close_proxy_servers(self._master, loop)
                 with contextlib.suppress(Exception):
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)

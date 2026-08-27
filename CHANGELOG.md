@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（抓包停止后端口未释放）
+
+- **`proxy.stop` / `session.close` 报告成功,端口却仍在监听,下一次抓包无法重新绑定**。
+  `_ProxyInstance._run` 过去只在 `master.run()` 返回后调 `_shutdown_loop`(取消挂起任务再关闭
+  事件循环)——这在旧版 mitmproxy 够用,因为 accept 是一个可取消的 task。从 mitmproxy 12.x 起
+  监听套接字归 Proxyserver addon 的 `ServerInstance` 所有,不是被 loop teardown 取消的那个 task,
+  于是关闭循环把已绑定的 socket 在 OS 层丢弃、端口继续 `LISTEN`,`stop()` 却显示已停。现在在
+  `_shutdown_loop` 之前先显式 `await server.stop()` 逐个停掉 Proxyserver 的监听器,真正释放端口。
+  `_close_proxy_servers` 跨版本防御:没有该 addon 形态就无事可做、直接落回原有 loop teardown;
+  单个 server 停止抛错不影响其余。新增不依赖 mitmproxy 的单测钉住「逐个停止」「一个失败不拖累其余」
+  「无 addon/无 master/循环已关是 no-op」「teardown 里先停 server 再拆循环」,真机 `test_proxy_lifecycle_gate`
+  对真实进程复核起停与端口回收。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
