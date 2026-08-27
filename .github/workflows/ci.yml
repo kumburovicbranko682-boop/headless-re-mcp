@@ -153,7 +153,11 @@ jobs:
   # real device or emulator) still self-skip with a reason.
   linux-nonpe-gates:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+    # The Jython post-script only runs on a Ghidra that still bundles Jython.
+    env:
+      GHIDRA_VERSION: "11.2.1"
+      GHIDRA_DIST: "ghidra_11.2.1_PUBLIC_20241105"
     steps:
       - uses: actions/checkout@v7
 
@@ -167,6 +171,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
 
       - name: Install system backends (radare2, wabt)
         run: |
@@ -184,15 +193,38 @@ jobs:
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium
 
+      - name: Cache Ghidra
+        id: cache-ghidra
+        uses: actions/cache@v4
+        with:
+          path: ~/ghidra
+          key: ghidra-${{ env.GHIDRA_VERSION }}
+
+      - name: Install Ghidra
+        # ExportJson.py is a Jython post-script. Ghidra 11.3+ dropped the bundled
+        # Jython interpreter for PyGhidra, so pin the last release that still runs
+        # .py post-scripts out of the box until the script is ported to PyGhidra.
+        if: steps.cache-ghidra.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/ghidra
+          curl -fsSL -o /tmp/ghidra.zip \
+            "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/${GHIDRA_DIST}.zip"
+          unzip -q /tmp/ghidra.zip -d ~/ghidra
+
+      - name: Point at Ghidra
+        run: echo "HEADLESS_RE_GHIDRA_HOME=$HOME/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC" >> "$GITHUB_ENV"
+
       - name: Backends are discoverable (skip != pass)
         # If a backend is not actually reachable its gate would skip and read as
         # a pass. Fail loudly here instead so a broken install is fixed rather
         # than silently hollowing out this job.
         run: |
           set -e
-          for tool in r2 wat2wasm wasm2wat webcrack cc; do
+          for tool in r2 wat2wasm wasm2wat webcrack cc java; do
             command -v "$tool" >/dev/null || { echo "::error::$tool not on PATH"; exit 1; }
           done
+          test -x "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" \
+            || { echo "::error::ghidra analyzeHeadless missing at $HEADLESS_RE_GHIDRA_HOME"; exit 1; }
           python -c "import mitmproxy, playwright, androguard, adbutils, frida; print('python backends importable')"
 
       - name: Non-PE backend gates
@@ -208,9 +240,10 @@ jobs:
             tests/integration/test_m11_r2_live_gate.py \
             tests/integration/test_m11_optional_backends_gate.py \
             tests/integration/test_m11_frida_live_gate.py \
+            tests/integration/test_m11_ghidra_live_gate.py \
             tests/integration/test_android_re_gate.py \
             tests/integration/test_agent_browser_smoke.py \
-            -q -rs --tb=short --timeout=180
+            -q -rs --tb=short --timeout=300
 
   webui:
     runs-on: windows-latest
