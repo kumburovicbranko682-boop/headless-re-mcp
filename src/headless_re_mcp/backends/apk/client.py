@@ -975,6 +975,49 @@ class ApkClient:
         result["field_count"] = sum(1 for _ in found.get_fields())
         return result
 
+    def subclasses(
+        self, path: Path, type_name: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        target = type_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "type_name is required")
+        smali = _dotted_to_smali(target)
+        parsed = self._parsed(path)
+        matches: list[JsonObject] = []
+        scan_more = False
+        # Cap on internal classes examined, not on matches stored, mirroring
+        # classes(): the scan walks (and bounds at) the same window whether or not
+        # anything matches, so a miss is honest rather than an unbounded scan.
+        examined = 0
+        for klass in parsed.analysis.get_classes():
+            if klass.is_external():
+                continue
+            if examined >= _MAX_CLASSES_COLLECT:
+                scan_more = True
+                break
+            examined += 1
+            extends = getattr(klass, "extends", None)
+            if extends is not None and str(extends) == smali:
+                matches.append({"class": klass.name, "relation": "extends"})
+                continue
+            implements = getattr(klass, "implements", None) or []
+            if any(str(iface) == smali for iface in implements):
+                matches.append({"class": klass.name, "relation": "implements"})
+        matches.sort(key=lambda row: str(row["class"]))
+        window = matches[offset : offset + limit]
+        window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
+        return {
+            "type_name": smali,
+            "subclasses": window,
+            "count": len(window),
+            "total": len(matches),
+            "offset": offset,
+            "has_more": offset + len(window) < len(matches),
+            # True when the examined cap was hit before the class walk ended, so an
+            # empty result is not read as "no subtype" when more went unseen.
+            "scan_capped": scan_more,
+        }
+
     def strings(
         self, path: Path, *, offset: int = 0, limit: int = 200, contains: str | None = None
     ) -> JsonObject:

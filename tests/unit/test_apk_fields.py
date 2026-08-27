@@ -1184,3 +1184,129 @@ def test_apk_class_info_blank_class_name_is_invalid_params(
     with pytest.raises(ApkError) as info:
         client.class_info(tmp_path / "app.apk", "   ")
     assert info.value.code == "invalid_params"
+
+
+_HIER_CLASSES = [
+    _FakeHierClass("Lcom/example/Screen;", extends="Landroid/app/Activity;"),
+    _FakeHierClass("Lcom/example/Worker;", implements=["Ljava/lang/Runnable;"]),
+    _FakeHierClass(
+        "Lcom/example/TrustAll;",
+        implements=["Ljavax/net/ssl/X509TrustManager;"],
+    ),
+    _FakeHierClass("Lcom/example/Plain;", extends="Ljava/lang/Object;"),
+    _FakeHierClass("Lext/Framework;", external=True, extends="Landroid/app/Activity;"),
+]
+
+
+def test_apk_subclasses_finds_extends_and_implements_with_relation(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The reverse of class_info: who extends or implements a given type.
+
+    Measured on five classes (one external, skipped): querying the Activity base
+    finds the one that extends it labelled "extends"; querying Runnable finds the
+    one that implements it labelled "implements"; querying the dotted trust-
+    manager interface finds TrustAll (proving dotted resolution) -- the SSL-bypass
+    hunt in one call.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeHierParsed(list(_HIER_CLASSES))
+    )
+    apk = tmp_path / "app.apk"
+
+    activities = client.subclasses(apk, "Landroid/app/Activity;")
+    assert activities["type_name"] == "Landroid/app/Activity;"
+    assert activities["subclasses"] == [
+        {"class": "Lcom/example/Screen;", "relation": "extends"}
+    ]
+    assert activities["total"] == 1
+
+    runnables = client.subclasses(apk, "Ljava/lang/Runnable;")
+    assert runnables["subclasses"] == [
+        {"class": "Lcom/example/Worker;", "relation": "implements"}
+    ]
+
+    # A dotted interface name resolves to the same Lsmali/type the DEX stores.
+    trust = client.subclasses(apk, "javax.net.ssl.X509TrustManager")
+    assert trust["type_name"] == "Ljavax/net/ssl/X509TrustManager;"
+    assert trust["subclasses"] == [
+        {"class": "Lcom/example/TrustAll;", "relation": "implements"}
+    ]
+
+    doc = _tool_docstring("apk.subclasses")
+    for token in ("subclasses", "relation", "extends", "implements", "type_name", "scan_capped"):
+        assert token in doc
+
+
+def test_apk_subclasses_skips_external_classes(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An external class that matches the type is never a result (only app classes).
+
+    Lext/Framework; also extends the Activity base, but it is a framework stub,
+    not the app's own code, so it must not appear -- otherwise the audit is
+    polluted with classes the app did not write.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeHierParsed(list(_HIER_CLASSES))
+    )
+    result = client.subclasses(tmp_path / "app.apk", "Landroid/app/Activity;")
+    names = {row["class"] for row in result["subclasses"]}
+    assert "Lext/Framework;" not in names
+    assert result["total"] == 1
+
+
+def test_apk_subclasses_no_match_is_an_empty_list_not_an_error(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A type nothing extends or implements yields an empty list, not not_found."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeHierParsed(list(_HIER_CLASSES))
+    )
+    result = client.subclasses(tmp_path / "app.apk", "Lcom/example/Nonexistent;")
+    assert result["subclasses"] == []
+    assert result["total"] == 0
+    assert result["scan_capped"] is False
+
+
+def test_apk_subclasses_blank_type_name_is_invalid_params(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A blank type_name is rejected before any scan."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeHierParsed(list(_HIER_CLASSES))
+    )
+    with pytest.raises(ApkError) as info:
+        client.subclasses(tmp_path / "app.apk", "   ")
+    assert info.value.code == "invalid_params"
+
+
+def test_apk_subclasses_paginates_and_flags_has_more(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A common base pages by offset/limit and says the list did not end.
+
+    Measured: 25 classes extending Object, limit 10 -> count 10, total 25,
+    has_more True; offset 20 -> the last 5, has_more False.
+    """
+    classes = [
+        _FakeHierClass(f"Lcom/example/C{index:02d};", extends="Ljava/lang/Object;")
+        for index in range(25)
+    ]
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeHierParsed(classes)
+    )
+    apk = tmp_path / "app.apk"
+    first = client.subclasses(apk, "Ljava/lang/Object;", limit=10)
+    assert first["count"] == 10
+    assert first["total"] == 25
+    assert first["has_more"] is True
+    assert all(row["relation"] == "extends" for row in first["subclasses"])
+    tail = client.subclasses(apk, "Ljava/lang/Object;", offset=20, limit=10)
+    assert tail["count"] == 5
+    assert tail["has_more"] is False

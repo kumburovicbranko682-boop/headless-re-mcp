@@ -227,6 +227,40 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_class_info(session_id, class_name))
 
+    @tools.tool(name="apk.subclasses")
+    def apk_subclasses(
+        session_id: str,
+        type_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Find the app's classes that directly extend or implement a type.
+
+        apk.class_info answers "what is this class" forwards (its superclass and
+        interfaces); this answers the reverse -- "who is a X" -- across the whole
+        DEX. It is the query a reverse engineer starts an audit with: pass
+        Ljavax/net/ssl/X509TrustManager; to list every custom trust manager (the
+        classic certificate-pinning/SSL-bypass surface), Ljava/lang/Runnable; or
+        Ljava/lang/Thread; for background workers, an Landroid/app/Activity; /
+        WebViewClient / BroadcastReceiver base to enumerate the app's own screens
+        or receivers behind obfuscated names. Answers with type_name (the resolved
+        Lsmali/name queried), subclasses, count, total, offset, has_more and
+        scan_capped. Each row is {class, relation} where relation is "extends"
+        (the type is the class's direct superclass) or "implements" (it is one of
+        the class's declared interfaces). Matching is DIRECT only -- a grandchild
+        that extends an intermediate class is not listed under the grandparent --
+        and covers only the app's own classes (an external framework/library class
+        is never a result). total is the number of matches found, capped by the
+        class-scan cap; scan_capped true means the DEX had more classes than were
+        walked, so an empty or short list may be under-reported. count may be
+        below limit when the result-size budget trimmed the page, so read count,
+        not limit, and page on has_more. A blank type_name is invalid_params; a
+        type nothing extends or implements is an empty list, not an error. The
+        list field is subclasses, not classes or items. Accepts a dotted or
+        Lsmali/type name.
+        """
+        return _dump(analysis.apk_subclasses(session_id, type_name, offset=offset, limit=limit))
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,

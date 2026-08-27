@@ -123,6 +123,17 @@ def test_m11_androguard_apk_surface() -> None:
     assert info["method_count"] == 3
     assert info["field_count"] == 0
 
+    # subclasses is the reverse index of the same .extends/.implements surface:
+    # Sample's superclass is Object, so querying Object must return Sample with
+    # relation "extends", while a type nothing in the DEX subtypes is an empty
+    # (not error) list -- pinning both the positive extends scan and the miss.
+    subs = client.subclasses(_APK, "java.lang.Object")
+    assert subs["type_name"] == "Ljava/lang/Object;"
+    assert {"class": "Lcom/example/gate/Sample;", "relation": "extends"} in subs["subclasses"]
+    none = client.subclasses(_APK, "Lcom/example/gate/NoSuchBase;")
+    assert none["subclasses"] == []
+    assert none["total"] == 0
+
     strings = client.strings(_APK)
     assert any(
         "APK_GATE_MARKER_STRING" in value for value in strings["strings"]

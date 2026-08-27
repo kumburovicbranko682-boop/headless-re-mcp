@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **279（162 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **280（163 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -1465,6 +1465,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   单测(`test_apk_fields.py`):父类/两个接口/访问标志/方法数/字段数全数读回、点分名解析到 Lsmali/名、无接口回 `[]`、外部引用只回 class_name/is_external 而略去伪造继承、未定义类报 not_found、空类名报 invalid_params。
   实机测试(`test_m11_android_apk_live_gate.py`,走真实 `sample.apk`)读回 `Sample` 的父类为 `Ljava/lang/Object;`、接口为 `[]`、access 含 "public"、恰好 3 个方法(`<init>`/`callee`/`caller`)与 0 字段,点分名解析到 smali 名——
   这条 4.x 面(`extends`/`implements`/访问标志)有别于既有的方法/xref 读取,故 androguard 在该处的漂移由本例兜住。
+
+- **新增 `apk.subclasses`:`apk.class_info` 的逆向索引——给一个类型,列出整个 DEX 里*直接*继承它或实现它的 app 自有类。** `class_info` 正向回答「这个类是什么」(父类、接口),本工具回答反向的「谁是某个 X」,是安全审计的第一个查询:
+  传 `Ljavax/net/ssl/X509TrustManager;` 一次列出所有自定义信任管理器(证书固定/SSL 绕过的高发面)、传 `Ljava/lang/Runnable;`/`Ljava/lang/Thread;` 找后台线程、传某个 `Landroid/app/Activity;`/WebViewClient/BroadcastReceiver 基类
+  在混淆命名下枚举 app 自己的界面或接收器。回 `type_name`(解析后查询的 Lsmali/名)、`subclasses`、`count`、`total`、`offset`、`has_more`、`scan_capped`,每行 `{class, relation}`,`relation` 为 `extends`(该类型是其直接父类)或
+  `implements`(是其声明的接口之一)。**只匹配直接关系**——隔代经由中间类继承的孙类不计入祖父类的结果——且**只含 app 自有类**(外部框架/库类永不作为结果,即便匹配)。`total` 为命中数,受类扫描上限约束,`scan_capped` 为真表示 DEX 里类多于已扫窗口,
+  故空/短列表可能少报;预算裁剪落到 `has_more`。空 `type_name` 报 `invalid_params`;无任何类继承/实现该类型则回空列表而非报错;入参可给点分名或 Lsmali/名;列表字段名为 `subclasses` 而非 classes/items。工具面 279→**280**(162→**163** 只读,写不变)。
+  单测(`test_apk_fields.py`):按 extends 与 implements 分别命中并各带 relation、点分接口名解析到 smali、外部类即便匹配也被跳过、无命中回空而非 not_found、空 type_name 报 invalid_params、公共基类分页并置 has_more。
+  实机测试(`test_m11_android_apk_live_gate.py`,走真实 `sample.apk`)查 `java.lang.Object` 必含 `Sample` 且 relation 为 extends,查 DEX 未定义的基类回空列表——正向 extends 扫描与未命中两条路径同时兜住。
 
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
