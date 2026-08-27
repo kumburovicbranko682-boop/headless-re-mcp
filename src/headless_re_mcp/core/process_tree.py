@@ -9,6 +9,7 @@ import subprocess
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -223,6 +224,22 @@ def collect_process_group(pgid: int) -> list[int]:
     return members
 
 
+def collect_process_tree(parent_pid: int) -> list[int]:
+    """Known descendants plus isolated-group members whose launcher exited.
+
+    ``collect_descendants`` follows the parent/child links, which the kernel
+    erases the moment it reparents an orphan to init; ``collect_process_group``
+    recovers those survivors by the session group the launcher led. The union
+    covers a helper whether it is still parented or already reparented.
+    """
+    found: list[int] = []
+    with suppress(Exception):
+        found = collect_descendants(parent_pid)
+    with suppress(Exception):
+        found.extend(collect_process_group(parent_pid))
+    return list(dict.fromkeys(pid for pid in found if pid != parent_pid))
+
+
 def terminate_process_group(pgid: int) -> list[int]:
     """POSIX: kill every live member of process group ``pgid``. [] on Windows.
 
@@ -313,6 +330,37 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
     return killed
 
 
+def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
+    """Kill helpers a launcher left behind after it reported completion.
+
+    A one-shot CLI wrapper (diec, Exeinfo PE, upx) can exit 0 while a helper it
+    spawned survives -- reparented to init and invisible to the parent/child
+    walk. When the launcher's session group still has members, tear the whole
+    tree down; with none, this is a no-op, so a helper meant to outlive the tool
+    is left alone. Never raises: this runs on a cleanup path.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    killed: list[int] = []
+    with suppress(Exception):
+        leftover = collect_process_tree(pid)
+        if not leftover:
+            return []
+        killed = terminate_process_tree(process, wait_s=wait_s)
+        # SIGKILL / TerminateProcess is asynchronous, but the one-shot CLI
+        # adapters that call this assert the helper is gone the instant they
+        # return. Wait until each enumerated survivor is actually dead (or a
+        # zombie awaiting reaping), bounded by wait_s, not merely signalled.
+        deadline = monotonic() + max(wait_s, 0.0)
+        pending = [child for child in leftover if child != pid]
+        while pending and monotonic() < deadline:
+            pending = [child for child in pending if _pid_running(child)]
+            if pending:
+                sleep(0.02)
+    return killed
+
+
 def terminate_pid_tree(pid: int) -> list[int]:
     """Kill ``pid`` and its descendants when there is no Popen handle left.
 
@@ -348,6 +396,38 @@ def _kill_pid(pid: int) -> None:
         return
     try:
         kernel32.TerminateProcess(handle, 1)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _pid_running(pid: int) -> bool:
+    """True while ``pid`` is a live, non-zombie process.
+
+    A killed orphan reparented to init reads as a zombie ('Z'/'X') until it is
+    reaped, then vanishes once it is; both mean it no longer holds anything, so
+    both count as not running. Used to wait out an asynchronous kill.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name != "nt":
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            return False
+        close = stat.rfind(")")
+        if close < 0:
+            return False
+        fields = stat[close + 2 :].split()
+        return bool(fields) and fields[0] not in {"Z", "X", "x"}
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == 259  # STILL_ACTIVE
     finally:
         kernel32.CloseHandle(handle)
 

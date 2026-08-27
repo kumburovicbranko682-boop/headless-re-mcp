@@ -360,6 +360,13 @@ def _capture_process(
         # truncate a short-lived process's final JSON bytes.
         stdout_thread.join(timeout=1.0)
         stderr_thread.join(timeout=1.0)
+        # diec can exit 0 while a helper it spawned lingers, reparented to init.
+        # Reap the launcher's session group so a completed scan leaves nothing
+        # holding the sample; a survivor also lets the readers finish so the
+        # conditional close below never wedges.
+        from headless_re_mcp.core.process_tree import terminate_leftover_process_tree
+
+        terminate_leftover_process_tree(process, wait_s=1.0)
         # The readers close their own pipes; only close here when the reader has
         # already finished, so a reader still blocked on a survivor's pipe never
         # wedges this thread on close().
