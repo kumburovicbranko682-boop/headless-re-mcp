@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（模型列表探测成功却因缓存写盘失败报成「探测失败」）
+
+- `POST /api/providers/{id}/models` 把「向供应商拉取模型列表」和「把结果写回 providers.json 的
+  `known_models` 暖存」放在同一个 try 里。后者只是给设置面板下拉框下次打开预热用的缓存，但
+  providers.json 只读、损坏或超限时，`configs.save` 抛的异常被当成探测失败：路由回 502
+  `provider_probe_failed:OSError:…`，用户被引去排查密钥/网络/配额——而供应商明明应答了；
+  已经取到的模型列表也被丢弃，不返回给调用方。设置面板打开时的自动探测同样中招（静默吞掉，
+  下拉框退化成文本框）。现把缓存写盘挪出探测的 try：写失败时仍返回 200 + `models`，附
+  `cache_error` 说明缓存没存上；真正的探测失败仍是原样 502。
+- 新增两条路由直测：探测成功但 `save` 抛 `OSError` 时返回 200、模型列表完整、带 `cache_error`
+  （修复前该用例停在 502）；正常路径仍把 `known_models` 持久化且无 `cache_error`。相关 14 条
+  测试、ruff、mypy 均通过。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

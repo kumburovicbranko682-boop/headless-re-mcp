@@ -67,3 +67,77 @@ def test_probe_models_keeps_the_provider_error_in_the_502(
         detail = probed.json()["detail"]
         assert detail.startswith("provider_probe_failed:RuntimeError:")
         assert "quota exceeded retry after 30s" in detail
+
+
+def test_probe_models_returns_the_list_when_only_the_cache_write_fails(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A read-only providers.json must not turn a successful probe into a 502.
+
+    Persisting known_models only warms the settings dropdown for the next
+    open. The write used to share the probe's try block, so its OSError was
+    reported as provider_probe_failed — sending the user to debug their key
+    and network while the provider had answered — and the fetched list was
+    discarded instead of returned.
+    """
+
+    async def listed(self: OpenAICompatibleProvider) -> list[str]:
+        return ["model-a", "model-b"]
+
+    monkeypatch.setattr(OpenAICompatibleProvider, "list_models", listed)
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    with TestClient(app) as client:
+        saved = client.put(
+            "/api/providers/default",
+            headers=headers,
+            json={"base_url": "https://example.invalid/v1", "model": "fake", "api_key": "k"},
+        )
+        assert saved.status_code == 200
+
+        def refuse_save(profile: Any, *, make_current: bool = True) -> dict[str, Any]:
+            raise OSError("providers.json is read-only")
+
+        store = app.state.provider_configs
+        monkeypatch.setattr(store, "save", refuse_save)
+
+        probed = client.post("/api/providers/default/models", headers=headers)
+        assert probed.status_code == 200
+        body = probed.json()
+        assert body["ok"] is True
+        assert body["models"] == ["model-a", "model-b"]
+        assert "read-only" in body["cache_error"]
+
+
+def test_probe_models_still_persists_the_cache_when_it_can(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    async def listed(self: OpenAICompatibleProvider) -> list[str]:
+        return ["model-a", "model-b"]
+
+    monkeypatch.setattr(OpenAICompatibleProvider, "list_models", listed)
+    monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    app = create_app(service, token="web-secret", settings=settings)
+    headers = {"Authorization": "Bearer web-secret"}
+    with TestClient(app) as client:
+        saved = client.put(
+            "/api/providers/default",
+            headers=headers,
+            json={"base_url": "https://example.invalid/v1", "model": "fake", "api_key": "k"},
+        )
+        assert saved.status_code == 200
+
+        probed = client.post("/api/providers/default/models", headers=headers)
+        assert probed.status_code == 200
+        body = probed.json()
+        assert body["models"] == ["model-a", "model-b"]
+        assert "cache_error" not in body
+
+        listed_profiles = client.get("/api/providers", headers=headers).json()
+        default = next(p for p in listed_profiles["profiles"] if p["id"] == "default")
+        assert default["known_models"] == ["model-a", "model-b"]

@@ -590,10 +590,6 @@ def register_agent_routes(
         try:
             provider = OpenAICompatibleProvider(configs.get(profile_id), timeout=30.0)
             models = await provider.list_models()
-            if models:
-                current = configs.get(profile_id)
-                current.known_models = models
-                configs.save(current, make_current=False)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="profile_not_found") from exc
         except Exception as exc:
@@ -607,7 +603,21 @@ def register_agent_routes(
                 status_code=502,
                 detail=f"provider_probe_failed:{type(exc).__name__}:{detail}",
             ) from exc
-        return JSONResponse({"ok": True, "models": models})
+        payload: dict[str, object] = {"ok": True, "models": models}
+        if models:
+            # Persisting known_models only warms the dropdown for the next
+            # dialog open. This write used to share the probe's try block, so
+            # a read-only or corrupted providers.json turned a successful
+            # probe into "provider_probe_failed" — pointing the user at their
+            # key/network — and discarded the fetched list instead of
+            # returning it.
+            try:
+                current = configs.get(profile_id)
+                current.known_models = models
+                configs.save(current, make_current=False)
+            except Exception as exc:
+                payload["cache_error"] = " ".join(str(exc).split())[:500]
+        return JSONResponse(payload)
 
     @app.post("/api/providers/zerofall/preview")
     def zerofall_preview(body: JsonObject, authorization: str | None = Header(default=None)) -> JSONResponse:
