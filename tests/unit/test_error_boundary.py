@@ -54,6 +54,15 @@ def test_tool_exception_returns_ai_envelope_and_logs(
         "secret=sk-DEADBEEFsecret",
         "Password=sk-DEADBEEFsecret",
         "Authorization: Bearer sk-DEADBEEFsecret",
+        # Keywords the structured redactor already masks; the inline scrubber
+        # guards higher-exposure channels (on-disk log, 500 body) and must
+        # cover the same set or a payload-safe secret leaks when it lands in a
+        # message instead.
+        "private_key=sk-DEADBEEFsecret",
+        "private-key: sk-DEADBEEFsecret",
+        "access_key=sk-DEADBEEFsecret",
+        "passwd=sk-DEADBEEFsecret",
+        "credential: sk-DEADBEEFsecret",
     ],
 )
 def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:
@@ -62,7 +71,8 @@ def test_every_sensitive_keyword_form_is_redacted(marker: str) -> None:
     ``record_exception`` and the envelope both run messages through this regex,
     so if an edit drops a keyword or a separator the matching secret starts
     reaching disk in the clear. Pin the whole matrix -- every keyword, both
-    ``:``/``=`` separators, the bearer header, and case-insensitivity.
+    ``:``/``=`` separators, the bearer header, and case-insensitivity -- and
+    keep it aligned with the structured redactor's key set in redaction.py.
     """
     redacted = boundary._redact_text(f"connect failed while sending {marker} to host")
 

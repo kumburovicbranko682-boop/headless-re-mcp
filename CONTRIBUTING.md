@@ -99,6 +99,28 @@ CI 会断言提交的 SPA 与 `webui/src` 匹配,忘了重编会红。
 - PR 描述里写清测试证据:本地跑了哪些命令、结果如何;动了集成路径但没有对应
   后端时如实说明,不要把 skip 说成通过。
 
+## 发布流程
+
+版本号有四个必须一起动的落点,漏掉任何一个都有守卫拦截:
+
+1. `pyproject.toml` 的 `version`;
+2. `packaging/wix/Product.wxs` 的 `Product/@Version`(打包脚本校验它与 pyproject 一致,
+   否则 MSI 的 `MajorUpgrade` 会失效);
+3. README 首行横幅的 `（vX.Y.Z）`(`test_readme_catalog_consistency` 钉死它与 pyproject
+   和运行时 `build_info()` 三者一致);
+4. `CHANGELOG.md`:把 `## [Unreleased]` 改成 `## [X.Y.Z] - 日期`,底部补
+   `[X.Y.Z]:` 发布链接,并把 `[Unreleased]:` 比较链接的基点移到新 tag。
+
+步骤:main 全绿为前提;改完四处后**重装 editable 包再跑质量门**(版本一致性测试读的是
+安装元数据,不重装它就用旧版本号比对);提交 `Release X.Y.Z` 并推上 main,等 CI 绿;
+打附注 tag `vX.Y.Z`(tag 消息写发布摘要,惯例见 `git tag -n9`)并推送——release
+workflow 会构建 MSI、做装-跑-卸往返验证,然后自动创建 GitHub Release 并附上安装包
+与校验和。想只验打包路径不发布,用 release workflow 的 `workflow_dispatch` 空跑。
+
+有配好真实 IDA / x64dbg 的机器时,发布前手动触发 `windows-integration` 的集成 gate
+(需要 `[self-hosted, Windows, headless-re]` 标签的 runner);没有也不阻塞发布,
+但 CHANGELOG 的「验证」小节不要声称集成 gate 通过。
+
 ## 许可证
 
 GPL-3.0-only。提交贡献即表示你同意以同一许可证发布你的改动。

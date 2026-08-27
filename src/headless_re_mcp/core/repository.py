@@ -509,7 +509,17 @@ class InMemoryAnalysisRepository:
                 self._knowledge.pop(knowledge_key, None)
             for backend_key in [item for item in self._backends if item[0] == sid]:
                 self._backends.pop(backend_key, None)
-            path = session_timeline_path(self.artifact_root, sid)
+            # session_timeline_path is the traversal guard: it refuses ids
+            # that are not one ordinary path component. The check below that
+            # this replaces (``Path(sid).name == sid``) passed "..", which
+            # collapses debug-events/<sid> into the artifact root itself.
+            # Skip what the guard refuses rather than raise: the trim runs on
+            # session close, and one poisoned row must not fail every later
+            # clean close.
+            try:
+                path = session_timeline_path(self.artifact_root, sid)
+            except ValueError:
+                continue
             with suppress(OSError):
                 if path.is_file():
                     path.unlink()
@@ -518,7 +528,7 @@ class InMemoryAnalysisRepository:
                 with suppress(OSError):
                     parent.rmdir()
             events = self.artifact_root / "debug-events" / sid
-            if Path(sid).name == sid and events.is_dir():
+            if events.is_dir():
                 with suppress(OSError):
                     shutil.rmtree(events)
 
