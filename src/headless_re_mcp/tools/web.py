@@ -162,8 +162,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Capture a screenshot of the current page to a PNG artifact.
 
         Answers with path and size, plus artifact_id when the PNG was
-        registered. There is no screenshot or png field. A full-page capture
-        over the cap is refused rather than left on disk.
+        registered. There is no screenshot or png field. A capture that produced
+        no file is an envelope failure, not a zero-byte success, and a full-page
+        capture over the cap is refused rather than left on disk.
         """
         return _dump(analysis.web_screenshot(session_id, full_page=full_page))
 

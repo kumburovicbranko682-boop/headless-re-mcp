@@ -15,6 +15,7 @@ import shutil
 import stat
 import threading
 import zipfile
+from contextlib import suppress
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
@@ -256,6 +257,48 @@ def _file_mode_size(info: Any) -> tuple[int, int]:
         mode = int(info[0] or 0)
         size = int(info[1] or 0)
     return mode, size
+
+
+def _remote_stat(dev: Any, remote_path: str) -> tuple[bool, int] | None:
+    """Best-effort ``(present, size)`` for a device path, or None when unknown.
+
+    adb sync.stat does not raise for a missing path: it answers a zero stat
+    (mode 0, size 0). ``present`` is therefore ``mode != 0 or size > 0``. Any
+    backend that cannot be asked (no sync, no stat, or the call failed) returns
+    None so the caller reports "could not verify" rather than a false negative.
+    """
+    sync = getattr(dev, "sync", None)
+    stat_fn = getattr(sync, "stat", None)
+    if not callable(stat_fn):
+        return None
+    try:
+        info = _call(stat_fn, remote_path, timeout=_ADB_PROBE_TIMEOUT_S)
+    except Exception:  # noqa: BLE001
+        return None
+    mode, size = _file_mode_size(info)
+    return bool(mode) or size > 0, size
+
+
+def _forward_present(dev: Any, serial: str, local: str) -> bool | None:
+    """Whether ``local`` shows in the device's forward list, or None when unknown.
+
+    adb keeps forwards on the server; a call that returns without error is not
+    proof the binding took. When the backend exposes no list API (or it fails),
+    return None so the caller says "not verified" rather than "did not appear".
+    """
+    lister = getattr(dev, "forward_list", None)
+    if not callable(lister):
+        return None
+    try:
+        items = _call(lister, timeout=_ADB_SHELL_TIMEOUT_S)
+    except Exception:  # noqa: BLE001
+        return None
+    for item in items or []:
+        item_local = getattr(item, "local", None)
+        item_serial = getattr(item, "serial", None)
+        if item_local == local and item_serial in (None, "", serial):
+            return True
+    return False
 
 
 class AdbBackend:
@@ -588,6 +631,17 @@ class AdbBackend:
                 size=size,
                 cap=UNREGISTERED_CAPTURE_MAX_BYTES,
             )
+        if size <= 0:
+            # image.save can return without leaving a usable PNG (empty or
+            # missing). Reporting that as a capture sends the caller to a
+            # zero-byte path it reads as a blank screen.
+            with suppress(OSError):
+                out_path.unlink()
+            raise AdbError(
+                "backend_error",
+                "screenshot produced no image file",
+                path=str(out_path),
+            )
         return {
             "path": str(out_path),
             "serial": _check_serial(serial),
@@ -599,6 +653,7 @@ class AdbBackend:
         local_path.parent.mkdir(parents=True, exist_ok=True)
         cap = UNREGISTERED_CAPTURE_MAX_BYTES
         sync = getattr(dev, "sync", None)
+        expected_size: int | None = None
         if sync is not None:
             try:
                 info = _call(sync.stat, remote_path, timeout=_ADB_PROBE_TIMEOUT_S)
@@ -620,6 +675,7 @@ class AdbBackend:
                         size=size,
                         cap=cap,
                     )
+                expected_size = size
         try:
             _call(dev.sync.pull, remote_path, str(local_path), timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
@@ -633,6 +689,15 @@ class AdbBackend:
                 "refusing to keep a pulled directory",
                 remote=remote_path,
             )
+        if not local_path.exists():
+            # sync.pull can return without writing anything (e.g. the remote
+            # path vanished between stat and pull). A size-0 "success" reads as
+            # an empty file the caller then tries to open.
+            raise AdbError(
+                "backend_error",
+                "pull returned but produced no local file",
+                remote=remote_path,
+            )
         pulled, over = capped_file_size(local_path, cap=cap)
         if over:
             raise AdbError(
@@ -641,6 +706,15 @@ class AdbBackend:
                 remote=remote_path,
                 size=pulled,
                 cap=cap,
+            )
+        if expected_size is not None and expected_size > 0 and pulled == 0:
+            with suppress(OSError):
+                local_path.unlink()
+            raise AdbError(
+                "backend_error",
+                "pull produced an empty local file for a non-empty remote",
+                remote=remote_path,
+                remote_size=expected_size,
             )
         return {"remote": remote_path, "local": str(local_path), "size": pulled}
 
@@ -670,7 +744,27 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"push failed: {exc}", remote=remote_path) from exc
-        return {"local": str(path), "remote": remote_path, "size": size}
+        result: JsonObject = {"local": str(path), "remote": remote_path, "size": size}
+        # A push that returns is not proof the bytes landed: a read-only path or
+        # a full device can swallow it. Confirm the remote like install/uninstall
+        # confirm through pm path, and say so when it cannot be checked.
+        remote = _remote_stat(dev, remote_path)
+        if remote is None:
+            result["pushed"] = None
+            result["note"] = "push returned; remote file could not be verified"
+        else:
+            present, remote_size = remote
+            result["pushed"] = present
+            if present:
+                result["remote_size"] = remote_size
+                if remote_size != size:
+                    result["note"] = (
+                        f"push returned; remote size {remote_size} "
+                        f"differs from local {size}"
+                    )
+            else:
+                result["note"] = "push returned; remote file is not visible to adb stat"
+        return result
 
     def ensure_frida_server(
         self,
@@ -765,7 +859,18 @@ class AdbBackend:
                     if key in self._forwards:
                         self._forwards.remove(key)
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
-        return {"local": local, "remote": remote}
+        result: JsonObject = {"local": local, "remote": remote}
+        # The slot stays reserved regardless (release_forwards must still try to
+        # remove it); the caller is only told whether adb actually lists it.
+        listed = _forward_present(dev, serial_id, local)
+        if listed is None:
+            result["verified"] = None
+        elif listed:
+            result["verified"] = True
+        else:
+            result["verified"] = False
+            result["note"] = "forward returned; not present in adb forward --list"
+        return result
 
     def release_forwards(self) -> JsonObject:
         """Drop every forward this process created.

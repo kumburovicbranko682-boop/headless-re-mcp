@@ -150,9 +150,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_screenshot(serial: str) -> dict[str, Any]:
         """Capture a device screenshot to a PNG under artifact_root/device/.
 
-        Answers with path, serial and size. The file is not a registered artifact
-        -- artifacts.read cannot open it -- only the newest 32 device captures
-        are kept, and a file over 64 MiB is deleted and refused.
+        Answers with path, serial and size. A capture that produced no file is an
+        envelope failure, not a zero-byte success. The file is not a registered artifact
+        -- artifacts.read cannot open it -- only the newest 32 device captures are kept,
+        and a file over 64 MiB is deleted and refused.
         """
         return _dump(analysis.device_screenshot(serial))
 
@@ -160,9 +161,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_pull(serial: str, remote_path: str) -> dict[str, Any]:
         """Pull a device file to artifact_root/device/.
 
-        Answers with remote, local and size. The file is not a registered artifact
-        -- artifacts.read cannot open it -- only the newest 32 device captures
-        are kept, and a file over 64 MiB is deleted and refused.
+        Answers with remote, local and size. A pull that produced no local file is an
+        envelope failure, not a zero-size success. The file is not a registered artifact
+        -- artifacts.read cannot open it -- only the newest 32 device captures are kept,
+        and a file over 64 MiB is deleted and refused.
         """
         return _dump(analysis.device_pull(serial, remote_path))
 
@@ -170,8 +172,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_push(serial: str, local_path: str, remote_path: str) -> dict[str, Any]:
         """Push a local file to a path on the device.
 
-        Answers with local, remote and size. Files over the capture cap are
-        refused rather than copied onto the device.
+        Answers with local, remote, size, and pushed (true/false, or null when
+        the remote could not be verified), plus remote_size and note when the
+        remote was checked. A return from adb is not by itself proof the bytes
+        landed. Files over the capture cap are refused rather than copied onto
+        the device.
         """
         return _dump(analysis.device_push(serial, local_path, remote_path))
 
@@ -179,7 +184,9 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_forward(serial: str, local: str, remote: str) -> dict[str, Any]:
         """Set an adb forward (e.g. tcp:27042 -> tcp:27042 for frida-server).
 
-        Answers with local and remote. Forwards stay on the adb server until
+        Answers with local, remote, and verified (true/false, or null when the
+        forward list could not be read) so a call that returned but never bound
+        is not read as a live forward. Forwards stay on the adb server until
         close_all; this process will refuse a new one once the table is full.
         """
         return _dump(analysis.device_forward(serial, local, remote))

@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（设备/浏览器捕获与传输不再谎报空产物为成功）
+
+- `device.screenshot` / `web.screenshot` 过去在 `image.save` / `page.screenshot` 返回后只查超大,
+  却没查文件是否真的写出。`capped_file_size` 对缺失路径答 `0`,于是一次没落盘的截图(远端一闪、
+  标签页被切后台或崩溃)被当成 `size=0` 的成功回给调用方——它据此打开一张空白图,或(web 侧)把
+  空文件注册成产物。现两者在 `size<=0` 时删掉残留并抛 `backend_error`。
+- `device.pull` 同理:`sync.pull` 返回但没写本地文件(stat 与 pull 之间远端消失)会被记成 size 0
+  成功。现返回前若本地文件缺失即抛 `backend_error`;若远端 stat 已知非空而本地为 0 字节,删掉空
+  文件并抛错。合法的空远端文件仍照常拉成 size 0。
+- `device.push` 过去只回报本地大小,从不核实远端是否落地(只读路径或满盘会把写吞掉)。现仿照
+  `install`/`uninstall` 经 `pm path` 核实的范式,push 后 `sync.stat` 远端并回 `pushed`
+  (`true`/`false`,无法核实时 `null`),落地时附 `remote_size`,大小不一致或不可见时附 `note`。
+- `device.forward` 过去只要 `dev.forward` 不抛就回 `{local, remote}`,而 adb 转发只是记在 server 上,
+  返回并不等于绑定生效。现尽力经 `forward --list` 核实并回 `verified`(`true`/`false`,无 list API
+  时 `null`);未出现时附 `note`。占位槽仍保留,`release_forwards` 下次照常尝试移除。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的

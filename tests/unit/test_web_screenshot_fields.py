@@ -79,3 +79,43 @@ def test_web_screenshot_over_the_cap_is_deleted(tmp_path: Path, monkeypatch: Any
         backend.screenshot("s", out)
     assert caught.value.code == "too_large"
     assert out.exists() is False
+
+
+def test_web_screenshot_that_writes_no_file_is_not_a_capture(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """page.screenshot can return without leaving a PNG on a backgrounded or
+    crashed tab. Reporting a zero-byte path as a capture registers an empty
+    artifact the caller reads as a blank page."""
+    out = tmp_path / "shot.png"
+
+    class Page:
+        def screenshot(self, path: str, full_page: bool = False) -> None:
+            del path, full_page  # returns without writing the file
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=Page()))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    with pytest.raises(WebError) as caught:
+        backend.screenshot("s", out)
+    assert caught.value.code == "backend_error"
+    assert "no image file" in caught.value.message
+    assert out.exists() is False
+
+
+def test_web_screenshot_with_bytes_reports_path_and_size(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    out = tmp_path / "shot.png"
+
+    class Page:
+        def screenshot(self, path: str, full_page: bool = False) -> None:
+            del full_page
+            Path(path).write_bytes(b"\x89PNG\r\n")
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(page=Page()))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.screenshot("s", out)
+    assert payload["path"].endswith("shot.png")
+    assert payload["size"] == 6

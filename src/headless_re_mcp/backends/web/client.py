@@ -678,6 +678,17 @@ class WebBackend:
                     size=size,
                     cap=UNREGISTERED_CAPTURE_MAX_BYTES,
                 )
+            if size <= 0:
+                # page.screenshot can return without leaving a usable PNG on a
+                # backgrounded or crashed tab. A size-0 "capture" registers an
+                # empty artifact the caller reads as a blank page.
+                with contextlib.suppress(OSError):
+                    out_path.unlink()
+                raise WebError(
+                    "backend_error",
+                    "screenshot produced no image file",
+                    path=str(out_path),
+                )
             return {"path": str(out_path), "size": size}
 
         return self._runner(handle).call(work)

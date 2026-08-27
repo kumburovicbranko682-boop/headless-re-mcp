@@ -3865,6 +3865,368 @@ class TestDevicePullRefusesTreesAndHugeFiles:
         assert out.exists() is False
 
 
+class TestDeviceCapturesAndTransfersAreHonest:
+    """A capture or transfer that returns without producing its output is not
+    a size-0 success. adb sync/save calls can return without writing a usable
+    file (the remote vanished, the tab was backgrounded, the device is full),
+    and capped_file_size answers 0 for a missing path, so the old code reported
+    a zero-byte capture the caller then read as blank or empty."""
+
+    def test_a_screenshot_that_writes_no_file_is_not_reported_captured(
+        self, tmp_path: Any
+    ) -> None:
+        from pathlib import Path
+
+        from headless_re_mcp.backends.adb import client as mod
+
+        out = tmp_path / "shot.png"
+
+        class Image:
+            def save(self, path: str) -> None:
+                del path  # adbutils returned an image whose save writes nothing
+
+        class Dev:
+            def screenshot(self, timeout: float | None = None) -> Image:
+                del timeout
+                return Image()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(mod.AdbError) as caught:
+            backend.screenshot("emulator-5554", out)
+        assert caught.value.code == "backend_error"
+        assert "no image file" in caught.value.message
+        assert out.exists() is False
+        assert Path(str(out)).exists() is False
+
+    def test_an_empty_screenshot_file_is_deleted_and_refused(
+        self, tmp_path: Any
+    ) -> None:
+        from pathlib import Path
+
+        from headless_re_mcp.backends.adb import client as mod
+
+        out = tmp_path / "shot.png"
+
+        class Image:
+            def save(self, path: str) -> None:
+                Path(path).write_bytes(b"")
+
+        class Dev:
+            def screenshot(self, timeout: float | None = None) -> Image:
+                del timeout
+                return Image()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(mod.AdbError) as caught:
+            backend.screenshot("emulator-5554", out)
+        assert caught.value.code == "backend_error"
+        assert out.exists() is False
+
+    def test_a_screenshot_with_bytes_reports_path_and_size(self, tmp_path: Any) -> None:
+        from pathlib import Path
+
+        from headless_re_mcp.backends.adb import client as mod
+
+        out = tmp_path / "shot.png"
+
+        class Image:
+            def save(self, path: str) -> None:
+                Path(path).write_bytes(b"\x89PNG\r\n")
+
+        class Dev:
+            def screenshot(self, timeout: float | None = None) -> Image:
+                del timeout
+                return Image()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.screenshot("emulator-5554", out)
+        assert result["path"] == str(out)
+        assert result["size"] == 6
+        assert result["serial"] == "emulator-5554"
+
+    def test_a_pull_that_writes_no_local_file_is_not_reported_pulled(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        class Info:
+            mode = 0o100644
+            size = 10
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> Info:
+                del remote, timeout
+                return Info()
+
+            def pull(self, remote: str, local: str, timeout: float | None = None) -> None:
+                del remote, local, timeout  # returns without writing the file
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(mod.AdbError) as caught:
+            backend.pull("emulator-5554", "/sdcard/x.bin", tmp_path / "x.bin")
+        assert caught.value.code == "backend_error"
+        assert "no local file" in caught.value.message
+
+    def test_an_empty_pull_of_a_non_empty_remote_is_refused(
+        self, tmp_path: Any
+    ) -> None:
+        from pathlib import Path
+
+        from headless_re_mcp.backends.adb import client as mod
+
+        out = tmp_path / "x.bin"
+
+        class Info:
+            mode = 0o100644
+            size = 10
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> Info:
+                del remote, timeout
+                return Info()
+
+            def pull(self, remote: str, local: str, timeout: float | None = None) -> None:
+                del remote, timeout
+                Path(local).write_bytes(b"")
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(mod.AdbError) as caught:
+            backend.pull("emulator-5554", "/sdcard/x.bin", out)
+        assert caught.value.code == "backend_error"
+        assert out.exists() is False
+
+    def test_a_legitimately_empty_remote_pulls_to_size_zero(
+        self, tmp_path: Any
+    ) -> None:
+        from pathlib import Path
+
+        from headless_re_mcp.backends.adb import client as mod
+
+        out = tmp_path / "empty.txt"
+
+        class Info:
+            mode = 0o100644
+            size = 0
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> Info:
+                del remote, timeout
+                return Info()
+
+            def pull(self, remote: str, local: str, timeout: float | None = None) -> None:
+                del remote, timeout
+                Path(local).write_bytes(b"")
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.pull("emulator-5554", "/sdcard/empty.txt", out)
+        assert result["size"] == 0
+        assert out.is_file()
+
+    def test_a_pull_that_lands_reports_the_size(self, tmp_path: Any) -> None:
+        from pathlib import Path
+
+        from headless_re_mcp.backends.adb import client as mod
+
+        out = tmp_path / "data.bin"
+
+        class Info:
+            mode = 0o100644
+            size = 3
+
+        class Sync:
+            def stat(self, remote: str, timeout: float | None = None) -> Info:
+                del remote, timeout
+                return Info()
+
+            def pull(self, remote: str, local: str, timeout: float | None = None) -> None:
+                del remote, timeout
+                Path(local).write_bytes(b"abc")
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.pull("emulator-5554", "/sdcard/data.bin", out)
+        assert result["size"] == 3
+        assert result["local"] == str(out)
+
+    def test_a_push_that_lands_reports_pushed_true(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        local = tmp_path / "f.bin"
+        local.write_bytes(b"abc")
+
+        class Info:
+            mode = 0o100644
+            size = 3
+
+        class Sync:
+            def push(self, *args: Any, **kwargs: Any) -> None:
+                del args, kwargs
+
+            def stat(self, remote: str, timeout: float | None = None) -> Info:
+                del remote, timeout
+                return Info()
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.push("emulator-5554", str(local), "/data/local/tmp/f.bin")
+        assert result["pushed"] is True
+        assert result["remote_size"] == 3
+        assert result["size"] == 3
+        assert "note" not in result
+
+    def test_a_push_that_does_not_land_reports_pushed_false(self, tmp_path: Any) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        local = tmp_path / "f.bin"
+        local.write_bytes(b"abc")
+
+        class Info:
+            mode = 0
+            size = 0
+
+        class Sync:
+            def push(self, *args: Any, **kwargs: Any) -> None:
+                del args, kwargs
+
+            def stat(self, remote: str, timeout: float | None = None) -> Info:
+                del remote, timeout
+                return Info()
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.push("emulator-5554", str(local), "/data/local/tmp/f.bin")
+        assert result["pushed"] is False
+        assert "not visible" in str(result.get("note", ""))
+
+    def test_a_push_that_cannot_be_verified_reports_pushed_none(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        local = tmp_path / "f.bin"
+        local.write_bytes(b"abc")
+
+        class Sync:
+            def push(self, *args: Any, **kwargs: Any) -> None:
+                del args, kwargs
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.push("emulator-5554", str(local), "/data/local/tmp/f.bin")
+        assert result["pushed"] is None
+        assert "could not be verified" in str(result.get("note", ""))
+
+    def test_a_push_whose_remote_size_differs_carries_a_note(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        local = tmp_path / "f.bin"
+        local.write_bytes(b"abcdef")
+
+        class Info:
+            mode = 0o100644
+            size = 3
+
+        class Sync:
+            def push(self, *args: Any, **kwargs: Any) -> None:
+                del args, kwargs
+
+            def stat(self, remote: str, timeout: float | None = None) -> Info:
+                del remote, timeout
+                return Info()
+
+        class Dev:
+            sync = Sync()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.push("emulator-5554", str(local), "/data/local/tmp/f.bin")
+        assert result["pushed"] is True
+        assert result["remote_size"] == 3
+        assert "differs" in str(result.get("note", ""))
+
+    def test_a_forward_that_appears_in_the_list_is_verified(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Item:
+            def __init__(self, serial: str, local: str, remote: str) -> None:
+                self.serial = serial
+                self.local = local
+                self.remote = remote
+
+        class Dev:
+            def forward(self, local: str, remote: str) -> None:
+                del local, remote
+
+            def forward_list(self) -> list[Item]:
+                return [Item("emulator-5554", "tcp:27042", "tcp:27042")]
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.forward("emulator-5554", "tcp:27042", "tcp:27042")
+        assert result["verified"] is True
+        assert result["local"] == "tcp:27042"
+
+    def test_a_forward_missing_from_the_list_is_not_verified(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def forward(self, local: str, remote: str) -> None:
+                del local, remote
+
+            def forward_list(self) -> list[Any]:
+                return []
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.forward("emulator-5554", "tcp:27042", "tcp:27042")
+        assert result["verified"] is False
+        assert "not present" in str(result.get("note", ""))
+        # The slot is still held so release_forwards will try to remove it.
+        assert backend._forwards == [("emulator-5554", "tcp:27042")]
+
+    def test_a_forward_without_a_list_api_is_unverified(self) -> None:
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def forward(self, local: str, remote: str) -> None:
+                del local, remote
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.forward("emulator-5554", "tcp:27042", "tcp:27042")
+        assert result["verified"] is None
+        assert result["local"] == "tcp:27042"
+
+
 class TestProxyReplayWaitsForTheCommand:
     def test_a_failed_replay_command_is_not_reported_replayed(self) -> None:
         from types import SimpleNamespace
