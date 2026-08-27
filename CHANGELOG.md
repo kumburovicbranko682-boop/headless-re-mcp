@@ -210,6 +210,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `7f454c46`。frida 原生 runtime 在 CI 跑不了，故按仓库既有做法（见 hook-template schema 测试）
   以源码静态断言钉住脚本用的是指针方法、不再出现被删的全局名。
 
+### 修复（OCR 每次读图都吃满 128 MiB 上限）
+
+- `ui.ocr` 的 Windows 路径经 `_read_bounded_bmp` 把截图整份读进内存喂给 OCR 引擎，过去用
+  `stream.read(_MAX_OCR_INPUT_BYTES + 1)` 一次读完。这一步刻意封顶在 128 MiB 安全上限内，但
+  Python 带缓冲的 `read(n)` 会先按 `n` 预分配再收缩——于是**每一次 OCR 无论截图多大都瞬时吃掉
+  128 MiB 堆**（一张 ~8 MiB 的 1080p BMP 也一样）。模块自己的注释就写着「OCR runs on every
+  ui.ocr call, which a UI-driving loop makes constantly」，在 UI 驱动循环里这类尖峰反复出现。
+  现改为分块读到 `max + 1`：短读即 EOF，一个分块内的图仍是一次读（拒绝/接受边界与超限判断不变），
+  分配随磁盘上实际字节数增长而非随上限。回归测试断言小图在 128 MiB 上限下的分配与文件大小成比例。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
