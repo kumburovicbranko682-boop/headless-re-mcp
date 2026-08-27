@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`dynamic.attach` 子窗口探测崩溃被吞成“无子窗口”）
+
+- `dynamic.attach` 成功后会顺带跑一次只读的子窗口探测（`probe_child_window_candidates`），
+  给启动器/加壳样本这类“真正窗口在子进程 pid 上”的目标补一条 `child_windows_hint` /
+  `suggested_child_pids` / `child_candidates`。这层富化是 best-effort，探测抛异常绝不能让整个
+  attach 失败,所以外面裹了 `except Exception: pass`——但静默吞掉后,回包与“探测跑了、确实没有
+  子窗口”一模一样。对那些真有子窗口的目标,调用方据此认定窗口就在被附加的 pid 上、去操作了错误
+  的进程。现改为探测崩溃时回包带 `child_window_probe_failed=true` 与经空白折叠、截到 300 字的
+  `child_window_probe_error`,并**不**补任何 hint 字段(失败的探测不提任何建议),提示调用方改用
+  `ui.process_tree` 自行复查;探测正常跑完但没找到子窗口时依旧不带任何标记,表示“窗口确实在被
+  附加的 pid 上”。`dynamic.attach` 工具说明同步列出这两个失败字段。新增三条直测:探测崩溃时回包
+  带失败标记与有界错误串且不带 hint、探测空手而归时干净无标记、探测找到子窗口时既有 hint 弧线
+  不变。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
