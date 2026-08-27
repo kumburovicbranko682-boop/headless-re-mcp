@@ -197,6 +197,32 @@ jobs:
       - name: Point the Ghidra gate at the install
         run: echo "HEADLESS_RE_GHIDRA_HOME=$HOME/ghidra/ghidra_11.2.1_PUBLIC" >> "$GITHUB_ENV"
 
+      - name: Cache Android decompile tools (jadx, r8)
+        id: cache-android-tools
+        uses: actions/cache@v4
+        with:
+          path: ~/android-tools
+          key: android-tools-jadx-1.5.1-r8-8.5.35
+
+      - name: Install jadx and r8/d8
+        if: steps.cache-android-tools.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/android-tools/jadx
+          curl -fsSL -o /tmp/jadx.zip \
+            https://github.com/skylot/jadx/releases/download/v1.5.1/jadx-1.5.1.zip
+          unzip -q /tmp/jadx.zip -d ~/android-tools/jadx
+          rm /tmp/jadx.zip
+          # r8.jar ships the D8 dexer; the gate uses it to build a real classes.dex
+          # from compiled Java, so the decompile leg runs against a genuine DEX.
+          curl -fsSL -o ~/android-tools/r8.jar \
+            https://maven.google.com/com/android/tools/r8/8.5.35/r8-8.5.35.jar
+
+      - name: Point the Android decompile gate at jadx and r8
+        run: |
+          chmod +x "$HOME/android-tools/jadx/bin/jadx"
+          echo "HEADLESS_RE_JADX=$HOME/android-tools/jadx/bin/jadx" >> "$GITHUB_ENV"
+          echo "HEADLESS_RE_R8_JAR=$HOME/android-tools/r8.jar" >> "$GITHUB_ENV"
+
       - name: Install package with portable extras
         run: |
           python -m pip install -U pip
@@ -212,6 +238,8 @@ jobs:
           webcrack --version
           "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" -help >/dev/null 2>&1 || true
           test -x "$HEADLESS_RE_GHIDRA_HOME/support/analyzeHeadless" && echo "ghidra analyzeHeadless present"
+          "$HEADLESS_RE_JADX" --version
+          javac -version
           python -c "import androguard, adbutils, mitmproxy, playwright; print('android/proxy/web imports ok')"
 
       - name: Non-PE integration gates
