@@ -42,6 +42,13 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A CSS selector and the text a single type call enters are both caller input
+# handed straight to Playwright. The selector cap is far above any real one; the
+# text cap sits well above any legitimate form field while turning a
+# megabyte-long paste into a clean refusal rather than an unbounded push across
+# the CDP channel and into the page.
+_MAX_SELECTOR_BYTES = 2048
+_MAX_TYPE_TEXT_BYTES = 64 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -81,6 +88,45 @@ def _require_http_url(url: str) -> str:
             url=_bounded_metadata(text, _MAX_URL_BYTES)[0],
         )
     return text
+
+
+def _require_selector(selector: str) -> str:
+    """Bound a caller-supplied selector before it reaches Playwright.
+
+    A selector is model input handed straight to ``page.click`` / ``page.fill``.
+    An empty one matches nothing and would surface only as a late actionability
+    timeout after a browser thread was already spent waiting; a megabyte-long
+    one is pathological. Reject both up front with ``invalid_params`` so a bad
+    selector fails fast and cheap. A selector operates on the live DOM, not the
+    filesystem, so there is no path surface to guard here -- only size and
+    emptiness.
+    """
+    text = (selector or "").strip()
+    if not text:
+        raise WebError("invalid_params", "selector must not be empty")
+    encoded = len(text.encode("utf-8"))
+    if encoded > _MAX_SELECTOR_BYTES:
+        raise WebError(
+            "invalid_params", "selector is too long", bytes=encoded, cap=_MAX_SELECTOR_BYTES
+        )
+    return text
+
+
+def _require_type_text(text: str) -> str:
+    """Cap the text a single type call enters into a field.
+
+    ``fill`` sets the whole value at once, so an unbounded string is an
+    unbounded allocation pushed across CDP and into the page. The value itself
+    is never handed back by the tool -- only its length -- so a typed password
+    or token does not land in the transcript even when the cap is not hit.
+    """
+    value = text if isinstance(text, str) else ("" if text is None else str(text))
+    encoded = len(value.encode("utf-8"))
+    if encoded > _MAX_TYPE_TEXT_BYTES:
+        raise WebError(
+            "invalid_params", "text exceeds the type cap", bytes=encoded, cap=_MAX_TYPE_TEXT_BYTES
+        )
+    return value
 
 
 def _bound_nav_timeout(timeout: float) -> float:
@@ -589,6 +635,59 @@ class WebBackend:
             return result
 
         return self._runner(handle).call(work, timeout=timeout + 10.0)
+
+    def click(self, session_id: str, selector: str, *, timeout: float = 5.0) -> JsonObject:
+        """Click the first element matching a CSS selector.
+
+        Bounded like navigate: the selector and the actionability wait are both
+        clamped before any work is queued, so a wrong selector or a stray
+        timeout fails fast rather than parking (or wedging) the session thread.
+        Playwright waits for the element to be actionable and raises when it is
+        not, which surfaces as ``backend_error``. url/title are read after the
+        click so a click that navigated reports the page it landed on.
+        """
+        target = _require_selector(selector)
+        handle = self._get(session_id)
+        bound = _bound_nav_timeout(timeout)
+
+        def work() -> JsonObject:
+            try:
+                handle.page.click(target, timeout=bound * 1000.0)
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"click failed: {exc}", selector=target) from exc
+            return {
+                "clicked": True,
+                "selector": target,
+                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
+                "title": _safe_title(handle.page),
+            }
+
+        return self._runner(handle).call(work, timeout=bound + 10.0)
+
+    def type_text(
+        self, session_id: str, selector: str, text: str, *, timeout: float = 5.0
+    ) -> JsonObject:
+        """Fill the input matching a CSS selector with text.
+
+        Uses ``fill`` (set the whole value at once), not per-key events: it is
+        deterministic and naturally bounded, and it clears the field first. A
+        non-editable target raises, surfacing as ``backend_error``. Only the
+        length of the entered text is returned, never the text itself, so a
+        typed secret stays out of the result envelope.
+        """
+        target = _require_selector(selector)
+        value = _require_type_text(text)
+        handle = self._get(session_id)
+        bound = _bound_nav_timeout(timeout)
+
+        def work() -> JsonObject:
+            try:
+                handle.page.fill(target, value, timeout=bound * 1000.0)
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"type failed: {exc}", selector=target) from exc
+            return {"typed": True, "selector": target, "length": len(value)}
+
+        return self._runner(handle).call(work, timeout=bound + 10.0)
 
     def close(self, session_id: str) -> JsonObject:
         with self._lock:

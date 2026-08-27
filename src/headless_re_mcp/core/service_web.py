@@ -116,6 +116,16 @@ class WebAnalysisMixin:
     def web_navigate(self, session_id: str, url: str, timeout: float = 30.0) -> Result[JsonObject]:
         return self._web_wrap(session_id, "navigate", session_id, url, timeout=timeout)
 
+    def web_click(
+        self, session_id: str, selector: str, timeout: float = 5.0
+    ) -> Result[JsonObject]:
+        return self._web_wrap(session_id, "click", session_id, selector, timeout=timeout)
+
+    def web_type(
+        self, session_id: str, selector: str, text: str, timeout: float = 5.0
+    ) -> Result[JsonObject]:
+        return self._web_wrap(session_id, "type_text", session_id, selector, text, timeout=timeout)
+
     def web_close(self, session_id: str) -> Result[JsonObject]:
         try:
             data = self._web.close(session_id)

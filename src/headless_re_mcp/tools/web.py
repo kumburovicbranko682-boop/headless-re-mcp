@@ -59,6 +59,41 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_navigate(session_id, url, timeout=timeout))
 
+    @tools.tool(name="web.click")
+    def web_click(
+        session_id: str,
+        selector: str,
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 5.0,
+    ) -> dict[str, Any]:
+        """Click the first element matching a CSS selector.
+
+        Answers with clicked, selector, url and title. url and title are read
+        after the click, so a click that navigated reports the new page. There
+        is no ok or element field. The element must become actionable within
+        timeout or the call is refused with backend_error; an empty or over-long
+        selector is invalid_params. Only a selector is accepted, never a script,
+        so this is a bounded interaction and not a general execution path.
+        """
+        return _dump(analysis.web_click(session_id, selector, timeout=timeout))
+
+    @tools.tool(name="web.type")
+    def web_type(
+        session_id: str,
+        selector: str,
+        text: str,
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 5.0,
+    ) -> dict[str, Any]:
+        """Fill the input matching a CSS selector with text.
+
+        Answers with typed, selector and length. The text itself is never
+        echoed back -- only its length -- so a typed password or token stays out
+        of the transcript. There is no value, text or ok field. The value
+        replaces the field's contents (a fill, not per-key events). A
+        non-editable target is refused with backend_error; an empty or over-long
+        selector, or text over the cap, is invalid_params.
+        """
+        return _dump(analysis.web_type(session_id, selector, text, timeout=timeout))
+
     @tools.tool(name="web.close")
     def web_close(session_id: str) -> dict[str, Any]:
         """Close the session's browser and free its resources.
