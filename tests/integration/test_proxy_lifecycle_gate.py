@@ -196,6 +196,15 @@ def test_proxy_records_a_real_request_and_exports_it_to_har(tmp_path: Path) -> N
         assert recorded, f"the captured flow list does not contain {target}: {flows['flows']}"
         assert recorded[0]["method"] == "GET"
         assert recorded[0]["status"] == 200
+        # The recorder computes each flow's decoded response body length up front
+        # so the summary keeps it even for a flow whose body was later dropped
+        # from the retain ring. The upstream serves a fixed 19-byte body with an
+        # explicit Content-Length and no content-encoding, so raw_content is
+        # exactly those bytes -- the same length flow.get reports below. Pin it:
+        # a regression that stopped recording response_size would otherwise pass
+        # every url/status assertion while silently feeding the HAR nothing.
+        body_size = len(b"hello-through-proxy")
+        assert recorded[0]["response_size"] == body_size
 
         exported = backend.export_har("capture", tmp_path / "capture.har")
         assert exported["entry_count"] >= 1
@@ -206,6 +215,14 @@ def test_proxy_records_a_real_request_and_exports_it_to_har(tmp_path: Path) -> N
         assert any(entry["request"]["url"] == target for entry in entries)
         matched = next(entry for entry in entries if entry["request"]["url"] == target)
         assert matched["response"]["status"] == 200
+        # response_size threads through to the HAR: content.size and bodySize must
+        # carry the real 19 bytes, not the spec's -1 "not available" placeholder a
+        # flow with no recorded length falls back to. This is the only coverage of
+        # the recorder -> har_entry size pipeline against real traffic, so without
+        # it a break anywhere along response_size -> response_body_size ->
+        # content.size would revert HAR sizes to -1 unnoticed.
+        assert matched["response"]["content"]["size"] == body_size
+        assert matched["response"]["bodySize"] == body_size
     finally:
         backend.close_all()
         server.shutdown()
