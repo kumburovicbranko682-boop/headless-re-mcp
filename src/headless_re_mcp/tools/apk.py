@@ -176,6 +176,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         class_name: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        contains: str | None = None,
     ) -> dict[str, Any]:
         """List methods of a class (dotted or Lsmali/form; paginated).
 
@@ -186,9 +187,20 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         has_more only means a larger offset still has collected rows -- and
         count may be below the requested limit when the result-size budget
         trimmed the page, so read count, not limit, and page on has_more.
+
+        contains narrows a large class (a God-activity or a generated binder)
+        to the methods worth reading: it is a case-insensitive substring of
+        the method name (not the descriptor), so contains="crypt" finds every
+        crypt* method without paging the whole class. When set, total counts
+        only matches and the reply adds filtered true; the examined cap still
+        applies, so scan_capped true with a filter means matches beyond the
+        scanned window may exist. A blank or whitespace-only value is ignored
+        rather than matching everything. Mirrors apk.classes / apk.strings.
         """
         return _dump(
-            analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
+            analysis.apk_methods(
+                session_id, class_name, offset=offset, limit=limit, contains=contains
+            )
         )
 
     @tools.tool(name="apk.strings")

@@ -1369,6 +1369,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   空白串忽略且外部类仍排除;字符串 contains 大小写、子串在常量中部命中(证明是子串非前缀)、空白串忽略。实机 gate(`test_m11_android_apk_live_gate.py`)对真实 dex:`classes(contains="sample")` 留住 Sample 类并置
   `filtered`、无意义串给出空的已过滤列表;`strings(contains="MARKER")` 留住标记串并置 `filtered`——走真实 androguard 扫描而非 mock。
 
+- **`apk.classes`/`apk.strings` 加过滤后,`apk.methods` 成了 DEX 列表面里最后一个还只能按 offset/limit 翻页的——一个上千方法的 God-Activity 或生成的 binder,想挑出关心的那几个方法只能整页翻。** 现给它补上
+  同源的 `contains`(大小写不敏感子串)过滤,与 `apk.classes`/`apk.strings` 逐字段对齐:`apk.methods(class_name=..., contains="crypt")` 直接列出该类里所有 crypt* 方法,不必翻遍整个类。过滤在扫描时施加(上限计
+  「已检视数」而非「命中数」,故有无过滤走同一段 `_MAX_METHODS_COLLECT` 检视窗口,无过滤时行为逐字节不变);比对的是方法名而非描述符,故 `contains="()V"` 不会因每个方法的描述符恰好是 `()V` 而误命中。命中后
+  `total` 只计匹配数并新增 `filtered`(为真);`scan_capped` 语义不变——带过滤且为真时意味「检视窗口之外可能还有匹配」。空白过滤串按「无过滤」处理,既不匹配全部也不匹配空。这是修改既有工具而非新增,工具面
+  计数不变。单测(`test_apk_fields.py`):方法名 contains 大小写(encryptPayload/Encrypt 命中而 decrypt 不含 "encrypt")、只按名不按描述符命中、落空给出空的已过滤列表、空白串忽略、无过滤仍列全部。实机 gate
+  (`test_m11_android_apk_live_gate.py`)对真实 dex:`methods(contains="CALL")` 留住 callee/caller 两个方法并置 `filtered`、排除 `<init>`,无意义串给出空的已过滤列表——走真实 androguard 扫描而非 mock。
+
 - **`web.scripts` 只有 `wasm_only` 与 offset/limit,一页解析了几百个脚本时想按 URL 挑出关心的那个(如 app.js)只能整页翻——是 Web 列表面里最后一个还没有子串过滤的。** 现加一个 `url_contains`
   (大小写不敏感的 URL 子串)过滤,与 `web.network.list` 同源,并与 `wasm_only` 相 AND:`url_contains="app.js"` 直接定位那个脚本。命中后 `total` 只计匹配数并新增 `filtered`(为真)与 `captured`
   (过滤前环内条数),`has_more` 针对命中集翻页;`dropped` 仍是脚本环已淘汰数(与过滤无关)。刻意只让新的 `url_contains` 触发 `filtered`/`captured`:`wasm_only` 单用时保持原有无标记形态,故复用同一

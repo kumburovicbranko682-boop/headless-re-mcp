@@ -877,6 +877,7 @@ class ApkClient:
         *,
         offset: int = 0,
         limit: int = 100,
+        contains: str | None = None,
     ) -> JsonObject:
         parsed = self._parsed(path)
         target = class_name.strip()
@@ -889,16 +890,27 @@ class ApkClient:
         ]
         if not found:
             raise ApkError("not_found", "class not found", class_name=class_name)
+        needle = _norm_contains(contains)
         methods: list[JsonObject] = []
         scan_more = False
+        # Cap on methods examined, not on matches stored, so a filtered scan
+        # walks the same _MAX_METHODS_COLLECT window as the unfiltered list; a
+        # case-insensitive substring of the method name decides storage. Without
+        # a filter examined == stored, so the unfiltered contract is unchanged.
+        # Mirrors classes()/strings().
+        examined = 0
         for klass in found:
             for method in klass.get_methods():
-                if len(methods) >= _MAX_METHODS_COLLECT:
+                if examined >= _MAX_METHODS_COLLECT:
                     scan_more = True
                     break
+                examined += 1
+                name = method.name
+                if needle is not None and needle not in name.casefold():
+                    continue
                 methods.append(
                     {
-                        "name": method.name,
+                        "name": name,
                         "descriptor": str(getattr(method, "descriptor", "")),
                         "access": str(getattr(method, "access", "")),
                     }
@@ -909,7 +921,7 @@ class ApkClient:
         # Bound the page by encoded size too: 1000 {name, descriptor, access}
         # rows with long signatures can outgrow the budget. See classes().
         window = fit_json_list(window, reserve=_LIST_FIELD_RESERVE)[0]
-        return {
+        result: JsonObject = {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
@@ -918,6 +930,11 @@ class ApkClient:
             "has_more": offset + len(window) < len(methods),
             "scan_capped": scan_more,
         }
+        if needle is not None:
+            # total now counts only matching methods; flag the narrowing so a
+            # filtered page is not read as the whole class. See classes().
+            result["filtered"] = True
+        return result
 
     def strings(
         self, path: Path, *, offset: int = 0, limit: int = 200, contains: str | None = None

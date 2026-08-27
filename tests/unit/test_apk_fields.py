@@ -848,6 +848,84 @@ def test_apk_methods_puts_the_list_in_methods_and_says_when_it_stopped(
     assert "Answers with methods" in doc
     assert "has_more" in doc
 
+
+class _NamedMethod:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.descriptor = "()V"
+        self.access = "public"
+
+
+class _NamedMethodClass:
+    def __init__(self, names: list[str]) -> None:
+        self.name = "Lcom/example/Foo;"
+        self._methods = [_NamedMethod(name) for name in names]
+
+    def get_methods(self) -> list[_NamedMethod]:
+        return self._methods
+
+
+class _NamedMethodParsed:
+    def __init__(self, names: list[str]) -> None:
+        self.analysis = self
+        self._classes = [_NamedMethodClass(names)]
+
+    def get_classes(self) -> list[_NamedMethodClass]:
+        return self._classes
+
+
+_METHOD_NAMES = ["<init>", "encryptPayload", "Encrypt", "decrypt", "doNetworkCall", "toString"]
+
+
+def test_apk_methods_contains_filters_case_insensitively_and_flags_filtered(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """contains keeps only methods whose name holds the (case-insensitive) needle.
+
+    Measured on a 6-method class: contains="encrypt" keeps encryptPayload and
+    Encrypt (decrypt does not hold "encrypt"), total counts only matches, and
+    filtered is flagged; the unfiltered call still returns all 6 with no
+    filtered flag. The needle tests the method name, not the descriptor, so
+    "()V" matches nothing even though every descriptor is "()V".
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _NamedMethodParsed(list(_METHOD_NAMES))
+    )
+    apk = tmp_path / "app.apk"
+
+    filtered = client.methods(apk, "com.example.Foo", contains="encrypt")
+    assert {m["name"] for m in filtered["methods"]} == {"encryptPayload", "Encrypt"}
+    assert filtered["total"] == 2
+    assert filtered["filtered"] is True
+
+    full = client.methods(apk, "com.example.Foo")
+    assert full["total"] == 6
+    assert "filtered" not in full
+
+    # The filter matches the name only; the shared "()V" descriptor never leaks in.
+    by_descriptor = client.methods(apk, "com.example.Foo", contains="()V")
+    assert by_descriptor["total"] == 0
+    assert by_descriptor["filtered"] is True
+
+    doc = _tool_docstring("apk.methods")
+    assert "contains" in doc
+    assert "filtered" in doc
+
+
+def test_apk_methods_blank_contains_is_ignored_not_matched(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A whitespace-only filter is treated as no filter, not a match-all."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _NamedMethodParsed(list(_METHOD_NAMES))
+    )
+    payload = client.methods(tmp_path / "app.apk", "com.example.Foo", contains="   ")
+    assert payload["total"] == 6
+    assert "filtered" not in payload
+
+
 def test_apk_decompile_names_source_and_says_when_it_was_cut(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

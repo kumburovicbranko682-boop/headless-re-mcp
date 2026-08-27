@@ -95,6 +95,19 @@ def test_m11_androguard_apk_surface() -> None:
     # caller/callee are the two methods the xref assertion below depends on.
     assert {"callee", "caller"} <= names, names
 
+    # The method-name filter runs against the real DEX: a case-insensitive
+    # substring keeps callee/caller (both hold "call"), flags the narrowing, and
+    # counts only matches, while a needle in no method name yields an honest
+    # empty list -- the same contract as apk.classes / apk.strings.
+    call_only = client.methods(_APK, _CLASS, contains="CALL")
+    assert call_only["filtered"] is True
+    assert {"callee", "caller"} <= {m["name"] for m in call_only["methods"]}
+    assert all("call" in m["name"].casefold() for m in call_only["methods"])
+    assert "<init>" not in {m["name"] for m in call_only["methods"]}
+    miss_methods = client.methods(_APK, _CLASS, contains="no-such-method-marker")
+    assert miss_methods["methods"] == []
+    assert miss_methods["filtered"] is True
+
     strings = client.strings(_APK)
     assert any(
         "APK_GATE_MARKER_STRING" in value for value in strings["strings"]
