@@ -144,6 +144,33 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  # The integration gates encode the contracts the unit suite cannot see
+  # (real mitmproxy binds a port, real chromium drives the workbench, real
+  # androguard opens an APK) -- and until this lane existed no CI job ran
+  # them at all, so they rotted invisibly on machines nobody had. Windows
+  # backend gates (x64dbg / IDA / Win32 UI) still skip here by design; the
+  # -rs listing keeps every skip visible so skip != pass stays auditable.
+  linux-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package with optional backends
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,web,android,proxy,browser]"
+
+      - name: Install chromium for the browser gates
+        run: python -m playwright install --with-deps chromium
+
+      - name: Linux integration gates
+        run: python -m pytest tests/integration -q -rs --tb=short --timeout=300
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
