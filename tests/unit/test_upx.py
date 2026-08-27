@@ -208,6 +208,47 @@ def test_process_capture_timeout_kills_child(monkeypatch: pytest.MonkeyPatch) ->
     assert caught.value.code == UpxErrorCode.TIMEOUT
 
 
+def test_process_capture_cleanup_shares_one_drain_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stuck reader threads must not add four seconds of joins after a timeout."""
+    clock = [0.0]
+    join_timeouts: list[float] = []
+
+    class _StuckThread:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def start(self) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            # Model a reader wedged on an orphaned grandchild's pipe so the
+            # cleanup path exercises every join instead of closing early.
+            return True
+
+        def join(self, timeout: float | None = None) -> None:
+            budget = float(timeout or 0.0)
+            join_timeouts.append(budget)
+            clock[0] += budget
+
+    def _advance_clock(seconds: float) -> None:
+        clock[0] += seconds
+
+    process = _FakeProcess(b"", hangs=True)
+    monkeypatch.setattr(upx_adapter.subprocess, "Popen", lambda *a, **k: process)
+    monkeypatch.setattr(upx_adapter, "Thread", _StuckThread)
+    monkeypatch.setattr(upx_adapter, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(upx_adapter, "sleep", _advance_clock)
+    monkeypatch.setattr(upx_adapter, "_terminate_process", lambda child: child.kill())
+
+    with pytest.raises(UpxTimeoutError):
+        upx_adapter._capture_process(["fake-upx"], timeout=0.1, max_output_size=32)
+
+    assert join_timeouts, "cleanup should join the reader threads"
+    assert sum(join_timeouts) <= 2.0
+
+
 def test_process_capture_enforces_output_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     process = _FakeProcess(b"x" * 64)
     monkeypatch.setattr(upx_adapter.subprocess, "Popen", lambda *args, **kwargs: process)

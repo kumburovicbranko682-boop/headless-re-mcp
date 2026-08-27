@@ -41,7 +41,9 @@ class ProxyAnalysisMixin:
         return self._proxy_backend
 
     def _proxy_artifact_dir(self, session_id: str) -> Path:
-        if not session_id or Path(session_id).name != session_id:
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        if not _is_safe_session_segment(session_id):
             raise ProxyError("invalid_params", "invalid session id")
         self.registry.get(session_id)
         root = self.settings.artifact_root.expanduser().resolve() / "proxy" / session_id
@@ -103,17 +105,32 @@ class ProxyAnalysisMixin:
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))
-            spilled = data.get("response", {})
-            body_path = spilled.get("body_path") if isinstance(spilled, dict) else None
-            if isinstance(body_path, str) and body_path:
-                data = _register_capture(
+            # Either side of the exchange can spill a body. Register each under
+            # its own kind and hang the artifact id off that part, so a request
+            # body and a response body never overwrite one another's id, and a
+            # spilled body is reclaimable and re-openable like every capture.
+            for part_key, kind in (
+                ("request", "proxy_flow_request_body"),
+                ("response", "proxy_flow_response_body"),
+            ):
+                part = data.get(part_key)
+                if not isinstance(part, dict):
+                    continue
+                body_path = part.get("body_path")
+                if not (isinstance(body_path, str) and body_path):
+                    continue
+                registered = _register_capture(
                     self,
                     session_id,
                     Path(body_path),
-                    kind="proxy_flow_body",
+                    kind=kind,
                     source="proxy.flow.get",
-                    payload=data,
+                    payload={},
                 )
+                if "artifact_id" in registered:
+                    part["artifact_id"] = registered["artifact_id"]
+                elif "artifact_error" in registered:
+                    part["artifact_error"] = registered["artifact_error"]
             return _success(data, session_id=session_id, backend="proxy")
         except ProxyError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
