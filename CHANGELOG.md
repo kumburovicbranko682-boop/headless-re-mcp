@@ -494,6 +494,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `C:\Program Files\vm\revert.ps1` 整行变成一个参数。现在按命令行拆并保住路径。
 - **jadx / apktool / ghidra 写入后 prune 共享父目录会删掉其它会话**。关闭时只清自己的
   工作树。Ghidra 的 `export_*.json` 已登记为产物，关会话不再一并 `rmtree`。
+- **配错的 `HEADLESS_RE_WEBCRACK` 会被当成就绪、每次调用都在启动时 `backend_error`**。
+  `JsClient` 过去把任何真值配置路径原样留用，路径不存在（拼错，或装完前就设好了）时
+  `available` 仍报 True，`js.deobfuscate` 每次都在 `Popen` 找不到程序时报 `backend_error`
+  ——与本模块「缺工具就降级成 capability_unavailable」的约定相反，也不像同文件的
+  `WasmClient`（其解析器只返回真实存在的文件）。它还从不回退到 PATH 上的 webcrack，
+  于是可能与 `doctor` 的 `probe_optional_tool`（会回退）判断打架。现在按同一逻辑解析：
+  配置路径只在确为文件时采用，否则回退到 PATH；两者都没有时 `available` 为 False、调用方
+  拿到 `capability_unavailable`。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。
