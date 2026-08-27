@@ -14,7 +14,7 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、Playwright Chromium、androguard/adbutils/frida、mitmproxy，以及 JDK 21 + 带缓存的 Ghidra 11.2.1）并按 `-rs` 跑整个 `tests/integration`——Web / Android / 抓包（含真实拦截）/ radare2 / Ghidra 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、Playwright Chromium、androguard/adbutils/frida、mitmproxy，JDK 21 + 带缓存的 Ghidra 11.2.1，以及带缓存的 jadx 1.5.1 + r8/D8）并按 `-rs` 跑整个 `tests/integration`——Web / Android 静态分类 / **Android 反编译（jadx 处理真实 DEX）** / 抓包（含真实拦截）/ radare2 / Ghidra 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
@@ -47,6 +47,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   平台优先、`ARGS` 改为 `getScriptArgs()`；新增 gate 用真实 `analyzeHeadless` 分析编译出的 ELF，
   断言导出到具名函数（`main`/`compute`）与 `compute` 的非空反编译。Ghidra/Java 未配置或无 C
   编译器时才 skip。
+- **Android 反编译此前从未端到端跑过**：既有 Android gate 只在一份合成 APK 上验证分类与优雅降级，
+  从不真正反编译（那需要真实 `classes.dex` 与一套 jadx 安装），jadx 单元测试也只 mock 子进程——
+  正是这类 mock 让上面两个 Ghidra bug 长期蒙混过关。新增 gate 构造一份货真价实的 Android 制品
+  （`javac` 编译后用 d8 dex 成真实 `classes.dex`，再打进 APK），像 MCP 客户端那样经 `AnalysisService`
+  驱动 `apk.export_sources` / `apk.decompile`，断言反编译出的 Java 真的带回编入的方法体
+  （`addOne`、`greet`），而非只回一个空文件或错类。这是 jadx 线在 Windows 之外的首个端到端证据。
+  jadx 未配置、或没有 `javac`/dexer 可造夹具时才 skip。
 
 ### 新增（监控台工作台）
 
@@ -218,6 +225,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   proxyserver 的 `ServerManager` 不持有任何 mode（`servers.update([])`），这才真正关掉监听
   socket。`tests/integration/test_proxy_lifecycle_gate.py` 会真实起停并断言端口确实被释放，
   现由 `linux-integration` job 每次提交都跑。
+- **两路并发抓包会随机把彼此打挂**。每会话一个 `DumpMaster`，多会话就有多个 master 同进程共存；
+  而 mitmproxy 把 `mitmproxy.ctx.options` 当成进程级全局、指向最后构造的那个 master。起第二个代理
+  会把该全局指到一个尚未装好的 options 上，此时另一个**已在运行**的 master 的 `keepserving` /
+  `readfile` `running` 钩子读 `ctx.options.rfile` 就抛 `No such option: rfile`，把一条本来健康的抓包
+  在启动期直接带走（两路代理背靠背启动时约三次一发）。这两个 addon 只为 mitmdump CLI「读文件回放后
+  继续挂着」服务，我们这种手动起停的进程内 master 根本用不到，于是在 `run()` 前把它们摘掉——连跑 60
+  次两路启动零复现，且不影响抓包与 replay。`test_proxy_lifecycle_gate.py::test_close_all_releases_every_running_capture`
+  正是复现此缺陷的 gate。
 - **抓包缓冲无界**。摘要环是有界的，但保存完整 flow 对象（含报文体）的那份是普通 dict，
   永不淘汰——一夜的抓包足以把宿主机内存吃光。现在两者同步淘汰，取不到的 flow 会明确告知
   已被环形缓冲淘汰，而不是假装不存在。
