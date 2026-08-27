@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -596,6 +596,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同时作用于 MCP 客户端与监控台 Agent 的工具面（后者按 run 读取，改了不必重建 orchestrator）。
 - 监控台增加开屏页，让用户在「本地 PE / Web / Android / 全部」之间选择方向，选择经
   `GET`/`POST /api/workspace/mode` 持久化到用户配置；也可用 `workspace.mode.get/set` 工具。
+
+### 新增（Frida 动态符号）
+
+- `frida.symbols`（只读）通过短暂 Frida 探针枚举目标进程中某个已加载模块的符号表
+  （`Module.enumerateSymbols`）。它是 `frida.exports` 的超集：当库带有符号时，会包含未导出的
+  内部函数——正是这些让你能挂钩没有任何导出名的内部例程。答复带 `found`（模块未加载时为
+  `false`）、`module`、`base` 与 `symbols`，每条含 `name`、`address`、`type`（function/variable）、
+  `global`（全局符号为真、局部为假）和 `section`（段 id，无则空串），外加 `count` 与 `has_more`，
+  让填满上限的一页不被误读成整张符号表。当目标的 Frida 无法枚举符号时，`available` 为 `false`
+  且 `symbols` 为空——这与一个已加载但被 strip、符号表确实为空的模块（`found` 真、无 `available`
+  字段）区分开来。仅限已授权的 debuggee pid。
 
 ### 依赖
 

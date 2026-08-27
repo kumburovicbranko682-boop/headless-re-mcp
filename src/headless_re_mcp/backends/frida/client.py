@@ -116,6 +116,34 @@ rpc.exports = {
     }
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
+  symbols: function (moduleName, limit) {
+    var mod = Process.findModuleByName(moduleName);
+    if (mod === null) {
+      return {found: false, symbols: []};
+    }
+    var all;
+    try {
+      all = mod.enumerateSymbols();
+    } catch (e) {
+      // enumerateSymbols is not implemented on every target. Say so instead of
+      // returning an empty table that reads as "this module has no symbols".
+      return {found: true, module: mod.name, base: mod.base.toString(),
+              symbols: [], available: false, error: String(e)};
+    }
+    var items = [];
+    for (var i = 0; i < all.length && items.length < limit; i++) {
+      var s = all[i];
+      items.push({
+        name: s.name,
+        address: s.address.toString(),
+        type: s.type,
+        global: !!s.isGlobal,
+        section: (s.section && s.section.id) ? s.section.id : ""
+      });
+    }
+    return {found: true, module: mod.name, base: mod.base.toString(),
+            symbols: items, total: all.length, available: true};
+  },
   read: function (address, size) {
     // Read through the NativePointer method, not the legacy Memory.read* free
     // functions: frida 17 removed those globals, so the old form raised
@@ -400,6 +428,59 @@ class FridaClient:
                 "count": len(items),
                 "has_more": has_more,
             }
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
+    def symbols(
+        self,
+        pid: int,
+        module_name: str,
+        *,
+        allowed_pid: int,
+        limit: int = 64,
+    ) -> JsonObject:
+        self._require(pid, allowed_pid)
+        if not isinstance(module_name, str) or not module_name.strip():
+            raise FridaError("invalid_params", "module_name is required")
+        capped = max(1, min(int(limit), 512))
+        session = self._attach_local(pid)
+        try:
+            script = session.create_script(_ENUM_SCRIPT)
+            script.load()
+            raw = script.exports_sync.symbols(module_name.strip(), capped + 1)
+            if not isinstance(raw, dict):
+                raise FridaError("backend_error", "unexpected frida symbols payload")
+            page, has_more = _page(list(raw.get("symbols") or []), capped)
+            items = []
+            for item in page:
+                if not isinstance(item, dict):
+                    continue
+                items.append(
+                    {
+                        "name": str(item.get("name", "")),
+                        "address": str(item.get("address", "")),
+                        "type": str(item.get("type", "")),
+                        "global": bool(item.get("global")),
+                        "section": str(item.get("section", "")),
+                    }
+                )
+            result = {
+                "found": bool(raw.get("found")),
+                "module": str(raw.get("module") or module_name),
+                "base": str(raw.get("base") or ""),
+                "symbols": items,
+                "count": len(items),
+                "has_more": has_more,
+            }
+            # enumerateSymbols is unimplemented on some targets; when the script
+            # said so, pass it through so an empty list is not misread as "this
+            # module's symbol table is empty".
+            if raw.get("available") is False:
+                result["available"] = False
+                if raw.get("error"):
+                    result["error"] = str(raw.get("error"))
+            return result
         finally:
             with contextlib.suppress(Exception):
                 session.detach()

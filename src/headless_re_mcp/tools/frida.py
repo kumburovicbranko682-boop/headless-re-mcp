@@ -56,6 +56,29 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 
+    @tools.tool(name="frida.symbols")
+    def frida_symbols(
+        session_id: str,
+        module_name: str,
+        limit: Annotated[int, Field(ge=1, le=512)] = 64,
+    ) -> dict[str, Any]:
+        """List the symbol table of one named module in the debuggee via a Frida probe.
+
+        The module's symbol table (Module.enumerateSymbols), a superset of
+        frida.exports: it includes non-exported internal functions when the
+        library shipped symbols, which is what lets you hook an internal
+        routine that no export names. Answers with found (false when the module
+        is not loaded), module, base, and symbols, each carrying name, address,
+        type (function/variable), global (true for a global symbol, false for a
+        local one) and section (the section id, or empty when none), plus count
+        and has_more so a page that filled the limit is not read as the whole
+        table. When the target's Frida cannot enumerate symbols, available is
+        false and symbols is empty -- distinct from a loaded, stripped module
+        whose symbol table really is empty (found true, no available field).
+        Limited to the debuggee pid.
+        """
+        return _dump(analysis.frida_symbols(session_id, module_name, limit=limit))
+
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16

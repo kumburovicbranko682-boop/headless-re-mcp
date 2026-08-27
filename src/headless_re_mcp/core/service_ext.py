@@ -505,6 +505,27 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def frida_symbols(
+        self, session_id: str, module_name: str, limit: int = 64
+    ) -> Result[JsonObject]:
+        try:
+            pid = _require_debuggee_pid(self, session_id)
+            client = FridaClient()
+            data = client.symbols(pid, module_name, allowed_pid=pid, limit=limit)
+            _timeline_append(
+                self,
+                session_id,
+                "frida.symbols",
+                "frida symbols listed",
+                module=module_name,
+                count=data.get("count"),
+            )
+            return _success(data, session_id=session_id, backend="frida")
+        except FridaError as exc:
+            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def frida_memory_read(
         self, session_id: str, address: int, size: int
     ) -> Result[JsonObject]:
