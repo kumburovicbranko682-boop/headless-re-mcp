@@ -471,7 +471,8 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x06: 4 + 2 + 2 + s + b + _simple_index_size(rc, 0x08),  # MethodDef
         0x07: _simple_index_size(rc, 0x08),  # ParamPtr
         0x08: 2 + 2 + s,  # Param
-        0x09: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x06),
+        # InterfaceImpl: Class(TypeDef index) + Interface(TypeDefOrRef coded).
+        0x09: _simple_index_size(rc, 0x02) + type_def_or_ref,
         0x0A: member_ref_parent + s + b,  # MemberRef
         0x0B: 2 + has_constant + b,  # Constant
         0x0C: has_custom_attribute + custom_attribute_type + b,
@@ -503,7 +504,8 @@ def _table_row_size(meta: _MetaCtx, table: int) -> int:
         0x26: 4 + s + implementation,  # File
         0x27: 0,  # ExportedType; fixed below
         0x28: 4 + 4 + s + implementation,  # ManifestResource
-        0x29: _simple_index_size(rc, 0x02) + implementation,  # NestedClass
+        # NestedClass: NestedClass(TypeDef index) + EnclosingClass(TypeDef index).
+        0x29: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x02),
         0x2A: 0,  # GenericParam; fixed below
         0x2B: _simple_index_size(rc, 0x2A) + type_def_or_ref,
         0x2C: method_def_or_ref + b,  # MethodSpec

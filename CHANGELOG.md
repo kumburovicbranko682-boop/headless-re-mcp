@@ -192,6 +192,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `_SIGNED_OPERANDS`(两种宽度的分支 + `ldc.i4`),元数据 token(`call`/`ldstr` 等)仍按
   无符号。新增直测:对长分支、常量、短分支与 token 混合的 IL 断言各自解出正确符号。
 
+### 修复（元数据表 InterfaceImpl/NestedClass 列宽按 ECMA-335 取错索引类型）
+
+- `_table_row_size` 里 InterfaceImpl(0x09)把 `Interface` 列当成 MethodDef 简单索引
+  (`_simple_index_size(rc, 0x06)`),而按 ECMA-335 II.22.23 它是 TypeDefOrRef **编码索引**;
+  NestedClass(0x29)把 `EnclosingClass` 列当成 Implementation 编码索引,而两列本都是 TypeDef
+  简单索引。两种宽度只有在相关行数越过 2^14 时才分叉,小程序集里都塌成 2 字节而看不出来;
+  一旦是值得枚举的大程序集,InterfaceImpl 行宽算错会平移其后所有表的起点,`list_memberref_xrefs`
+  与 IL token 解析随之读偏。现 InterfaceImpl 用 `type_def_or_ref`、NestedClass 两列都用 TypeDef
+  简单索引。新增直测:用 20000 行的 TypeRef/File 强制相关索引为 4 字节,断言两表行宽分别为
+  6、4,并留一条小行数用例钉住常见情形仍是 4(2+2)。
+
 ### 修复（frida.memory.read 在 frida 17 上因用了被删的全局 API 而失效）
 
 - **`frida.memory.read` 的注入脚本用 `Memory.readByteArray(ptr(address), size)` 读内存。**
