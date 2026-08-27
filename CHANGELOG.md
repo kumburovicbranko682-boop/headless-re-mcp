@@ -49,6 +49,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（内存版仓库把空串过滤器当成「匹配空 id」，与 SQLite 口径分裂）
+
+- `InMemoryAnalysisRepository` 自述「与 SQLite 相同的可观察契约」，但两处列表过滤的空值语义
+  与 SQLite 口不一致。SQLite 版 `list_audit` 用 `if session_id:`、`list_knowledge` 用
+  `if kind:` 来判定是否过滤——落空的过滤值（`None` 或 `""`）都表示「不过滤、列全部」。内存版
+  却用 `if session_id is not None` 和 `kind is None`：于是 `list_audit("")` 去过滤 id 恰为
+  `""` 的那一个会话、`list_knowledge(sid, kind="")` 去过滤 kind 恰为 `""` 的那一类——而这样的
+  行/类根本不存在，于是内存版交出**空页**，SQLite 版却交出**整个集合**。同一个任一端都可能收到的
+  空串，把两个口分到了不同结果上，正是这个「production 模块、供自定义组合复用」的类承诺要避免的。
+  现将内存版两处改为 `if session_id:` 与 `not kind`，与 SQLite 的真值判定逐字对齐；`None`、真实
+  id、真实 kind 三条常规路径的行为都不变（仅空串这一越界值被拉回一致）。新增按 memory/sqlite
+  双参数化的回归：向两端写入一条带会话的审计、一条全局审计与两类知识，断言 `list_audit("")`
+  与 `list_audit(None)`、`list_knowledge(sid, kind="")` 与 `kind=None` 在两个口上都列出全部；
+  去掉修复后 `[memory]` 用例失败（`total` 为 0 而非 2），`[sqlite]` 始终通过。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

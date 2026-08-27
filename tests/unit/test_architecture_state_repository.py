@@ -188,6 +188,54 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
     assert repository.list_unclean_sessions() == ([], 0)
 
 
+def test_an_empty_filter_lists_everything_on_both_ports(
+    repository: AnalysisRepository,
+) -> None:
+    """A falsy filter means "no filter" on both ports, not "match the empty id".
+
+    The SQLite store guards its filters with ``if session_id:`` / ``if kind:``,
+    so ``list_audit("")`` returns every row and ``list_knowledge(sid, kind="")``
+    returns every kind. The in-memory port used ``is not None`` / ``kind is
+    None`` instead, so the same empty string filtered for the one session (or
+    kind) whose id happens to be "" -- of which there are none -- and answered
+    with an empty page where SQLite answered with the whole set. That split the
+    two ports on a value either could be handed, contradicting the in-memory
+    class's promise of the same observable contract as SQLite.
+    """
+    repository.append_audit(
+        session_id="s-real",
+        action="scoped.audit",
+        params_summary={},
+        ok=True,
+        result_summary={},
+    )
+    repository.append_audit(
+        session_id=None,
+        action="global.audit",
+        params_summary={},
+        ok=True,
+        result_summary={},
+    )
+    empty = repository.list_audit("")
+    unfiltered = repository.list_audit(None)
+    assert empty["total"] == unfiltered["total"] == 2
+    assert {entry["action"] for entry in empty["entries"]} == {
+        "scoped.audit",
+        "global.audit",
+    }
+
+    repository.record_knowledge(
+        session_id="s-real", kind="function", key="k1", value={"n": 1}
+    )
+    repository.record_knowledge(
+        session_id="s-real", kind="struct", key="k2", value={"n": 2}
+    )
+    empty_kind = repository.list_knowledge("s-real", kind="")
+    any_kind = repository.list_knowledge("s-real", kind=None)
+    assert empty_kind["total"] == any_kind["total"] == 2
+    assert {entry["kind"] for entry in empty_kind["entries"]} == {"function", "struct"}
+
+
 def test_the_audit_log_is_trimmed_to_the_newest_entries(tmp_path: Path) -> None:
     """The audit table is the one store with no natural end.
 
