@@ -388,6 +388,8 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 **Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。
 
+Android 静态分析（androguard 进程内）现有一个不依赖设备/SDK 的真机 Gate：仓库里提交了一个用真实 Java 编出、已签名的 `fixtures/android/sample.apk`（构建脚本见同目录 `build.sh`），`tests/integration/test_android_static_deep_gate.py` 用它跑通 `apk.open/manifest/permissions/certificates/components/native_libs/classes/methods/strings/xrefs` 全套——包含 DEX 类/方法/字符串与方法间交叉引用，只要装了 `android` extra（androguard）即执行。radare2 的 live Gate 也已可移植到非 Windows：缺 PE 夹具时会就地用 `cc` 编一个原生 ELF 来跑。
+
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
