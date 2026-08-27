@@ -137,14 +137,19 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.logcat")
     def device_logcat(
-        serial: str, lines: Annotated[int, Field(ge=1, le=5000)] = 200
+        serial: str,
+        lines: Annotated[int, Field(ge=1, le=5000)] = 200,
+        min_priority: str = "",
     ) -> dict[str, Any]:
         """Return the last N lines of logcat (non-streaming snapshot).
 
         Answers with lines, requested, and truncated when the dump was cut
-        at the character cap.
+        at the character cap. min_priority (one of V, D, I, W, E, F) keeps only
+        that log level and above via logcat's own filterspec, so the last N
+        lines are the last N matching ones -- pass E to pull just errors from a
+        noisy device. An unknown level is invalid_params.
         """
-        return _dump(analysis.device_logcat(serial, lines=lines))
+        return _dump(analysis.device_logcat(serial, lines=lines, min_priority=min_priority))
 
     @tools.tool(name="device.screenshot")
     def device_screenshot(serial: str) -> dict[str, Any]:

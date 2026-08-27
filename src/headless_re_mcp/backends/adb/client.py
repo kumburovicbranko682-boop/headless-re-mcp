@@ -29,6 +29,8 @@ _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 _MAX_LOGCAT_LINES = 5000
 _MAX_LOGCAT_CHARS = 200_000
+# logcat priority letters, ascending; a min_priority filterspec is *:<letter>.
+_LOGCAT_PRIORITIES = ("V", "D", "I", "W", "E", "F")
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
@@ -564,10 +566,25 @@ class AdbBackend:
             "activity": getattr(current, "activity", None),
         }
 
-    def logcat(self, serial: str, *, lines: int = 200) -> JsonObject:
+    def logcat(self, serial: str, *, lines: int = 200, min_priority: str = "") -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
-        raw = _device_shell(dev, ["logcat", "-d", "-t", str(capped)])
+        args = ["logcat", "-d", "-t", str(capped)]
+        # A min-priority filterspec (V/D/I/W/E/F) applied by logcat itself, so
+        # -t returns the last N *matching* lines rather than N raw lines a client
+        # filter would then thin to a handful -- the device-log analogue of the
+        # console type_filter. The level is validated against the fixed set and
+        # passed as its own argv entry, so it can never smuggle a shell token.
+        level = (min_priority or "").strip().upper()
+        if level:
+            if level not in _LOGCAT_PRIORITIES:
+                raise AdbError(
+                    "invalid_params",
+                    "min_priority must be one of V, D, I, W, E, F",
+                    min_priority=min_priority,
+                )
+            args.append(f"*:{level}")
+        raw = _device_shell(dev, args)
         text = str(raw)
         truncated = len(text) > _MAX_LOGCAT_CHARS
         if truncated:

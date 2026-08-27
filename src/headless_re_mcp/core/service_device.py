@@ -173,8 +173,12 @@ class DeviceAnalysisMixin:
     def device_current_activity(self, serial: str) -> Result[JsonObject]:
         return self._adb_wrap("current_activity", serial=serial)
 
-    def device_logcat(self, serial: str, lines: int = 200) -> Result[JsonObject]:
-        return self._adb_wrap("logcat", serial=serial, lines=lines)
+    def device_logcat(
+        self, serial: str, lines: int = 200, min_priority: str = ""
+    ) -> Result[JsonObject]:
+        return self._adb_wrap(
+            "logcat", serial=serial, lines=lines, min_priority=min_priority
+        )
 
     def device_screenshot(self, serial: str) -> Result[JsonObject]:
         out = self._device_artifact_path("screenshot", ".png")

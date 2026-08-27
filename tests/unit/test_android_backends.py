@@ -79,6 +79,48 @@ class TestAdbArgumentValidation:
         assert info.value.code == "capability_unavailable"
 
 
+class _RecordingDevice:
+    """A fake adbutils device that records the argv every shell call receives."""
+
+    def __init__(self, output: str) -> None:
+        self.calls: list[list[str]] = []
+        self._output = output
+
+    def shell(self, args: list[str], timeout: float | None = None) -> str:
+        self.calls.append(list(args))
+        return self._output
+
+
+class TestLogcatPriorityFilter:
+    def _backend(self, dev: _RecordingDevice) -> AdbBackend:
+        backend = AdbBackend()
+        backend._device = lambda serial: dev  # type: ignore[method-assign]
+        return backend
+
+    def test_min_priority_appends_a_logcat_filterspec(self) -> None:
+        dev = _RecordingDevice("boot\n")
+        backend = self._backend(dev)
+        backend.logcat("emulator-5554", lines=50, min_priority="e")
+        assert dev.calls == [["logcat", "-d", "-t", "50", "*:E"]]
+
+    def test_no_min_priority_leaves_the_command_unfiltered(self) -> None:
+        dev = _RecordingDevice("boot\n")
+        backend = self._backend(dev)
+        backend.logcat("emulator-5554", lines=10)
+        assert dev.calls == [["logcat", "-d", "-t", "10"]]
+
+    @pytest.mark.parametrize("level", ["X", "error", "3", "*:E", "e;id"])
+    def test_unknown_level_is_invalid_params_and_never_reaches_the_device(
+        self, level: str
+    ) -> None:
+        dev = _RecordingDevice("boot\n")
+        backend = self._backend(dev)
+        with pytest.raises(AdbError) as info:
+            backend.logcat("emulator-5554", min_priority=level)
+        assert info.value.code == "invalid_params"
+        assert dev.calls == []
+
+
 class TestFridaTargetAuthorization:
     def test_device_operations_refuse_unauthorized_pid(self) -> None:
         client = FridaClient()

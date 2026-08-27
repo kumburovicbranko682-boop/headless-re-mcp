@@ -221,6 +221,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`web.scripts` 无法只看运行时生成脚本，也不能按 URL 定位**。给它加上 `dynamic_only` 与 `url_filter`：前者只留
   `dynamic=True` 的脚本（`eval`/`new Function`/注入 `<script>`，其 url 通常为空，正是加壳器解包后 payload 的落点，url 过滤够不着），
   后者对 url 做大小写不敏感子串匹配；二者都在分页前应用，于是 `total` 即匹配数——在解析了成百上千脚本的页面上直接锁定目标。
+- **`device.logcat` 只能拉最后 N 行，噪声设备上错误被淹没**。它一直只按 `-t N` 取尾，等价于 console 加 `type_filter` 之前的样子。
+  现给它加上 `min_priority`（`V`/`D`/`I`/`W`/`E`/`F`）：交给 logcat 自己的 `*:<级别>` filterspec 在源头过滤，于是 `-t N` 取到的是
+  最后 N 条**匹配**行，而不是先取 N 行再由客户端筛剩下寥寥几条——传 `E` 即可从吵闹的设备里只捞错误。级别在固定集合内校验，
+  并作为独立 argv 传入（绝不拼进 shell），未知级别是 `invalid_params`，与既有「无 `device.shell` 透传」的安全约束一致。
 - **`web.console` 没有类型过滤，报错淹没在海量 log 里**。延续 `url_filter` 的思路，给 `web.console` 加上 `type_filter`：对条目
   `type` 做大小写不敏感的精确匹配（`error`/`warning`/`log`…），在取尾之前应用，于是能把失败（包括折叠进来的未捕获异常，其
   type 为 error）从被 log 刷屏的控制台里单独拉出来；`has_more` 随之反映更早的匹配项，`dropped` 仍为环形缓冲淘汰计数。
