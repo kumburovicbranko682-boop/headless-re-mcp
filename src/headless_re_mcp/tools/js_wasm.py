@@ -70,8 +70,9 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Convert a .wasm module to WebAssembly text (WAT) via wasm2wat.
 
         Answers with wat and bytes, plus truncated when the text was cut at
-        the buffer. An input over 16 MiB is refused as too_large rather than
-        handed to wasm2wat.
+        the buffer. An input over 16 MiB is refused as too_large, and a file
+        that is not a WebAssembly module as invalid_params, rather than handed
+        to wasm2wat.
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
@@ -82,8 +83,9 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Dump sections and details of a .wasm module via wasm-objdump.
 
         Answers with objdump holding that text, not a sections list, plus
-        truncated when the text was cut at the buffer. An input over 16 MiB
-        is refused as too_large rather than handed to wasm-objdump.
+        truncated when the text was cut at the buffer. An input over 16 MiB is
+        refused as too_large, and a file that is not a WebAssembly module as
+        invalid_params, rather than handed to wasm-objdump.
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
