@@ -293,3 +293,60 @@ def test_apk_export_sources_says_when_the_java_list_was_cut(
     doc = _tool_docstring("apk.export_sources")
     assert "java_files" in doc
     assert "has_more" in doc
+
+
+def test_apk_export_sources_lists_the_alphabetical_head_not_a_sample(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A cut java_files page sampled directory order, then sorted the sample.
+
+    Measured: 5 files, cap 3, rglob yielding C4..C0 -- the page was
+    C2/C3/C4. Sorted output reads as the alphabetical head of the tree,
+    so C0 and C1 were silently missing from the range the page appears
+    to cover, and which files appear depended on filesystem iteration
+    order, so the same APK could list different files on different hosts.
+    """
+    from headless_re_mcp.backends.jadx import client as mod
+
+    out = tmp_path / "out"
+    sources = out / "sources"
+    sources.mkdir(parents=True)
+    for index in range(5):
+        (sources / f"C{index}.java").write_text("class C {}", encoding="utf-8")
+    real_rglob = Path.rglob
+
+    def _reversed_rglob(self: Path, pattern: str) -> Any:
+        return iter(sorted(real_rglob(self, pattern), reverse=True))
+
+    monkeypatch.setattr(Path, "rglob", _reversed_rglob)
+    monkeypatch.setattr(mod, "_MAX_LISTED_FILES", 3)
+    client = mod.JadxClient(tmp_path / "jadx.bat")
+    monkeypatch.setattr(client, "_run", lambda *args, **kwargs: ("", "", 0))
+    payload = client.export_sources(tmp_path / "app.apk", out)
+    listed = [name.replace("\\", "/") for name in payload["java_files"]]
+    assert listed == ["sources/C0.java", "sources/C1.java", "sources/C2.java"]
+    assert payload["java_file_count"] == 5
+    assert payload["has_more"] is True
+    doc = _tool_docstring("apk.export_sources")
+    assert "alphabetically first" in doc
+
+
+def test_apk_export_sources_counting_cap_still_reports_more(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Files past the counting cap must still surface as has_more."""
+    from headless_re_mcp.backends.jadx import client as mod
+
+    out = tmp_path / "out"
+    sources = out / "sources"
+    sources.mkdir(parents=True)
+    for index in range(6):
+        (sources / f"C{index}.java").write_text("class C {}", encoding="utf-8")
+    monkeypatch.setattr(mod, "_MAX_COUNTED_FILES", 4)
+    monkeypatch.setattr(mod, "_MAX_LISTED_FILES", 3)
+    client = mod.JadxClient(tmp_path / "jadx.bat")
+    monkeypatch.setattr(client, "_run", lambda *args, **kwargs: ("", "", 0))
+    payload = client.export_sources(tmp_path / "app.apk", out)
+    assert payload["java_file_count"] == 4
+    assert len(payload["java_files"]) == 3
+    assert payload["has_more"] is True

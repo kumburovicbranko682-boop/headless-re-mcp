@@ -23,24 +23,29 @@ _MAX_COUNTED_FILES = 50_000
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
+    # Collect every name up to the counting cap before sorting, then page.
+    # Capping first and sorting the sample would return whatever ``cap``
+    # files the filesystem happened to yield first, presented in sorted
+    # order -- a listing that reads as the alphabetical head of the tree
+    # while arbitrary files inside that range are silently missing, and
+    # that can differ between hosts for the same APK.
     names: list[str] = []
     total = 0
-    has_more = False
+    count_capped = False
     if not root.is_dir():
         return [], 0, False
     for path in root.rglob("*.java"):
         if not path.is_file():
             continue
-        total += 1
-        if len(names) < cap:
-            names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
         if total >= _MAX_COUNTED_FILES:
-            has_more = True
+            count_capped = True
             break
+        total += 1
+        names.append(str(path.relative_to(root)))
     names.sort()
-    return names, total, has_more
+    listed = names[:cap]
+    has_more = count_capped or total > len(listed)
+    return listed, total, has_more
 
 
 class JadxError(RuntimeError):

@@ -219,8 +219,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decompile the whole APK to a Java source tree via jadx.
 
         Answers with output_dir, sources_dir, java_file_count and java_files,
-        plus has_more when the listed files were cut at the buffer. There is
-        no files or sources field.
+        plus has_more when the listed files were cut at the buffer. A cut
+        java_files listing is the alphabetically first files of the tree, not
+        a sample. There is no files or sources field.
         """
         return _dump(
             analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)
