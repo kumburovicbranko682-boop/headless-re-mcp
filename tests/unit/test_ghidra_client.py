@@ -324,6 +324,33 @@ def test_max_heap_is_invalid_params_before_the_capability_gate(
     assert calls == []
 
 
+@pytest.mark.parametrize("address", ["", "   ", "\t"])
+def test_xrefs_and_decompile_require_an_address_before_the_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, address: str
+) -> None:
+    """An empty address must not cost a full analyzeHeadless import.
+
+    address drives both exports; the Jython getAddress("") yields nothing, so a
+    blank value returns an empty listing -- but only after importing and
+    analysing the binary, minutes on a large one. The tool signature is a
+    required str with no min_length, so pydantic sends "" (not None) and the
+    service's ``address is None`` guard never fires. Rejecting it in the client
+    before the gate mirrors apk.xrefs/methods; the tripwire run_bounded proves
+    neither export spawns.
+    """
+    calls = _capture_run(monkeypatch)
+    client = _client(tmp_path)
+    binary = _binary(tmp_path)
+    project = tmp_path / "project"
+    with pytest.raises(ghidra_client.GhidraError) as xref_err:
+        client.xrefs(binary, project, address)
+    assert xref_err.value.code == "invalid_params"
+    with pytest.raises(ghidra_client.GhidraError) as decomp_err:
+        client.decompile(binary, project, address)
+    assert decomp_err.value.code == "invalid_params"
+    assert calls == []
+
+
 @pytest.mark.parametrize(
     ("payload", "error_type"),
     [

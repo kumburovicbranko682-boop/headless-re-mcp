@@ -62,6 +62,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `test_successful_cli_adapters_reap_detached_helpers`（die/exeinfope/upx 参数化）钉住，同时
   `run_bounded` 的「干净退出不杀 helper」语义保持不变。
 
+### 修复（ghidra.xrefs/decompile 的必填 address 空值在分析之前就回 invalid_params）
+
+- `ghidra.xrefs`/`decompile` 的 `address` 是必填参数、驱动整趟导出，但工具签名是无 `min_length` 的
+  必填 `str`，于是 pydantic 送进来的是 `""`（不是 `None`），服务层 `_ghidra_export` 里那句
+  `if address is None` 的既有守卫**根本不会触发**；空串一路走到 `client.xrefs(..., "")`，先把二进制导入
+  Ghidra 跑完整趟 analyzeHeadless 分析（大文件数分钟），脚本里的 `getAddress("")` 再取不到地址，最后回一个
+  空列表——一次昂贵分析全烧在一个本就畸形的请求上。这与 `apk.xrefs/methods` 当初"必填名放在整包 DEX
+  分析之后"是同一类问题。现把空/纯空白 `address` 的拒绝放进客户端 `xrefs`/`decompile`，在能力门与
+  analyzeHeadless 导入之前回 `invalid_params`（服务层原有的 `None` 守卫保留为更早的冗余拦截）。这条与
+  `max_heap` 那条不同，是**经 MCP 工具面可达**的浪费：调用方确实能传空 `address`。回归用探针 `run_bounded`
+  在已配置 Ghidra 的客户端上钉住：空/纯空白 address 两个导出都在能力门之前回 `invalid_params`，且从不 spawn
+  analyzeHeadless。合法地址表达式（`0x401000`、`ram:0x1000` 等去空白后非空）照常放行，校验只挡空值。
+
 ### 修复（Ghidra 的 max_heap 校验移到能力门之前，兑现文档早已声明的"输入先于门"）
 
 - `max_heap` 被拼进 `JAVA_TOOL_OPTIONS`（`-Xmx<max_heap>`），是请求自身的属性，但它的正则校验一直只在

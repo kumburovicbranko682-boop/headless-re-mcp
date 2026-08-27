@@ -148,6 +148,13 @@ class GhidraClient:
         timeout: float = 180.0,
         max_heap: str = "2G",
     ) -> JsonObject:
+        # address drives the whole export and is required. An empty or
+        # whitespace-only value would still run a full analyzeHeadless import
+        # (minutes on a large binary) only for the script's getAddress() to
+        # yield nothing and the listing to come back empty. Judge it before the
+        # capability gate and the analysis, the way apk.xrefs checks method_name.
+        if not str(address).strip():
+            raise GhidraError("invalid_params", "address is required")
         return self._export(
             binary,
             project_dir,
@@ -167,6 +174,11 @@ class GhidraClient:
         timeout: float = 180.0,
         max_heap: str = "2G",
     ) -> JsonObject:
+        # Same as xrefs: the address is required and picks the function to
+        # decompile, so an empty or whitespace-only value is rejected before the
+        # capability gate and the analyzeHeadless import rather than after.
+        if not str(address).strip():
+            raise GhidraError("invalid_params", "address is required")
         return self._export(
             binary,
             project_dir,
