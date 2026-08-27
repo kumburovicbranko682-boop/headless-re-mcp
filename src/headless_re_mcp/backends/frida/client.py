@@ -117,7 +117,17 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // ptr(address).readByteArray(size), not the old Memory.readByteArray(ptr,
+    // size): the global read shorthands were removed in modern frida (gone on
+    // 17.x -- the call raised "TypeError: not a function"), while the
+    // NativePointer method has existed for many majors, so this reads on both.
+    // readByteArray returns null for an unreadable page; Uint8Array(null) would
+    // throw, so a null read is reported as empty bytes.
+    var buf = ptr(address).readByteArray(size);
+    if (buf === null) {
+      return [];
+    }
+    return Array.from(new Uint8Array(buf));
   }
 };
 """

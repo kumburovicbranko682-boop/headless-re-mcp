@@ -1,13 +1,13 @@
-"""M11 Frida live gate: attach/modules/exports against a standalone process.
+"""M11 Frida live gate: attach/modules/exports/memory.read against a process.
 
 Portable across the platforms this backend runs on. Windows keeps its PE
 fixture and probes the system DLLs it always loads; elsewhere any process loads
 the C runtime, so a sleeping Python interpreter is target enough and needs no
-fixture. The frida client operations (attach, modules, exports, hook_template)
-are themselves platform-agnostic -- only the target and the name of a system
-library with exports differ -- so the same assertions run on both. It skips,
-never fails, when frida is absent or the OS forbids a local attach (ptrace
-restrictions on Linux, an unsigned interpreter on macOS): skip != pass.
+fixture. The frida client operations (attach, modules, exports, memory_read,
+hook_template) are themselves platform-agnostic -- only the target and the name
+of a system library with exports differ -- so the same assertions run on both.
+It skips, never fails, when frida is absent or the OS forbids a local attach
+(ptrace restrictions on Linux, an unsigned interpreter on macOS): skip != pass.
 """
 
 from __future__ import annotations
@@ -87,20 +87,38 @@ def test_m11_frida_live_attach_modules_exports() -> None:
         assert mods["count"] >= 1
         assert any(isinstance(m.get("name"), str) and m["name"] for m in mods["modules"])
 
-        sys_mod = next(
+        sys_module = next(
             (
-                str(m["name"])
+                m
                 for m in mods["modules"]
                 if any(marker in str(m.get("name", "")).lower() for marker in sys_markers)
             ),
             None,
         )
-        if sys_mod is None:
+        if sys_module is None:
             pytest.fail(f"expected a system library ({sys_markers}) among frida modules")
+        sys_mod = str(sys_module["name"])
         exports = client.exports(proc.pid, sys_mod, allowed_pid=proc.pid, limit=16)
         assert exports.get("found") is True
         assert exports.get("count", 0) >= 1
         assert isinstance(exports.get("exports"), list)
+
+        # memory.read shares the local-read path (attach + enum script) with
+        # modules/exports and is the one reader the gate did not exercise live.
+        # Read the image header at the module base and confirm the real bytes
+        # are the platform's executable magic: ELF (7f 45 4c 46) on POSIX, MZ
+        # (4d 5a) on a Windows PE. A wrong address or a broken read cannot fake
+        # this, so it pins the read to a known-correct value.
+        base = str(sys_module.get("base", ""))
+        assert base.startswith("0x"), f"module base is not a hex address: {base!r}"
+        read = client.memory_read(proc.pid, int(base, 16), 4, allowed_pid=proc.pid)
+        assert read.get("size") == 4
+        assert read.get("encoding") == "hex"
+        magic = str(read.get("data", "")).lower()
+        if os.name == "nt":
+            assert magic.startswith("4d5a"), f"expected an MZ header at the base, got {magic!r}"
+        else:
+            assert magic == "7f454c46", f"expected the ELF magic at the base, got {magic!r}"
 
         hooked = client.hook_template(proc.pid, "noop", allowed_pid=proc.pid)
         assert hooked.get("loaded") is True
