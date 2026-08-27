@@ -80,10 +80,13 @@ gate 与 CI，并修掉两处只有在真后端下才暴露的缺陷。全部 ga
 - **radare2 ELF 与 web CDP gate 面加厚。** r2 侧补 `pdj` 反汇编（含带方括号内存操作数的解析）与 `izj`
   字符串到 `vaddr` 的映射；web 侧补 CDP 网络抓取/取体、`script.source`、截图、HAR 导出、导航、
   `wasm.list`，以及 wasm `wat`/`info`。
-- **`.github/workflows/linux-integration.yml`。** ubuntu-latest 上每次 push/PR 真跑上述非 PE gate：`gates`
+- **`.github/workflows/linux-integration.yml`。** 每次 push/PR 真跑上述非 PE gate：`gates`
   job 装 radare2/wabt/webcrack/jadx/apktool/apksigner + Playwright 自带 Chromium 与 mitmproxy，跑整个
   `tests/integration`（conftest 按名 skip Windows-only gate）；`ghidra-gate` job 单独缓存 ~570 MB 的
-  Ghidra 下载、配 JDK 21，只收 Ghidra gate 文件。
+  Ghidra 下载、配 JDK 21，只收 Ghidra gate 文件。两个 job 都钉在 `ubuntu-24.04`（而非会随 LTS 升级悄悄
+  漂移的 `ubuntu-latest` 别名）——apt 后端（radare2/wabt/apksigner/gcc）从该发行版 archive 取版本，钉住
+  镜像才钉住它们；webcrack 也用 `WEBCRACK_VERSION` 显式钉版（npm registry 保留旧版，可复现），与既有的
+  Ghidra/jadx/apktool 版本钉法一致，均在本地 Ubuntu 24.04 上跑通对应版本后钉定，「刻意升级」。
 
 ### 新增（监控台工作台）
 

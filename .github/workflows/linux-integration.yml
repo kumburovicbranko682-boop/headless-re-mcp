@@ -36,7 +36,12 @@ concurrency:
 
 jobs:
   gates:
-    runs-on: ubuntu-latest
+    # Pin the image, not the moving ubuntu-latest alias: the apt backends
+    # (radare2, wabt, apksigner, gcc) are served from this release's archive, so
+    # a silent LTS promotion would otherwise swap their versions under the gate.
+    # This is the release the versions below were validated against; bump
+    # deliberately alongside them.
+    runs-on: ubuntu-24.04
     # The backend installs dominate; the gates themselves finish in seconds. A
     # hung browser or proxy probe must name itself and fail well inside this.
     timeout-minutes: 30
@@ -48,6 +53,9 @@ jobs:
       # written next to it. It auto-installs its bundled AOSP framework on first
       # build, so no Android SDK is needed.
       APKTOOL_VERSION: "3.0.3"
+      # webcrack from npm; the registry keeps every version, so a literal pin is
+      # reproducible. Node itself is pinned by setup-node below.
+      WEBCRACK_VERSION: "2.16.0"
     strategy:
       fail-fast: false
       matrix:
@@ -136,7 +144,7 @@ jobs:
 
       - name: JS deobfuscation backend (webcrack)
         run: |
-          npm install -g webcrack
+          npm install -g "webcrack@${WEBCRACK_VERSION}"
           webcrack --version
 
       - name: Install package with the portable-backend extras
@@ -193,7 +201,9 @@ jobs:
   # JDK the other job does not, and its download is cached across runs. Only the
   # Ghidra gate file is collected, so no Web/Android/proxy backends are needed.
   ghidra-gate:
-    runs-on: ubuntu-latest
+    # Pinned like the gates job: fixes the apt gcc that builds the ELF fixture
+    # and the JVM baseline Ghidra runs under to the validated release.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       # Pin the release validated locally for reproducibility; bump
