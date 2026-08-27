@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.apk import ApkClient
+from headless_re_mcp.backends.apktool import ApktoolClient
 from headless_re_mcp.backends.jadx import JadxClient
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
@@ -168,5 +169,40 @@ def test_android_jadx_decompile_when_configured() -> None:
         result = service.apk_decompile(session_id, _FIXTURE_ACTIVITY, timeout=180.0)
         assert result.ok, result.error
         assert _FIXTURE_MARKER in result.data["source"]
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_apktool_decode_repack_roundtrip_when_configured() -> None:
+    """apktool disassembles the fixture to smali and rebuilds it.
+
+    This is the Android modification line (decode -> edit -> build), which only
+    mocked degradation tests cover otherwise. Driving the real round trip on the
+    committed valid APK means a regression in argument construction or output
+    parsing fails here instead of passing on a mock. Signing needs apksigner
+    (Android build-tools) and stays covered by the degradation unit test.
+    """
+    service = AnalysisService()
+    try:
+        if not ApktoolClient(getattr(service.settings, "apktool", None)).available:
+            pytest.skip("apktool not configured — decode/repack gate not run (skip != pass)")
+        assert _APK_FIXTURE.is_file(), f"fixture missing: {_APK_FIXTURE}"
+        created = service.create_session(str(_APK_FIXTURE), target="apk")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        decoded = service.apk_decode(session_id, timeout=180.0)
+        assert decoded.ok, decoded.error
+        assert decoded.data["smali_dirs"], "apktool produced no smali directory"
+        manifest = Path(decoded.data["manifest"])
+        assert manifest.is_file()
+        # apktool decodes the binary AXML back to text that names the package.
+        assert _FIXTURE_PACKAGE in manifest.read_text(encoding="utf-8", errors="replace")
+
+        repacked = service.apk_repack(session_id, timeout=180.0)
+        assert repacked.ok, repacked.error
+        assert repacked.data["signed"] is False
+        assert Path(repacked.data["apk"]).is_file()
     finally:
         service.close_all()
