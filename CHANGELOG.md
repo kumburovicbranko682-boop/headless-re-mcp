@@ -49,6 +49,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（Markdown 报告「最近操作」分节也披露只展示了部分,与其它分节看齐）
+
+- `report.generate` 里「Findings」和「Artifacts」分节都会在 `total > 已展示条数` 时打一行
+  `Showing X of Y …`,唯独审计的「Recent actions」分节没有:一份只带 50 行审计切片(总量数千)
+  的报告,那张表读起来就是完整的近期历史。标题里的「Recent」只暗示这是子集,却没说漏了多少。现在
+  该分节同样调用 `_note_if_partial(..., noun="actions")`,`total` 超过展示条数时输出
+  `Showing 50 of 4200 actions`;审计结果不带 `total` 或 `total` 不超过展示数时一字不加(既有
+  「有审计才渲染该分节」「无 total 不打披露」的行为不变)。扩展 capped-report 测试:审计切片 50/
+  4200 如实披露,而完整报告(三分节 total 均等于展示数)仍无任何 `Showing`。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

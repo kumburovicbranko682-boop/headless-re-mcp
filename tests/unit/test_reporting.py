@@ -180,6 +180,11 @@ def test_a_capped_report_says_it_is_capped() -> None:
             "count": 1,
             "total": 1,
         },
+        audit={
+            "entries": [{"at": "t", "action": "static.open", "ok": True}],
+            "count": 1,
+            "total": 1,
+        },
     )
     assert "Showing" not in whole, "a complete report needs no disclaimer"
 
@@ -195,9 +200,17 @@ def test_a_capped_report_says_it_is_capped() -> None:
             "count": 100,
             "total": 247,
         },
+        audit={
+            "entries": [{"at": "t", "action": "static.open", "ok": True}] * 50,
+            "count": 50,
+            "total": 4200,
+        },
     )
     assert "Showing 500 of 913 findings" in partial
     assert "Showing 100 of 247 artifacts" in partial
+    # The audit table was the one section that used to pass a page off as the
+    # whole recent history; now it says how much it is not showing.
+    assert "Showing 50 of 4200 actions" in partial
 
 
 def test_report_reads_the_list_artifacts_key() -> None:
