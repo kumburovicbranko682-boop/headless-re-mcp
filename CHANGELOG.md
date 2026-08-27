@@ -14,7 +14,7 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
 
-CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、Playwright Chromium、androguard/adbutils/frida、mitmproxy）并按 `-rs` 跑整个 `tests/integration`——Web / Android / 抓包 / radare2 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
+CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服务与 wheel/sdist 构建。新增 `linux-integration` job：在托管 Ubuntu runner 上装齐可移植后端（radare2、wabt、webcrack、Playwright Chromium、androguard/adbutils/frida、mitmproxy，以及 JDK 21 + 带缓存的 Ghidra 11.2.1）并按 `-rs` 跑整个 `tests/integration`——Web / Android / 抓包（含真实拦截）/ radare2 / Ghidra 这几条 gate 在此**真实执行**，PE/IDA 与 Windows-only gate 干净 skip 并打印原因，让「skip ≠ pass」对非 PE 线终于成立。真实 Windows 后端 gate 继续留在自托管 Windows job。
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
@@ -36,6 +36,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   关闭的设置弹窗，以及 fail-closed autonomy——好让写工具的批准卡片真的弹出。批准腿断言
   `/approve` 返回 200、卡片能挺过一次 reload 并从携带的游标续跑；拒绝腿断言 `/reject` 返回
   200、卡片随之从时间线消失。
+- **抓包此前只测生命周期（起停 / 端口），从未测它真正的用途——拦截**。新增 live capture gate：
+  用 stdlib `urllib` 经代理向一个临时 origin 发请求，断言 flow 被记录（method/url/status 正确）、
+  `flow.get` 取回完整响应体、`export_har` 写出条目、`replay` 让 origin 被再次命中。只用标准库当
+  客户端，因此只需 proxy extra 而不必装 web(httpx)；mitmproxy 缺失才 skip。
+- **Ghidra 被列为可移植后端，却从未端到端跑通过**——单元测试把 `run_bounded` 全 mock 掉，于是
+  两个真 bug 一直没被发现：适配器在所有平台都优先选 Windows 的 `analyzeHeadless.bat` 启动器
+  （Linux/macOS 上 Popen 直接 `Exec format error`），且 Jython 导出脚本读了 Ghidra 根本不注入的
+  全局 `ARGS`（每次导出 `NameError`、不写 JSON，适配器报「export JSON missing」）。启动器改为按
+  平台优先、`ARGS` 改为 `getScriptArgs()`；新增 gate 用真实 `analyzeHeadless` 分析编译出的 ELF，
+  断言导出到具名函数（`main`/`compute`）与 `compute` 的非空反编译。Ghidra/Java 未配置或无 C
+  编译器时才 skip。
 
 ### 新增（监控台工作台）
 
