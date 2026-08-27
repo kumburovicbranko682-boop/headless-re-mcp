@@ -85,10 +85,13 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Ghidra's decompilation of the function at address.
 
         Answers with decompiled, truncated when the C was cut at the buffer,
-        and found: found is false when no function contains address, so an
-        empty decompiled then means "no function here", not an empty body. A
-        second reading of code IDA decompiled differently, or of code it could
-        not. A failed export is an error, not empty code.
+        found, and decompile_completed. found is false when no function
+        contains address, so an empty decompiled then means "no function
+        here", not an empty body. decompile_completed is false when a function
+        was found but its decompiler did not finish (the 30s budget, or an
+        error): an empty decompiled then means "did not finish", not an empty
+        body. A second reading of code IDA decompiled differently, or of code
+        it could not. A failed export is an error, not empty code.
         """
         return _dump(analysis.ghidra_decompile(session_id, address, timeout=timeout))
     return tools.bindings

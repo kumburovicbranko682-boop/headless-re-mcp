@@ -277,6 +277,13 @@ class GhidraClient:
             # a foreign-interpreter boundary, so derive it here when the script
             # did not emit it rather than trusting the field to be present.
             payload.setdefault("found", bool(payload.get("function")))
+            # Same boundary: a found function whose decompiler ran out of its
+            # budget also comes back with `decompiled` empty. The script now
+            # says whether decompilation finished; when an older script did
+            # not, non-empty output is proof it did and empty output is the
+            # conservative "did not", so a timed-out function is not read as an
+            # empty body.
+            payload.setdefault("decompile_completed", bool(payload.get("decompiled")))
         return payload
 
     def _run_headless(
