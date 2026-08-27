@@ -92,9 +92,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def proxy_export_har(session_id: str) -> dict[str, Any]:
         """Export captured flows to a HAR artifact.
 
-        Answers with path and entry_count. There is no har, output or
-        artifact field. path is the file; looking for har after a successful
-        export reads as a missing capture.
+        Answers with path, entry_count, size and truncated (true when the
+        oldest-first flows were dropped to fit the capture cap). There is no
+        har, output or artifact field. path is the file; looking for har after
+        a successful export reads as a missing capture.
         """
         return _dump(analysis.proxy_export_har(session_id))
 
