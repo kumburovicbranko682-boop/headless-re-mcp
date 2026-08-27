@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
+
+# The analysis passes the r2 command allowlist permits. "aa" is shallow and
+# fast; it misses functions only reachable through a call (stripped binaries)
+# and data refs built by multi-instruction address materialisation (ARM
+# adrp/add). "aac" follows calls, "aar" recovers data refs, "aaa" runs the
+# full umbrella -- slower, but what stripped/ARM targets need.
+AnalysisPass = Literal["aa", "aac", "aar", "aaa"]
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -105,20 +112,28 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         address: Annotated[int, Field(ge=0)],
         count: Annotated[int, Field(ge=1, le=512)] = 32,
+        analysis_pass: AnalysisPass = "aa",
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
         """Disassemble count instructions at address, as radare2 decodes them.
 
         Answers with items holding those instructions, plus address
         (va/rva/module), address_va (the integer that was asked) and count.
-        There is no integer address field.
+        There is no integer address field. analysis_pass picks the analysis
+        run first: the default aa decodes fine but leaves call targets in
+        stripped binaries unnamed; aaa recovers fcn.<addr>/str.<text> names.
         """
-        return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
+        return _dump(
+            analysis.r2_disasm(
+                session_id, address, count=count, analysis=analysis_pass, timeout=timeout
+            )
+        )
 
     @tools.tool(name="r2.xrefs")
     def r2_xrefs(
         session_id: str,
         address: Annotated[int, Field(ge=0)],
+        analysis_pass: AnalysisPass = "aa",
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
         """References to and from address, as radare2 resolved them.
@@ -127,14 +142,19 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         to_address, plus address (va/rva/module) and address_va (the integer
         that was asked). Read items_truncated, items_total and items_limit
         when the list filled the cap (4096). There is no integer address,
-        xrefs, truncated or has_more field.
+        xrefs, truncated or has_more field. analysis_pass picks the analysis
+        run first; the default aa graph omits edges only a deeper pass (aaa)
+        finds, e.g. in stripped binaries or ARM literal-pool loads.
         """
-        return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
+        return _dump(
+            analysis.r2_xrefs(session_id, address, analysis=analysis_pass, timeout=timeout)
+        )
 
     @tools.tool(name="r2.xrefs_to")
     def r2_xrefs_to(
         session_id: str,
         address: Annotated[int, Field(ge=0)],
+        analysis_pass: AnalysisPass = "aa",
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
         """References that target address (radare2 axtj), inbound only.
@@ -145,14 +165,20 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         fcn_addr and fcn_name, plus address (va/rva/module) and address_va (the
         integer that was asked). Read items_truncated, items_total and
         items_limit when the list filled the cap (4096). There is no integer
-        address, xrefs, truncated or has_more field.
+        address, xrefs, truncated or has_more field. analysis_pass picks the
+        analysis run first: with the default aa, references from code that only
+        a deeper pass discovers (stripped binaries, ARM adrp/add string loads)
+        are missing; aaa recovers them at the cost of a slower run.
         """
-        return _dump(analysis.r2_xrefs_to(session_id, address, timeout=timeout))
+        return _dump(
+            analysis.r2_xrefs_to(session_id, address, analysis=analysis_pass, timeout=timeout)
+        )
 
     @tools.tool(name="r2.xrefs_from")
     def r2_xrefs_from(
         session_id: str,
         address: Annotated[int, Field(ge=0)],
+        analysis_pass: AnalysisPass = "aa",
         timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
     ) -> dict[str, Any]:
         """References made from the function at address (radare2 axffj), outbound.
@@ -164,7 +190,12 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         ref_address, and to the item's address), plus address (va/rva/module)
         and address_va (the integer that was asked). Read items_truncated,
         items_total and items_limit when the list filled the cap (4096). There
-        is no integer address, xrefs, truncated or has_more field.
+        is no integer address, xrefs, truncated or has_more field. analysis_pass
+        picks the analysis run first: the default aa never analyzes a function
+        reachable only through a call, so on stripped binaries the walk finds no
+        function and returns nothing; aaa recovers the body and its edges.
         """
-        return _dump(analysis.r2_xrefs_from(session_id, address, timeout=timeout))
+        return _dump(
+            analysis.r2_xrefs_from(session_id, address, analysis=analysis_pass, timeout=timeout)
+        )
     return tools.bindings

@@ -345,7 +345,12 @@ class ExtAnalysisMixin(UiDriveMixin):
         return _r2_request(self, session_id, ["iEj"], timeout=timeout)
 
     def r2_disasm(
-        self, session_id: str, address: int, count: int = 32, timeout: float = 30.0
+        self,
+        session_id: str,
+        address: int,
+        count: int = 32,
+        analysis: str = "aa",
+        timeout: float = 30.0,
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -359,7 +364,9 @@ class ExtAnalysisMixin(UiDriveMixin):
                 )
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
-            data = client.disasm(session.require_binary(), address, count=count, timeout=timeout)
+            data = client.disasm(
+                session.require_binary(), address, count=count, analysis=analysis, timeout=timeout
+            )
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -369,14 +376,19 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"r2.disasm cannot run in {session.state.value} state"
                 )
-            _timeline_append(self, session_id, "r2.disasm", "r2 disasm", address=address, count=count)
+            _timeline_append(
+                self, session_id, "r2.disasm", "r2 disasm",
+                address=address, count=count, analysis=analysis,
+            )
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
             return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def r2_xrefs(self, session_id: str, address: int, timeout: float = 30.0) -> Result[JsonObject]:
+    def r2_xrefs(
+        self, session_id: str, address: int, analysis: str = "aa", timeout: float = 30.0
+    ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
             if session.state in {
@@ -389,7 +401,9 @@ class ExtAnalysisMixin(UiDriveMixin):
                 )
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
-            data = client.xrefs(session.require_binary(), address, timeout=timeout)
+            data = client.xrefs(
+                session.require_binary(), address, analysis=analysis, timeout=timeout
+            )
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -399,7 +413,9 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"r2.xrefs cannot run in {session.state.value} state"
                 )
-            _timeline_append(self, session_id, "r2.xrefs", "r2 xrefs", address=address)
+            _timeline_append(
+                self, session_id, "r2.xrefs", "r2 xrefs", address=address, analysis=analysis
+            )
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
             return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
@@ -407,7 +423,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _failure(exc, session_id=session_id)
 
     def r2_xrefs_to(
-        self, session_id: str, address: int, timeout: float = 30.0
+        self, session_id: str, address: int, analysis: str = "aa", timeout: float = 30.0
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -421,7 +437,9 @@ class ExtAnalysisMixin(UiDriveMixin):
                 )
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
-            data = client.xrefs_to(session.require_binary(), address, timeout=timeout)
+            data = client.xrefs_to(
+                session.require_binary(), address, analysis=analysis, timeout=timeout
+            )
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -431,7 +449,9 @@ class ExtAnalysisMixin(UiDriveMixin):
                 raise InvalidStateTransition(
                     f"r2.xrefs_to cannot run in {session.state.value} state"
                 )
-            _timeline_append(self, session_id, "r2.xrefs_to", "r2 xrefs to", address=address)
+            _timeline_append(
+                self, session_id, "r2.xrefs_to", "r2 xrefs to", address=address, analysis=analysis
+            )
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
             return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
@@ -439,7 +459,7 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _failure(exc, session_id=session_id)
 
     def r2_xrefs_from(
-        self, session_id: str, address: int, timeout: float = 30.0
+        self, session_id: str, address: int, analysis: str = "aa", timeout: float = 30.0
     ) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -453,7 +473,9 @@ class ExtAnalysisMixin(UiDriveMixin):
                 )
             exe = getattr(self.settings, "r2", None)
             client = R2Client(Path(exe) if exe else None)
-            data = client.xrefs_from(session.require_binary(), address, timeout=timeout)
+            data = client.xrefs_from(
+                session.require_binary(), address, analysis=analysis, timeout=timeout
+            )
             session = self.registry.get(session_id)
             if session.state in {
                 SessionState.CLOSING,
@@ -464,7 +486,8 @@ class ExtAnalysisMixin(UiDriveMixin):
                     f"r2.xrefs_from cannot run in {session.state.value} state"
                 )
             _timeline_append(
-                self, session_id, "r2.xrefs_from", "r2 xrefs from", address=address
+                self, session_id, "r2.xrefs_from", "r2 xrefs from",
+                address=address, analysis=analysis,
             )
             return _success(data, session_id=session_id, backend="radare2")
         except R2Error as exc:
