@@ -157,9 +157,9 @@ jobs:
   # gates were never exercised in CI and their maturity rested on unit tests
   # alone. This job installs the portable backends -- radare2 (static),
   # wabt + webcrack + Playwright Chromium (web), androguard plus the jadx
-  # decompiler and apktool on a JRE (android), mitmproxy (shared proxy) -- and
-  # runs the integration gates so a regression in any of those lines fails here
-  # instead of in production.
+  # decompiler, apktool and apksigner on a JRE (android), mitmproxy (shared
+  # proxy) -- and runs the integration gates so a regression in any of those
+  # lines fails here instead of in production.
   linux-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -179,6 +179,9 @@ jobs:
           # Pinned so the Java-toolchain lines are reproducible; bump deliberately.
           JADX_VERSION: "1.5.6"
           APKTOOL_VERSION: "3.0.3"
+          # Android build-tools ship apksigner + zipalign. r34 unzips to android-14.
+          BUILD_TOOLS_ZIP: "build-tools_r34-linux.zip"
+          BUILD_TOOLS_DIR: "android-14"
         run: |
           sudo apt-get update
           # radare2: portable static analysis. wabt: wasm2wat/wasm-objdump.
@@ -208,6 +211,14 @@ jobs:
             "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"
           chmod +x "$HOME/apktool/apktool"
           echo "$HOME/apktool" >> "$GITHUB_PATH"
+          # apksigner (sign + verify) closes the Java line. It lives in Android
+          # build-tools; pull the pinned package directly (no SDK manager) and put
+          # its dir on PATH. keytool for the gate's keystore comes with the JRE.
+          curl -fsSL -o /tmp/build-tools.zip \
+            "https://dl.google.com/android/repository/${BUILD_TOOLS_ZIP}"
+          mkdir -p "$HOME/android-build-tools"
+          unzip -q -o /tmp/build-tools.zip -d "$HOME/android-build-tools"
+          echo "$HOME/android-build-tools/${BUILD_TOOLS_DIR}" >> "$GITHUB_PATH"
 
       - name: Install package with Android/Web/portable extras
         run: |
