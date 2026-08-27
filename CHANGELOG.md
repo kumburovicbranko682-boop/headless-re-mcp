@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`web.har.export` 给每条记录打上真实发起时间,而非导出时刻）
+
+- HAR 的 `startedDateTime` 本该是请求真正发出的时间,可 Web 抓包从不保存它:`har_entry`
+  在没拿到时间时回退到**导出那一刻**,于是一份 HAR 里所有条目共用同一个时间戳——看上去像
+  全部流量同时发生。请求的先后与间隔——逆向者打开 HAR 的主要理由之一——就此丢失,而 CDP 的
+  `Network.requestWillBeSent` 明明每条都带着 `wallTime`(纪元秒)。
+- 现在会话在收到 `requestWillBeSent` 时把 `wallTime` 记进一张与请求摘要**并行**的表
+  (`request_times`),它刻意不塞进摘要本身,故不会泄进 `web.network.list` / `get` 的字段;这张表随请求
+  环一起按最旧淘汰,不会随长跑会话无限增长。`har_export` 据此把每条记录的 `startedDateTime` 设为该请求的
+  真实发起时间;只有在 `wallTime` 尚不可知(缺失/非数/越界)时才回退到导出时刻,绝不伪造。工具描述
+  点明 `startedDateTime` 取自 `wallTime`、保留先后与间隔。
+- 新增回归:`_iso_from_wall_time` 把纪元秒转 ISO、对 None/0/负数/布尔/越界一律回退 None;
+  `har_export` 按各自记录的 `wallTime` 给条目打上互不相同的真实时间戳、无记录时回退到「就在此刻」的
+  合法 ISO;`requestWillBeSent` 的 `wallTime` 被捕获且与请求环**同步淘汰**(灌 5 条、上限压到 3,两张表
+  只余最新的 `2/3/4`、`requests_dropped=2`);不带 `wallTime` 的请求仍记摘要但不记时间。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在

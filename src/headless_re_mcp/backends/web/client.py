@@ -23,6 +23,7 @@ from collections import OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
@@ -57,6 +58,26 @@ class WebError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _iso_from_wall_time(value: object) -> str | None:
+    """CDP ``wallTime`` (epoch seconds) as an ISO 8601 instant, or None.
+
+    ``Network.requestWillBeSent`` carries ``wallTime`` -- the request's real
+    start in seconds since the epoch. Without it har_export stamps every entry
+    with the export instant, so a HAR reads as though all traffic happened at
+    once; ordering and spacing, a main reason to open a HAR, are lost. None
+    (a missing, non-numeric, or out-of-range value) falls back to har_entry's
+    export-time default rather than fabricating a timestamp.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    if value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _bound_nav_timeout(timeout: float) -> float:
@@ -293,6 +314,11 @@ class _WebSession:
         self.page = page
         self.cdp = cdp
         self.requests: OrderedDict[str, JsonObject] = OrderedDict()
+        # Real request start (CDP wallTime, epoch seconds), kept out of the
+        # request summary so it never leaks into network.list/get, and evicted
+        # in lockstep with requests so har_export can stamp each entry with when
+        # it actually happened instead of the export instant.
+        self.request_times: OrderedDict[str, float] = OrderedDict()
         self.console: deque[JsonObject] = deque(maxlen=_MAX_CONSOLE)
         self.requests_dropped = 0
         self.console_dropped = 0
@@ -469,10 +495,15 @@ class WebBackend:
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            wall_time = params.get("wallTime")
             with handle.lock:
-                handle.requests[str(params.get("requestId"))] = entry
+                request_id = str(params.get("requestId"))
+                handle.requests[request_id] = entry
+                if isinstance(wall_time, (int, float)) and not isinstance(wall_time, bool):
+                    handle.request_times[request_id] = float(wall_time)
                 while len(handle.requests) > _MAX_REQUESTS:
-                    handle.requests.popitem(last=False)
+                    old_id, _ = handle.requests.popitem(last=False)
+                    handle.request_times.pop(old_id, None)
                     handle.requests_dropped += 1
 
         def on_response(params: JsonObject) -> None:
@@ -794,6 +825,9 @@ class WebBackend:
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
         with handle.lock:
+            # getattr keeps har_export working against partial test doubles that
+            # predate request_times; a live session always has it.
+            times = getattr(handle, "request_times", {})
             entries = [
                 har_entry(
                     method=e.get("method"),
@@ -801,8 +835,9 @@ class WebBackend:
                     status=e.get("status"),
                     mime_type=e.get("mimeType") or "",
                     resource_type=e.get("resourceType"),
+                    started_date_time=_iso_from_wall_time(times.get(request_id)),
                 )
-                for e in handle.requests.values()
+                for request_id, e in handle.requests.items()
             ]
         serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
         if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
