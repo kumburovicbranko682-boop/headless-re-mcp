@@ -344,7 +344,14 @@ def register_agent_routes(
             if approved and remember in {"tool", "effect"}:
                 policy = _remember_approval(run_id, tool_call_id, str(remember)).describe()
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="tool_call_not_found") from exc
+            # decide() raises KeyError(run_id) for a run that does not exist and
+            # decide_tool_call raises KeyError(tool_call_id) for a missing call;
+            # keyed on which id came back so a nonexistent run is 404
+            # run_not_found (matching the cancel endpoint) instead of being
+            # mislabeled as a missing tool call.
+            missing_run = bool(exc.args) and exc.args[0] == run_id
+            detail = "run_not_found" if missing_run else "tool_call_not_found"
+            raise HTTPException(status_code=404, detail=detail) from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         payload: dict[str, object] = {"ok": True, "tool_call": decision}
