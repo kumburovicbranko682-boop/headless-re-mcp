@@ -152,6 +152,46 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-adb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package with adbutils
+        # adbutils bundles its own adb binary and auto-spawns the daemon, so the
+        # gate needs no system adb and no device -- just the Python module.
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]" "adbutils>=2.12"
+
+      - name: adb server gate runs for real (skip != pass)
+        run: |
+          python -c "import adbutils; print('adbutils', adbutils.__version__, adbutils.adb_path())"
+          python -m pytest tests/integration/test_adb_server_live_gate.py \
+            -rs --tb=short --junitxml=adb-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("adb-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # adbutils was just installed, so a skip here means the gate could not
+          # reach the bundled adb server -- the false-green "skip != pass" warns
+          # about. This is the only test that ever exchanges a command with a real
+          # adb daemon.
+          if not cases:
+              sys.exit("no adb gate was collected")
+          if skipped:
+              sys.exit(f"adb gate skipped despite an installed adbutils: {skipped}")
+          print(f"adb gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

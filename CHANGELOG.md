@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+adb 线首次有了真实执行覆盖（无需真机）。adb 后端经 adbutils 走 TCP 5037 与真实 adb 服务器
+通信，而 adbutils 自带 adb 二进制并会自动拉起守护进程；此前所有 adb 测试只断言缺 adbutils
+时优雅降级，从没真正起过服务器、也没和它交换过一条命令，adbutils↔服务器这段协议路径零覆盖。
+新增 `tests/integration/test_adb_server_live_gate.py`：真跑无需接手机也有意义的两个操作——枚举
+设备（守护进程拉起、应答，后端返回结构良好的空分页）与连接一个已关闭端口（服务器处理请求，后端把
+拒绝干净地映射成 `connected: False` 而非崩溃/挂起）。shell、install、logcat、pull 等设备级操作
+确实需要真机或模拟器，不在本 gate 范围。新增 `linux-adb` CI job：装 adbutils、跑该 gate 并解析
+junitxml，adbutils 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
