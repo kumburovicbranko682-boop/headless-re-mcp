@@ -42,6 +42,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   是可读 DN。CI 新增 `linux-apk-certificates` job 装 androguard 跑该 gate，skip≠pass 守卫在 androguard 已装却仍
   skip 时判失败。
 
+### 修复（apk.certificates 的 serial 以十六进制渲染，对得上 keytool/apksigner/openssl）
+
+- asn1crypto 把证书序列号存成 Python `int`，后端过去直接 `str()` 输出十进制（如
+  `3531785565013764108`）。可 keytool（`Serial number: 31036c42…`）、apksigner、openssl 全都以
+  **十六进制**打印序列号——逆向的人拿这串十进制去对任何签名工具的输出都对不上，还得自己换算。
+  现抽出 `_hex_serial`：`int` 走 `format(value, "x")` 得 `31036c42597f680c` 这类十六进制；非 int
+  形状（旧版/其他证书对象）原样回退 `str()`，`None` 回空，`bool`（int 子类但绝不是序列号）不误转。
+  `apk.certificates` 文档串说明 serial 是十六进制。单测新增 `_hex_serial` 的 int→hex、字符串回退、
+  None 与 bool 断言，以及一条走 `certificates()` 断言 serial 落成 `3039`（12345）而非 `"12345"`；
+  live gate 把夹具 APK 的 serial 从「非空」收紧为钉死 `31036c42597f680c`——正是 keytool 对该夹具
+  打印的值，十进制一回归 gate 即红。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

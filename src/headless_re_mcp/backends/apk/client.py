@@ -78,6 +78,25 @@ def _readable_name(value: Any) -> str:
     return str(value)
 
 
+def _hex_serial(value: Any) -> str:
+    """Render an X.509 serial number in hex, the way signer tools print it.
+
+    asn1crypto exposes the serial as a Python ``int``; emitting ``str(int)``
+    yields a decimal like ``3531785565013764108`` that never matches what
+    keytool (``Serial number: 31036c42...``), apksigner or openssl print --
+    they all show hexadecimal. Render hex so the value lines up with those
+    tools; non-int shapes (older or other certificate objects) fall back to
+    ``str`` unchanged, and ``None`` becomes an empty string.
+    """
+    if isinstance(value, bool):  # bool is an int subclass but never a serial
+        return str(value)
+    if isinstance(value, int):
+        return format(value, "x")
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -294,7 +313,7 @@ class ApkClient:
                     {
                         "subject": _readable_name(getattr(cert, "subject", "")),
                         "issuer": _readable_name(getattr(cert, "issuer", "")),
-                        "serial": str(getattr(cert, "serial_number", "")),
+                        "serial": _hex_serial(getattr(cert, "serial_number", "")),
                         "sha256": cert.sha256_fingerprint
                         if hasattr(cert, "sha256_fingerprint")
                         else "",

@@ -21,8 +21,11 @@ taking a binary-AXML sample APK and signing it with::
 
 so the signer's distinguished name is known. The gate parses it through real
 androguard and pins that the recorded subject/issuer contain that DN in
-human-readable form and never the asn1crypto repr. It depends only on
-androguard -- no Android SDK, no signing tools at test time.
+human-readable form and never the asn1crypto repr, and that the serial comes
+back in hexadecimal (``31036c42597f680c``) -- the spelling keytool, apksigner
+and openssl print -- not the decimal of asn1crypto's raw int
+(``3531785565013764108``), which no signer tool would ever match. It depends
+only on androguard -- no Android SDK, no signing tools at test time.
 
 Skip != pass: the gate skips with a reason when androguard is absent and runs
 for real when present. CI installs it, so a skip there is a real regression.
@@ -81,6 +84,8 @@ def test_certificate_subject_and_issuer_are_human_readable() -> None:
     assert "asn1crypto" not in issuer
     assert not subject.startswith("<")
 
-    # The other fields stayed populated: a real serial and a real fingerprint.
-    assert cert["serial"]
+    # The committed fixture's serial, in the hex spelling keytool/apksigner/
+    # openssl print -- never the decimal 3531785565013764108 the raw int gives.
+    assert cert["serial"] == "31036c42597f680c"
+    # The fingerprint stayed populated.
     assert cert["sha256"]

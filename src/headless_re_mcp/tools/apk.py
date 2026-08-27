@@ -59,7 +59,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         signature_files, v1_signed, and has_more so a list that filled the
         cap is not read as every signer. subject and issuer are human-readable
         distinguished names (e.g. "Common Name: Acme, Organization: Co"), not
-        the raw asn1crypto object repr. There is no certs or signatures field.
+        the raw asn1crypto object repr. serial is hexadecimal, matching what
+        keytool, apksigner and openssl print, not the decimal of the raw int.
+        There is no certs or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 

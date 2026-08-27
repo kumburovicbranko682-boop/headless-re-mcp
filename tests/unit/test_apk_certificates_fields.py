@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.backends.apk.client import ApkClient, _readable_name
+from headless_re_mcp.backends.apk.client import ApkClient, _hex_serial, _readable_name
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -129,6 +129,32 @@ def test_certificates_render_subject_and_issuer_as_readable_dns() -> None:
     assert cert["issuer"] == "Common Name: Example CA, Country: US"
     assert "asn1crypto" not in cert["subject"]
     assert "asn1crypto" not in cert["issuer"]
+
+
+def test_hex_serial_renders_ints_as_hex_like_keytool() -> None:
+    """The serial must match what keytool/apksigner/openssl print: hex, not decimal.
+
+    asn1crypto stores the serial as an int; ``str(int)`` gave a decimal that
+    never lines up with any signer tool's output. 12345 must read ``3039``.
+    """
+    assert _hex_serial(12345) == "3039"
+    assert _hex_serial(3531785565013764108) == "31036c42597f680c"
+    # Non-int shapes (older/other certificate objects) pass through unchanged.
+    assert _hex_serial("already-a-string") == "already-a-string"
+    assert _hex_serial(None) == ""
+    # bool is an int subclass but never a serial; it must not become "1"/"0".
+    assert _hex_serial(True) == "True"
+
+
+def test_certificates_render_serial_in_hex() -> None:
+    """apk.certificates emits the serial in hex and the docstring says so."""
+    client = ApkClient()
+    client._apk = lambda _path: _FriendlyApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    cert = payload["certificates"][0]
+    assert cert["serial"] == "3039"  # 12345 decimal -> hex, never "12345"
+    doc = _tool_docstring("apk.certificates")
+    assert "hexadecimal" in doc
 
 
 def test_readable_name_on_a_real_asn1crypto_name() -> None:
