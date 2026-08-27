@@ -108,7 +108,10 @@ omit = [
 [tool.coverage.report]
 # Set just below the measured value so it ratchets. Raise it when real coverage
 # rises; never lower it to turn a red build green.
-fail_under = 64
+# Ratchet: raise when measured coverage rises, never lower to go green.
+# Floors measured on the 2026-08-27 green run: linux-quality 72.23%,
+# windows quality 73.21%; 71 leaves headroom for environment-driven skips.
+fail_under = 71
 show_missing = false
 skip_covered = true
 exclude_also = [
