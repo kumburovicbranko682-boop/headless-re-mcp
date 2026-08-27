@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,6 +17,15 @@ _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
+# Longest an address token can be. A hex offset, a 0x prefix, or a
+# ``space:offset`` form is never close to this; the cap is only here to keep a
+# blob from riding into the argv.
+_MAX_ADDRESS_CHARS = 128
+# Every address string analyzeHeadless can act on -- bare hex, an 0x prefix, a
+# segmented ``1234:5678``, or a named ``ram:0x401000`` overlay -- is drawn from
+# this set. Whitespace, control bytes and quotes are not, and are exactly what a
+# junk address carries.
+_ADDRESS_RE = re.compile(r"^[A-Za-z0-9_.:]+$")
 
 
 def _project_lock(project_dir: Path) -> Any:
@@ -29,6 +39,30 @@ class GhidraError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _normalize_address(address: str | int | None) -> str:
+    """A usable Ghidra address token, or reject before a headless run starts.
+
+    ``analyzeHeadless`` imports and analyses the whole binary -- minutes, and a
+    2 GB JVM -- before ``ExportJson.py`` ever reads this argument, so an empty or
+    malformed address otherwise pays for that entire pass only to hand the script
+    a value ``getAddressFactory().getAddress`` returns null for, and comes back
+    with nothing. On an unattended service a fat-fingered address is then a wedged
+    core, not an error. Checking the token here fails it in microseconds instead.
+    """
+    if address is None:
+        raise GhidraError("invalid_params", "address is required")
+    text = (hex(address) if isinstance(address, int) else str(address)).strip()
+    if not text:
+        raise GhidraError("invalid_params", "address is required")
+    if len(text) > _MAX_ADDRESS_CHARS or _ADDRESS_RE.match(text) is None:
+        raise GhidraError(
+            "invalid_params",
+            "address is not a valid Ghidra address token",
+            address=text[:_MAX_ADDRESS_CHARS],
+        )
+    return text
 
 
 class GhidraClient:
@@ -195,9 +229,12 @@ class GhidraClient:
             raise GhidraError("backend_error", "ExportJson.py missing from package")
         project_dir.mkdir(parents=True, exist_ok=True)
         out_path = project_dir / f"export_{mode}.json"
+        # Reject a junk address before the import, not after: the file is removed
+        # up front so a stale export from a prior run cannot be read as this one's
+        # result, and _run_headless below is the minutes-long part.
+        addr = _normalize_address(address) if mode in {"xrefs", "decompile"} else ""
         if out_path.exists():
             out_path.unlink()
-        addr = "" if address is None else (hex(address) if isinstance(address, int) else str(address))
         capped = max(1, min(int(limit), 1024))
         extra = [
             "-scriptPath",
