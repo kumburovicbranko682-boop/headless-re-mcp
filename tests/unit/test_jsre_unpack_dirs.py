@@ -113,6 +113,37 @@ def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
     assert set(page["files"]) & set(tail["files"]) == set()
 
 
+def test_unpack_forces_overwrite_so_the_precreated_dir_is_not_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """webcrack 2.x refuses an existing output dir; the backend always makes one.
+
+    unpack_bundle mkdir()s out_dir (and the artifact layer may too), so without
+    ``-f`` webcrack exits 1 with "output directory already exists" and the whole
+    tool is dead against modern webcrack -- observed live on webcrack 2.16.0.
+    Pin that the force flag reaches the argv.
+    """
+    from headless_re_mcp.backends.jsre import client as jsre_client
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
+        del timeout
+        seen["cmd"] = list(cmd)
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        (out_dir / "mod.js").write_text("x", encoding="utf-8")
+        return "", "", 0
+
+    monkeypatch.setattr(jsre_client, "_run", fake_run)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    client = JsClient(executable=Path("/bin/true"))
+    client.unpack_bundle(bundle, tmp_path / "out")
+
+    assert "-f" in seen["cmd"] or "--force" in seen["cmd"]
+
+
 @pytest.mark.parametrize(
     ("files_written", "listing_truncated"),
     [(5, False), (6, True)],

@@ -84,6 +84,34 @@ def test_js_deobfuscate_when_webcrack_present() -> None:
 
 
 @pytest.mark.integration
+def test_js_unpack_bundle_when_webcrack_present(tmp_path: Path) -> None:
+    """The output-dir path: webcrack refuses a pre-existing dir without ``-f``.
+
+    Skipped without webcrack, but when present this must actually unpack rather
+    than fail with "output directory already exists" -- the bug that a
+    deobfuscate-only smoke test never reached.
+    """
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    bundle = tmp_path / "bundle.js"
+    bundle.write_text(
+        '(()=>{var m={"./a.js":(module)=>{module.exports=42;},'
+        '"./b.js":(module,exports,require)=>{exports.val=require("./a.js");}};'
+        "var c={};function r(id){if(c[id])return c[id].exports;"
+        "var module=c[id]={exports:{}};m[id](module,module.exports,r);return module.exports;}"
+        'r("./b.js");})();\n',
+        encoding="utf-8",
+    )
+    service = AnalysisService()
+    try:
+        result = service.js_unpack_bundle(str(bundle))
+        assert result.ok, result.error
+        assert result.data["file_count"] >= 1
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_wat_when_wabt_present(tmp_path: Path) -> None:
     if not WasmClient().available:
         pytest.skip("wabt (wasm2wat) not installed — WASM Gate not run (skip != pass)")
