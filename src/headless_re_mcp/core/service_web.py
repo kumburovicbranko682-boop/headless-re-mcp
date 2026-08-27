@@ -148,6 +148,16 @@ class WebAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def web_ws_list(self, session_id: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
+        return self._web_wrap(session_id, "ws_list", session_id, offset=offset, limit=limit)
+
+    def web_ws_frames(
+        self, session_id: str, ws_id: str, offset: int = 0, limit: int = 100
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id, "ws_frames", session_id, ws_id, offset=offset, limit=limit
+        )
+
     def web_console(self, session_id: str, limit: int = 200) -> Result[JsonObject]:
         return self._web_wrap(session_id, "console", session_id, limit=limit)
 

@@ -46,6 +46,13 @@ _MAX_METADATA_BYTES = 1024
 _MAX_HAR_HEADERS = 100
 _MAX_HAR_HEADER_VALUE = 4 * 1024
 _MAX_HAR_POST_DATA = 16 * 1024
+# WebSocket capture: bound how many connections are tracked, how many frames
+# each keeps, and how much of a frame's payload is held resident. A chatty
+# socket (heartbeats, streaming) would otherwise grow these without limit, the
+# same reasoning as the request/console/script rings.
+_MAX_WEBSOCKETS = 256
+_MAX_WS_FRAMES = 1000
+_MAX_WS_PAYLOAD = 8 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -72,6 +79,27 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
 def _without_har(entry: JsonObject) -> JsonObject:
     """A shallow copy of a request entry with the internal ``_har`` key removed."""
     return {key: value for key, value in entry.items() if key != "_har"}
+
+
+# RFC 6455 opcodes, surfaced as a readable name next to the raw number so a
+# caller does not have to memorise the numbering.
+_WS_OPCODES = {
+    0x0: "continuation",
+    0x1: "text",
+    0x2: "binary",
+    0x8: "close",
+    0x9: "ping",
+    0xA: "pong",
+}
+
+
+def _ws_summary(entry: JsonObject) -> JsonObject:
+    """A WebSocket connection row without its internal frame ring (``_frames``).
+
+    ``_frames`` is a deque -- not JSON-serialisable and potentially large -- so
+    the list view projects it out and callers page the frames with ws.frames.
+    """
+    return {key: value for key, value in entry.items() if key != "_frames"}
 
 
 def _bounded_header_map(headers: Any) -> dict[str, str]:
@@ -528,6 +556,11 @@ class _WebSession:
         # this dictionary for as long as the session is open.
         self.scripts: OrderedDict[str, JsonObject] = OrderedDict()
         self.scripts_dropped = 0
+        # WebSocket connections seen on this page. Each entry carries a bounded
+        # deque of recent frames under ``_frames``; the same bounding reasoning
+        # as requests/scripts applies, since a long-lived socket streams forever.
+        self.websockets: OrderedDict[str, JsonObject] = OrderedDict()
+        self.websockets_dropped = 0
         self.lock = threading.RLock()
         # Set right after construction: the runner is what built these objects,
         # and it is the only thread allowed to touch them again.
@@ -812,11 +845,96 @@ class WebBackend:
                     handle.console_dropped += 1
                 handle.console.append(entry)
 
+        def on_ws_created(params: JsonObject) -> None:
+            url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
+            entry: JsonObject = {
+                "wsId": params.get("requestId"),
+                "url": url,
+                "status": None,
+                "closed": False,
+                "frames_sent": 0,
+                "frames_received": 0,
+                "frames_dropped": 0,
+                # Internal, projected out of the list view by _ws_summary.
+                "_frames": deque(maxlen=_MAX_WS_FRAMES),
+            }
+            if url_truncated:
+                entry["metadata_truncated"] = True
+            with handle.lock:
+                handle.websockets[str(params.get("requestId"))] = entry
+                while len(handle.websockets) > _MAX_WEBSOCKETS:
+                    handle.websockets.popitem(last=False)
+                    handle.websockets_dropped += 1
+
+        def on_ws_handshake(params: JsonObject) -> None:
+            resp = params.get("response") or {}
+            with handle.lock:
+                entry = handle.websockets.get(str(params.get("requestId")))
+                if entry is not None:
+                    entry["status"] = resp.get("status")
+
+        def _record_frame(params: JsonObject, direction: str) -> None:
+            # Sent and received frames arrive under the same ``response`` shape
+            # (a WebSocketFrame: opcode, mask, payloadData). For a text frame
+            # payloadData is the text; for a binary frame CDP base64-encodes it.
+            frame = params.get("response") or {}
+            raw = frame.get("payloadData")
+            raw = raw if isinstance(raw, str) else ("" if raw is None else str(raw))
+            payload, truncated = _bounded_metadata(raw, _MAX_WS_PAYLOAD)
+            opcode = frame.get("opcode")
+            record: JsonObject = {
+                "direction": direction,
+                "opcode": opcode,
+                "type": _WS_OPCODES.get(opcode, "other"),
+                "payload": payload,
+                "payload_len": len(raw.encode("utf-8", errors="replace")),
+                "ts": params.get("timestamp"),
+            }
+            if truncated:
+                record["payload_truncated"] = True
+            with handle.lock:
+                entry = handle.websockets.get(str(params.get("requestId")))
+                if entry is None:
+                    return
+                frames = entry["_frames"]
+                if frames.maxlen is not None and len(frames) == frames.maxlen:
+                    entry["frames_dropped"] += 1
+                frames.append(record)
+                if direction == "sent":
+                    entry["frames_sent"] += 1
+                else:
+                    entry["frames_received"] += 1
+
+        def on_ws_frame_sent(params: JsonObject) -> None:
+            _record_frame(params, "sent")
+
+        def on_ws_frame_received(params: JsonObject) -> None:
+            _record_frame(params, "received")
+
+        def on_ws_frame_error(params: JsonObject) -> None:
+            message, _ = _bounded_metadata(params.get("errorMessage"), _MAX_METADATA_BYTES)
+            with handle.lock:
+                entry = handle.websockets.get(str(params.get("requestId")))
+                if entry is not None:
+                    entry["error"] = message
+
+        def on_ws_closed(params: JsonObject) -> None:
+            with handle.lock:
+                entry = handle.websockets.get(str(params.get("requestId")))
+                if entry is not None:
+                    entry["closed"] = True
+
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.requestWillBeSentExtraInfo", on_request_extra_info)
         cdp.on("Network.responseReceived", on_response)
         cdp.on("Network.responseReceivedExtraInfo", on_response_extra_info)
         cdp.on("Network.loadingFinished", on_loading_finished)
+        cdp.on("Network.webSocketCreated", on_ws_created)
+        cdp.on("Network.webSocketHandshakeResponseReceived", on_ws_handshake)
+        cdp.on("Network.webSocketFrameSent", on_ws_frame_sent)
+        cdp.on("Network.webSocketFrameReceived", on_ws_frame_received)
+        cdp.on("Network.webSocketFrameError", on_ws_frame_error)
+        cdp.on("Network.webSocketClosed", on_ws_closed)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,
@@ -927,6 +1045,48 @@ class WebBackend:
             result["body_path"] = str(spill)
         result["base64_encoded"] = base64_encoded
         return result
+
+    def ws_list(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        handle = self._get(session_id)
+        with handle.lock:
+            items = [_ws_summary(entry) for entry in handle.websockets.values()]
+            dropped = handle.websockets_dropped
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = items[start : start + cap]
+        return {
+            "websockets": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": start,
+            "has_more": start + len(window) < len(items),
+            "dropped": dropped,
+        }
+
+    def ws_frames(
+        self, session_id: str, ws_id: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
+        handle = self._get(session_id)
+        with handle.lock:
+            entry = handle.websockets.get(ws_id)
+            if entry is None:
+                raise WebError("not_found", "unknown websocket id", ws_id=ws_id)
+            frames = list(entry["_frames"])
+            frames_dropped = int(entry.get("frames_dropped", 0))
+            url = entry.get("url")
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = frames[start : start + cap]
+        return {
+            "wsId": ws_id,
+            "url": url,
+            "frames": window,
+            "count": len(window),
+            "total": len(frames),
+            "offset": start,
+            "has_more": start + len(window) < len(frames),
+            "dropped": frames_dropped,
+        }
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
         handle = self._get(session_id)

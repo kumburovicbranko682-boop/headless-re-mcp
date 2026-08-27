@@ -88,6 +88,41 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
+    @tools.tool(name="web.ws.list")
+    def web_ws_list(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List captured WebSocket connections.
+
+        Answers with websockets (wsId, url, status, closed, frames_sent,
+        frames_received, frames_dropped), count, total, offset, has_more and
+        dropped so a page that filled the limit is not read as the whole
+        capture, and ring eviction is visible. The frames themselves are not
+        inlined here; page them with web.ws.frames using a wsId. There is no
+        frames or connections field.
+        """
+        return _dump(analysis.web_ws_list(session_id, offset=offset, limit=limit))
+
+    @tools.tool(name="web.ws.frames")
+    def web_ws_frames(
+        session_id: str,
+        ws_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Page one WebSocket connection's frames, oldest first.
+
+        Answers with wsId, url, frames (direction, opcode, type, payload,
+        payload_len, ts), count, total, offset, has_more and dropped. direction
+        is sent or received; type names the RFC 6455 opcode (text, binary,
+        ping, pong, close). A binary frame's payload is base64; a payload over
+        the per-frame cap is cut and marked payload_truncated. There is no body
+        or messages field.
+        """
+        return _dump(analysis.web_ws_frames(session_id, ws_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.console")
     def web_console(
         session_id: str, limit: Annotated[int, Field(ge=1, le=2000)] = 200

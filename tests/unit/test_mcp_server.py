@@ -304,6 +304,8 @@ async def test_minimal_mcp_tool_surface() -> None:
         "web.close",
         "web.network.list",
         "web.network.get",
+        "web.ws.list",
+        "web.ws.frames",
         "web.console",
         "web.scripts",
         "web.script.source",
