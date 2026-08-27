@@ -399,6 +399,10 @@ class InMemoryAnalysisRepository:
         self._backends: dict[tuple[str, str], JsonObject] = {}
         self._artifacts: dict[str, JsonObject] = {}
         self._timeline: dict[str, list[JsonObject]] = {}
+        # Entries the per-session cap has dropped, so list_timeline can report
+        # loss the way the file-backed store's dropped sidecar does rather than
+        # passing the survivors off as the whole history.
+        self._timeline_dropped: dict[str, int] = {}
         self._audit: list[JsonObject] = []
         self._knowledge: dict[tuple[str, str, str], JsonObject] = {}
 
@@ -574,7 +578,11 @@ class InMemoryAnalysisRepository:
             # timeline's own line cap.
             keep = max(1, int(self.retained_timeline_per_session))
             if len(entries) > keep:
-                del entries[: len(entries) - keep]
+                dropped = len(entries) - keep
+                del entries[:dropped]
+                self._timeline_dropped[session_id] = (
+                    self._timeline_dropped.get(session_id, 0) + dropped
+                )
 
     def register_artifact(self, **fields: Any) -> JsonObject:
         path = Path(fields["path"])
@@ -701,6 +709,7 @@ class InMemoryAnalysisRepository:
             "offset": offset,
             "limit": limit,
             "has_more": offset + len(page) < total,
+            "dropped_total": self._timeline_dropped.get(session_id, 0),
         }
 
     def list_unclean_sessions(
