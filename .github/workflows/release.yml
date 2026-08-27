@@ -20,6 +20,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Tag matches package version
+        # build_msi.ps1 already refuses a pyproject/Product.wxs mismatch, but
+        # nothing ties either to the tag being released: a v* tag on the wrong
+        # commit -- or pushed before the version-bump commit -- would publish an
+        # MSI that advertises the previous version under the new release name,
+        # and its MajorUpgrade would not supersede that prior install. Check
+        # before the expensive build; pyproject is the anchor because the
+        # build script enforces Product.wxs equality against it.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $projectVersion = ([regex]::Match((Get-Content -LiteralPath "pyproject.toml" -Raw), '(?m)^version\s*=\s*"([^"]+)"')).Groups[1].Value
+          if (-not $projectVersion) { throw "could not read version from pyproject.toml" }
+          if ($tagVersion -ne $projectVersion) {
+            throw "tag $env:GITHUB_REF_NAME does not match pyproject.toml version $projectVersion -- tag the release commit, or land the version bump first"
+          }
+          Write-Host "tag $env:GITHUB_REF_NAME matches pyproject.toml version $projectVersion"
+
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
