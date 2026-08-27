@@ -18,6 +18,8 @@ CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服�
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
+纯 Python 的 .NET 托管元数据/IL 读取面（`dotnet.inspect` / `dotnet.enumerate` / `dotnet.il` / `dotnet.xrefs`）新增独立端到端 Gate（`tests/integration/test_dotnet_managed_read_gate.py`）。此前该读取面只随 de4dot 的 M6 Gate 顺带跑，缺 de4dot 构建时整组 skip，ECMA-335 表遍历、#Strings 解析、IL 方法体读取与 MemberRef 列举没有独立守护。现提交一枚用 .NET 8 SDK 从 `managed_gate_fixture.cs` 编出的托管程序集 `managed_gate.dll`（C# 源码一并入库），六条用例校验 CLR 头与元数据流、TypeDef/MethodDef/Field/#Strings 表、一段带 call token 的 MethodDef IL、指向 `System.Console::WriteLine` 与 `String::Concat` 的 MemberRef xref，以及 `invalid_argument`/`not_found`/`invalid_params` 参数守护和原生 PE 的 `not_dotnet` 分支。读取端无运行时依赖，测试期不需要任何工具链，故此 Gate 恒跑不 skip。
+
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
 
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。
