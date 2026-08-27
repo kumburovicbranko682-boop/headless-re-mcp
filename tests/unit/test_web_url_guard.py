@@ -15,7 +15,12 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.web.client import WebBackend, WebError, _require_http_url
+from headless_re_mcp.backends.web.client import (
+    _MAX_URL_BYTES,
+    WebBackend,
+    WebError,
+    _require_http_url,
+)
 
 
 @pytest.mark.parametrize(
@@ -58,6 +63,48 @@ def test_the_url_guard_rejects_everything_that_is_not_http(hostile: str) -> None
 )
 def test_the_url_guard_accepts_real_web_targets(web: str) -> None:
     assert _require_http_url(web) == web.strip()
+
+
+def test_the_url_guard_rejects_an_over_long_url_before_it_reaches_the_browser() -> None:
+    """A valid-scheme but megabyte-long URL is refused, not pushed to goto.
+
+    The selector and type-text guards hard-cap their caller input; the URL guard
+    only ever used _MAX_URL_BYTES to trim the value in error metadata, so a
+    well-formed http(s) URL of any length was returned verbatim and handed to
+    page.goto -- an unbounded push across the CDP channel, and echoed into the
+    timeline at full length. The cap now runs on the accept path too: a URL over
+    16 KiB fails closed as invalid_params (carrying the measured size and a
+    trimmed echo), while one right at the cap still passes.
+    """
+    # Multi-byte characters prove the cap counts encoded bytes, not code points.
+    over = "https://example.com/" + "é" * _MAX_URL_BYTES
+    with pytest.raises(WebError) as excinfo:
+        _require_http_url(over)
+    assert excinfo.value.code == "invalid_params"
+    assert excinfo.value.details["cap"] == _MAX_URL_BYTES
+    assert excinfo.value.details["bytes"] > _MAX_URL_BYTES
+    # The echoed url in the error is itself bounded, never the raw megabyte input.
+    assert len(str(excinfo.value.details["url"]).encode("utf-8")) <= _MAX_URL_BYTES
+
+    # A URL whose encoded length sits exactly at the cap is still accepted, so the
+    # bound refuses only what is genuinely over it.
+    prefix = "https://example.com/"
+    at_cap = prefix + "a" * (_MAX_URL_BYTES - len(prefix.encode("utf-8")))
+    assert len(at_cap.encode("utf-8")) == _MAX_URL_BYTES
+    assert _require_http_url(at_cap) == at_cap
+
+
+def test_web_navigate_rejects_an_over_long_url_before_touching_the_session() -> None:
+    """The length cap, like the scheme check, lands before the session lookup."""
+    backend = WebBackend()
+
+    def poisoned(_session_id: str) -> Any:
+        raise AssertionError("an over-long URL must not reach the session")
+
+    backend._get = poisoned  # type: ignore[method-assign]
+    with pytest.raises(WebError) as excinfo:
+        backend.navigate("s", "https://example.com/" + "a" * _MAX_URL_BYTES)
+    assert excinfo.value.code == "invalid_params"
 
 
 def test_web_navigate_refuses_a_file_url_before_touching_the_session() -> None:

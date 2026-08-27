@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（web.open / web.navigate 在把 URL 交给 page.goto 之前先按 _MAX_URL_BYTES 收敛长度）
+
+- web 后端的 `_require_selector`（2 KiB）、`_require_type_text`（64 KiB）都对调用方输入做了硬上限,但
+  `_require_http_url` 只用 `_MAX_URL_BYTES`(16 KiB)去截断*错误信息里*回显的 URL,从不在接受路径上拒绝超长 URL。
+  于是一个合法 scheme 但长达数 MB 的 `http(s)` URL 会被原样返回并交给 `page.goto`——一次跨 CDP 通道的无界推送,
+  还会以全长写进 timeline。
+- 现让 `_require_http_url` 在确认 http(s) 之后再按字节长度收敛:超过 16 KiB 的 URL 以 `invalid_params` fail-closed
+  (带上实测字节数与被截断的回显),与 selector / type-text 的处理一致;恰好等于上限的 URL 仍然通过。校验仍在
+  会话查找、浏览器启动、乃至 Playwright 导入之前,故超长 URL 一个字节都到不了浏览器线程。
+- `tests/unit/test_web_url_guard.py` 新增两例:超长(多字节字符)URL 在 `_require_http_url` 即被拒且回显本身有界、
+  恰好卡上限的 URL 通过;`web.navigate` 的超长 URL 在会话查找之前即以 `invalid_params` 拒掉(毒化的 `_get` 从不触发)。
+
 ### 加固（apk.methods / apk.xrefs 在整包 DEX 分析之前先校验类名/方法名，避免白付一次全量分析）
 
 - androguard 的 `methods` / `xrefs` 过去先 `_parsed`(即 `AnalyzeAPK`——解析整包、缓存未命中时可达数十到数百 MB、

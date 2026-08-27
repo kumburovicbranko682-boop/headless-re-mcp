@@ -83,12 +83,27 @@ def _require_http_url(url: str) -> str:
     scheme fails closed before a browser launches. The stripped string is
     what gets navigated, so a control-character prefix cannot smuggle a
     scheme past the check.
+
+    The accepted URL is also length-bounded, matching ``_require_selector`` and
+    ``_require_type_text``: an over-long address is otherwise handed straight to
+    ``page.goto`` (an unbounded push across the CDP channel) and echoed into the
+    timeline at whatever length the caller sent. 16 KiB is far above any real
+    web address while turning a megabyte-long string into a clean refusal.
     """
     text = (url or "").strip()
     if not is_http_url(text):
         raise WebError(
             "invalid_params",
             "web navigation is limited to http(s) URLs",
+            url=_bounded_metadata(text, _MAX_URL_BYTES)[0],
+        )
+    encoded = len(text.encode("utf-8"))
+    if encoded > _MAX_URL_BYTES:
+        raise WebError(
+            "invalid_params",
+            "url exceeds the length cap",
+            bytes=encoded,
+            cap=_MAX_URL_BYTES,
             url=_bounded_metadata(text, _MAX_URL_BYTES)[0],
         )
     return text
