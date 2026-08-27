@@ -37,6 +37,22 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _page(offset: int, limit: int, cap: int) -> tuple[int, int]:
+    """Clamp a caller's page window to a non-negative start and a sane count.
+
+    The Agent transport invokes tool handlers with the model's arguments
+    directly, without the pydantic ``Field`` bounds that the MCP transport
+    enforces from the same schema. A negative offset then becomes a Python
+    tail slice (``names[-1:...]``) and a zero or negative limit an empty or
+    inverted window -- either reported back with a nonsensical offset and
+    has_more. ``cap`` is the collected-row ceiling, so clamping the limit to it
+    is a no-op for every in-range page and only trims an out-of-range one.
+    """
+    start = max(0, int(offset))
+    count = max(1, min(int(limit), cap))
+    return start, count
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -293,6 +309,14 @@ class ApkClient:
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
+        # The schema pins offset>=0 and 1<=limit<=1000, but the Agent transport
+        # calls this handler with the model's raw arguments and never runs that
+        # validation, so a model paging backwards reaches names[-1:...] -- a
+        # tail slice reported as offset -1 with has_more true, or an empty page
+        # the paging loop reads as "no classes". Clamp here, where every
+        # transport arrives, as unpack_bundle and xrefs already do; a no-op for
+        # any in-range page.
+        start, count = _page(offset, limit, _MAX_CLASSES_COLLECT)
         names: list[str] = []
         scan_more = False
         for klass in parsed.analysis.get_classes():
@@ -303,13 +327,13 @@ class ApkClient:
                 break
             names.append(klass.name)
         names.sort()
-        window = names[offset : offset + limit]
+        window = names[start : start + count]
         return {
             "classes": window,
             "count": len(window),
             "total": len(names),
-            "offset": offset,
-            "has_more": offset + len(window) < len(names),
+            "offset": start,
+            "has_more": start + len(window) < len(names),
             "scan_capped": scan_more,
         }
 
@@ -332,6 +356,9 @@ class ApkClient:
         ]
         if not found:
             raise ApkError("not_found", "class not found", class_name=class_name)
+        # Clamp for the same reason as classes(): the Agent transport skips the
+        # schema's offset>=0 / limit bounds.
+        start, count = _page(offset, limit, _MAX_METHODS_COLLECT)
         methods: list[JsonObject] = []
         scan_more = False
         for klass in found:
@@ -348,19 +375,22 @@ class ApkClient:
                 )
             if scan_more:
                 break
-        window = methods[offset : offset + limit]
+        window = methods[start : start + count]
         return {
             "class_name": found[0].name,
             "methods": window,
             "count": len(window),
             "total": len(methods),
-            "offset": offset,
-            "has_more": offset + len(window) < len(methods),
+            "offset": start,
+            "has_more": start + len(window) < len(methods),
             "scan_capped": scan_more,
         }
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
         parsed = self._parsed(path)
+        # Clamp for the same reason as classes(): the Agent transport skips the
+        # schema's offset>=0 / limit bounds.
+        start, count = _page(offset, limit, _MAX_STRINGS_COLLECT)
         seen: set[str] = set()
         scan_more = False
         for item in parsed.analysis.get_strings():
@@ -369,13 +399,13 @@ class ApkClient:
                 break
             seen.add(str(item.get_value())[:_MAX_STRING_LEN])
         values = sorted(seen)
-        window = values[offset : offset + limit]
+        window = values[start : start + count]
         return {
             "strings": window,
             "count": len(window),
             "total": len(values),
-            "offset": offset,
-            "has_more": offset + len(window) < len(values),
+            "offset": start,
+            "has_more": start + len(window) < len(values),
             "scan_capped": scan_more,
         }
 

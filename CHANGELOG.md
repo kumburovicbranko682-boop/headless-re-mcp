@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（apk 列表分页在 agent 传输上不受 schema 边界保护）
+
+- **`apk.classes` / `apk.methods` / `apk.strings` 的负 offset 只在 MCP schema 上被拦,agent 路径
+  直穿到 Python 尾部切片**。这三个工具的 schema 用 `Field(ge=0)` 钉住 offset≥0、limit 有界,但
+  agent 传输的 `catalog.invoke` 直接 `handler(**arguments)` 调用,从不跑那套 pydantic 校验(它只用于
+  **生成** schema)。而这些工具的主要消费者恰是自主 agent:模型往回翻页发出 `offset=-1` 时,
+  `names[-1:-1+limit]` 变成尾部切片——25 条里 `values[-1:9]` 直接是空页,却带着 `offset:-1`、
+  `has_more:true` 返回,翻页循环据此读成「没有类/字符串」或原地打转。同域的 `unpack_bundle`、
+  `xrefs` 早已在客户端 `max(0,…)`/`max(1,min(…))` 钳制,唯独这三处漏了。现在统一在客户端(所有
+  传输的汇合点)钳制 offset 与 limit:对任何 schema 合法的页是纯 no-op,只矫正越界输入。新增回归
+  覆盖负 offset 读作第 0 页、非正 limit 至少返回一行、合法页不被改动。
+
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
 - die/exeinfope/upx 的 `_capture_process` 重新在**成功**退出后清点并回收启动器遗留的
