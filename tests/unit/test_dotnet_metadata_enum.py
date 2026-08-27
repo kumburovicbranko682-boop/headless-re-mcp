@@ -5,9 +5,18 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import pytest
+
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
-from headless_re_mcp.dotnet.metadata_enum import CAPABILITY, _disassemble_il, enumerate_metadata
+from headless_re_mcp.dotnet import metadata_enum
+from headless_re_mcp.dotnet.metadata_enum import (
+    CAPABILITY,
+    _disassemble_il,
+    _MetaCtx,
+    _read_method_body,
+    enumerate_metadata,
+)
 
 
 def _write_minimal_clr(path: Path) -> None:
@@ -49,6 +58,46 @@ def _write_minimal_clr(path: Path) -> None:
     cursor = meta_off + 16 + len(version_padded)
     struct.pack_into("<HH", image, cursor, 0, 0)
     path.write_bytes(image)
+
+
+def _bare_ctx(pe_data: bytes) -> _MetaCtx:
+    return _MetaCtx(
+        path=Path("x.dll"),
+        pe_data=pe_data,
+        layout=None,
+        meta=b"",
+        stream_map={},
+        tables=b"",
+        strings=b"",
+        heap_sizes=0,
+        string_index_size=2,
+        blob_index_size=2,
+        guid_index_size=2,
+        row_counts={},
+        table_data_offset=0,
+    )
+
+
+def test_fat_method_header_flags_exclude_size_nibble(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reported ``flags`` must be bits 0-11, not the whole first word.
+
+    ECMA-335 packs the header size into bits 12-15 of the same 16-bit word.
+    A standard fat header is 0x3013 (size nibble 3, flags 0x13); folding the
+    nibble in reported flags 0x3013, so any equality check or high-bit read an
+    agent made against ``flags`` was against a fabricated value.
+    """
+    monkeypatch.setattr(metadata_enum.pe_mod, "_rva_to_offset", lambda layout, rva, *, size: 0)
+    fat = struct.pack("<HHII", 0x3013, 8, 2, 0x11000001) + b"\x00\x2a"  # nop; ret
+    body = _read_method_body(_bare_ctx(fat), 0x1000, max_bytes=4096)
+    header = body["header"]
+    assert header["format"] == "fat"
+    assert header["flags"] == 0x13
+    assert header["header_size"] == 12
+    assert header["max_stack"] == 8
+    assert header["code_size"] == 2
+    assert header["local_var_sig_tok"] == 0x11000001
+    assert body["il"] == b"\x00\x2a"
+    assert body["truncated"] is False
 
 
 def test_enumerate_empty_tables_is_ok(tmp_path: Path) -> None:
