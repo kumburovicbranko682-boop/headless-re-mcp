@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.zip_guard import ZipExpansionError, check_zip_expansion
 
 JsonObject = dict[str, Any]
 _MAX_SOURCE_BYTES = 400_000
@@ -157,6 +158,13 @@ class JadxClient:
             raise JadxError("capability_unavailable", "jadx is not configured")
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
+        # jadx extracts resources and writes decompiled sources with only the
+        # timeout as a bound; a central directory declaring petabytes fills
+        # the disk for minutes before that fires. Refuse before the JVM runs.
+        try:
+            check_zip_expansion(apk)
+        except ZipExpansionError as exc:
+            raise JadxError(exc.code, exc.message, **exc.details) from exc
         out_dir.mkdir(parents=True, exist_ok=True)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [str(self.executable), *extra, str(apk)]

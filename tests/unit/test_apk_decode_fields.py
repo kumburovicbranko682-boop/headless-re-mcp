@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -41,8 +42,11 @@ def test_apk_decode_names_decoded_dir_not_output(
     """
     fake_tool = tmp_path / "apktool.bat"
     fake_tool.write_text("@echo off\n", encoding="utf-8")
+    # A readable zip, not two magic bytes: decode now checks the declared
+    # expansion before running apktool, and an unreadable archive is refused.
     apk = tmp_path / "a.apk"
-    apk.write_bytes(b"PK")
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
     out = tmp_path / "decoded"
     out.mkdir()
     (out / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")

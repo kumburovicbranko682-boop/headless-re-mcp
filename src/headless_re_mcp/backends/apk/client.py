@@ -13,6 +13,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
 
+from headless_re_mcp.backends.common.zip_guard import ZipExpansionError, check_zip_expansion
+
 JsonObject = dict[str, Any]
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
@@ -139,6 +141,20 @@ class ApkClient:
     def _key(self, path: Path) -> tuple[str, int]:
         return (str(path), int(path.stat().st_mtime_ns))
 
+    @staticmethod
+    def _guard_expansion(path: Path) -> None:
+        """Refuse a declared-size bomb before androguard inflates it into RAM.
+
+        Where apktool and jadx fill the disk, androguard decompresses entries
+        in-process: a classes.dex declaring gigabytes OOMs the whole server,
+        not just one tool call. Run on cache miss only -- a cached parse
+        already paid (and survived) the inflation.
+        """
+        try:
+            check_zip_expansion(path)
+        except ZipExpansionError as exc:
+            raise ApkError(exc.code, exc.message, **exc.details) from exc
+
     def _apk(self, path: Path) -> Any:
         """Parse manifest-level facts only (cheap; no DEX analysis)."""
         resolved = self._require(path)
@@ -148,6 +164,7 @@ class ApkClient:
             if cached is not None:
                 self._light_cache.move_to_end(key)
                 return cached
+        self._guard_expansion(resolved)
         from androguard.core.apk import APK
 
         try:
@@ -169,6 +186,7 @@ class ApkClient:
             if cached is not None:
                 self._full_cache.move_to_end(key)
                 return cached
+        self._guard_expansion(resolved)
         from androguard.misc import AnalyzeAPK
 
         try:

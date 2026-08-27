@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.zip_guard import ZipExpansionError, check_zip_expansion
 
 JsonObject = dict[str, Any]
 _MAX_STDERR = 8000
@@ -80,6 +81,13 @@ class ApktoolClient:
             raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
+        # apktool inflates the archive onto disk with only the timeout as a
+        # bound; a central directory declaring petabytes fills the disk for
+        # minutes before that fires. Refuse the bomb before the JVM starts.
+        try:
+            check_zip_expansion(apk)
+        except ZipExpansionError as exc:
+            raise ApktoolError(exc.code, exc.message, **exc.details) from exc
         out_dir.parent.mkdir(parents=True, exist_ok=True)
         args = [str(self.apktool), "d", str(apk), "-o", str(out_dir), "-f"]
         if no_resources:

@@ -27,7 +27,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with package, version_name, version_code, min_sdk, target_sdk,
         native_abis, main_activity, permission_count and opened. There is no
-        version, sdk or abis field.
+        version, sdk or abis field. An APK whose zip directory declares an
+        expansion beyond the safety cap is refused with too_large before it
+        is parsed.
         """
         return _dump(analysis.apk_open(session_id))
 
@@ -154,6 +156,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with class_name, path and source, plus truncated when the
         Java was cut at the buffer. There is no java, code or text field.
+        An APK whose zip directory declares an expansion beyond the safety
+        cap is refused with too_large before jadx runs.
         """
         return _dump(analysis.apk_decompile(session_id, class_name, timeout=timeout))
 
@@ -166,7 +170,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Decode the APK to smali and resources with apktool (editable tree).
 
         Answers with decoded_dir, manifest, smali_dirs, and has_resources.
-        There is no output, path or tree field.
+        There is no output, path or tree field. An APK whose zip directory
+        declares an expansion beyond the safety cap is refused with
+        too_large before apktool runs.
         """
         return _dump(analysis.apk_decode(session_id, timeout=timeout, no_resources=no_resources))
 
@@ -220,7 +226,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with output_dir, sources_dir, java_file_count and java_files,
         plus has_more when the listed files were cut at the buffer. There is
-        no files or sources field.
+        no files or sources field. An APK whose zip directory declares an
+        expansion beyond the safety cap is refused with too_large before
+        jadx runs.
         """
         return _dump(
             analysis.apk_export_sources(session_id, timeout=timeout, no_imports=no_imports)

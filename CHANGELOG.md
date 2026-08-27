@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（APK 解包三处入口不设声明尺寸上限——zip 炸弹直至超时才停）
+
+- apktool（`apk.decode`）与 jadx（`apk.export_sources` / `apk.decompile`）把归档膨胀到磁盘、
+  androguard（`apk.open` 等静态读取）把条目解压进内存，三处都只有调用超时这一个界：中央目录
+  声明 PB 级展开的经典 42.zip 形态会让工具在截止时间到来前实打实写几分钟磁盘、或直接把整个
+  服务进程 OOM——而中央目录本身读起来近乎免费。新增共享的 `check_zip_expansion`
+  （`backends/common/zip_guard.py`，成员数上限 100k、声明展开上限 4 GiB，与 installer 的
+  依赖包护栏同型）：apktool/jadx 在 JVM 启动前、androguard 在缓存未命中解析前先查先拒，
+  超限以 `too_large` 拒绝，中央目录不可读则以 `invalid_params` 失败即拒（下游工具反正也解不了）。
+  `tests/unit/test_apk_zip_bomb_guard.py` 钉住三处入口都在花费任何资源之前拒绝、
+  不可读归档不放行。
+
 ### 修复（web.open / web.navigate 可导航到 file:// 等本地 scheme）
 
 - `web.open` / `web.navigate` 把调用方的 URL 原样交给 `page.goto`，而 goto 对 `file://`、
