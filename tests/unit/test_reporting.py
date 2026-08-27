@@ -200,6 +200,38 @@ def test_a_capped_report_says_it_is_capped() -> None:
     assert "Showing 100 of 247 artifacts" in partial
 
 
+def test_a_summarized_value_says_when_it_dropped_fields() -> None:
+    """A finding's value is summarised to a few fields; the rest must be owned.
+
+    render_markdown_report shows only the first handful of a value dict's keys
+    to keep the row readable. Dropping the remainder with no marker made a
+    six-field finding read as a two- or four-field one in the artefact someone
+    keeps -- the same silent omission the section 'Showing X of Y' notes guard
+    against, one level down. A value at or under the cap must stay unadorned.
+    """
+    from headless_re_mcp.reporting import _MAX_VALUE_FIELDS
+
+    over = {f"k{i}": i for i in range(_MAX_VALUE_FIELDS + 2)}
+    knowledge = {
+        "entries": [
+            {"kind": "note", "key": "many", "value": over, "updated_at": "t"},
+            {
+                "kind": "note",
+                "key": "few",
+                "value": {"only": "one"},
+                "updated_at": "t",
+            },
+        ]
+    }
+    markdown = render_markdown_report(session=_SESSION, knowledge=knowledge, generated_at="t")
+
+    assert "(+2 more)" in markdown
+    many_row = next(line for line in markdown.splitlines() if line.startswith("| many"))
+    few_row = next(line for line in markdown.splitlines() if line.startswith("| few"))
+    assert "(+2 more)" in many_row
+    assert "more)" not in few_row
+
+
 def test_report_reads_the_list_artifacts_key() -> None:
     """Production list_artifacts returns artifacts, not entries."""
     markdown = render_markdown_report(
