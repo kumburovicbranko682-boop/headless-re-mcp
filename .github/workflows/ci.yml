@@ -144,6 +144,55 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  # The Android, Web and portable-static lines only prove they work when their
+  # real backends are present. linux-quality installs none of them, so those
+  # gates were never exercised in CI and their maturity rested on unit tests
+  # alone. This job installs the portable backends -- radare2 (static),
+  # wabt + webcrack + Playwright Chromium (web), adbutils/androguard/frida
+  # (android), mitmproxy (shared proxy) -- and runs the integration gates so a
+  # regression in any of those lines fails here instead of in production.
+  linux-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install portable backends
+        run: |
+          sudo apt-get update
+          # radare2: portable static analysis. wabt: wasm2wat/wasm-objdump.
+          # adb: Android device bridge. upx-ucl: the upx CLI. build-essential:
+          # the C compiler the portable r2 ELF gate builds its fixture with.
+          sudo apt-get install -y --no-install-recommends \
+            radare2 wabt adb upx-ucl build-essential
+          # webcrack drives JS deobfuscation/unpacking for the web line.
+          npm install -g webcrack
+          echo "$(npm config get prefix)/bin" >> "$GITHUB_PATH"
+
+      - name: Install package with Android/Web/portable extras
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,android,browser,proxy]"
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Android, Web, proxy and portable-static integration gates
+        # -rs prints every skip reason: a gate that quietly skipped for a
+        # missing backend must not read as a pass. The Windows-only gates
+        # (x64dbg/WinDbg/Win32/IDA) skip themselves through the conftest, so the
+        # whole directory is safe to run and any new Linux-capable gate is
+        # picked up here automatically.
+        run: python -m pytest tests/integration -q -rs --tb=short --timeout=300
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
