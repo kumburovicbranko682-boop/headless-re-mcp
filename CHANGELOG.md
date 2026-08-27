@@ -1275,6 +1275,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
+- **`web.dom.snapshot` 的截断由 Python 侧二次兜底钉死**：既有用例里页面内脚本已经切过
+  HTML 并报 `truncated: True`,客户端自身的 `text[:cap]` 再切与
+  `bool(clipped.get("truncated")) or len(text) > cap` 的长度兜底就成了死代码——一个抢在 cap
+  之前渲染完、或忽略了 slice 参数的敌意页面,可以返回超额 html 却谎报 `truncated: False`,
+  于是整页原样内联透传、被读成完整文档。新增 5 个用例覆盖 Python 侧的二次防线:脚本谎报不
+  截断的超额文档仍被客户端自行切到 cap 且照样标 `truncated`;既未截断又装得下的小页面原样
+  返回且 `truncated=False`(两个信号都为假);非 dict 的求值结果报 `backend_error`(而不是拿去
+  `.get` 崩);缺失或非字符串的 html 归一为空文档(否则 `None[:cap]` 崩);求值本身抛异常映射为
+  `backend_error dom snapshot failed`。
 
 ### 变更（Android 后端清理）
 
