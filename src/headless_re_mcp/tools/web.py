@@ -91,6 +91,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         CORS, redirect Location, HSTS ...) as a str->str map, with
         headers_truncated set when a value was capped or the map was bounded by
         size; response_headers is empty when no response was recorded for the id.
+        request_headers is the matching client-sent map (Cookie, Authorization,
+        custom X- headers, User-Agent), merged from requestWillBeSent and its
+        ExtraInfo so network-stack headers like Cookie are included, with
+        request_headers_truncated flagged the same way.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 

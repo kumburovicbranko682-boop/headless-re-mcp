@@ -193,6 +193,13 @@ def test_web_cdp_captures_network_and_reads_a_body() -> None:
             assert isinstance(resp_headers, dict) and resp_headers, got.data
             lowered = {str(k).lower(): str(v) for k, v in resp_headers.items()}
             assert "javascript" in lowered.get("content-type", "").lower(), resp_headers
+            # Request headers captured across requestWillBeSent(+ExtraInfo): the
+            # browser always sends a User-Agent on a sub-resource fetch, so a
+            # working capture returns a non-empty map carrying it.
+            req_headers = got.data["request_headers"]
+            assert isinstance(req_headers, dict) and req_headers, got.data
+            req_lowered = {str(k).lower(): str(v) for k, v in req_headers.items()}
+            assert "user-agent" in req_lowered, req_headers
         finally:
             service.web_close(session_id)
     finally:

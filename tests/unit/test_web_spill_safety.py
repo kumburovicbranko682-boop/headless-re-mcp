@@ -139,6 +139,7 @@ def test_network_get_reply_stays_under_the_transport_budget(
             }
         }
         response_headers: dict[str, dict[str, object]] = {}
+        request_headers: dict[str, dict[str, str]] = {}
         cdp = _Cdp()
 
     class _Immediate:

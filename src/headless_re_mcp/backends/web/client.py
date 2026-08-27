@@ -113,6 +113,39 @@ def _bounded_headers(raw: object) -> tuple[dict[str, str], bool]:
     return {k: v for k, v in kept}, truncated or list_cut
 
 
+def _accumulate_headers(
+    store: OrderedDict[str, dict[str, str]], request_id: str, raw: object
+) -> None:
+    """Merge coerced, per-value-capped request headers for ``request_id``.
+
+    A request's headers arrive across two CDP events: ``requestWillBeSent`` (the
+    headers the page/fetch set) and ``requestWillBeSentExtraInfo`` (the ones the
+    network stack adds, notably Cookie). Capturing only the first would tell an
+    analyst "no Cookie was sent" when there was one, so both feed the same bucket
+    keyed by requestId; a dict dedupes by name, so redirects reusing the id do
+    not grow it without bound. Values are coerced and capped here so a giant
+    Authorization/Cookie cannot sit in the buffer; the encoded-size bound is
+    applied once at read time by ``_bounded_headers``. The store evicts oldest
+    past ``_MAX_REQUESTS`` in lockstep with the request ring.
+    """
+    try:
+        base = dict(raw)  # type: ignore[call-overload]
+    except Exception:  # noqa: BLE001 - header container shape varies
+        return
+    if not base:
+        return
+    bucket = store.get(request_id)
+    if bucket is None:
+        bucket = {}
+        store[request_id] = bucket
+    for key, value in base.items():
+        capped_value, _cut = _bounded_metadata(_coerce_header(value), _MAX_HEADER_VALUE_BYTES)
+        bucket[_coerce_header(key)] = capped_value
+    store.move_to_end(request_id)
+    while len(store) > _MAX_REQUESTS:
+        store.popitem(last=False)
+
+
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     """Join console args, stopping at ``_MAX_CONSOLE_TEXT``.
 
@@ -294,6 +327,9 @@ class _WebSession:
         # on the request entry, so network_list stays lean (its rows are already
         # bounded by url size) while network_get can still return them per-request.
         self.response_headers: OrderedDict[str, JsonObject] = OrderedDict()
+        # Request headers accumulate across requestWillBeSent (+ExtraInfo) into
+        # their own bounded map, same rationale as response_headers above.
+        self.request_headers: OrderedDict[str, dict[str, str]] = OrderedDict()
         self.console: deque[JsonObject] = deque(maxlen=_MAX_CONSOLE)
         self.requests_dropped = 0
         self.console_dropped = 0
@@ -469,11 +505,21 @@ class WebBackend:
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            request_id = str(params.get("requestId"))
             with handle.lock:
-                handle.requests[str(params.get("requestId"))] = entry
+                handle.requests[request_id] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
                     handle.requests.popitem(last=False)
                     handle.requests_dropped += 1
+                _accumulate_headers(handle.request_headers, request_id, req.get("headers"))
+
+        def on_request_extra(params: JsonObject) -> None:
+            # requestWillBeSentExtraInfo carries the headers the network stack
+            # adds after the page's own (Cookie, sec-* ...); merge them into the
+            # same per-request bucket so the captured request headers are whole.
+            request_id = str(params.get("requestId"))
+            with handle.lock:
+                _accumulate_headers(handle.request_headers, request_id, params.get("headers"))
 
         def on_response(params: JsonObject) -> None:
             resp = params.get("response") or {}
@@ -532,6 +578,7 @@ class WebBackend:
                 handle.console.append(entry)
 
         cdp.on("Network.requestWillBeSent", on_request)
+        cdp.on("Network.requestWillBeSentExtraInfo", on_request_extra)
         cdp.on("Network.responseReceived", on_response)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
@@ -615,6 +662,7 @@ class WebBackend:
         with handle.lock:
             entry = handle.requests.get(request_id)
             captured_headers = handle.response_headers.get(request_id)
+            captured_request_headers = dict(handle.request_headers.get(request_id) or {})
         if entry is None:
             raise WebError("not_found", "unknown request id", request_id=request_id)
         # Response headers captured at Network.responseReceived (Set-Cookie, CSP,
@@ -623,6 +671,12 @@ class WebBackend:
         header_fields: JsonObject = {"response_headers": {}, "headers_truncated": False}
         if captured_headers is not None:
             header_fields = dict(captured_headers)
+        # Request headers accumulated across requestWillBeSent(+ExtraInfo): what
+        # the client sent (Cookie, Authorization, custom X- headers, User-Agent).
+        # Bound by encoded size once here, the same discipline as the response map.
+        request_headers, request_headers_truncated = _bounded_headers(captured_request_headers)
+        header_fields["request_headers"] = request_headers
+        header_fields["request_headers_truncated"] = request_headers_truncated
         body = ""
         base64_encoded = False
         try:

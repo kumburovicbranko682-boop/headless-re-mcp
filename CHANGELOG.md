@@ -1211,6 +1211,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   响应头在入环前就被封顶、`headers_truncated` 真。实机 gate(`test_web_re_gate.py`)对真实浏览器抓到的 `/app.js` 响应补断言 `response_headers` 里
   (键名大小写归一后)`content-type` 含 `javascript`,证明 responseReceived→捕获→取回这条链路端到端可用。
 
+- **`web.network.get` 只回响应头,不回请求头,而客户端发出的 `Cookie`/`Authorization`/自定义 `X-` 头/`User-Agent` 同样是 Web 逆向的核心事实。** 接上一条
+  响应头的补齐:请求头分散在两个 CDP 事件里——`requestWillBeSent` 带页面/脚本设置的头,`requestWillBeSentExtraInfo` 带网络栈追加的头(尤其 `Cookie`)。
+  只抓前者会让分析者误以为「没发 Cookie」,故新增 `_accumulate_headers` 把两个事件的头按 requestId 合并进同一桶(dict 按名去重,重定向复用 id 也不会无界增长),
+  每个值即时强制成 `str` 并封到 4KiB;`network_get` 在读取时对合并后的桶再按 JSON 编码体积兜一次(经 `_bounded_headers`),返回 `request_headers`(str→str)
+  与 `request_headers_truncated`。请求头同样存在独立于请求条目的桶(按 `_MAX_REQUESTS` 淘汰),保持 `network_list` 分页行精简。工具描述补上两字段并说明
+  ExtraInfo 合并。单测(`test_web_network_get_fields.py`):经桩件断言取回 `user-agent`/`cookie`、`request_headers_truncated` 假;无请求头时返回空表。
+  `test_web_fields.py` 经真实 `_wire_events` 布线断言 `requestWillBeSent`(User-Agent)与 `requestWillBeSentExtraInfo`(Cookie)合并进同一请求、超大头值入桶前被封顶。
+  实机 gate(`test_web_re_gate.py`)对真实浏览器抓到的 `/app.js` 请求补断言 `request_headers`(键名归一后)含 `user-agent`,证明 requestWillBeSent(+ExtraInfo)→
+  合并→取回端到端可用。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

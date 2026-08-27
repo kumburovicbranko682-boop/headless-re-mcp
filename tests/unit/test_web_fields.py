@@ -52,6 +52,7 @@ class _FakeHandle:
             for index in range(count)
         }
         self.response_headers: OrderedDict[str, dict[str, object]] = OrderedDict()
+        self.request_headers: OrderedDict[str, dict[str, str]] = OrderedDict()
         self.scripts = {
             str(index): {
                 "scriptId": str(index),
@@ -147,9 +148,12 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     cdp.handlers["Network.requestWillBeSent"](
         {
             "requestId": "request-1",
-            "request": {"url": huge, "method": huge},
+            "request": {"url": huge, "method": huge, "headers": {"User-Agent": "gate/1.0"}},
             "type": huge,
         }
+    )
+    cdp.handlers["Network.requestWillBeSentExtraInfo"](
+        {"requestId": "request-1", "headers": {"Cookie": "sid=1", "X-Big": huge}}
     )
     cdp.handlers["Network.responseReceived"](
         {
@@ -177,6 +181,12 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert stored["response_headers"]["Set-Cookie"] == "sid=1"
     assert len(str(stored["response_headers"]["X-Big"]).encode()) <= _MAX_HEADER_VALUE_BYTES
     assert stored["headers_truncated"] is True
+    # Request headers merge requestWillBeSent (User-Agent) with its ExtraInfo
+    # (Cookie, the network-stack header), and the oversized value is capped.
+    req_headers = handle.request_headers["request-1"]
+    assert req_headers["User-Agent"] == "gate/1.0"
+    assert req_headers["Cookie"] == "sid=1"
+    assert len(req_headers["X-Big"].encode()) <= _MAX_HEADER_VALUE_BYTES
     script = handle.scripts["script-1"]
     assert len(str(script["url"]).encode()) <= _MAX_URL_BYTES
     assert len(str(script["language"]).encode()) <= _MAX_METADATA_BYTES

@@ -59,6 +59,7 @@ class _Handle:
             "headers_truncated": False,
         }
     }
+    request_headers = {"r1": {"user-agent": "gate/1.0", "cookie": "sid=abc"}}
     cdp = _Cdp()
 
 
@@ -104,8 +105,12 @@ def test_web_network_get_returns_captured_response_headers(
     assert payload["response_headers"]["set-cookie"] == "sid=abc"
     assert payload["response_headers"]["content-security-policy"] == "default-src 'self'"
     assert payload["headers_truncated"] is False
+    assert payload["request_headers"]["user-agent"] == "gate/1.0"
+    assert payload["request_headers"]["cookie"] == "sid=abc"
+    assert payload["request_headers_truncated"] is False
     doc = _tool_docstring("web.network.get")
     assert "response_headers" in doc
+    assert "request_headers" in doc
 
 
 def test_web_network_get_response_headers_empty_when_unseen(
@@ -122,6 +127,7 @@ def test_web_network_get_response_headers_empty_when_unseen(
         lock = Lock()
         requests = {"r2": {"requestId": "r2", "url": "https://y"}}
         response_headers: dict[str, dict[str, object]] = {}
+        request_headers: dict[str, dict[str, str]] = {}
         cdp = _Cdp()
 
     backend = WebBackend()
@@ -130,6 +136,8 @@ def test_web_network_get_response_headers_empty_when_unseen(
     payload = backend.network_get("s", "r2", tmp_path)
     assert payload["response_headers"] == {}
     assert payload["headers_truncated"] is False
+    assert payload["request_headers"] == {}
+    assert payload["request_headers_truncated"] is False
 
 
 def test_bounded_headers_coerces_bytes_keys_and_values() -> None:
