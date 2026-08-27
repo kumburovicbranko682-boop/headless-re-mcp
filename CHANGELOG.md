@@ -139,6 +139,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   skip),skip != pass。CI 的 `gates` job 已装 Playwright Chromium 故真机执行;本机 Chromium 151 上与
   `test_web_cdp_open_and_inspect` 一并验过。
 
+### 新增（Web 实测 Gate 再补 script.source / screenshot / har.export / navigate 四条真机路径）
+
+- 上一条 Gate 补齐了抓网,但 Web CDP 面里还有四条工具在真机 Chromium 上从未被跑过:`web.script.source`（`test_web_cdp_open_and_inspect`
+  只 `list` 脚本、从不取源码）、`web.screenshot`、`web.har.export`、`web.navigate`——全都只有单元桩。其中 `script.source` 尤其
+  要紧:它正是 `network_get` 对齐的那个兄弟(两者都对卡死会话原样上抛 `WebError`),但它的健康路径(真 `Debugger.getScriptSource`)
+  从未在真浏览器上验过。新增 `test_web_cdp_source_screenshot_har_and_navigate`:在同一张已加载页上一次跑完四条——从 `web.scripts`
+  里认出外链 `app.js`、经 `getScriptSource` 取回源码并断言含已知内容且未截断;`screenshot` 落一个真 PNG(按 `\x89PNG` 魔数与
+  `size>0` 断言),不是零字节文件;`har.export` 导出含 `app.js` 那条请求的 HAR;`navigate` 跳到第二个文档并断言标题随之变成
+  `page-two`。未装 playwright/Chromium 时如实 skip(浏览器起不来也照 `web.open` 那套干净 skip),skip != pass。CI 的 `gates` job
+  已装 Playwright Chromium 故真机执行;本机 Chromium 151 上三条 Web CDP Gate 一并验过。
+
 ### 新增（WASM 反汇编 Gate 用真实模块，并补上 wasm-objdump 那条从未被实测的路径）
 
 - Web 反混淆那条线的 WASM 侧此前只对「magic+version、无任何 section」的空模块跑 `wasm2wat`，只断言输出里
