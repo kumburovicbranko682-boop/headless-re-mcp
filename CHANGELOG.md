@@ -57,8 +57,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   frida 17.17 attach 本地进程，`attach` / `modules` / `exports` 都正常，唯独 `memory.read`
   报错。改用 NativePointer 方法 `ptr(address).readByteArray(size)`（frida 12 起就有，覆盖
   `android` extra 声明的 `>=16.5` 全区间）。真机验证：修复后读模块基址前 4 字节返回 ELF 魔数
-  `7f454c46`。frida 原生 runtime 在 CI 跑不了，故按仓库既有做法（见 hook-template schema 测试）
-  以源码静态断言钉住脚本用的是指针方法、不再出现被删的全局名。
+  `7f454c46`。两层测试守住：`test_frida_memory_read_api` 以源码静态断言钉住脚本用的是指针方法、
+  不再出现被删的全局名（无 frida 也能跑，快）；新增 `test_frida_local_probe_gate.py` 则在能 attach
+  的机器上真机验证——spawn 一个本地进程，经 `FridaClient` 跑 `attach/modules/exports/memory_read`，
+  钉住 `_ENUM_SCRIPT` 的 `read` 路径真能在装着的 runtime 上返回请求的字节（Linux 上即模块基址的
+  ELF 魔数 `7f454c46`），并顺带验证会话 pid 授权守卫仍拒未授权 pid。旧断言「frida 原生 runtime 在
+  CI 跑不了」只在无 ptrace / 无 frida-server 的沙箱成立：那时 gate 明确 skip（skip≠pass），能
+  attach 时就真跑——这正是当初只靠静态断言没能在运行期直接照出 frida 17 破坏的那条路径。
 
 ### 修复（合并回归：成功路径残留进程与 UI 捕获错误码）
 
