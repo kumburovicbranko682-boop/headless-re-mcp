@@ -217,6 +217,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`parse_r2_json` 会把带括号的 opcode 当成 JSON 起点**。`rfind("[")` 切到
   `mov eax, dword [rbp+0x10]` 里，整表解析失败后只留下最后一个对象。现在从第一个
   `[`/`{` 做 `raw_decode`。
+- **r2 的 JSON 列表在原始输出被 1 MB 缓冲截断后整表消失**。`R2Client.run` 先把 stdout
+  截到 1 MB 再交给 `enrich_r2_payload` 解析，而 `json` 无法加载半截数组；`parse_r2_json`
+  第一个能解出的值是数组的第 0 个元素（一个 dict），于是走到 dict 分支，报 `parsed: True`
+  加一个假的 `info` 对象、没有 `items`——`aflj` 每行约 500 字节，一兆只够约 2000 个函数，
+  于是稍大一点的二进制 `r2.functions` / `r2.strings` 就整份列表为空。现在识别「本应是数组
+  却没解成数组」的情况，从 `[` 之后逐个 `raw_decode` 完整到手的元素（封顶 4096），把它们作为
+  有界前缀放回 `items` 并置 `items_truncated`；此时真实总数不可知，故不给 `items_total`
+  （原始输出的 `truncated` 标志已说明字节被切）。`r2.functions` 的说明也补齐了 `items_total` /
+  `items_limit` 与这条输出截断恢复行为，与 strings/imports/exports/xrefs 对齐。
 - **`doctor` 把源码树和 MSVC 当成必选项**。二进制包部署没有它们也会报 NOT READY。
   必选探针只剩 `python` / `ida_idalib` / `x64dbg_headless_binaries`。
 - **resume/step 在事件环溢出时会报成功**。`wait_for_state` 把 `dropped > 0` 当成
