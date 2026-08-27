@@ -354,9 +354,11 @@ class AdbBackend:
         self._available = False
         self._adb_path = adb_path
         self._forward_lock = threading.Lock()
-        # (serial, local) pairs this process created. adb keeps forwards until
-        # they are removed or the adb server dies, so close_all has to know.
-        self._forwards: list[tuple[str, str]] = []
+        # (serial, local) -> remote this process forwarded. adb keeps forwards
+        # until they are removed or the adb server dies, so close_all has to
+        # know; the remote is kept so a rebind can report the target it
+        # overwrote and release can restore a failed removal faithfully.
+        self._forwards: dict[tuple[str, str], str] = {}
         try:
             import adbutils
 
@@ -883,7 +885,9 @@ class AdbBackend:
         dev = self._device(serial)
         reserved = False
         with self._forward_lock:
-            if key not in self._forwards:
+            existed = key in self._forwards
+            previous_remote = self._forwards.get(key)
+            if not existed:
                 if len(self._forwards) >= _MAX_FORWARDS:
                     raise AdbError(
                         "invalid_state",
@@ -891,23 +895,33 @@ class AdbBackend:
                         cap=_MAX_FORWARDS,
                         held=len(self._forwards),
                     )
-                self._forwards.append(key)
+                self._forwards[key] = remote
                 reserved = True
         try:
             _call(dev.forward, local, remote, timeout=_ADB_SHELL_TIMEOUT_S)
         except AdbError:
+            # Only drop a slot this call reserved. A rebind that fails leaves the
+            # prior forward (and its old remote) untouched on adb and in our map.
             if reserved:
                 with self._forward_lock:
-                    if key in self._forwards:
-                        self._forwards.remove(key)
+                    self._forwards.pop(key, None)
             raise
         except Exception as exc:  # noqa: BLE001
             if reserved:
                 with self._forward_lock:
-                    if key in self._forwards:
-                        self._forwards.remove(key)
+                    self._forwards.pop(key, None)
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
-        return {"local": local, "remote": remote}
+        with self._forward_lock:
+            self._forwards[key] = remote
+        # created says whether this call took a new slot or hit an existing
+        # binding; a bare {local, remote} hid that adb silently rebinds a local
+        # spec, so a caller could clobber a live forward (a frida-server port)
+        # with no signal. previous_remote surfaces the target that was
+        # overwritten when the rebind actually changed it.
+        result: JsonObject = {"local": local, "remote": remote, "created": not existed}
+        if existed and previous_remote is not None and previous_remote != remote:
+            result["previous_remote"] = previous_remote
+        return result
 
     def release_forwards(self) -> JsonObject:
         """Drop every forward this process created.
@@ -917,12 +931,12 @@ class AdbBackend:
         frida or a debug port every night eventually cannot bind another.
         """
         with self._forward_lock:
-            held = list(self._forwards)
+            held = list(self._forwards.items())
             self._forwards.clear()
         removed: list[JsonObject] = []
         failed: list[JsonObject] = []
-        retry: list[tuple[str, str]] = []
-        for serial, local in held:
+        retry: list[tuple[tuple[str, str], str]] = []
+        for (serial, local), remote in held:
             try:
                 dev = self._device(serial)
                 remover = getattr(dev, "forward_remove", None) or getattr(
@@ -936,18 +950,18 @@ class AdbBackend:
                             "error": "device has no forward-remove API",
                         }
                     )
-                    retry.append((serial, local))
+                    retry.append(((serial, local), remote))
                     continue
                 _call(remover, local, timeout=_ADB_SHELL_TIMEOUT_S)
                 removed.append({"serial": serial, "local": local})
             except Exception as exc:  # noqa: BLE001
                 failed.append({"serial": serial, "local": local, "error": str(exc)})
-                retry.append((serial, local))
+                retry.append(((serial, local), remote))
         if retry:
             # A disconnected device at close_all must not make us forget the
             # forward: adb still has it, and the next close_all is the retry.
             with self._forward_lock:
-                for key in retry:
+                for key, remote in retry:
                     if key not in self._forwards:
-                        self._forwards.append(key)
+                        self._forwards[key] = remote
         return {"removed": removed, "failed": failed, "count": len(removed)}

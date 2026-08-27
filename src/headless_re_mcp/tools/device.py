@@ -185,8 +185,13 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_forward(serial: str, local: str, remote: str) -> dict[str, Any]:
         """Set an adb forward (e.g. tcp:27042 -> tcp:27042 for frida-server).
 
-        Answers with local and remote. Forwards stay on the adb server until
-        close_all; this process will refuse a new one once the table is full.
+        Answers with local, remote and created. created is false when this
+        process already had a forward on this local spec, so the call rebound
+        it (adb silently overwrites an existing local binding); previous_remote
+        then carries the target that was overwritten when it actually changed,
+        so clobbering a live forward is not silent. Forwards stay on the adb
+        server until close_all; this process will refuse a new one once the
+        table is full.
         """
         return _dump(analysis.device_forward(serial, local, remote))
 

@@ -57,7 +57,7 @@ def test_in_range_tcp_ports_are_accepted(local: str) -> None:
     backend = _backend()
     result = backend.forward("emulator-5554", local, "tcp:27042")
     assert result["local"] == local
-    assert backend._forwards == [("emulator-5554", local)]
+    assert backend._forwards == {("emulator-5554", local): "tcp:27042"}
 
 
 @pytest.mark.parametrize("side", ["local", "remote"])
@@ -77,13 +77,17 @@ def test_tcp_zero_is_refused_on_both_sides(side: str) -> None:
         backend.forward("emulator-5554", local, remote)
     assert caught.value.code == "invalid_params"
     assert caught.value.details.get(side) == "tcp:0"
-    assert backend._forwards == []
+    assert backend._forwards == {}
 
 
 def test_localabstract_and_jdwp_specs_still_work() -> None:
     backend = _backend()
     result = backend.forward("emulator-5554", "localabstract:frida", "jdwp:1234")
-    assert result == {"local": "localabstract:frida", "remote": "jdwp:1234"}
+    assert result == {
+        "local": "localabstract:frida",
+        "remote": "jdwp:1234",
+        "created": True,
+    }
 
 
 def test_jdwp_is_only_valid_on_the_remote_side() -> None:
@@ -116,4 +120,4 @@ def test_an_out_of_range_port_is_refused_before_a_device_is_touched() -> None:
     with pytest.raises(AdbError) as caught:
         backend.forward("emulator-5554", "tcp:70000", "tcp:27042")
     assert caught.value.code == "invalid_params"
-    assert backend._forwards == []
+    assert backend._forwards == {}

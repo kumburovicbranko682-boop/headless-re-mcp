@@ -462,6 +462,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   的递归与大小写直测,以及 `_SETTINGS_ENV_MAP` 只引用真实 `Settings` 字段的漂移护栏(否则改名
   会让某个 `HEADLESS_RE_*` 路径从生成配置里悄悄消失)。
 
+### 修复（device.forward 静默改绑已有转发，不告知覆盖了谁）
+
+- `device.forward` 只回 `{local, remote}`。但 `adb forward` 对同一 local 端点是**静默改绑**:再 forward
+  一次 `tcp:27042` 会把它指向新的 remote,悄悄覆盖旧映射。回包里没有任何信号,长跑的 agent 因此可能把一条
+  正在用的转发(比如 frida-server 的端口)一脚踹掉而毫不知情。
+- 现在回包带 `created`:本进程此前已在这个 local 端点有转发时为 false(即这次是改绑);当改绑确实改了目标时,
+  `previous_remote` 带回被覆盖掉的旧 remote,覆盖不再无声。原样重发同一 `local→remote`(幂等)则 `created` 为
+  false、且不带 `previous_remote`(没有目标被改)。
+- 实现上把进程内的转发跟踪从 `(serial, local)` 列表改为 `(serial, local) -> remote` 映射:改绑能报出被覆盖的
+  目标,`release_forwards` 拆除失败时也能按原 remote 忠实地重新登记以待下次重试。槽位记账/上限/失败不占槽
+  等既有语义不变。
+- 新增回归:新建转发 `created=true`、改绑不同 remote → `created=false` 且 `previous_remote` 指向旧目标、幂等重发
+  → `created=false` 且无 `previous_remote`、满表时改绑已有槽仍放行;并更新既有列表形态断言为映射形态。
+  `device.forward` 文档串点名 `created` / `previous_remote`。
+
 ### 修复（adb forward 端口越界未在边界拦截）
 
 - `device.forward` 的 local/remote 端点校验用 `tcp:\d{1,5}` 匹配，会放过 `tcp:70000` 这类五位数

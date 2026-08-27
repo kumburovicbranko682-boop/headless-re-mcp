@@ -11,7 +11,12 @@ covered elsewhere; what is pinned here is the state around it:
 * the cap is enforced,
 * ``release_forwards`` reports what it removed and, when a removal fails or the
   device offers no remove API, keeps the slot for the next attempt rather than
-  forgetting a forward adb still holds.
+  forgetting a forward adb still holds,
+* a rebind of an existing local spec reports ``created`` false and, when the
+  target changed, the ``previous_remote`` it silently overwrote.
+
+The map is ``(serial, local) -> remote`` so a rebind can name the overwritten
+target and a failed release restores the same remote.
 """
 
 from __future__ import annotations
@@ -63,8 +68,8 @@ def test_a_successful_forward_tracks_exactly_one_slot() -> None:
     dev = _ForwardDev()
     backend = _backend_returning(dev)
     result = backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
-    assert result == {"local": "tcp:5000", "remote": "tcp:27042"}
-    assert backend._forwards == [("emulator-5554", "tcp:5000")]
+    assert result == {"local": "tcp:5000", "remote": "tcp:27042", "created": True}
+    assert backend._forwards == {("emulator-5554", "tcp:5000"): "tcp:27042"}
     assert dev.forwarded == [("tcp:5000", "tcp:27042")]
 
 
@@ -75,7 +80,7 @@ def test_a_failed_forward_does_not_leak_the_reserved_slot() -> None:
     with pytest.raises(AdbError) as caught:
         backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
     assert caught.value.code == "backend_error"
-    assert backend._forwards == []
+    assert backend._forwards == {}
 
 
 def test_reforwarding_the_same_endpoint_does_not_double_count() -> None:
@@ -83,17 +88,42 @@ def test_reforwarding_the_same_endpoint_does_not_double_count() -> None:
     dev = _ForwardDev()
     backend = _backend_returning(dev)
     backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
-    backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
-    assert backend._forwards == [("emulator-5554", "tcp:5000")]
+    second = backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
+    assert backend._forwards == {("emulator-5554", "tcp:5000"): "tcp:27042"}
     # The device was asked both times; only the local slot bookkeeping dedupes.
     assert dev.forwarded == [("tcp:5000", "tcp:27042"), ("tcp:5000", "tcp:27042")]
+    # Re-issuing the identical forward is not newly created, and since the
+    # target did not change there is nothing overwritten to report.
+    assert second["created"] is False
+    assert "previous_remote" not in second
+
+
+def test_rebinding_a_local_spec_reports_the_overwritten_remote() -> None:
+    """adb silently rebinds a local spec; the reply must surface what it clobbered.
+
+    Forwarding tcp:5000 first to the frida port, then to a different remote,
+    overwrites the first mapping on the adb server. created is false and
+    previous_remote names the target that was silently replaced, so an agent
+    does not lose a live forward without a trace.
+    """
+    dev = _ForwardDev()
+    backend = _backend_returning(dev)
+    backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
+    rebind = backend.forward("emulator-5554", "tcp:5000", "tcp:9999")
+    assert rebind["created"] is False
+    assert rebind["previous_remote"] == "tcp:27042"
+    assert rebind["remote"] == "tcp:9999"
+    # The map now holds the new target, still one slot.
+    assert backend._forwards == {("emulator-5554", "tcp:5000"): "tcp:9999"}
 
 
 def test_the_forward_cap_is_enforced() -> None:
     """A new endpoint past the cap is refused, and its slot is never taken."""
     dev = _ForwardDev()
     backend = _backend_returning(dev)
-    backend._forwards = [("emulator-5554", f"tcp:{6000 + index}") for index in range(_MAX_FORWARDS)]
+    backend._forwards = {
+        ("emulator-5554", f"tcp:{6000 + index}"): "tcp:1" for index in range(_MAX_FORWARDS)
+    }
     with pytest.raises(AdbError) as caught:
         backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
     assert caught.value.code == "invalid_state"
@@ -108,11 +138,14 @@ def test_reforwarding_at_the_cap_is_allowed_for_a_held_slot() -> None:
     """A key already held is refreshed even at the cap: it takes no new slot."""
     dev = _ForwardDev()
     backend = _backend_returning(dev)
-    held = [("emulator-5554", f"tcp:{6000 + index}") for index in range(_MAX_FORWARDS)]
-    backend._forwards = list(held)
+    held = {
+        ("emulator-5554", f"tcp:{6000 + index}"): "tcp:1" for index in range(_MAX_FORWARDS)
+    }
+    backend._forwards = dict(held)
     # tcp:6000 is already in the set, so this must not trip the cap.
     result = backend.forward("emulator-5554", "tcp:6000", "tcp:27042")
     assert result["local"] == "tcp:6000"
+    assert result["created"] is False
     assert len(backend._forwards) == _MAX_FORWARDS
 
 
@@ -125,7 +158,7 @@ def test_release_forwards_removes_and_reports_each() -> None:
     assert report["count"] == 2
     assert {entry["local"] for entry in report["removed"]} == {"tcp:5000", "tcp:5001"}
     assert report["failed"] == []
-    assert backend._forwards == []
+    assert backend._forwards == {}
     assert set(dev.removed) == {"tcp:5000", "tcp:5001"}
 
 
@@ -138,8 +171,8 @@ def test_release_forwards_keeps_a_slot_whose_removal_failed() -> None:
     assert report["count"] == 0
     assert len(report["failed"]) == 1
     assert report["failed"][0]["local"] == "tcp:5000"
-    # The forward is retained so the next release_forwards tries again.
-    assert backend._forwards == [("emulator-5554", "tcp:5000")]
+    # The forward is retained (with its remote) so the next release tries again.
+    assert backend._forwards == {("emulator-5554", "tcp:5000"): "tcp:27042"}
 
 
 def test_release_forwards_retains_a_slot_when_the_device_has_no_remove_api() -> None:
@@ -151,4 +184,4 @@ def test_release_forwards_retains_a_slot_when_the_device_has_no_remove_api() -> 
     assert report["count"] == 0
     assert len(report["failed"]) == 1
     assert "forward-remove" in report["failed"][0]["error"]
-    assert backend._forwards == [("emulator-5554", "tcp:5000")]
+    assert backend._forwards == {("emulator-5554", "tcp:5000"): "tcp:27042"}
