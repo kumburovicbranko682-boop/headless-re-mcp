@@ -94,6 +94,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   Ghidra 12.1.3 实测：对 ELF 夹具正确列出含 `elf_fixture_transform`/`main` 的函数与符号，并反编译出
   与源码一致的 C。
 
+### 新增（Ghidra 真机实测 Gate 与 Linux CI 集成）
+
+- 新增 `tests/integration/test_ghidra_live_gate.py`：复用可移植 ELF 夹具，对真实 `analyzeHeadless`
+  跑 `functions`/`symbols`/`decompile`，断言列出含 `elf_fixture_transform`/`main` 的函数（带
+  entry/body_size）、符号表含该函数、以及按发现地址反编译出非空且未截断、含函数名的 C。未配置
+  Ghidra/JDK 时如实 skip（点名缺哪个），skip != pass。`linux-integration.yml` 增设独立
+  `ghidra-gate` job：Ghidra 是 ~570MB 的 JVM 下载，单独成 job 便与那些快 Gate 并行、带自己的 JDK 21、
+  并缓存下载；只收集 Ghidra 一个 Gate 文件，因此无需装 Web/Android/抓包后端。Ghidra 版本固定为本地
+  实测通过的 12.1.3。
+
 ### 修复（抓包停止后端口不释放）
 
 - `proxy.stop` / `proxy.close_all` 及关闭 Web 会话时，mitmproxy 12.x 下监听端口**停不掉**：
