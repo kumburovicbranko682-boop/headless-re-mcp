@@ -114,6 +114,13 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         env = os.environ.copy()
         env["PATH"] = f"{settings.ida_home}{os.pathsep}{env.get('PATH', '')}"
         env["PYTHONUNBUFFERED"] = "1"
+        # This end of the pipe is pinned to UTF-8 below, but on Windows the
+        # piped worker defaults its stdio to the ANSI code page: requests
+        # written here in UTF-8 were read back garbled, and an extracted
+        # string outside that code page (CJK names in a sample) killed the
+        # worker's ensure_ascii=False reply with UnicodeEncodeError. Pin the
+        # worker's side to match.
+        env["PYTHONIOENCODING"] = "utf-8:replace"
         popen_kw = no_window_popen_kwargs()
 
         self._process = subprocess.Popen(

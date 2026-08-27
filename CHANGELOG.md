@@ -24,6 +24,8 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+Python 子进程管道的编码在所有 locale 下固定为 UTF-8。idalib gate worker、idalib 会话 worker 与 Windows OCR worker 都向管道打印 `ensure_ascii=False` 的 JSON，而 Windows 上被管道接管的 Python 子进程默认用 ANSI 代码页编码 stdio，父进程却按 UTF-8 解码：样本里提取的非 ASCII 字符串、NTFS 中日韩路径、非英文界面的 OCR 结果回来全是乱码；超出子进程代码页的字符（英文系统上识别中文 UI 是最典型场景）更让子进程在回复中途直接死于 `UnicodeEncodeError`——OCR 一律报“subprocess failed”，gate 对这类路径的样本必挂。三个父进程现向子进程环境注入 `PYTHONIOENCODING=utf-8:replace` 并在自己一侧固定 `encoding="utf-8", errors="replace"`（`ida/client` 双向的 stdin 请求通道一并对齐），配套测试通过生产 kwargs 真实拉起子进程并要求非 ASCII 内容精确往返，Windows runner 上丢失该约定会直接失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

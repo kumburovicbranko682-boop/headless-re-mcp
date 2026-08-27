@@ -56,6 +56,12 @@ def run_idalib_gate(
 
     env = os.environ.copy()
     env["PATH"] = f"{current.ida_home}{os.pathsep}{env.get('PATH', '')}"
+    # On Windows a piped Python child encodes stdio with the ANSI code page,
+    # and the worker emits ensure_ascii=False JSON that includes the binary's
+    # path -- an NTFS name outside that code page made the worker die with
+    # UnicodeEncodeError before it could report anything. Pin both ends to
+    # UTF-8 so the pipe has one encoding regardless of locale.
+    env["PYTHONIOENCODING"] = "utf-8:replace"
     command = [sys.executable, "-m", "headless_re_mcp.backends.ida.gate_worker"]
     if not decompile:
         command.append("--no-decompile")
@@ -66,6 +72,8 @@ def run_idalib_gate(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
         **no_window_popen_kwargs(),
     )
