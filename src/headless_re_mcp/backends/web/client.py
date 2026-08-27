@@ -26,7 +26,11 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
-from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
+from headless_re_mcp.core.process_tree import (
+    pid_still_running,
+    process_image_path,
+    terminate_pid_tree,
+)
 
 JsonObject = dict[str, Any]
 T = TypeVar("T")
@@ -278,15 +282,38 @@ class WebBackend:
             return {"open": False, "opening": True}
         if not isinstance(handle, _WebSession):
             return {"open": False}
+        runner = self._runner(handle)
+        # Answered before dispatching: a session whose browser had died still
+        # reported open with a stale url, and status is exactly the probe an
+        # unattended caller uses to decide whether the expensive calls are
+        # worth making. The wedged flag and the driver pid are the two health
+        # signals that answer from this thread without touching the driver.
+        if runner.wedged:
+            return {"open": True, "responsive": False, "wedged": True}
+        if _driver_gone(handle):
+            return {"open": True, "responsive": False, "exited": True}
 
         def work() -> JsonObject:
+            # The title roundtrip doubles as the health probe for Chromium
+            # dying under a live driver: the client-side flags never flip
+            # (measured: is_connected() still True 4s after SIGKILLing the
+            # whole chromium tree) while this call fails in about a
+            # millisecond. status already paid for the roundtrip; the fix is
+            # to stop discarding the health information it carries.
+            try:
+                title = _bounded_metadata(handle.page.title(), _MAX_METADATA_BYTES)[0]
+            except Exception as exc:  # noqa: BLE001
+                if _target_closed(exc):
+                    return {"open": True, "responsive": False, "exited": True}
+                title = ""
             return {
                 "open": True,
+                "responsive": True,
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
-                "title": _safe_title(handle.page),
+                "title": title,
             }
 
-        return self._runner(handle).call(work)
+        return runner.call(work)
 
     def _get(self, session_id: str) -> _WebSession:
         with self._lock:
@@ -301,6 +328,25 @@ class WebBackend:
         runner = handle.runner
         if runner is None:
             raise WebError("invalid_state", "web session has no browser thread")
+        return runner
+
+    def _live_runner(self, handle: _WebSession) -> _Runner:
+        """The session's runner, refusing fast when the browser is already dead.
+
+        A call dispatched into a dead node driver does not fail -- it blocks
+        until ``_CALL_TIMEOUT`` wedges the runner, so every browser crash cost
+        the first caller sixty seconds and surfaced as a generic timeout.
+        Checking the driver pid before dispatching turns that into an
+        immediate, actionable invalid_state. Chromium dying under a live
+        driver needs no equivalent gate: the driver answers those calls with a
+        prompt TargetClosed error that each method already wraps.
+        """
+        runner = self._runner(handle)
+        if _driver_gone(handle):
+            raise WebError(
+                "invalid_state",
+                "the browser for this session has exited; call web.close, then web.open again",
+            )
         return runner
 
     def open(
@@ -477,7 +523,7 @@ class WebBackend:
                 "title": _safe_title(handle.page),
             }
 
-        return self._runner(handle).call(work, timeout=timeout + 10.0)
+        return self._live_runner(handle).call(work, timeout=timeout + 10.0)
 
     def close(self, session_id: str) -> JsonObject:
         with self._lock:
@@ -493,18 +539,22 @@ class WebBackend:
             handle.close()
             return {"closed": True}
         clean = True
-        if not runner.wedged:
+        # A dead driver cannot run its own teardown: dispatching handle.close
+        # at it blocks for the full 20s bound before wedging, so close -- the
+        # recovery path after a crash -- used to cost 20 seconds for nothing.
+        driver_gone = _driver_gone(handle)
+        if not runner.wedged and not driver_gone:
             # Teardown talks to the browser, so it belongs on the same thread as
             # everything else. Bounded, because close is the recovery path: it
             # has to reclaim the session even when the browser is beyond saving.
             with contextlib.suppress(WebError):
                 runner.call(handle.close, timeout=20.0)
-        if runner.wedged:
+        if runner.wedged or driver_gone:
             clean = False
             # Playwright objects cannot be touched from this thread, and a
             # wedged runner will never run handle.close. The node driver is
             # what still holds Chromium; killing it is the only close that
-            # works from here.
+            # works from here. After a crash this sweeps whatever survived it.
             _reap_web_session(handle)
         runner.shutdown()
         return {"closed": True, "clean": clean}
@@ -535,7 +585,7 @@ class WebBackend:
         body = ""
         base64_encoded = False
         try:
-            resp = self._runner(handle).call(
+            resp = self._live_runner(handle).call(
                 lambda: handle.cdp.send("Network.getResponseBody", {"requestId": request_id})
             )
             body = resp.get("body", "")
@@ -600,7 +650,7 @@ class WebBackend:
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
         try:
-            resp = self._runner(handle).call(
+            resp = self._live_runner(handle).call(
                 lambda: handle.cdp.send("Debugger.getScriptSource", {"scriptId": script_id})
             )
         except WebError:
@@ -659,7 +709,7 @@ class WebBackend:
                 "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
             }
 
-        return self._runner(handle).call(work)
+        return self._live_runner(handle).call(work)
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:
         handle = self._get(session_id)
@@ -680,7 +730,7 @@ class WebBackend:
                 )
             return {"path": str(out_path), "size": size}
 
-        return self._runner(handle).call(work)
+        return self._live_runner(handle).call(work)
 
     def har_export(self, session_id: str, out_path: Path) -> JsonObject:
         handle = self._get(session_id)
@@ -756,6 +806,35 @@ def _playwright_driver_pid(playwright: Any) -> int | None:
             return None
     pid = getattr(current, "pid", None)
     return pid if isinstance(pid, int) and pid > 0 else None
+
+
+def _driver_gone(handle: _WebSession) -> bool:
+    """True once the node driver that owns Chromium has exited.
+
+    The sync objects expose no health signal and a call into a dead driver
+    does not fail, it blocks; the driver pid is the one thing a crashed
+    session still answers for cheaply, and from any thread. Zombie-aware on
+    purpose: a SIGKILLed driver sits unreaped in /proc until something waits
+    on it, and ``os.kill(pid, 0)`` would keep reporting it alive.
+    """
+    pid = getattr(handle, "driver_pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    return not pid_still_running(pid)
+
+
+def _target_closed(exc: BaseException) -> bool:
+    """Whether an exception says the page/browser is gone, not that a call failed.
+
+    Matched by class name because ``playwright.sync_api`` does not re-export
+    ``TargetClosedError`` in every release this backend accepts, and the
+    private ``_impl`` module is not an import target. The message fallback
+    covers older drivers that raised a plain Error with the same wording.
+    """
+    if type(exc).__name__ == "TargetClosedError":
+        return True
+    text = str(exc).casefold()
+    return "has been closed" in text or "target closed" in text or "connection closed" in text
 
 
 _DRIVER_IMAGE_MARKERS = ("node", "chromium", "chrome", "playwright")
