@@ -627,6 +627,18 @@ class AdbBackend:
                 size=size,
                 cap=UNREGISTERED_CAPTURE_MAX_BYTES,
             )
+        if size == 0:
+            # PIL's save returns None on success; a refused capture returns
+            # False and writes nothing, and capped_file_size answers 0 for a
+            # missing or empty file. Without this the reply is a size-0 success
+            # the caller reads as a real screenshot it can open.
+            raise AdbError(
+                "backend_error",
+                "screenshot did not produce a local file",
+                path=str(out_path),
+                serial=_check_serial(serial),
+                captured=False,
+            )
         return {
             "path": str(out_path),
             "serial": _check_serial(serial),
