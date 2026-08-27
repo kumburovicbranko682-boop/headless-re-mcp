@@ -52,8 +52,11 @@ def test_a_capped_property_list_says_has_more() -> None:
     assert "items" not in payload
     assert payload["count"] == 500
     assert len(payload["properties"]) == 500
+    assert payload["total"] == 600
+    assert payload["offset"] == 0
     assert payload["has_more"] is True
     doc = _tool_docstring("device.properties")
     assert "Answers with properties" in doc
     assert "has_more" in doc
     assert "count" in doc
+    assert "total" in doc

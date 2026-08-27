@@ -124,6 +124,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - UPX / XVLKC / Scylla / VMPDump / de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为
   本机没装 CLI 就说成 `capability_unavailable`。
 
+### 修复（`device.packages` / `device.properties` 分页可达性）
+
+- 两者过去都只按 `limit` 截断并置 `has_more=True`,却**不带 `offset`**——一旦包名/属性
+  超过一页,后面的就取不到了;`device.packages` 还是「先按 `pm` 顺序留前 N,再对这 N 排序」,
+  所以那一页只是任意子集的排序视图,并非字典序最前的 N 个。现改成与 `apk.classes` /
+  jadx 源树列举同款的稳定分页读:整套先收齐再排序后切片,`device.packages` 按包名、
+  `device.properties` 按键排序,返回 `total`/`offset`/`count`,`has_more` 据总数判定。
+  schema 上两者的 `offset` 声明 `ge=0`、`limit` 保持 `ge=1,le=2000`。
+
 ### 新增（会话目标类型）
 
 - 会话不再只认 PE。`Session` 增加 `target`（`pe|apk|web`）与 `locator`，`architecture`、

@@ -387,46 +387,58 @@ class AdbBackend:
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
 
-    def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
+    def properties(self, serial: str, *, offset: int = 0, limit: int = 500) -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PROPERTIES))
+        start = max(0, int(offset))
         raw = _device_shell(dev, "getprop")
-        props: dict[str, str] = {}
-        has_more = False
+        parsed: list[tuple[str, str]] = []
         for line in str(raw).splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
-            if not match:
-                continue
-            if len(props) >= capped:
-                has_more = True
-                break
-            props[match.group(1)] = match.group(2)
-        return {"properties": props, "count": len(props), "has_more": has_more}
+            if match:
+                parsed.append((match.group(1), match.group(2)))
+        # Sort by key before paging: getprop order is not a stable contract, so
+        # a plain first-N (the previous behaviour) made page N meaningless and
+        # left no offset to reach later keys once has_more was raised.
+        parsed.sort(key=lambda item: item[0])
+        total = len(parsed)
+        window = parsed[start : start + capped]
+        return {
+            "properties": dict(window),
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+        }
 
     def packages(
-        self, serial: str, *, third_party_only: bool = False, limit: int = 500
+        self, serial: str, *, third_party_only: bool = False, offset: int = 0, limit: int = 500
     ) -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PACKAGES))
+        start = max(0, int(offset))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
         pkgs: list[str] = []
-        has_more = False
         for line in str(raw).splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
-            if not name:
-                continue
-            if len(pkgs) >= capped:
-                has_more = True
-                break
-            pkgs.append(name)
+            if name:
+                pkgs.append(name)
+        # Sort the whole set, then slice: the previous "keep the first N in pm
+        # order, then sort those N" returned a sorted view of an arbitrary
+        # subset and offered no offset, so anything past page one was
+        # unreachable and the sorted page was not the alphabetically first N.
         pkgs.sort()
+        total = len(pkgs)
+        window = pkgs[start : start + capped]
         return {
-            "packages": pkgs,
-            "count": len(pkgs),
-            "has_more": has_more,
+            "packages": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
             "third_party_only": third_party_only,
         }
 

@@ -60,30 +60,35 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="device.properties")
     def device_properties(
-        serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
+        serial: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 500,
     ) -> dict[str, Any]:
-        """Return getprop key/value pairs for a device.
+        """Return getprop key/value pairs for a device, sorted and paged by key.
 
-        Answers with properties (the name-to-value map), count, and has_more
-        so a page that filled the cap is not read as every property. There
-        is no props or items field.
+        Answers with properties (the name-to-value map), count, total, offset,
+        and has_more so a page that filled the cap is not read as every
+        property; page past the cap with offset/limit. There is no props or
+        items field.
         """
-        return _dump(analysis.device_properties(serial, limit=limit))
+        return _dump(analysis.device_properties(serial, offset=offset, limit=limit))
 
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,
         third_party_only: bool = False,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 500,
     ) -> dict[str, Any]:
-        """List installed package names, optionally only third-party ones.
+        """List installed package names, sorted, optionally only third-party ones.
 
-        Answers with packages, count, has_more, and third_party_only so a
-        page that filled the cap is not read as every package.
+        Answers with packages, count, total, offset, has_more, and
+        third_party_only so a page that filled the cap is not read as every
+        package; page past the cap with offset/limit.
         """
         return _dump(
             analysis.device_packages(
-                serial, third_party_only=third_party_only, limit=limit
+                serial, third_party_only=third_party_only, offset=offset, limit=limit
             )
         )
 
