@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`frida.server.ensure` 把 adb 主机错误当成 frida-server 明确没跑）
+
+- `frida.server.ensure` 用 `_frida_server_visible` 在 `ps` 里找 `frida-server`，据此给出三态
+  `running`（true/false/null，null 表示读不到进程列表——该函数本就为探针抛异常保留了 null
+  分支）。但 adbutils 会把 adb 主机自己的 `adb:`/`error:` 行当 stdout 返回而不抛异常（离线设备
+  就这么回 `ps`），而这行里没有 `frida-server`，于是主机错误被读成「明确没在跑」（false）而非
+  「没法确认」（null）——正是 `pm path` / `force_stop` 已补上的同款误报。读到 false 的调用方会去
+  重启一个可能已经起来的 frida-server，或对一个根本没核过的设备判定失败。现在
+  `_frida_server_visible` 对 `ps -A` 与 `ps` 回退的输出都用 `_is_host_error_output` 判定，主机错误
+  一律返回 `None`；`ensure_frida_server` 在启动后复核拿到 null 时，把提示语也改成「读不到设备进程
+  列表、无法确认」而非「ps 里看不到 frida-server」。新增直测覆盖两处主机错误路径、真实命中与
+  真实未命中，并端到端验证 `running` 为 null。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

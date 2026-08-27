@@ -208,11 +208,22 @@ def _call(method: Any, *args: Any, timeout: float | None = None, **kwargs: Any) 
 
 
 def _frida_server_visible(dev: Any) -> bool | None:
+    # Tri-state: True/False when the process list was read, None when it could
+    # not be. adbutils can hand back the adb host's own "adb:"/"error:" line as
+    # stdout instead of raising (an offline device answers ps that way), and
+    # "frida-server" is not in that line -- so without this guard a host error
+    # read as a definite "not running" (False) rather than "could not check"
+    # (None), the same misreport pm path and force_stop grew a guard against.
     try:
-        text = _device_shell(dev, "ps -A", timeout=_ADB_PROBE_TIMEOUT_S)
+        text = str(_device_shell(dev, "ps -A", timeout=_ADB_PROBE_TIMEOUT_S))
+        if _is_host_error_output(text):
+            return None
         if "frida-server" in text:
             return True
-        return "frida-server" in _device_shell(dev, "ps", timeout=_ADB_PROBE_TIMEOUT_S)
+        fallback = str(_device_shell(dev, "ps", timeout=_ADB_PROBE_TIMEOUT_S))
+        if _is_host_error_output(fallback):
+            return None
+        return "frida-server" in fallback
     except Exception:  # noqa: BLE001
         return None
 
@@ -866,11 +877,16 @@ class AdbBackend:
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": pushed, "port": port}
+        note = (
+            "launch command returned; could not read the device process list to confirm"
+            if visible is None
+            else "launch command returned; frida-server not visible in ps"
+        )
         return {
             "running": visible,
             "pushed": pushed,
             "port": port,
-            "note": "launch command returned; frida-server not visible in ps",
+            "note": note,
         }
 
     def forward(self, serial: str, local: str, remote: str) -> JsonObject:
