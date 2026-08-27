@@ -254,6 +254,18 @@ class GhidraClient:
             ) from exc
         if not isinstance(payload, dict):
             raise GhidraError("backend_error", "export JSON must be an object")
+        if code != 0 and not _export_has_content(payload, mode):
+            # analyzeHeadless often exits 1 after a real postScript write, so a
+            # non-zero exit that still produced content is a success. An empty
+            # payload left by a failed script is not that write: returning it
+            # would read as a binary with no functions, symbols, xrefs or code.
+            raise GhidraError(
+                "backend_error",
+                "analyzeHeadless export failed",
+                exit_code=code,
+                stderr=stderr[:4000],
+                stdout_excerpt=stdout[-4000:],
+            )
         payload["export_path"] = str(out_path)
         payload["project_dir"] = str(project_dir)
         if mode == "decompile":
@@ -280,8 +292,14 @@ class GhidraClient:
         assert self.analyze is not None
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         env = os.environ.copy()
-        # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free.
-        env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap}"
+        # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free. Prepend, do
+        # not overwrite: operators set JAVA_TOOL_OPTIONS for a proxy, an encoding,
+        # or the --add-opens a JDK 17+ Ghidra needs, and clobbering it here would
+        # silently break analyzeHeadless on their machine. Ours goes first so the
+        # heap bound is the default while an explicit operator -Xmx, which the JVM
+        # parses last, still wins.
+        existing = env.get("JAVA_TOOL_OPTIONS", "").strip()
+        env["JAVA_TOOL_OPTIONS"] = f"-Xmx{max_heap} {existing}".strip()
         cmd = [
             str(self.analyze),
             str(project_dir),
@@ -320,6 +338,14 @@ class GhidraClient:
         stdout = completed.stdout.decode("utf-8", errors="replace")[:_MAX_STDOUT]
         stderr = completed.stderr.decode("utf-8", errors="replace")[:50_000]
         return stdout, stderr, int(completed.returncode)
+
+
+def _export_has_content(payload: JsonObject, mode: str) -> bool:
+    if mode == "decompile":
+        text = payload.get("decompiled")
+        return isinstance(text, str) and bool(text.strip())
+    items = payload.get("items")
+    return isinstance(items, list) and bool(items)
 
 
 def _which(name: str) -> Path | None:

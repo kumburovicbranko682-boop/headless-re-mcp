@@ -112,6 +112,7 @@ class FridaDeviceMixin:
         serial: str,
         server_binary: str = "",
         port: int = 27042,
+        bind_host: str = "127.0.0.1",
     ) -> Result[JsonObject]:
         try:
             self._require_open_session(session_id, "frida.server.ensure")
@@ -123,7 +124,9 @@ class FridaDeviceMixin:
                 if getattr(self.settings, "frida_server", None)
                 else None
             )
-            data = backend.ensure_frida_server(serial, server_binary=binary, port=port)
+            data = backend.ensure_frida_server(
+                serial, server_binary=binary, port=port, bind_host=bind_host
+            )
             self._require_open_session(session_id, "frida.server.ensure")
             _timeline_append(
                 self, session_id, "frida.server.ensure", "frida-server ensured", serial=serial
@@ -148,6 +151,13 @@ class FridaDeviceMixin:
         try:
             auth = self._frida_auth(session_id)
             data = FridaClient().spawn(auth.get("device_id"), package)
+            # A close arriving mid-spawn would otherwise report ok=True and
+            # write the freshly spawned pid onto a session that no longer
+            # exists -- the same "mutate a closed session" defect that
+            # frida.device.connect and frida.server.ensure re-check for. The
+            # spawned process is on the device either way; refusing here at
+            # least keeps a dead session from being recorded as owning it.
+            self._require_open_session(session_id, "frida.spawn")
             pid = int(data["pid"])
             auth = dict(auth)
             auth["pids"] = _append_recent(auth.get("pids"), pid)
