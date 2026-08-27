@@ -42,6 +42,30 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   以及 `pid`/`exit_code`/`capabilities`/`metadata`(防御性拷贝)属性。行覆盖 42% → 62%
   (余量为 Windows 专有的命名管道传输、`__init__` 真实拉起与桌面/收尾路径)。
 
+### 测试（共享受管子进程 mixin 的跨平台合同）
+
+- `backends/common/subprocess_rpc.py` 的既有 terminate 测试只验证 Win32 后代枚举、在
+  Linux 上 skip，导致 mixin 的启动 kwargs、`pid` / `analyzer_windows` 属性与 `_lock`
+  接缝在 Linux CI 上从未被执行。新增 `tests/unit/test_subprocess_rpc_mixin.py` 固定各
+  平台都成立的部分:`no_window_popen_kwargs()` 的返回形态(Linux 上 `creationflags==0`、
+  `startupinfo is None`;Windows 上抑制控制台窗口且 `wShowWindow==0`)、`pid` 属性、
+  `analyzer_windows` 排序并累积目击集(窗口关闭后仍留在累积集里)、`terminate_process`
+  在有无 `_lock` 两种情形下都真实回收进程且释放锁。Linux 行覆盖 44% → 89%(仅余
+  Windows 专有的 `STARTUPINFO` 分支,由形态测试在 Windows job 覆盖)。
+
+### 测试（IDA worker RPC 客户端合同测试）
+
+- `IdaWorkerClient` 的传输层此前只有窗口历史上限一项合同有测试（行覆盖 32%）。新增
+  `tests/unit/test_ida_worker_client_rpc.py`：通过 `PYTHONPATH` 遮蔽真实
+  `backends.ida.worker` 模块、以脚本化假 worker 子进程走完整协议，不需要 idalib、
+  Windows 与 Linux 均可运行。覆盖 ready/fatal 握手（含 capabilities 非列表、data 非
+  对象、启动前崩溃携带 stderr 诊断）、请求按 id 关联与错误载荷映射、超时/未读消息
+  溢出后 worker 被强制退休（不复用卡死进程）、close 的三种收尾（应答后不退出则杀树、
+  worker 已死静默收尾、不应答则上抛超时且二次 close 幂等）、分析器窗口在启动与请求
+  两个时点的拒答及重复目击不膨胀历史，另有 `next_receive_deadline` /
+  `startup_receive_remaining` / `IdaWorkerError.from_payload` 纯函数合同。该模块行
+  覆盖 32% → 98%。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
