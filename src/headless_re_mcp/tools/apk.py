@@ -140,8 +140,12 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List callers of every method named method_name.
 
-        Answers with callers (class and method), method_name, count, and
-        has_more so a page that filled the limit is not read as the whole list.
+        Answers with callers (class and method), method_name, count,
+        matched_methods, and has_more so a page that filled the limit is not
+        read as the whole list. matched_methods is how many methods the name
+        resolved to: 0 means no such method (a typo or a renamed/obfuscated
+        one), so an empty callers list is not "never called"; greater than 1
+        means the callers span several same-named methods merged together.
         """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 

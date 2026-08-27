@@ -78,9 +78,66 @@ def test_apk_xrefs_puts_the_list_in_callers_and_says_when_it_stopped(
     assert payload["count"] == 10
     assert len(payload["callers"]) == 10
     assert payload["has_more"] is True
+    # The one method the name resolved to is still counted even though the
+    # caller page filled and stopped early.
+    assert payload["matched_methods"] == 1
     doc = _tool_docstring("apk.xrefs")
     assert "Answers with callers" in doc
     assert "has_more" in doc
+
+
+def test_apk_xrefs_matched_methods_separates_absent_from_uncalled(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An empty callers list is "never called" only when a method matched.
+
+    Measured against the same fake analysis: a method that exists but is never
+    invoked answers matched_methods 1 with no callers; a name that matches no
+    method answers matched_methods 0. Without the count the two are the same
+    empty list, so a typo'd or renamed target reads as a genuinely dead method.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeParsed([_FakeMethod("lonely", 0)]),
+    )
+    uncalled = client.xrefs(tmp_path / "app.apk", "lonely", limit=10)
+    assert uncalled["count"] == 0
+    assert uncalled["callers"] == []
+    assert uncalled["matched_methods"] == 1
+
+    absent = client.xrefs(tmp_path / "app.apk", "doesNotExist", limit=10)
+    assert absent["count"] == 0
+    assert absent["callers"] == []
+    assert absent["matched_methods"] == 0
+
+    doc = " ".join(_tool_docstring("apk.xrefs").split())
+    assert "matched_methods" in doc
+    assert "no such method" in doc
+
+
+def test_apk_xrefs_counts_every_same_named_method_even_past_the_page(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A name on several methods reports them all, and warns via the count > 1.
+
+    The first matching method already fills the caller page, but the other two
+    methods sharing the name must still be counted so matched_methods (3) tells
+    a reader the callers span more than one method rather than a single target.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeParsed(
+            [_FakeMethod("run", 25), _FakeMethod("run", 4), _FakeMethod("run", 1)]
+        ),
+    )
+    payload = client.xrefs(tmp_path / "app.apk", "run", limit=10)
+    assert payload["count"] == 10
+    assert payload["has_more"] is True
+    assert payload["matched_methods"] == 3
 
 
 def test_apk_xrefs_names_method_name_on_the_payload(

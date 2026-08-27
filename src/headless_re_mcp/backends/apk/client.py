@@ -425,8 +425,18 @@ class ApkClient:
         _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
         callers: list[JsonObject] = []
         has_more = False
+        # How many internal methods actually carry this name. An empty caller
+        # list means "never called" only when at least one method matched; with
+        # zero matches the name resolved to nothing (a typo, an obfuscated or
+        # renamed method, the dotted-vs-smali confusion) and "no callers" would
+        # read as a fact about a method that is not there. Count every match
+        # even after the caller page fills so a common name is not undercounted.
+        matched = 0
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
+                continue
+            matched += 1
+            if has_more:
                 continue
             for _, call, _ in method.get_xref_from():
                 if len(callers) >= cap:
@@ -440,12 +450,14 @@ class ApkClient:
                         "method": str(call.name),
                     }
                 )
-            if has_more:
-                break
         return {
             "method_name": target,
             "callers": callers,
             "count": len(callers),
+            # How many methods the name resolved to: 0 says the name matched no
+            # method at all (so an empty list is not "never called"), and >1
+            # warns that the callers span several same-named methods merged here.
+            "matched_methods": matched,
             # A caller deciding "these are all the callers" has to know whether
             # the enumeration ended or merely stopped.
             "has_more": has_more,

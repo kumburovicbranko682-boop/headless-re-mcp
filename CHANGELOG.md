@@ -24,6 +24,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（apk.xrefs 区分"无此方法"与"方法在但没人调用"）
+
+- `apk.xrefs` 列举同名内部方法的调用者,找不到调用者时返回空列表——可"真的没人调用的方法"与
+  "根本没有这个方法"(拼错、被混淆/重命名、点分名与 smali 名混淆)返回的是**同一个空列表**,无从
+  区分。这是两个截然不同的结论:一个是"这段是死代码",一个是"你问的东西不在这里"。现新增
+  `matched_methods` 字段——该名字解析到的内部方法数:为 0 表示没有任何方法匹配(空列表不是"从未被
+  调用"),大于 1 则提示这些调用者其实横跨多个同名方法、被合并到了一起。计数在调用者分页填满后仍继续
+  统计每个匹配方法,避免常见名被少计。`apk.xrefs` 文档串说明 `matched_methods` 的三种含义。单测新增
+  「存在但零调用者(matched 1)vs 无此方法(matched 0)可区分」与「同名多方法即使超页也全计入
+  (matched 3)」两条,并把原有测试补上 matched_methods 断言。新增 live gate
+  (`test_apk_xrefs_method_resolved_live_gate.py`)配套夹具 `fixtures/apk/xref_sample.apk`(内含真
+  `classes.dex`,由 `xref_sample.smali` 经 smali 汇编、`xref_sample_gen.py` 打包,附重建说明):经真
+  androguard 的交叉引用分析,断言 `callee` 被两个方法调用(matched 1、count 2)、`lonely` 存在却零
+  调用者(matched 1、count 0)、`doesNotExist` 无匹配(matched 0),证明"未被调用"与"不存在"不再是
+  同一个答案。CI 新增 `linux-apk-xrefs` job 装 androguard 跑该 gate,skip≠pass 守卫在 androguard 已装
+  却仍 skip 时判失败。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
