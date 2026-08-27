@@ -173,6 +173,10 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "bytes" in _tool_docstring("js.beautify")
     assert "output_dir" in _tool_docstring("js.unpack_bundle")
     assert "has_more" in _tool_docstring("js.unpack_bundle")
+    # listing_truncated is produced by the client (the 50k counting cap) and
+    # tested against the live backend, but was missing from the catalog: a
+    # caller reading total as exact could not learn it was a floor.
+    assert "listing_truncated" in _tool_docstring("js.unpack_bundle")
     assert "Answers with wat" in _tool_docstring("wasm.wat")
     assert "bytes" in _tool_docstring("wasm.wat")
     assert "truncated" in _tool_docstring("wasm.info")
