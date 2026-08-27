@@ -12,6 +12,10 @@ from headless_re_mcp.backends.r2.mapping import enrich_r2_payload
 
 JsonObject = dict[str, Any]
 _MAX_OUTPUT = 1_000_000
+# r2.open inlines the identity text as a convenience preview. It is cut tighter
+# than run()'s 1 MB buffer, so the cut needs its own flag: r2.info already says
+# when its identity dump was truncated, and open must not silently do less.
+_MAX_OPEN_INFO = 8000
 _ALLOWED = frozenset(
     {
         "i",
@@ -65,12 +69,19 @@ class R2Client:
         if not binary.is_file():
             raise R2Error("not_found", "binary not found", path=str(binary))
         data = self.run(binary, ["i"], timeout=timeout)
-        return {
+        identity = str(data.get("raw", ""))
+        payload: JsonObject = {
             "opened": True,
             "binary": str(binary),
-            "info": data.get("raw", "")[:8000],
+            "info": identity[:_MAX_OPEN_INFO],
             "note": "r2.open is one-shot validation; subsequent tools reopen the binary",
         }
+        if len(identity) > _MAX_OPEN_INFO:
+            # A caller reading info for the section or library count has to know
+            # the preview stopped at the buffer rather than ended, the same way
+            # r2.info reports its own cut.
+            payload["info_truncated"] = True
+        return payload
 
     def disasm(
         self,
