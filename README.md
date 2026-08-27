@@ -384,7 +384,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 已有较完整的静态查询、动态调试闭环、事件流、地址同步、workflow，以及 dump / IAT / UPX 等脱壳相关路径的代码与真机 Gate。连接级自愈已实测，但公开提交仍少，可选后端成熟度不一。
 
-**Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制，但真机 Gate 只在装了对应工具的机器上才真正执行。缺 adb/jadx/apktool/webcrack/wabt 时相关 Gate 会如实跳过，**skip 不等于 pass**。
+**Android 与 Web 两个目标域是新加的，成熟度明显低于 PE 那条链路**：契约（信封、读写分级、敌意输入）与降级路径有单元测试强制。它们的真机 Gate 过去只在装了对应工具的机器上才执行；现在 GitHub 托管的 `linux-integration` CI 作业会装齐 androguard / jadx / apktool / Playwright+Chromium / webcrack / wabt / mitmproxy，并在每个 PR 与推送 `main` 时运行这些非 PE Gate——androguard 的 DEX 分析、jadx 反编译、apktool 反汇编与 decode→repack 回环、CDP 抓取网络/脚本/控制台/运行期 WASM 模块/DOM 快照、JS/WASM 静态、抓包起停与真实流量回放。该作业先跑一步“工具链自检”，缺任一工具即红，避免“工具没装好→Gate 静默跳过→看起来像通过”。换一台缺 adb/jadx/apktool/webcrack/wabt 的机器，相关 Gate 仍会如实跳过，**skip 不等于 pass**；PE 那条链路仍无对应的托管 CI（见下）。该 CI 作业本轮新加，公开历史里尚未累计绿跑记录。
 
 当前证据（在一台配好 x64dbg headless + Chrome/Playwright + mitmproxy + androguard 的机器上实测；
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
@@ -419,9 +419,10 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 Gate 会从 `config.json` 读取后端路径（`tests/integration/conftest.py` 负责桥接），所以配置好的机器不会因为"没设环境变量"而假跳过。**skip 仍然不等于 pass**：换一台缺后端的机器，对应 Gate 会如实跳过。
 
 无人值守的机制已经具备（自动批准策略、持久目标与调度、进程守护、看门狗、隔离钩子、provider 退避），
-但这不等于本项目替你承担了 SLA。仍然成立的限制：真机 Gate 只在配好后端的机器上手动跑过，
-自建 runner 的那条 CI 从未绿过；单维护者、公开历史短；IDA idalib 与 x64dbg headless 本身都不是
-为 7×24 无人值守设计的，可用性上限被它们锁死。要对外承诺可用性数字，这三条得先自己解决。
+但这不等于本项目替你承担了 SLA。仍然成立的限制：PE 那条链路的真机 Gate（IDA idalib / x64dbg
+headless / WinDbg / Win32 UI）只在配好后端的机器上手动跑过，自建 runner 的那条 CI 从未绿过（非 PE
+的 Android/Web/抓包 Gate 现已进托管 CI，见上）；单维护者、公开历史短；IDA idalib 与 x64dbg headless
+本身都不是为 7×24 无人值守设计的，可用性上限被它们锁死。要对外承诺可用性数字，这三条得先自己解决。
 
 不适合：在 Linux 上要求 x64dbg/WinDbg/Win32 UI/MSI，或把可用性责任外包给上游的场景。  
 适合：已有 Windows + IDA 9.x 的完整 PE 工作流；或在 Linux x86_64 上使用 MCP 核心、纯静态检测、Web/Android/Ghidra/radare2 等可移植能力。
