@@ -8,16 +8,20 @@ import json
 from ghidra.app.decompiler import DecompInterface
 from ghidra.util.task import ConsoleTaskMonitor
 
-mode = ARGS[0] if ARGS else "functions"
-out_path = ARGS[1] if len(ARGS) > 1 else None
+# Ghidra injects post-script arguments through getScriptArgs(), not a global
+# named ARGS -- the latter does not exist, so the previous code raised
+# NameError before writing anything and no export was ever produced.
+args = getScriptArgs()
+mode = args[0] if len(args) > 0 else "functions"
+out_path = args[1] if len(args) > 1 else None
 limit = 256
 try:
-    if len(ARGS) > 2:
-        limit = max(1, min(int(ARGS[2]), 1024))
+    if len(args) > 2:
+        limit = max(1, min(int(args[2]), 1024))
 except Exception:
     limit = 256
 
-address_arg = ARGS[3] if len(ARGS) > 3 else None
+address_arg = args[3] if len(args) > 3 else None
 payload = {"mode": mode, "items": [], "count": 0, "has_more": False}
 monitor = ConsoleTaskMonitor()
 program = currentProgram

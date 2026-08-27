@@ -321,13 +321,16 @@ def _which(name: str) -> Path | None:
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
-    for rel in (
-        "support/analyzeHeadless.bat",
-        "support/analyzeHeadless",
-        "analyzeHeadless.bat",
-        "analyzeHeadless",
-    ):
-        candidate = home / rel
-        if candidate.is_file():
-            return candidate
+    # Ghidra ships both launchers side by side: analyzeHeadless (a shell script)
+    # and analyzeHeadless.bat. On Linux/macOS the .bat is a Windows batch file
+    # the OS cannot exec ("Exec format error"), and on Windows the reverse, so
+    # the OS-appropriate launcher has to win rather than whichever is listed
+    # first. Both the support/ layout and a flattened root are still accepted.
+    names = ("analyzeHeadless.bat", "analyzeHeadless") if os.name == "nt" \
+        else ("analyzeHeadless", "analyzeHeadless.bat")
+    for directory in (home / "support", home):
+        for name in names:
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
     return None
