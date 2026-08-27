@@ -354,10 +354,63 @@ class _ProxyInstance:
                     _shutdown_loop(loop)
             _uninstall_master_logging(self._master, loop)
 
+    def _close_servers(self, master: Any, loop: asyncio.AbstractEventLoop) -> None:
+        """Close the proxyserver addon's listening sockets on the loop thread.
+
+        ``master.shutdown()`` only sets ``should_exit``; from mitmproxy 10 the
+        proxyserver addon frees its listening sockets when its server list is
+        emptied, not on the Done hook that a plain shutdown fires. ``mitmdump``
+        never noticed because the process exits and the OS reclaims the port, but
+        this backend runs mitmproxy on a thread inside a long-lived service, so
+        the socket would stay bound and the next capture on that port would be
+        refused. Stopping each running server here is what actually frees it.
+
+        Best-effort by design: the addon layout differs across mitmproxy
+        versions, so any failure falls through to the shutdown() path below
+        rather than blocking stop().
+        """
+        ps = None
+        with contextlib.suppress(Exception):
+            ps = master.addons.get("proxyserver")
+        servers = getattr(ps, "servers", None)
+        if servers is None:
+            return
+        done: concurrent.futures.Future[bool] = concurrent.futures.Future()
+
+        async def _teardown() -> None:
+            try:
+                # Stop each ServerInstance directly rather than via update([]),
+                # so freeing this proxy's port does not depend on the
+                # process-global mitmproxy.ctx (shared by every proxy) still
+                # pointing at this master.
+                stop_tasks = [
+                    server.stop()
+                    for server in list(servers)
+                    if getattr(server, "stop", None) is not None
+                ]
+                if stop_tasks:
+                    await asyncio.gather(*stop_tasks, return_exceptions=True)
+            finally:
+                if not done.done():
+                    done.set_result(True)
+
+        def _schedule() -> None:
+            try:
+                asyncio.ensure_future(_teardown())
+            except Exception as exc:  # noqa: BLE001 - loop may be closing
+                if not done.done():
+                    done.set_exception(exc)
+
+        with contextlib.suppress(Exception):
+            loop.call_soon_threadsafe(_schedule)
+            with contextlib.suppress(Exception):
+                done.result(timeout=8.0)
+
     def stop(self) -> None:
         master = self._master
         loop = self._loop
         if master is not None and loop is not None:
+            self._close_servers(master, loop)
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(master.shutdown)
         if self._thread is not None:
