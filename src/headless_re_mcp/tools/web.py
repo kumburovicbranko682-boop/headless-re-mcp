@@ -73,7 +73,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
         visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        A request Chromium aborted carries failed=true and error_text (plus
+        canceled or blocked_reason when reported), so a failed request is not
+        mistaken for one still in flight (status stays null on both). There
+        is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -89,7 +92,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         decoded size. When CDP has no body for the request (a redirect, or a
         body already evicted from its cache) body is empty and body_error says
         why, while body, base64_encoded and body_truncated stay present. A
-        body over the capture cap is refused rather than written to disk.
+        request Chromium aborted carries failed=true and error_text from the
+        capture, so an empty body is not read as an empty response. A body over
+        the capture cap is refused rather than written to disk.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
