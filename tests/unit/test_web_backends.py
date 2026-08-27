@@ -238,14 +238,15 @@ class TestProxyScoping:
     def test_stop_without_start_is_not_an_error(self) -> None:
         assert ProxyBackend().stop("no-such-session")["stopped"] is False
 
-    def test_start_rejects_an_out_of_range_port(self) -> None:
+    @pytest.mark.parametrize("bad_port", [0, -1, 99999, True, 8080.0, "8080", None])
+    def test_start_rejects_an_out_of_range_port(self, bad_port: object) -> None:
+        # Port validation runs before the mitmproxy availability probe, so a bad
+        # port is rejected as invalid_params even on a machine without mitmproxy
+        # -- the check is no longer masked by capability_unavailable, and this
+        # assertion is meaningful whether or not the backend is installed.
         backend = ProxyBackend()
-        try:
-            backend._check_available()
-        except ProxyError:
-            pytest.skip("mitmproxy not installed — port validation not reached (skip != pass)")
         with pytest.raises(ProxyError) as info:
-            backend.start("s", port=99999)
+            backend.start("s", port=bad_port)  # type: ignore[arg-type]
         assert info.value.code == "invalid_params"
 
 
