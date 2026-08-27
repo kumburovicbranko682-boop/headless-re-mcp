@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 proxy.export_har 的服务层制品登记与时间线留痕钉进测试）
+
+- `ProxyBackend.export_har` 的后端行为(spec-valid HAR、按抓取上限做字节裁剪)已有测试,但它外面那层**服务**接线
+  从没被覆盖过——而正是这层接线让导出可用:导出的 HAR 会被登记为制品(裸路径两头不通:工具面没有工具能打开它,
+  保留巡检也只回收仓库知道的东西,所以未登记的 HAR 既对发起它的 agent 隐身、又让制品根无限增长),并落一条
+  `proxy.export_har` 时间线,和 proxy.start/stop/replay/ca.install_android 并列。
+- 新增 `tests/unit/test_proxy_export_har_timeline.py`(沿用 replay 时间线测试的 `AnalysisService` + 注入式假后端
+  骨架):成功导出会挂上一个真实可 `describe_artifact` 回来、kind 为 `proxy_har`、文件在盘的制品 id,并恰好留一条
+  `proxy.export_har` 时间线;失败导出(和所有只在成功时留痕的写类兄弟一样)不留误导性的"已导出"痕迹。
+  `core/service_proxy.py` 的 `proxy_export_har` 成功接线补齐覆盖,纯补测、不改行为。
+
 ### 加固（把共享保留原语在抓取目录不可读时的软降级钉进测试）
 
 - `core/limits.py` 的 `prune_capped_dir` / `_dir_size` 是唯一挡在各条非 PE 抓取工具（`device.pull`、
