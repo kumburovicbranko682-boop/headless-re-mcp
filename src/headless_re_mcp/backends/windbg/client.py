@@ -67,20 +67,31 @@ def _summarised(text: str, limit: int) -> dict[str, object]:
 
 
 def _carried(data: JsonObject) -> dict[str, object]:
-    """Lift a truncation notice out of the raw payload a wrapper nests.
+    """Lift the truncation and failure notices out of the raw payload a wrapper nests.
 
     Every wrapper here renames ``output`` to something the caller reads --
     threads, modules, disasm -- and drops the rest. A caller reading the
-    renamed field has no reason to open a nested copy, so the notice has
-    to travel with it.
+    renamed field has no reason to open a nested copy, so any notice that
+    changes how that text should be read has to travel with it. That is the
+    truncation flags, and also a cdb failure: an exit code outside the tolerated
+    0/1 means the printed text is an error or a partial listing, not the
+    finished answer, so ``tool_failed``/``exit_code`` ride along rather than
+    letting ``modules``/``threads``/``disasm`` read a failed run as a normal,
+    if short, result.
     """
-    if not data.get("truncated"):
-        return {}
-    return {
-        "truncated": True,
-        "output_chars": data.get("output_chars"),
-        "returned_chars": data.get("returned_chars"),
-    }
+    carried: dict[str, object] = {}
+    if data.get("truncated"):
+        carried["truncated"] = True
+        carried["output_chars"] = data.get("output_chars")
+        carried["returned_chars"] = data.get("returned_chars")
+    exit_code = data.get("exit_code")
+    if isinstance(exit_code, int) and exit_code not in (0, 1):
+        carried["tool_failed"] = True
+        carried["exit_code"] = exit_code
+        stderr = data.get("stderr")
+        if stderr:
+            carried["stderr"] = str(stderr)[:2000]
+    return carried
 
 
 def _is_store_package(path: Path) -> bool:
@@ -301,6 +312,19 @@ class WindbgClient:
             ) from exc
         out, cut = _bounded(completed.stdout, _MAX_OUTPUT)
         err, _ = _bounded(completed.stderr, _MAX_STDERR)
+        # Mirror _run_process: cdb can exit non-zero after printing nothing when
+        # it could not open the dump at all (wrong bitness, corrupt file, a
+        # symbol path it refused). Returning that as {output: ""} reads through
+        # the wrappers as "the dump has no modules/threads" -- an empty result
+        # rather than the failed analysis it is. When cdb printed something the
+        # payload is kept and the non-zero exit is surfaced by _carried instead.
+        if completed.returncode not in {0, 1} and not out:
+            raise WindbgError(
+                "backend_error",
+                "cdb dump analysis failed",
+                exit_code=completed.returncode,
+                stderr=err[:2000],
+            )
         return {
             "dump": str(dump),
             "output": out,

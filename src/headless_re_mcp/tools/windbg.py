@@ -46,6 +46,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with threads holding that text, plus dump, and truncated,
         output_chars and returned_chars when the session was cut at the buffer.
+        When cdb exits with a failure code, tool_failed and exit_code (with
+        stderr) travel with it, so an errored session is not read as an empty
+        thread list.
         """
         return _dump(analysis.windbg_threads(dump_path, timeout=timeout))
 
@@ -57,6 +60,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with modules holding that text, plus dump, and truncated,
         output_chars and returned_chars when the session was cut at the buffer.
+        When cdb exits with a failure code, tool_failed and exit_code (with
+        stderr) travel with it, so an errored session is not read as an empty
+        module list.
         """
         return _dump(analysis.windbg_modules(dump_path, timeout=timeout))
 
@@ -71,7 +77,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with disasm holding that text, plus dump, address and length,
         and truncated, output_chars and returned_chars when the session was
-        cut at the 500_000-character buffer. There is no output field.
+        cut at the 500_000-character buffer. When cdb exits with a failure code,
+        tool_failed and exit_code (with stderr) travel with it, so an errored
+        session is not read as empty disassembly. There is no output field.
         """
         return _dump(analysis.windbg_disasm(dump_path, address, length=length, timeout=timeout))
 
@@ -97,7 +105,10 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with threads holding the cdb text, plus pid, and truncated,
         output_chars and returned_chars when the session was cut at the
-        500_000-character buffer. There is no process_id or output field.
+        500_000-character buffer. When cdb exits with a failure code,
+        tool_failed and exit_code (with stderr) travel with it, so an errored
+        session is not read as an empty thread list. There is no process_id or
+        output field.
         """
         return _dump(analysis.windbg_live_threads(session_id, timeout=timeout))
 
@@ -109,7 +120,10 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with modules holding the cdb text, plus pid, and truncated,
         output_chars and returned_chars when the session was cut at the
-        500_000-character buffer. There is no process_id or output field.
+        500_000-character buffer. When cdb exits with a failure code,
+        tool_failed and exit_code (with stderr) travel with it, so an errored
+        session is not read as an empty module list. There is no process_id or
+        output field.
         """
         return _dump(analysis.windbg_live_modules(session_id, timeout=timeout))
 
@@ -124,7 +138,9 @@ def build_windbg_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with disasm holding that text, plus pid, address and length,
         and truncated, output_chars and returned_chars when the session was
-        cut at the 500_000-character buffer. There is no process_id or
+        cut at the 500_000-character buffer. When cdb exits with a failure code,
+        tool_failed and exit_code (with stderr) travel with it, so an errored
+        session is not read as empty disassembly. There is no process_id or
         output field.
         """
         return _dump(
