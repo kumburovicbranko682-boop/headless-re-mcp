@@ -23,6 +23,7 @@ from typing import cast
 import pytest
 
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
+from headless_re_mcp.core.session import describe_har
 
 _TOKEN_BODY = b'{"token": "headless-re-gate"}'
 _LOGIN_REQUEST_BODY = b'{"user": "headless"}'
@@ -183,6 +184,24 @@ def test_capture_describes_the_traffic_that_really_happened(tmp_path: Path) -> N
             ("POST", f"{origin.base_url}/login"),
         ]
         assert [e["response"]["status"] for e in entries] == [200, 201]
+
+        # The tool-free HAR reader must describe that same capture. A session
+        # opens over a .har with no proxy running, so describe_har is the HAR
+        # line's floor -- yet its only other coverage is hand-written fixtures.
+        # Reading the file mitmproxy's traffic just produced proves it agrees
+        # with a real capture, the HAR analogue of the apktool gate proving the
+        # AXML reader reads real aapt output rather than only the committed one.
+        har = describe_har(out_path)["har"]
+        assert har["entry_count"] == 2
+        assert har["creator"] == "headless-re-mcp"
+        assert har["methods"] == {"GET": 1, "POST": 1}
+        assert har["host_count"] == 1
+        assert har["hosts"] == ["127.0.0.1"]
+        assert har["status_classes"] == {"2xx": 2}
+        assert har["has_websocket"] is False
+        assert har["truncated"] is False
+        # The GET response body (_TOKEN_BODY) alone makes this strictly positive.
+        assert har["total_response_bytes"] >= len(_TOKEN_BODY)
 
 
 @pytest.mark.integration
