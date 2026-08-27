@@ -130,6 +130,71 @@ def test_frida_exports_says_when_the_page_is_not_the_whole_table() -> None:
     assert "has_more" in doc
 
 
+class _ShortReadApi:
+    def read(self, address: int, size: int) -> list[int]:
+        del address, size
+        return [0xDE, 0xAD, 0xBE, 0xEF]
+
+
+class _FullReadApi:
+    def read(self, address: int, size: int) -> list[int]:
+        del address
+        return [0] * int(size)
+
+
+def _read_client(api: Any) -> FridaClient:
+    class _ReadScript:
+        exports_sync = api
+
+        def load(self) -> None:
+            return None
+
+    class _ReadSession:
+        def create_script(self, source: str) -> Any:
+            del source
+            return _ReadScript()
+
+        def detach(self) -> None:
+            return None
+
+    class _ReadFrida:
+        def attach(self, pid: int) -> Any:
+            del pid
+            return _ReadSession()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = _ReadFrida()
+    return client
+
+
+def test_frida_memory_read_reports_bytes_returned_not_bytes_requested() -> None:
+    """A short/unreadable read used to look like a full one.
+
+    ``Memory.readByteArray`` returns null (or fewer bytes) for a region that is
+    unreadable or shorter than asked, yet the payload echoed the requested size
+    next to a shorter ``data``. ``size`` must be what actually came back, and
+    ``requested``/``complete`` must let the caller see the span was short.
+    """
+    client = _read_client(_ShortReadApi())
+    payload = client.memory_read(1, 0x1000, 16, allowed_pid=1)
+    assert payload["requested"] == 16
+    assert payload["size"] == 4
+    assert payload["complete"] is False
+    assert payload["data"] == "deadbeef"
+    assert len(bytes.fromhex(payload["data"])) == payload["size"]
+
+    full = _read_client(_FullReadApi())
+    done = full.memory_read(1, 0x1000, 8, allowed_pid=1)
+    assert done["requested"] == 8
+    assert done["size"] == 8
+    assert done["complete"] is True
+    assert len(bytes.fromhex(done["data"])) == 8
+    doc = _tool_docstring("frida.memory.read")
+    assert "requested" in doc
+    assert "complete" in doc
+
+
 class _Dev:
     def __init__(self, ident: str, name: str, kind: str) -> None:
         self.id = ident

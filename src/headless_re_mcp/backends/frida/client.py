@@ -117,7 +117,11 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // readByteArray returns null for an unreadable (or short) region rather
+    // than throwing; report only the bytes that actually came back so the
+    // caller is not told it received `size` bytes of a failed read.
+    var buf = Memory.readByteArray(ptr(address), size);
+    return buf === null ? [] : Array.from(new Uint8Array(buf));
   }
 };
 """
@@ -403,9 +407,15 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
+            # size is what actually came back, not what was asked for: an
+            # unreadable or short region yields fewer (or zero) bytes, and a
+            # caller reading `size` to know how much it got must not be handed
+            # the request. `complete` says whether the whole span was readable.
             return {
                 "address": address,
-                "size": size,
+                "size": len(data),
+                "requested": size,
+                "complete": len(data) == size,
                 "encoding": "hex",
                 "data": data.hex(),
             }
