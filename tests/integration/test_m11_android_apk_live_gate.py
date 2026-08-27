@@ -102,6 +102,12 @@ def test_m11_androguard_apk_surface() -> None:
     assert manifest["package"] == "com.example.gate"
     assert manifest["truncated"] is False
     assert "com.example.gate.MainActivity" in manifest["manifest_xml"]
+    # The fixture's <application> declares neither debuggable nor allowBackup,
+    # so a working read reports both as None (not declared) -- exercising the
+    # real get_attribute_value path that returns None for an absent attribute,
+    # and pinning that None (never False) is what the field promises.
+    assert manifest["debuggable"] is None, manifest
+    assert manifest["allow_backup"] is None, manifest
 
     components = client.components(_APK)
     assert "com.example.gate.MainActivity" in components["activities"], components

@@ -165,6 +165,33 @@ def _cert_datetime(cert: Any, attr: str) -> str | None:
     return str(value)
 
 
+def _manifest_flag(apk: Any, attribute: str) -> bool | None:
+    """Read a boolean ``<application>`` manifest attribute, or ``None``.
+
+    androguard's ``get_attribute_value('application', attr)`` returns the
+    declared string ("true"/"false") or ``None`` when the attribute is absent.
+    Map it to a real bool so a caller need not re-parse AXML string casing, but
+    keep ``None`` for "not declared" rather than collapsing it to ``False``:
+    that distinction is the whole point of the field. An unset ``allowBackup``
+    still defaults to backups enabled on pre-Android-12 targets, so reporting a
+    fabricated ``False`` would read as an explicit deny the manifest never made;
+    the honest answer is "never pinned". A missing method or raising accessor
+    (older androguard, an unparseable manifest) likewise degrades to ``None``.
+    """
+    try:
+        raw = apk.get_attribute_value("application", attribute)
+    except Exception:  # noqa: BLE001 - manifest access varies by version
+        return None
+    if raw is None:
+        return None
+    text = str(raw).strip().lower()
+    if text == "true":
+        return True
+    if text == "false":
+        return False
+    return None
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -343,6 +370,8 @@ class ApkClient:
             "package": apk.get_package(),
             "manifest_xml": inline,
             "truncated": encoded_cut or len(xml) > _MAX_MANIFEST_CHARS,
+            "debuggable": _manifest_flag(apk, "debuggable"),
+            "allow_backup": _manifest_flag(apk, "allowBackup"),
         }
 
     def permissions(self, path: Path) -> JsonObject:

@@ -38,7 +38,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with package and manifest_xml, plus truncated when the XML
         was cut -- by the character cap or, on a quote-heavy manifest, by the
         result-size budget, so treat manifest_xml as possibly partial and read
-        truncated rather than assuming the whole document is present.
+        truncated rather than assuming the whole document is present. Also
+        surfaces the two <application> security flags debuggable and
+        allow_backup as booleans, or null when the attribute is not declared
+        (null is not False: an unset allowBackup still defaults to backups
+        enabled on pre-Android-12 targets).
         """
         return _dump(analysis.apk_manifest(session_id))
 

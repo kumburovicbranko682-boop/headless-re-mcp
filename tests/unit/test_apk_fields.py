@@ -138,6 +138,60 @@ def test_apk_manifest_names_manifest_xml_and_says_when_it_was_cut(
     assert "manifest_xml" in doc
     assert "truncated" in doc
 
+
+class _FlagApk:
+    """Fake APK whose manifest declares the given <application> attributes."""
+
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+
+    def get_android_manifest_axml(self) -> _ManifestBody:
+        return _ManifestBody()
+
+    def get_package(self) -> str:
+        return "com.example.app"
+
+    def get_attribute_value(self, tag: str, attribute: str) -> str | None:
+        assert tag == "application"
+        return self._values.get(attribute)
+
+
+def test_apk_manifest_maps_application_security_flags(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """debuggable/allowBackup come back as real bools, not AXML strings.
+
+    A caller triaging an APK should not have to know that androguard returns the
+    manifest attribute as the string "true"/"false"; the field maps it to a bool
+    so debuggable True (a release-build red flag) reads directly.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient,
+        "_apk",
+        lambda self, path: _FlagApk({"debuggable": "true", "allowBackup": "false"}),
+    )
+    payload = client.manifest(tmp_path / "app.apk")
+    assert payload["debuggable"] is True
+    assert payload["allow_backup"] is False
+
+
+def test_apk_manifest_undeclared_flags_are_null_not_false(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An undeclared flag reports null, never a fabricated False.
+
+    allowBackup unset still defaults to backups enabled on pre-Android-12
+    targets, so collapsing "not declared" to False would read as an explicit
+    deny the manifest never made. null keeps "never pinned" distinct.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _FlagApk({}))
+    payload = client.manifest(tmp_path / "app.apk")
+    assert payload["debuggable"] is None
+    assert payload["allow_backup"] is None
+
+
 class _FakeClass:
     def __init__(self, name: str, *, external: bool = False) -> None:
         self.name = name

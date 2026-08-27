@@ -1191,6 +1191,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   且整条 payload 可序列化。实机 gate 对真实夹具证书补断言两界均可被 `datetime.fromisoformat` 解析、且 `not_after` 严格晚于 `not_before`(断言时序而非固定
   时间戳,重造夹具的一次性密钥不会打断 gate)。
 
+- **`apk.manifest` 只回 XML 文本,不抽取 `<application>` 的安全标志,而 `debuggable`/`allowBackup` 是 Android 安全审查最靠前的两条。** 之前
+  `manifest()` 只有 `package`/`manifest_xml`/`truncated`,分析者要自己在 XML 里翻这两个属性。现新增 `debuggable`、`allow_backup` 两个布尔字段,
+  经新助手 `_manifest_flag` 调 androguard 的 `get_attribute_value('application', attr)` 取声明值并映射:`"true"`→`True`、`"false"`→`False`、
+  未声明(或属性缺失/访问抛异常)→`None`。关键是**不把「未声明」塌成 `False`**:`allowBackup` 不声明时在 Android 12 之前仍默认开启备份,若伪造成
+  `False` 会被读成清单从未做过的显式拒绝——`None` 保留「从未钉死」这一真相。工具描述补上两字段及其 `null` 语义。单测(`test_apk_fields.py`):
+  声明 `debuggable=true`/`allowBackup=false` 的假清单断言映射成真/假布尔;空清单断言两者均为 `None` 而非 `False`。实机 gate 对真实夹具(其
+  `<application>` 两标志都没声明)补断言两者均为 `None`,走的正是 `get_attribute_value` 对缺失属性返回 `None` 的真实路径。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的
