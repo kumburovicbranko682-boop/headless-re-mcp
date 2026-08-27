@@ -4,8 +4,9 @@ Ghidra's analyzeHeadless backend is portable, so it analyses a PE the same way
 on Linux as on Windows -- through the Jython script provider on Ghidra <= 11.2
 and through PyGhidra on >= 11.3. This gate drives the real launcher end to end:
 it imports a PE, lists functions with their entry addresses, and decompiles one
-of them. skip != pass: it skips only when HEADLESS_RE_GHIDRA_HOME is unset or the
-install is not runnable here (no java, or PyGhidra without its Python package).
+of them. skip != pass: it skips only when HEADLESS_RE_GHIDRA_HOME is unset or
+names a missing directory, or the install is not runnable here (no java, or
+PyGhidra without its Python package) -- and the skip message says which.
 """
 
 from __future__ import annotations
@@ -23,12 +24,23 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _TIMEOUT = 480.0
 
 
-def _ghidra_home() -> Path | None:
+def _ghidra_home() -> Path:
+    """The configured Ghidra home, or a skip that names what is actually wrong.
+
+    Folding "not set" and "set but not a directory" into one None made the skip
+    say "unset" when the variable was set and the install had merely vanished --
+    exactly the half-failed-download case the CI step can produce, and a reader
+    chasing that message checks the workflow env instead of the filesystem.
+    """
     raw = os.environ.get("HEADLESS_RE_GHIDRA_HOME")
     if not raw:
-        return None
+        pytest.skip("HEADLESS_RE_GHIDRA_HOME unset — live Gate not run (skip≠pass)")
     home = Path(raw).expanduser()
-    return home if home.is_dir() else None
+    if not home.is_dir():
+        pytest.skip(
+            f"HEADLESS_RE_GHIDRA_HOME={raw!r} is not a directory — live Gate not run (skip≠pass)"
+        )
+    return home
 
 
 def _pe_fixture() -> Path | None:
@@ -42,10 +54,7 @@ def _pe_fixture() -> Path | None:
 
 @pytest.mark.integration
 def test_m11_ghidra_live_functions_and_decompile(tmp_path: Path) -> None:
-    home = _ghidra_home()
-    if home is None:
-        pytest.skip("HEADLESS_RE_GHIDRA_HOME unset — live Gate not run (skip≠pass)")
-    client = GhidraClient(home=home)
+    client = GhidraClient(home=_ghidra_home())
     if not client.available:
         pytest.skip(
             "Ghidra install not runnable here (no java, or PyGhidra without its "
