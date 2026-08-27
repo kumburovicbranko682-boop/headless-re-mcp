@@ -109,6 +109,45 @@ def test_persona_index_and_prompt_reads_are_bounded(
     assert store.prompt_for(DEFAULT_PERSONA_ID) == "xxxxxxxx\n\n[persona truncated]"
 
 
+def test_a_broken_current_selection_discloses_the_effective_fallback(
+    tmp_path: Path,
+) -> None:
+    """Deleting the active persona's body must not leave the listing lying.
+
+    current_id() already falls back to the default persona when the recorded
+    selection's body file is gone, so runs quietly used the default prompt --
+    while list_public still named the broken persona as current with bytes 0,
+    indistinguishable from an empty one. The listing now carries
+    current_effective (only when it differs) and marks the entry missing.
+    """
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+    imported = store.import_markdown(title="lab notes", body="# lab\nkeep hashes")
+    custom_id = str(imported["current"])
+
+    (store.root / f"{custom_id}.md").unlink()
+
+    listed = store.list_public()
+    assert listed["current"] == custom_id
+    assert listed["current_effective"] == DEFAULT_PERSONA_ID
+    assert store.current_id() == DEFAULT_PERSONA_ID
+    broken = next(item for item in listed["personas"] if item["id"] == custom_id)
+    assert broken["missing"] is True
+    assert broken["bytes"] == 0
+
+
+def test_an_intact_store_lists_no_missing_or_effective_fields(tmp_path: Path) -> None:
+    """An empty-but-present body is not "missing", and current needs no caveat."""
+    store = PersonaStore(tmp_path / "personas", seed_paths=())
+    (store.root / f"{DEFAULT_PERSONA_ID}.md").write_text("", encoding="utf-8")
+
+    listed = store.list_public()
+
+    assert "current_effective" not in listed
+    default = next(item for item in listed["personas"] if item["id"] == DEFAULT_PERSONA_ID)
+    assert default["bytes"] == 0
+    assert "missing" not in default
+
+
 def test_personas_are_switchable_over_http(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
     settings = Settings(

@@ -49,6 +49,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（当前 persona 的正文文件丢失后，列表仍称它在用）
+
+- `PersonaStore.current_id()` 在所记 persona 的 `.md` 正文被删/条目失效时会静默回退到默认
+  persona，agent 实际拿默认提示词跑；但 `list_public` 照旧把坏掉的 persona 标成 current、
+  `bytes: 0`——与"空 persona"完全无法区分，UI 与真实运行悄然分叉。现在回退判定收敛到共用的
+  `_effective_current`（`current_id` 与列表不可能再不一致），`list_public` 在记录值与实际生效值
+  不同时附 `current_effective` 点名真正在用的 persona，正文缺失的条目附 `missing: true`；
+  完好存储的载荷保持原样（空正文只有 `bytes: 0`，无 `missing`，也没有 `current_effective`）。
+  回归测试钉住：删掉当前自定义 persona 的正文后列表披露回退与缺失、`current_id` 与
+  `current_effective` 一致；完好/空正文存储两个字段都不出现。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
