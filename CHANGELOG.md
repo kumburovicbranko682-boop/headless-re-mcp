@@ -172,6 +172,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `pgrp` 逐个击杀,避免组长 pid 复用误伤）。该行为随「Reap helpers after successful CLI
   launches」引入,但在与 `_capture_process` 读者自闭管道范式收敛的合并中被覆盖丢失,
   只有 de4dot 保留了等效逻辑;本次按现行 process_tree API 重建并接回三处。
+- 上述清扫在 Linux 上现在**确定性**收尾:进程启动即启用 `PR_SET_CHILD_SUBREAPER`
+  收养启动器遗弃的孤儿,清扫返回前用有界 `waitpid` 轮询把每个被杀 pid 真正回收
+  (`ECHILD` 时按 `/proc` 存在性区分「已被收尸」与「尚未过继」,已结束的 pid 不再
+  空转到截止)。此前 helper 死没死取决于内核处理 SIGKILL 的时机——测试在快机器上
+  碰巧能过,这正是上次合并把回收链整个丢掉却没有一个测试变红的原因。新增 Linux
+  专用测试直接钉住机制本身(subreaper 标志已设、被杀子进程不留僵尸、清扫返回时
+  孤儿的 `/proc` 条目已消失),机制再被丢弃必然变红,不再靠调度运气。
 - `ui.screenshot` / `ui.ocr` 对路径穿越型 session id 现在在**任何平台**都返回
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
@@ -336,6 +343,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   会先转储所有线程栈、点名卡住的测试再退出。`faulthandler_exit_on_timeout` 是
   pytest 9.0 才有的选项，test extra 的 pytest 下限随之从 8.3 抬到 9.0——在 8.x 上
   它只是一条 unknown-option 警告，退出兜底会静默失效。
+- 关闭挂起的最后一个盲区：pytest-timeout 与 faulthandler 兜底都按测试武装、测试后
+  解除，谁都不覆盖**最后一个测试结束之后**的解释器关闭阶段。多个并发压力测试用非
+  守护线程驱动产品代码（Windows 共享冲突下的时间线并发追加、artifact 探针、proxy/web
+  后端启动、workflow 导航），其中数处 join 带超时且不查存活——线程一旦卡住，套件照常
+  通过、摘要照常打印，然后 `threading._shutdown` 永久等待，正是挂满 30 分钟、无输出
+  可查的形态。测试工作线程现全部为守护线程，原先无存活断言的定时 join 补上断言，
+  卡住的工作线程在自己的测试里具名失败，而不是在套件通过后拖垮整个 job。
 - 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入
   `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。
   监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。
