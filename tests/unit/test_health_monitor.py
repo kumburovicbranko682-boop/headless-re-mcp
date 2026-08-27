@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
+from headless_re_mcp.core import health as health_module
 from headless_re_mcp.core.health import BackendHealthMonitor
 from headless_re_mcp.core.models import BackendKind
 
@@ -100,6 +103,49 @@ def test_a_backend_without_health_signals_counts_as_healthy() -> None:
     # Treating an unknown backend as broken would invent failures for workers
     # that simply do not expose the attributes.
     assert monitor.report("s1")[0]["healthy"] is True
+
+
+def test_forget_also_clears_a_backoff_entry() -> None:
+    # A failing reconnect records a backoff entry keyed by the session; forget
+    # must drop that too, not just the health row, or a reused id starts penalised.
+    worker = FakeWorker(connected=False)
+    worker.reconnect_error = ConnectionError("pipe is gone")
+    monitor = _monitor(("s1", BackendKind.X64DBG, worker))
+    monitor.check_once()
+    assert monitor.report("s1")[0]["failures"] == 1
+    assert any(key[0] == "s1" for key in monitor._reconnect_backoff)
+
+    monitor.forget("s1")
+
+    assert monitor.report("s1") == []
+    assert not any(key[0] == "s1" for key in monitor._reconnect_backoff)
+
+
+def test_a_sweep_that_raises_is_alerted_and_does_not_kill_the_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        health_module, "record_alert", lambda kind, **kwargs: alerts.append(kind)
+    )
+    worker = FakeWorker()
+    monitor = _monitor(("s1", BackendKind.X64DBG, worker))
+    calls = {"n": 0}
+
+    def boom(self: BackendHealthMonitor) -> None:
+        calls["n"] += 1
+        self._stop.set()  # let the loop exit after this one iteration
+        raise RuntimeError("sweep exploded")
+
+    monkeypatch.setattr(BackendHealthMonitor, "check_once", boom)
+    monitor.start()
+    thread = monitor._thread
+    assert thread is not None
+    thread.join(timeout=2.0)
+
+    assert calls["n"] >= 1
+    assert "health_sweep_failed" in alerts
+    assert not thread.is_alive()
 
 
 def test_report_is_scoped_and_cleared_per_session() -> None:
