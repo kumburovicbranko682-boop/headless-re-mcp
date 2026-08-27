@@ -305,6 +305,7 @@ jobs:
             tests/integration/test_m11_ghidra_arm32_gate.py \
             tests/integration/test_m11_ghidra_arm_xrefs_gate.py \
             tests/integration/test_m11_ghidra_data_xrefs_gate.py \
+            tests/integration/test_m11_ghidra_decompile_gate.py \
             tests/integration/test_m11_r2_ghidra_agree_gate.py \
             tests/integration/test_m11_r2_ghidra_data_xref_agree_gate.py \
             tests/integration/test_m11_r2_arm_xrefs_gate.py \
