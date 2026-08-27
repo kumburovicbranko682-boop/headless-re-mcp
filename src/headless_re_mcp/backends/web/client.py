@@ -41,6 +41,13 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# web.cookies bounds. A context can hold many cookies and a single value can be
+# a large JWT, so both the count and each value are capped; the value cap is
+# generous enough to keep a normal token whole.
+_MAX_COOKIES = 1000
+_MAX_COOKIES_PAGE = 500
+_MAX_COOKIE_VALUE_BYTES = 8 * 1024
+_MAX_COOKIE_FIELD_BYTES = 2 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -84,6 +91,70 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _summarize_cookies(raw: object, *, offset: int, limit: int) -> JsonObject:
+    """Bound and page a Playwright cookie list into an honest cookies payload.
+
+    Pure over the list ``context.cookies()`` returns so it can be pinned without
+    a browser. Each cookie's value is capped (a token can be large); when a value
+    is cut, ``value_truncated`` is set and ``value_bytes`` gives the full size so
+    a clipped token is never read as the whole thing. ``expires`` is passed
+    through as the epoch seconds Playwright reports, and ``session`` is true when
+    it is negative (a session cookie with no persistent expiry) -- the caller can
+    tell a session cookie from an expiring one rather than guessing from a -1.
+    Booleans (``http_only``, ``secure``) and ``same_site`` are only set when the
+    driver actually reported them, so an absent flag is not read as false.
+    """
+    items = raw if isinstance(raw, list) else []
+    collected: list[JsonObject] = []
+    scan_more = False
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        if len(collected) >= _MAX_COOKIES:
+            scan_more = True
+            break
+        raw_value = entry.get("value")
+        value, value_cut = _bounded_metadata(raw_value, _MAX_COOKIE_VALUE_BYTES)
+        name, name_cut = _bounded_metadata(entry.get("name"), _MAX_COOKIE_FIELD_BYTES)
+        cookie: JsonObject = {
+            "name": name,
+            "value": value,
+            "domain": _bounded_metadata(entry.get("domain"), _MAX_COOKIE_FIELD_BYTES)[0],
+            "path": _bounded_metadata(entry.get("path"), _MAX_COOKIE_FIELD_BYTES)[0],
+        }
+        if name_cut:
+            cookie["name_truncated"] = True
+        if value_cut:
+            cookie["value_truncated"] = True
+            cookie["value_bytes"] = len(str(raw_value or "").encode("utf-8", errors="replace"))
+        http_only = entry.get("httpOnly")
+        if isinstance(http_only, bool):
+            cookie["http_only"] = http_only
+        secure = entry.get("secure")
+        if isinstance(secure, bool):
+            cookie["secure"] = secure
+        same_site = entry.get("sameSite")
+        if isinstance(same_site, str) and same_site:
+            cookie["same_site"] = same_site
+        expires = entry.get("expires")
+        if isinstance(expires, (int, float)) and not isinstance(expires, bool):
+            cookie["expires"] = expires
+            cookie["session"] = expires < 0
+        collected.append(cookie)
+    collected.sort(key=lambda item: (item["domain"], item["name"], item["path"]))
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_COOKIES_PAGE))
+    window = collected[start : start + cap]
+    return {
+        "cookies": window,
+        "count": len(window),
+        "total": len(collected),
+        "offset": start,
+        "has_more": start + len(window) < len(collected),
+        "scan_capped": scan_more,
+    }
 
 
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
@@ -352,6 +423,14 @@ class WebBackend:
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
             }
+
+        return self._runner(handle).call(work)
+
+    def cookies(self, session_id: str, *, offset: int = 0, limit: int = 200) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            return _summarize_cookies(handle.context.cookies(), offset=offset, limit=limit)
 
         return self._runner(handle).call(work)
 

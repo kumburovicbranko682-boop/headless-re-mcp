@@ -113,6 +113,27 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_console(session_id, limit=limit))
 
+    @tools.tool(name="web.cookies")
+    def web_cookies(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=500)] = 200,
+    ) -> dict[str, Any]:
+        """Read the browser context's cookies, one bounded page at a time.
+
+        Reads the cookies visible to the session's context -- session and auth
+        tokens included -- so an analyst can see the state a page carries. Each
+        cookie has name, value, domain, path, and, when the driver reports them,
+        http_only, secure, same_site, and expires (epoch seconds) with session
+        true when the cookie has no persistent expiry. Answers with cookies,
+        count, total, offset, has_more and scan_capped so a page that filled the
+        limit is not read as every cookie; the collected total is capped at
+        1000. A large value is cut with value_truncated set and value_bytes
+        giving the full size, so a clipped token is not read as whole. An absent
+        http_only/secure flag means the driver did not report it, not false.
+        """
+        return _dump(analysis.web_cookies(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,
