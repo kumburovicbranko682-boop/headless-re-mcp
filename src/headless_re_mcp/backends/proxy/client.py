@@ -563,9 +563,14 @@ class ProxyBackend:
         return inst
 
     def start(self, session_id: str, host: str = "127.0.0.1", port: int = 8080) -> JsonObject:
-        self._check_available()
+        # A port outside 1..65535 is a bad input with or without mitmproxy, so
+        # validate it before the capability check -- matching frida.spawn,
+        # jadx.decompile and apk.methods, which reject malformed caller input as
+        # invalid_params rather than let a missing backend mask it as
+        # capability_unavailable.
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
+        self._check_available()
         # A blank host is not "no preference": mitmproxy reads listen_host="" as
         # bind-all (0.0.0.0 + ::), which would put an active HTTPS MITM -- and the
         # CA it can install onto a device -- on every interface, reachable by
