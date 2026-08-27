@@ -5,6 +5,11 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+Web 静态工具线（webcrack 反混淆 + wabt 的 WASM 反汇编）在 CI 首次真实执行：新增
+`linux-web-tools` job——装 Node 22 + `npm i -g webcrack`、apt 装 wabt，跑
+`test_web_re_gate.py` 里的 webcrack 与 wasm2wat 两项，并解析 junitxml，工具已装却
+skip 时判失败（skip ≠ pass）。这两条 gate 此前已存在但从未在 CI 跑过。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
