@@ -896,6 +896,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   都不返回,而所有 mock 单测照过。r2 live gate 现对现编 ELF 真跑 `izj`/`iij`/`iEj`/`aflj`/`pdj`,断言各自
   解析出应有内容(格式串、`printf` 导入、至少一个导出、映射出地址的反汇编)。夹具的格式串加长到超过
   r2 字符串扫描的 4 字节下限,`izj` 才会报它。已在 radare2 6.2.0 验证通过。
+- **`frida.memory.read` 在近代 frida 上根本读不了**。枚举脚本的 `read` RPC 调的是
+  `Memory.readByteArray(ptr(address), size)`——这个全局读快捷方式在近代 frida 已被移除(frida 17.x 上
+  直接抛 `TypeError: not a function`),于是 `memory.read` 对任何当前 frida 都是废的,而 `modules`/
+  `exports` 仍好使,问题一直没被发现。改用 NativePointer 方法 `ptr(address).readByteArray(size)`(存在了
+  很多个大版本,新旧通吃);页不可读时 `readByteArray` 返回 null,`Uint8Array(null)` 会抛,故 null 读
+  报成空字节而非异常。这个 bug 是把可移植 Frida live gate 扩到覆盖 `memory.read`(它此前唯一没覆盖的本地
+  读取)时抓到的:gate 现对某系统库的 module base 读 4 字节,断言真实字节就是该平台可执行文件魔数(POSIX
+  的 ELF `7f454c46`、Windows PE 的 MZ `4d5a`),错地址或坏读取都伪造不出来。已在 frida 17.17.0 attach 一个
+  睡眠解释器验证通过。上一条的 `_read_with_script` 映射也在此得到印证:这个「移除的 API」故障是以干净的
+  `backend_error` 冒出来的,而非 internal_error 事故。另加一条静态单测钉住枚举脚本用 NativePointer 读法、
+  不含被移除的 `Memory.readByteArray` 全局,让没装 frida 的 CI 也能挡住回归。
 
 ### 变更（Android 后端清理）
 

@@ -181,6 +181,21 @@ def test_frida_local_read_maps_a_backend_fault_and_detaches() -> None:
     assert client._frida.session.detached is True
 
 
+def test_frida_enum_script_reads_via_nativepointer_not_the_removed_global() -> None:
+    """memory.read must use ptr(x).readByteArray, not Memory.readByteArray.
+
+    The global read shorthands were removed in modern frida (gone on 17.x,
+    where the call raised 'TypeError: not a function'), which killed
+    memory.read on any current frida while modules/exports kept working. The
+    live gate catches this only where frida is installed; this pins the JS
+    contract everywhere, including CI without frida.
+    """
+    from headless_re_mcp.backends.frida.client import _ENUM_SCRIPT
+
+    assert "Memory.readByteArray" not in _ENUM_SCRIPT
+    assert ".readByteArray(" in _ENUM_SCRIPT
+
+
 def test_frida_memory_read_rejects_a_negative_address() -> None:
     """The tool types address as int but sets no lower bound; the client must.
 
