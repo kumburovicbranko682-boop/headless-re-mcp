@@ -64,6 +64,7 @@ def _stub_report() -> DoctorReport:
     return DoctorReport(
         probes=(
             Probe("ida_idalib", ProbeStatus.READY, "stub ready"),
+            Probe("win32_ui", ProbeStatus.READY, "stub ready"),
             Probe("diec", ProbeStatus.MISSING, "stub missing"),
         )
     )
@@ -78,9 +79,8 @@ def test_list_capabilities_maps_probe_status_and_honors_filters(
 
     # A ready probe surfaces as ready; a missing probe as missing.
     assert by_id["ida.idalib"]["status"] == "ready"
-    assert by_id["detect.die"]["status"] == "missing"
-    # status_probe=None is always ready (ui.win32 has no probe).
     assert by_id["ui.win32"]["status"] == "ready"
+    assert by_id["detect.die"]["status"] == "missing"
     # A probe absent from the report falls back to missing rather than raising.
     assert by_id["unpack.upx"]["status"] == "missing"
 
@@ -92,6 +92,15 @@ def test_list_capabilities_maps_probe_status_and_honors_filters(
     ready = {cap["id"] for cap in list_capabilities(status="ready")}
     assert "ida.idalib" in ready and "ui.win32" in ready
     assert "detect.die" not in ready
+
+
+def test_a_probe_less_capability_would_report_ready() -> None:
+    """Every catalog entry is probe-backed today, so the ``status_probe=None``
+    mapping has no shipped representative; pin it directly lest a future
+    probe-less capability silently report missing."""
+    report = _stub_report()
+    assert capabilities_catalog._probe_status(report, None) == "ready"
+    assert capabilities_catalog._probe_status(report, "absent_probe") == "missing"
 
 
 def test_describe_capability_finds_known_ids_and_none_for_unknown(

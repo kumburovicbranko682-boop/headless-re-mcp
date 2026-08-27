@@ -249,14 +249,17 @@ def _poisoned_report(*, ready: bool):
     )
     if not ready:
         return DoctorReport(probes=(leaky,))
-    # Ready needs every required probe present and READY.
-    return DoctorReport(
-        probes=(
-            leaky,
-            Probe("python", ProbeStatus.READY, "ready"),
-            Probe("x64dbg_headless_binaries", ProbeStatus.READY, "ready"),
-        )
+    # Ready needs every required probe present and READY. The required set is
+    # platform-dependent (Windows wants the x64dbg binaries, Linux wants the
+    # platform probe), so derive it rather than hardcoding one platform's list.
+    from headless_re_mcp.doctor import required_probe_names
+
+    required = tuple(
+        Probe(name, ProbeStatus.READY, "ready")
+        for name in sorted(required_probe_names())
+        if name != "ida_idalib"
     )
+    return DoctorReport(probes=(leaky, *required))
 
 
 def test_generated_bundle_scrubs_a_secret_from_the_doctor_report_when_ready(
