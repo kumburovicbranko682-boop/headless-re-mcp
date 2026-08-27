@@ -99,13 +99,20 @@ def test_logcat_clamps_the_requested_line_count() -> None:
 
 
 def test_packages_reports_has_more_and_sorts_the_page() -> None:
-    """A list longer than the cap says has_more and comes back sorted."""
+    """A list longer than the cap says has_more, reports the full total, and
+    comes back sorted.
+
+    total counts every package the listing held (5), not the page kept (3), so
+    a caller capped at the limit can size the next request instead of only
+    learning that some were withheld.
+    """
     listing = "\n".join(
         f"package:{name}" for name in ("com.e", "com.d", "com.c", "com.b", "com.a")
     )
     dev = _ScriptedDev({("pm", "list", "packages"): listing})
     payload = _backend_with(dev).packages("emulator-5554", limit=3)
     assert payload["count"] == 3
+    assert payload["total"] == 5
     assert payload["has_more"] is True
     assert payload["third_party_only"] is False
     assert payload["packages"] == sorted(payload["packages"])
@@ -113,13 +120,38 @@ def test_packages_reports_has_more_and_sorts_the_page() -> None:
 
 
 def test_packages_complete_list_is_not_labelled_partial() -> None:
-    """A list within the cap reports has_more false and keeps every name."""
+    """A list within the cap reports has_more false, total equal to count, and
+    keeps every name."""
     listing = "package:com.b\npackage:com.a"
     dev = _ScriptedDev({("pm", "list", "packages"): listing})
     payload = _backend_with(dev).packages("emulator-5554", limit=500)
     assert payload["has_more"] is False
     assert payload["count"] == 2
+    assert payload["total"] == 2
     assert payload["packages"] == ["com.a", "com.b"]
+
+
+def test_properties_reports_the_full_total_when_the_page_is_capped() -> None:
+    """getprop is already in memory, so the cap must not hide the real count.
+
+    Four properties parsed at a limit of 2 -> count 2, total 4, has_more True.
+    A caller sizing its next limit needs the 4, not just "there is more".
+    """
+    dump = "\n".join(f"[ro.k{index}]: [v{index}]" for index in range(4))
+    dev = _ScriptedDev({("getprop",): dump})
+    payload = _backend_with(dev).properties("emulator-5554", limit=2)
+    assert payload["count"] == 2
+    assert payload["total"] == 4
+    assert payload["has_more"] is True
+
+
+def test_properties_within_the_cap_reports_total_equal_to_count() -> None:
+    dump = "[ro.a]: [1]\n[ro.b]: [2]"
+    dev = _ScriptedDev({("getprop",): dump})
+    payload = _backend_with(dev).properties("emulator-5554", limit=500)
+    assert payload["count"] == 2
+    assert payload["total"] == 2
+    assert payload["has_more"] is False
 
 
 def test_packages_third_party_only_passes_the_flag() -> None:

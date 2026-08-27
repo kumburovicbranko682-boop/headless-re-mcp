@@ -90,11 +90,13 @@ def test_device_list_fallback_when_there_is_no_list_method() -> None:
 
 
 def test_the_device_list_is_capped_and_flags_the_overflow() -> None:
-    """More devices than the cap are paged, with has_more set."""
+    """More devices than the cap are paged, with has_more set and total naming
+    the full count so a caller knows how many were withheld."""
     rows = [_Info(f"emulator-{index}", "device") for index in range(_MAX_DEVICES + 5)]
     payload = _backend_with_client(_ListClient(rows)).list_devices()
     assert payload["count"] == _MAX_DEVICES
     assert len(payload["devices"]) == _MAX_DEVICES
+    assert payload["total"] == _MAX_DEVICES + 5
     assert payload["has_more"] is True
 
 
@@ -103,4 +105,5 @@ def test_exactly_the_cap_is_not_flagged_as_overflow() -> None:
     rows = [_Info(f"emulator-{index}", "device") for index in range(_MAX_DEVICES)]
     payload = _backend_with_client(_ListClient(rows)).list_devices()
     assert payload["count"] == _MAX_DEVICES
+    assert payload["total"] == _MAX_DEVICES
     assert payload["has_more"] is False

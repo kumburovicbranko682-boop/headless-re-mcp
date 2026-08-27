@@ -430,9 +430,17 @@ class AdbBackend:
                     "timeout", f"adb timed out after {_ADB_PROBE_TIMEOUT_S:g}s"
                 ) from exc
             raise AdbError("backend_error", f"failed to list devices: {exc}") from exc
+        # total is len(items): the whole list is already in hand, so a caller
+        # capped at _MAX_DEVICES can tell how many were withheld instead of only
+        # that some were.
         has_more = len(items) > _MAX_DEVICES
         page = items[:_MAX_DEVICES]
-        return {"devices": page, "count": len(page), "has_more": has_more}
+        return {
+            "devices": page,
+            "count": len(page),
+            "total": len(items),
+            "has_more": has_more,
+        }
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:
         client = self._client()
@@ -485,16 +493,24 @@ class AdbBackend:
         if _is_host_error_output(text):
             raise AdbError("backend_error", "getprop failed", output=text[:800])
         props: dict[str, str] = {}
-        has_more = False
+        total = 0
         for line in text.splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if not match:
                 continue
-            if len(props) >= capped:
-                has_more = True
-                break
-            props[match.group(1)] = match.group(2)
-        return {"properties": props, "count": len(props), "has_more": has_more}
+            # Count every property the dump holds, not just the page kept: the
+            # text is already in memory, so the true total is free, and stopping
+            # at the cap left a caller unable to size the next limit. Keep the
+            # first ``capped`` in encounter order as the page.
+            total += 1
+            if len(props) < capped:
+                props[match.group(1)] = match.group(2)
+        return {
+            "properties": props,
+            "count": len(props),
+            "total": total,
+            "has_more": total > len(props),
+        }
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500
@@ -507,22 +523,25 @@ class AdbBackend:
         if _is_host_error_output(text):
             raise AdbError("backend_error", "pm list failed", output=text[:800])
         pkgs: list[str] = []
-        has_more = False
+        total = 0
         for line in text.splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
             if not name:
                 continue
-            if len(pkgs) >= capped:
-                has_more = True
-                break
-            pkgs.append(name)
+            # Count every package the listing holds, not just the page kept: the
+            # text is already in memory, so the true total is free, and stopping
+            # at the cap left a caller unable to size the next limit.
+            total += 1
+            if len(pkgs) < capped:
+                pkgs.append(name)
         pkgs.sort()
         return {
             "packages": pkgs,
             "count": len(pkgs),
-            "has_more": has_more,
+            "total": total,
+            "has_more": total > len(pkgs),
             "third_party_only": third_party_only,
         }
 

@@ -30,9 +30,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_list() -> dict[str, Any]:
         """List ADB devices and emulators visible to the local adb server.
 
-        Answers with devices (serial and state), count, and has_more. Offline
-        and unauthorized serials are included; a missing device is not the
-        same as an offline one.
+        Answers with devices (serial and state), count, total, and has_more:
+        total is how many the adb server reported, so a caller capped at the
+        page limit knows how many were withheld. Offline and unauthorized
+        serials are included; a missing device is not the same as an offline
+        one.
         """
         return _dump(analysis.device_list())
 
@@ -64,10 +66,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return getprop key/value pairs for a device.
 
-        Answers with properties (the name-to-value map), count, and has_more
-        so a page that filled the cap is not read as every property. There
-        is no props or items field. An adb error line (a dead or offline
-        device) is a failure, not an empty property set.
+        Answers with properties (the name-to-value map), count, total, and
+        has_more so a page that filled the cap is not read as every property:
+        total is how many getprop returned, so a caller can size the next
+        limit. There is no props or items field. An adb error line (a dead or
+        offline device) is a failure, not an empty property set.
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
@@ -79,9 +82,10 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List installed package names, optionally only third-party ones.
 
-        Answers with packages, count, has_more, and third_party_only so a
-        page that filled the cap is not read as every package. An adb error
-        line (a dead or offline device) is a failure, not an empty device.
+        Answers with packages, count, total, has_more, and third_party_only so
+        a page that filled the cap is not read as every package: total is how
+        many pm listed, so a caller can size the next limit. An adb error line
+        (a dead or offline device) is a failure, not an empty device.
         """
         return _dump(
             analysis.device_packages(

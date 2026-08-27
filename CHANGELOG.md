@@ -61,6 +61,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（device.list/properties/packages 补齐 total）
+
+- `device.list`、`device.properties`、`device.packages` 三个读取器此前把一份**已在内存里**的集合
+  按上限截断后,只回 `count` 与 `has_more`,不回 `total`——调用方只知道「还有」,却无从知道到底有
+  多少、下一次 `limit` 该设多大。`list_devices` 的完整列表本就在手;`properties`/`packages` 更是
+  一遇上限就 `break` 停止解析,而整段 `getprop` / `pm list` 输出早已取回内存,继续数完是白得的。
+  现在三者都计出真实 `total`(继续把 `getprop`/`pm` 文本数完,只保留前 `capped` 条为当前页),并以
+  `total > count` 推导 `has_more`;分页语义不变(仍取遇到顺序的前若干条,packages 再排序)。回归测
+  试覆盖三者的截断(total 为全量、大于 count)与放得下(total 等于 count)两种情形。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
