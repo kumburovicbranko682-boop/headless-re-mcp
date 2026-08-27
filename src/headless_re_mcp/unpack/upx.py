@@ -259,7 +259,12 @@ def _capture_process(
     # start_new_session (POSIX) makes upx its own group leader, so the group id
     # is its pid. Used to find and kill a wrapper's child reparented to init
     # after upx exits, when the parent/child walk sees nothing.
-    group_id = int(process.pid) if os.name != "nt" and process.pid else 0
+    session_pid = getattr(process, "pid", None)
+    group_id = (
+        int(session_pid)
+        if os.name != "nt" and isinstance(session_pid, int) and session_pid > 0
+        else 0
+    )
 
     limit_event = Event()
     stdout_capture = _CapturedStream(max_output_size)
