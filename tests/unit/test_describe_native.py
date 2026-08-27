@@ -120,6 +120,30 @@ def _lc_uuid() -> bytes:
     return _lc_uuid_bytes(b"\x00" * 16)
 
 
+def _lc_symtab(stroff: int, strsize: int) -> bytes:
+    # LC_SYMTAB: symoff/nsyms (unused by the reader) then stroff/strsize.
+    return (
+        (0x02).to_bytes(4, "little")
+        + (24).to_bytes(4, "little")
+        + (0).to_bytes(4, "little")
+        + (0).to_bytes(4, "little")
+        + stroff.to_bytes(4, "little")
+        + strsize.to_bytes(4, "little")
+    )
+
+
+def _lc_encryption_info(cryptid: int, cmd: int = 0x2C) -> bytes:
+    # LC_ENCRYPTION_INFO(_64): cryptoff/cryptsize then cryptid (+ pad for _64).
+    return (
+        cmd.to_bytes(4, "little")
+        + (24).to_bytes(4, "little")
+        + (0x1000).to_bytes(4, "little")
+        + (0x1000).to_bytes(4, "little")
+        + cryptid.to_bytes(4, "little")
+        + (0).to_bytes(4, "little")
+    )
+
+
 def _lc_main(entryoff: int) -> bytes:
     # LC_MAIN: entry point as a file offset of main(), plus an initial stack size.
     return (
@@ -697,6 +721,63 @@ def test_macho32_entry_uses_the_32bit_segment_layout(tmp_path: Path) -> None:
     assert facts["entry"] == 0x1400
 
 
+def test_macho_nx_reflects_the_stack_execution_flag(tmp_path: Path) -> None:
+    # The stack is non-executable unless the image opts in with
+    # MH_ALLOW_STACK_EXECUTION -- the inverse of ELF's PT_GNU_STACK PF_X bit.
+    hardened = _macho64_full(filetype=2, flags=0x4, load_cmds=b"", ncmds=0)
+    assert describe_native(_write(tmp_path, "a.bin", hardened))["native"]["nx"] is True
+    execstack = _macho64_full(filetype=2, flags=0x4 | 0x00020000, load_cmds=b"", ncmds=0)
+    assert describe_native(_write(tmp_path, "b.bin", execstack))["native"]["nx"] is False
+
+
+def test_macho_encrypted_from_the_encryption_info_cryptid(tmp_path: Path) -> None:
+    """LC_ENCRYPTION_INFO's cryptid is the FairPlay question for an iOS binary.
+
+    cryptid != 0 means __TEXT is ciphertext on disk and static analysis reads
+    garbage until the image is dumped decrypted -- the first triage fact for an
+    App Store binary. A decrypted (cryptid 0) or never-encrypted image reads
+    False.
+    """
+    encrypted = _macho64_full(
+        filetype=2, flags=0x4, load_cmds=_lc_encryption_info(1), ncmds=1
+    )
+    assert describe_native(_write(tmp_path, "a.bin", encrypted))["native"]["encrypted"] is True
+    # The 32-bit command (0x21) decodes identically.
+    encrypted32 = _macho64_full(
+        filetype=2, flags=0x4, load_cmds=_lc_encryption_info(1, cmd=0x21), ncmds=1
+    )
+    assert describe_native(_write(tmp_path, "b.bin", encrypted32))["native"]["encrypted"] is True
+    decrypted = _macho64_full(
+        filetype=2, flags=0x4, load_cmds=_lc_encryption_info(0), ncmds=1
+    )
+    assert describe_native(_write(tmp_path, "c.bin", decrypted))["native"]["encrypted"] is False
+    plain = _macho64_full(filetype=2, flags=0x4, load_cmds=b"", ncmds=0)
+    assert describe_native(_write(tmp_path, "d.bin", plain))["native"]["encrypted"] is False
+
+
+def test_macho_canary_from_the_symbol_string_table(tmp_path: Path) -> None:
+    # A -fstack-protector build imports ___stack_chk_guard/_fail from
+    # libSystem; their names sit in LC_SYMTAB's string table, the same place
+    # the ELF reader greps dynstr. One leading underscore more than the ELF
+    # spelling, which the substring scan absorbs.
+    guarded_tab = b"\x00_main\x00___stack_chk_guard\x00___stack_chk_fail\x00"
+    cmds = _lc_symtab(stroff=32 + 24, strsize=len(guarded_tab))
+    guarded = _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1) + guarded_tab
+    assert describe_native(_write(tmp_path, "a.bin", guarded))["native"]["canary"] is True
+
+    bare_tab = b"\x00_main\x00_printf\x00"
+    cmds = _lc_symtab(stroff=32 + 24, strsize=len(bare_tab))
+    bare = _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1) + bare_tab
+    assert describe_native(_write(tmp_path, "b.bin", bare))["native"]["canary"] is False
+
+
+def test_macho_without_a_symtab_has_no_canary_fact(tmp_path: Path) -> None:
+    # No symbol table means the question cannot be answered: no fact, rather
+    # than a fabricated False -- the ELF reader's posture for a static binary.
+    data = _macho64_full(filetype=2, flags=0x4, load_cmds=_lc_uuid(), ncmds=1)
+    assert "canary" not in describe_native(_write(tmp_path, "a.bin", data))["native"]
+
+
 def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     # The committed fixture's LC_MAIN points at its code blob inside __TEXT
     # (vmaddr 0x100000000, fileoff 0), so the mapped entry is a known constant
@@ -705,7 +786,12 @@ def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     if not fixture.is_file():
         pytest.skip(f"fixture missing: {fixture}")
     facts = describe_native(fixture)["native"]
-    assert facts["entry"] == 0x1000001D0
+    assert facts["entry"] == 0x100000238
+    # Its build posture, cross-checked against radare2 by the r2 gate: NX on,
+    # stack-protector imports present, no FairPlay encryption.
+    assert facts["nx"] is True
+    assert facts["canary"] is True
+    assert facts["encrypted"] is False
 
 
 def test_macho_reads_load_commands_past_the_header_window(tmp_path: Path) -> None:

@@ -10,7 +10,12 @@ section carrying a real function body and a ``__cstring`` section carrying a
 marker string), an ``LC_LOAD_DYLINKER``/``LC_LOAD_DYLIB`` pair so the dynamic
 identity facts (interpreter, dylibs) are populated the way every real
 executable populates them, an ``LC_MAIN`` entry point so analysis seeds a
-function, and an ``LC_UUID``. No macOS toolchain is required; the output is
+function, an ``LC_UUID``, and an ``LC_SYMTAB``/``LC_DYSYMTAB`` pair whose
+undefined imports include the ``___stack_chk_guard``/``___stack_chk_fail``
+pair a clang ``-fstack-protector`` build pulls from libSystem -- so the
+canary posture fact has a positive case radare2 independently confirms (r2
+keys its own canary line on that import, reached through the dysymtab's
+indirect-symbol table). No macOS toolchain is required; the output is
 deterministic and committed as ``minimal.macho`` next to this file.
 
 Run ``python fixtures/native/build_minimal_macho.py`` to regenerate it.
@@ -31,14 +36,20 @@ CODE = b"\x55\x48\x89\xe5\x31\xc0\x5d\xc3"
 DYLINKER = "/usr/lib/dyld"
 DYLIB = "/usr/lib/libSystem.B.dylib"
 
+# The stack-protector imports every hardened clang build carries; both the
+# stdlib reader (string-table scan) and radare2 (undefined-import walk) derive
+# their canary fact from these names.
+SYMBOLS = ["_main", "___stack_chk_guard", "___stack_chk_fail"]
+
 _MH_MAGIC_64 = 0xFEEDFACF
 _CPU_TYPE_X86_64 = 0x01000007
 _CPU_SUBTYPE_X86_64_ALL = 0x00000003
 _MH_EXECUTE = 2
-_MH_NOUNDEFS = 0x1
 _MH_DYLDLINK = 0x4
 _MH_PIE = 0x00200000
 _LC_SEGMENT_64 = 0x19
+_LC_SYMTAB = 0x02
+_LC_DYSYMTAB = 0x0B
 _LC_LOAD_DYLIB = 0x0C
 _LC_LOAD_DYLINKER = 0x0E
 _LC_UUID = 0x1B
@@ -96,6 +107,24 @@ def _sect64(sect: str, seg: str, addr: int, size: int, offset: int, flags: int) 
     )
 
 
+def _symtab_blob(code_addr: int) -> tuple[bytes, bytes]:
+    """The nlist_64 rows plus string table for ``SYMBOLS``.
+
+    ``_main`` is defined in section 1 at the entry point; the stack_chk pair
+    are undefined externals (imports), exactly how a linker emits them.
+    """
+    strtab = b"\x00"
+    nlists = b""
+    for name in SYMBOLS:
+        strx = len(strtab)
+        strtab += name.encode() + b"\x00"
+        if name == "_main":
+            nlists += struct.pack("<IBBHQ", strx, 0x0F, 1, 0, code_addr)  # N_SECT | N_EXT
+        else:
+            nlists += struct.pack("<IBBHQ", strx, 0x01, 0, 0, 0)  # N_UNDF | N_EXT
+    return nlists, strtab
+
+
 def build() -> bytes:
     dylinker = _lc_load_dylinker(DYLINKER)
     dylib = _lc_load_dylib(DYLIB)
@@ -103,8 +132,19 @@ def build() -> bytes:
     seg_text = 72 + 80 * 2  # two sections: __text and __cstring
     lc_main = 24
     lc_uuid = 24
-    sizeofcmds = seg_pagezero + seg_text + len(dylinker) + len(dylib) + lc_main + lc_uuid
-    ncmds = 6
+    lc_symtab = 24
+    lc_dysymtab = 80
+    sizeofcmds = (
+        seg_pagezero
+        + seg_text
+        + len(dylinker)
+        + len(dylib)
+        + lc_main
+        + lc_uuid
+        + lc_symtab
+        + lc_dysymtab
+    )
+    ncmds = 8
     code_off = 32 + sizeofcmds
     cstr_off = code_off + len(CODE)
     total = cstr_off + len(MARKER)
@@ -115,6 +155,23 @@ def build() -> bytes:
     padding = max(0, dylib_name_off + 256 - total)
     total += padding
 
+    # The symbol machinery rides after the padding tail: nlist rows, the string
+    # table, then the indirect-symbol table radare2 requires before it walks
+    # the dysymtab's undefined range as imports.
+    nlists, strtab = _symtab_blob(_VM_BASE + code_off)
+    nundef = len(SYMBOLS) - 1
+    symoff = total
+    stroff = symoff + len(nlists)
+    indirectoff = stroff + len(strtab)
+    indirect = struct.pack(f"<{nundef}I", *range(1, 1 + nundef))
+    total = indirectoff + len(indirect)
+    symtab = struct.pack("<IIIIII", _LC_SYMTAB, 24, symoff, len(SYMBOLS), stroff, len(strtab))
+    # dysymtab_command: one defined external (_main), then the undefined
+    # imports, plus the indirect table; every other range is empty.
+    dysymtab = struct.pack(
+        "<20I", _LC_DYSYMTAB, 80, 0, 0, 0, 1, 1, nundef, *([0] * 6), indirectoff, nundef, 0, 0, 0, 0
+    )
+
     header = struct.pack(
         "<IiiIIII",
         _MH_MAGIC_64,
@@ -123,7 +180,7 @@ def build() -> bytes:
         _MH_EXECUTE,
         ncmds,
         sizeofcmds,
-        _MH_NOUNDEFS | _MH_DYLDLINK | _MH_PIE,
+        _MH_DYLDLINK | _MH_PIE,  # undefined imports now exist, so no MH_NOUNDEFS
     ) + struct.pack("<I", 0)
     pagezero = _seg64("__PAGEZERO", 0, _VM_BASE, 0, 0, 0, 0, 0, 0)
     text_sect = _sect64(
@@ -135,8 +192,10 @@ def build() -> bytes:
     text = _seg64("__TEXT", _VM_BASE, 0x1000, 0, total, 5, 5, 2, 0) + text_sect + cstr_sect
     main = struct.pack("<IIQQ", _LC_MAIN, 24, code_off, 0)  # entryoff, stacksize
     uuid = struct.pack("<II", _LC_UUID, 24) + bytes(range(16))
-    blob = header + pagezero + text + dylinker + dylib + main + uuid + CODE + MARKER
+    blob = header + pagezero + text + dylinker + dylib + main + uuid + symtab + dysymtab
+    blob += CODE + MARKER
     blob += b"\x00" * padding
+    blob += nlists + strtab + indirect
     assert len(blob) == total, (len(blob), total)
     return blob
 

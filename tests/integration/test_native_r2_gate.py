@@ -27,6 +27,9 @@ _MACHO_MARKER = "headless-macho-fixture"
 _R2_NX_RE = re.compile(r"^nx\s+(true|false)\s*$", re.MULTILINE)
 _R2_RELRO_RE = re.compile(r"^relro\s+(\S+)\s*$", re.MULTILINE)
 _R2_CANARY_RE = re.compile(r"^canary\s+(true|false)\s*$", re.MULTILINE)
+# For a Mach-O, r2's crypto line reports LC_ENCRYPTION_INFO's cryptid -- the
+# FairPlay question the stdlib reader answers as "encrypted".
+_R2_CRYPTO_RE = re.compile(r"^crypto\s+(true|false)\s*$", re.MULTILINE)
 # r2 spells "no RELRO" as "no"; the stdlib reader spells it "none".
 _R2_RELRO = {"full": "full", "partial": "partial", "no": "none"}
 
@@ -191,8 +194,29 @@ def test_native_macho_opens_and_r2_reads_it() -> None:
         assert native["interpreter"] == "/usr/lib/dyld"
         assert native["dylibs"] == ["/usr/lib/libSystem.B.dylib"]
         # LC_MAIN's offset mapped through __TEXT: the fixture's known entry.
-        assert native["entry"] == 0x1000001D0
+        assert native["entry"] == 0x100000238
         session_id = str(session["id"])
+
+        # Build posture, cross-checked against r2's own decode of the same
+        # image -- the Mach-O counterpart of the ELF gate's nx/relro/canary
+        # checks. The stdlib reader derives nx from MH_ALLOW_STACK_EXECUTION,
+        # canary from the stack_chk imports in LC_SYMTAB's string table, and
+        # encrypted from LC_ENCRYPTION_INFO's cryptid; r2 reads each fact from
+        # the same commands independently (its canary line keys on the
+        # __stack_chk_fail import the fixture really carries).
+        iI = R2Client().run(_MACHO_FIXTURE, ["iI"], timeout=60.0)["raw"]
+        nx_match = _R2_NX_RE.search(iI)
+        canary_match = _R2_CANARY_RE.search(iI)
+        crypto_match = _R2_CRYPTO_RE.search(iI)
+        assert nx_match, iI
+        assert native["nx"] is (nx_match.group(1) == "true")
+        assert canary_match, iI
+        assert native["canary"] is (canary_match.group(1) == "true")
+        # The positive case, not two false negatives agreeing by accident: the
+        # fixture imports the guard, and both readers saw it.
+        assert native["canary"] is True
+        assert crypto_match, iI
+        assert native["encrypted"] is (crypto_match.group(1) == "true")
 
         opened = service.r2_open(session_id, timeout=60.0)
         assert opened.ok, opened.error

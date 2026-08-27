@@ -463,7 +463,16 @@ _MACHO_CPU = {
 }
 _MH_PIE = 0x00200000
 _MH_DYLDLINK = 0x00000004
+# When set, the kernel maps the stack executable -- the inverse of ELF's
+# PT_GNU_STACK PF_X bit, so nx is simply this flag's absence.
+_MH_ALLOW_STACK_EXECUTION = 0x00020000
 _LC_DYLIB_CMDS = frozenset({0x0C, 0x80000018, 0x8000001F})  # LOAD_DYLIB, weak, reexport
+_LC_SYMTAB = 0x02  # names the symbol/string tables -- where stack_chk imports live
+# FairPlay DRM (App Store) encryption: cryptid != 0 means __TEXT is still
+# encrypted on disk and static analysis reads ciphertext -- the first question
+# an iOS reverser asks of a binary.
+_LC_ENCRYPTION_INFO = 0x21
+_LC_ENCRYPTION_INFO_64 = 0x2C
 _LC_LOAD_DYLINKER = 0x0E  # names the dynamic linker -- the Mach-O PT_INTERP
 _LC_ID_DYLIB = 0x0D  # a dylib's own install name -- the Mach-O DT_SONAME
 _LC_UUID = 0x1B  # the build's unique id -- the Mach-O GNU build-id
@@ -2389,6 +2398,9 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         flags = int.from_bytes(head[24:28], order)  # type: ignore[arg-type]
         facts["pie"] = bool(flags & _MH_PIE)
         facts["linking"] = "dynamic" if flags & _MH_DYLDLINK else "static"
+        # Same posture questions the ELF reader answers from PT_GNU_STACK: the
+        # stack is non-executable unless the image opts in via the header flag.
+        facts["nx"] = not flags & _MH_ALLOW_STACK_EXECUTION
         cmd_off = 32 if bits == 64 else 28
         cmds = _macho_read_load_commands(stream, cmd_off, sizeofcmds, head)
         lc = _macho_load_commands(cmds, order, ncmds)
@@ -2400,7 +2412,38 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         entry = _macho_entry(lc["entryoff"], lc["segments"])
         if entry is not None:
             facts["entry"] = entry
+        # FairPlay: an LC_ENCRYPTION_INFO with cryptid != 0 means the code is
+        # ciphertext on disk; no command at all means not encrypted.
+        facts["encrypted"] = bool(lc["cryptid"])
+        canary = _macho_canary(stream, lc["symtab"])
+        if canary is not None:
+            facts["canary"] = canary
     return facts
+
+
+def _macho_canary(stream: BinaryIO, symtab: tuple[int, int] | None) -> bool | None:
+    """Whether the symbol string table names a stack-protector guard.
+
+    A clang ``-fstack-protector`` build imports ``___stack_chk_guard`` /
+    ``___stack_chk_fail`` from libSystem, so their names sit in LC_SYMTAB's
+    string table -- the same substring scan the ELF reader runs over dynstr
+    (Mach-O C symbols carry one more leading underscore, which a substring
+    match absorbs). An image with no symbol table cannot answer, so it gets
+    None (no fact) rather than a fabricated False.
+    """
+    if symtab is None:
+        return None
+    stroff, strsize = symtab
+    if stroff <= 0 or strsize <= 0:
+        return None
+    try:
+        stream.seek(stroff)
+        blob = stream.read(min(strsize, _ELF_MAX_STRTAB))
+    except OSError:
+        return None
+    if not blob:
+        return None
+    return any(sym in blob for sym in _ELF_CANARY_SYMBOLS)
 
 
 def _macho_read_load_commands(
@@ -2446,10 +2489,12 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     the command count is out of range), ``interpreter`` (LC_LOAD_DYLINKER),
     ``install_name`` (LC_ID_DYLIB, a dylib's own name -- the DT_SONAME analogue),
     ``uuid`` (LC_UUID, the build id), ``entryoff`` (LC_MAIN's file offset of
-    main, or None) and ``segments`` ((vmaddr, fileoff, filesize) per LC_SEGMENT
-    / LC_SEGMENT_64, for mapping that offset to an address). Bounded by the
-    command count and the region already sized; a command whose body runs past
-    that region stops the walk.
+    main, or None), ``segments`` ((vmaddr, fileoff, filesize) per LC_SEGMENT
+    / LC_SEGMENT_64, for mapping that offset to an address), ``symtab``
+    (LC_SYMTAB's (stroff, strsize), for the canary scan) and ``cryptid``
+    (LC_ENCRYPTION_INFO's crypt id, or None when the image carries none).
+    Bounded by the command count and the region already sized; a command whose
+    body runs past that region stops the walk.
     """
     result: dict[str, Any] = {
         "dylibs": None,
@@ -2458,6 +2503,8 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         "uuid": None,
         "entryoff": None,
         "segments": [],
+        "symtab": None,
+        "cryptid": None,
     }
     if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
         return result
@@ -2485,6 +2532,21 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
             result["uuid"] = _macho_uuid(cmds[pos + 8 : pos + 24])
         elif cmd == _LC_MAIN and result["entryoff"] is None and cmdsize >= 24:
             result["entryoff"] = int.from_bytes(cmds[pos + 8 : pos + 16], order)  # type: ignore[arg-type]
+        elif cmd == _LC_SYMTAB and result["symtab"] is None and cmdsize >= 24:
+            # symoff/nsyms then stroff/strsize; only the string table matters
+            # here -- the canary scan greps it for the stack-guard imports.
+            result["symtab"] = (
+                int.from_bytes(cmds[pos + 16 : pos + 20], order),  # type: ignore[arg-type]
+                int.from_bytes(cmds[pos + 20 : pos + 24], order),  # type: ignore[arg-type]
+            )
+        elif (
+            cmd in (_LC_ENCRYPTION_INFO, _LC_ENCRYPTION_INFO_64)
+            and result["cryptid"] is None
+            and cmdsize >= 20
+        ):
+            # cryptoff/cryptsize then cryptid, in both the 32- and 64-bit
+            # layouts (the 64-bit one only appends padding).
+            result["cryptid"] = int.from_bytes(cmds[pos + 16 : pos + 20], order)  # type: ignore[arg-type]
         elif cmd == _LC_SEGMENT_64 and cmdsize >= 56:
             # segname(16) then vmaddr/vmsize/fileoff/filesize as u64s.
             segments.append(
