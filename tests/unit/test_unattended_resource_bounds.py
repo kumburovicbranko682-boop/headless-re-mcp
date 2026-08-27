@@ -1028,6 +1028,50 @@ class TestWebScriptBufferIsBounded:
         assert list(tmp_path.iterdir()) == []
 
 
+class TestConcurrentWebSessionsAreCapped:
+    def test_open_past_the_ceiling_is_refused_before_a_browser_starts(self) -> None:
+        """A ninth open must fail closed, not fork another Chromium.
+
+        Each live session is a browser process tree; without a ceiling an agent
+        loop that never calls web.close starves the host. The cap is checked
+        under the lock before the playwright import, so filling every slot with
+        the same bare reservation token an in-flight open holds reproduces the
+        refusal without launching anything.
+        """
+        from headless_re_mcp.backends.web.client import (
+            _MAX_WEB_SESSIONS,
+            WebBackend,
+            WebError,
+        )
+
+        backend = WebBackend()
+        backend._available = True
+        for index in range(_MAX_WEB_SESSIONS):
+            backend._sessions[f"s{index}"] = object()  # type: ignore[assignment]
+        with pytest.raises(WebError) as caught:
+            backend.open("overflow", "https://example.com")
+        assert caught.value.code == "invalid_state"
+        assert caught.value.details["cap"] == _MAX_WEB_SESSIONS
+        assert caught.value.details["held"] == _MAX_WEB_SESSIONS
+        # The refused open must not leak a reservation into the table.
+        assert "overflow" not in backend._sessions
+        assert len(backend._sessions) == _MAX_WEB_SESSIONS
+
+    def test_closing_a_session_frees_a_slot_for_a_new_open(self) -> None:
+        """The cap counts live reservations, so web.close must give one back."""
+        from headless_re_mcp.backends.web.client import _MAX_WEB_SESSIONS, WebBackend
+
+        backend = WebBackend()
+        backend._available = True
+        for index in range(_MAX_WEB_SESSIONS):
+            backend._sessions[f"s{index}"] = object()  # type: ignore[assignment]
+        # A bare object() reservation is torn down as an aborted open, freeing
+        # the slot without needing a real browser handle.
+        closed = backend.close("s0")
+        assert closed["closed"] is True
+        assert len(backend._sessions) == _MAX_WEB_SESSIONS - 1
+
+
 class TestFridaAuthorizationWindow:
     def test_most_recent_pid_wins_even_when_it_is_numerically_smaller(self) -> None:
         """Sorting would silently target the highest pid, not the new app."""

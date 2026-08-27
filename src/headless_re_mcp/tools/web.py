@@ -38,6 +38,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         other schemes are refused with invalid_params so the browser cannot be
         turned into a local-file reader. An empty url opens a blank browser.
 
+        Each open holds a live Chromium; at most 8 may run at once, so an open
+        past that ceiling is invalid_state (close one with web.close first)
+        rather than a starved host.
+
         Answers with opened, url, title and headless. There is no session,
         browser, ok or page field.
         """

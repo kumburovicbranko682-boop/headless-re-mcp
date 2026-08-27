@@ -221,6 +221,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - **`web.scripts` 无法只看运行时生成脚本，也不能按 URL 定位**。给它加上 `dynamic_only` 与 `url_filter`：前者只留
   `dynamic=True` 的脚本（`eval`/`new Function`/注入 `<script>`，其 url 通常为空，正是加壳器解包后 payload 的落点，url 过滤够不着），
   后者对 url 做大小写不敏感子串匹配；二者都在分页前应用，于是 `total` 即匹配数——在解析了成百上千脚本的页面上直接锁定目标。
+- **`web.open` 不限并发，浏览器会话可无界堆叠拖垮宿主**。每个 `web.open` 都持有一个活的 Chromium（独立进程树、数百 MB
+  内存），但后端从不限制同时打开的会话数——一个忘记 `web.close` 的调用方或跑飞的 agent 循环能一直 fork 浏览器直到宿主被
+  耗尽。仿照 adb 后端限制并发端口转发的做法，加上 `_MAX_WEB_SESSIONS`（8）：在持锁、且在 import playwright、启动浏览器
+  之前就校验，超限的 `open` 返回 `invalid_state`（附 `cap`/`held`），提示先 `web.close` 一个，而不是启动第九个浏览器再崩。
+  被拒的 open 绝不会占用槽位或泄漏预留。
 - **`frida.imports` 缺席：能列一个原生模块导出什么，却看不到它调用什么**。`frida.exports` 回答"这个 `.so` 提供哪些符号"，
   但拿到一个陌生原生库时，分析者的第一问往往是反过来的——"它依赖什么"：`dlopen`/`JNI_OnLoad` 说明它在动态加载或桥接 Java，
   `system`/`ptrace` 是行为线索。新增 `frida.imports`，用 `Module.enumerateImports` 完整镜像 exports 那条路径：同样的

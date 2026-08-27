@@ -72,6 +72,11 @@ _CALL_TIMEOUT = 60.0
 # non-positive value, the way the Frida and subprocess backends clamp.
 _MAX_NAV_TIMEOUT_S = 120.0
 _DEFAULT_NAV_TIMEOUT_S = 30.0
+# Each open() holds a live Chromium (its own process tree and hundreds of MB).
+# Without a ceiling an agent loop -- or a caller that forgets web.close -- can
+# fork browsers until the host is starved; the adb backend caps concurrent
+# forwards for the same reason. A refused open is invalid_state, not a crash.
+_MAX_WEB_SESSIONS = 8
 _OPENING = object()
 
 
@@ -545,6 +550,17 @@ class WebBackend:
         with self._lock:
             if session_id in self._sessions:
                 raise WebError("invalid_state", "web session already open", session_id=session_id)
+            # Bound the live browser count before reserving a slot, so a refused
+            # open never starts a Chromium. The reservation (opening token or a
+            # live handle) is what counts, so a launch in flight already holds
+            # its slot and cannot be double-spent by a racing open.
+            if len(self._sessions) >= _MAX_WEB_SESSIONS:
+                raise WebError(
+                    "invalid_state",
+                    "too many open web sessions; close one before opening another",
+                    cap=_MAX_WEB_SESSIONS,
+                    held=len(self._sessions),
+                )
             # Per-open token, not the shared _OPENING sentinel: close() pops
             # the reservation, and a second open() must not look like the
             # first launch still owns the slot.
