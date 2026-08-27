@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+Android 清单级工具首次有了对真实二进制 AXML 的执行覆盖，androguard 线的边界至此基本补齐。DEX 分析 gate
+从裸 classes.dex 覆盖了 `apk.classes`/`methods`/`strings`/`xrefs`，但清单级工具——`apk.open`/`apk.manifest`/
+`apk.permissions`/`apk.components`——读的是二进制 AndroidManifest.xml（AXML），手搓 zip 没有它，故这四个从
+未解析过真实清单，输出只来自 mock 与"返回 ok 或 error"的合成 APK 测试。生成二进制 AXML 需要 Android build
+tools，因此夹具 `fixtures/android/gate_sample.apk` 一次性构建并提交（与 artifacts/ 下的 PE 夹具同理）：用
+`aapt2 link`（-I android.jar）把一个声明包名 `com.example.gate`（version 1.4 / code 7）、`INTERNET` 权限、
+启动 Activity `com.example.MainActivity` 的清单编译为带 AXML+resources.arsc 的 APK，再加入 javac+D8 产出的
+classes.dex。新增 `tests/integration/test_androguard_manifest_live_gate.py`：断言 androguard 从真实 AXML 精确
+解码出这些事实——包名、版本名/号、主 Activity、权限计数、`INTERNET` 权限、Activity 列表及主 Activity，以及
+清单解码回文本含包名/Activity/权限。gate 只依赖 androguard——无需 Android SDK、无需模拟器。新增
+`linux-androguard-manifest` CI job：装 androguard、跑该 gate 并解析 junitxml，androguard 已装却 skip 时判失败
+（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

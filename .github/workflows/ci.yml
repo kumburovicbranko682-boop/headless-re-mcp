@@ -152,6 +152,44 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-androguard-manifest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the package with androguard
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]" androguard
+          python -c "import androguard; print('androguard', androguard.__version__)"
+
+      - name: androguard manifest gate runs for real (skip != pass)
+        run: |
+          python -m pytest tests/integration/test_androguard_manifest_live_gate.py \
+            -rs --tb=short --junitxml=androguard-manifest-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("androguard-manifest-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          # androguard was just installed and the fixture APK is committed, so a
+          # skip here means androguard could not decode a real binary manifest --
+          # the false-green "skip != pass" warns about. This is the only test
+          # that runs apk.open/manifest/permissions/components against real AXML.
+          if not cases:
+              sys.exit("no androguard-manifest gate was collected")
+          if skipped:
+              sys.exit(f"androguard-manifest gate skipped despite an installed androguard: {skipped}")
+          print(f"androguard-manifest gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
