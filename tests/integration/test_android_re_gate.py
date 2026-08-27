@@ -7,10 +7,11 @@ degradation on a bare machine; a second, genuinely androguard-parseable APK
 ``_apk_fixture``) exercises the androguard success path -- package, version,
 permissions, every component type, and the DEX code surface (classes, methods,
 strings, xrefs) -- skipping only where the ``android`` extra is absent. When
-jadx is configured, a further gate decompiles that same DEX back to Java and
-asserts the class, its methods, and an embedded constant come back as source.
-Parts that need a real device / adbutils are asserted only for a structured
-envelope, never a crash (skip != pass for the live-device parts).
+jadx or apktool are configured, further gates decompile that same DEX back to
+Java and disassemble it to smali, asserting the class, its methods, and an
+embedded constant come back out as source / smali. Parts that need a real
+device / adbutils are asserted only for a structured envelope, never a crash
+(skip != pass for the live-device parts).
 """
 
 from __future__ import annotations
@@ -205,6 +206,47 @@ def test_android_jadx_decompiles_dex_to_java(tmp_path: Path) -> None:
         # run()'s body calls the other two methods; seeing those calls proves
         # jadx reconstructed method bodies, not merely signatures.
         assert "greet(" in source and "add(" in source, source
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_android_apktool_baksmalis_dex(tmp_path: Path) -> None:
+    """Exercise apktool's baksmali path end to end against the real classes.dex.
+
+    apktool is the third Android adapter (androguard reads bytecode, jadx emits
+    Java, apktool disassembles to smali and unpacks resources), and unit tests
+    stub its CLI. ``no_resources=True`` runs ``apktool d -r`` so the decode needs
+    only the real DEX, not a full resources.arsc: it must shell out, land a smali
+    tree, and disassemble the class with its field, methods, and the intra-class
+    call that a signatures-only stub could not show. Skips (skip != pass) where
+    apktool is not configured on the host.
+    """
+    if Settings.load().apktool is None:
+        pytest.skip("apktool not configured — Android baksmali Gate not run (skip != pass)")
+    apk = build_valid_apk(tmp_path / "hello.apk")
+
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+
+        decoded = service.apk_decode(session_id, no_resources=True)
+        assert decoded.ok, decoded.error
+        assert "smali" in decoded.data["smali_dirs"], decoded.data
+        decoded_dir = Path(decoded.data["decoded_dir"])
+        matches = list(decoded_dir.rglob("Hello.smali"))
+        assert matches, sorted(str(p) for p in decoded_dir.rglob("*.smali"))
+        smali = matches[0].read_text(encoding="utf-8", errors="replace")
+
+        assert f".class public {EXPECTED['dex_class']}" in smali, smali
+        assert EXPECTED["dex_string"] in smali, smali
+        for method in EXPECTED["dex_source_methods"]:
+            assert f".method public {method}(" in smali, (method, smali)
+        # run() invokes greet(); the smali call site proves method bodies were
+        # disassembled, not just their signatures.
+        assert f"{EXPECTED['dex_class']}->{EXPECTED['dex_xref_target']}(" in smali, smali
     finally:
         service.close_all()
 
