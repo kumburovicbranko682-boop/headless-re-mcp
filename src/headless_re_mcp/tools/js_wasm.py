@@ -69,6 +69,35 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="wasm.data")
+    def wasm_data(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Map a WebAssembly module's data segments to linear memory, wabt-free.
+
+        The data section's load map: it lists each segment's mode and where it
+        lands, in pure Python, so unlike wasm.info / wasm.wat it needs no wabt
+        installed, and it is the structural companion to wasm.strings (which
+        pulls the text out of the same bytes). Each row is index, mode (active --
+        copied into memory at instantiation -- or passive -- copied on demand by
+        memory.init) and size, the payload's byte length. An active segment also
+        carries memory_index (which linear memory it targets, almost always 0)
+        and memory_offset, the destination address when that offset is a plain
+        i32.const; a computed offset (e.g. global.get) leaves memory_offset null
+        rather than guessing. Segment bytes themselves are not returned -- use
+        wasm.strings for their text. Answers with has_data_section (false when
+        the module has none -- then segments is empty and total 0, not an error),
+        segments, count, total, offset and has_more so a filled page is not read
+        as every segment; total is capped at 50000 with scan_capped when more may
+        exist, and truncated is true when a segment length or offset expression
+        is malformed (segments read so far are still returned). A file that is
+        not a WebAssembly module is refused as invalid_params, one over 16 MiB as
+        too_large.
+        """
+        return _dump(analysis.wasm_data(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.exports")
     def wasm_exports(
         path: str,

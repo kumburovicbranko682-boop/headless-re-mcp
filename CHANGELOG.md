@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **272（155 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **273（156 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -616,6 +616,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一个有界的常量表达式操作码集合完成，遇集合外的操作码即置 `truncated` 而非错位冲进下一个全局。返回
   `globals/count/total/offset/has_more`，`total` 上限 50000、越限置 `scan_capped`。非 WebAssembly 文件按
   `invalid_params` 拒绝，超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.data`：给出 data 段的加载映射——每个数据段落在线性内存的哪里，纯 Python、**不需要 wabt**，
+  是 `wasm.strings`（从同一批字节里取文本）的结构侧伴侣。每行是 `index`、`mode`（active 实例化时拷入 /
+  passive 由 `memory.init` 按需拷入）与 `size`（负载字节数）。active 段另带 `memory_index`（目标线性
+  内存，几乎总是 0）与 `memory_offset`——当偏移是简单 `i32.const` 时即目标地址；偏移为计算式（如
+  `global.get`）时留 null 而不猜。段内字节本身不返回（要文本用 `wasm.strings`）。返回
+  `has_data_section`（模块无 data 段时为 false，此时 `segments` 空、`total` 0，而非报错）、`segments`
+  （含 `count/total/offset/has_more`）；`total` 上限 50000、越限置 `scan_capped`；`truncated` 在段长或偏移
+  表达式畸形时为 true（已读到的段照常返回）。非 WebAssembly 文件按 `invalid_params` 拒绝，超过 16 MiB
+  按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

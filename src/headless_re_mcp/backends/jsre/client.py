@@ -127,6 +127,12 @@ _MAX_WASM_STRING_LEN = 1024
 _WASM_GLOBAL_SECTION_ID = 6
 _MAX_WASM_GLOBALS_COLLECT = 50000
 _MAX_WASM_GLOBALS_PAGE = 1000
+# wasm.data maps each data segment to where it loads in linear memory. For an
+# active segment the offset is a constant expression; the common i32.const case
+# is evaluated to a concrete address, anything else (e.g. global.get) is skipped
+# with memory_offset left null. Reuses _WASM_DATA_SECTION_ID from wasm.strings.
+_MAX_WASM_DATA_COLLECT = 50000
+_MAX_WASM_DATA_PAGE = 1000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -1167,6 +1173,142 @@ def parse_wasm_globals(
     return {
         "globals": window,
         "imported_count": imported_count,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _read_sleb(data: bytes, pos: int) -> tuple[int, int]:
+    """Decode one signed LEB128 at pos; return (value, next). Sign-extends."""
+    result = 0
+    shift = 0
+    while True:
+        byte = _byte_at(data, pos)
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            if byte & 0x40 and shift < 64:
+                result |= -(1 << shift)
+            return result, pos
+        if shift > 70:
+            raise _WasmParseError("sleb128 too long")
+
+
+def _eval_offset_expr(data: bytes, pos: int) -> tuple[int | None, int]:
+    """Evaluate a data/element offset expression; return (value_or_None, next).
+
+    The overwhelmingly common form is ``i32.const N; end`` and is resolved to N.
+    Anything else -- a global.get, an extended-const computation -- is stepped
+    over with the value left None, so a non-constant offset never becomes a made
+    up address.
+    """
+    try:
+        if _byte_at(data, pos) == 0x41:  # i32.const
+            value, after = _read_sleb(data, pos + 1)
+            if _byte_at(data, after) == 0x0B:  # end
+                return value, after + 1
+    except _WasmParseError:
+        pass
+    return None, _skip_const_expr(data, pos)
+
+
+def _parse_data_section(body: bytes) -> tuple[list[JsonObject], bool, bool]:
+    """Parse vec(data segment) into rows; return (rows, scan_more, truncated)."""
+    rows: list[JsonObject] = []
+    scan_more = False
+    try:
+        count, pos = _read_uleb(body, 0)
+        for index in range(count):
+            if len(rows) >= _MAX_WASM_DATA_COLLECT:
+                scan_more = True
+                break
+            flag, pos = _read_uleb(body, pos)
+            row: JsonObject = {"index": index}
+            if flag == 0:  # active, memory 0: offset expr + bytes
+                memory_offset, pos = _eval_offset_expr(body, pos)
+                row.update(
+                    {"mode": "active", "memory_index": 0, "memory_offset": memory_offset}
+                )
+            elif flag == 1:  # passive: bytes only
+                row["mode"] = "passive"
+            elif flag == 2:  # active, explicit memidx: memidx + offset expr + bytes
+                memory_index, pos = _read_uleb(body, pos)
+                memory_offset, pos = _eval_offset_expr(body, pos)
+                row.update(
+                    {
+                        "mode": "active",
+                        "memory_index": memory_index,
+                        "memory_offset": memory_offset,
+                    }
+                )
+            else:
+                raise _WasmParseError(f"unknown data segment flag {flag}")
+            size, pos = _read_uleb(body, pos)
+            end = pos + size
+            if end > len(body):
+                raise _WasmParseError("segment bytes run past the section")
+            pos = end
+            row["size"] = size
+            rows.append(row)
+    except _WasmParseError:
+        return rows, scan_more, True
+    return rows, scan_more, False
+
+
+def parse_wasm_data(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """Map a WebAssembly module's data segments to linear memory, wabt-free.
+
+    The data section's load map: it lists each segment's mode and where it
+    lands, in pure Python, so unlike wasm.info / wasm.wat it needs no wabt
+    installed, and it is the structural companion to wasm.strings (which pulls
+    the text out of the same bytes). Each row is index, mode (active -- copied
+    into memory at instantiation -- or passive -- copied on demand by memory
+    .init) and size, the payload's byte length. An active segment also carries
+    memory_index (which linear memory it targets, almost always 0) and
+    memory_offset, the destination address when that offset is a plain i32
+    .const; a computed offset (e.g. global.get) leaves memory_offset null rather
+    than guessing. Segment bytes themselves are not returned -- use wasm.strings
+    for their text. Answers with has_data_section (false when the module has
+    none -- then segments is empty and total 0, not an error), segments, count,
+    total, offset and has_more so a filled page is not read as every segment;
+    total is capped at 50000 with scan_capped when more may exist, and truncated
+    is true when a segment length or offset expression is malformed (the
+    segments read so far are still returned). A file that is not a WebAssembly
+    module is refused as invalid_params, one over 16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    bodies, truncated = _collect_section_bodies(
+        raw, frozenset({_WASM_DATA_SECTION_ID})
+    )
+    has_data_section = _WASM_DATA_SECTION_ID in bodies
+    rows: list[JsonObject] = []
+    scan_more = False
+    if has_data_section:
+        rows, scan_more, body_truncated = _parse_data_section(
+            bodies[_WASM_DATA_SECTION_ID]
+        )
+        truncated = truncated or body_truncated
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_DATA_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "segments": window,
+        "has_data_section": has_data_section,
         "count": len(window),
         "total": len(rows),
         "offset": start,
