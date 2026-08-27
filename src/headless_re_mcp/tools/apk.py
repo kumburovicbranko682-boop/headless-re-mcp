@@ -44,9 +44,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_permissions(session_id: str) -> dict[str, Any]:
         """List declared and requested permissions.
 
-        Answers with permissions, requested_permissions, count, and has_more
-        so a list that filled the cap is not read as every permission. There
-        is no declared or requested field.
+        Answers with permissions, requested_permissions, count, has_more so a
+        list that filled the cap is not read as every permission, and truncated
+        when an APK-derived name was clipped to its length cap. There is no
+        declared or requested field.
         """
         return _dump(analysis.apk_permissions(session_id))
 
@@ -55,8 +56,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List signing certificates and v1 signature files.
 
         Answers with certificates (subject, issuer, serial, sha256),
-        signature_files, v1_signed, and has_more so a list that filled the
-        cap is not read as every signer. There is no certs or signatures field.
+        signature_files, v1_signed, has_more so a list that filled the cap is
+        not read as every signer, and truncated when an APK-derived subject,
+        issuer, serial or signature-file name was clipped to its length cap.
+        There is no certs or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 
@@ -65,8 +68,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """List activities, services, receivers, and providers.
 
         Answers with activities, services, receivers, providers,
-        main_activity, and has_more so a list that filled the cap is not
-        read as every component. There is no components field.
+        main_activity, has_more so a list that filled the cap is not read as
+        every component, and truncated when an APK-derived component name was
+        clipped to its length cap. There is no components field.
         """
         return _dump(analysis.apk_components(session_id))
 
@@ -74,8 +78,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_native_libs(session_id: str) -> dict[str, Any]:
         """List bundled native libraries and their ABIs.
 
-        Answers with native_libs, abis, count, and has_more so a list that
-        filled the cap is not read as every .so. There is no libs or
+        Answers with native_libs, abis, count, has_more so a list that filled
+        the cap is not read as every .so, and truncated when an APK-derived
+        entry path was clipped to its length cap. There is no libs or
         libraries field.
         """
         return _dump(analysis.apk_native_libs(session_id))
@@ -92,7 +97,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         that filled the limit is not read as the whole collected list.
         total is the number collected, capped at 10000; scan_capped is true
         when the real class count may be higher. has_more only means a
-        larger offset still has collected rows.
+        larger offset still has collected rows. truncated is true when an
+        APK-derived class name was clipped to its length cap.
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
@@ -110,6 +116,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         read as the whole collected class. total is the number collected,
         capped at 2000; scan_capped is true when more methods may exist.
         has_more only means a larger offset still has collected rows.
+        truncated is true when an APK-derived name, descriptor or access
+        string was clipped to its length cap.
         """
         return _dump(
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
@@ -139,8 +147,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List callers of every method named method_name.
 
-        Answers with callers (class and method), method_name, count, and
-        has_more so a page that filled the limit is not read as the whole list.
+        Answers with callers (class and method), method_name, count, has_more
+        so a page that filled the limit is not read as the whole list, and
+        truncated when an APK-derived caller class or method name was clipped
+        to its length cap.
         """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 

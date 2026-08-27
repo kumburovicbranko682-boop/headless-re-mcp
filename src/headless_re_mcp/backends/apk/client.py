@@ -19,6 +19,16 @@ JsonObject = dict[str, Any]
 # parsed apps resident and evict the oldest.
 _CACHE_LIMIT = 4
 _MAX_STRING_LEN = 2000
+# One class name, method descriptor, zip entry path, component id, permission
+# or certificate field. The lists are count-capped, but each row comes from the
+# APK under analysis -- untrusted, often malware. A crafted DEX type name, or a
+# zip entry name (which the format allows up to 64 KiB), can bloat a single tool
+# result far past what the count cap suggests: 256 native-lib rows at 64 KiB is
+# ~16 MiB in one reply, and a direct MCP caller (no agent-side result cap) would
+# take all of it. ``strings()`` already clips its values this way; the sibling
+# enumerations did not. A real identifier is well under this; anything larger is
+# clipped and the reply says so.
+_MAX_NAME_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
@@ -37,16 +47,27 @@ class ApkError(RuntimeError):
         self.details = details
 
 
-def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
+def _clip_name(value: str, *, limit: int = _MAX_NAME_LEN) -> tuple[str, bool]:
+    """Bound one APK-derived identifier, returning it and whether it was cut."""
+    if len(value) <= limit:
+        return value, False
+    return value[:limit], True
+
+
+def _cap_names(values: Any, limit: int) -> tuple[list[str], bool, bool]:
     items: list[str] = []
     has_more = False
+    truncated = False
     for item in values or []:
         if len(items) >= limit:
             has_more = True
             break
-        items.append(str(item))
+        clipped, cut = _clip_name(str(item))
+        if cut:
+            truncated = True
+        items.append(clipped)
     items.sort()
-    return items, has_more
+    return items, has_more, truncated
 
 
 class _ParsedApk:
@@ -199,18 +220,21 @@ class ApkClient:
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
+        declared, declared_more, declared_cut = _cap_names(
+            apk.get_permissions(), _MAX_PERMISSIONS
+        )
         try:
-            requested, requested_more = _cap_names(
+            requested, requested_more, requested_cut = _cap_names(
                 apk.get_requested_permissions(), _MAX_PERMISSIONS
             )
         except Exception:  # noqa: BLE001 - older androguard lacks this
-            requested, requested_more = declared, declared_more
+            requested, requested_more, requested_cut = declared, declared_more, declared_cut
         return {
             "permissions": declared,
             "requested_permissions": requested,
             "count": len(declared),
             "has_more": declared_more or requested_more,
+            "truncated": declared_cut or requested_cut,
         }
 
     def certificates(self, path: Path) -> JsonObject:
@@ -222,22 +246,31 @@ class ApkClient:
             names = []
         sig_files: list[str] = []
         files_more = False
+        truncated = False
         for name in names or []:
             if len(sig_files) >= _MAX_CERTIFICATES:
                 files_more = True
                 break
-            sig_files.append(str(name))
+            clipped, cut = _clip_name(str(name))
+            if cut:
+                truncated = True
+            sig_files.append(clipped)
         certs_more = False
         for cert in apk.get_certificates():
             if len(items) >= _MAX_CERTIFICATES:
                 certs_more = True
                 break
             try:
+                subject, subject_cut = _clip_name(str(getattr(cert, "subject", "")))
+                issuer, issuer_cut = _clip_name(str(getattr(cert, "issuer", "")))
+                serial, serial_cut = _clip_name(str(getattr(cert, "serial_number", "")))
+                if subject_cut or issuer_cut or serial_cut:
+                    truncated = True
                 items.append(
                     {
-                        "subject": str(getattr(cert, "subject", "")),
-                        "issuer": str(getattr(cert, "issuer", "")),
-                        "serial": str(getattr(cert, "serial_number", "")),
+                        "subject": subject,
+                        "issuer": issuer,
+                        "serial": serial,
                         "sha256": cert.sha256_fingerprint
                         if hasattr(cert, "sha256_fingerprint")
                         else "",
@@ -250,14 +283,15 @@ class ApkClient:
             "certificates": items,
             "v1_signed": bool(names),
             "has_more": certs_more or files_more,
+            "truncated": truncated,
         }
 
     def components(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        activities, a_more = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
-        services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
-        receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
-        providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
+        activities, a_more, a_cut = _cap_names(apk.get_activities(), _MAX_COMPONENT_NAMES)
+        services, s_more, s_cut = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
+        receivers, r_more, r_cut = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
+        providers, p_more, p_cut = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
         return {
             "activities": activities,
             "services": services,
@@ -265,6 +299,7 @@ class ApkClient:
             "providers": providers,
             "main_activity": apk.get_main_activity(),
             "has_more": a_more or s_more or r_more or p_more,
+            "truncated": a_cut or s_cut or r_cut or p_cut,
         }
 
     def native_libs(self, path: Path) -> JsonObject:
@@ -272,36 +307,50 @@ class ApkClient:
         libs: list[str] = []
         abis: set[str] = set()
         has_more = False
+        truncated = False
         for name in apk.get_files() or []:
             text = str(name)
             if not text.startswith("lib/"):
                 continue
             parts = text.split("/")
             if len(parts) >= 3:
-                abis.add(parts[1])
+                # ABI segment only; clip it too so a crafted entry cannot bloat
+                # the abis set with a multi-kilobyte pseudo-ABI.
+                abi, abi_cut = _clip_name(parts[1])
+                if abi_cut:
+                    truncated = True
+                abis.add(abi)
             if len(libs) >= _MAX_NATIVE_LIBS:
                 has_more = True
                 continue
-            libs.append(text)
+            clipped, cut = _clip_name(text)
+            if cut:
+                truncated = True
+            libs.append(clipped)
         libs.sort()
         return {
             "native_libs": libs,
             "abis": sorted(abis),
             "count": len(libs),
             "has_more": has_more,
+            "truncated": truncated,
         }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
         scan_more = False
+        truncated = False
         for klass in parsed.analysis.get_classes():
             if klass.is_external():
                 continue
             if len(names) >= _MAX_CLASSES_COLLECT:
                 scan_more = True
                 break
-            names.append(klass.name)
+            clipped, cut = _clip_name(str(klass.name))
+            if cut:
+                truncated = True
+            names.append(clipped)
         names.sort()
         # Clamp the way the web/proxy/jsre/adb backends do rather than trusting
         # the boundary alone: a negative offset would otherwise index from the
@@ -316,6 +365,7 @@ class ApkClient:
             "offset": start,
             "has_more": start + len(window) < len(names),
             "scan_capped": scan_more,
+            "truncated": truncated,
         }
 
     def methods(
@@ -339,31 +389,41 @@ class ApkClient:
             raise ApkError("not_found", "class not found", class_name=class_name)
         methods: list[JsonObject] = []
         scan_more = False
+        truncated = False
         for klass in found:
             for method in klass.get_methods():
                 if len(methods) >= _MAX_METHODS_COLLECT:
                     scan_more = True
                     break
+                name, name_cut = _clip_name(str(method.name))
+                descriptor, descriptor_cut = _clip_name(str(getattr(method, "descriptor", "")))
+                access, access_cut = _clip_name(str(getattr(method, "access", "")))
+                if name_cut or descriptor_cut or access_cut:
+                    truncated = True
                 methods.append(
                     {
-                        "name": method.name,
-                        "descriptor": str(getattr(method, "descriptor", "")),
-                        "access": str(getattr(method, "access", "")),
+                        "name": name,
+                        "descriptor": descriptor,
+                        "access": access,
                     }
                 )
             if scan_more:
                 break
+        class_name_out, class_name_cut = _clip_name(str(found[0].name))
+        if class_name_cut:
+            truncated = True
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = methods[start : start + cap]
         return {
-            "class_name": found[0].name,
+            "class_name": class_name_out,
             "methods": window,
             "count": len(window),
             "total": len(methods),
             "offset": start,
             "has_more": start + len(window) < len(methods),
             "scan_capped": scan_more,
+            "truncated": truncated,
         }
 
     def strings(self, path: Path, *, offset: int = 0, limit: int = 200) -> JsonObject:
@@ -396,6 +456,7 @@ class ApkClient:
         cap = max(1, int(limit))
         callers: list[JsonObject] = []
         has_more = False
+        truncated = False
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
                 continue
@@ -405,10 +466,14 @@ class ApkClient:
                     # that happens to fill the page is not reported as partial.
                     has_more = True
                     break
+                class_name, class_cut = _clip_name(str(call.class_name))
+                method_name, method_cut = _clip_name(str(call.name))
+                if class_cut or method_cut:
+                    truncated = True
                 callers.append(
                     {
-                        "class": str(call.class_name),
-                        "method": str(call.name),
+                        "class": class_name,
+                        "method": method_name,
                     }
                 )
             if has_more:
@@ -420,6 +485,7 @@ class ApkClient:
             # A caller deciding "these are all the callers" has to know whether
             # the enumeration ended or merely stopped.
             "has_more": has_more,
+            "truncated": truncated,
         }
 
 
