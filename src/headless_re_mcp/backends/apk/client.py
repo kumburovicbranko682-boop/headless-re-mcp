@@ -813,6 +813,76 @@ class ApkClient:
             "has_more": has_more or budget_cut,
         }
 
+    def string_xrefs(
+        self,
+        path: Path,
+        value: str,
+        *,
+        limit: int = 100,
+        contains: bool = False,
+    ) -> JsonObject:
+        parsed = self._parsed(path)
+        # A string is not stripped the way a method name is: leading/trailing
+        # whitespace can be part of a real constant, and an empty needle in
+        # contains mode would match every string, so reject only the empty one.
+        if not value:
+            raise ApkError("invalid_params", "value is required")
+        cap = max(1, int(limit))
+        rows: list[JsonObject] = []
+        has_more = False
+        scan_capped = False
+        strings_matched = 0
+        # androguard's StringAnalysis carries the same xref-from edges as a
+        # method, so "which methods reference this string" answers the question
+        # apk.strings cannot: where a hardcoded URL/key/command is actually used.
+        # get_xref_from() on a StringAnalysis yields (ClassAnalysis,
+        # MethodAnalysis) pairs -- take the method (element 1), tolerating a
+        # longer tuple shape from another androguard version.
+        for scanned, sa in enumerate(parsed.analysis.get_strings()):
+            if scanned >= _MAX_STRINGS_COLLECT:
+                scan_capped = True
+                break
+            text = str(sa.get_value())
+            if (value in text) if contains else (text == value):
+                strings_matched += 1
+                matched_value = text[:_MAX_STRING_LEN]
+                for edge in sa.get_xref_from():
+                    ref = edge[1]
+                    if len(rows) >= cap:
+                        # Set only once a row was actually left out, so a page
+                        # that exactly fills the cap is not flagged partial.
+                        has_more = True
+                        break
+                    rows.append(
+                        {
+                            "class": str(getattr(ref, "class_name", "")),
+                            "method": str(getattr(ref, "name", "")),
+                            # Which matched string this edge belongs to: redundant
+                            # in exact mode, load-bearing in contains mode where
+                            # several distinct strings can match one query.
+                            "string": matched_value,
+                        }
+                    )
+                if has_more:
+                    break
+        # Bound the list by encoded size too: like method xrefs there is no
+        # offset to page with, so a budget cut just omits rows -- fold it into
+        # has_more so a trimmed list is never read as the whole set.
+        rows, _dropped, budget_cut = fit_json_list(rows, reserve=_LIST_FIELD_RESERVE)
+        return {
+            "value": value,
+            # exact needs the whole constant; contains finds any string holding
+            # the needle. Echoed so a contains reply is never read as exact.
+            "match": "contains" if contains else "exact",
+            "strings_matched": strings_matched,
+            "xrefs": rows,
+            "count": len(rows),
+            "has_more": has_more or budget_cut,
+            # True when the string scan hit its own cap before the whole DEX was
+            # walked, so an empty/short result is not read as "nowhere else".
+            "scan_capped": scan_capped,
+        }
+
 
 def _dotted_to_smali(name: str) -> str:
     """com.example.Foo -> Lcom/example/Foo; so either form resolves a class."""

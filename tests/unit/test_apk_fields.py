@@ -161,6 +161,149 @@ def test_apk_xrefs_rejects_an_unknown_direction(tmp_path: Path, monkeypatch: Any
     assert info.value.code == "invalid_params"
 
 
+class _FakeStringRef:
+    """The MethodAnalysis half of a StringAnalysis xref-from edge."""
+
+    def __init__(self, class_name: str, name: str) -> None:
+        self.class_name = class_name
+        self.name = name
+
+
+class _FakeStringAnalysis:
+    """androguard StringAnalysis: a value plus (ClassAnalysis, MethodAnalysis) edges."""
+
+    def __init__(self, value: str, refs: list[_FakeStringRef]) -> None:
+        self._value = value
+        self._refs = refs
+
+    def get_value(self) -> str:
+        return self._value
+
+    def get_xref_from(self) -> list[tuple[object, _FakeStringRef]]:
+        return [(None, ref) for ref in self._refs]
+
+
+class _FakeStringParsed:
+    def __init__(self, strings: list[_FakeStringAnalysis]) -> None:
+        self.analysis = self
+        self._strings = strings
+
+    def get_strings(self) -> list[_FakeStringAnalysis]:
+        return self._strings
+
+
+def test_apk_string_xrefs_exact_lists_the_methods_that_reference_the_string(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """apk.strings says a string exists; string_xrefs says who uses it.
+
+    Measured: the marker string is referenced by two methods and an unrelated
+    string by a third; an exact query returns exactly the two under xrefs (not
+    callers/results), each row carrying the class, the method, and the string
+    it matched, with strings_matched 1 and the third method never appearing.
+    """
+    client = ApkClient()
+    strings = [
+        _FakeStringAnalysis(
+            "https://api.example.com/login",
+            [
+                _FakeStringRef("Lcom/example/Net;", "connect"),
+                _FakeStringRef("Lcom/example/Auth;", "login"),
+            ],
+        ),
+        _FakeStringAnalysis("unrelated", [_FakeStringRef("Lcom/example/Other;", "noise")]),
+    ]
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeStringParsed(strings)
+    )
+    payload = client.string_xrefs(tmp_path / "app.apk", "https://api.example.com/login")
+    assert "callers" not in payload
+    assert "results" not in payload
+    assert payload["match"] == "exact"
+    assert payload["strings_matched"] == 1
+    assert payload["count"] == 2
+    pairs = {(row["class"], row["method"]) for row in payload["xrefs"]}
+    assert pairs == {("Lcom/example/Net;", "connect"), ("Lcom/example/Auth;", "login")}
+    assert all(row["string"] == "https://api.example.com/login" for row in payload["xrefs"])
+    assert payload["has_more"] is False
+    assert payload["scan_capped"] is False
+    doc = _tool_docstring("apk.string_xrefs")
+    assert "xrefs" in doc
+    assert "strings_matched" in doc
+    assert "scan_capped" in doc
+
+
+def test_apk_string_xrefs_contains_matches_several_strings_and_labels_each_row(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """contains widens the query to any string holding the needle, labelled per row.
+
+    Measured: two http URLs and one ftp URL; contains "http://" matches the two
+    http strings (strings_matched 2), and each returned row names the specific
+    string its edge belongs to so the hits stay attributable. The same needle
+    matched exactly finds nothing -- no constant is literally "http://".
+    """
+    client = ApkClient()
+    strings = [
+        _FakeStringAnalysis("http://a.example/one", [_FakeStringRef("LcomA;", "a")]),
+        _FakeStringAnalysis("http://b.example/two", [_FakeStringRef("LcomB;", "b")]),
+        _FakeStringAnalysis("ftp://c.example/three", [_FakeStringRef("LcomC;", "c")]),
+    ]
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeStringParsed(strings)
+    )
+    apk = tmp_path / "app.apk"
+    hits = client.string_xrefs(apk, "http://", contains=True)
+    assert hits["match"] == "contains"
+    assert hits["strings_matched"] == 2
+    assert hits["count"] == 2
+    by_method = {row["method"]: row["string"] for row in hits["xrefs"]}
+    assert by_method == {"a": "http://a.example/one", "b": "http://b.example/two"}
+    exact = client.string_xrefs(apk, "http://")
+    assert exact["match"] == "exact"
+    assert exact["strings_matched"] == 0
+    assert exact["count"] == 0
+    assert exact["xrefs"] == []
+    doc = " ".join(_tool_docstring("apk.string_xrefs").split())
+    assert "contains" in doc
+    assert "match" in doc
+
+
+def test_apk_string_xrefs_limit_caps_rows_and_flags_has_more(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A busy string caps at the limit and says the list did not end.
+
+    Measured: 25 referencing methods, limit 10 -> count 10, has_more True,
+    strings_matched still 1. A full page with no has_more would read as the
+    whole reference set.
+    """
+    client = ApkClient()
+    refs = [_FakeStringRef(f"Lcom/example/C{i};", f"m{i}") for i in range(25)]
+    strings = [_FakeStringAnalysis("SECRET_KEY", refs)]
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeStringParsed(strings)
+    )
+    payload = client.string_xrefs(tmp_path / "app.apk", "SECRET_KEY", limit=10)
+    assert payload["count"] == 10
+    assert len(payload["xrefs"]) == 10
+    assert payload["has_more"] is True
+    assert payload["strings_matched"] == 1
+
+
+def test_apk_string_xrefs_rejects_an_empty_value(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An empty needle would match every string in contains mode, so reject it."""
+    client = ApkClient()
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeStringParsed([])
+    )
+    with pytest.raises(ApkError) as info:
+        client.string_xrefs(tmp_path / "app.apk", "")
+    assert info.value.code == "invalid_params"
+
+
 class _ManifestBody:
     def get_xml(self) -> bytes:
         return b"<manifest/>" * ((_MAX_MANIFEST_CHARS // 10) + 20)

@@ -12,7 +12,8 @@ returns the marker string ``APK_GATE_MARKER_STRING``. The manifest declares the
 ``INTERNET`` permission, the APK ships a native ``lib/arm64-v8a/libgate.so``, and
 the whole APK is v1 (JAR) signed with a self-signed ``CN=HeadlessRE Gate`` key,
 so the manifest-side surface has something to find. androguard must list the
-class, its methods, the marker string, resolve the caller->callee xref, decode
+class, its methods, the marker string, resolve the caller->callee xref both
+ways and the methods that reference the marker string, decode
 the binary manifest (package + main activity), read the declared permission,
 enumerate the native ABI, and read the signing certificate back as a readable
 DN; apktool must decode it back into a manifest plus a smali tree containing that
@@ -109,6 +110,32 @@ def test_m11_androguard_apk_surface() -> None:
         callee["method"] == "callee" and "Sample" in callee["class"]
         for callee in callees["callees"]
     ), callees["callees"]
+
+    # String xrefs close the loop that apk.strings only opens: the marker string
+    # is returned in the const-string that callee() hands back, so asking who
+    # references APK_GATE_MARKER_STRING must name callee. This reads a third 4.x
+    # surface -- StringAnalysis.get_xref_from, distinct from the method xref-from
+    # / xref-to above -- so a drift that stopped resolving string edges (empty
+    # list) is caught here rather than in a unit mock.
+    string_refs = client.string_xrefs(_APK, "APK_GATE_MARKER_STRING")
+    assert string_refs["match"] == "exact"
+    assert string_refs["strings_matched"] >= 1
+    assert string_refs["count"] >= 1
+    assert any(
+        row["method"] == "callee" and "Sample" in row["class"]
+        for row in string_refs["xrefs"]
+    ), string_refs["xrefs"]
+    assert all(
+        row["string"] == "APK_GATE_MARKER_STRING" for row in string_refs["xrefs"]
+    ), string_refs["xrefs"]
+    # A substring query for the marker resolves the same edge, proving contains
+    # mode matches the whole constant it is embedded in, not just an exact hit.
+    contains_refs = client.string_xrefs(_APK, "MARKER", contains=True)
+    assert contains_refs["match"] == "contains"
+    assert any(
+        row["method"] == "callee" and "MARKER" in row["string"]
+        for row in contains_refs["xrefs"]
+    ), contains_refs["xrefs"]
 
     # Manifest side: these use androguard's APK object (binary AXML decode plus
     # component queries), a different 4.x surface from the DEX analysis above.

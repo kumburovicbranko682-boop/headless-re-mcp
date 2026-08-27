@@ -195,6 +195,35 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_xrefs(session_id, method_name, limit=limit, direction=direction)
         )
 
+    @tools.tool(name="apk.string_xrefs")
+    def apk_string_xrefs(
+        session_id: str,
+        value: str,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        contains: bool = False,
+    ) -> dict[str, Any]:
+        """List the methods that reference a DEX string constant.
+
+        Answers where a string is actually used -- the follow-up apk.strings
+        cannot make, for tracing a hardcoded URL, key, or command back to the
+        code that reads it. Answers with xrefs (each row a class and method plus
+        the string it matched), value, match, strings_matched, count, has_more,
+        and scan_capped. There is no callers or results field. By default value
+        is matched exactly (match "exact"); set contains true to match any string
+        that holds value as a substring (match "contains"), in which case several
+        distinct strings can match and the per-row string names which one each
+        edge belongs to. strings_matched is how many distinct strings matched;
+        count is how many reference rows are returned. has_more is set when the
+        limit or the result-size budget cut the rows (there is no offset, so a
+        trimmed list simply omits the rest); scan_capped is set when the string
+        scan hit its cap before the whole DEX was walked, so an empty or short
+        result is not read as "referenced nowhere else". An empty value is
+        rejected as invalid_params.
+        """
+        return _dump(
+            analysis.apk_string_xrefs(session_id, value, limit=limit, contains=contains)
+        )
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,
