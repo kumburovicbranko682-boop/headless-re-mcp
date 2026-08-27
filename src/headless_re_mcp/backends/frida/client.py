@@ -317,15 +317,22 @@ class FridaClient:
             )
         session = self._attach_local(pid, timeout=timeout)
         try:
-            return {
-                "pid": pid,
-                "attached": True,
-                "device": "local",
-                "note": "probe attach; detached immediately",
-            }
-        finally:
-            with contextlib.suppress(Exception):
-                session.detach()
+            session.detach()
+        except Exception as exc:
+            # A probe that cannot detach leaves a session resident in the
+            # target. Saying attached=true would let the caller move on while a
+            # leaked session keeps its scripts loaded, so report the failure.
+            raise FridaError(
+                "frida_detach_failed",
+                f"probe detach failed: {type(exc).__name__}: {exc}",
+                pid=pid,
+            ) from exc
+        return {
+            "pid": pid,
+            "attached": True,
+            "device": "local",
+            "note": "probe attach; detached immediately",
+        }
 
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
@@ -351,15 +358,17 @@ class FridaClient:
                 for item in held[:capped]
                 if isinstance(item, dict)
             ]
-            return {
+            result = {
                 "modules": items,
                 "count": len(items),
                 "total": total,
                 "has_more": total > len(items),
             }
-        finally:
+        except BaseException:
             with contextlib.suppress(Exception):
                 session.detach()
+            raise
+        return self._detached_probe_result(session, result, pid, "module probe")
 
     def exports(
         self,
@@ -392,7 +401,7 @@ class FridaClient:
                         "type": str(item.get("type", "")),
                     }
                 )
-            return {
+            result = {
                 "found": bool(raw.get("found")),
                 "module": str(raw.get("module") or module_name),
                 "base": str(raw.get("base") or ""),
@@ -400,9 +409,11 @@ class FridaClient:
                 "count": len(items),
                 "has_more": has_more,
             }
-        finally:
+        except BaseException:
             with contextlib.suppress(Exception):
                 session.detach()
+            raise
+        return self._detached_probe_result(session, result, pid, "export probe")
 
     def memory_read(
         self, pid: int, address: int, size: int, *, allowed_pid: int
@@ -415,15 +426,17 @@ class FridaClient:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
             data = bytes(script.exports_sync.read(int(address), int(size)))
-            return {
+            result = {
                 "address": address,
                 "size": size,
                 "encoding": "hex",
                 "data": data.hex(),
             }
-        finally:
+        except BaseException:
             with contextlib.suppress(Exception):
                 session.detach()
+            raise
+        return self._detached_probe_result(session, result, pid, "memory probe")
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
@@ -486,6 +499,26 @@ class FridaClient:
                 _detach_all(sessions)
                 raise _timeout_error(deadline) from exc
             raise FridaError("backend_error", f"attach failed: {exc}", pid=pid) from exc
+
+    def _detached_probe_result(
+        self, session: Any, result: JsonObject, pid: int, label: str
+    ) -> JsonObject:
+        """Detach a completed read probe, surfacing a detach that fails.
+
+        The read already succeeded, so the caller expects its payload. But a
+        detach that fails leaves the session resident in the target with its
+        enumeration script loaded; returning the payload as-is would hide that
+        leak. Report it instead so the caller knows a session was stranded.
+        """
+        try:
+            session.detach()
+        except Exception as exc:
+            raise FridaError(
+                "frida_detach_failed",
+                f"{label} detach failed: {type(exc).__name__}: {exc}",
+                pid=pid,
+            ) from exc
+        return result
 
     def _require(self, pid: int, allowed_pid: int) -> None:
         if pid != allowed_pid:
