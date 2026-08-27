@@ -202,8 +202,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
         """Return the current page HTML, URL, and title.
 
-        Answers with url, title and html, plus truncated when the HTML was
-        cut at the buffer. There is no content, dom or body field.
+        Answers with url, title, html and bytes (the full DOM length), plus
+        truncated when the inline html is only a preview. When truncated, the
+        complete document is written to a file and its path returned as
+        html_path -- read that for the whole DOM rather than treating the
+        inline html as complete. There is no content, dom or body field.
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 

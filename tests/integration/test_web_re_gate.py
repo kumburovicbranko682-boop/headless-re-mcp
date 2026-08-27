@@ -801,6 +801,80 @@ def test_web_cdp_reads_the_cookie_jar() -> None:
             service.close_all()
 
 
+_BIG_DOM_MARKER = b"gate-big-dom-marker"
+# A body well past the 200 KB inline cap so the snapshot has to spill.
+_BIG_DOM_PAGE = (
+    b"<!doctype html><html><head><title>big-dom-gate</title></head><body>"
+    + (b"<div class='row'>" + _BIG_DOM_MARKER + b"</div>") * 12000
+    + b"</body></html>"
+)
+
+
+@contextmanager
+def _big_dom_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(_BIG_DOM_PAGE)))
+            self.end_headers()
+            self.wfile.write(_BIG_DOM_PAGE)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_web_cdp_dom_snapshot_spills_a_large_document() -> None:
+    """A large DOM was sliced to 200 KB in the browser and the rest lost.
+
+    A real SPA's markup runs past that, so the snapshot -- often the whole
+    point of the capture -- came back cut with no way to reach the full page.
+    Drive a page whose DOM is ~500 KB and assert web.dom.snapshot spills the
+    complete document to html_path (byte length in bytes), the inline html is
+    only a bounded preview, and the spilled file holds the whole thing.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web DOM spill Gate not run (skip != pass)")
+    with _big_dom_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            snap = service.web_dom_snapshot(session_id)
+            assert snap.ok, snap.error
+            data = snap.data
+            assert data["truncated"] is True, "a 500 KB DOM should not fit inline"
+            assert "html_path" in data, data
+            assert data["bytes"] > 200_000
+            assert len(str(data["html"]).encode("utf-8")) <= data["bytes"]
+            spilled = Path(data["html_path"])
+            assert spilled.is_file()
+            full = spilled.read_bytes()
+            assert len(full) == data["bytes"]
+            assert _BIG_DOM_MARKER in full
+        finally:
+            service.close_all()
+
+
 @pytest.mark.integration
 def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:

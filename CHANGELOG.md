@@ -311,6 +311,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   「已 bind 但从不 listen」的回环端口（内核直接拒连）发一次请求，断言该 flow 被标 `failed`、带非空 `error`、
   `status` 为 null、且 `flow.get` 如实回报失败（缺 mitmproxy 时 skip≠pass）；单测直接驱动 `error`，覆盖新建失败行、
   `flow.get` 透出失败、以及「响应后再报错只标注不重复建行」。
+- **`web.dom.snapshot` 把 DOM 在浏览器里切到 200 KB、其余直接丢**。快照原来在页面内 `slice(0, 200KB)` 再回传，
+  可一个真实 SPA 的 DOM 动辄几百 KB 到几 MB——而快照往往正是这次取证的核心，却拿回一段被截断、且无从补全的
+  HTML。改用 `page.content()` 取完整 DOM，再按既有落盘范式（同 `web.script.source`）：内联一段预览、其余写进会话
+  产物文件并回 `html_path`，另回 `bytes`（完整 DOM 长度）；`truncated` 现表示「内联只是预览、完整在 html_path」。落盘
+  文件注册为 capture 走留存回收；直接调用后端（无产物目录）时退回内联预览+`truncated`，行为不变。活体门下发一个约
+  500 KB DOM 的页面，断言 `web.dom.snapshot` 置 `truncated`、`html_path` 指向的文件逐字节等于 `bytes` 且含页面标记、内联
+  html 仅为有界预览（缺浏览器时 skip≠pass）；单测覆盖大文档落盘（内联预览+完整可读回）与小文档不落盘。
 - **Web 线读不到 Cookie——也就是会话/鉴权状态本身**。抓包线能看到 `Cookie`/`Set-Cookie` 头，但浏览器的
   Cookie 罐（含 HttpOnly——JS 读不到、只在罐里、且往往正是那枚会话令牌）此前没有任何工具能取。新增只读的
   `web.cookies`：驱动上下文的 `context.cookies()`，回 `cookies`/`count`/`has_more`，每条带 `name`、`value`

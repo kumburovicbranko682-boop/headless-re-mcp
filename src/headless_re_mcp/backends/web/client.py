@@ -979,36 +979,44 @@ class WebBackend:
                 result["wasm_path"] = str(wasm_out)
         return result
 
-    def dom_snapshot(self, session_id: str) -> JsonObject:
+    def dom_snapshot(self, session_id: str, artifact_dir: Path | None = None) -> JsonObject:
         handle = self._get(session_id)
 
         def work() -> JsonObject:
             try:
-                clipped = handle.page.evaluate(
-                    """(cap) => {
-                        const html = document.documentElement
-                          ? document.documentElement.outerHTML
-                          : (document.body ? document.body.outerHTML : "");
-                        const text = typeof html === "string" ? html : "";
-                        return {
-                          html: text.length > cap ? text.slice(0, cap) : text,
-                          truncated: text.length > cap
-                        };
-                    }""",
-                    _MAX_INLINE_BODY,
-                )
+                html = handle.page.content()
             except Exception as exc:  # noqa: BLE001
                 raise WebError("backend_error", f"dom snapshot failed: {exc}") from exc
-            if not isinstance(clipped, dict):
-                raise WebError("backend_error", "dom snapshot returned no document")
-            html = clipped.get("html")
-            text = html if isinstance(html, str) else ""
-            return {
+            if not isinstance(html, str):
+                html = str(html)
+            result: JsonObject = {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
-                "html": text[:_MAX_INLINE_BODY],
-                "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
+                "bytes": len(html.encode("utf-8", errors="replace")),
             }
+            if artifact_dir is not None:
+                # The DOM was previously sliced to 200 KB in the browser and the
+                # rest thrown away: a real SPA's markup runs well past that, so
+                # the snapshot -- often the whole point of the capture -- came
+                # back cut with no way to reach the full document. Inline a
+                # preview and spill the rest to a file (like web.script.source).
+                inline, spill, cut = _spill_text(
+                    html,
+                    artifact_dir=artifact_dir,
+                    filename=f"dom-{uuid4().hex}.html",
+                    kind="dom snapshot",
+                )
+                result["html"] = inline
+                result["truncated"] = cut
+                if spill is not None:
+                    result["html_path"] = str(spill)
+            else:
+                # A direct backend caller with no artifact area: inline a
+                # bounded prefix and still flag when the page was larger.
+                payload = html.encode("utf-8", errors="replace")
+                result["html"] = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
+                result["truncated"] = len(payload) > _MAX_INLINE_BODY
+            return result
 
         return self._runner(handle).call(work)
 
