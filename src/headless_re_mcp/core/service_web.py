@@ -114,7 +114,21 @@ class WebAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def web_navigate(self, session_id: str, url: str, timeout: float = 30.0) -> Result[JsonObject]:
-        return self._web_wrap(session_id, "navigate", session_id, url, timeout=timeout)
+        try:
+            data = self._web.navigate(session_id, url, timeout=timeout)
+            # Record where the browser actually landed (data["url"] is page.url
+            # after redirects), the same audit trail web.open/close/screenshot/
+            # har.export already leave. Navigation is what decides which page
+            # every later read -- console, DOM snapshot, network, scripts --
+            # describes, so a session timeline that omits it cannot be replayed.
+            _timeline_append(
+                self, session_id, "web.navigate", "browser navigated", url=data.get("url")
+            )
+            return _success(data, session_id=session_id, backend="web")
+        except WebError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def web_close(self, session_id: str) -> Result[JsonObject]:
         try:
