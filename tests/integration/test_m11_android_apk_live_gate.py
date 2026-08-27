@@ -9,19 +9,22 @@ would pass the whole suite while the real tools returned nothing usable. This
 runs both against a tiny committed APK, ``fixtures/android/sample.apk``: a single
 ``com.example.gate.Sample`` class whose ``caller`` calls ``callee``, which
 returns the marker string ``APK_GATE_MARKER_STRING``. The manifest declares the
-``INTERNET`` permission and the APK ships a native ``lib/arm64-v8a/libgate.so``
+``INTERNET`` permission, the APK ships a native ``lib/arm64-v8a/libgate.so``, and
+the whole APK is v1 (JAR) signed with a self-signed ``CN=HeadlessRE Gate`` key,
 so the manifest-side surface has something to find. androguard must list the
 class, its methods, the marker string, resolve the caller->callee xref, decode
-the binary manifest (package + main activity), read the declared permission, and
-enumerate the native ABI; apktool must decode it back into a manifest plus a
-smali tree containing that class. Each capability skips (skip != pass) when its
-backend is absent.
+the binary manifest (package + main activity), read the declared permission,
+enumerate the native ABI, and read the signing certificate back as a readable
+DN; apktool must decode it back into a manifest plus a smali tree containing that
+class. Each capability skips (skip != pass) when its backend is absent.
 
 Fixture provenance: the smali is assembled into ``classes.dex`` by apktool 3.0.3
 and the manifest is compiled to binary AXML by aapt2 linked against the android
 framework; those, a minimal ``resources.arsc``, and a placeholder
 ``lib/arm64-v8a/libgate.so`` (a synthetic non-loadable stub, only ever listed by
-name) are zipped into the APK. The readable sources are committed beside it as
+name) are zipped into the APK, which is then jarsigner-signed with a throwaway
+keytool RSA key (the committed ``.apk`` is the artifact; the keystore is not
+kept). The readable sources are committed beside it as
 ``fixtures/android/sample.smali`` and ``fixtures/android/sample.AndroidManifest.xml``.
 """
 
@@ -116,6 +119,20 @@ def test_m11_androguard_apk_surface() -> None:
     assert any(
         name == "lib/arm64-v8a/libgate.so" for name in native["native_libs"]
     ), native["native_libs"]
+
+    # certificates() reads the v1 (JAR) signature: get_signature_names for the
+    # .RSA file and get_certificates for the asn1crypto x509 cert. The fixture is
+    # jarsigner-signed with a self-signed CN=HeadlessRE Gate key, so a working
+    # read must report v1_signed, name the .RSA, and -- the part a mock never
+    # exercises -- render the subject as a readable DN rather than the
+    # "<asn1crypto.x509.Name 0x..>" repr the old str(cert.subject) emitted.
+    certs = client.certificates(_APK)
+    assert certs["v1_signed"] is True, certs
+    assert any(name.endswith(".RSA") for name in certs["signature_files"]), certs
+    assert certs["certificates"], certs
+    subject = certs["certificates"][0]["subject"]
+    assert "HeadlessRE Gate" in subject, subject
+    assert "asn1crypto" not in subject, subject
 
 
 @pytest.mark.integration
