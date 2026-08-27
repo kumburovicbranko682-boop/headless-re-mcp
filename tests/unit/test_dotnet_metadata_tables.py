@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from headless_re_mcp.dotnet.clr_inspect import inspect_dotnet
+from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError, inspect_dotnet
 from headless_re_mcp.dotnet.metadata_enum import (
     disassemble_method_il,
     enumerate_metadata,
@@ -84,8 +84,8 @@ def _build_metadata_root(*, typedef_declared: int = 1) -> bytes:
     return bytes(root)
 
 
-def _write_clr_with_tables(path: Path, *, typedef_declared: int = 1) -> None:
-    """PE64 with COR20 + BSJB metadata carrying real table rows in .text."""
+def _write_pe_with_metadata(path: Path, metadata: bytes) -> None:
+    """Wrap a prebuilt BSJB metadata blob in a minimal PE64 with a COR20 header."""
     image = bytearray(0x1000)
     pe_offset = 0x80
     image[:2] = b"MZ"
@@ -109,7 +109,6 @@ def _write_clr_with_tables(path: Path, *, typedef_declared: int = 1) -> None:
     struct.pack_into("<IIII", image, section + 8, 0x800, 0x1000, 0x800, 0x200)
     struct.pack_into("<I", image, section + 36, 0x60000020)
 
-    metadata = _build_metadata_root(typedef_declared=typedef_declared)
     # COR20 at file 0x300 / RVA 0x1100
     cor_off = 0x300
     struct.pack_into("<I", image, cor_off, 72)
@@ -122,6 +121,46 @@ def _write_clr_with_tables(path: Path, *, typedef_declared: int = 1) -> None:
     # BSJB metadata root at file 0x400 / RVA 0x1200
     image[0x400 : 0x400 + len(metadata)] = metadata
     path.write_bytes(image)
+
+
+def _write_clr_with_tables(path: Path, *, typedef_declared: int = 1) -> None:
+    """PE64 with COR20 + BSJB metadata carrying real table rows in .text."""
+    _write_pe_with_metadata(path, _build_metadata_root(typedef_declared=typedef_declared))
+
+
+def _build_reserved_table_root() -> bytes:
+    """A verified BSJB root whose #~ stream sets an unsizable table bit (0x1E).
+
+    Module (0x00) and Assembly (0x20) surround the reserved bit, so name
+    extraction reads the module, then meets a table it cannot size before it
+    can reach Assembly.
+    """
+    strings_heap, idx = _build_strings_heap()
+    tables = bytearray()
+    tables += struct.pack("<IBBBB", 0, 2, 0, 0x00, 1)
+    valid = (1 << 0x00) | (1 << 0x1E) | (1 << 0x20) | (1 << 0x28)
+    tables += struct.pack("<QQ", valid, 0)
+    tables += struct.pack("<IIII", 1, 1, 1, 1)  # Module, reserved 0x1E, Assembly, Resource
+    # Module row; the tables past the reserved bit are never validly reached.
+    tables += struct.pack("<HHHHH", 0, idx["MyModule.exe"], 1, 0, 0)
+    tables += struct.pack("<HHH", 0, 0, 0)  # opaque bytes for the unsizable table
+    tables += struct.pack("<IHHHHIHHH", 0x8004, 1, 2, 3, 4, 0, 0, idx["MyAssembly"], 0)
+    tables += struct.pack("<IIHH", 0, 0, 0, 0)  # opaque ManifestResource bytes
+
+    version = b"v4.0.30319\0"
+    version_padded = version + b"\0" * ((4 - len(version) % 4) % 4)
+    root = bytearray(b"BSJB")
+    root += struct.pack("<HHI", 1, 1, 0)
+    root += struct.pack("<I", len(version)) + version_padded
+    root += struct.pack("<HH", 0, 2)
+    header_area = (8 + 4) + (8 + 12)
+    tables_off = len(root) + header_area
+    strings_off = tables_off + len(tables)
+    root += struct.pack("<II", tables_off, len(tables)) + b"#~\0\0"
+    root += struct.pack("<II", strings_off, len(strings_heap)) + b"#Strings\0\0\0\0"
+    root += bytes(tables)
+    root += strings_heap
+    return bytes(root)
 
 
 def test_enumerate_types_methods_fields_from_real_tables(tmp_path: Path) -> None:
@@ -189,6 +228,30 @@ def test_inspect_reports_module_and_assembly_names(tmp_path: Path) -> None:
     assert stats.type_count == 1
     assert stats.method_count == 1
     assert stats.field_count == 1
+
+
+def test_inspect_degrades_gracefully_past_an_unsizable_table(tmp_path: Path) -> None:
+    """A table clr_inspect cannot size stops the name walk, it does not crash.
+
+    Module sits before the reserved bit and is still reported; Assembly sits
+    after it and is unreachable, so assembly_name falls back to None instead of
+    raising out of inspect_dotnet.
+    """
+    binary = tmp_path / "reserved.exe"
+    _write_pe_with_metadata(binary, _build_reserved_table_root())
+    report = inspect_dotnet(binary, require_verified=True)
+    assert report.verified_clr is True
+    assert report.module_name == "MyModule.exe"
+    assert report.assembly_name is None
+
+
+def test_enumerate_refuses_an_unsizable_intervening_table(tmp_path: Path) -> None:
+    """Enumerating past a reserved table fails closed, not with a wrong offset."""
+    binary = tmp_path / "reserved.exe"
+    _write_pe_with_metadata(binary, _build_reserved_table_root())
+    with pytest.raises(DotnetInspectError) as excinfo:
+        enumerate_metadata(binary, "resources", limit=10)
+    assert excinfo.value.code == "unsupported_metadata"
 
 
 @pytest.mark.parametrize("declared", [0x7FFFFFFF, 0xFFFFFFFF])
