@@ -11,9 +11,11 @@ silently turn a bound into either an outage or an unbounded directory.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,6 +63,35 @@ def test_available_memory_returns_none_on_a_negative_reading(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(os, "sysconf", lambda name: -1)
+    assert limits.available_memory_bytes() is None
+
+
+def test_available_memory_reads_the_windows_avail_phys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ctypes.byref keeps a live reference to the struct in ._obj, so the fake
+    # win32 call can fill the field the same way GlobalMemoryStatusEx would.
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def fake_status_ex(ref: ctypes.CArgObject) -> int:
+        ref._obj.ullAvailPhys = 4096  # type: ignore[attr-defined]
+        return 1  # nonzero == success
+
+    kernel32 = SimpleNamespace(GlobalMemoryStatusEx=fake_status_ex)
+    monkeypatch.setattr(
+        limits.ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False
+    )
+    assert limits.available_memory_bytes() == 4096
+
+
+def test_available_memory_returns_none_when_the_windows_call_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    kernel32 = SimpleNamespace(GlobalMemoryStatusEx=lambda ref: 0)  # zero == failure
+    monkeypatch.setattr(
+        limits.ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False
+    )
     assert limits.available_memory_bytes() is None
 
 
@@ -193,6 +224,21 @@ def test_prune_terminates_when_a_deletion_keeps_failing(
     assert len(list(root.iterdir())) == 3
 
 
+def test_prune_returns_zero_when_listing_the_directory_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # is_dir() passes on a real directory, but a racing removal can make the
+    # subsequent iterdir() raise; prune degrades to "removed nothing".
+    root = tmp_path / "captures"
+    root.mkdir()
+
+    def boom_iterdir(self: Path) -> object:
+        raise OSError("listing vanished")
+
+    monkeypatch.setattr(Path, "iterdir", boom_iterdir)
+    assert limits.prune_capped_dir(root, max_entries=1, max_bytes=1) == 0
+
+
 def test_prune_sizes_and_evicts_subdirectories(tmp_path: Path) -> None:
     root = tmp_path / "captures"
     root.mkdir()
@@ -238,6 +284,34 @@ def test_dir_size_sums_files_and_skips_nested_directories(tmp_path: Path) -> Non
     # Below the file cap, so the walk visits every entry: the two top-level
     # files and the nested one sum to 60, while the directory entries add zero.
     assert limits._dir_size(sub) == 60
+
+
+def test_dir_size_skips_a_child_it_cannot_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A child whose is_file()/stat() raises mid-walk is skipped, not fatal.
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "a.bin").write_bytes(b"x" * 10)
+
+    def boom_is_file(self: Path) -> bool:
+        raise OSError("stat vanished")
+
+    monkeypatch.setattr(Path, "is_file", boom_is_file)
+    assert limits._dir_size(tree) == 0
+
+
+def test_dir_size_returns_what_it_has_when_the_walk_itself_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+
+    def boom_rglob(self: Path, pattern: str) -> object:
+        raise OSError("walk failed")
+
+    monkeypatch.setattr(Path, "rglob", boom_rglob)
+    assert limits._dir_size(tree) == 0
 
 
 def test_remove_entry_deletes_a_file(tmp_path: Path) -> None:
