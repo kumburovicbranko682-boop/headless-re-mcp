@@ -141,6 +141,46 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
 
 
+def test_a_unicode_line_separator_in_an_entry_survives_the_read(tmp_path: Path) -> None:
+    """An entry carrying U+2028/U+2029/U+0085 must not be split into fragments.
+
+    Entries are written with ``json.dumps(ensure_ascii=False)``, so a Unicode
+    line separator inside a message or detail lands in the file literally. The
+    pager used to slice the window with ``str.splitlines``, which treats those
+    code points as line breaks and cut one JSON record into pieces that each
+    failed ``json.loads`` -- so an entry ``total`` still counted vanished from
+    the page and ``has_more`` came back wrong. Splitting only on the newline the
+    writer actually emits keeps every record whole.
+    """
+    path = tmp_path / "timeline.jsonl"
+    store.append_session_timeline(path, event="first", message="plain")
+    store.append_session_timeline(
+        path,
+        event="separators",
+        message="line one\u2028line two\u2029para",
+        details={"nel": "before\u0085after"},
+    )
+    store.append_session_timeline(path, event="third", message="plain")
+
+    listed = store.list_session_timeline(path)
+    assert listed["total"] == 3
+    assert listed["count"] == 3
+    assert [item["event"] for item in listed["events"]] == ["first", "separators", "third"]
+    middle = listed["events"][1]
+    assert middle["message"] == "line one\u2028line two\u2029para"
+    assert middle["details"]["nel"] == "before\u0085after"
+
+    # One entry per page, in order, with an accurate has_more on every step.
+    paged = [
+        (
+            store.list_session_timeline(path, offset=offset, limit=1)["events"][0]["event"],
+            store.list_session_timeline(path, offset=offset, limit=1)["has_more"],
+        )
+        for offset in range(3)
+    ]
+    assert paged == [("first", True), ("separators", True), ("third", False)]
+
+
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

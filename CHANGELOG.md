@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（时间线分页把带 Unicode 行分隔符的条目整条丢掉）
+
+- `list_session_timeline` 的分页器 `_page` 用 `str.splitlines()` 切分取出的窗口。条目是用
+  `json.dumps(ensure_ascii=False)` 落盘的,所以 message 或 details 里的 Unicode 行分隔符——
+  U+2028(LINE SEPARATOR)、U+2029(PARAGRAPH SEPARATOR)、NEL U+0085——会**原样**写进文件。
+  `str.splitlines()` 把这些码点当换行,于是一条 JSON 记录被切成多个片段,每片 `json.loads`
+  都失败被 `except json.JSONDecodeError: continue` 静默跳过:一条 `total` 仍计入、确实写成功的
+  诊断条目就此从页面上消失,而 `has_more` 因为 `len(chunk)` 被多切出来的片段撑大而算错(实测
+  写入 3 条、`total=3`,页面只回 2 条且 `has_more=False`,读者看不到任何缺口提示)。现改为只按
+  写入端真正落盘的 `"\n"` 切分,并去掉终止换行带出的尾部空串以保持计数精确;`total` 的
+  `raw.count(b"\n")` 一直是对的,现在窗口条数与之一致。新增回归:一条把 U+2028/U+2029/U+0085
+  同时放进 message 与 details 的条目,能整条读回、内容无损,逐条分页顺序与 `has_more` 全部正确。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

@@ -164,6 +164,15 @@ def _page(raw: bytes, offset: int, limit: int) -> tuple[int, list[str]]:
 
     Entries are newline-terminated, so counting separators gives the total
     without building a list of every line in the file.
+
+    The window is split on ``"\\n"`` alone rather than with ``str.splitlines``.
+    Entries are written with ``json.dumps(ensure_ascii=False)``, so a message or
+    detail carrying a Unicode line separator -- U+2028, U+2029 or the NEL U+0085 --
+    lands in the file literally. ``str.splitlines`` treats those as line breaks and
+    would cut one JSON record into fragments that each fail ``json.loads``, silently
+    dropping an entry that ``total`` still counted and leaving ``has_more`` wrong.
+    ``str.split`` breaks only on the terminator we actually wrote; the trailing
+    empty from that terminator is dropped so the count stays exact.
     """
     total = raw.count(b"\n") + (1 if raw and not raw.endswith(b"\n") else 0)
     start = 0
@@ -180,7 +189,10 @@ def _page(raw: bytes, offset: int, limit: int) -> tuple[int, list[str]]:
             end = len(raw)
             break
         end = nxt + 1
-    return total, raw[start:end].decode("utf-8", errors="replace").splitlines()
+    lines = raw[start:end].decode("utf-8", errors="replace").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return total, lines
 
 
 def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
