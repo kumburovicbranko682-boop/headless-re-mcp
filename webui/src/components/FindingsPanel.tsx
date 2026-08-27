@@ -33,18 +33,26 @@ export function FindingsPanel({ sessionId, onSessionMissing }: { sessionId: stri
 
   const load = useCallback(async () => {
     if (!sessionId) { setKnowledge(null); return; }
-    const result = await api<Envelope<KnowledgeData>>(
-      `/api/sessions/${encodeURIComponent(sessionId)}/knowledge`,
-    );
-    if (!result.ok || !result.data) {
-      setKnowledge(null);
-      const gone = isSessionGone(result.error);
-      setError(gone ? inspectorDisconnectedHint() : (result.error?.message ?? "暂无发现"));
-      if (gone) onSessionMissing?.(sessionId);
-      return;
+    try {
+      const result = await api<Envelope<KnowledgeData>>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/knowledge`,
+      );
+      if (!result.ok || !result.data) {
+        setKnowledge(null);
+        const gone = isSessionGone(result.error);
+        setError(gone ? inspectorDisconnectedHint() : (result.error?.message ?? "暂无发现"));
+        if (gone) onSessionMissing?.(sessionId);
+        return;
+      }
+      setKnowledge(result.data);
+      setError(null);
+    } catch (reason) {
+      // Same trap as the other inspector panels: api() rejects on a non-2xx or
+      // a network drop, the !result.ok branch only handles a resolved failure
+      // envelope, and load() runs as void load(). Without this the rejection is
+      // unhandled and the panel sits empty instead of naming the failure.
+      setError(String(reason));
     }
-    setKnowledge(result.data);
-    setError(null);
   }, [onSessionMissing, sessionId]);
 
   const generate = useCallback(async () => {

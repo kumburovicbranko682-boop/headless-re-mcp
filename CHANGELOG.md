@@ -49,7 +49,7 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
-### 修复（检查器时间线 / 产物 / 审计面板请求失败会无声空着）
+### 修复（检查器时间线 / 产物 / 审计 / 发现面板请求失败会无声空着）
 
 - `webui` 检查器的 `TimelinePanel` / `ArtifactsPanel` / `AuditPanel` 三个面板的 `load()` 直接
   `await api(...)` 而没有任何 `try/catch`。但 `api()` 在任何非 2xx（令牌缺失的 401、后端 500）
@@ -60,9 +60,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   其实是请求根本没成。旁边同文件的 `MonitorPanel.load()` 一直是 `try/catch` + `setError(String(reason))`，
   `ArtifactsPanel.download()` 也早有 catch——这三处是明显的漏网。现把三个 `load()` 各自包进
   `try/catch`，抛错时统一走已有的 `findings-error` 横幅显示原因，与 `MonitorPanel` 对齐。
-- 新增一条 `Inspector` 直测：让 `/timeline`、`/artifacts`、`/audit` 三个请求全部 reject（其余监视
-  所需请求照常成功），断言三个面板各自把错误显示成横幅。修复前该测试以三个 unhandled rejection
-  失败，正对应线上「无声空着」的表现。前端 64 条测试与 `tsc --noEmit` 均通过，提交的 SPA 产物已重建。
+- 同一处的第四块「发现与报告」面板 `FindingsPanel.load()`（单独文件 `FindingsPanel.tsx`）是完全
+  一样的坑：`await api('.../knowledge')` 无 catch、以 `void load()` 调用，`!result.ok` 分支只兜住
+  已 resolve 的失败信封。请求真抛错时同样静静空着，用户以为「还没有记录」。其 `generate()`（生成
+  报告）早有 `try/catch`，唯独 `load()` 漏了。现同样补上 `try/catch` + `findings-error` 横幅。
+- 新增 `Inspector` 直测（让 `/timeline`、`/artifacts`、`/audit` 全部 reject、其余监视请求照常成功，
+  断言三个面板各自把错误显示成横幅）与 `FindingsPanel` 两条直测（`/knowledge` 正常时按 kind 分组
+  列出、reject 时给出横幅）。修复前对应用例分别以 unhandled rejection 失败，正对应线上「无声空着」
+  的表现。前端 66 条测试与 `tsc --noEmit` 均通过，提交的 SPA 产物已重建。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
