@@ -61,9 +61,12 @@ def test_plain_text_reads_the_shapes_and_ignores_the_rest() -> None:
 
 
 def test_hidden_texts_pulls_reasoning_object_and_google_thoughts() -> None:
-    # An object-shaped reasoning field is handled both by the key loop and the
-    # explicit reasoning-object branch; this pins that current behaviour.
-    assert _hidden_texts({"reasoning": {"text": "r"}}) == ["r", "r"]
+    # An object-shaped reasoning field is read exactly once (the key loop's
+    # _plain_text already handles the object), so it is not double-emitted.
+    assert _hidden_texts({"reasoning": {"text": "r"}}) == ["r"]
+    # The string form is unchanged, and both spell out to a single piece.
+    assert _hidden_texts({"reasoning": "r"}) == ["r"]
+    assert _hidden_texts({"reasoning_content": "r"}) == ["r"]
     # Google-style thoughts ride under extra_content.google.thought ...
     assert _hidden_texts({"extra_content": {"google": {"thought": "g"}}}) == ["g"]
     # ... and fall back to a bare `extra` container using the plural key.
@@ -232,6 +235,25 @@ async def test_stream_omits_authorization_when_no_key_is_configured() -> None:
     events = [e async for e in provider.stream_chat(messages=[], tools=[], model="m")]
     assert observed["authorization"] is None
     assert events[-1].type == "completed"
+
+
+@pytest.mark.asyncio
+async def test_object_shaped_reasoning_is_streamed_once_not_twice() -> None:
+    # Regression: a provider that sends delta.reasoning as an object used to
+    # produce two reasoning_delta events for one chunk, so the orchestrator
+    # stored the thinking text doubled.
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=_sse(
+                {"choices": [{"delta": {"reasoning": {"text": "let me think"}}}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            ),
+        )
+
+    provider = OpenAICompatibleProvider(_profile(), transport=httpx.MockTransport(respond))
+    events = [e async for e in provider.stream_chat(messages=[], tools=[], model="m")]
+    assert [e.text for e in events if e.type == "reasoning_delta"] == ["let me think"]
 
 
 @pytest.mark.asyncio

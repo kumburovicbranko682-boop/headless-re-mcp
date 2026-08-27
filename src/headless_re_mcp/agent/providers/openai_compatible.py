@@ -46,15 +46,16 @@ def _plain_text(value: Any) -> str:
 
 
 def _hidden_texts(delta: dict[str, Any]) -> list[str]:
-    """Thinking / reasoning text. Empty first chunks are ignored, like Harness."""
+    """Thinking / reasoning text. Empty first chunks are ignored, like Harness.
+
+    ``reasoning`` is read once, by the key loop: ``_plain_text`` already pulls
+    text out of the object form, so a separate object branch here re-read the
+    same field and emitted an object-shaped ``reasoning`` twice -- doubling the
+    thinking text the orchestrator concatenated into the run.
+    """
     texts: list[str] = []
     for key in _HIDDEN_DELTA_KEYS:
         piece = _plain_text(delta.get(key))
-        if piece:
-            texts.append(piece)
-    reasoning = delta.get("reasoning")
-    if isinstance(reasoning, dict):
-        piece = _plain_text(reasoning)
         if piece:
             texts.append(piece)
     extra = delta.get("extra_content")
