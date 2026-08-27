@@ -289,7 +289,12 @@ def _capture_process(
     # group id is the runner's pid. A child it detaches keeps this group id even
     # after the kernel reparents the orphan, which is how a clean-exit leftover
     # is found once the parent/child walk sees nothing.
-    group_id = int(process.pid) if os.name != "nt" and process.pid else 0
+    group_pid = getattr(process, "pid", None)
+    group_id = (
+        int(group_pid)
+        if os.name != "nt" and isinstance(group_pid, int) and group_pid > 0
+        else 0
+    )
 
     stdout_pipe = process.stdout
     stderr_pipe = process.stderr
