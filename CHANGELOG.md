@@ -162,7 +162,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   把脚本注入一个已消失会话的设备进程。现在设备分支也拒绝 CLOSING/CLOSED/FAILED 状态（本地 PE
   分支本就被 `_require_debuggee_pid` 挡住）。
 
-### 修复（jadx 部分反编译失败不再伪装成完整源码树）
+### 测试（内嵌 frida agent 脚本必须是合法 JavaScript）
+
+- frida 后端内嵌的 JavaScript 只在目标进程里跑：`frida.hook.template` 的几段罐装脚本，以及
+  `frida.modules` / `frida.exports` / `frida.memory.read` / `frida.java.*` 背后的 RPC agent。
+  Python 侧测试都把 `create_script` 打桩、从不真编译这些源码，现场 gate 又要真设备，于是任一段
+  里的语法笔误都能溜过 CI，只在分析师第一次对真实进程用这个工具时炸成 `backend_error`。新增
+  `tests/unit/test_frida_hook_templates_valid_js.py`：从模块里发现全部内嵌脚本（后续新增的模板
+  自动纳入），逐段用 `node --check` 解析——它只查语法、不解引用，所以 `Java` / `Process` / `ptr`
+  / `send` / `rpc` 这些运行时全局未定义并不影响判定，正正卡住「装不进目标」的那类错误。GitHub
+  托管 runner 自带 node，单测作业里会真跑；node 确实缺失时按 skip != pass 显式跳过。
 
 - `apk.export_sources` / `apk.decompile` 走 jadx，而 jadx 常在某几个类反编译失败时以非零退出收场，
   却仍为其余类写出可用的源码树——后端因此保留输出而非直接失败(只有磁盘上一个 `.java` 都没落时才抛)。
