@@ -335,6 +335,40 @@ def test_function_list_is_items_not_functions(tmp_path: Path) -> None:
     assert "no functions field" in described
 
 
+def test_r2_functions_docstring_names_the_top_level_coordinate_frame(tmp_path: Path) -> None:
+    """r2 and Ghidra now report the same top-level coordinate frame; ghidra.functions
+    documents module/image_base/architecture, so r2.functions must too, or the parity
+    the coords gate proves is invisible on the r2 side. The wording is checked against
+    the keys enrich_r2_payload actually emits so the doc cannot drift from the mapper.
+    """
+    import ast
+
+    from headless_re_mcp.tools.r2 import build_r2_tools
+
+    binary = _minimal_pe(tmp_path, x64=True)
+    payload = enrich_r2_payload(
+        {
+            "raw": json.dumps([{"offset": 0x140001000, "name": "entry0", "size": 32}]),
+            "commands": ["aa", "aflj"],
+        },
+        binary=binary,
+        architecture=Architecture.X64,
+    )
+    # The frame the docstring promises is really at the top level of the payload.
+    assert payload["module"] == "demo64.exe"
+    assert payload["image_base"] == 0x140000000
+    assert payload["architecture"] == "x64"
+
+    source = Path(build_r2_tools.__code__.co_filename).read_text(encoding="utf-8")
+    described = ""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name == "r2_functions":
+            described = ast.get_docstring(node) or ""
+    for key in ("module", "image_base", "architecture"):
+        assert key in described, key
+    assert "top level" in described
+
+
 def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

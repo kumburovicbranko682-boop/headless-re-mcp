@@ -60,8 +60,10 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Functions radare2 found.
 
         Answers with items, each carrying name, offset, size and address
-        (va/rva/module), plus count. There is no functions field. Read
-        items_truncated when the list filled the cap.
+        (va/rva/module), plus count. The payload also names module, image_base
+        and architecture once at the top level -- the same coordinate frame the
+        ghidra tools report, so the two engines line up on rva/module. There is
+        no functions field. Read items_truncated when the list filled the cap.
         """
         return _dump(analysis.r2_functions(session_id, timeout=timeout))
 
