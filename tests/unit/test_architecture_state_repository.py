@@ -94,6 +94,23 @@ def test_workflow_unpack_and_trace_owners_keep_independent_terminal_state() -> N
     assert sum(item is not None for item in claims) == 15
 
 
+def test_state_owners_tolerate_absent_keys() -> None:
+    # pop of a runtime that was never opened must leave it ABSENT, not CLOSED:
+    # a spurious CLOSED would make a later begin_open look like a reopen.
+    runtimes: BackendRuntimeOwner[object] = BackendRuntimeOwner()
+    assert runtimes.pop("ghost", BackendKind.IDA) is None
+    assert runtimes.phase("ghost", BackendKind.IDA) is BackendRuntimePhase.ABSENT
+
+    workflows: WorkflowStateOwner[str] = WorkflowStateOwner()
+    # Failing a session with no live workflow is a no-op that returns nothing.
+    assert workflows.fail_live("ghost", lambda value: value) is None
+    # clear_terminal drops the record and is idempotent when there is none.
+    workflows.put_terminal("s", "done")
+    workflows.clear_terminal("s")
+    assert workflows.get_terminal("s") is None
+    workflows.clear_terminal("s")
+
+
 @pytest.fixture(params=["memory", "sqlite"])
 def repository(request: pytest.FixtureRequest, tmp_path: Path) -> AnalysisRepository:
     root = tmp_path / str(request.param)
