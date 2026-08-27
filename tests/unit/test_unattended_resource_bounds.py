@@ -3971,6 +3971,33 @@ class TestDevicePullRefusesTreesAndHugeFiles:
         assert caught.value.code == "too_large"
         assert out.exists() is False
 
+    def test_a_screenshot_that_wrote_no_file_is_not_a_success(
+        self, tmp_path: Any
+    ) -> None:
+        from headless_re_mcp.backends.adb import client as mod
+
+        out = tmp_path / "shot.png"
+
+        class Image:
+            def save(self, path: str) -> bool:
+                del path
+                # A refused capture returns False and writes nothing;
+                # capped_file_size then answers 0 for the missing file.
+                return False
+
+        class Dev:
+            def screenshot(self, timeout: float | None = None) -> Image:
+                del timeout
+                return Image()
+
+        backend = mod.AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        with pytest.raises(mod.AdbError) as caught:
+            backend.screenshot("emulator-5554", out)
+        assert caught.value.code == "backend_error"
+        assert caught.value.message == "screenshot did not produce a local file"
+        assert caught.value.details.get("captured") is False
+
 
 class TestProxyReplayWaitsForTheCommand:
     def test_a_failed_replay_command_is_not_reported_replayed(self) -> None:
