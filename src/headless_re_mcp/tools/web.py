@@ -178,6 +178,25 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.web_storage(session_id, which=which, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="web.frames")
+    def web_frames(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Enumerate the page's frame tree (main frame plus every iframe).
+
+        Cross-origin iframes -- ads, payment widgets, embedded SPAs -- are what
+        the main-frame web.dom.snapshot misses; this maps them. Answers with
+        frames (each frameId, parentFrameId, name, url, url_truncated,
+        securityOrigin, mimeType, depth, is_main), count, total, offset,
+        has_more and scan_capped. Frames are depth-first, so a parent precedes
+        its children; parentFrameId is null only for the main frame (is_main
+        true, depth 0). securityOrigin tells same-origin from cross-origin
+        embedding. scan_capped means the tree had more frames than the guard.
+        """
+        return _dump(analysis.web_frames(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="web.scripts")
     def web_scripts(
         session_id: str,

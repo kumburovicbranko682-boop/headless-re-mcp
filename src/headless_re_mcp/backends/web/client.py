@@ -50,6 +50,9 @@ _MAX_COOKIES = 1000
 # fires on a pathological store and is disclosed via scan_capped.
 _MAX_STORAGE_VALUE = 64 * 1024
 _MAX_STORAGE_KEYS = 10_000
+# A page's frame tree is normally small, but a hostile page can nest thousands
+# of iframes; cap how many are flattened and disclose when the cap fired.
+_MAX_FRAMES = 2000
 _COOKIE_FIELDS = (
     "name",
     "value",
@@ -1403,6 +1406,76 @@ class WebBackend:
             # exceed what was actually pulled -- say so rather than let a caller
             # read a short list as the whole store.
             "scan_capped": bool(raw.get("capped")),
+        }
+
+    def frames(self, session_id: str, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                resp = handle.cdp.send("Page.getFrameTree")
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"cannot read frame tree: {exc}") from exc
+            if not isinstance(resp, dict):
+                raise WebError("backend_error", "frame tree read returned no object")
+            return resp
+
+        resp = self._runner(handle).call(work)
+        tree = resp.get("frameTree")
+        flat: list[JsonObject] = []
+        capped = False
+
+        # Page.getFrameTree is a nested {frame, childFrames} structure; flatten it
+        # depth-first so a parent always precedes its children, which is the order
+        # a caller reads the embedding from. Cross-origin iframes (ads, payment
+        # widgets, embedded SPAs) are exactly what the main-frame DOM snapshot
+        # misses, so each row keeps its securityOrigin and parent link.
+        def walk(node: object, depth: int) -> None:
+            nonlocal capped
+            if not isinstance(node, dict):
+                return
+            if len(flat) >= _MAX_FRAMES:
+                capped = True
+                return
+            frame = node.get("frame")
+            if isinstance(frame, dict):
+                url, url_cut = _bounded_metadata(str(frame.get("url", "")), _MAX_URL_BYTES)
+                parent = frame.get("parentId")
+                flat.append(
+                    {
+                        "frameId": str(frame.get("id", "")),
+                        "parentFrameId": str(parent) if parent else None,
+                        "name": _bounded_metadata(str(frame.get("name", "")), _MAX_METADATA_BYTES)[
+                            0
+                        ],
+                        "url": url,
+                        "url_truncated": url_cut,
+                        "securityOrigin": _bounded_metadata(
+                            str(frame.get("securityOrigin", "")), _MAX_URL_BYTES
+                        )[0],
+                        "mimeType": str(frame.get("mimeType", "")),
+                        "depth": depth,
+                        "is_main": depth == 0,
+                    }
+                )
+            for child in node.get("childFrames") or []:
+                walk(child, depth + 1)
+
+        if isinstance(tree, dict):
+            walk(tree, 0)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_FRAMES))
+        window = flat[start : start + cap]
+        return {
+            "frames": window,
+            "count": len(window),
+            "total": len(flat),
+            "offset": start,
+            "has_more": start + len(window) < len(flat),
+            # The tree had more frames than the flatten guard, so total counts
+            # only what was pulled -- say so rather than let a short list read as
+            # the whole tree.
+            "scan_capped": capped,
         }
 
     def screenshot(self, session_id: str, out_path: Path, *, full_page: bool = False) -> JsonObject:

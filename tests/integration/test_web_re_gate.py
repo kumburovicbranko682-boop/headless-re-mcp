@@ -195,6 +195,55 @@ def _binary_site() -> Iterator[str]:
         server.server_close()
 
 
+# A main document embedding a child iframe that itself embeds a grandchild, so
+# the frame tree is three deep and web.frames has real nesting to flatten.
+_FRAME_CHILD_PATH = "/frame-child"
+_FRAME_GRAND_PATH = "/frame-grand"
+_FRAME_MAIN_HTML = (
+    "<!doctype html><html><head><title>frame-main</title></head><body>frame-main"
+    f"<iframe src='{_FRAME_CHILD_PATH}'></iframe></body></html>"
+)
+_FRAME_CHILD_HTML = (
+    "<!doctype html><html><head><title>frame-child</title></head><body>frame-child"
+    f"<iframe src='{_FRAME_GRAND_PATH}'></iframe></body></html>"
+)
+_FRAME_GRAND_HTML = (
+    "<!doctype html><html><head><title>frame-grand</title></head><body>frame-grand</body></html>"
+)
+
+
+class _FramesHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:  # silence per-request logging
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        page = {
+            _FRAME_CHILD_PATH: _FRAME_CHILD_HTML,
+            _FRAME_GRAND_PATH: _FRAME_GRAND_HTML,
+        }.get(self.path, _FRAME_MAIN_HTML)
+        body = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextlib.contextmanager
+def _frames_site() -> Iterator[str]:
+    """Serve a three-deep nested-iframe page so web.frames has a real tree."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FramesHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        server.server_close()
+
+
 _WASM_PATH = "/add.wasm"
 # The page instantiates a real WASM module so V8 registers a WebAssembly script
 # the Debugger domain reports; that is the only way to exercise the live
@@ -652,6 +701,62 @@ def test_web_cookies_read_the_jar_including_httponly() -> None:
                 # The HttpOnly cookie only the CDP jar can see, correctly flagged.
                 assert by_name[_SITE_HTTPONLY_NAME]["value"] == _SITE_HTTPONLY_VALUE
                 assert by_name[_SITE_HTTPONLY_NAME]["httpOnly"] is True
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
+
+
+@pytest.mark.integration
+def test_web_frames_map_the_nested_iframe_tree() -> None:
+    """web.frames must flatten the main frame plus its nested iframes.
+
+    The loopback page embeds a child iframe that embeds a grandchild, so the
+    tree is three deep -- nesting the main-frame DOM snapshot cannot show. Real
+    chromium must report all three frames, the main one tagged is_main with a
+    null parent, and each child pointing at its parent so the embedding chain is
+    reconstructable. skip != pass when playwright or chromium is unavailable.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    with _frames_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                # The child/grandchild frames load asynchronously, so poll until
+                # all three are in the tree.
+                got = _poll(
+                    lambda: service.web_frames(session_id),
+                    lambda r: r.ok
+                    and any(f["url"].endswith(_FRAME_GRAND_PATH) for f in r.data["frames"]),
+                    tries=80,
+                )
+                assert got.ok, got.error
+                frames = got.data["frames"]
+                by_url = {f["url"]: f for f in frames}
+                main = next(f for f in frames if f["is_main"])
+                child = next(f for f in frames if f["url"].endswith(_FRAME_CHILD_PATH))
+                grand = next(f for f in frames if f["url"].endswith(_FRAME_GRAND_PATH))
+
+                # The main frame is the root: no parent, depth 0.
+                assert main["parentFrameId"] is None
+                assert main["depth"] == 0
+                # The chain reconstructs: grand -> child -> main.
+                assert child["parentFrameId"] == main["frameId"], frames
+                assert grand["parentFrameId"] == child["frameId"], frames
+                assert child["depth"] == 1 and grand["depth"] == 2, frames
+                # Only one frame is the main frame.
+                assert sum(1 for f in frames if f["is_main"]) == 1, frames
+                assert len(by_url) >= 3
             finally:
                 service.web_close(session_id)
         finally:
