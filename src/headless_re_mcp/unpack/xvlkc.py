@@ -192,7 +192,6 @@ def run_xvlkc(
     """Run XVLKC on a work copy; publish the newest PE output to output_path."""
     timeout = _validate_positive_number(timeout, "timeout")
     exe = Path(executable).expanduser()
-    source = Path(input_path).expanduser().resolve(strict=True)
     destination = Path(output_path).expanduser()
     if not exe.is_file():
         raise XvlkcError(
@@ -200,6 +199,18 @@ def run_xvlkc(
             f"XVLKC executable does not exist: {exe}",
             details={"executable": str(exe)},
         )
+    # A missing input used to escape as a raw FileNotFoundError from
+    # ``resolve(strict=True)`` -- a generic internal_error at the agent
+    # transport -- instead of the INPUT_NOT_FOUND this taxonomy already
+    # raises for a directory, the way die/exeinfope convert the same failure.
+    try:
+        source = Path(input_path).expanduser().resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError) as exc:
+        raise XvlkcError(
+            XvlkcErrorCode.INPUT_NOT_FOUND,
+            f"input binary not found: {Path(input_path)}",
+            details={"input_path": str(input_path)},
+        ) from exc
     if not source.is_file():
         raise XvlkcError(
             XvlkcErrorCode.INPUT_NOT_FOUND,
