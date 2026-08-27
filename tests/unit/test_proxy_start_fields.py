@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 
 from headless_re_mcp.backends.proxy.client import ProxyBackend
@@ -35,15 +36,13 @@ def test_proxy_start_puts_the_result_in_running_host_port_endpoint() -> None:
     and endpoint. There is no ok, started or url field. Looking for those
     after a successful start reads as a proxy that never bound a port.
     """
-    source = Path(ProxyBackend.start.__code__.co_filename).read_text(encoding="utf-8")
-    start = source.index("def start(self, session_id")
-    chunk = source[start : source.index("def stop(self, session_id", start)]
-    marker = chunk.rindex('return {')
-    returned = chunk[marker : marker + 180]
+    chunk = inspect.getsource(ProxyBackend.start)
+    returned = chunk[chunk.rindex("return {") :]
     assert '"running"' in returned
     assert '"host"' in returned
     assert '"port"' in returned
     assert '"endpoint"' in returned
+    assert '"ssl_insecure"' in returned
     assert '"ok"' not in returned
     assert '"started"' not in returned
     assert '"url"' not in returned
@@ -52,3 +51,4 @@ def test_proxy_start_puts_the_result_in_running_host_port_endpoint() -> None:
     assert "host" in doc
     assert "port" in doc
     assert "endpoint" in doc
+    assert "ssl_insecure" in doc

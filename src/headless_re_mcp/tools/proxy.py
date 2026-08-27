@@ -26,13 +26,19 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         host: str = "127.0.0.1",
         port: Annotated[int, Field(ge=1, le=65535)] = 8080,
+        ssl_insecure: bool = False,
     ) -> dict[str, Any]:
         """Start an HTTP(S) interception proxy bound to this session.
 
-        Answers with running, host, port and endpoint. There is no ok,
-        started or url field.
+        Answers with running, host, port, endpoint and ssl_insecure. There is
+        no ok, started or url field. Set ssl_insecure true to skip upstream
+        certificate verification (the mitmproxy --ssl-insecure flag): a target
+        with a self-signed or pinned cert otherwise answers 502 and records
+        nothing.
         """
-        return _dump(analysis.proxy_start(session_id, host=host, port=port))
+        return _dump(
+            analysis.proxy_start(session_id, host=host, port=port, ssl_insecure=ssl_insecure)
+        )
 
     @tools.tool(name="proxy.stop")
     def proxy_stop(session_id: str) -> dict[str, Any]:

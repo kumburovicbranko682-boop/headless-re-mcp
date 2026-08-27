@@ -272,9 +272,14 @@ class _FlowRecorder:
 
 
 class _ProxyInstance:
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, *, ssl_insecure: bool = False) -> None:
         self.host = host
         self.port = port
+        # Do not verify the upstream server certificate. Targets under analysis
+        # routinely present self-signed or otherwise-untrusted certs, and
+        # without this mitmproxy answers 502 "certificate verify failed" and
+        # records nothing -- the mitmproxy --ssl-insecure flag.
+        self.ssl_insecure = ssl_insecure
         self.recorder = _FlowRecorder()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -329,6 +334,10 @@ class _ProxyInstance:
             asyncio.set_event_loop(loop)
             self._loop = loop
             opts = options.Options(listen_host=self.host, listen_port=self.port)
+            if self.ssl_insecure:
+                # Set after construction: ssl_insecure is stable across versions,
+                # but the constructor's kwargs are not (see the DumpMaster note).
+                opts.ssl_insecure = True
             # Only the constructor may disagree about kwargs across mitmproxy
             # versions. Catching TypeError around run() too would treat a bug
             # inside a running proxy as a signature mismatch and start a second
@@ -447,7 +456,14 @@ class ProxyBackend:
             raise ProxyError("invalid_state", "no proxy running for this session; call proxy.start")
         return inst
 
-    def start(self, session_id: str, host: str = "127.0.0.1", port: int = 8080) -> JsonObject:
+    def start(
+        self,
+        session_id: str,
+        host: str = "127.0.0.1",
+        port: int = 8080,
+        *,
+        ssl_insecure: bool = False,
+    ) -> JsonObject:
         self._check_available()
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ProxyError("invalid_params", "port must be 1..65535", port=port)
@@ -465,7 +481,7 @@ class ProxyBackend:
                     )
             # Reserve before listen: two workers racing start() used to each
             # bind a port, and only the last write to this dict was tracked.
-            inst = _ProxyInstance(host, port)
+            inst = _ProxyInstance(host, port, ssl_insecure=ssl_insecure)
             self._instances[session_id] = inst
         try:
             inst.start()
@@ -483,6 +499,7 @@ class ProxyBackend:
                     "host": host,
                     "port": port,
                     "endpoint": f"{host}:{port}",
+                    "ssl_insecure": ssl_insecure,
                 }
         with contextlib.suppress(Exception):
             inst.stop()
