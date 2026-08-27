@@ -26,6 +26,25 @@ JsonObject = dict[str, Any]
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 _TRANSIENT_MARKERS = ("timeout", "connect", "network", "remote protocol", "temporarily")
 
+_MAX_ALERT_ERROR_CHARS = 300
+_TRUNCATION_MARKER = "...[truncated]"
+
+
+def _bounded_error(exc: BaseException) -> str:
+    """The alert's error field, cut to its budget with the cut marked.
+
+    The provider deliberately appends the HTTP error body to the exception it
+    re-raises -- that body is where a host says which limit was hit and for how
+    long -- so this text routinely exceeds the alert budget, and the operative
+    detail sits past the cut. A bare slice read as the whole error; mark it,
+    keeping the result within the same budget collectors already rely on.
+    """
+    text = f"{type(exc).__name__}: {exc}"
+    if len(text) <= _MAX_ALERT_ERROR_CHARS:
+        return text
+    keep = max(0, _MAX_ALERT_ERROR_CHARS - len(_TRUNCATION_MARKER))
+    return text[:keep] + _TRUNCATION_MARKER
+
 
 def is_retryable(exc: BaseException) -> bool:
     """Decide whether the same request is worth sending again.
@@ -94,7 +113,7 @@ class RetryingProvider:
                         "attempt": attempt,
                         "of": self.max_attempts,
                         "backoff_s": backoff,
-                        "error": f"{type(exc).__name__}: {exc}"[:300],
+                        "error": _bounded_error(exc),
                     },
                 )
                 await self.sleep(backoff)
