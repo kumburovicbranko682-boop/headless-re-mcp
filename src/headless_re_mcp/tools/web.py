@@ -74,8 +74,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit is not read as the whole capture, and ring eviction is
         visible. A request that carried a payload is flagged has_request_body,
         so web.network.get can be pointed at it to fetch request_body.
-        metadata_truncated marks bounded oversized request fields. There is no
-        type field.
+        A request the browser blocked or aborted (CSP, CORS, net::ERR_*,
+        cancellation) is flagged failed with error_text (and blocked_reason
+        or canceled when known) instead of a status, so it is not mistaken
+        for one still pending. metadata_truncated marks bounded oversized
+        request fields. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 

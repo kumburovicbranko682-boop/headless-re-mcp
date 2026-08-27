@@ -171,6 +171,62 @@ def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:
     assert script["metadata_truncated"] is True
 
 
+def test_web_loading_failed_marks_the_request_instead_of_leaving_it_pending() -> None:
+    """Network.loadingFailed must flag the request; a blocked call has no response.
+
+    Wire the events, open a request, then fire loadingFailed the way Chromium
+    does for a blocked resource (errorText plus blockedReason). Assert the entry
+    is flagged failed with the reason kept and no phantom status, and that a
+    failure for an unknown/evicted request id is ignored rather than crashing.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    assert "Network.loadingFailed" in cdp.handlers
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "request-1",
+            "request": {"url": "https://blocked/x", "method": "GET"},
+            "type": "XHR",
+        }
+    )
+    cdp.handlers["Network.loadingFailed"](
+        {
+            "requestId": "request-1",
+            "errorText": "net::ERR_BLOCKED_BY_CLIENT",
+            "blockedReason": "inspector",
+            "canceled": False,
+        }
+    )
+    cdp.handlers["Network.loadingFailed"](
+        {"requestId": "ghost", "errorText": "net::ERR_ABORTED"}
+    )
+
+    entry = handle.requests["request-1"]
+    assert entry["failed"] is True
+    assert entry["error_text"] == "net::ERR_BLOCKED_BY_CLIENT"
+    assert entry["blocked_reason"] == "inspector"
+    assert entry["status"] is None
+    assert "canceled" not in entry
+    assert "ghost" not in handle.requests
+    doc = _tool_docstring("web.network.list")
+    assert "failed" in doc
+    assert "error_text" in doc
+
+
 def test_web_uncaught_exception_lands_in_the_console_ring() -> None:
     """Runtime.exceptionThrown must be captured; console.* is not the only source.
 

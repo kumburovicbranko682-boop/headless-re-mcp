@@ -461,6 +461,29 @@ class WebBackend:
                     if mime_truncated:
                         entry["metadata_truncated"] = True
 
+        def on_loading_failed(params: JsonObject) -> None:
+            # A blocked/aborted request (CSP, CORS, net::ERR_*, cancellation)
+            # never yields a responseReceived, so without this it would sit at
+            # status None -- indistinguishable from pending, with the reason
+            # lost. Mark it failed and keep the error text CDP hands us.
+            error_text, err_truncated = _bounded_metadata(
+                params.get("errorText"), _MAX_METADATA_BYTES
+            )
+            blocked, blocked_truncated = _bounded_metadata(
+                params.get("blockedReason"), _MAX_METADATA_BYTES
+            )
+            with handle.lock:
+                entry = handle.requests.get(str(params.get("requestId")))
+                if entry is not None:
+                    entry["failed"] = True
+                    entry["error_text"] = error_text
+                    if params.get("canceled"):
+                        entry["canceled"] = True
+                    if blocked:
+                        entry["blocked_reason"] = blocked
+                    if err_truncated or blocked_truncated:
+                        entry["metadata_truncated"] = True
+
         def on_script(params: JsonObject) -> None:
             url, url_truncated = _bounded_metadata(params.get("url"), _MAX_URL_BYTES)
             language, language_truncated = _bounded_metadata(
@@ -519,6 +542,7 @@ class WebBackend:
 
         cdp.on("Network.requestWillBeSent", on_request)
         cdp.on("Network.responseReceived", on_response)
+        cdp.on("Network.loadingFailed", on_loading_failed)
         cdp.on("Debugger.scriptParsed", on_script)
         # Over CDP like the rest, not page.on("console"). The high-level event
         # hands over a ConsoleMessage whose args are remote JSHandle wrappers,

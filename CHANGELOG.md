@@ -250,6 +250,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   为 `error`、`source` 为 `exception` 记进同一 console 环（正文取 `exceptionDetails.exception.description` 的完整栈、
   按 console 文本上限截断；畸形事件忽略而非崩溃）。活体门用顶层 `throw` 的页面断言异常被捕获、且前后的普通
   `console.log` 仍在；单测用 mock 的 `exceptionThrown` 锁住入环行为。
+- **`web.network.*` 看不出请求失败，被浏览器拦下/中断的请求与「还在跑」无法区分**。网络捕获只挂了
+  `Network.requestWillBeSent` 与 `responseReceived`——被 CORS、CSP、`net::ERR_*` 或主动取消挡下的请求永远拿不到
+  `responseReceived`，于是它一直停在 `status` 为 `null`，和一条尚未完成的请求长得一模一样，失败原因也被整份丢弃。
+  对逆向而言这是实打实的假阴性：被拦的遥测端点、失败的接口调用、被 CSP 挡掉的外链，恰恰是要盯的目标，却在
+  列表里查无实据。现在补挂 `Network.loadingFailed`，把对应请求标 `failed`、带上 `error_text`（并在有值时带
+  `blocked_reason` / `canceled`），不再伪装成 `status` 待定；`web.network.list` / `web.network.get` 因为原样返回
+  该请求记录，两个字段自动露出。活体门驱动一个 fetch 打向被内核直接拒连的回环端口的页面，断言该请求回来时标了
+  `failed`、带非空 `error_text`、且没有假的 `status`（缺浏览器时 skip≠pass）；另加不依赖浏览器的单测直接驱动
+  `loadingFailed` 钩子，覆盖标记、原因保留与对未知/已淘汰请求 id 的忽略。
 - **HTTPS 抓包对自签/私有 CA/固定证书的上游无法解密，且失败时静默**。MITM 代理的核心价值就是解密 TLS，
   但 `proxy.start` 不暴露任何上游 TLS 选项，mitmproxy 默认要校验上游证书——而本工具面向的 App、
   移动端与自建/测试服务器几乎清一色用自签或私有 CA 证书。实测这类上游会被判 502、且**整条 flow 都不记录**

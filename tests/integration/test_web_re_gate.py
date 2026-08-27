@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -533,6 +534,91 @@ def test_web_cdp_captures_uncaught_exceptions() -> None:
                 for e in service.web_console(session_id, limit=200).data["console"]
             ]
             assert any("before-throw" in t for t in texts), "ordinary console.log was lost"
+        finally:
+            service.close_all()
+
+
+@contextmanager
+def _blocked_request_site() -> Iterator[str]:
+    # Reserve a loopback port and leave it bound but never listening: a connect
+    # to it is refused at the network layer, so the page can trigger a
+    # deterministic loadingFailed (ERR_CONNECTION_REFUSED) with no flaky DNS or
+    # timeout. Holding the socket open also keeps the port from being reused.
+    dead = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    dead.bind(("127.0.0.1", 0))
+    dead_port = dead.getsockname()[1]
+    page = (
+        b"<!doctype html><html><head><title>blocked-gate</title><script>"
+        b"fetch('http://127.0.0.1:" + str(dead_port).encode("ascii") + b"/api/blocked')"
+        b".catch(e => console.log('fetch-failed', e && e.message));"
+        b"</script></head><body>x</body></html>"
+    )
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(page)))
+            self.end_headers()
+            self.wfile.write(page)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        dead.close()
+
+
+@pytest.mark.integration
+def test_web_cdp_flags_a_blocked_request() -> None:
+    """A request the browser fails to fetch was left indistinguishable from pending.
+
+    Only responseReceived was wired, so a blocked/aborted request (CORS, CSP,
+    net::ERR_*, cancellation) sat at status None forever with its failure reason
+    dropped -- a false negative for anyone hunting a blocked telemetry endpoint
+    or a failing API call. Drive a page whose fetch is refused at the network
+    layer and assert the request comes back flagged failed with error_text and
+    no phantom status.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web failed-request Gate not run (skip != pass)")
+    with _blocked_request_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            def _failed_request() -> dict[str, Any] | None:
+                listing = service.web_network_list(session_id, limit=1000)
+                assert listing.ok, listing.error
+                for request in listing.data["requests"]:
+                    if str(request.get("url", "")).endswith("/api/blocked") and request.get(
+                        "failed"
+                    ):
+                        return request
+                return None
+
+            request = _poll(_failed_request, timeout=15.0)
+            assert request is not None, "the refused request was never flagged failed"
+            assert request["failed"] is True
+            assert request.get("status") is None
+            assert isinstance(request.get("error_text"), str)
+            assert request["error_text"], "the failure reason was dropped"
         finally:
             service.close_all()
 
