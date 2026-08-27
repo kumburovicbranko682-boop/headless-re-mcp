@@ -345,15 +345,32 @@ class WebBackend:
             return {"open": False, "opening": True}
         if not isinstance(handle, _WebSession):
             return {"open": False}
+        # A session whose worker thread already wedged (an earlier call timed
+        # out and marked it unusable) makes .call() raise -- so status, meant to
+        # report state safely, would turn a health check into an error and lose
+        # the fact that the session is still registered. Report it as
+        # open-but-unresponsive so the caller closes it instead of reading a
+        # transient failure to retry.
+        runner = handle.runner
+        if runner is None or runner.wedged:
+            return {"open": True, "responsive": False}
 
         def work() -> JsonObject:
             return {
                 "open": True,
+                "responsive": True,
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
             }
 
-        return self._runner(handle).call(work)
+        try:
+            return runner.call(work)
+        except WebError as exc:
+            # A fresh timeout during the probe wedged the session the same way;
+            # report it rather than raising so status never looks transient.
+            if exc.code == "timeout":
+                return {"open": True, "responsive": False}
+            raise
 
     def _get(self, session_id: str) -> _WebSession:
         with self._lock:

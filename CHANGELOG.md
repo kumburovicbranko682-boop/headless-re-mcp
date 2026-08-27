@@ -71,6 +71,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（`web.status` 对已卡死的会话不再把健康探针变成异常）
+
+- 一次浏览器调用超时后,会话的 worker 线程会被标记为 wedged,此后任何 `.call()` 都直接抛
+  「browser is unresponsive…call web.close」。而 `web.status` 本是「不启动浏览器、廉价地报一下页面身份」
+  的探针,它却照样往 wedged 的 runner 上派活——于是探一个卡死会话的状态,拿回的是个异常。经服务层
+  `web_status` 兜底后变成一个 failure,`open` / `locator` / `state` / `target` 这些上下文全丢了:调用方
+  看到的像是一次可重试的瞬时错误,而不是「会话还在、但浏览器已卡死,该 close 了」。
+- 现在 `status` 在派活前先看 runner:已 wedged(或 runner 缺失)直接回 `{"open": true, "responsive": false}`,
+  不再碰 page;正常会话回包新增 `responsive: true` 并照旧带 `url` / `title`。派活过程中若"当场"首次超时,
+  也捕获这一个 `timeout` 并同样回 `responsive: false`,让探针永不因卡死而抛。未打开 / opening / 已关闭的
+  回包形状不变(不带 `responsive`,因为无所谓响应与否)。
+- 新增回归:wedged 会话回 `open=true`/`responsive=false` 且绝不派活(派活即断言失败)、正常会话回
+  `responsive=true` 且带 url/title、探测中首次超时被捕获回 `responsive=false`。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
