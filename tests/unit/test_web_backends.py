@@ -138,6 +138,25 @@ class _FakeWebBackend:
             "dom_path": str(spill),
         }
 
+    def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> dict:  # type: ignore[type-arg]
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        resp = artifact_dir / f"body-{request_id}.bin"
+        resp.write_bytes(b"r" * 300_000)
+        req = artifact_dir / f"request-body-{request_id}.bin"
+        req.write_bytes(b"q" * 300_000)
+        return {
+            "requestId": request_id,
+            "url": "https://x",
+            "has_post_data": True,
+            "body": "r",
+            "body_truncated": True,
+            "body_path": str(resp),
+            "base64_encoded": False,
+            "request_body": "q",
+            "request_body_truncated": True,
+            "request_body_path": str(req),
+        }
+
     def close(self, session_id: str) -> dict:  # type: ignore[type-arg]
         return {"closed": False}
 
@@ -209,6 +228,33 @@ class TestCapturesAreReachableAndReclaimable:
             listed = service.repository.list_artifacts(session_id)
             kinds = {item["kind"] for item in listed["artifacts"]}
             assert "web_dom_snapshot" in kinds
+        finally:
+            service.close_all()
+
+    def test_a_spilled_request_body_registers_beside_the_response(
+        self, tmp_path: Path
+    ) -> None:
+        """Both bodies spill; each must be reclaimable under its own id.
+
+        The response body lands as web_response_body/artifact_id and the request
+        body as web_request_body/request_artifact_id, so the second id does not
+        overwrite the first and retention reclaims both.
+        """
+        service = self._service(tmp_path)
+        try:
+            created = service.create_session("https://example.com/app", target="web")
+            session_id = created.data["session"]["id"]
+
+            got = service.web_network_get(session_id, "r1")
+            assert got.ok, got.error
+            assert got.data is not None
+            assert got.data["artifact_id"]
+            assert got.data["request_artifact_id"]
+            assert got.data["artifact_id"] != got.data["request_artifact_id"]
+
+            listed = service.repository.list_artifacts(session_id)
+            kinds = {item["kind"] for item in listed["artifacts"]}
+            assert {"web_response_body", "web_request_body"} <= kinds
         finally:
             service.close_all()
 

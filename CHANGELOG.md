@@ -413,6 +413,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   策略拦截再带 `blocked_reason`（如 `csp`）与 `canceled`，字段照 `_MAX_METADATA_BYTES` 有界（超限置
   `metadata_truncated`），与 `on_response` 填 `status` 同一范式。失败事件指向一个已被环形缓冲挤出/从未见过的
   requestId 时直接忽略，不凭空造一条裸 entry。`web.network.list` 原样透出这些字段，成功请求行为不变。
+- **`web.network.get` 只取得响应体，请求发出的 POST 体根本拿不到——而逆向 API/协议时请求载荷往往比响应更关键**。
+  代理侧 `proxy.flow.get` 早就有 `request.body`，web 侧却只有响应体，两条线不对称。原因：CDP 的
+  `Network.requestWillBeSent` 在体较大时不会内联 `postData`，取回它得按需调 `Network.getRequestPostData`。现在
+  `on_request` 记录 `hasPostData` → 行上打 `has_post_data`（只在为真时，`web.network.list` 借此告诉调用方哪条有体可取）；
+  `web.network.get` 在该行有体时调 `getRequestPostData` 取回请求体，并与响应体同一套 `_spill_text` 有界处理：小体走
+  `request_body`、超内联上限溢出到 `request_body_path`（服务层用独立 `key=request_artifact_id` 登记为 `web_request_body`
+  制品，不覆盖响应体的 `artifact_id`）、`request_body_truncated` 标记裁剪。会话级故障（runner 超时/wedged/已关）与响应体
+  一样上抛（`timeout` 可重试），而每体级故障（CDP 未留存该请求体、或请求体超抓包容量上限）降级成软 `request_body_error`
+  以免连已取到的响应体一起丢掉。无 POST 体的请求（GET）行为不变，绝不会触发 `getRequestPostData` 调用。
 - **代理侧同一个盲区：连接失败的 flow 根本不进 `proxy.flows`**。`_FlowRecorder` 只实现了 mitmproxy 的
   `response()` 钩子——可一个在拿到响应前就失败的 flow（上游 refuse/reset、DNS 或 TLS 握手失败——把被 pin 的
   移动 App 挂到代理后最常见的正是这个、或超时）走的是 `error()` 钩子。没实现它，`proxy.flows` 就悄悄丢掉每一条

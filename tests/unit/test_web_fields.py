@@ -233,6 +233,45 @@ def test_web_marks_a_failed_request_instead_of_leaving_it_pending() -> None:
     assert "ghost" not in handle.requests
 
 
+def test_web_flags_a_request_that_carried_a_post_body() -> None:
+    """hasPostData on requestWillBeSent is the only hint a body exists to fetch.
+
+    CDP does not inline a large POST body in the event, so without recording
+    the flag a caller cannot tell which rows web.network.get could pull a
+    request body from. Measured: a POST row carries has_post_data True, a GET
+    row has no such key.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    WebBackend()._wire_events(handle)  # type: ignore[arg-type]
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "p1",
+            "request": {"url": "https://x/login", "method": "POST", "hasPostData": True},
+            "type": "XHR",
+        }
+    )
+    cdp.handlers["Network.requestWillBeSent"](
+        {"requestId": "g1", "request": {"url": "https://x/", "method": "GET"}, "type": "Document"}
+    )
+
+    assert handle.requests["p1"]["has_post_data"] is True
+    assert "has_post_data" not in handle.requests["g1"]
+
+
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(
     monkeypatch: Any,
 ) -> None:

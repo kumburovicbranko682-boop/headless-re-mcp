@@ -515,6 +515,13 @@ class WebBackend:
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            # The page's POST payload (the request body -- JSON, form creds, a
+            # signed blob) is what an API/protocol analyst most wants, but CDP
+            # does not put it in this event when it is large; it must be pulled
+            # on demand by web.network.get. Flag which rows have one so the
+            # caller knows there is a body to fetch rather than guessing.
+            if req.get("hasPostData"):
+                entry["has_post_data"] = True
             with handle.lock:
                 handle.requests[str(params.get("requestId"))] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
@@ -746,7 +753,53 @@ class WebBackend:
         if spill is not None:
             result["body_path"] = str(spill)
         result["base64_encoded"] = base64_encoded
+        if entry.get("has_post_data"):
+            self._attach_request_body(handle, request_id, artifact_dir, result)
         return result
+
+    def _attach_request_body(
+        self,
+        handle: _WebSession,
+        request_id: str,
+        artifact_dir: Path,
+        result: JsonObject,
+    ) -> None:
+        """Pull the request's POST body and spill it beside the response body.
+
+        Symmetric with proxy.flow.get, which already exposes request.body. A
+        session-level fault propagates the way the response-body fetch does; a
+        per-body condition (CDP has no post data retained, or a body over the
+        capture cap) is a soft request_body_error so the response the caller
+        already got is not lost.
+        """
+        try:
+            post = self._runner(handle).call(
+                lambda: handle.cdp.send(
+                    "Network.getRequestPostData", {"requestId": request_id}
+                )
+            )
+        except WebError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            result["request_body_error"] = str(exc)
+            return
+        raw = post.get("postData", "") if isinstance(post, dict) else ""
+        if not isinstance(raw, str):
+            raw = str(raw)
+        try:
+            inline, spill, cut = _spill_text(
+                raw,
+                artifact_dir=artifact_dir,
+                filename=f"request-body-{uuid4().hex}.bin",
+                kind="request body",
+            )
+        except WebError as exc:
+            result["request_body_error"] = exc.message
+            return
+        result["request_body"] = inline
+        result["request_body_truncated"] = cut
+        if spill is not None:
+            result["request_body_path"] = str(spill)
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
         handle = self._get(session_id)

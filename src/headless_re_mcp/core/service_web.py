@@ -147,6 +147,17 @@ class WebAnalysisMixin:
                     source="web.network.get",
                     payload=data,
                 )
+            request_spill = data.get("request_body_path")
+            if isinstance(request_spill, str):
+                data = _register_capture(
+                    self,
+                    session_id,
+                    Path(request_spill),
+                    kind="web_request_body",
+                    source="web.network.get",
+                    payload=data,
+                    key="request_artifact_id",
+                )
             return _success(data, session_id=session_id, backend="web")
         except WebError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)

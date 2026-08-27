@@ -75,8 +75,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         eviction is visible. A request blocked or aborted before any response
         carries failed with error_text and, for a policy block, blocked_reason
         (and canceled), so a failed load is not read as one still in flight.
-        metadata_truncated marks bounded oversized request fields. There is no
-        type field.
+        has_post_data marks a row whose request carried a POST body, which
+        web.network.get can then fetch. metadata_truncated marks bounded
+        oversized request fields. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -87,7 +88,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
         not truncated. A body over the capture cap is refused rather than
-        written to disk.
+        written to disk. When the request carried a POST body (has_post_data on
+        the row), request_body is included the same way -- request_body_truncated
+        and request_body_path (registered as request_artifact_id) when it spills,
+        or request_body_error when it could not be retrieved -- so the payload the
+        page sent is recoverable, not just the response.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
