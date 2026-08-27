@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 加固（把 apk 服务层的成功尾段与错误分类钉进测试）
+
+- APK 线的入口守卫与运行中泄漏守卫(会话中途关闭→删树重抛)已由各 `*_closed_session` 测试钉住,`..`
+  产物目录守卫由 `test_web_proxy_artifact_dir_safety` 钉住。但这条线的**成功**那一半只在 androguard/
+  jadx/apktool 真解析到东西时才跑,而测试机上这些工具都不在——于是读包装
+  (open/manifest/permissions/certificates/components/native_libs/classes/methods/strings/xrefs)、
+  `_apk_call` 分发,以及 decompile/export_sources/decode/repack/sign 的成功尾段(记 backend + timeline)
+  都没有单测覆盖,它们的 ApkError→原样 code、意外异常→`internal_error` 映射也没有。
+- 新增 `tests/unit/test_apk_service_envelopes.py`,用假 Apk/Jadx/Apktool client(不需真工具)在服务层钉住:
+  十个读包装都带 session_id+backend 回信封、并各自钉住 ApkError→code 与意外→`internal_error` 两类
+  fail-closed(参数化);`apk.open` 成功记 backend+timeline;decompile/export_sources/decode/repack/sign
+  成功各记一条 timeline;decompile 的 JadxError、decode 的 ApktoolError 都透传原样 code;真正的
+  `_apktool_client`(其余测试都桩掉了)按配置路径构造出 ApktoolClient。`service_apk` 覆盖率 85%→约 99%
+  (仅剩超限树守卫里一条 OSError 兜底和\"关闭时尚未落树\"的泄漏守卫分支),纯补测、不改行为。
+
 ### 加固（把 web 服务层的读透传、抓取落盘登记与信封分类钉进测试）
 
 - web 后端由 field 测试驱动、`web.open` 的泄漏守卫由 `test_web_backends.py` 钉住,但服务层还有一整条
