@@ -2,12 +2,14 @@
 
 ``test_web_re_gate`` opens a data: URL and checks the page is reachable; it never
 proves the DevTools capture surface an operator actually leans on. Serve a small
-site with a subresource, a fetch, an external script and a console log, drive it
-through the service the way a user would -- list network requests and pull one
-back, list scripts and fetch a source, read the console, snap a screenshot,
-export a HAR, then navigate -- and assert each returns the real bytes, not just
-an ok flag. A data: URL issues no network requests and parses no external
-script, so only a served origin can exercise these paths.
+site with a subresource, a fetch, an external script, a console log and a
+runtime-instantiated WebAssembly module, drive it through the service the way a
+user would -- list network requests and pull one back, list scripts and fetch a
+source, read the console, list the WASM modules the page loaded, snapshot the
+rendered DOM, snap a screenshot, export a HAR, then navigate -- and assert each
+returns the real bytes, not just an ok flag. A data: URL issues no network
+requests, parses no external script and loads no WASM, so only a served origin
+can exercise these paths.
 """
 
 from __future__ import annotations
@@ -28,24 +30,42 @@ from headless_re_mcp.core.service import AnalysisService
 _SCRIPT_MARKER = "cdp-gate-script-MARKER"
 _CONSOLE_MARKER = "cdp-gate-console-MARKER"
 _NETWORK_MARKER = "gate-network-MARKER"
+_DOM_MARKER = "hello cdp"
 _SETTLE_S = 10.0
+
+# A real module exporting add(i32, i32) -> i32; the page instantiates it at
+# runtime so CDP reports a genuine WebAssembly script (not a JS shim).
+_WASM_ADD = bytes((
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
+    0x03, 0x02, 0x01, 0x00,
+    0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00,
+    0x0A, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B,
+))
 
 _APP_JS = (
     f"window.__marker = '{_SCRIPT_MARKER}';\n"
     f"console.log('{_CONSOLE_MARKER}');\n"
     "fetch('/data.json').then((r) => r.json());\n"
+    # Instantiating the module makes V8 compile it, which CDP surfaces as a
+    # WebAssembly script -- the runtime bridge from the browser tools to the
+    # WASM static line.
+    "fetch('/add.wasm').then((r) => r.arrayBuffer())"
+    ".then((b) => WebAssembly.instantiate(b))"
+    ".then((m) => console.log('wasm-add=' + m.instance.exports.add(2, 3)));\n"
 ).encode()
 _DATA_JSON = f'{{"cdp":"{_NETWORK_MARKER}"}}'.encode()
 _INDEX = (
     b"<html><head><title>cdp-gate</title>"
     b"<script src='/app.js'></script></head>"
-    b"<body><h1>hello cdp</h1></body></html>"
+    b"<body><h1>" + _DOM_MARKER.encode() + b"</h1></body></html>"
 )
 _PAGE2 = b"<html><head><title>second-page</title></head><body>two</body></html>"
 
 _ROUTES = {
     "/app.js": (_APP_JS, "application/javascript"),
     "/data.json": (_DATA_JSON, "application/json"),
+    "/add.wasm": (_WASM_ADD, "application/wasm"),
     "/page2": (_PAGE2, "text/html"),
 }
 
@@ -150,6 +170,33 @@ def test_web_cdp_captures_network_scripts_console_and_media() -> None:
                         break
                     time.sleep(0.1)
                 assert any(_CONSOLE_MARKER in t for t in console_texts), console_texts
+
+                # wasm_list surfaces the module the page instantiated at
+                # runtime -- the handoff point where an operator spots a WASM
+                # blob to pull into the static WASM tools. It arrives async, so
+                # poll for it.
+                deadline = time.monotonic() + _SETTLE_S
+                wasm_scripts: list[dict] = []
+                while time.monotonic() < deadline:
+                    wasm_listed = service.web_wasm_list(session_id, limit=100)
+                    assert wasm_listed.ok, wasm_listed.error
+                    wasm_scripts = wasm_listed.data["scripts"]
+                    if wasm_scripts:
+                        break
+                    time.sleep(0.1)
+                assert wasm_scripts, "no WebAssembly script captured over CDP"
+                assert all(
+                    str(s.get("language")).lower() == "webassembly" for s in wasm_scripts
+                ), wasm_scripts
+                # wasm_only must be a real filter, not a passthrough: the JS
+                # app.js is in the full list but must not leak into wasm_list.
+                assert not any("app.js" in (s.get("url") or "") for s in wasm_scripts), wasm_scripts
+
+                # dom_snapshot returns the rendered document, not the raw HTML
+                # the origin served (proof the page actually ran in the browser).
+                dom = service.web_dom_snapshot(session_id)
+                assert dom.ok, dom.error
+                assert _DOM_MARKER in (dom.data.get("html") or ""), dom.data
 
                 # A screenshot is a real PNG on disk, not an empty file.
                 shot = service.web_screenshot(session_id)
