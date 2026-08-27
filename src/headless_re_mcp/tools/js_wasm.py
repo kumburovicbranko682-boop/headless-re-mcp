@@ -488,6 +488,29 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_sections(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.start")
+    def wasm_start(path: str) -> dict[str, Any]:
+        """Report a WebAssembly module's start function -- what runs on load, wabt-free.
+
+        The start section names the one function a runtime calls automatically
+        when the module is instantiated, before any export is invoked, which
+        makes it a prime spot for initialisation, self-unpacking or
+        anti-analysis code -- the first thing to read when a module "does
+        something" merely by loading. Read in pure Python -- no wabt needed.
+        Unlike the listing tools this returns a scalar, because a module has at
+        most one start function: has_start_section (false when the module
+        declares none -- the common case, not an error), start_function (its
+        module-wide function index, or null), and kind -- "import" when that
+        index falls in the imported range, which is unusual and worth noting,
+        "local" for a module-defined function, or null when there is no start
+        (resolve the index against wasm.functions for a name, and wasm.calls for
+        what it goes on to invoke). imported_count is given as the context
+        needed to read the index. truncated is true when the section is
+        malformed. A file that is not a WebAssembly module is refused as
+        invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_start(path))
+
     @tools.tool(name="wasm.strings")
     def wasm_strings(
         path: str,

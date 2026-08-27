@@ -194,6 +194,11 @@ _MAX_WASM_PRODUCERS_PAGE = 1000
 _WASM_FEATURE_PREFIXES = {0x2B: "+", 0x2D: "-", 0x3D: "="}
 _MAX_WASM_FEATURES_COLLECT = 10000
 _MAX_WASM_FEATURES_PAGE = 1000
+# wasm.start surfaces the start section (id 8) -- the single function index that
+# runs automatically at instantiation. It is the one remaining defined section
+# not otherwise decoded, and holds exactly zero or one value, so the result is
+# scalar rather than a paginated list.
+_WASM_START_SECTION_ID = 8
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -2250,6 +2255,62 @@ def parse_wasm_features(
         "offset": start,
         "has_more": start + len(window) < len(rows),
         "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def parse_wasm_start(path: Path) -> JsonObject:
+    """Report a WebAssembly module's start function -- what runs on load, wabt-free.
+
+    The start section names the one function a runtime calls automatically when
+    the module is instantiated, before any export is invoked, which makes it a
+    prime spot for initialisation, self-unpacking or anti-analysis code -- the
+    first thing to read when a module "does something" merely by loading. Read
+    in pure Python -- no wabt needed. Unlike the listing tools this returns a
+    scalar, because a module has at most one start function: has_start_section
+    (false when the module declares none -- the common case, not an error),
+    start_function (its module-wide function index, or null), and kind --
+    "import" when that index falls in the imported range, which is unusual and
+    worth noting, "local" for a module-defined function, or null when there is
+    no start (resolve the index against wasm.functions for a name, and
+    wasm.calls for what it goes on to invoke). imported_count is given as the
+    context needed to read the index. truncated is true when the section is
+    malformed. A file that is not a WebAssembly module is refused as
+    invalid_params, one over 16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError(
+            "invalid_params", "not a WebAssembly module", path=str(resolved)
+        )
+    bodies, truncated = _collect_section_bodies(
+        raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_START_SECTION_ID})
+    )
+    imported_count = 0
+    if _WASM_IMPORT_SECTION_ID in bodies:
+        func_imports, imp_trunc = _parse_func_imports(bodies[_WASM_IMPORT_SECTION_ID])
+        imported_count = len(func_imports)
+        truncated = truncated or imp_trunc
+    has_start_section = _WASM_START_SECTION_ID in bodies
+    start_function: int | None = None
+    kind: str | None = None
+    if has_start_section:
+        try:
+            start_function, _pos = _read_uleb(bodies[_WASM_START_SECTION_ID], 0)
+            kind = "import" if start_function < imported_count else "local"
+        except _WasmParseError:
+            truncated = True
+    return {
+        "has_start_section": has_start_section,
+        "start_function": start_function,
+        "kind": kind,
+        "imported_count": imported_count,
         "truncated": truncated,
     }
 

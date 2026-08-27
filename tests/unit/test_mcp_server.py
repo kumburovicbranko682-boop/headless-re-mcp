@@ -310,6 +310,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "wasm.names",
         "wasm.producers",
         "wasm.sections",
+        "wasm.start",
         "wasm.strings",
         "wasm.tables",
         "wasm.wat",

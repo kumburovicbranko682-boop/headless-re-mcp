@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **280（163 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **281（164 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -697,6 +697,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `total` 0,而非报错)与 `features`(含 `count/total/offset/has_more`);`total` 上限 10000、越限置
   `scan_capped`;`truncated` 在段畸形时为 true(已读到的行照常返回)。该段为自报告、可被剥除,故其缺失
   不能证明这些特性未被使用。非 WebAssembly 文件按 `invalid_params` 拒绝,超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.start`：报告 start 段——模块实例化时自动运行的那个函数,纯 Python、**不需要 wabt**。运行时在
+  任何导出被调用之前就会调用 start 函数,故这里是初始化、自解包、反分析代码的高发地——当一个模块"仅仅
+  被加载就做事"时,这是第一个该看的地方。它是唯一尚未解码的已定义段,补齐后 WASM 标准段覆盖闭环。
+  与列表类工具不同,它返回标量(模块至多一个 start 函数):`has_start_section`(无该段时为 false——常态,
+  非错误)、`start_function`(模块级函数索引,或 null)、`kind`——索引落在导入区间时为 "import"(不寻常、
+  值得注意),模块自定义函数为 "local",无 start 时为 null(索引可与 `wasm.functions` 联查名字,再用
+  `wasm.calls` 看它接着调用了什么);`imported_count` 作为解读索引所需的上下文一并给出。`truncated` 在段
+  畸形时为 true。非 WebAssembly 文件按 `invalid_params` 拒绝,超过 16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。
