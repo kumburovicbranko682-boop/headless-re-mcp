@@ -54,11 +54,16 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.certificates")
     def apk_certificates(session_id: str) -> dict[str, Any]:
-        """List signing certificates and v1 signature files.
+        """List signing certificates and the signature schemes that signed the APK.
 
         Answers with certificates (subject, issuer, serial, sha256),
-        signature_files, v1_signed, and has_more so a list that filled the
-        cap is not read as every signer. There is no certs or signatures field.
+        signature_files, and has_more so a list that filled the cap is not read
+        as every signer. Signing-scheme flags v1_signed, v2_signed, v3_signed,
+        and the overall signed report which APK Signature Schemes are present:
+        each is true/false, or null when this androguard build could not
+        determine it (null is not "unsigned"). v1-only signing on a modern APK
+        is the CVE-2017-13156 (Janus) risk pattern. There is no certs or
+        signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 

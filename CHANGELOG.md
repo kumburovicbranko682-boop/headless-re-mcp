@@ -1172,6 +1172,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `headers_truncated`。既有 flow_get 测试不变(小头表照常直出)。新测:200 个 ~4000 字符的响应头(约 800KB)断言头表被裁到 200 条以下、
   `headers_truncated` 真、整条编码体不超预算;一个 `bytes` 头值断言回来是 `str` 且 `json.dumps` 不抛。
 
+- **`apk.certificates` 只报 v1(JAR)签名,无法区分「未签名」与「只用 v2/v3 方案签名」。** 过去 payload 仅有
+  `v1_signed`(由 `get_signature_names()` 推出)。面向 API 24+/30+ 的现代 APK 常常**只**用 APK Signature Scheme v2/v3
+  签名、根本不带 META-INF 里的 v1 JAR 文件——这类包 `v1_signed` 为假,分析者若只看这一个字段就会把签好的包误读成未签名。反过来,一个现代
+  目标若**只**有 v1 签名,正是 CVE-2017-13156(Janus)可利用的可疑形态,值得单独标出。现新增 `v2_signed`、`v3_signed` 与总体 `signed`
+  三个标志,经新助手 `_sig_scheme` 调 androguard 的 `is_signed_v2`/`is_signed_v3`/`is_signed`:方案判定干净作答时给 `True`/`False`,方法
+  缺失(更老的 androguard)或解析签名块抛异常时给 `None`——`null` 表示「测不出」,不与「没用该方案签」(`False`)混为一谈。`v1_signed`
+  维持 `bool(names)` 原样不动。工具描述同步说明四个签名标志及 `null` 语义、并点出 v1-only 的 Janus 风险。单测(`test_apk_certificates_fields.py`):
+  v2/v3-only 假 APK(`v1_signed` 假但 `signed` 真)、抛异常的方案判定(回 `None` 而非 `False`)、缺失方法的老 androguard(全部降级为 `None`)各一例;
+  实机 gate(`test_m11_android_apk_live_gate.py`)对 jarsigner v1-only 夹具补断言 `signed` 真、`v2_signed`/`v3_signed` 均为 `False`(而非 `None`)。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的

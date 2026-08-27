@@ -44,6 +44,47 @@ class _FakeApk:
         return [_Cert(index) for index in range(40)]
 
 
+class _V2OnlyApk:
+    """A modern APK signed only with schemes v2/v3, carrying no v1 JAR files."""
+
+    def get_signature_names(self) -> list[str]:
+        return []
+
+    def get_certificates(self) -> list[_Cert]:
+        return [_Cert(0)]
+
+    def is_signed(self) -> bool:
+        return True
+
+    def is_signed_v1(self) -> bool:
+        return False
+
+    def is_signed_v2(self) -> bool:
+        return True
+
+    def is_signed_v3(self) -> bool:
+        return True
+
+
+class _RaisingSchemeApk:
+    """v1 present, but the v2/v3 predicates blow up parsing the signing block."""
+
+    def get_signature_names(self) -> list[str]:
+        return ["META-INF/CERT.RSA"]
+
+    def get_certificates(self) -> list[_Cert]:
+        return [_Cert(0)]
+
+    def is_signed(self) -> bool:
+        return True
+
+    def is_signed_v2(self) -> bool:
+        raise ValueError("malformed signing block")
+
+    def is_signed_v3(self) -> bool:
+        raise ValueError("malformed signing block")
+
+
 def test_apk_certificates_names_signature_files_not_certs() -> None:
     """The catalog never named the payload.
 
@@ -66,3 +107,51 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+
+
+def test_apk_certificates_reports_v2_v3_only_signing() -> None:
+    """A v2/v3-only APK carries no v1 JAR files but is still signed.
+
+    Reading v1_signed False alone would call this unsigned; the scheme flags
+    keep that from happening. is_signed True with v1_signed False is exactly the
+    modern APK the field set exists to describe.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _V2OnlyApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert payload["v1_signed"] is False
+    assert payload["v2_signed"] is True
+    assert payload["v3_signed"] is True
+    assert payload["signed"] is True
+    assert len(payload["certificates"]) == 1
+
+
+def test_apk_certificates_scheme_flag_none_when_predicate_raises() -> None:
+    """A raising predicate reads as null (unknown), never as False (not signed).
+
+    Collapsing a parse failure to False would tell an analyst the APK lacks v2/v3
+    protection when the truth is the tool could not tell; null keeps the two
+    apart so v1-only-looking output is trusted only when it is actually known.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _RaisingSchemeApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert payload["v1_signed"] is True
+    assert payload["v2_signed"] is None
+    assert payload["v3_signed"] is None
+    assert payload["signed"] is True
+
+
+def test_apk_certificates_scheme_flag_none_when_predicate_absent() -> None:
+    """An older androguard without the predicate reports null, not a crash.
+
+    The original fake apk defines none of the is_signed* methods, so every new
+    flag must degrade to null while the established fields keep their values.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.certificates(Path("dummy.apk"))
+    assert payload["v1_signed"] is True
+    assert payload["v2_signed"] is None
+    assert payload["v3_signed"] is None
+    assert payload["signed"] is None

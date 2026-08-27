@@ -117,6 +117,27 @@ def _readable_name(value: Any) -> str:
     return str(value)
 
 
+def _sig_scheme(apk: Any, method: str) -> bool | None:
+    """Best-effort read of an androguard APK signature-scheme predicate.
+
+    androguard exposes ``is_signed`` / ``is_signed_v1`` / ``is_signed_v2`` /
+    ``is_signed_v3``, but which of these exist -- and whether they parse a given
+    APK's signing block without raising -- varies across versions and malformed
+    inputs. Returning ``True``/``False`` only when the predicate answers cleanly,
+    and ``None`` when the method is missing or raises, lets a caller tell "this
+    APK is not signed with that scheme" apart from "this build could not
+    determine it" -- a distinction that matters when v1-only signing on a modern
+    target is the CVE-2017-13156 (Janus) risk pattern the field exists to flag.
+    """
+    func = getattr(apk, method, None)
+    if not callable(func):
+        return None
+    try:
+        return bool(func())
+    except Exception:  # noqa: BLE001 - signing-block parsing varies by version
+        return None
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -355,6 +376,9 @@ class ApkClient:
             "signature_files": sig_files,
             "certificates": items,
             "v1_signed": bool(names),
+            "v2_signed": _sig_scheme(apk, "is_signed_v2"),
+            "v3_signed": _sig_scheme(apk, "is_signed_v3"),
+            "signed": _sig_scheme(apk, "is_signed"),
             "has_more": certs_more or files_more,
         }
 

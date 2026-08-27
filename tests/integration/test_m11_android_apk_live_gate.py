@@ -139,6 +139,13 @@ def test_m11_androguard_apk_surface() -> None:
     # gate -- is caught here against the real cert.
     assert cert["serial"].isdigit(), cert
     assert isinstance(cert["sha256"], str) and cert["sha256"], cert
+    # The fixture is jarsigner (v1/JAR) signed only, so the scheme flags read
+    # against the real signing block must be v1-only: signed True (some scheme
+    # covers it), but v2 and v3 both explicitly False -- not null, which would
+    # mean androguard could not parse the signing block on this host.
+    assert certs["signed"] is True, certs
+    assert certs["v2_signed"] is False, certs
+    assert certs["v3_signed"] is False, certs
 
 
 @pytest.mark.integration
