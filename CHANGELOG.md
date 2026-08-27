@@ -43,6 +43,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `tmd` / `winlicense` / `oreans` 是合法别名。`enabled=false` 会把 `CurrentProfile` 写成
   `Disabled`。TitanHide / VT 启动器本阶段不做。
 
+### 新增（radare2 服务面首个真跑的 Gate）
+
+- `r2.open/info/functions/strings/imports/exports/disasm/xrefs` 这条 `AnalysisService` 上的 r2
+  读取面此前没有任何端到端测试:唯一的 r2 Gate（`test_m11_r2_live_gate.py`）直接驱动底层
+  `R2Client`、只断言函数地址能映射,而且它用的夹具（`artifacts/fixtures-x64/headless_fixture.exe`）
+  并未提交——于是在干净检出上即便装了 radare2 它也只会跳过,从没真跑过;那条服务面（建会话、经
+  服务信封把二进制读回来）更是一次都没被验证。现新增 `tests/integration/test_r2_service_gate.py`,
+  跑在已提交、未加壳的 x64 PE 夹具 `fixtures/upx/console_fixture-x64.pre-upx.exe`（其源码即
+  `fixtures/native/console_fixture.c`）上:每条断言核的都是绑到源码的“还原出的内容”而非“非空信封”
+  ——导入表带 `LoadLibraryW`/`GetProcAddress`/`CreateThread`、字符串表带字面量 `--debug-wait`、
+  可执行文件导出为空、函数带统一的 PE Address 映射（module + rva + va + 架构）、`main` 反汇编出真实
+  指令、其 xref 能解析到具名导入与字符串。缺 radare2/rizin 时按明确的 skip != pass 跳过;关闭会话
+  （`invalid_request`,状态先于后端检查）与库缺失降级（`capability_unavailable`）两条无需 r2,始终
+  运行。基于 radare2 5.5.0 在 Linux 上分析一枚 Windows PE 实测。
+
 ### 变更（监控台检查器）
 
 - 监控台检查器按工作方向和会话 `target` 换皮：Web 不再显示 x64dbg 虚拟桌面 / 打开静态 /
