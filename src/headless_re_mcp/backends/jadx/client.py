@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.json_budget import RESULT_BUDGET_BYTES, fit_json_text
 
 JsonObject = dict[str, Any]
-_MAX_SOURCE_BYTES = 400_000
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
@@ -155,16 +155,23 @@ class JadxClient:
             candidate = match
         try:
             with candidate.open("rb") as handle:
-                raw = handle.read(_MAX_SOURCE_BYTES + 1)
+                raw = handle.read(RESULT_BUDGET_BYTES + 1)
         except OSError as exc:
             raise JadxError("backend_error", f"failed to read source: {exc}") from exc
-        truncated = len(raw) > _MAX_SOURCE_BYTES
-        source = raw[:_MAX_SOURCE_BYTES].decode("utf-8", errors="replace")
+        # Read only as many raw bytes as could ever survive the encoded budget
+        # (the JSON-encoded form is never smaller than the raw bytes), plus one
+        # to notice a larger file, then bound the returned text by its encoded
+        # size. A raw-byte cap above the transport budget -- the old 400 KB one
+        # was -- meant a big class was discarded for a ~16 KiB summary instead of
+        # returned cleanly truncated.
+        file_truncated = len(raw) > RESULT_BUDGET_BYTES
+        text = raw[:RESULT_BUDGET_BYTES].decode("utf-8", errors="replace")
+        source, _source_bytes, fit_truncated = fit_json_text(text)
         result: JsonObject = {
             "class_name": target,
             "path": str(candidate),
             "source": source,
-            "truncated": truncated,
+            "truncated": file_truncated or fit_truncated,
         }
         # Carry the overall-run failure forward: the requested class exists, but a
         # jadx that exited non-zero may have written this very file as a

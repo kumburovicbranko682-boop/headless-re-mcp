@@ -116,28 +116,43 @@ def test_js_deobfuscate_names_bytes_not_size(tmp_path: Path) -> None:
     assert "Answers with code" in doc
 
 
-def test_js_deobfuscate_applies_inline_limit_to_encoded_bytes(
+def test_js_deobfuscate_bounds_the_inline_code_by_encoded_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from headless_re_mcp.backends.jsre import client as mod
+    """The inline body must fit the JSON-encoded budget, not a raw byte count.
+
+    The transport discards the whole result for a ~16 KiB summary once the
+    *encoded* envelope exceeds the budget, so a raw cap above it threw the
+    output away. Shrink the budget for the test and confirm deobfuscate returns
+    a shorter, cleanly truncated ``code`` (with the original size still in
+    ``bytes``) whose encoded form fits -- rather than the full body.
+    """
+    from headless_re_mcp.backends.common import json_budget
 
     tool = tmp_path / "webcrack.exe"
     tool.write_bytes(b"")
     src = tmp_path / "app.js"
     src.write_text("x", encoding="utf-8")
-    body = "ééé"
+    # Newlines and quotes inflate under JSON escaping, so a raw-byte cap would
+    # not have caught this; the encoded-size bound must.
+    body = 'a"\n' * 4000  # 12000 raw bytes
 
     def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
         return Completed(0, body.encode("utf-8"), b"")
 
-    monkeypatch.setattr(mod, "_MAX_INLINE", 5)
+    # Tiny budget + reserve so a small body is forced to truncate.
+    monkeypatch.setattr(json_budget, "RESULT_BUDGET_BYTES", 2048)
+    monkeypatch.setattr(json_budget, "_FIELD_RESERVE_BYTES", 512)
     with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
         payload = JsClient(tool).deobfuscate(src)
 
-    assert payload["code"] == "éé"
-    assert payload["bytes"] == 6
     assert payload["truncated"] is True
-    assert len(str(payload["code"]).encode("utf-8")) <= 5
+    assert payload["bytes"] == len(body.encode("utf-8"))
+    assert len(payload["code"]) < len(body)
+    import json as _json
+
+    encoded = len(_json.dumps(payload["code"], ensure_ascii=False).encode("utf-8"))
+    assert encoded <= 2048 - 512
 
 
 def test_js_beautify_names_bytes_not_size(tmp_path: Path) -> None:

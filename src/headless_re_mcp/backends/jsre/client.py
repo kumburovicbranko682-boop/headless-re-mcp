@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.json_budget import fit_json_text
 
 JsonObject = dict[str, Any]
-_MAX_INLINE = 400_000
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
@@ -96,13 +96,15 @@ def _run(cmd: list[str], *, timeout: float) -> tuple[str, str, int]:
 
 
 def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
-    payload = text.encode("utf-8", errors="replace")
-    result: JsonObject = {
-        key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
-        "truncated": len(payload) > _MAX_INLINE,
-    }
+    # Bound by the JSON-encoded size, not the raw byte count: the transport
+    # discards the whole result (for a ~16 KiB summary) once the *encoded*
+    # envelope outruns the budget, so a raw cap above that budget -- the old
+    # 400 KB one was -- guaranteed the useful output was thrown away instead of
+    # returned cleanly truncated. fit_json_text leaves room for the other fields.
+    inline, original_bytes, truncated = fit_json_text(text)
+    result: JsonObject = {key: inline, "truncated": truncated}
     if include_bytes:
-        result["bytes"] = len(payload)
+        result["bytes"] = original_bytes
     return result
 
 
