@@ -117,7 +117,11 @@ rpc.exports = {
     return {found: true, module: mod.name, base: mod.base.toString(), exports: items};
   },
   read: function (address, size) {
-    return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
+    // NativePointer.readByteArray, not the old global Memory.readByteArray:
+    // frida 16.6 deprecated and 17 removed the top-level Memory.readX helpers,
+    // so the global form throws "TypeError: not a function" and every
+    // frida.memory.read fails backend_error on a current runtime.
+    return Array.from(new Uint8Array(ptr(address).readByteArray(size)));
   }
 };
 """
