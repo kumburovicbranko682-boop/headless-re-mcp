@@ -280,6 +280,7 @@ jobs:
             tests/integration/test_web_cdp_gate.py \
             tests/integration/test_web_cdp_https_gate.py \
             tests/integration/test_web_proxy_https_chain_gate.py \
+            tests/integration/test_web_proxy_error_gate.py \
             tests/integration/test_web_network_get_gate.py \
             tests/integration/test_web_har_export_gate.py \
             tests/integration/test_web_wasm_gate.py \
