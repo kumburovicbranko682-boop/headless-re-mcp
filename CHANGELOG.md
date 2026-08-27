@@ -155,6 +155,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
 
+### 测试（r2 `run` 的两条失败出口:非零退出与启动 OSError）
+
+- r2 客户端的成功与截断路径都已钉死,但 `run` 的两条错误出口没有任何测试驱动过:radare2 **非零退出**
+  (损坏或不支持的样本)与**启动时的 `OSError`**(可执行文件在场但跑不起来——没有 +x,或在 `is_file()`
+  检查与 spawn 之间被换掉)。两者都必须落成 `backend_error`,否则后端配置问题或坏输入会以
+  `internal_error` 事故的形态撞到信封、还带一条日志事件。新增回归:非零退出以 `backend_error` **抛出**
+  (而非把带 `raw` 的成功载荷交回去让调用者把半截 stdout 读成完整分析),并透传 `exit_code`;其 `stderr`
+  经 `errors="replace"` 宽松解码、封顶 2000 字符,一段非 UTF-8 的诊断不会把干净的 `backend_error`
+  变成未捕获的 `UnicodeDecodeError`;启动 `OSError` 映射成 `backend_error` 并在消息里点名可执行文件——
+  既有桩注入的 `PermissionError`,也有一个真实无 +x 文件端到端触发的 `PermissionError`(POSIX;Windows
+  无执行位模型故 skip,skip != pass)。
+- 变异验证:去掉 `returncode != 0` 判定、去掉 stderr 的 `[:2000]` 上限、把解码从 `errors="replace"`
+  改成 `"strict"`、移走 `except OSError -> backend_error` 分支,均分别只被对应新测试逮住;源树零改动
+  (仅新增测试与本条目)。
+
 ### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
 - Playwright 的 `page.goto` 只在传输层失败（DNS、拒连、超时）时抛异常；一个 4xx/5xx 主文档会
