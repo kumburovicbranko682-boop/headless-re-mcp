@@ -78,7 +78,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         total, offset, has_more, and dropped so a page that filled the
         limit is not read as the whole capture, and ring eviction is
         visible. metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        There is no type field. The captured request body is omitted here to
+        keep the listing lean; read it per request with web.network.get.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -95,6 +96,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         body already evicted from its cache) body is empty and body_error says
         why, while body, base64_encoded and body_truncated stay present. A
         body over the capture cap is refused rather than written to disk.
+        When the request carried a POST body, request_body holds it with
+        request_body_size (the full byte length) and request_body_truncated
+        when it was bounded; request_body_omitted is true when CDP flagged a
+        body it did not inline for capture. These request fields are absent for
+        a request that had no body.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 

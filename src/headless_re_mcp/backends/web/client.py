@@ -41,6 +41,11 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# The request body an agent reverse-engineering an API most wants to see -- what
+# was actually POSTed. CDP inlines it on requestWillBeSent for small bodies; a
+# larger one is bounded here, and one CDP flagged but did not inline is reported
+# as omitted rather than implied absent.
+_MAX_REQUEST_BODY = 64 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -475,6 +480,17 @@ class WebBackend:
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            post_data = req.get("postData")
+            if isinstance(post_data, str) and post_data:
+                body_text, body_cut = _bounded_metadata(post_data, _MAX_REQUEST_BODY)
+                entry["request_body"] = body_text
+                entry["request_body_size"] = len(post_data.encode("utf-8", errors="replace"))
+                if body_cut:
+                    entry["request_body_truncated"] = True
+            elif req.get("hasPostData"):
+                # CDP flagged a body but did not inline it on the event. We do
+                # not fetch it, so say it was omitted rather than imply none.
+                entry["request_body_omitted"] = True
             with handle.lock:
                 handle.requests[str(params.get("requestId"))] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
@@ -597,7 +613,18 @@ class WebBackend:
             dropped = handle.requests_dropped
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
-        window = items[start : start + cap]
+        # The request body lives on the entry so network_get can return it, but
+        # a listing of up to 1000 entries must stay lean -- project it out here.
+        lean = (
+            "request_body",
+            "request_body_size",
+            "request_body_truncated",
+            "request_body_omitted",
+        )
+        window = [
+            {key: value for key, value in item.items() if key not in lean}
+            for item in items[start : start + cap]
+        ]
         return {
             "requests": window,
             "count": len(window),
