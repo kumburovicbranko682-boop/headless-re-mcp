@@ -60,6 +60,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_request`:输入校验挪到 Windows 平台门之前,Linux 上不再把敌意输入报成
   `unsupported_on_platform`。
 
+### 修复（r2.open 如实说明身份预览被截断）
+
+- `r2.open` 把 `i` 身份文本作为 `info` 预览内联,但切到 8000 字符——比 `run()` 的 1 MB
+  缓冲更紧,于是 `run()` 自己的 `truncated` 标记永远不触发,这一层截断是**静默**的。
+  `r2.info` 早已在身份转储被 1 MB 缓冲截断时报 `truncated`;`r2.open` 读同一份文本却不吭声,
+  拿 `info` 去数节区或依赖库的调用方会把"停在缓冲处"当成"就这么多"。现在超过 8000 字符时
+  回包带 `info_truncated: true`,并在工具描述里点名该字段。回归测试钉住:超长身份文本被标记且
+  `info` 恰好 8000 字符,短文本不被误标。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
