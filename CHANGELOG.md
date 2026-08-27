@@ -1275,6 +1275,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
+- **`frida.modules` 的 dict 载荷形态与 `frida.exports` 的 found 三态钉死**：`modules` 接受脚本
+  返回 list 或 `{"modules": [...], "total": N}` 两种形态,但唯一的既有用例只走 list 分支——
+  该分支里 `total` 被强制成 `len(held)`,`has_more` 只能表示"客户端切了页"。dict 分支才是要害:
+  进程内脚本可以只回一页却报告服务端真实 `total`,于是 `has_more` 表示"即便客户端不切、模块
+  也不止这一页"。只有 list 夹具时,把 dict 处理整段删掉(`list()` 一个 dict 得到的是它的键)
+  或把 `total` 塌回 `len(held)` 都能蒙混过关。新增 4 个 modules 用例:服务端 `total` 超过返回页
+  仍标 `has_more`;dict 缺 `total` 时回退到页长、小页不误标;脚本超发时客户端 `held[:capped]`
+  仍把页切回上限;非 dict 的模块条目被 `isinstance` 守卫跳过而非拿去 `.get` 崩。`exports` 一向
+  只用 `found: True`、模块名齐备、dict 载荷驱动,留下 found(模块根本没加载 vs 加载了但不导出)、
+  模块名回退、非 dict 守卫、名字校验四处失活;新增 5 个用例:缺失模块报 `found=False` 空表、
+  已加载但无导出的模块报 `found=True` 空表(二者成对把 `found` 钉到 `bool(raw["found"])` 而非
+  `len(exports)`)、脚本省略模块名时回显请求名、非 dict 载荷报 `backend_error`、空白模块名在
+  attach 之前就被拒为 `invalid_params`(坏参数不得在目标上拉起 frida 会话)。
 
 ### 变更（Android 后端清理）
 
