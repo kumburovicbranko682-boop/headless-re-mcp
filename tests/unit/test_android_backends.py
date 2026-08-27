@@ -626,6 +626,99 @@ class TestApkClassification:
             describe_apk(plain)
 
 
+class TestApkBundleAndSet:
+    """.aab/.apks/.xapk carry .apk-family suffixes but have no root manifest.
+
+    classify_target routes them to describe_apk on suffix alone, so opening a
+    session over a legitimate bundle or set must return its structure -- and, for
+    a set, its base APK's manifest -- instead of failing on the missing root
+    AndroidManifest.xml.
+    """
+
+    def test_a_classic_apk_is_tagged_with_its_format(self, tmp_path: Path) -> None:
+        info = describe_apk(_apk(tmp_path / "app.apk"))["apk"]
+        assert info["format"] == "apk"
+
+    def test_a_bundletool_set_reads_the_base_master_manifest(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        path = tmp_path / "app.apks"
+        with zipfile.ZipFile(path, "w") as archive:
+            # The base module's master split holds the manifest and dex; the
+            # density split under the same splits/ dir must not be chosen as base.
+            archive.writestr("splits/base-master.apk", _APK_FIXTURE.read_bytes())
+            archive.writestr("splits/base-xxhdpi.apk", b"PK\x05\x06" + b"\x00" * 18)
+            archive.writestr("toc.pb", b"")
+        info = describe_apk(path)["apk"]
+        assert info["format"] == "apk_set"
+        assert info["apk_count"] == 2
+        assert "splits/base-master.apk" in info["apks"]
+        assert info["base_apk"] == "splits/base-master.apk"
+        # The base APK's manifest is read by recursing into that member.
+        assert info["manifest"]["package"] == "com.example.headless"
+
+    def test_an_xapk_base_is_chosen_over_config_splits(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        path = tmp_path / "app.xapk"
+        with zipfile.ZipFile(path, "w") as archive:
+            # APKPure names the whole app after its package and the splits after
+            # their ABI/density; the package APK is the one to read.
+            archive.writestr("com.example.headless.apk", _APK_FIXTURE.read_bytes())
+            archive.writestr("config.arm64_v8a.apk", b"PK\x05\x06" + b"\x00" * 18)
+            archive.writestr("manifest.json", b'{"package_name": "com.example.headless"}')
+            archive.writestr("icon.png", b"\x89PNG")
+        info = describe_apk(path)["apk"]
+        assert info["format"] == "apk_set"
+        assert info["base_apk"] == "com.example.headless.apk"
+        assert info["manifest"]["package"] == "com.example.headless"
+
+    def test_a_set_without_a_readable_base_still_lists_its_apks(self, tmp_path: Path) -> None:
+        # Both members are empty ZIP end-records: a set shape with no manifest to
+        # recurse into must still report the listing rather than raise.
+        path = tmp_path / "empty.apks"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("splits/base-master.apk", b"PK\x05\x06" + b"\x00" * 18)
+            archive.writestr("splits/base-xhdpi.apk", b"PK\x05\x06" + b"\x00" * 18)
+        info = describe_apk(path)["apk"]
+        assert info["format"] == "apk_set"
+        assert info["apk_count"] == 2
+        assert "manifest" not in info
+
+    def test_an_app_bundle_lists_its_modules(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.aab"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("BundleConfig.pb", b"")
+            # An .aab manifest is protobuf under <module>/manifest/, not AXML.
+            archive.writestr("base/manifest/AndroidManifest.xml", b"\x0a\x03pkg")
+            archive.writestr("base/dex/classes.dex", b"dex\n035\x00")
+            archive.writestr("feature1/manifest/AndroidManifest.xml", b"\x0a\x03pkg")
+        info = describe_apk(path)["apk"]
+        assert info["format"] == "aab"
+        assert info["modules"] == ["base", "feature1"]
+
+    def test_config_split_detection_spans_both_layouts(self) -> None:
+        from headless_re_mcp.core.session import _apk_is_config_split
+
+        assert _apk_is_config_split("base-xxhdpi.apk") is True
+        assert _apk_is_config_split("config.arm64_v8a.apk") is True
+        assert _apk_is_config_split("base-master.apk") is False
+        assert _apk_is_config_split("com.example.app.apk") is False
+
+    def test_session_over_a_set_opens_and_carries_the_format(self, tmp_path: Path) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        from headless_re_mcp.core.session import SessionRegistry
+
+        path = tmp_path / "app.apks"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("splits/base-master.apk", _APK_FIXTURE.read_bytes())
+        session = SessionRegistry().create(str(path))
+        assert session.target is TargetKind.APK
+        assert session.metadata["apk"]["format"] == "apk_set"
+        assert session.metadata["apk"]["manifest"]["package"] == "com.example.headless"
+
+
 class TestApktoolBoundaries:
     def test_missing_apktool_degrades(self, tmp_path: Path) -> None:
         client = ApktoolClient(None, None)

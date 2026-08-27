@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import json
 import re
 import zipfile
@@ -505,6 +506,38 @@ _DEX_MAX_BYTES = 32 * 1024 * 1024
 _DEX_MAX_NAMES = 8192
 _DEX_MAX_TOTAL_NAMES = 512
 
+# An .aab bundle, an .apks (bundletool) or an .xapk (APKPure) all carry the .apk
+# family suffixes classify_target routes to describe_apk, but none has a compiled
+# AndroidManifest.xml at the archive root: a bundle nests it under
+# ``<module>/manifest/`` as protobuf, and a set is a ZIP of whole APKs. Rather
+# than fail session creation on a legitimate artifact, recognise these shapes and
+# return their structure, recursing into a set's base APK for the real manifest.
+_AAB_BUNDLE_CONFIG = "BundleConfig.pb"
+_AAB_BASE_MANIFEST = "base/manifest/AndroidManifest.xml"
+_AAB_MODULE_MANIFEST_SUFFIX = "/manifest/AndroidManifest.xml"
+_APK_SET_MAX_LIST = 256
+# A set's base APK is read whole into memory to reach its manifest, so refuse an
+# implausibly large member rather than allocate for it.
+_APK_INNER_MAX = 128 * 1024 * 1024
+# Config/density/ABI splits carry only a slice of resources or native libs, never
+# the app manifest, so they are excluded when picking the base APK to recurse
+# into. bundletool names them ``base-xxhdpi.apk``; APKPure names them
+# ``config.arm64_v8a.apk``. Matched on the basename so the ``splits/`` directory
+# every bundletool member sits under does not itself read as a split.
+_APK_CONFIG_SPLIT_TOKENS = (
+    "ldpi",
+    "mdpi",
+    "hdpi",
+    "tvdpi",
+    "arm64_v8a",
+    "armeabi_v7a",
+    "armeabi",
+    "x86_64",
+    "x86",
+    "mips64",
+    "mips",
+)
+
 
 def is_http_url(reference: str) -> bool:
     return reference.lower().startswith(("http://", "https://"))
@@ -587,6 +620,9 @@ def describe_apk(path: Path) -> dict[str, Any]:
     except (OSError, zipfile.BadZipFile) as exc:
         raise ValueError(f"not a readable Android package: {path}") from exc
     if _APK_MANIFEST not in names:
+        bundle = _apk_bundle_facts(path, names)
+        if bundle is not None:
+            return {"apk": bundle}
         raise ValueError(f"archive has no {_APK_MANIFEST}: {path}")
     abis = sorted(
         {
@@ -598,6 +634,7 @@ def describe_apk(path: Path) -> dict[str, Any]:
     signed_v2, signed_v3 = _apk_signature_schemes(path)
     return {
         "apk": {
+            "format": "apk",
             "native_abis": abis,
             "dex_count": sum(1 for name in names if name.endswith(".dex")),
             "entry_count": len(names),
@@ -611,6 +648,110 @@ def describe_apk(path: Path) -> dict[str, Any]:
             "dex": _apk_dex_facts(path),
         }
     }
+
+
+def _apk_bundle_facts(path: Path, names: list[str]) -> dict[str, Any] | None:
+    """Identity facts for an archive with no root manifest, or None.
+
+    Distinguishes the two legitimate no-root-manifest shapes classify_target
+    routes here so session creation does not fail on them:
+
+    * an APK set (``.apks`` from bundletool, ``.xapk`` from APKPure) is a ZIP of
+      whole APKs -- reported as ``format="apk_set"`` with its base APK's manifest
+      read by recursing into that member;
+    * an app bundle (``.aab``) nests each module's manifest under
+      ``<module>/manifest/`` -- reported as ``format="aab"`` with the module
+      list. The bundle manifest is protobuf, not AXML, so it is not parsed here.
+
+    Returns None for anything that is neither, so describe_apk still raises on a
+    ZIP that is genuinely not an Android package.
+    """
+    apk_entries = sorted(n for n in names if n.lower().endswith(".apk"))
+    if apk_entries:
+        facts: dict[str, Any] = {
+            "format": "apk_set",
+            "apk_count": len(apk_entries),
+            "apks": apk_entries[:_APK_SET_MAX_LIST],
+        }
+        base = _apk_set_base(path, apk_entries)
+        if base is not None:
+            facts["base_apk"] = base
+            manifest = _apk_manifest_facts_from_inner(path, base)
+            if manifest:
+                facts["manifest"] = manifest
+        return facts
+    if _AAB_BUNDLE_CONFIG in names or _AAB_BASE_MANIFEST in names:
+        modules = sorted(
+            {
+                name.split("/", 1)[0]
+                for name in names
+                if name.endswith(_AAB_MODULE_MANIFEST_SUFFIX) and "/" in name
+            }
+        )
+        return {"format": "aab", "modules": modules}
+    return None
+
+
+def _apk_is_config_split(basename: str) -> bool:
+    """True for a config/density/ABI split member, which holds no app manifest."""
+    stem = basename[:-4] if basename.endswith(".apk") else basename
+    if stem.startswith("config") or stem.startswith("split_config"):
+        return True
+    return any(token in stem for token in _APK_CONFIG_SPLIT_TOKENS)
+
+
+def _apk_set_base(path: Path, apk_entries: list[str]) -> str | None:
+    """Pick the base APK of a set: the non-split, ``base``-named, largest member.
+
+    Config/density/ABI splits carry no manifest, so they lose to any other
+    member; a ``base``-named member then wins and size breaks ties, since the
+    base APK holding the dex and resources is reliably the largest. Fail-closed:
+    an unreadable archive yields None and the set is reported without a manifest.
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            sizes: dict[str, int] = {}
+            for name in apk_entries:
+                try:
+                    sizes[name] = archive.getinfo(name).file_size
+                except KeyError:
+                    continue
+    except (OSError, zipfile.BadZipFile):
+        return None
+    if not sizes:
+        return None
+
+    def rank(name: str) -> tuple[bool, bool, int]:
+        base = name.rsplit("/", 1)[-1].lower()
+        config = _apk_is_config_split(base)
+        named_base = "base" in base and not config
+        return (not config, named_base, sizes[name])
+
+    return max(sizes, key=rank)
+
+
+def _apk_manifest_facts_from_inner(path: Path, inner_name: str) -> dict[str, Any]:
+    """Read the compiled manifest of an APK nested inside a set, or {}.
+
+    A set member is a whole APK, so reaching its manifest means opening a ZIP
+    within the ZIP. Fail-closed and bounded: an implausibly large member, or one
+    we cannot open, yields {} rather than raising or reading unbounded bytes.
+    """
+    try:
+        with zipfile.ZipFile(path) as outer:
+            if outer.getinfo(inner_name).file_size > _APK_INNER_MAX:
+                return {}
+            blob = outer.read(inner_name)
+        with zipfile.ZipFile(io.BytesIO(blob)) as inner:
+            if inner.getinfo(_APK_MANIFEST).file_size > _AXML_MAX_BYTES:
+                return {}
+            with inner.open(_APK_MANIFEST) as handle:
+                data = handle.read(_AXML_MAX_BYTES + 1)
+    except (OSError, zipfile.BadZipFile, KeyError):
+        return {}
+    if len(data) > _AXML_MAX_BYTES:
+        return {}
+    return _apk_manifest_facts(data)
 
 
 def _apk_dex_facts(path: Path) -> dict[str, Any]:
