@@ -28,6 +28,31 @@ def test_a_merge_keeps_unrelated_keys_and_overwrites_named_ones(tmp_path: Path) 
     assert data == {"ida_home": "C:/ida", "http_port": 9000}
 
 
+def test_load_resolves_the_radare2_binary_name_from_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Settings.load must recognize the radare2 binary, like doctor and R2Client.
+
+    R2Client._discover and the doctor probe both accept r2/rizin/radare2. A host
+    with only the long-named ``radare2`` binary on PATH (no r2/rizin alias) left
+    settings.r2 unset because the loader consulted only r2 then rizin -- the same
+    binary-name gap one layer up. The client still worked through its own
+    discovery, but config disagreed with the other two on what counts as radare2.
+    """
+    radare2 = tmp_path / "radare2"
+    radare2.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        config_module.shutil,
+        "which",
+        lambda cmd: str(radare2) if cmd == "radare2" else None,
+    )
+    monkeypatch.delenv("HEADLESS_RE_R2", raising=False)
+
+    settings = Settings.load(tmp_path / "no-such-config.json")
+
+    assert settings.r2 == radare2.resolve()
+
+
 def test_none_deletes_a_key_and_deleting_a_missing_key_is_quiet(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     update_config_values({"upx": "/usr/bin/upx", "keep": 1}, config_path=path)
