@@ -152,6 +152,56 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  # Portable non-PE gates that need no proprietary backend, so unlike the
+  # Windows real-backend lane they can run on a free hosted runner. Everything
+  # they need -- mitmproxy, Playwright's bundled Chromium, androguard, webcrack
+  # (Node), wabt -- installs from pip/npm/apt, so these gates actually execute
+  # instead of skipping. That is what makes "skip != pass" real for the Web,
+  # proxy and Android lines in CI: the proxy port-release regression, for one,
+  # only ever surfaced when the lifecycle gate ran against real mitmproxy.
+  linux-nonpe-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install portable non-PE backends
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wabt
+          npm install -g webcrack
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,android,browser,proxy,pe]"
+          # Bundled Chromium plus the system libraries it needs; the product and
+          # every web gate launch this exact browser (pw.chromium.launch).
+          python -m playwright install --with-deps chromium
+
+      - name: Tool sanity
+        run: |
+          webcrack --version
+          wasm2wat --version
+          python -c "import mitmproxy, androguard, playwright; print('proxy/apk/browser extras present')"
+
+      - name: Non-PE portable integration gates
+        # -rs prints each skip reason: a gate that quietly skips reads exactly
+        # like one that passed. --timeout fails a wedged gate with context
+        # rather than letting the job deadline cancel the whole run.
+        timeout-minutes: 15
+        run: |
+          python -m pytest -rs --tb=short --timeout=180 \
+            tests/integration/test_proxy_lifecycle_gate.py \
+            tests/integration/test_web_re_gate.py \
+            tests/integration/test_web_lifecycle_gate.py \
+            tests/integration/test_android_re_gate.py
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20
