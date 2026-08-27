@@ -152,6 +152,31 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-proxy-lifecycle:
+    # The proxy lifecycle gate is a live mitmproxy test, so it lives in
+    # tests/integration and the unit jobs never touch it. Run it here with
+    # mitmproxy actually installed: the concurrent-start case guards a
+    # process-global startup race that only appears when several masters boot at
+    # once, and a gate that only ever skips would not have caught it. skip != pass
+    # -- if mitmproxy is somehow unavailable the gate reports an explicit skip.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,proxy]"
+
+      - name: Proxy lifecycle gate
+        timeout-minutes: 10
+        run: python -m pytest tests/integration/test_proxy_lifecycle_gate.py -q -rs --tb=short --timeout=120
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

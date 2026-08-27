@@ -42,7 +42,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `finally` 兜底放锁，绝不把后续 `start()` 卡死。真机验证：修复后整组 gate 跑 50 次全绿、8 路并发
   gate 跑 6 次全绿，端到端仍能拦到 GET 并记成 flow。新增
   `tests/integration/test_proxy_lifecycle_gate.py::test_concurrent_starts_survive_the_shared_mitmproxy_globals`
-  （8 路并发起停）确定性地钉住这条：旧客户端上跑 8 次挂 8 次，修复后稳过。
+  （8 路并发起停）确定性地钉住这条：旧客户端上跑 8 次挂 8 次，修复后稳过。这条现场 gate 过去
+  没进 CI（单测作业只跑 `tests/unit`），新增 `linux-proxy-lifecycle` 作业装上 `proxy` extra 真跑
+  它——skip != pass。
 
 ### 新增（监控台工作台）
 
