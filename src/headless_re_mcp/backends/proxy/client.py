@@ -272,11 +272,39 @@ class _FlowRecorder:
                 summary["body_omitted"] = True
                 break
 
+    def _store_raw_locked(self, flow_id: str, flow: Any, stored_bytes: int) -> bool:
+        """Insert a flow's raw object under the byte cap; returns whether omitted.
+
+        Shared by response() and error(): drops any stale entry for this id,
+        evicts older bodies (then, failing that, this one) to stay under
+        _MAX_RETAINED_BYTES, and keeps _raw evicting in lockstep with the summary
+        ring. Caller must hold self._lock.
+        """
+        self._raw.pop(flow_id, None)
+        self._retained_bytes -= self._raw_sizes.pop(flow_id, 0)
+        omitted = stored_bytes > _MAX_STORED_BODY
+        if not omitted:
+            for retained_id, retained in list(self._raw.items()):
+                if self._retained_bytes + stored_bytes <= _MAX_RETAINED_BYTES:
+                    break
+                if retained is not _OMITTED_BODY:
+                    self._omit_retained(retained_id)
+            omitted = self._retained_bytes + stored_bytes > _MAX_RETAINED_BYTES
+        self._raw[flow_id] = _OMITTED_BODY if omitted else flow
+        if not omitted:
+            self._raw_sizes[flow_id] = stored_bytes
+            self._retained_bytes += stored_bytes
+        # Evict oldest raw flows in lockstep with the summary ring so the two
+        # views can never disagree about which flows are retrievable.
+        while len(self._raw) > self._capacity:
+            evicted_id, _ = self._raw.popitem(last=False)
+            self._retained_bytes -= self._raw_sizes.pop(evicted_id, 0)
+        return omitted
+
     def response(self, flow: Any) -> None:  # mitmproxy calls this on each response
         req = flow.request
         resp = flow.response
         stored_bytes = _flow_stored_bytes(flow)
-        omitted = stored_bytes > _MAX_STORED_BODY
         method, method_truncated = _bounded_metadata(req.method, _MAX_METADATA_BYTES)
         url, url_truncated = _bounded_metadata(req.pretty_url, _MAX_URL_BYTES)
         host, host_truncated = _bounded_metadata(req.host, _MAX_METADATA_BYTES)
@@ -287,24 +315,7 @@ class _FlowRecorder:
         with self._lock:
             self._seq += 1
             flow_id = str(getattr(flow, "id", None) or self._seq)
-            self._raw.pop(flow_id, None)
-            self._retained_bytes -= self._raw_sizes.pop(flow_id, 0)
-            if not omitted:
-                for retained_id, retained in list(self._raw.items()):
-                    if self._retained_bytes + stored_bytes <= _MAX_RETAINED_BYTES:
-                        break
-                    if retained is not _OMITTED_BODY:
-                        self._omit_retained(retained_id)
-                omitted = self._retained_bytes + stored_bytes > _MAX_RETAINED_BYTES
-            self._raw[flow_id] = _OMITTED_BODY if omitted else flow
-            if not omitted:
-                self._raw_sizes[flow_id] = stored_bytes
-                self._retained_bytes += stored_bytes
-            # Evict oldest raw flows in lockstep with the summary ring so the
-            # two views can never disagree about which flows are retrievable.
-            while len(self._raw) > self._capacity:
-                evicted_id, _ = self._raw.popitem(last=False)
-                self._retained_bytes -= self._raw_sizes.pop(evicted_id, 0)
+            omitted = self._store_raw_locked(flow_id, flow, stored_bytes)
             entry: JsonObject = {
                 "id": flow_id,
                 "seq": self._seq,
@@ -321,6 +332,57 @@ class _FlowRecorder:
             if omitted:
                 entry["body_omitted"] = True
             if method_truncated or url_truncated or host_truncated or type_truncated:
+                entry["metadata_truncated"] = True
+            self.flows.append(entry)
+
+    def error(self, flow: Any) -> None:  # mitmproxy calls this when a flow fails
+        # A flow that never receives a response -- upstream refused/reset, DNS
+        # or TLS handshake failure (the usual culprit when a pinned mobile app
+        # is put behind the proxy), or a timeout -- fires error(), not
+        # response(). Without recording it, proxy.flows silently drops every
+        # failed connection, which is exactly the evidence the proxy was set up
+        # to catch. Record it as a finished flow marked failed, retaining the
+        # attempted request the same bounded way so flow.get can still show what
+        # was sent.
+        req = getattr(flow, "request", None)
+        err = getattr(flow, "error", None)
+        stored_bytes = _flow_stored_bytes(flow)
+        method, method_truncated = _bounded_metadata(
+            getattr(req, "method", "") if req is not None else "", _MAX_METADATA_BYTES
+        )
+        url, url_truncated = _bounded_metadata(
+            getattr(req, "pretty_url", "") if req is not None else "", _MAX_URL_BYTES
+        )
+        host, host_truncated = _bounded_metadata(
+            getattr(req, "host", "") if req is not None else "", _MAX_METADATA_BYTES
+        )
+        error_text, error_truncated = _bounded_metadata(
+            getattr(err, "msg", None) or (str(err) if err is not None else ""),
+            _MAX_METADATA_BYTES,
+        )
+        with self._lock:
+            self._seq += 1
+            flow_id = str(getattr(flow, "id", None) or self._seq)
+            omitted = self._store_raw_locked(flow_id, flow, stored_bytes)
+            entry: JsonObject = {
+                "id": flow_id,
+                "seq": self._seq,
+                "method": method,
+                "url": url,
+                "host": host,
+                "status": None,
+                "content_type": "",
+                "started_at": (
+                    float(getattr(req, "timestamp_start", None) or time.time())
+                    if req is not None
+                    else time.time()
+                ),
+                "failed": True,
+                "error_text": error_text or "flow error",
+            }
+            if omitted:
+                entry["body_omitted"] = True
+            if method_truncated or url_truncated or host_truncated or error_truncated:
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
 
@@ -578,7 +640,18 @@ class ProxyBackend:
         # body when there is one, so a plain GET stays method/url/headers.
         self._attach_body(request, req, artifact_dir, name="req", always=False)
         self._attach_body(response, resp, artifact_dir, name="resp", always=True)
-        return {"id": flow_id, "request": request, "response": response}
+        result: JsonObject = {"id": flow_id, "request": request, "response": response}
+        # A failed flow (upstream reset, TLS handshake failure, timeout) has an
+        # empty response by definition; say why rather than let it read as a
+        # successful fetch of a zero-length body.
+        err = getattr(flow, "error", None)
+        if err is not None:
+            error_text, _ = _bounded_metadata(
+                getattr(err, "msg", None) or str(err), _MAX_METADATA_BYTES
+            )
+            result["failed"] = True
+            result["error_text"] = error_text or "flow error"
+        return result
 
     def _attach_body(
         self, part: JsonObject, message: Any, artifact_dir: Path, *, name: str, always: bool

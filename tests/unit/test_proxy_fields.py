@@ -353,6 +353,76 @@ def test_proxy_flow_get_registers_both_spilled_bodies(tmp_path: Path, monkeypatc
         service.close_all()
 
 
+def _make_error_flow(
+    flow_id: str = "e1",
+    *,
+    url: str = "http://x/pinned",
+    msg: str = "Client TLS handshake failed",
+) -> Any:
+    request = SimpleNamespace(
+        method="POST",
+        pretty_url=url,
+        host="x",
+        headers={},
+        raw_content=b"",
+        timestamp_start=1000.0,
+    )
+    return SimpleNamespace(
+        id=flow_id, request=request, response=None, error=SimpleNamespace(msg=msg)
+    )
+
+
+def test_proxy_records_a_failed_flow_marked_with_its_error(monkeypatch: Any) -> None:
+    """error(), not response(), fires when a flow fails before any response.
+
+    Without wiring it, every reset/refused/TLS-handshake-failure connection was
+    dropped from proxy.flows -- exactly the evidence a proxy is set up to catch.
+    Measured: one error flow -> one row, status None, failed True, error_text set,
+    with the attempted method/url still on the summary.
+    """
+    recorder = _FlowRecorder(capacity=50)
+    recorder.error(_make_error_flow())
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder))
+    payload = backend.flows("s", offset=0, limit=10)
+    assert payload["count"] == 1
+    row = payload["flows"][0]
+    assert row["status"] is None
+    assert row["failed"] is True
+    assert row["error_text"] == "Client TLS handshake failed"
+    assert row["method"] == "POST"
+    assert row["url"] == "http://x/pinned"
+    doc = _tool_docstring("proxy.flows")
+    assert "failed" in doc
+    assert "error_text" in doc
+
+
+def test_proxy_flow_get_reports_the_error_on_a_failed_flow(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A failed flow retains the attempted request; flow.get says why the
+    response is empty rather than let it read as a fetch of a zero-length body."""
+    flow = _make_error_flow(url="http://x/login")
+    flow.request.raw_content = b'{"u":"a"}'
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder()))
+    payload = backend.flow_get("s", "e1", tmp_path)
+    assert payload["failed"] is True
+    assert payload["error_text"] == "Client TLS handshake failed"
+    assert payload["request"]["method"] == "POST"
+    assert payload["request"]["body"] == '{"u":"a"}'
+    assert payload["response"]["status"] is None
+    doc = _tool_docstring("proxy.flow.get")
+    assert "failed" in doc
+    assert "error_text" in doc
+
+
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
     """The catalog said how many flows and never named the count field.
 

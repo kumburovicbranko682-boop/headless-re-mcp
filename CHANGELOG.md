@@ -400,6 +400,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   策略拦截再带 `blocked_reason`（如 `csp`）与 `canceled`，字段照 `_MAX_METADATA_BYTES` 有界（超限置
   `metadata_truncated`），与 `on_response` 填 `status` 同一范式。失败事件指向一个已被环形缓冲挤出/从未见过的
   requestId 时直接忽略，不凭空造一条裸 entry。`web.network.list` 原样透出这些字段，成功请求行为不变。
+- **代理侧同一个盲区：连接失败的 flow 根本不进 `proxy.flows`**。`_FlowRecorder` 只实现了 mitmproxy 的
+  `response()` 钩子——可一个在拿到响应前就失败的 flow（上游 refuse/reset、DNS 或 TLS 握手失败——把被 pin 的
+  移动 App 挂到代理后最常见的正是这个、或超时）走的是 `error()` 钩子。没实现它，`proxy.flows` 就悄悄丢掉每一条
+  失败连接，而这恰是架代理最想抓的证据。现在新增 `error()`：把 flow 记成一条 `failed:true` 且带 `error_text`
+  （`flow.error.msg`）、`status:null` 的完结 flow；抓取失败请求体的保留走与 `response()` 完全相同的有界路径（抽出
+  共用的 `_store_raw_locked` 承载 raw 存储/驱逐，`response()` 行为逐字不变），故 `proxy.flow.get` 仍能取回「当时
+  试图发出的请求」（含请求体），其空响应段现在会带上 `failed`/`error_text` 说明缘由，而非被读成一次零长响应的成功
+  抓取。`_flow_stored_bytes` / `_content_len` 本就容忍 `response=None`，字段照 `_MAX_METADATA_BYTES` 有界。
   设备截图/拉取的目录保留由这个只按数量裁剪的 `prune_device_artifacts(keep=_MAX_DEVICE_ARTIFACTS=32)`
   实现——但 `device.screenshot` / `device.pull` 早已改走 `prune_capped_dir`（`UNREGISTERED_CAPTURE_MAX_ENTRIES`
   按数量、`UNREGISTERED_CAPTURE_MAX_BYTES` 按总量，比只裁数量更全），那个函数与常量遂再无调用方，只剩

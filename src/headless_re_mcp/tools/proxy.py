@@ -61,7 +61,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with flows (id, seq, method, url, host, status, content_type,
         started_at as an epoch time), count, total, offset, has_more, and
         dropped. body_omitted is set on a
-        row whose request/response body was over the retain cap. The list
+        row whose request/response body was over the retain cap. A flow that
+        failed before any response (upstream reset, TLS handshake failure,
+        timeout) has status null and carries failed with error_text, so a
+        failed connection is not read as one still in flight. The list
         field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;
         a page that filled the limit is not the whole log. metadata_truncated
@@ -82,7 +85,8 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         body_decoded (false means the bytes are still that encoding, e.g.
         brotli), and encoded_size (the on-wire length) to its own section; size
         is the decoded length. body_truncated marks a decoded body cut at the
-        decode ceiling.
+        decode ceiling. A flow that failed before any response adds top-level
+        failed and error_text, and its response section is empty.
         """
         return _dump(analysis.proxy_flow_get(session_id, flow_id))
 
