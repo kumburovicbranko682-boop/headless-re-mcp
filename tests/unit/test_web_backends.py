@@ -204,22 +204,35 @@ class TestCapturesAreReachableAndReclaimable:
 
 
 class TestJsReDegradation:
-    def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
+    def test_missing_webcrack_degrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # JsClient(None) still auto-discovers webcrack from PATH, so on a host
+        # that has it installed the constructor would not be unavailable. Stub
+        # discovery to reproduce the bare-machine state and exercise the real
+        # degradation path deterministically instead of skipping.
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._discover_webcrack", lambda: None
+        )
         source = tmp_path / "a.js"
         source.write_text("var a=1;", encoding="utf-8")
         client = JsClient(None)
-        if client.available:
-            pytest.skip("webcrack installed — degradation path not exercised (skip != pass)")
+        assert not client.available
         with pytest.raises(JsReError) as info:
             client.deobfuscate(source)
         assert info.value.code == "capability_unavailable"
 
-    def test_missing_wabt_degrades(self, tmp_path: Path) -> None:
+    def test_missing_wabt_degrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client._resolve_wabt_tool",
+            lambda *_args, **_kwargs: None,
+        )
         module = tmp_path / "m.wasm"
         module.write_bytes(b"\x00asm\x01\x00\x00\x00")
         client = WasmClient(None)
-        if client.available:
-            pytest.skip("wabt installed — degradation path not exercised (skip != pass)")
+        assert not client.available
         with pytest.raises(JsReError) as info:
             client.wat(module)
         assert info.value.code == "capability_unavailable"
