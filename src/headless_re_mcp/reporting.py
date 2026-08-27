@@ -23,6 +23,12 @@ JsonObject = dict[str, Any]
 _MAX_CELL = 120
 
 
+# A finding's value is summarised to a handful of fields so the row stays
+# readable; anything past this many is replaced by a running "(+N more)" count
+# so the report never silently drops fields it was told to record.
+_MAX_VALUE_FIELDS = 4
+
+
 def _cell(value: object) -> str:
 
     text = "" if value is None else str(value)
@@ -57,7 +63,20 @@ def _summarize_value(value: object) -> str:
 
             return "—"
 
-        return ", ".join(f"{key}={_cell(item)}" for key, item in list(value.items())[:4])
+        items = list(value.items())
+
+        shown = ", ".join(f"{key}={_cell(item)}" for key, item in items[:_MAX_VALUE_FIELDS])
+
+        hidden = len(items) - _MAX_VALUE_FIELDS
+
+        if hidden > 0:
+
+            # Say a finding carried more fields than the row shows: the report is
+            # the artefact someone keeps, and a value that reads as complete when
+            # it is not is the same silent omission the section notes guard against.
+            return f"{shown}, (+{hidden} more)"
+
+        return shown
 
     return _cell(value)
 
