@@ -127,8 +127,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with strings, count, total, offset, and has_more so a page
         that filled the limit is not read as the whole collected DEX. total
         is the number collected, capped at 5000; scan_capped is true when
-        more unique strings may exist. has_more only means a larger offset
-        still has collected rows. There is no items or constants field.
+        more unique strings may exist. values_truncated is true when a string
+        on this page was cut to 2000 characters, so the value shown is a prefix,
+        not the whole string. has_more only means a larger offset still has
+        collected rows. There is no items or constants field.
         """
         return _dump(analysis.apk_strings(session_id, offset=offset, limit=limit))
 

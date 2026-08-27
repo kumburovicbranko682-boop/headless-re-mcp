@@ -82,6 +82,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
 
+### 修复（apk.strings 不再把被截到长度上限的字符串谎报为完整字符串）
+
+- `apk.strings` 收集时对每条字符串做 `str(item.get_value())[:_MAX_STRING_LEN]`(2000)裁剪后入集合。
+  这一刀是静默的:一条 2000 字符的返回值被读成整条字符串,而两条前 2000 字符相同的不同字符串会
+  折叠成一条、悄悄丢一条。过去返回只有 `strings`/`count`/`total`/`offset`/`has_more`/`scan_capped`,
+  没有任何标志说明「本页某条只是前缀」。现记录哪些入集合的形式来自超长原串,分页后据此回
+  `values_truncated`:本页含被裁字符串时为真并附 `note`,点明展示的是前缀而非整条。`values_truncated`
+  (单条被裁到 2000)与 `scan_capped`(收集在 5000 条封顶)、`has_more`(分页)三者正交。回归测试以打桩的
+   `_parsed`(含一条超长串与全部合规两种情形)覆盖,不依赖真实 APK/androguard。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
