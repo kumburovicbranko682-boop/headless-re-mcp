@@ -128,11 +128,13 @@ class JadxClient:
         """Decompile the whole APK, then return one class's Java source.
 
         A ``class_name`` that does not map to an exact source path falls back to
-        a simple-name match. One match is used; several is reported as
+        a simple-name match. A single match is used. When an *unqualified* name
+        (a bare simple name, no package) matches several files, that is
         ``invalid_params`` (ambiguous) carrying ``candidates`` and
         ``candidate_count`` -- not ``not_found``, which would claim a class that
         was in fact decompiled is absent -- so the caller can re-issue with a
-        package-qualified name.
+        package-qualified name. A name that already carried a package but is
+        missing stays ``not_found``.
         """
         target = class_name.strip()
         if not target:
@@ -163,13 +165,15 @@ class JadxClient:
                 if len(matches) == 1:
                     match = matches[0]
             if match is None:
-                if len(matches) > 1:
-                    # The class *was* decompiled -- several classes share this
-                    # simple name across packages -- so "not found" would tell
-                    # the caller the class is absent when the name is merely
-                    # ambiguous. Surface the candidates (relative to sources,
-                    # sorted, bounded) so the caller can re-issue with a
-                    # package-qualified name instead of concluding it is missing.
+                # Only an *unqualified* name (a bare simple name, no package)
+                # is ambiguous when several files match: the class was
+                # decompiled, just under multiple packages, so "not found"
+                # would claim it is absent. A caller who already gave a
+                # package (com.missing.Main) asked for one specific class;
+                # homonyms in other packages are not it, so that stays
+                # not_found rather than being redirected to a class it did
+                # not name.
+                if len(matches) > 1 and len(rel.parts) == 1:
                     candidates = sorted(str(m.relative_to(sources)) for m in matches)
                     raise JadxError(
                         "invalid_params",
