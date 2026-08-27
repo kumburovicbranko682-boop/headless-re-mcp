@@ -74,12 +74,14 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List captured network requests.
 
-        Answers with requests (url, method, status, resourceType,
-        status_text), count, total, offset, has_more, and dropped so a page
-        that filled the limit is not read as the whole capture, and ring
-        eviction is visible. status_text is the HTTP reason phrase CDP reported
-        (e.g. OK, Not Found; null until the response arrives, or on HTTP/2 which
-        carries none); export_har uses it for the HAR statusText.
+        Answers with requests (url, method, status, resourceType, status_text,
+        server_ip), count, total, offset, has_more, and dropped so a page that
+        filled the limit is not read as the whole capture, and ring eviction is
+        visible. status_text is the HTTP reason phrase CDP reported (e.g. OK, Not
+        Found; null until the response arrives, or on HTTP/2 which carries none);
+        export_har uses it for the HAR statusText. server_ip is the resolved
+        server address CDP reached (null until the response arrives, or when CDP
+        reported none); export_har uses it for the HAR serverIPAddress.
         metadata_truncated marks bounded oversized request fields. There is no
         type field.
         """

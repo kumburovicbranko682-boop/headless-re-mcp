@@ -473,6 +473,7 @@ class WebBackend:
                 "status": None,
                 "mimeType": None,
                 "status_text": None,
+                "server_ip": None,
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
@@ -492,6 +493,11 @@ class WebBackend:
             status_text, status_text_truncated = _bounded_metadata(
                 resp.get("statusText"), _MAX_METADATA_BYTES
             )
+            # CDP resolves the server address it actually reached; keep it so the
+            # request summary and the HAR's serverIPAddress name the host.
+            server_ip, ip_truncated = _bounded_metadata(
+                resp.get("remoteIPAddress"), _MAX_METADATA_BYTES
+            )
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
@@ -499,7 +505,9 @@ class WebBackend:
                     entry["mimeType"] = mime_type
                     if status_text:
                         entry["status_text"] = status_text
-                    if mime_truncated or status_text_truncated:
+                    if server_ip:
+                        entry["server_ip"] = server_ip
+                    if mime_truncated or status_text_truncated or ip_truncated:
                         entry["metadata_truncated"] = True
 
         def on_script(params: JsonObject) -> None:
@@ -822,6 +830,7 @@ class WebBackend:
                     mime_type=e.get("mimeType") or "",
                     resource_type=e.get("resourceType"),
                     status_text=e.get("status_text"),
+                    server_ip_address=e.get("server_ip"),
                 )
                 for e in handle.requests.values()
             ]
