@@ -7,6 +7,56 @@ from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.core import retention as retention_module
+
+
+def test_measure_usage_truncates_at_the_file_limit(tmp_path: Path) -> None:
+    for index in range(3):
+        (tmp_path / f"f{index}.bin").write_bytes(b"x")
+    usage = retention_module.measure_usage(tmp_path, file_limit=1)
+    assert usage.truncated is True
+    assert usage.files == 1
+
+
+def test_measure_usage_gives_up_when_the_walk_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom_rglob(self: Path, pattern: str) -> object:
+        raise OSError("directory iterator failed")
+
+    monkeypatch.setattr(Path, "rglob", boom_rglob)
+    usage = retention_module.measure_usage(tmp_path)
+    assert usage.truncated is True
+    assert usage.files == 0
+
+
+def test_refresh_keeps_the_last_value_and_alerts_only_once_across_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a good measurement, repeated failures keep the last value and the
+    alert fires once, not on every failed pass."""
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        retention_module, "record_alert", lambda kind, **kwargs: alerts.append(kind)
+    )
+
+    def boom(root: Path, *, file_limit: int = 0) -> retention_module.DiskUsage:
+        raise RuntimeError("walk failed")
+
+    monkeypatch.setattr(retention_module, "measure_usage", boom)
+    cache = retention_module.UsageCache(ttl_s=0.05)
+    cache._value = retention_module.DiskUsage(bytes=10, files=1, truncated=False)
+    cache._failing = False
+
+    cache._refresh(tmp_path)
+    cache._refresh(tmp_path)
+
+    # The prior measurement is retained rather than zeroed out.
+    assert cache._value.bytes == 10
+    assert cache._value.files == 1
+    # A run of failures is a single alert, not one per pass.
+    assert alerts == ["artifact_usage_measurement_failing"]
+
 
 def test_a_failed_usage_walk_is_reported_and_throttled(
     tmp_path: Path,
