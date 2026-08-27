@@ -1105,6 +1105,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   计数上限没被字节预算完全取代;`r2.info` 截断测从「`raw` 恰好 1MB」改成「短于 1MB 且编码体不超预算、`returned_bytes` 与之一致、
   `output_bytes` 仍为真实产出」;空 list(`"[]"`)测断言 `raw` 已被丢、`count`=0。地址映射与各 address_fields 测(小列表)不受影响。
 
+- **`apk.classes`/`methods`/`strings`/`xrefs` 与 `proxy.flows` 的分页结果同样会被传输层整条丢弃——每条工具只按行数封顶,没按编码字节裁。**
+  接上一条 r2 的思路推到 Android 与 Web 域:这几条工具都返回一个按 offset/limit 切出的窗口,而**每行的体积是变量**——`apk.strings`
+  每个字符串封到 2000 字符,默认 `limit`=200 时一页就 ~400KB;`proxy.flows` 每行的 `url` 封到 16KiB,`limit`=1000 时一个窗口能到几 MB。
+  行数上限(`limit` / `_MAX_*`)拦不住这种溢出,溢出来自长度:一旦编码体超过 262144 传输预算,`bounded_tool_result` 照旧把**整条**回复
+  ——行、`count`/`total`/`offset`、`has_more` 分页游标全都——换成约 16KiB 摘要,agent 拿到的不是「前若干行」而是一段摘要。现在每条在算
+  `has_more` **之前**用 `fit_json_list` 把窗口按编码体积裁进「预算−16KiB 余量」:裁过的一页 `count` 会低于请求的 `limit`,但 `has_more`
+  仍为真(`offset+len(window)<total`),调用方据此翻页即可越过被裁的部分,不会把半页读成全集。`apk.xrefs` 没有 offset 可翻页,故其字节裁剪
+  直接并入 `has_more`(被裁只意味着省略了其余 caller)。五条工具的 catalog 描述同步更新:读 `count`、别读 `limit`,凭 `has_more` 翻页。
+  裁剪余量取 16KiB(窗口之外的 `count`/`total`/`offset`/`has_more`/`scan_capped`/`dropped` 等标量都很小)。单测(`test_list_budget.py`)
+  用真实的超量数据跑真实预算:1500 个 ~300 字符类名的 `classes`、1200 个长签名方法的 `methods`、默认 200 行即溢出的 `strings`、800 个长
+  类名 caller 且**未触行数上限**故 `has_more` 只能来自字节裁剪的 `xrefs`、300 行长 url 的 `flows`——各断言 `0<count<limit`、`has_more` 为真、
+  且整条 JSON 编码体不超 `RESULT_BUDGET_BYTES`;另有一条小页面用例断言合身时不裁、`has_more` 不误报。
+
 - 移除 apktool 客户端 `_run` 里从未被任何调用方传入、且函数体立即丢弃的 `redact_from`
   死参数(口令抹除实际由调用处的 `stderr.replace` 完成,行为不变)。
 - 移除 adb 客户端里编译后从未被引用的 `_COMPONENT_RE` 死常量(组件名从未成为任何工具的
