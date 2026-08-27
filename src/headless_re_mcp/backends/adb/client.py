@@ -616,10 +616,19 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
-        return {
-            "package": getattr(current, "package", None),
-            "activity": getattr(current, "activity", None),
-        }
+        package = getattr(current, "package", None) if current is not None else None
+        activity = getattr(current, "activity", None) if current is not None else None
+        # Measured: app_current() returning None still answered
+        # {package: None, activity: None} as success, so an agent treated a
+        # failed dumpsys as an empty foreground rather than a read that failed.
+        if not package:
+            raise AdbError(
+                "backend_error",
+                "failed to read current activity",
+                package=package or None,
+                activity=activity or None,
+            )
+        return {"package": package, "activity": activity}
 
     def logcat(self, serial: str, *, lines: int = 200) -> JsonObject:
         dev = self._device(serial)
@@ -630,9 +639,17 @@ class AdbBackend:
             raise AdbError("backend_error", "logcat failed", output=text[:800])
         truncated = len(text) > _MAX_LOGCAT_CHARS
         if truncated:
+            # Keep the newest bytes, but that slice starts mid-line, so drop
+            # the leading partial fragment. Returned as lines[0] it reads as a
+            # complete log entry and mis-parses -- the truncated flag says
+            # bytes were cut, not that the first line is half a line.
             text = text[-_MAX_LOGCAT_CHARS:]
+            newline = text.find("\n")
+            text = text[newline + 1 :] if newline != -1 else ""
+        out_lines = text.splitlines()[-capped:]
         return {
-            "lines": text.splitlines()[-capped:],
+            "lines": out_lines,
+            "count": len(out_lines),
             "requested": capped,
             "truncated": truncated,
         }
