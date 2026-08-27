@@ -751,6 +751,110 @@ def test_a_live_thread_does_not_keep_every_mission_it_ever_finished(tmp_path: Pa
     assert store.get_mission(pending.id) is not None
 
 
+def test_completing_an_older_mission_after_newer_ones_returns_it_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Terminal-mission trim must never delete the mission being completed.
+
+    The trim keeps the newest N terminal missions by created_at. Completing an
+    *older* mission after newer ones have already finished makes that older row
+    the oldest terminal one -- the row the trim drops. set_mission_status then
+    read it back and asserted it was still there, so the completion the caller
+    just performed crashed with AssertionError instead of returning. A strictly
+    increasing clock pins the ordering so the older mission is unambiguously
+    the trim's target.
+    """
+    from headless_re_mcp.agent import store as store_module
+
+    clock = {"n": 0}
+
+    def increasing_now() -> str:
+        clock["n"] += 1
+        return f"2026-01-01T00:00:{clock['n']:02d}+00:00"
+
+    monkeypatch.setattr(store_module, "utc_now", increasing_now)
+    store = AgentStore(tmp_path / "trim-subject.db")
+    store.retained_terminal_missions_per_thread = 1
+    thread = store.create_thread(title="live")
+    older = store.create_mission(thread.id, "older")
+    newer = store.create_mission(thread.id, "newer")
+
+    store.set_mission_status(newer.id, MissionStatus.COMPLETED)
+    completed = store.set_mission_status(older.id, MissionStatus.COMPLETED)
+
+    assert completed.id == older.id
+    assert completed.status is MissionStatus.COMPLETED
+    # The just-completed older mission is the most-recently-finished, so with a
+    # retention of one it is the one kept -- and the earlier-finished newer one
+    # is trimmed. The count bound stays exactly one; the subject is never the
+    # row deleted out from under its own read-back.
+    assert store.get_mission(older.id) is not None
+    assert store.get_mission(newer.id) is None
+
+
+def test_cancelling_an_older_mission_after_newer_ones_returns_it_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cancel_mission trims terminal missions too, with the same hazard."""
+    from headless_re_mcp.agent import store as store_module
+
+    clock = {"n": 0}
+
+    def increasing_now() -> str:
+        clock["n"] += 1
+        return f"2026-01-01T00:00:{clock['n']:02d}+00:00"
+
+    monkeypatch.setattr(store_module, "utc_now", increasing_now)
+    store = AgentStore(tmp_path / "trim-cancel.db")
+    store.retained_terminal_missions_per_thread = 1
+    thread = store.create_thread(title="live")
+    older = store.create_mission(thread.id, "older")
+    newer = store.create_mission(thread.id, "newer")
+
+    store.set_mission_status(newer.id, MissionStatus.COMPLETED)
+    cancelled = store.cancel_mission(older.id)
+
+    assert cancelled.id == older.id
+    assert cancelled.status is MissionStatus.CANCELLED
+    assert store.get_mission(older.id) is not None
+    assert store.get_mission(newer.id) is None
+
+
+def test_completing_an_older_run_after_newer_ones_returns_it_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Terminal-run trim must never delete the run being transitioned.
+
+    Same shape as the mission trim: an older run reaching a terminal state
+    after newer runs already finished is the oldest terminal row, which the
+    trim would delete before transition() read it back and asserted on it.
+    """
+    from headless_re_mcp.agent import store as store_module
+
+    clock = {"n": 0}
+
+    def increasing_now() -> str:
+        clock["n"] += 1
+        return f"2026-01-01T00:00:{clock['n']:02d}+00:00"
+
+    monkeypatch.setattr(store_module, "utc_now", increasing_now)
+    store = AgentStore(tmp_path / "trim-run.db")
+    store.retained_terminal_runs_per_thread = 1
+    thread = store.create_thread(title="live")
+    older = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+    newer = store.create_run(thread.id, provider_profile="p", model=None, deadline_seconds=60)
+
+    store.transition(newer.id, RunStatus.STREAMING)
+    store.transition(newer.id, RunStatus.COMPLETED)
+    store.transition(older.id, RunStatus.STREAMING)
+    completed = store.transition(older.id, RunStatus.COMPLETED)
+
+    assert completed.id == older.id
+    assert completed.status is RunStatus.COMPLETED
+    assert store.get_run(older.id) is not None
+    assert store.get_run(newer.id) is None
+
+
 def test_oversized_run_profile_and_model_are_refused_not_stored(tmp_path: Path) -> None:
     """Tool names already refuse 128 characters; run identity strings did not.
 

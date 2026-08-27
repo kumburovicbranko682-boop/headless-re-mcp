@@ -27,7 +27,8 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with package, version_name, version_code, min_sdk, target_sdk,
         native_abis, main_activity, permission_count and opened. There is no
-        version, sdk or abis field.
+        version, sdk or abis field. A zip with no readable package name is a
+        backend error, not an opened package.
         """
         return _dump(analysis.apk_open(session_id))
 
@@ -183,7 +184,9 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with apk, size, signed (false until apk.sign), and note.
         There is no output, path or repacked field. A successful rebuild is
-        still unsigned.
+        still unsigned. An empty or non-zip output (apktool can exit 0 yet
+        leave a truncated file) is reported as backend_error, not as a rebuilt
+        apk, so an unusable file never reaches apk.sign.
         """
         return _dump(analysis.apk_repack(session_id, decoded_dir=decoded_dir, timeout=timeout))
 
