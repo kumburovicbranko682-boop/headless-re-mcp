@@ -428,6 +428,17 @@ class _FlowRecorder:
         with self._lock:
             return len(self.flows)
 
+    def dropped(self) -> int:
+        """How many summaries the ring has evicted since capture began.
+
+        _seq counts every flow ever recorded; the ring holds at most _capacity of
+        them, so the difference is what fell off the front. flows() reports the
+        same figure from its page snapshot; exposing it here lets status() answer
+        "is the ring already shedding history" without paging the flows.
+        """
+        with self._lock:
+            return max(0, self._seq - len(self.flows))
+
     def retained_bytes(self) -> int:
         with self._lock:
             return self._retained_bytes
@@ -635,6 +646,7 @@ class ProxyBackend:
             "host": inst.host,
             "port": inst.port,
             "flow_count": inst.recorder.count(),
+            "dropped": inst.recorder.dropped(),
             "retained_max": _MAX_FLOWS,
             "retained_bytes": inst.recorder.retained_bytes(),
             "retained_bytes_max": _MAX_RETAINED_BYTES,

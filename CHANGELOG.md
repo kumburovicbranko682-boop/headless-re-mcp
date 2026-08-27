@@ -24,6 +24,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 可观测性（proxy.status 增加 dropped 字段，抓包环开始丢弃时可提前预警）
+
+- `proxy.status` 本就是抓包健康快照(报 `flow_count` / `retained_bytes` 及各上限),却唯独不报已被环形缓冲淘汰的
+  条数。抓包一旦超过 `_MAX_FLOWS`(2000),最旧的 flow 摘要被静默丢弃,`flow_count` 饱和在 2000,轮询 status 的调用方
+  无法在不翻 `proxy.flows` 的情况下看出“环已经在丢历史”。`proxy.flows` 早已用序号算术报 `dropped`;现给 `_FlowRecorder`
+  加 `dropped()`(= `_seq - len(flows)`),`proxy.status` 一并返回 `dropped`,补齐健康快照,便于及时 export/fetch。
+  (新增字段,向后兼容;docstring 同步说明。)
+
 ### 测试（新增 drift guard：非 PE 工具的 port 参数一律在 schema 层收敛为 1..65535）
 
 - `proxy.start` / `frida.server.ensure` / `device.connect` 三个非 PE 操作都接受调用方传入的 TCP 端口,各自在 schema

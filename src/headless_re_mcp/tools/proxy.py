@@ -47,10 +47,13 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def proxy_status(session_id: str) -> dict[str, Any]:
         """Report whether the proxy is running and how many flows it captured.
 
-        Answers with running, and when running also host, port, flow_count
-        retained_max, retained_bytes and retained_bytes_max. There is no
-        count or flows field. A session with no proxy answers running false
-        and nothing else, which is not an empty capture.
+        Answers with running, and when running also host, port, flow_count,
+        dropped, retained_max, retained_bytes and retained_bytes_max. dropped is
+        how many summaries the capture ring already evicted -- nonzero means the
+        ring is shedding the oldest flows, so export or fetch before more is
+        lost, and flow_count alone undercounts what the session saw. There is no
+        count or flows field. A session with no proxy answers running false and
+        nothing else, which is not an empty capture.
         """
         return _dump(analysis.proxy_status(session_id))
 

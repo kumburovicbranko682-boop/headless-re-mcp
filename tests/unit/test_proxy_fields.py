@@ -192,6 +192,9 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
     assert "flows" not in payload
     assert payload["running"] is True
     assert payload["flow_count"] == 3
+    # 3 flows into a ring of 8: nothing was evicted, so the health snapshot
+    # reports zero drops right beside the count.
+    assert payload["dropped"] == 0
     assert payload["retained_max"] == _MAX_FLOWS
     assert payload["retained_bytes"] >= 0
     assert payload["retained_bytes_max"] > payload["retained_bytes"]
@@ -199,9 +202,35 @@ def test_proxy_status_names_flow_count_and_retained_max() -> None:
     assert idle == {"running": False}
     doc = _tool_docstring("proxy.status")
     assert "flow_count" in doc
+    assert "dropped" in doc
     assert "retained_max" in doc
     assert "retained_bytes" in doc
     assert "retained_bytes_max" in doc
+
+
+def test_proxy_status_reports_dropped_once_the_ring_overflows() -> None:
+    """flow_count saturates at the ring size; dropped is what it no longer shows.
+
+    A capture that outruns the ring keeps only the newest _capacity summaries, so
+    flow_count alone stops telling an operator how much the session actually saw.
+    status must expose the evicted count so "the ring is shedding history" is
+    visible without paging the flows -- the same honesty proxy.flows carries.
+    """
+    recorder = _FlowRecorder(capacity=4)
+    for index in range(10):
+        request = SimpleNamespace(method="GET", pretty_url=f"http://x/{index}", host="x")
+        response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(
+        host="127.0.0.1", port=8080, recorder=recorder
+    )
+    payload = backend.status("s")
+    # Ten recorded, four retained -> six fell off the front.
+    assert payload["flow_count"] == 4
+    assert payload["dropped"] == 6
 
 
 def test_proxy_export_har_names_path_and_entry_count(
