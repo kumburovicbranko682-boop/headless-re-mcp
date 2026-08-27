@@ -419,7 +419,11 @@ class FridaClient:
 
     def hook_template(self, pid: int, template: str, *, allowed_pid: int,
                       timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
-        self._require(pid, allowed_pid)
+        # Validate the template name (a fixed, public allow-set; no side effects
+        # and no process touched) before the authorization/capability guard: an
+        # unknown template is the caller's mistake regardless of environment, so
+        # it earns a deterministic invalid_params rather than capability_unavailable
+        # where frida is absent.
         source = _HOOK_TEMPLATES.get(template)
         if source is None:
             raise FridaError(
@@ -428,6 +432,7 @@ class FridaClient:
                 template=template,
                 allowed=sorted(_HOOK_TEMPLATES),
             )
+        self._require(pid, allowed_pid)
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []
 
@@ -704,7 +709,9 @@ class FridaClient:
         allowed_pids: Iterable[int],
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
-        self._authorize(pid, allowed_pids)
+        # Template name first, matching hook_template(): a fixed, public allow-set
+        # with no side effects, so an unknown template is invalid_params on every
+        # host rather than capability_unavailable where frida is absent.
         source = _HOOK_TEMPLATES.get(template)
         if source is None:
             raise FridaError(
@@ -713,6 +720,7 @@ class FridaClient:
                 template=template,
                 allowed=sorted(_HOOK_TEMPLATES),
             )
+        self._authorize(pid, allowed_pids)
         device = self._resolve_device(device_id)
         deadline = _bound_timeout(timeout)
         sessions: list[Any] = []

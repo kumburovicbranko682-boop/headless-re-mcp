@@ -49,6 +49,24 @@ def test_device_path_reports_invalid_params_before_capability(bad_pid: object) -
     assert caught.value.code == "invalid_params"
 
 
+@pytest.mark.parametrize("bad_template", ["arbitrary-script", "definitely-not-a-template", ""])
+def test_hook_template_unknown_name_is_invalid_params_without_frida(bad_template: str) -> None:
+    # The template name is a fixed, public allow-set checked before the guard, so
+    # an unknown template is invalid_params even where frida is not installed.
+    with pytest.raises(FridaError) as caught:
+        _unavailable_client().hook_template(5, bad_template, allowed_pid=5)
+    assert caught.value.code == "invalid_params"
+
+
+@pytest.mark.parametrize("bad_template", ["arbitrary-script", "definitely-not-a-template", ""])
+def test_hook_template_device_unknown_name_is_invalid_params_without_frida(
+    bad_template: str,
+) -> None:
+    with pytest.raises(FridaError) as caught:
+        _unavailable_client().hook_template_device("usb", 5, bad_template, allowed_pids={5})
+    assert caught.value.code == "invalid_params"
+
+
 def test_malformed_pid_beats_permission_denied_in_require() -> None:
     # Even with frida "available" and the pid outside the allow-set, a malformed
     # pid is the caller's shape error, not a permission decision, so _require must

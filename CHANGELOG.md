@@ -135,6 +135,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   都确定地报 `invalid_params`;各自的能力探测与授权判定保持原有相对顺序不变。新增回归覆盖
   `attach` / `modules`(`_require`)/ `java_enumerate`(`_authorize`)三条入口,并钉死形状校验先于
   授权判定。
+- Frida hook 模板名校验提到守卫之前:`hook_template` 与 `hook_template_device` 以前先过
+  `_require` / `_authorize` 再查模板名,导致未知模板在没装 frida 的机器上被抢先报成
+  `capability_unavailable`。模板名是一份固定且公开的白名单(校验无副作用、不触碰任何进程,出错时本就
+  把整份白名单回给调用方),现挪到授权/能力探测之前,未知模板在任何机器上都确定地报 `invalid_params`。
+  `test_unknown_hook_template_is_rejected_with_allowed_list` 因此不再需要装 frida 才能跑;
+  `test_local_single_pid_rule_is_unchanged`(`modules` 走 `_require`,授权先于能力探测)本就不依赖
+  frida,一并去掉多余的 skip 守卫——两条契约现在都能在 CI(不含 frida)上真正验证。
 
 ### 新增（会话目标类型）
 

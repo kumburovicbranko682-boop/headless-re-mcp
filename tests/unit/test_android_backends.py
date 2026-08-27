@@ -100,18 +100,22 @@ class TestFridaTargetAuthorization:
         assert info.value.code == "permission_denied"
 
     def test_local_single_pid_rule_is_unchanged(self) -> None:
-        """The pre-existing PE contract must survive the device generalisation."""
+        """The pre-existing PE contract must survive the device generalisation.
+
+        ``_require`` rejects a pid outside the single allowed pid before it probes
+        for frida, so this ``permission_denied`` is deterministic on every host --
+        including where frida is not installed -- and needs no skip guard.
+        """
         client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — authorization path not exercised (skip != pass)")
         with pytest.raises(FridaError) as info:
             client.modules(4242, allowed_pid=4243, limit=1)
         assert info.value.code == "permission_denied"
 
     def test_unknown_hook_template_is_rejected_with_allowed_list(self) -> None:
+        # The template name is validated against a fixed, public allow-set before
+        # the authorization/capability guard, so an unknown template reads as
+        # invalid_params on every host -- including where frida is not installed.
         client = FridaClient()
-        if not client.available:
-            pytest.skip("frida not installed — template path not exercised (skip != pass)")
         with pytest.raises(FridaError) as info:
             client.hook_template_device("usb", 5, "arbitrary-script", allowed_pids=[5])
         assert info.value.code == "invalid_params"
