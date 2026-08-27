@@ -389,6 +389,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   拉起来,再以晦涩的工具报错收场——白跑一趟。现直接返回 `invalid_params`,与既有
   `too_large` 守卫同一思路:超限先拦（顺序上魔数检查在体积检查之后,超大的非模块仍报
   `too_large` 而非误判为坏魔数），不合规的输入根本不交给子进程。
+
+### 修复（js.unpack_bundle 因 webcrack 2.x 拒绝已存在输出目录而全线失效）
+
+- **`js.unpack_bundle` 先 `mkdir` 出输出目录，再让 webcrack 往这个已存在的目录里解包。**
+  webcrack 2.x 遇到已存在的输出目录会直接报错退出（`output directory already exists`，exit 1），
+  而后端每次都先建目录（artifact 层也可能建过），于是这条工具对现代 webcrack **每次必失败**——
+  真机复现：webcrack 2.16.0，`deobfuscate` / `wat` 正常，唯独 `unpack_bundle` 报「目录已存在」。
+  现给 webcrack 传 `-f`（覆盖）：对新建或已存在目录都能解包，且重试保持幂等。真机验证：修复后
+  一个 webpack bundle 正常拆出 `a.js` / `b.js` / `bundle.json` / `deobfuscated.js`，二次解包同目录
+  仍成功。补单测钉住 `-f` 进到 argv（CI 无 webcrack 也能守），并给 web RE gate 加一条真机解包用例
+  （装了 webcrack 才跑）——正是原先只测 deobfuscate 的冒烟没能覆盖到的路径。
+
 ### 修复（监控台回环护栏）
 
 - 非回环连接现在真的收到承诺的 `403 loopback_only`。此前回环守卫在中间件里抛
