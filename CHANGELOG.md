@@ -83,6 +83,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
+### 修复（apk.manifest 被截断时不说被截了多少，只给一个布尔）
+
+- `apk.manifest` 把解码后的 AndroidManifest.xml 截到 20 万字符并置 `truncated=true`,但**从不说
+  完整长度**。调用方只拿到一个布尔:不知道被砍掉的是 5 个字符还是 5 兆字节,无从判断是否值得改走
+  重量级的 `apk.decode`(起 JVM、apktool 全量解包)去取完整清单;更要命的是,按字符上限硬切出来的
+  前缀**不是合法可解析的 XML**——把它喂给 XML 解析器必然在半个标签处炸掉,而布尔完全不提示这点。
+  大型或被恶意膨胀的清单(数百组件、成串深链 intent-filter、FileProvider 路径表)确会越过 20 万上限。
+- 现返回新增 `total_chars`(完整清单的字符数),与 `apk.strings` / `apk.classes` 等同族工具用 `total`
+  如实交代完整规模同一范式:`truncated=true` 时据 `total_chars` 即知砍了多少、够不够、要不要回退;
+  未截断时 `total_chars == len(manifest_xml)`,于是"`truncated` 为假且 `total_chars` 等于长度"可被
+  当作"拿到的是整份清单"的凭据。不新增工具、不改工具计数;工具描述点明截断的 `manifest_xml` 只是
+  前缀、非合法 XML,需完整清单时改用 `apk.decode`。新增/扩充回归:截断时 `total_chars` 为真实全长且
+  大于上限、描述串提及 `total_chars`;清单能装下时 `truncated` 为假且 `total_chars` 等于返回长度。
+
 ### 修复（apk.sign / apk.decode 先验证输入是有效 zip，再启 JVM）
 
 - `apk.sign`（apksigner）与 `apk.decode`（apktool `d`）此前只检查输入路径存在（`is_file`）就把它

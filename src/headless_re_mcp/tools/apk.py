@@ -36,8 +36,11 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def apk_manifest(session_id: str) -> dict[str, Any]:
         """Return the decoded AndroidManifest.xml for the APK session.
 
-        Answers with package and manifest_xml, plus truncated when the XML
-        was cut at the buffer.
+        Answers with package, manifest_xml, truncated, and total_chars (the
+        full character length). When truncated is true, manifest_xml is only
+        the leading total_chars-capped prefix -- cut at the character cap, so
+        it is not valid, parseable XML; total_chars says how much was dropped.
+        Run apk.decode for the complete manifest when the tail is needed.
         """
         return _dump(analysis.apk_manifest(session_id))
 

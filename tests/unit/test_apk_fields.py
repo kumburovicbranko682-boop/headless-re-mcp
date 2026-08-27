@@ -136,9 +136,45 @@ def test_apk_manifest_names_manifest_xml_and_says_when_it_was_cut(
     assert payload["truncated"] is True
     assert payload["package"] == "com.example.app"
     assert len(payload["manifest_xml"]) == _MAX_MANIFEST_CHARS
+    # truncated alone cannot say how much was cut; total_chars is the full
+    # length, so a cut manifest is not mistaken for a 200000-char whole file.
+    assert payload["total_chars"] == len(b"<manifest/>") * ((_MAX_MANIFEST_CHARS // 10) + 20)
+    assert payload["total_chars"] > _MAX_MANIFEST_CHARS
     doc = _tool_docstring("apk.manifest")
     assert "manifest_xml" in doc
     assert "truncated" in doc
+    assert "total_chars" in doc
+
+
+class _SmallManifestBody:
+    def get_xml(self) -> bytes:
+        return b"<manifest package='com.example.app'/>"
+
+
+class _SmallManifestApk:
+    def get_android_manifest_axml(self) -> _SmallManifestBody:
+        return _SmallManifestBody()
+
+    def get_package(self) -> str:
+        return "com.example.app"
+
+
+def test_apk_manifest_total_chars_matches_full_length_when_whole(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A manifest that fits must report truncated False and the true length.
+
+    total_chars has to equal the returned manifest_xml length here, so a caller
+    can trust "truncated is False and total_chars == len(manifest_xml)" as
+    proof it holds the whole file.
+    """
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _SmallManifestApk())
+    payload = client.manifest(tmp_path / "app.apk")
+    assert payload["truncated"] is False
+    assert payload["total_chars"] == len(payload["manifest_xml"])
+    assert payload["total_chars"] == len("<manifest package='com.example.app'/>")
+
 
 class _FakeClass:
     def __init__(self, name: str, *, external: bool = False) -> None:

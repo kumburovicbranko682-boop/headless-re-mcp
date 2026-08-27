@@ -230,6 +230,11 @@ class ApkClient:
             "package": apk.get_package(),
             "manifest_xml": xml[:_MAX_MANIFEST_CHARS],
             "truncated": len(xml) > _MAX_MANIFEST_CHARS,
+            # The full character length, so a caller reading truncated=True knows
+            # how much was cut and whether the fallback (apk.decode) is worth it.
+            # A prefix cut at the char cap is not valid XML; the boolean alone
+            # cannot say whether the missing tail is 5 chars or 5 megabytes.
+            "total_chars": len(xml),
         }
 
     def permissions(self, path: Path) -> JsonObject:
