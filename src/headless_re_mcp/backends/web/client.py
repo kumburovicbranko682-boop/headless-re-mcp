@@ -804,6 +804,7 @@ class WebBackend:
                 )
                 for e in handle.requests.values()
             ]
+            dropped = handle.requests_dropped
         serialized = serialize_har(entries, max_bytes=UNREGISTERED_CAPTURE_MAX_BYTES)
         if serialized.size > UNREGISTERED_CAPTURE_MAX_BYTES:
             raise WebError(
@@ -814,12 +815,24 @@ class WebBackend:
             )
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(serialized.text, encoding="utf-8")
-        return {
+        # web.network.list already discloses dropped (the count-capped request
+        # ring evicted the oldest entries as the page ran); the HAR export left
+        # it out, so a file of entry_count entries read as the whole capture.
+        # dropped (evicted during capture) and truncated (entries shed here to
+        # fit the capture cap) are independent losses and can both be set.
+        result: JsonObject = {
             "path": str(out_path),
             "entry_count": serialized.entry_count,
             "truncated": serialized.truncated,
             "size": serialized.size,
+            "dropped": dropped,
         }
+        if dropped:
+            result["note"] = (
+                "the capture ring evicted older requests before export; the HAR "
+                "is missing the earliest requests of the session"
+            )
+        return result
 
     def close_all(self) -> None:
         with self._lock:

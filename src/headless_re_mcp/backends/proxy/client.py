@@ -723,6 +723,7 @@ class ProxyBackend:
 
     def export_har(self, session_id: str, out_path: Path) -> JsonObject:
         inst = self._get(session_id)
+        flows = inst.recorder.snapshot()
         entries = [
             har_entry(
                 method=f.get("method"),
@@ -731,7 +732,7 @@ class ProxyBackend:
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
             )
-            for f in inst.recorder.snapshot()
+            for f in flows
         ]
         # Bounded like web.har.export: the flow ring holds up to 2000 rows whose
         # URLs alone can be 16 KiB each, so an unbounded write would drop a
@@ -746,12 +747,29 @@ class ProxyBackend:
             )
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(serialized.text, encoding="utf-8")
-        return {
+        # proxy.flows already discloses dropped (the count-capped ring evicted
+        # the oldest flows before the caller ever read them); the HAR export
+        # left it out, so a file of entry_count entries read as the whole
+        # session. seq is a monotonic per-response counter, so the newest slot's
+        # seq minus what the ring still holds is how many earlier flows are gone.
+        # dropped (evicted during capture) and truncated (entries shed here to
+        # fit the capture cap) are independent losses and can both be set.
+        dropped = 0
+        if flows:
+            dropped = max(0, int(flows[-1].get("seq") or 0) - len(flows))
+        result: JsonObject = {
             "path": str(out_path),
             "entry_count": serialized.entry_count,
             "truncated": serialized.truncated,
             "size": serialized.size,
+            "dropped": dropped,
         }
+        if dropped:
+            result["note"] = (
+                "the capture ring evicted older flows before export; the HAR is "
+                "missing the earliest flows of the session"
+            )
+        return result
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):

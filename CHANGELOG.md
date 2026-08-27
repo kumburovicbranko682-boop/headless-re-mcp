@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（HAR 导出补齐 dropped，与列表读取器对齐）
+
+- `proxy.export_har` 与 `web.har.export` 都从有界的抓包环形缓冲(proxy 最多 `_MAX_FLOWS` 条流、
+  web 最多 `_MAX_REQUESTS` 条请求)构建 HAR。会话流量超过容量时,最早的行在导出前就已被淘汰,
+  文件里只剩最新的尾段。过去两者只回 `path`/`entry_count`/`truncated`/`size`:`entry_count` 讲写进
+  文件的条数,`truncated` 讲为压到导出大小上限而在导出时丢掉的条目——两条都不披露「环形缓冲更早
+  就丢了前面的行」。于是一份 `entry_count` 条的 HAR 被读成整场会话,调用方据此回放、断定之前什么
+  都没发生。`proxy.flows` 早已按 `seq` 披露 `dropped`、`web.network.list` 早已按计数器披露 `dropped`,
+  唯独两个 HAR 导出漏了。现两者都返回 `dropped`(抓包环形缓冲在导出前淘汰的行数);`dropped>0` 时附
+  `note`,明说最早的流/请求已完全缺失。`dropped`(抓包期淘汰)与 `truncated`(导出期为压到上限而截断)
+  是两条独立的轴,可同时置位。回归测试覆盖两个导出的零淘汰(不加 note)、非零淘汰(带 note)与空抓包三种情形。
+
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 
 - `android` 工作方向此前把整个 `proxy.*` 面一起藏掉：`excluded_prefixes` 把 `proxy.` 归在
