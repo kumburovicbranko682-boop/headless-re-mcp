@@ -116,6 +116,42 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="apk.smali")
+    def apk_smali(
+        session_id: str,
+        class_name: str,
+        method_name: str,
+        descriptor: str | None = None,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Disassemble one method to Dalvik instructions.
+
+        The fast per-method bytecode view: apk.methods lists a class's method
+        names and apk.decompile hands a whole class to jadx (slow, Java), but
+        neither shows the actual instructions of one method. Resolves the class
+        by dotted or Lsmali/ name, then the method by simple name; when the name
+        is overloaded the first overload is used and every matching signature is
+        listed in overloads, so a specific one is chosen with descriptor.
+        External/abstract/native methods carry no code and yield an empty
+        instruction list (total 0), not an error. Each row is addr (its 16-bit
+        code-unit offset, the unit branch targets reference), mnemonic (e.g.
+        invoke-virtual) and operands ('' for operand-less ops like return-void).
+        Answers with class_name, method_name, descriptor, overloads,
+        instructions, count, total, offset, and has_more so a filled page is not
+        read as the whole method; scan_capped guards a malformed oversized body.
+        """
+        return _dump(
+            analysis.apk_smali(
+                session_id,
+                class_name,
+                method_name,
+                descriptor=descriptor,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="apk.strings")
     def apk_strings(
         session_id: str,

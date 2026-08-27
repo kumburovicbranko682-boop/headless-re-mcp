@@ -20,12 +20,80 @@ from typing import Any
 from headless_re_mcp.backends.apk.client import (
     _MAX_CLASSES_PAGE,
     _MAX_METHODS_PAGE,
+    _MAX_SMALI_PAGE,
     _MAX_STRINGS_PAGE,
     _MAX_XREFS_PAGE,
     ApkClient,
 )
 from headless_re_mcp.tools.apk import build_apk_tools
 from headless_re_mcp.tools.binding import input_schema_for
+
+
+class _FakeInsn:
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def get_name(self) -> str:
+        return self._name
+
+    def get_output(self) -> str:
+        return "v0"
+
+    def get_length(self) -> int:
+        return 2
+
+
+class _FakeEncoded:
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def get_instructions(self) -> list[_FakeInsn]:
+        return [_FakeInsn("nop") for _ in range(self._count)]
+
+
+class _FakeSmaliMethod:
+    def __init__(self, name: str, count: int) -> None:
+        self.name = name
+        self.descriptor = "()V"
+        self._encoded = _FakeEncoded(count)
+
+    def is_external(self) -> bool:
+        return False
+
+    def get_method(self) -> _FakeEncoded:
+        return self._encoded
+
+
+class _FakeSmaliClass:
+    def __init__(self, name: str, method: _FakeSmaliMethod) -> None:
+        self.name = name
+        self._method = method
+
+    def get_methods(self) -> list[_FakeSmaliMethod]:
+        return [self._method]
+
+
+class _FakeSmaliParsed:
+    def __init__(self, classes: list[_FakeSmaliClass]) -> None:
+        self.analysis = self
+        self._classes = classes
+
+    def get_classes(self) -> list[_FakeSmaliClass]:
+        return self._classes
+
+
+def test_smali_clamp_oversized_limit(tmp_path: Path, monkeypatch: Any) -> None:
+    method = _FakeSmaliMethod("run", _MAX_SMALI_PAGE + 17)
+    klass = _FakeSmaliClass("Lcom/example/Target;", method)
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _FakeSmaliParsed([klass])
+    )
+    client = ApkClient()
+    payload = client.disassemble(
+        tmp_path / "app.apk", "Lcom/example/Target;", "run", limit=10**9
+    )
+    assert payload["count"] == _MAX_SMALI_PAGE
+    assert payload["has_more"] is True
 
 
 class _FakeClass:
@@ -231,3 +299,4 @@ def test_client_page_caps_match_the_tool_schema_maxima() -> None:
     assert _limit_schema("apk.methods")["maximum"] == _MAX_METHODS_PAGE
     assert _limit_schema("apk.strings")["maximum"] == _MAX_STRINGS_PAGE
     assert _limit_schema("apk.xrefs")["maximum"] == _MAX_XREFS_PAGE
+    assert _limit_schema("apk.smali")["maximum"] == _MAX_SMALI_PAGE

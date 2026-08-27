@@ -22,6 +22,10 @@ _MAX_STRING_LEN = 2000
 _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
+# A single Dalvik method's code is at most 65535 16-bit units, so an
+# instruction (>= 1 unit) count cannot exceed this; the cap is a hard ceiling
+# that also guards a malformed code_item claiming an implausible length.
+_MAX_SMALI_COLLECT = 65_536
 _MAX_NATIVE_LIBS = 256
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
@@ -34,6 +38,7 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+_MAX_SMALI_PAGE = 2000
 
 
 class ApkError(RuntimeError):
@@ -393,6 +398,115 @@ class ApkClient:
             "total": len(methods),
             "offset": start,
             "has_more": start + len(window) < len(methods),
+            "scan_capped": scan_more,
+        }
+
+    def disassemble(
+        self,
+        path: Path,
+        class_name: str,
+        method_name: str,
+        *,
+        descriptor: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> JsonObject:
+        """Disassemble one method to Dalvik instructions.
+
+        The fast per-method bytecode view: apk.methods lists a class's method
+        names/descriptors and apk.decompile hands a whole class to jadx (slow,
+        Java), but neither shows the actual instructions of one method. Resolves
+        the class by dotted or Lsmali/ name, then the method by simple name;
+        when a name is overloaded the first overload is used and every matching
+        signature is returned in overloads, so a specific one can be picked with
+        descriptor. External/abstract/native methods carry no code and yield an
+        empty instruction list (total 0), not an error. Each instruction row is
+        addr (its 16-bit code-unit offset, the unit branch targets reference),
+        mnemonic (e.g. invoke-virtual) and operands (the rendered arguments, ''
+        for operand-less ops like return-void). Rows keep DEX order; offset/
+        limit/total/has_more page them and scan_capped guards a malformed
+        oversized code_item.
+        """
+        parsed = self._parsed(path)
+        cls = class_name.strip()
+        meth = method_name.strip()
+        if not cls:
+            raise ApkError("invalid_params", "class_name is required")
+        if not meth:
+            raise ApkError("invalid_params", "method_name is required")
+        smali = _dotted_to_smali(cls)
+        found = [
+            klass
+            for klass in parsed.analysis.get_classes()
+            if klass.name in (smali, cls)
+        ]
+        if not found:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        matches = []
+        for klass in found:
+            for method in klass.get_methods():
+                if str(method.name) != meth:
+                    continue
+                if method.is_external():
+                    continue
+                matches.append(method)
+        if not matches:
+            raise ApkError(
+                "not_found", "method not found", class_name=class_name, method=meth
+            )
+        overloads = sorted(
+            {str(getattr(method, "descriptor", "")) for method in matches}
+        )
+        if descriptor is not None and descriptor.strip():
+            want = descriptor.strip()
+            chosen = next(
+                (m for m in matches if str(getattr(m, "descriptor", "")) == want),
+                None,
+            )
+            if chosen is None:
+                raise ApkError(
+                    "not_found",
+                    "method descriptor not found",
+                    class_name=class_name,
+                    method=meth,
+                    descriptor=want,
+                )
+        else:
+            chosen = matches[0]
+        chosen_desc = str(getattr(chosen, "descriptor", ""))
+        rows: list[JsonObject] = []
+        scan_more = False
+        addr = 0
+        for insn in chosen.get_method().get_instructions():
+            if len(rows) >= _MAX_SMALI_COLLECT:
+                scan_more = True
+                break
+            try:
+                mnemonic = str(insn.get_name())
+            except Exception:  # noqa: BLE001 - concrete op types vary
+                mnemonic = "?"
+            try:
+                operands = str(insn.get_output()).strip()
+            except Exception:  # noqa: BLE001 - concrete op types vary
+                operands = ""
+            rows.append({"addr": addr, "mnemonic": mnemonic, "operands": operands})
+            try:
+                length = int(insn.get_length())
+            except Exception:  # noqa: BLE001 - concrete op types vary
+                length = 0
+            addr += max(length // 2, 0)
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_SMALI_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "class_name": found[0].name,
+            "method_name": meth,
+            "descriptor": chosen_desc,
+            "overloads": overloads,
+            "instructions": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
             "scan_capped": scan_more,
         }
 
