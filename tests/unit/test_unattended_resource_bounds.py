@@ -3761,6 +3761,55 @@ class TestDeviceForceStopIsHonest:
         assert result["stopped"] is True
         assert result["remaining_pids"] == []
 
+    def test_pidof_missing_falls_back_to_ps_and_finds_the_process(self) -> None:
+        """Older Androids ship no pidof; force-stop must still not lie.
+
+        When pidof is absent the shell answers "not found", and the honest
+        verdict comes from parsing ps -A. A process still listed there means
+        the stop did not take -- reporting stopped would be a false clear.
+        """
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del timeout
+                if isinstance(args, list) and args[:1] == ["pidof"]:
+                    return "/system/bin/sh: pidof: not found"
+                if args == "ps -A":
+                    return (
+                        "USER     PID   PPID  VSZ    RSS   WCHAN ADDR S NAME\n"
+                        "u0_a123  4242  1234  100000 20000 0     0    S com.example.app\n"
+                    )
+                return ""
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.force_stop("emulator-5554", "com.example.app")
+        assert result["stopped"] is False
+        assert result["remaining_pids"] == [4242]
+
+    def test_pidof_missing_and_absent_from_ps_is_reported_stopped(self) -> None:
+        """The same fallback clears the verdict when the package is gone from ps."""
+        from headless_re_mcp.backends.adb.client import AdbBackend
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del timeout
+                if isinstance(args, list) and args[:1] == ["pidof"]:
+                    return "pidof: not found"
+                if args == "ps -A":
+                    return (
+                        "USER     PID   PPID  VSZ    RSS   WCHAN ADDR S NAME\n"
+                        "u0_a0    999   1     50000  8000  0     0    S system_server\n"
+                    )
+                return ""
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.force_stop("emulator-5554", "com.example.app")
+        assert result["stopped"] is True
+        assert result["remaining_pids"] == []
+
 
 class TestDevicePullRefusesTreesAndHugeFiles:
     def test_a_directory_is_refused_before_copy(self, tmp_path: Any) -> None:
