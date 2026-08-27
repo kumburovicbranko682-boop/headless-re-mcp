@@ -67,7 +67,13 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with activities, services, receivers, providers,
         main_activity, and has_more so a list that filled the cap is not
-        read as every component. There is no components field.
+        read as every component. exported_activities, exported_services,
+        exported_receivers, and exported_providers name the components other
+        apps can reach: an explicit android:exported wins; without it a
+        component with an intent-filter counts as exported (the
+        pre-targetSdk-31 default) and a provider does not. All four are
+        omitted together when the manifest attributes could not be read, so
+        absence is never read as not-exported. There is no components field.
         """
         return _dump(analysis.apk_components(session_id))
 

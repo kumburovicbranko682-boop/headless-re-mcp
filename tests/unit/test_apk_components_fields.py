@@ -65,3 +65,77 @@ def test_apk_components_names_the_four_lists_not_components() -> None:
     assert "Answers with activities" in doc
     assert "has_more" in doc
     assert "main_activity" in doc
+
+
+class _ManifestApk:
+    """One of each rule: explicit true/false, filter-implied, provider defaults."""
+
+    def get_activities(self) -> list[str]:
+        return ["b.Act", "a.Act"]
+
+    def get_services(self) -> list[str]:
+        return ["s.Svc"]
+
+    def get_receivers(self) -> list[str]:
+        return ["r.Rcv"]
+
+    def get_providers(self) -> list[str]:
+        return ["p.Prov", "q.Prov"]
+
+    def get_main_activity(self) -> str:
+        return "a.Act"
+
+    def get_attribute_value(self, tag: str, attribute: str, **kwargs: str) -> str | None:
+        assert attribute == "exported"
+        explicit = {
+            ("activity", "a.Act"): "true",
+            ("activity", "b.Act"): "false",
+            ("provider", "p.Prov"): "true",
+        }
+        return explicit.get((tag, kwargs.get("name", "")))
+
+    def get_intent_filters(self, itemtype: str, name: str) -> dict[str, list[str]]:
+        if (itemtype, name) == ("receiver", "r.Rcv"):
+            return {"action": ["android.intent.action.BOOT_COMPLETED"], "category": []}
+        return {"action": [], "category": [], "data": []}
+
+
+class _UnreadableManifestApk(_ManifestApk):
+    def get_attribute_value(self, tag: str, attribute: str, **kwargs: str) -> str | None:
+        raise RuntimeError("manifest attribute lookup broke")
+
+
+def test_apk_components_reports_which_components_are_exported() -> None:
+    """exported_* answer the attack-surface question the name lists cannot.
+
+    Explicit android:exported wins (a.Act true, b.Act false, p.Prov true);
+    without it a filtered receiver counts as exported (pre-targetSdk-31
+    default: r.Rcv), an unfiltered service and an attribute-less provider do
+    not (s.Svc, q.Prov).
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _ManifestApk()  # type: ignore[method-assign]
+    payload = client.components(Path("dummy.apk"))
+    assert payload["exported_activities"] == ["a.Act"]
+    assert payload["exported_services"] == []
+    assert payload["exported_receivers"] == ["r.Rcv"]
+    assert payload["exported_providers"] == ["p.Prov"]
+    doc = _tool_docstring("apk.components")
+    assert "exported_activities" in doc
+
+
+def test_apk_components_omits_exported_when_the_manifest_cannot_be_read() -> None:
+    """A failed lookup omits all four fields rather than guessing not-exported.
+
+    A partial or empty exported list after a lookup failure would read as "no
+    attack surface" -- a false negative. The four base name lists must still
+    come back.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _UnreadableManifestApk()  # type: ignore[method-assign]
+    payload = client.components(Path("dummy.apk"))
+    assert "exported_activities" not in payload
+    assert "exported_services" not in payload
+    assert "exported_receivers" not in payload
+    assert "exported_providers" not in payload
+    assert payload["activities"] == ["a.Act", "b.Act"]

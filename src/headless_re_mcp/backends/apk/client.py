@@ -44,6 +44,24 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _component_exported(apk: Any, tag: str, name: str) -> bool:
+    """Effective android:exported for one manifest component.
+
+    An explicit android:exported attribute wins. When it is absent, a
+    provider is not exported (the modern platform default) and any other
+    component is exported iff it carries an intent-filter -- the
+    pre-targetSdk-31 default; on 31+ the attribute is mandatory for filtered
+    components, so the inference only fills the gap the platform allowed.
+    """
+    value = apk.get_attribute_value(tag, "exported", name=name)
+    if value is not None:
+        return str(value).strip().lower() == "true"
+    if tag == "provider":
+        return False
+    filters = apk.get_intent_filters(tag, name) or {}
+    return any(bool(entries) for entries in filters.values())
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -293,7 +311,7 @@ class ApkClient:
         services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
         receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
         providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
-        return {
+        result: JsonObject = {
             "activities": activities,
             "services": services,
             "receivers": receivers,
@@ -301,6 +319,27 @@ class ApkClient:
             "main_activity": apk.get_main_activity(),
             "has_more": a_more or s_more or r_more or p_more,
         }
+        # Exported components are the attack surface other apps can reach, so
+        # the four lists above alone leave the key triage question unanswered.
+        # Computed over the names listed above; all four fields are omitted
+        # together when the manifest attributes cannot be read, because a
+        # partial answer would read as "not exported" -- a false negative on
+        # the attack surface.
+        try:
+            exported = {
+                key: [n for n in names if _component_exported(apk, tag, n)]
+                for key, tag, names in (
+                    ("exported_activities", "activity", activities),
+                    ("exported_services", "service", services),
+                    ("exported_receivers", "receiver", receivers),
+                    ("exported_providers", "provider", providers),
+                )
+            }
+        except Exception:  # noqa: BLE001 - manifest attribute APIs vary
+            pass
+        else:
+            result.update(exported)
+        return result
 
     def native_libs(self, path: Path) -> JsonObject:
         apk = self._apk(path)
