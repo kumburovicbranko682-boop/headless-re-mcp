@@ -49,6 +49,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`unpack.verify` 声称 timeout 最大 600s，服务端却按 300s 拒绝，合法入参反被打回）
+
+- `unpack.verify` 的 `timeout` 用 `ExternalToolTimeout`（`le=600`）标注，注释还说“比 run control 宽，
+  因为 `open_ida` 要撑过一整轮 idalib 分析”。可服务端 `unpack_verify` 里这个 `timeout` 只喂给可选的
+  DIE 复扫（`bounded_timeout = _detection_timeout(timeout)`），而 `_detection_timeout` 对超过
+  `MAX_WORKFLOW_TIMEOUT`（300s）的值直接抛 `ValueError`；`open_ida` 那条重开走的是 `open_static`
+  自己的超时，压根不碰这个参数。于是注释的理由站不住，schema 又比实际执行宽：调用方按 schema 传个
+  合法的 `timeout=400` 通过了 MCP 校验，却在下游被“timeout must be greater than 0 and at most
+  300 seconds”拦下——一个从没被告知的上限。现把该 schema 收敛为 `RunControlTimeout`（`le=300`）与
+  服务端实际执行对齐（并顺手移除因此不再被引用的 `ExternalToolTimeout` 导入），并订正注释。新增回归
+  钉住 `unpack.verify` 广告的最大值恰为 `_detection_timeout` 强制的上限（300s），且越过一步即被拒，
+  与共用同一 gate 的 dotnet / 外部脱壳 CLI 工具一致。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把
