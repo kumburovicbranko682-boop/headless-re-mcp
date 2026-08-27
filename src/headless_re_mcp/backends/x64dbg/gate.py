@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import subprocess
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 
+from headless_re_mcp.backends.common.bounded_run import DEFAULT_MAX_OUTPUT, drain_capped
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.backends.x64dbg.client import seed_headless_event_settings
 from headless_re_mcp.core.models import Architecture
-from headless_re_mcp.core.process_tree import terminate_process_tree
 from headless_re_mcp.core.session import detect_pe_architecture
 from headless_re_mcp.core.windows import describe_process_windows
 
@@ -18,6 +17,10 @@ from headless_re_mcp.core.windows import describe_process_windows
 # enumeration is a relatively expensive OS call; polling every 250 ms keeps
 # overhead low without meaningfully delaying detection.
 _WINDOW_POLL_INTERVAL = 0.25
+
+# Per stream. The command-loop marker is printed early, so keeping the head of
+# a flooded stream still answers the gate's question.
+_GATE_MAX_OUTPUT = DEFAULT_MAX_OUTPUT
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +33,8 @@ class XdbgHeadlessGateResult:
     stderr: str
     analyzer_windows: tuple[str, ...]
     command_loop_seen: bool
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -41,6 +46,8 @@ class XdbgHeadlessGateResult:
             "stderr": self.stderr,
             "analyzer_windows": list(self.analyzer_windows),
             "command_loop_seen": self.command_loop_seen,
+            "stdout_truncated": self.stdout_truncated,
+            "stderr_truncated": self.stderr_truncated,
         }
 
 
@@ -85,24 +92,30 @@ def run_command_loop_gate(
         )
         monitor.start()
         try:
-            stdout, stderr = process.communicate(input="state\nexit\n", timeout=timeout)
-        except subprocess.TimeoutExpired:
-            # process.kill() stops the headless executable and nothing else.
-            # Measured: a launcher that started a sleeper returned in 0.81s
-            # after a 0.8s timeout while the child was still running.
-            terminate_process_tree(process)
-            stdout, stderr = "", ""
-            with suppress(subprocess.TimeoutExpired, ValueError, OSError):
-                drained = process.communicate(timeout=5)
-                stdout, stderr = drained
+            # communicate() keeps every byte the executable writes with no
+            # cap. drain_capped bounds each stream and, on timeout, kills the
+            # executable's whole tree: process.kill() stops the headless
+            # executable and nothing else. Measured: a launcher that started
+            # a sleeper returned in 0.81s after a 0.8s timeout while the
+            # child was still running.
+            io = drain_capped(
+                process,
+                timeout=timeout,
+                input_text="state\nexit\n",
+                max_chars=_GATE_MAX_OUTPUT,
+            )
         finally:
             monitor_stop.set()
             monitor.join(timeout=2)
             observed.update(describe_process_windows(process.pid))
+    stdout, stderr = io.stdout, io.stderr
 
     command_loop_seen = "[headless] entering command loop" in stdout
     return XdbgHeadlessGateResult(
-        ok=process.returncode == 0 and command_loop_seen and not observed,
+        ok=not io.timed_out
+        and process.returncode == 0
+        and command_loop_seen
+        and not observed,
         architecture=architecture,
         executable=str(path),
         exit_code=int(process.returncode if process.returncode is not None else -1),
@@ -110,4 +123,6 @@ def run_command_loop_gate(
         stderr=stderr,
         analyzer_windows=tuple(sorted(observed)),
         command_loop_seen=command_loop_seen,
+        stdout_truncated=io.stdout_truncated,
+        stderr_truncated=io.stderr_truncated,
     )

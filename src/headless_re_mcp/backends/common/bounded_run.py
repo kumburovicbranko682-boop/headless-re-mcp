@@ -103,7 +103,7 @@ class Completed:
 
 
 def _read_capped(
-    stream: Any, cap: int, chunks: list[bytes], truncated: list[bool]
+    stream: Any, cap: int, chunks: list[Any], truncated: list[bool]
 ) -> None:
     kept = 0
     try:
@@ -153,6 +153,90 @@ def _terminate_bounded_process(process: subprocess.Popen[bytes]) -> list[int]:
     in a dedicated session and kill that process group as a final sweep.
     """
     return terminate_process_tree(process, kill_group=os.name != "nt")
+
+
+@dataclass(frozen=True, slots=True)
+class CappedIO:
+    """What a caller got back from a child it may have had to kill."""
+
+    stdout: str
+    stderr: str
+    timed_out: bool
+    killed: list[int]
+    stdout_truncated: bool
+    stderr_truncated: bool
+
+
+def drain_capped(
+    process: subprocess.Popen[str],
+    *,
+    timeout: float,
+    input_text: str | None = None,
+    max_chars: int = DEFAULT_MAX_OUTPUT,
+    drain_s: float = 5.0,
+) -> CappedIO:
+    """``communicate()`` with a per-stream cap and a tree kill on timeout.
+
+    For callers that must own the ``Popen`` themselves -- the debugger gates
+    feed stdin commands and poll the child's windows by pid while it runs, so
+    they cannot hand the spawn to ``run_bounded``. ``communicate()`` keeps
+    every byte the child writes, and a gate analysing a hostile sample can
+    flood stdout for its whole deadline; the readers here keep the head of
+    each text stream under ``max_chars`` and discard the rest. On timeout the
+    child's whole tree is killed: ``process.kill()`` alone stops the launcher
+    and nothing else, leaving a sleeper holding CPU and a lock on the sample.
+    """
+    cap = max(1, int(max_chars))
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    stdout_trunc = [False]
+    stderr_trunc = [False]
+    readers = (
+        Thread(
+            target=_read_capped,
+            args=(process.stdout, cap, stdout_chunks, stdout_trunc),
+            name="capped-stdout",
+            daemon=True,
+        ),
+        Thread(
+            target=_read_capped,
+            args=(process.stderr, cap, stderr_chunks, stderr_trunc),
+            name="capped-stderr",
+            daemon=True,
+        ),
+    )
+    for reader in readers:
+        reader.start()
+    if input_text is not None and process.stdin is not None:
+        # A child that exited before reading its stdin raises BrokenPipeError
+        # here; that is its answer, not ours to re-raise.
+        with suppress(OSError, ValueError):
+            process.stdin.write(input_text)
+            process.stdin.flush()
+        with suppress(OSError, ValueError):
+            process.stdin.close()
+    timed_out = False
+    killed: list[int] = []
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        killed = terminate_process_tree(process)
+        _join_readers(readers, drain_s)
+    else:
+        if _join_readers(readers, drain_s):
+            # Child exited but the pipes are still open: something it started
+            # inherited them. Sweep the tree and take what was captured.
+            killed = terminate_process_tree(process)
+            _join_readers(readers, 1.0)
+    return CappedIO(
+        "".join(stdout_chunks),
+        "".join(stderr_chunks),
+        timed_out,
+        killed,
+        stdout_trunc[0],
+        stderr_trunc[0],
+    )
 
 
 def run_bounded(

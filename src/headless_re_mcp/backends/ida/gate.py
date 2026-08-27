@@ -4,21 +4,25 @@ import json
 import os
 import subprocess
 import sys
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
 
+from headless_re_mcp.backends.common.bounded_run import DEFAULT_MAX_OUTPUT, drain_capped
 from headless_re_mcp.backends.common.subprocess_rpc import no_window_popen_kwargs
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.process_tree import terminate_process_tree
 from headless_re_mcp.core.windows import describe_process_windows
 
 # Interval between analyzer-window enumerations while the gate worker runs.
 # Window enumeration is a relatively expensive OS call; polling every 250 ms
 # keeps overhead low without meaningfully delaying detection.
 _WINDOW_POLL_INTERVAL = 0.25
+
+# Per stream. idalib analysing a hostile sample can print diagnostics for the
+# whole gate deadline; the verdict JSON is one line, so keeping the head is
+# enough for a healthy run and a flood fails closed as "no JSON object".
+_GATE_MAX_OUTPUT = DEFAULT_MAX_OUTPUT
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,11 +65,14 @@ def run_idalib_gate(
         command.append("--no-decompile")
     command.append(str(binary.resolve(strict=True)))
 
+    # errors="replace": idalib echoes bytes from the sample it is analysing,
+    # and a hostile sample's invalid UTF-8 must not crash the gate mid-read.
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",
         env=env,
         **no_window_popen_kwargs(),
     )
@@ -88,31 +95,35 @@ def run_idalib_gate(
     )
     monitor.start()
 
-    timed_out = False
-    killed: list[int] = []
-    stdout, stderr = "", ""
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        # process.kill() stops the gate worker and nothing else. Measured: a
-        # launcher that started a sleeper returned in 0.81s after a 0.8s
-        # timeout while the child was still running, holding CPU for the rest
-        # of the process life.
-        timed_out = True
-        killed = terminate_process_tree(process)
-        with suppress(subprocess.TimeoutExpired, ValueError, OSError):
-            drained = process.communicate(timeout=5)
-            stdout, stderr = drained
+        # communicate() keeps every byte the worker writes, and idalib
+        # analysing a hostile sample can flood stdout for the whole gate
+        # deadline. drain_capped caps each stream and, on timeout, kills the
+        # worker's whole tree: process.kill() stops the gate worker and
+        # nothing else. Measured: a launcher that started a sleeper returned
+        # in 0.81s after a 0.8s timeout while the child was still running,
+        # holding CPU for the rest of the process life.
+        io = drain_capped(process, timeout=timeout, max_chars=_GATE_MAX_OUTPUT)
     finally:
         monitor_stop.set()
         monitor.join(timeout=2)
         observed.update(describe_process_windows(process.pid))
+    stdout, stderr = io.stdout, io.stderr
 
-    if timed_out:
+    payload: dict[str, Any]
+    if io.timed_out:
         payload = {
             "error": f"idalib gate timed out after {timeout} seconds",
-            "killed_pids": killed,
+            "killed_pids": io.killed,
         }
+    else:
+        payload = _last_json_line(stdout)
+    if io.stdout_truncated:
+        payload["stdout_truncated"] = True
+    if io.stderr_truncated:
+        payload["stderr_truncated"] = True
+
+    if io.timed_out:
         return HeadlessGateResult(
             False,
             "ida",
@@ -123,7 +134,6 @@ def run_idalib_gate(
             tuple(sorted(observed)),
         )
 
-    payload = _last_json_line(stdout)
     ok = process.returncode == 0 and bool(payload.get("ok")) and not observed
     return HeadlessGateResult(
         ok,

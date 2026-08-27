@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import time
 from pathlib import Path
 from typing import Any
@@ -19,25 +20,48 @@ def _write_minimal_pe(path: Path, machine: int) -> None:
     path.write_bytes(image)
 
 
+class _FakeStdin:
+    """Records what the gate feeds the command loop."""
+
+    def __init__(self) -> None:
+        self.buffer = ""
+        self.closed = False
+
+    def write(self, text: str) -> int:
+        self.buffer += text
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _FakeProcess:
+    """Popen shaped for drain_capped: real streams plus wait(timeout)."""
+
     pid = 4242
 
     def __init__(self, *, delay: float = 0.0) -> None:
         self.returncode: int | None = 0
         self.delay = delay
-        self.input: str | None = None
+        self.stdin = _FakeStdin()
+        self.stdout = io.StringIO("[headless] entering command loop...\n")
+        self.stderr = io.StringIO("")
         self.killed = False
 
-    def communicate(
-        self,
-        input: str | None = None,
-        timeout: float | None = None,
-    ) -> tuple[str, str]:
-        assert timeout is not None
-        self.input = input
+    @property
+    def input(self) -> str | None:
+        return self.stdin.buffer or None
+
+    def wait(self, timeout: float | None = None) -> int:
         if self.delay:
             time.sleep(self.delay)
-        return "[headless] entering command loop...\n", ""
+        return int(self.returncode or 0)
+
+    def poll(self) -> int | None:
+        return self.returncode
 
     def kill(self) -> None:
         self.killed = True
