@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（Agent 编排器整环 Gate）
+
+- 新集成 Gate `tests/integration/test_agent_loop_real_tools_gate.py`（纯 Python，任何平台可跑）
+  第一次把 Agent 编排器对着**真实工具目录 + 真实 `AnalysisService`** 跑整环——此前编排器的全部
+  单测都只绑一个合成单工具 catalog（lambda handler）。这里用无后端、脚本化的 LLM provider
+  （编排器的 `provider_factory` 注入缝）驱动真正的 265 工具面。
+- 钉住两条产品级语义：**完整工具往返产生真实副作用**（模型调用 `session.create` 打开提交的 PE
+  夹具，从回灌的 tool 结果消息里**读回**新会话 id，再据此 `knowledge.record`、`report.generate`,
+  最后收尾；事后 service 侧确有一个绑定的 PE 会话、finding 可查询、报告为已注册制品;
+  full-access 下每次写都以命名了放行规则的 `approval.auto` 审计,而非静默执行);
+  **失败的真实工具调用留在信封里**（对不存在路径的 `session.create` 以 `ok=False` 作为
+  tool 结果回灌,模型读到后照常收尾、run 仍 COMPLETED、不留半个会话,而不是让整个 run 崩在
+  后端拒绝上)。整个过程无网络（provider 注入）、不打开任何分析后端（session.create 只分诊与绑定）。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
