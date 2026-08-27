@@ -3763,6 +3763,33 @@ class TestDeviceForceStopIsHonest:
         assert result["stopped"] is True
         assert result["remaining_pids"] == []
 
+    def test_a_flooding_pidof_reply_cannot_grow_the_force_stop_envelope(self) -> None:
+        """The device is untrusted, and its pidof reply is echoed back.
+
+        A real app has a handful of processes; a hostile or wedged device can
+        answer ``pidof`` with an arbitrary number of tokens. The ps fallback
+        already stopped at 16, but the primary pidof path parsed every token
+        into remaining_pids, so a flood became an unbounded response field on
+        an operation the caller runs precisely against a misbehaving target.
+        """
+        from headless_re_mcp.backends.adb.client import _MAX_PIDS, AdbBackend
+
+        flood = " ".join(str(pid) for pid in range(1, 100_000))
+
+        class Dev:
+            def shell(self, args: Any, timeout: float | None = None) -> str:
+                del timeout
+                if isinstance(args, list) and args[:1] == ["pidof"]:
+                    return flood
+                return ""
+
+        backend = AdbBackend()
+        backend._device = lambda serial: Dev()  # type: ignore[method-assign]
+        result = backend.force_stop("emulator-5554", "com.example.app")
+        assert result["stopped"] is False
+        assert len(result["remaining_pids"]) == _MAX_PIDS
+        assert result["remaining_pids"] == list(range(1, _MAX_PIDS + 1))
+
 
 class TestDevicePullRefusesTreesAndHugeFiles:
     def test_a_directory_is_refused_before_copy(self, tmp_path: Any) -> None:

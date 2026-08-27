@@ -162,6 +162,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   一致;`apk.xrefs` 本就把 `limit` 钳到 `>=1`,现补上同一上限。越界前后行为、上限对齐 schema 的
   漂移护栏均有回归测试(`test_apk_page_clamp.py`)。
 
+### 修复（force_stop 的 pidof 回复无界，可被设备撑大回包）
+
+- **`_pids_for_package` 的 `ps -A` 兜底路径把结果钳在 16 个 pid，但主用的 `pidof` 路径把每个
+  空白分隔的 token 都塞进 `remaining_pids`，没有上限。** ADB 会话里设备是不可信的一方——`force_stop`
+  正是冲着行为异常的目标去的——而 `pidof` 的回复由设备说了算，又被原样回显进强停回包。一个恶意或
+  卡死的设备用海量 token 应答 `pidof`，就能在这条专门针对问题目标的操作上把回包字段撑到无界。
+- 现在两条路径都最多解析 `_MAX_PIDS`(16，即 `ps` 兜底原有的上限，提为共享常量)。真实应用只有个位数
+  进程，这个上限永远不会截断正常答案。新增回归用 10 万个 token 灌 `pidof`，断言回包只保留前 16 个。
+
 ### 修复（签名口令上进程表）
 
 - `apk.sign` 过去以 `--ks-pass pass:<口令>` 把 keystore 口令明文放进 apksigner 的命令行。

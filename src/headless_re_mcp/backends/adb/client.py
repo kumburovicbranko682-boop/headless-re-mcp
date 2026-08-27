@@ -40,6 +40,10 @@ _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
+# The device is the untrusted party here, and a real app has a handful of
+# processes. Cap what we keep from pidof/ps so a device flooding the reply
+# cannot grow the force-stop envelope without bound.
+_MAX_PIDS = 16
 # adbutils shell/sync calls otherwise wait forever when the device stalls.
 _ADB_SHELL_TIMEOUT_S = 30.0
 _ADB_PROBE_TIMEOUT_S = 8.0
@@ -279,10 +283,18 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
                 if token.isdigit():
                     pids.append(int(token))
                     break
-            if len(pids) >= 16:
+            if len(pids) >= _MAX_PIDS:
                 break
         return pids
-    pids = [int(token) for token in text.replace(",", " ").split() if token.isdigit()]
+    # Same cap as the ps fallback: pidof output is device-controlled, and the
+    # list is echoed back in the force-stop envelope, so parse at most _MAX_PIDS
+    # rather than turning a flood of tokens into an unbounded response.
+    pids = []
+    for token in text.replace(",", " ").split():
+        if token.isdigit():
+            pids.append(int(token))
+            if len(pids) >= _MAX_PIDS:
+                break
     if not pids:
         return None
     return pids
