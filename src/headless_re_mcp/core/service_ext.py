@@ -518,20 +518,26 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def frida_hook_template(self, session_id: str, template: str = "noop") -> Result[JsonObject]:
+    def frida_hook_template(
+        self, session_id: str, template: str = "noop", pid: int = 0
+    ) -> Result[JsonObject]:
         try:
             client = FridaClient()
-            # A device-connected session (APK/web) hooks its authorised device
-            # pid; a PE session keeps the local single-pid behaviour unchanged.
+            # A device-connected session (APK/web) hooks an authorised device
+            # pid -- the given one, or the most recent when pid is 0, matching
+            # frida.java.* so a session that spawned several packages can hook
+            # any of them, not only the last. The backend re-checks the pid
+            # against the authorised set. A PE session keeps the local
+            # single-pid behaviour unchanged and ignores pid.
             auth = self.registry.get(session_id).metadata.get("frida_authorized")
             if isinstance(auth, dict) and auth.get("pids"):
-                pid = int(auth["pids"][-1])
+                target = int(pid) if pid else int(auth["pids"][-1])
                 data = client.hook_template_device(
-                    auth.get("device_id"), pid, template, allowed_pids=auth.get("pids", [])
+                    auth.get("device_id"), target, template, allowed_pids=auth.get("pids", [])
                 )
             else:
-                pid = _require_debuggee_pid(self, session_id)
-                data = client.hook_template(pid, template, allowed_pid=pid)
+                debuggee = _require_debuggee_pid(self, session_id)
+                data = client.hook_template(debuggee, template, allowed_pid=debuggee)
             _timeline_append(
                 self,
                 session_id,

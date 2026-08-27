@@ -74,15 +74,19 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             str,
             Field(pattern="^(noop|android_ssl_unpin|android_crypto_monitor|android_root_bypass)$"),
         ] = "noop",
+        pid: int = 0,
     ) -> dict[str, Any]:
         """Load a canned Frida probe template and destroy it before returning.
 
         Nothing stays hooked: persisted is false and note says so. A device
-        session uses its last authorized pid; a PE session uses the debuggee.
+        session hooks pid, defaulting to its last authorized pid when pid is 0,
+        the same convention as frida.java.classes; a PE session always uses the
+        debuggee and ignores pid. A device pid outside this session's authorized
+        set is refused as permission_denied.
         Answers with pid, template, loaded, device, persisted and note.
         There is no hooked, handle or session field.
         """
-        return _dump(analysis.frida_hook_template(session_id, template=template))
+        return _dump(analysis.frida_hook_template(session_id, template=template, pid=pid))
 
     @tools.tool(name="frida.devices")
     def frida_devices() -> dict[str, Any]:
