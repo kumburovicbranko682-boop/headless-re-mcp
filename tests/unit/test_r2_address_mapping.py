@@ -380,6 +380,110 @@ def test_function_list_is_items_not_functions(tmp_path: Path) -> None:
     assert "no functions field" in described
 
 
+def test_enrich_reads_a_string_address_and_skips_a_malformed_one(tmp_path: Path) -> None:
+    """r2 sometimes hands an address back as a hex string, not an int.
+
+    ``_item_va`` walks the candidate keys and, for a string, parses it with
+    ``int(value, 0)``; a value that will not parse is skipped so the walk keeps
+    looking. Here ``offset`` is the junk string ``"not_a_number"`` and ``vaddr``
+    is ``"0x140001000"``: the junk must be stepped over (the ``except
+    ValueError`` branch) and the real hex string resolved, or an entry r2
+    reported with a string offset would map to no address at all.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps([{"offset": "not_a_number", "vaddr": "0x140001000", "name": "s"}])
+
+    enriched = enrich_r2_payload(
+        {"raw": raw, "commands": ["izj"]},
+        binary=binary,
+        architecture=Architecture.X64,
+    )
+
+    assert enriched["count"] == 1
+    assert enriched["items"][0]["address"]["rva"] == 0x1000
+    assert enriched["items"][0]["address"]["va"] == 0x140001000
+
+
+def test_enrich_skips_non_dict_entries_in_the_parsed_list(tmp_path: Path) -> None:
+    """A parsed array can carry stray scalars; they must not become items.
+
+    r2 output is only bounded, not trusted, and a truncated or odd reply can
+    leave a list like ``[{...}, "garbage", 42, null]``. Each non-object element
+    is skipped so ``count`` reflects the rows that actually carry data, rather
+    than a scalar reaching ``dict(entry)`` and raising, or padding the count.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps([{"offset": 0x140001000, "name": "ok"}, "garbage", 42, None])
+
+    enriched = enrich_r2_payload(
+        {"raw": raw, "commands": ["aflj"]},
+        binary=binary,
+        architecture=Architecture.X64,
+    )
+
+    assert enriched["parsed"] is True
+    assert enriched["count"] == 1
+    assert [item["name"] for item in enriched["items"]] == ["ok"]
+
+
+def test_enrich_exposes_an_object_payload_as_info_not_items(tmp_path: Path) -> None:
+    """When r2 returns a JSON object (``ij``), it is identity, not a row list.
+
+    ``parse_r2_json`` yields a dict for object payloads; ``enrich_r2_payload``
+    files it under ``info`` and still marks ``parsed`` true, with no ``items``
+    or ``count``. A caller that inspects ``info`` gets the whole object instead
+    of an empty item list that would read as r2 finding nothing.
+    """
+    binary = _minimal_pe(tmp_path, x64=True)
+    raw = json.dumps({"core": {"file": "demo64.exe"}, "bin": {"arch": "x86"}})
+
+    enriched = enrich_r2_payload(
+        {"raw": raw, "commands": ["ij"]},
+        binary=binary,
+        architecture=Architecture.X64,
+    )
+
+    assert enriched["parsed"] is True
+    assert enriched["info"] == {"core": {"file": "demo64.exe"}, "bin": {"arch": "x86"}}
+    assert "items" not in enriched
+    assert "count" not in enriched
+
+
+@pytest.mark.parametrize(
+    ("magic", "optional_size"),
+    [
+        (0x107, 0xF0),  # ROM image / unrecognised optional magic
+        (0x10B, 40),  # PE32 optional header truncated below the ImageBase field
+    ],
+)
+def test_pe_preferred_base_declines_a_malformed_optional_header(
+    tmp_path: Path,
+    magic: int,
+    optional_size: int,
+) -> None:
+    """A header the enrichment prefix cannot trust yields no arch or base.
+
+    ``pe_preferred_base`` runs on every r2 call to read one field out of a
+    possibly-hostile binary. An optional header with an unrecognised magic, or
+    one cut short before ImageBase, must return ``(None, None)`` -- the tool
+    call still succeeds without an architecture rather than reading a bogus base
+    off malformed bytes or overrunning the slice.
+    """
+    data = bytearray(0x200)
+    data[0:2] = b"MZ"
+    pe_offset = 0x80
+    data[0x3C:0x40] = pe_offset.to_bytes(4, "little")
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    data[pe_offset + 20 : pe_offset + 22] = optional_size.to_bytes(2, "little")
+    optional_off = pe_offset + 24
+    data[optional_off : optional_off + 2] = magic.to_bytes(2, "little")
+    data[optional_off + 28 : optional_off + 32] = (0x400000).to_bytes(4, "little")
+    binary = tmp_path / "malformed.bin"
+    binary.write_bytes(bytes(data))
+
+    assert pe_preferred_base(binary) == (None, None)
+
+
 def test_r2_info_puts_identity_in_raw_not_arch_bits_entry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
