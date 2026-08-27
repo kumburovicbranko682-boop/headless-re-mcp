@@ -602,6 +602,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `src`/`tests`/`scripts` 整树复制,开发机跑过测试后这些缓存会原样进入源码交接包——
   其余四个打包脚本（`release.ps1`、`build_msi.ps1`、`build_portable.ps1`、
   `build_native_portable.ps1`）早有同款剔除,唯独交接包漏了,现对齐。
+### 修复（release.ps1 引用已删除的 NOTICES 文件）
+
+- `release.ps1` 的 portable 与 deps 目标仍在复制 `THIRD_PARTY_NOTICES.md`——该文件在
+  「公开文档收缩进 README」时已删除,其余打包脚本的复制名单都已跟上,唯独这两处漏改;
+  在 `$ErrorActionPreference = "Stop"` 下 `Copy-Item` 缺文件即抛错,这两个发布目标自那次
+  提交起必然失败。现从名单移除,FIRST_RUN 文案改指 `upstream.lock.json`,与
+  `build_msi.ps1` / `build_deps_bundle.ps1` 对齐。
 
 ### 新增（会话目标类型）
 
