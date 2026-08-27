@@ -9,9 +9,12 @@ from threading import Lock
 from typing import Any
 
 from headless_re_mcp.backends.web.client import (
+    _MAX_HEADER_TEXT,
+    _MAX_HEADERS,
     _MAX_METADATA_BYTES,
     _MAX_URL_BYTES,
     WebBackend,
+    _cdp_headers,
 )
 from headless_re_mcp.tools.web import build_web_tools
 
@@ -270,6 +273,84 @@ def test_web_flags_a_request_that_carried_a_post_body() -> None:
 
     assert handle.requests["p1"]["has_post_data"] is True
     assert "has_post_data" not in handle.requests["g1"]
+
+
+def test_cdp_headers_unfolds_repeats_and_is_bounded() -> None:
+    """CDP joins repeated names with newlines; each must survive its own entry."""
+    out = _cdp_headers({"Set-Cookie": "sid=1\ntoken=2", "Content-Type": "text/html"})
+    assert out == [
+        {"name": "Set-Cookie", "value": "sid=1"},
+        {"name": "Set-Cookie", "value": "token=2"},
+        {"name": "Content-Type", "value": "text/html"},
+    ]
+    assert _cdp_headers(None) == []
+    assert _cdp_headers("not-a-dict") == []
+    assert len(_cdp_headers({f"h{i}": "v" for i in range(500)})) == _MAX_HEADERS
+    clipped = _cdp_headers({"x": "y" * (10 * _MAX_HEADER_TEXT)})
+    assert len(clipped[0]["value"].encode()) <= _MAX_HEADER_TEXT
+
+
+def test_web_captures_headers_from_cdp_and_keeps_them_off_the_list(
+    monkeypatch: Any,
+) -> None:
+    """Response headers (Set-Cookie/CSP/CORS) and request headers are what web
+    dynamic analysis reads; CDP hands them over, so the ring entry keeps them.
+
+    Measured: a request with Authorization/Cookie and a response setting two
+    cookies -> the entry's request_headers/response_headers carry them, both
+    Set-Cookie values survive, yet network.list strips both so the index stays
+    lean.
+    """
+
+    class _Cdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def send(self, method: str) -> None:
+            del method
+
+        def on(self, event: str, handler: Any) -> None:
+            self.handlers[event] = handler
+
+    cdp = _Cdp()
+    handle = _FakeHandle(0)
+    handle.cdp = cdp  # type: ignore[attr-defined]
+    backend = WebBackend()
+    backend._wire_events(handle)  # type: ignore[arg-type]
+
+    cdp.handlers["Network.requestWillBeSent"](
+        {
+            "requestId": "r1",
+            "request": {
+                "url": "https://x/api",
+                "method": "GET",
+                "headers": {"Authorization": "Bearer t", "Cookie": "a=1"},
+            },
+            "type": "XHR",
+        }
+    )
+    cdp.handlers["Network.responseReceived"](
+        {
+            "requestId": "r1",
+            "response": {
+                "status": 200,
+                "mimeType": "application/json",
+                "headers": {"Content-Type": "application/json", "Set-Cookie": "sid=1\ntoken=2"},
+            },
+        }
+    )
+
+    entry = handle.requests["r1"]
+    assert {"name": "Authorization", "value": "Bearer t"} in entry["request_headers"]
+    resp_cookies = [h["value"] for h in entry["response_headers"] if h["name"] == "Set-Cookie"]
+    assert resp_cookies == ["sid=1", "token=2"]
+
+    monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+    listed = backend.network_list("s", offset=0, limit=10)["requests"][0]
+    assert "request_headers" not in listed
+    assert "response_headers" not in listed
+    doc = _tool_docstring("web.network.get")
+    assert "response_headers" in doc
 
 
 def test_web_wasm_list_puts_modules_in_scripts_not_modules(

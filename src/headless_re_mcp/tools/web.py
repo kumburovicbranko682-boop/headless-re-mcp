@@ -84,7 +84,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         (and canceled), so a failed load is not read as one still in flight.
         has_post_data marks a row whose request carried a POST body, which
         web.network.get can then fetch. metadata_truncated marks bounded
-        oversized request fields. There is no type field.
+        oversized request fields. Headers are omitted from this index to keep it
+        lean; fetch them per row with web.network.get. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
@@ -95,11 +96,14 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with body, base64_encoded, plus body_truncated and body_path
         when the text was cut at the buffer. The cut flag is body_truncated,
         not truncated. A body over the capture cap is refused rather than
-        written to disk. When the request carried a POST body (has_post_data on
-        the row), request_body is included the same way -- request_body_truncated
-        and request_body_path (registered as request_artifact_id) when it spills,
-        or request_body_error when it could not be retrieved -- so the payload the
-        page sent is recoverable, not just the response.
+        written to disk. request_headers and response_headers are lists of
+        {name, value} in the order CDP reported them, each repeat kept as its own
+        entry so every Set-Cookie survives. When the request carried a POST body
+        (has_post_data on the row), request_body is included the same way --
+        request_body_truncated and request_body_path (registered as
+        request_artifact_id) when it spills, or request_body_error when it could
+        not be retrieved -- so the payload the page sent is recoverable, not just
+        the response.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
@@ -208,9 +212,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         The file is a spec-valid HAR 1.2 log that standard viewers (Chrome
         DevTools, HAR analyzers) can open; each entry carries the required
         request/response, timings and startedDateTime members, its queryString
-        recovered from the request URL, with unknown fields left as empty/`-1`
-        rather than omitted. Answers with path and entry_count, plus artifact_id
-        when the HAR was registered. There is no har, entries or artifact field.
+        recovered from the request URL and the request/response headers CDP
+        reported, with unknown fields left as empty/`-1` rather than omitted.
+        Answers with path and entry_count, plus artifact_id when the HAR was
+        registered. There is no har, entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

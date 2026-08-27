@@ -218,6 +218,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `timeout+30` 秒——一次导航到卡死页面就能把浏览器工作线程占到远超上限。更糟的是 `gt=0` 下界同样
   被绕过：非正 `timeout` 传到 `page.goto` 就是 `timeout=0`，Playwright 读作「永不超时」，成了无界等待。
   现在后端按 schema 上限 clamp、非正值回落到 schema 缺省（30s），与 Frida/子进程后端一致。
+- **`web.network.get` 拿不到请求/响应头，而 `proxy.flow.get` 早就有——两条动态分析线不对称**。
+  响应头（Set-Cookie/CSP/CORS/Content-Type）与请求头（鉴权、cookie、自定义 API 头）正是 Web 动态分析要看的，
+  CDP 在 `requestWillBeSent` / `responseReceived` 事件里就带着，但 ring entry 从不保留、`web.network.get` 也
+  从不返回。现在 `on_request` / `on_response` 各自把头存到 entry（新增 `_cdp_headers`：CDP 用换行连接重复名，
+  按换行拆开使每个 Set-Cookie 各占一条，数量 100/单条 8 KiB/单侧 16 KiB 有界，防止 header 洪水撑大最多
+  _MAX_REQUESTS 条的 ring）；`web.network.get` 随即以 `request_headers` / `response_headers` 返回。为免撑大列表，
+  `web.network.list` 把这两个键从每行剔除（改逐行投影），头只在 get/har 里取。附带地，`web.har.export` 也把这
+  两侧头喂给 `har_entry`，于是 Web HAR 也有了头部，与 proxy HAR 对齐（上一版说 Web HAR 无头部，现已补上）。
 - **`proxy.flow.get` 用 `dict(headers)` 把重复头折叠，Set-Cookie 被折损**。mitmproxy 的
   `Headers` 是多值容器，`dict(...)` 会把同名头合并成一个逗号连接的值——对多数头（RFC 7230 允许逗号合并）
   无妨，但对 `Set-Cookie` 是破坏：RFC 6265 明确禁止逗号合并，而 `Expires` 日期本身就带逗号，于是一个

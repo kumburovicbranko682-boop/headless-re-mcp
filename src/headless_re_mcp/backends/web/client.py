@@ -39,6 +39,13 @@ _MAX_INLINE_BODY = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# Response/request headers are kept per ring entry; bound the count, each field
+# and the per-side total so a header-heavy page cannot bloat the request ring.
+_MAX_HEADERS = 100
+_MAX_HEADER_TEXT = 8 * 1024
+_MAX_HEADERS_BYTES = 16 * 1024
+# Header lists live on the ring entry but are stripped from network.list.
+_NETWORK_HEADER_KEYS = frozenset({"request_headers", "response_headers"})
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -71,6 +78,32 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _cdp_headers(headers: object) -> list[JsonObject]:
+    """CDP's header object as a bounded, order-preserving name/value list.
+
+    CDP hands headers over as a plain object, and where a name repeats it joins
+    the values with newlines -- Set-Cookie above all, which must never be folded
+    into one string (RFC 6265, and an Expires date carries its own comma). Split
+    on the newline so each value stays its own entry, the same fidelity
+    proxy.flow.get keeps. Count and total bytes are capped because these live on
+    a per-request ring entry retained for up to _MAX_REQUESTS requests, so a
+    header-flooding page cannot grow the buffer without bound.
+    """
+    if not isinstance(headers, dict):
+        return []
+    out: list[JsonObject] = []
+    total = 0
+    for raw_name, raw_value in headers.items():
+        name, _ = _bounded_metadata(raw_name, _MAX_HEADER_TEXT)
+        for piece in str(raw_value).split("\n"):
+            value, _ = _bounded_metadata(piece, _MAX_HEADER_TEXT)
+            out.append({"name": name, "value": value})
+            total += len(name) + len(value)
+            if len(out) >= _MAX_HEADERS or total >= _MAX_HEADERS_BYTES:
+                return out
+    return out
 
 
 def _bounded_nav_timeout(timeout: float) -> float:
@@ -550,6 +583,10 @@ class WebBackend:
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            # The request headers CDP reported at send time (auth, cookies, the
+            # custom API headers analysis is after). Kept off network.list -- see
+            # its projection -- and surfaced by network.get / har.export.
+            entry["request_headers"] = _cdp_headers(req.get("headers"))
             # The page's POST payload (the request body -- JSON, form creds, a
             # signed blob) is what an API/protocol analyst most wants, but CDP
             # does not put it in this event when it is large; it must be pulled
@@ -573,6 +610,10 @@ class WebBackend:
                 if entry is not None:
                     entry["status"] = resp.get("status")
                     entry["mimeType"] = mime_type
+                    # Set-Cookie, CSP, CORS, cache and content-type -- the
+                    # response side an analyst reads. CDP folds repeats with
+                    # newlines; _cdp_headers unfolds them so each survives.
+                    entry["response_headers"] = _cdp_headers(resp.get("headers"))
                     if mime_truncated:
                         entry["metadata_truncated"] = True
 
@@ -738,7 +779,13 @@ class WebBackend:
             dropped = handle.requests_dropped
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
-        window = items[start : start + cap]
+        # Headers ride on the ring entry so network.get and har.export can reach
+        # them, but a list of up to 1000 rows must stay a lean index -- strip
+        # them here so the summary is not dominated by every row's headers.
+        window = [
+            {k: v for k, v in item.items() if k not in _NETWORK_HEADER_KEYS}
+            for item in items[start : start + cap]
+        ]
         return {
             "requests": window,
             "count": len(window),
@@ -1047,6 +1094,8 @@ class WebBackend:
                     url=e.get("url"),
                     status=e.get("status"),
                     mime_type=e.get("mimeType"),
+                    request_headers=e.get("request_headers"),
+                    response_headers=e.get("response_headers"),
                     extra={"_resourceType": e.get("resourceType")},
                 )
                 for e in handle.requests.values()

@@ -226,6 +226,7 @@ class _WebHandle:
             "mimeType": "text/plain",
             "resourceType": "XHR",
             "started_at": 1_700_000_000.0,
+            "response_headers": [{"name": "content-type", "value": "text/plain"}],
         }
     }
 
@@ -241,3 +242,5 @@ def test_web_har_export_is_spec_valid(tmp_path: Path, monkeypatch: Any) -> None:
     _assert_entry_is_spec_valid(entry)
     assert entry["_resourceType"] == "XHR"
     assert datetime.fromisoformat(entry["startedDateTime"]).year == 2023
+    # The response headers the web capture kept reached the HAR too.
+    assert {"name": "content-type", "value": "text/plain"} in entry["response"]["headers"]
