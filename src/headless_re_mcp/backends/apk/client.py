@@ -8,6 +8,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -23,6 +24,8 @@ _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
+_MAX_DEX_HASHES = 64
+_HASH_CHUNK = 1024 * 1024
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
@@ -323,6 +326,65 @@ class ApkClient:
             "native_libs": libs,
             "abis": sorted(abis),
             "count": len(libs),
+            "has_more": has_more,
+        }
+
+    def hashes(self, path: Path) -> JsonObject:
+        """Fingerprint the APK for sample identification: file and per-DEX digests.
+
+        The first thing an RE session needs is a stable identity for the sample:
+        the sha256/sha1/md5 and size of the APK file (the keys VirusTotal and
+        most sample databases index on) plus the sha256 and size of each DEX so
+        two builds that repackaged the same code can be matched. md5 and sha1
+        are computed for lookup, not for security. The file is streamed so a
+        large APK never loads whole into memory; the DEX list is capped with
+        has_more so a heavily multidexed app is not read as fully enumerated.
+        """
+        resolved = self._require(path)
+        file_sha256 = hashlib.sha256()
+        file_sha1 = hashlib.sha1(usedforsecurity=False)
+        file_md5 = hashlib.md5(usedforsecurity=False)
+        size = 0
+        with open(resolved, "rb") as handle:
+            for chunk in iter(lambda: handle.read(_HASH_CHUNK), b""):
+                size += len(chunk)
+                file_sha256.update(chunk)
+                file_sha1.update(chunk)
+                file_md5.update(chunk)
+        apk = self._apk(path)
+        try:
+            names = apk.get_dex_names()
+        except Exception:  # noqa: BLE001 - older androguard / odd packaging
+            names = []
+        dexes: list[JsonObject] = []
+        has_more = False
+        for name in names or []:
+            if len(dexes) >= _MAX_DEX_HASHES:
+                has_more = True
+                break
+            try:
+                data = apk.get_file(name)
+            except Exception:  # noqa: BLE001 - a named entry that will not read
+                continue
+            if not isinstance(data, (bytes, bytearray)):
+                continue
+            dexes.append(
+                {
+                    "name": str(name),
+                    "sha256": hashlib.sha256(bytes(data)).hexdigest(),
+                    "size": len(data),
+                }
+            )
+        dexes.sort(key=lambda item: item["name"])
+        return {
+            "file": {
+                "sha256": file_sha256.hexdigest(),
+                "sha1": file_sha1.hexdigest(),
+                "md5": file_md5.hexdigest(),
+                "size": size,
+            },
+            "dexes": dexes,
+            "dex_count": len(dexes),
             "has_more": has_more,
         }
 

@@ -81,6 +81,19 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.hashes")
+    def apk_hashes(session_id: str) -> dict[str, Any]:
+        """Fingerprint the APK: file (sha256/sha1/md5/size) and per-DEX digests.
+
+        The stable identity of the sample for VirusTotal and sample-database
+        lookups and for matching repackaged builds. Answers with file (sha256,
+        sha1, md5, size), dexes (each name, sha256, size), dex_count, and
+        has_more so a heavily multidexed app is not read as fully enumerated.
+        md5 and sha1 are for lookup, not security. There is no hash or digest
+        field; the whole-file digests live under file.
+        """
+        return _dump(analysis.apk_hashes(session_id))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
