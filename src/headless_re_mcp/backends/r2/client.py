@@ -30,7 +30,9 @@ _ALLOWED = frozenset(
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
-_AXJ_COMMAND = re.compile(r"axj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# axj (all refs), axtj (refs to a seek), axfj (refs from a seek); the seek is
+# what makes the address meaningful, so only the seeked forms are whitelisted.
+_AXJ_COMMAND = re.compile(r"ax[tf]?j @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 
 
 class R2Error(RuntimeError):
@@ -100,7 +102,11 @@ class R2Client:
     ) -> JsonObject:
         if type(address) is not int or address < 0:
             raise R2Error("invalid_params", "address must be a non-negative int")
-        cmd = f"axj @ {address}"
+        # axtj lists refs *to* this address, honoring the seek. Plain `axj @ x`
+        # ignores the seek entirely and dumps every ref in the binary -- so the
+        # requested address was silently discarded and the answer was the same
+        # program-wide list no matter what was asked.
+        cmd = f"axtj @ {address}"
         data = self.run(binary, ["aa", cmd], timeout=timeout)
         data = dict(data)
         data["address"] = address

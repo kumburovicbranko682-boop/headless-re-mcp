@@ -285,6 +285,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   自搓的原始 WebSocket echo server + 原始客户端（不引第三方依赖）经代理跑通一次真正的 `ws://` 双工，断言
   `flow.get` 能按方向取回帧、摘要正确标记；另加不依赖 mitmproxy 的单测直接驱动 `websocket_message`，覆盖截断、
   计数、标记与裁列表。
+- **`r2.xrefs` 完全忽略传入地址，永远返回整个二进制的全部交叉引用**。用的命令是 `axj @ addr`——可 `axj`
+  是「列出全部 refs」，`@ addr` 的 seek 对它毫无作用（实测某 ELF 上 `axj @ 任意地址` 与不带 seek 的 `axj` 都回
+  相同的 20 条、`/bin/ls` 上都回 820 条）。于是 `r2.xrefs(某函数)` 拿到的是全程序 refs、而非该地址的引用者，
+  `address` 参数形同虚设，文档许诺的「to/from 该地址」根本没兑现，而活体门只校验了 `parsed` 与 Address 结构、
+  查不出这条。改用 `axtj @ addr`（列出**指向**该地址的引用，honors seek）：返回的是调用方/读取方列表，每条带
+  `from`（引用点）、`type`、`from_address`；出边（该地址自身引用了谁）不在此列——从 `r2.disasm` 读。白名单正则
+  放宽为同时接受 `axj`/`axtj`/`axfj` 的 seek 形式。活体门强化：编一个 `main→compute→helper` 的 ELF，断言
+  `r2.xrefs(compute)` 非空、调用方落在 `main`、且其条数**严格小于**全程序 `axj` 条数——一旦有人退回忽略 seek 的
+  写法，这条数相等即告警。
 - **`web.screenshot` / `web.har.export` 两个取证工具没有活体门**。二者都以 mock 挡不住的方式跨 Playwright 边界：
   截图走 `page.screenshot()`、必须真落一个 PNG 文件并登记为可下载产物；HAR 要把会话记录的请求序列化成合法的
   HAR 1.2 日志、含首文档与子资源。Playwright API 漂移会静默弄坏其一。新增

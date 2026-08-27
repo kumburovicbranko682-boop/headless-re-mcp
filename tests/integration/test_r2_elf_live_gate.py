@@ -131,6 +131,24 @@ def test_r2_disasm_and_xrefs_run_against_a_real_function(tmp_path: Path) -> None
         if edge is not None:
             assert isinstance(edge, dict) and isinstance(edge.get("va"), int)
 
+    # These are refs *to* compute, and compute is called from main, so the list
+    # must not be empty and its callers must sit in main -- not a program-wide
+    # dump. `axj @ addr` ignores the seek and returns every ref in the binary;
+    # `axtj @ addr` honours it. Lock the difference: the refs-to count must be
+    # strictly below the whole-binary axj count, or the seek was dropped again.
+    assert xrefs.get("count", 0) >= 1, "compute is called from main; refs-to must not be empty"
+    callers = [str(row.get("fcn_name", "")) for row in xrefs["items"]]
+    assert any("main" in caller for caller in callers), (
+        f"expected main among compute's callers, got: {callers}"
+    )
+    assert any("compute" in str(row.get("opcode", "")) for row in xrefs["items"])
+    program_wide = client.run(binary, ["aa", f"axj @ {va}"], timeout=60.0)
+    assert program_wide["parsed"] is True
+    assert xrefs["count"] < program_wide.get("count", 0), (
+        "axtj must return only refs to the address; a count equal to the "
+        "program-wide axj count means the seek was ignored"
+    )
+
 
 @pytest.mark.integration
 def test_r2_strings_imports_exports_map_on_a_real_elf(tmp_path: Path) -> None:
