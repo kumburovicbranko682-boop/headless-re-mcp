@@ -205,6 +205,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `C:\Program Files\vm\revert.ps1` 整行变成一个参数。现在按命令行拆并保住路径。
 - **jadx / apktool / ghidra 写入后 prune 共享父目录会删掉其它会话**。关闭时只清自己的
   工作树。Ghidra 的 `export_*.json` 已登记为产物，关会话不再一并 `rmtree`。
+- **Ghidra 在非 Windows 宿主上每次调用都死在启动器上**。发行包同时带 `analyzeHeadless.bat`
+  （Windows）与 `analyzeHeadless`（POSIX），发现逻辑却无条件先挑 `.bat`，Linux/macOS 于是把
+  不可执行的批处理交给 `Popen`，每次 `ghidra.*` 都以 `backend_error: Permission denied` 收场。
+  现按宿主平台选择启动器，`.bat` 只作缺失时的兜底，测试里的半截 fake home 仍能解析。
+- **Ghidra 导出脚本没跑成却被吞成模糊报错**。新版 Ghidra（约 11.3 起）把 `.py` 交给 PyGhidra，
+  headless 未以 PyGhidra 方式启动时导入会成功、postScript 抛 `GhidraScriptLoadException`、
+  但 `analyzeHeadless` 仍退出 0；旧代码只看到没有 JSON，回一句 “export JSON missing after
+  postScript”，让调用方去怀疑样本。现在识别 `SCRIPT ERROR` / `GhidraScriptLoadException`
+  并返回 `capability_unavailable`，把 analyzeHeadless 自己报告的原因带回，指向脚本运行时而非二进制。
+- **Ghidra 工程目录没像兄弟后端那样对会话 id 失败关闭**。`ghidra.analyze` 与各导出直接用
+  `artifact_root/ghidra/<id>` 建/删工程并落 `export_<mode>.json`，未经 `_is_safe_session_segment`；
+  `registry.get` 虽会先挡掉伪造 id，但路径构造本身不该依赖这一顺序——现补齐与 web/proxy/apk/jadx
+  一致的守卫，`.`/`..`/空/含分隔符一律 `invalid_params`。
 - **`close_session` 在服务锁里关浏览器/代理**。拆到锁外；`web.close` 失败也不跳过
   调试器 worker。x64dbg 的 `debug-events/<session>/events.sqlite3` 关连接后删除。
 - **jadx 同名类返回错文件**。`rglob("Main.java")` 不再取树上第一个。

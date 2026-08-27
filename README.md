@@ -84,6 +84,8 @@ python3 -m headless_re_mcp serve-web
 
 `HEADLESS_RE_EXTRAS=pe,web,android,browser,proxy ./scripts/install-linux.sh` 可扩展安装范围。Playwright 浏览器仍需按上游方式另装，例如 `python3 -m playwright install chromium`。
 
+> Ghidra 的 `ghidra.*` 导出工具依赖 analyzeHeadless 的 Python 脚本运行时：旧版 Ghidra（约 11.2 及以前）自带 Jython 即可运行导出脚本；新版（约 11.3 起）的 `.py` 脚本改由 PyGhidra 接管，需以 PyGhidra 方式启动 analyzeHeadless，否则导入会成功但导出脚本不执行。运行时缺失时后端返回 `capability_unavailable` 并附上 analyzeHeadless 报告的原因，而不是静默产出空结果。此外 Ghidra 发行包同时包含 `analyzeHeadless`（POSIX）与 `analyzeHeadless.bat`（Windows），后端按宿主平台选择，不会在 Linux 上误用 `.bat`。
+
 ### Windows：从源码
 
 ```powershell
