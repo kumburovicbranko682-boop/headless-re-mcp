@@ -9,6 +9,7 @@ import subprocess
 from contextlib import suppress
 from ctypes import wintypes
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -335,6 +336,61 @@ def terminate_pid_tree(pid: int) -> list[int]:
         with suppress(Exception):
             _kill_pid(child)
             killed.append(child)
+    return killed
+
+
+def _pid_is_live(pid: int) -> bool:
+    """POSIX: True only while ``pid`` is a schedulable process, not a corpse.
+
+    ``os.kill(pid, 0)`` and a bare ``/proc`` presence both report a killed but
+    unreaped zombie as still there, so a successful kill would look like a
+    survivor in a container whose pid 1 does not reap orphans. Read the state
+    field instead: 'Z' (zombie) and 'X' (dead) mean the kill has landed.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    close = stat.rfind(")")
+    if close < 0:
+        return False
+    fields = stat[close + 2 :].split()
+    return bool(fields) and fields[0] not in {"Z", "X", "x"}
+
+
+def reap_orphaned_children(pid: int | None, group_id: int, *, wait_s: float = 2.0) -> list[int]:
+    """Kill a child a just-exited tool detached and left running. Never raises.
+
+    A configured CLI is often a wrapper (a shell, dotnet, or a JVM launcher)
+    that spawns a worker and exits 0, orphaning that worker to init. The tool
+    call then returns success while the worker still holds CPU and a lock on the
+    sample. The parent/child walk no longer sees it, so on POSIX enumerate the
+    session group the tool led (``start_new_session`` made its pid the group
+    id); on Windows fall back to a descendant walk.
+
+    The kill is confirmed before returning: SIGKILL is asynchronous, so a caller
+    that reports success immediately afterwards would otherwise still be racing a
+    live worker. Bounded by ``wait_s``; returns the PIDs the sweep signalled.
+    """
+    killed: list[int] = []
+    with suppress(Exception):
+        if os.name != "nt":
+            if not (isinstance(group_id, int) and group_id > 0):
+                return []
+            if not collect_process_group(group_id):
+                return []
+            killed = terminate_process_group(group_id)
+            deadline = monotonic() + max(0.0, wait_s)
+            while monotonic() < deadline:
+                if not any(_pid_is_live(member) for member in collect_process_group(group_id)):
+                    break
+                terminate_process_group(group_id)
+                sleep(0.02)
+        elif isinstance(pid, int) and pid > 0 and collect_descendants(pid):
+            killed = terminate_pid_tree(pid)
+            deadline = monotonic() + max(0.0, wait_s)
+            while monotonic() < deadline and collect_descendants(pid):
+                sleep(0.02)
     return killed
 
 

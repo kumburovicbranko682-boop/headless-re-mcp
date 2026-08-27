@@ -307,6 +307,15 @@ def _capture_process(
         with suppress(OSError):
             stderr_pipe.close()
 
+    if not cancelled and not timed_out and not limit_event.is_set():
+        # upx may be a wrapper that exits 0 after detaching a worker; reap any
+        # orphan so a successful call leaves nothing holding the sample.
+        from headless_re_mcp.core.process_tree import reap_orphaned_children
+
+        process_pid = getattr(process, "pid", None)
+        group_id = int(process_pid) if os.name != "nt" and process_pid else 0
+        reap_orphaned_children(process_pid, group_id)
+
     returncode = process.poll()
     if returncode is None:
         _terminate_process(process)

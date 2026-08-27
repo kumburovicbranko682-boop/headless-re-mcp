@@ -482,6 +482,15 @@ def _capture_process(
         with suppress(OSError, ValueError):
             observed.update(observer(process.pid))
 
+    if not timed_out and not limited and not cancelled:
+        # A wrapper around Exeinfo PE can exit 0 after detaching a worker; reap
+        # any orphan so a successful scan leaves nothing holding the sample.
+        from headless_re_mcp.core.process_tree import reap_orphaned_children
+
+        process_pid = getattr(process, "pid", None)
+        group_id = int(process_pid) if os.name != "nt" and process_pid else 0
+        reap_orphaned_children(process_pid, group_id)
+
     if returncode is None:
         returncode = -1
     capture = _ProcessCapture(
