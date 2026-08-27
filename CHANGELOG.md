@@ -60,6 +60,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   输出抛 `AdbError`，两个调用方已有的 `except AdbError` 分支即把结果如实报成 null + “could not
   verify”。真正未安装的包回的是空输出（exit 1、无文本），不算主机错误，仍如实为 null/false。
   新增两条直测：`pm path` 返回主机错误串时 install 为 null、uninstall 为 null（而非 true）。
+- **`device.info` 把主机错误串当成设备属性值报成成功。**它由五次 getprop 读取拼出摘要，却不像
+  `device.properties` / `packages` / `logcat` 那样对每次读取跑 `_is_host_error_output`：adbutils 的
+  `shell` 把 adb 主机端自己的 `error:` / `adb:` 消息当 stdout 返回而不抛异常，于是一台掉线/死掉的设备
+  会答成 `{"model": "error: device offline", ...}` 的成功读取——无人值守的 agent 便把死设备当成一台
+  型号叫「error…」的活设备。根因与那几个兄弟读取相同，只是这里读的是单值 getprop 而非方括号转储，所以
+  漏掉了。现对五次 getprop 结果逐一跑既有断言，命中即抛 `backend_error`（带上出错属性名与输出摘录），
+  与兄弟方法一致；健康设备的返回不变。新增回归分别钉住 `error:` 与 `adb:` 两种主机错误行。
 
 ### 修复（工作方向隐藏了 Android 共用的抓包）
 

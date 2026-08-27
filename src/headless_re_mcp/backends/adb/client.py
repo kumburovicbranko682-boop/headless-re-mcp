@@ -453,25 +453,29 @@ class AdbBackend:
     def info(self, serial: str) -> JsonObject:
         dev = self._device(serial)
         try:
-            return {
-                "serial": _check_serial(serial),
-                "state": _call(dev.get_state, timeout=_ADB_PROBE_TIMEOUT_S),
-                "model": _device_shell(
-                    dev, "getprop ro.product.model", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "device": _device_shell(
-                    dev, "getprop ro.product.device", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "sdk": _device_shell(
-                    dev, "getprop ro.build.version.sdk", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "release": _device_shell(
-                    dev, "getprop ro.build.version.release", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-                "abi": _device_shell(
-                    dev, "getprop ro.product.cpu.abi", timeout=_ADB_PROBE_TIMEOUT_S
-                ).strip(),
-            }
+            state = _call(dev.get_state, timeout=_ADB_PROBE_TIMEOUT_S)
+            props: dict[str, str] = {}
+            for field, prop in (
+                ("model", "ro.product.model"),
+                ("device", "ro.product.device"),
+                ("sdk", "ro.build.version.sdk"),
+                ("release", "ro.build.version.release"),
+                ("abi", "ro.product.cpu.abi"),
+            ):
+                text = _device_shell(
+                    dev, f"getprop {prop}", timeout=_ADB_PROBE_TIMEOUT_S
+                )
+                # adbutils hands the adb host's own error:/adb: line back as
+                # stdout instead of raising, so a dead or offline device would
+                # otherwise answer {"model": "error: device offline", ...} as a
+                # successful read -- the same failure device.properties /
+                # packages / logcat already refuse.
+                if _is_host_error_output(text):
+                    raise AdbError(
+                        "backend_error", "getprop failed", output=text[:800], property=prop
+                    )
+                props[field] = text.strip()
+            return {"serial": _check_serial(serial), "state": state, **props}
         except AdbError:
             raise
         except Exception as exc:  # noqa: BLE001
