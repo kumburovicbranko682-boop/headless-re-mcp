@@ -26,14 +26,25 @@ from headless_re_mcp.backends.adb.client import _MAX_FORWARDS, AdbBackend, AdbEr
 class _ForwardDev:
     """A device that records forwards/removes and can be told to fail."""
 
-    def __init__(self, *, forward_fails: bool = False, remove_fails: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        forward_fails: bool = False,
+        forward_times_out: bool = False,
+        remove_fails: bool = False,
+    ) -> None:
         self._forward_fails = forward_fails
+        self._forward_times_out = forward_times_out
         self._remove_fails = remove_fails
         self.forwarded: list[tuple[str, str]] = []
         self.removed: list[str] = []
 
     def forward(self, local: str, remote: str, timeout: float | None = None) -> None:
         del timeout
+        if self._forward_times_out:
+            # _call classifies a timeout-named exception into AdbError('timeout'),
+            # exercising the except AdbError arm rather than the generic one.
+            raise TimeoutError("adb forward timed out")
         if self._forward_fails:
             raise RuntimeError("adb refused the bind")
         self.forwarded.append((local, remote))
@@ -75,6 +86,23 @@ def test_a_failed_forward_does_not_leak_the_reserved_slot() -> None:
     with pytest.raises(AdbError) as caught:
         backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
     assert caught.value.code == "backend_error"
+    assert backend._forwards == []
+
+
+def test_a_forward_that_times_out_also_releases_the_reserved_slot() -> None:
+    """A timeout is classified AdbError, and that arm must free the slot too.
+
+    The generic-exception arm and the ``except AdbError`` arm both release the
+    reservation; a timing-out device takes the latter. If only the generic path
+    freed the slot, a device that times out on every bind would still leak its
+    slot each attempt and eventually trip the cap. The timeout code is preserved
+    (not reclassified) on the way out.
+    """
+    dev = _ForwardDev(forward_times_out=True)
+    backend = _backend_returning(dev)
+    with pytest.raises(AdbError) as caught:
+        backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
+    assert caught.value.code == "timeout"
     assert backend._forwards == []
 
 
