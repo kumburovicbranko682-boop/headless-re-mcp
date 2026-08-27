@@ -44,6 +44,33 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _application_flags(apk: Any) -> JsonObject:
+    """Effective application-level security posture flags.
+
+    Each flag is the explicit manifest attribute when present, else the
+    platform default: debuggable off, backup allowed, cleartext traffic only
+    below an effective targetSdk of 28. network_security_config reports
+    whether such a config exists, because when it does the platform ignores
+    usesCleartextTraffic in favour of the config's per-domain rules.
+    """
+
+    def attr(name: str) -> str | None:
+        value = apk.get_attribute_value("application", name)
+        return None if value is None else str(value).strip().lower()
+
+    cleartext = attr("usesCleartextTraffic")
+    if cleartext is None:
+        cleartext_effective = int(apk.get_effective_target_sdk_version()) < 28
+    else:
+        cleartext_effective = cleartext == "true"
+    return {
+        "debuggable": attr("debuggable") == "true",
+        "allow_backup": attr("allowBackup") != "false",
+        "uses_cleartext_traffic": cleartext_effective,
+        "network_security_config": attr("networkSecurityConfig") is not None,
+    }
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -202,7 +229,7 @@ class ApkClient:
                 opened=False,
                 package=None,
             )
-        return {
+        result: JsonObject = {
             "opened": True,
             "package": package,
             "version_name": apk.get_androidversion_name(),
@@ -219,6 +246,17 @@ class ApkClient:
                 }
             ),
         }
+        # The security posture flags are omitted together when the manifest
+        # attributes cannot be read: a defaulted answer after a failed read
+        # would report a hostile APK as not-debuggable / no-cleartext, which
+        # is the dangerous direction to be wrong in.
+        try:
+            flags = _application_flags(apk)
+        except Exception:  # noqa: BLE001 - manifest attribute APIs vary
+            pass
+        else:
+            result.update(flags)
+        return result
 
     def manifest(self, path: Path) -> JsonObject:
         apk = self._apk(path)

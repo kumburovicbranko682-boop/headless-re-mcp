@@ -24,6 +24,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 改进（`apk.open` 不报应用级安全姿态，debuggable/allowBackup/明文流量得手工翻 manifest）
+
+- `apk.open` 回身份信息（包名、版本、min/target SDK、ABI），但 **应用级安全姿态标志完全缺席**：
+  `android:debuggable`（开着意味着任何人可经 JDWP 附加改逻辑）、`allowBackup`（`adb backup` 直接导出应用
+  数据）、`usesCleartextTraffic` 与 networkSecurityConfig（明文拦截姿态）。这组标志是 Android 分诊清单最先
+  看的一批（MobSF 等扫描器的头几条），逆向者却得从 `apk.manifest` 的原始 XML 里自己抠。
+- 现在结果新增四个字段，报**有效值**而非仅显式属性：`debuggable` / `allow_backup` / `uses_cleartext_traffic`
+  取显式 manifest 属性，缺席时按平台默认补齐（debug 默认关、backup 默认开、明文仅在有效 targetSdk<28 默认开，
+  经 `get_effective_target_sdk_version()` 判定）；`network_security_config` 报告是否存在该配置——存在时平台
+  会忽略 cleartext 标志、以配置的逐域规则为准，描述里点明这一取代关系。
+- 诚实性语义与姊妹改进一致：manifest 属性读取失败时**四字段一并缺席**——读取失败后按默认作答会把恶意 APK
+  报成「不可调试、无明文」，恰是错得最危险的方向。既有字段不变。新增回归：四个显式非默认值各就各位；
+  全缺席时按平台默认（含 targetSdk 27/28 的明文分界）；属性查询抛错 → 四字段全缺席、身份字段照常返回。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
