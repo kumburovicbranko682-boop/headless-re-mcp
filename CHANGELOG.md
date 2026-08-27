@@ -49,6 +49,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（apk.certificates 的证书 serial 改回十六进制,可与公开 serial 直接比对）
+
+- androguard 把证书 serial 以 Python **`int`** 返回,后端用 `str(int)` 渲染成**十进制**——可旁边的
+  `sha256` 指纹是十六进制,而 openssl(`-serial`)、keytool(`-printcert`)、apksigner 以及各家威胁情报
+  源打印证书 serial 全用十六进制。逆向的人拿一个**公开的**(必为十六进制)恶意样本证书 serial 来比对我们的
+  十进制串,会静默匹配不上,而且同一个对象里两个标识符各用一种进制、自相矛盾。新增 `_hex_serial`:`int`
+  渲染成 `0x` 前缀小写十六进制(负数——X.509 不会出现——保留符号而非回绕成巨大无符号数),非 `int` 原样
+  `str()` 不猜进制;`certificates()` 的 `serial` 改用它。`apk.certificates` 文档串说明 serial 是 `0x`
+  前缀十六进制串、可与公开 serial 直接比对。单测:`_hex_serial` 把 int 渲染成 `0x` 十六进制、bool/空值/None
+  不误渲染,证书字段测试把假证书 serial 从 int 断言成 `0xa0000`(而非十进制 `655360`)并钉死文档串含
+  "hex"。新增 live gate(`test_apk_certificate_serial_live_gate.py`)配套夹具 `fixtures/apk/cert_sample.apk`
+  (最小 v1 签名 APK,`cert_sample_gen.py` 用 `cryptography` 生成、serial 固定 `0x0abc123456789def`,附重建
+  说明):经真 androguard 解析后断言 `serial` 是 `0x` 十六进制、解析回同一整数、等于夹具已知 serial,并守卫
+  它确实不等于旧的十进制形。CI 新增 `linux-apk-cert-serial` job 装 androguard 跑该 gate,skip≠pass 守卫在
+  androguard 已装却仍 skip 时判失败。
+
 ### 修复（core/limits 的 sysconf 测试在 Windows 收集即崩）
 
 - `test_core_limits_eviction.py` 里三条 `available_memory_bytes` 的 POSIX 分支测试把

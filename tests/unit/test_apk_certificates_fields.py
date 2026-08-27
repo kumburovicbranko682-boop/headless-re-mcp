@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from headless_re_mcp.backends.apk.client import ApkClient
+from headless_re_mcp.backends.apk.client import ApkClient, _hex_serial
 from headless_re_mcp.tools.apk import build_apk_tools
 
 
@@ -32,7 +32,9 @@ class _Cert:
     def __init__(self, index: int) -> None:
         self.subject = f"CN={index}"
         self.issuer = "CN=i"
-        self.serial_number = index
+        # asn1crypto hands the serial back as a Python int; big serials are the
+        # norm, so use one that renders differently in decimal and hex.
+        self.serial_number = 0xA0000 + index
         self.sha256_fingerprint = "aa"
 
 
@@ -62,7 +64,27 @@ def test_apk_certificates_names_signature_files_not_certs() -> None:
     assert len(payload["signature_files"]) == 32
     assert payload["has_more"] is True
     assert payload["v1_signed"] is True
+    # The serial is rendered as 0x-hex (like the sha256 beside it and every cert
+    # tool), not the old decimal str(int). Index 0 -> 0xa0000, not "655360".
+    first = payload["certificates"][0]
+    assert first["serial"] == "0xa0000"
+    assert first["serial"] != str(0xA0000)
     doc = _tool_docstring("apk.certificates")
     assert "Answers with certificates" in doc
     assert "signature_files" in doc
     assert "has_more" in doc
+    assert "hex" in doc
+
+
+def test_hex_serial_renders_ints_as_hex_and_passes_other_types_through() -> None:
+    """asn1crypto returns an int; str(int) was decimal, which no cert tool prints."""
+    assert _hex_serial(773513251999227375) == "0xabc123456789def"
+    assert _hex_serial(0) == "0x0"
+    # A negative (should never happen for X.509) keeps its sign rather than
+    # wrapping to a huge unsigned value.
+    assert _hex_serial(-255) == "-0xff"
+    # A bool is not a serial; do not render it as 0x1.
+    assert _hex_serial(True) == "True"
+    # A missing/blank serial stays empty, not "0x0".
+    assert _hex_serial("") == ""
+    assert _hex_serial(None) == ""

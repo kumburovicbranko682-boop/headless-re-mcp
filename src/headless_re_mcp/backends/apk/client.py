@@ -44,6 +44,27 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+def _hex_serial(value: Any) -> str:
+    """A certificate serial as ``0x``-prefixed hex, the form cert tooling prints.
+
+    asn1crypto hands the serial back as a Python ``int``, and ``str(int)``
+    rendered it in decimal -- while the ``sha256`` fingerprint beside it is hex,
+    and openssl (``-serial``), keytool (``-printcert``), apksigner and threat-intel
+    feeds all print certificate serials in hex. An analyst matching a known serial
+    -- always published in hex -- against a decimal string silently fails to find
+    it, and the reply disagreed with itself about how to render an identifier.
+    Emit hex; keep ``str()`` for the rare non-int a version might hand back rather
+    than guessing at its radix.
+    """
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        # X.509 serials are positive integers; stay defensive about a negative.
+        sign = "-" if value < 0 else ""
+        return f"{sign}0x{abs(value):x}"
+    return str(value or "")
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -272,7 +293,7 @@ class ApkClient:
                     {
                         "subject": str(getattr(cert, "subject", "")),
                         "issuer": str(getattr(cert, "issuer", "")),
-                        "serial": str(getattr(cert, "serial_number", "")),
+                        "serial": _hex_serial(getattr(cert, "serial_number", "")),
                         "sha256": cert.sha256_fingerprint
                         if hasattr(cert, "sha256_fingerprint")
                         else "",

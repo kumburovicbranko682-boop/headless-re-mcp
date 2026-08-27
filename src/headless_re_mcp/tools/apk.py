@@ -57,7 +57,10 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with certificates (subject, issuer, serial, sha256),
         signature_files, v1_signed, and has_more so a list that filled the
-        cap is not read as every signer. There is no certs or signatures field.
+        cap is not read as every signer. serial is a 0x-prefixed hex string --
+        the form openssl, keytool and threat feeds print it -- not a decimal
+        number, so it can be matched against a published serial directly. There
+        is no certs or signatures field.
         """
         return _dump(analysis.apk_certificates(session_id))
 
