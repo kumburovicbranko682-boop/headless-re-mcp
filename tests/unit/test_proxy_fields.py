@@ -161,6 +161,54 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     assert "response" in doc
 
 
+def test_proxy_flow_get_returns_the_request_body(tmp_path: Path, monkeypatch: Any) -> None:
+    """The request payload used to be dropped, leaving only the response.
+
+    Measured: a POST body under the cap comes back as request.body with
+    request.size, alongside the response body; a body over the cap spills to
+    request.body_path with no request.body. Looking for the POSTed credentials
+    or JSON after a capture used to read as a flow that never carried them.
+    """
+    small = b'{"user":"alice","pass":"s3cr3t"}'
+    request = SimpleNamespace(
+        method="POST",
+        pretty_url="http://x/login",
+        headers={"content-type": "application/json"},
+        raw_content=small,
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "application/json"},
+        raw_content=b'{"ok":true}',
+    )
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert payload["request"]["body"] == small.decode()
+    assert payload["request"]["size"] == len(small)
+    assert "body_path" not in payload["request"]
+    assert payload["response"]["body"] == '{"ok":true}'
+
+    request.raw_content = b"P" * 200_001
+    spilled = backend.flow_get("s", "f1", tmp_path)
+    assert "body" not in spilled["request"]
+    assert spilled["request"]["size"] == 200_001
+    body_path = Path(str(spilled["request"]["body_path"]))
+    assert body_path.parent == tmp_path
+    assert body_path.name.startswith("flow-req-") and body_path.suffix == ".bin"
+    assert body_path.read_bytes() == request.raw_content
+    doc = _tool_docstring("proxy.flow.get")
+    assert "request body" in doc
+
+
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
     """The catalog said how many flows and never named the count field.
 

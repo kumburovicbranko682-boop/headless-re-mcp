@@ -47,6 +47,16 @@ def _origin_server() -> Iterator[str]:
             self.end_headers()
             self.wfile.write(_ORIGIN_BODY)
 
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            length = int(self.headers.get("Content-Length", "0"))
+            self.rfile.read(length)
+            body = b'{"stored":true}'
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
     server = HTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -146,6 +156,33 @@ def test_proxy_actually_intercepts_and_records_a_request() -> None:
             assert detail["request"]["method"] == "GET"
             assert detail["response"]["status"] == 200
             assert detail["response"]["body"] == _ORIGIN_BODY.decode("utf-8")
+
+            # The request body is the point of most captures; drive a POST with
+            # a payload and assert flow_get hands it back, not just the response.
+            post_url = origin_url.rsplit("/", 1)[0] + "/login"
+            payload = b'{"user":"alice","token":"s3cr3t"}'
+            post = urllib.request.Request(
+                post_url, data=payload, headers={"Content-Type": "application/json"}
+            )
+            with opener.open(post, timeout=10) as response:
+                assert response.status == 201
+
+            def _captured_post() -> dict[str, Any] | None:
+                for flow in backend.flows("gate-capture")["flows"]:
+                    if str(flow.get("url", "")).endswith("/login"):
+                        return flow
+                return None
+
+            post_flow = _poll(_captured_post)
+            assert post_flow is not None, "the POST through the proxy was never recorded"
+            assert post_flow["method"] == "POST"
+            post_detail = backend.flow_get(
+                "gate-capture", post_flow["id"], Path(tempfile.mkdtemp())
+            )
+            assert post_detail["request"]["method"] == "POST"
+            assert post_detail["request"]["size"] == len(payload)
+            assert post_detail["request"]["body"] == payload.decode("utf-8")
+            assert post_detail["response"]["status"] == 201
         finally:
             backend.stop("gate-capture")
 

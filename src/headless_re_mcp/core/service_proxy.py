@@ -103,17 +103,20 @@ class ProxyAnalysisMixin:
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         try:
             data = self._proxy.flow_get(session_id, flow_id, self._proxy_artifact_dir(session_id))
-            spilled = data.get("response", {})
-            body_path = spilled.get("body_path") if isinstance(spilled, dict) else None
-            if isinstance(body_path, str) and body_path:
-                data = _register_capture(
-                    self,
-                    session_id,
-                    Path(body_path),
-                    kind="proxy_flow_body",
-                    source="proxy.flow.get",
-                    payload=data,
-                )
+            # Either side's body can spill to an artifact; register whichever did
+            # so a large request payload is downloadable, not just the response.
+            for side in ("request", "response"):
+                section = data.get(side)
+                body_path = section.get("body_path") if isinstance(section, dict) else None
+                if isinstance(body_path, str) and body_path:
+                    data = _register_capture(
+                        self,
+                        session_id,
+                        Path(body_path),
+                        kind=f"proxy_flow_{side}_body",
+                        source="proxy.flow.get",
+                        payload=data,
+                    )
             return _success(data, session_id=session_id, backend="proxy")
         except ProxyError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)

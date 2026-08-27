@@ -31,6 +31,9 @@ _MAX_STORED_BODY = 2 * 1024 * 1024
 _MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
+# A body at or below this stays inline in the reply; anything larger spills to an
+# artifact so a single fetch cannot return a multi-megabyte string.
+_MAX_INLINE_BODY = 200_000
 _OMITTED_BODY = object()
 
 
@@ -147,6 +150,32 @@ def _close_proxy_servers(
     with contextlib.suppress(Exception):
         future = asyncio.run_coroutine_threadsafe(_teardown(), loop)
         future.result(timeout=timeout)
+
+
+def _message_body(message: Any) -> bytes:
+    """The decoded body of a mitmproxy request/response, or empty.
+
+    ``raw_content`` is the retained bytes; a message with no body (a GET, a
+    bodiless response) or one that raises while decoding yields ``b""`` so the
+    caller never has to guard.
+    """
+    if message is None:
+        return b""
+    try:
+        return message.raw_content or b""
+    except Exception:  # noqa: BLE001 - a malformed capture must not crash the read
+        return b""
+
+
+def _attach_body(section: JsonObject, body: bytes, artifact_dir: Path, *, prefix: str) -> None:
+    """Put a captured body on a flow section, inline when small, spilled when big."""
+    if len(body) > _MAX_INLINE_BODY:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        out = artifact_dir / f"{prefix}-{uuid4().hex}.bin"
+        out.write_bytes(body)
+        section["body_path"] = str(out)
+    else:
+        section["body"] = body.decode("utf-8", errors="replace")
 
 
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
@@ -604,31 +633,28 @@ class ProxyBackend:
             )
         req = flow.request
         resp = flow.response
-        body = b""
-        try:
-            body = resp.raw_content or b"" if resp else b""
-        except Exception:  # noqa: BLE001
-            body = b""
+        req_body = _message_body(req)
+        resp_body = _message_body(resp)
         result: JsonObject = {
             "id": flow_id,
             "request": {
                 "method": req.method,
                 "url": req.pretty_url,
                 "headers": dict(req.headers),
+                "size": len(req_body),
             },
             "response": {
                 "status": getattr(resp, "status_code", None),
                 "headers": dict(resp.headers) if resp else {},
-                "size": len(body),
+                "size": len(resp_body),
             },
         }
-        if len(body) > 200_000:
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            out = artifact_dir / f"flow-{uuid4().hex}.bin"
-            out.write_bytes(body)
-            result["response"]["body_path"] = str(out)
-        else:
-            result["response"]["body"] = body.decode("utf-8", errors="replace")
+        # The request body is often the point of the capture (POST params, a
+        # JSON payload, credentials); it used to be dropped, leaving only the
+        # response. Both are now returned, inline when small and spilled to an
+        # artifact when large, symmetrically.
+        _attach_body(result["request"], req_body, artifact_dir, prefix="flow-req")
+        _attach_body(result["response"], resp_body, artifact_dir, prefix="flow")
         return result
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
