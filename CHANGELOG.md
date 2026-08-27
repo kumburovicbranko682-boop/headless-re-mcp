@@ -59,6 +59,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
   创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
 
+### 修复（proxy 的 HAR 导出把每条流的耗时都写成 -1，瀑布图没有时长）
+
+- `har_entry` 一直把每个 entry 的 `timings` 写死成 `{send:-1, wait:-1, receive:-1}`、`time` 写死
+  成 0——HAR 1.2 里 -1 是「未测量」的标记值，于是 Chrome DevTools「Import HAR」等查看器的瀑布图
+  里每条请求都没有时长条，`time` 也恒为 0。可 mitmproxy 其实给每条请求/响应都盖了 start/end 纪元
+  秒（`request.timestamp_start/timestamp_end`、`response.timestamp_start/timestamp_end`），三段
+  相减就是真实的 send/wait/receive 毫秒。现 `_FlowRecorder._record` 用 `_flow_timings` 把三段算成
+  毫秒（缺时间戳的段仍如实为 -1；两枚时间戳相等或因跨时钟轻微反相则记 0 而非负值；一段都算不出时
+  整块为 null），记到摘要行上；`har_entry` 新增 `timings` 参数，在场时填进 `timings` 并把 `time`
+  取成各非负段之和（绝不把 -1 折进总时长），并把 entry 注释里「phase timings were not captured」
+  一句去掉。该 `timings` 同时如实出现在 `proxy.flows` 的行里（抓不到为 null），工具文档串已同步。
+  web 侧暂不改：CDP 的分段耗时要另取 `Network.responseReceived` 的 timing 对象与 loadingFinished，
+  按 HAR 规范各 entry 的 timings 相互独立，proxy 单独给真实分段是合法的。新增六条直测：`har_entry`
+  给定分段算出 timings 与 time、缺段仍为 -1 且不计入 time、无分段退回占位；proxy 完成流三段皆真、
+  出错流只有 send、无时间戳流 timings 为 null 且 HAR 退回 -1。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

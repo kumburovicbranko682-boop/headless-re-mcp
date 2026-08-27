@@ -168,6 +168,47 @@ def _content_len(part: Any) -> int:
         return 0
 
 
+def _phase_ms(start: Any, end: Any) -> float:
+    """Milliseconds between two mitmproxy epoch stamps, or -1 when unavailable.
+
+    mitmproxy stamps each request and response with start/end epoch seconds, so
+    a completed flow's HAR send/wait/receive phases are real subtractions. A
+    stamp mitmproxy never set (an errored flow with no response, an older
+    version) is None, so the phase is the -1 "not measured" sentinel; a stamp
+    pair that comes back equal or slightly reversed across mitmproxy's clocks is
+    a phase that still happened, reported as 0 rather than a negative duration.
+    """
+    if (
+        isinstance(start, bool)
+        or isinstance(end, bool)
+        or not isinstance(start, (int, float))
+        or not isinstance(end, (int, float))
+    ):
+        return -1.0
+    delta = (float(end) - float(start)) * 1000.0
+    return round(delta, 3) if delta > 0 else 0.0
+
+
+def _flow_timings(req: Any, resp: Any) -> JsonObject | None:
+    """HAR send/wait/receive millis for a flow, or None when nothing was timed.
+
+    send is how long the request took to send, wait the gap until the first
+    response byte, receive the response transfer. Any phase whose stamps are
+    missing stays -1; when all three are missing (mitmproxy timed nothing) the
+    whole block is dropped so har_entry falls back to unknown timings.
+    """
+    send = _phase_ms(getattr(req, "timestamp_start", None), getattr(req, "timestamp_end", None))
+    wait = _phase_ms(
+        getattr(req, "timestamp_end", None), getattr(resp, "timestamp_start", None)
+    )
+    receive = _phase_ms(
+        getattr(resp, "timestamp_start", None), getattr(resp, "timestamp_end", None)
+    )
+    if send == -1.0 and wait == -1.0 and receive == -1.0:
+        return None
+    return {"send": send, "wait": wait, "receive": receive}
+
+
 def _encoded_len(value: object) -> int:
     try:
         return len(str(value).encode("utf-8", errors="replace"))
@@ -369,6 +410,11 @@ class _FlowRecorder:
         # whose body was not retained -- and the HAR export can report a real
         # content size instead of the -1 "unknown" sentinel.
         response_size = _content_len(resp)
+        # mitmproxy stamps each request/response with start/end epoch seconds, so
+        # the HAR send/wait/receive phases are real durations rather than the -1
+        # placeholders; keep them on the summary so the flow list shows per-flow
+        # timing and export_har can draw a real waterfall.
+        timings = _flow_timings(req, resp)
         error_text, error_truncated = _bounded_metadata(error_msg, _MAX_METADATA_BYTES)
         with self._lock:
             self._seq += 1
@@ -400,6 +446,7 @@ class _FlowRecorder:
                 "status": getattr(resp, "status_code", None),
                 "content_type": content_type,
                 "response_size": response_size,
+                "timings": timings,
             }
             if omitted:
                 entry["body_omitted"] = True
@@ -730,6 +777,7 @@ class ProxyBackend:
                 status=f.get("status"),
                 mime_type=f.get("content_type") or "",
                 response_body_size=f.get("response_size"),
+                timings=f.get("timings"),
             )
             for f in inst.recorder.snapshot()
         ]
