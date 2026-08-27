@@ -670,3 +670,43 @@ def test_pe_tools_on_apk_and_web_sessions_report_target_mismatch(tmp_path: Path)
         assert web_dynamic.error.code == "target_mismatch"
     finally:
         service.close_all()
+
+
+def test_apk_tools_on_pe_and_web_sessions_report_target_mismatch(tmp_path: Path) -> None:
+    """The APK surface must refuse a non-APK session before it touches a backend.
+
+    Every apk.* method routes through ``_apk_binary`` -> ``require_target(APK)``
+    before constructing androguard/jadx/apktool, so a PE or web session earns
+    ``target_mismatch`` -- and it does so regardless of whether the Android
+    toolchain is installed. This guards against a method being reordered to build
+    its backend first, which on a toolchain-less host would flip the answer to
+    ``capability_unavailable`` for what is really a wrong-target call.
+    """
+    pe_binary = tmp_path / "sample.exe"
+    _write_minimal_pe(pe_binary)
+
+    service = AnalysisService(_settings(tmp_path))
+    try:
+        pe_created = service.create_session(str(pe_binary), target="pe")
+        assert pe_created.ok and pe_created.data is not None, pe_created.error
+        pe_id = str(pe_created.data["session"]["id"])
+
+        web_created = service.create_session("https://example.com/app", target="web")
+        assert web_created.ok and web_created.data is not None, web_created.error
+        web_id = str(web_created.data["session"]["id"])
+
+        # One representative call per backend the APK surface fronts: androguard
+        # (open/classes), jadx (decompile) and apktool/apksigner (decode/sign).
+        for session_id in (pe_id, web_id):
+            calls = (
+                service.apk_open(session_id),
+                service.apk_classes(session_id),
+                service.apk_decompile(session_id, "com.example.Foo"),
+                service.apk_decode(session_id),
+                service.apk_sign(session_id),
+            )
+            for result in calls:
+                assert not result.ok and result.error is not None
+                assert result.error.code == "target_mismatch"
+    finally:
+        service.close_all()

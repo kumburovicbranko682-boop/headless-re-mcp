@@ -162,6 +162,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   仍按预期报 `capability_unavailable`。(内部 shell 注入面另经审计:唯一把调用方输入拼进 shell 字符串的
   `ensure_frida_server` 的 `remote_path` 受 `^/[\w./\-]+$` 约束——不含引号/空格/元字符,且包在
   `su -c '...'` 单引号里——其余标识符一律走 `_check_serial`/`_check_package` 白名单并以列表参数传入。)
+- APK 工具面的 target 守卫补上端到端回归:每个 `apk.*` 都先经 `_apk_binary` → `require_target(APK)`
+  再构造 androguard/jadx/apktool,所以 PE/Web 会话确定地报 `target_mismatch`,且与本机是否装了
+  Android 工具链无关。此前只有模型层(`test_session_target_guard`)与 PE→APK 方向有测试;新增
+  `test_apk_tools_on_pe_and_web_sessions_report_target_mismatch` 覆盖 `apk.open/classes/decompile/
+  decode/sign` 五个入口(androguard/jadx/apktool/apksigner 各一),钉死"先判目标、再探能力"——CI
+  (不含 `android` 附加项)上正是在工具链缺席时验证 `target_mismatch` 压过 `capability_unavailable`。
 
 ### 新增（会话目标类型）
 
