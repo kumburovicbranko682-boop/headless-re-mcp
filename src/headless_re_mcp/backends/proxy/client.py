@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import inspect
 import logging
 import os
 import socket
@@ -58,6 +59,35 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.run_until_complete(loop.shutdown_asyncgens())
     finally:
         loop.close()
+
+
+async def _shutdown_master(master: Any) -> None:
+    """Stop the proxy's listening servers, then unblock the master's run loop.
+
+    ``Master.shutdown()`` only unblocks ``run()``; on current mitmproxy releases
+    it does not close the sockets the Proxyserver addon owns, so the port stays
+    bound after the loop is torn down and the next capture cannot rebind.
+    Cancelling loop tasks does not help either -- the listener lives on a server
+    instance, not on a pending task. Stopping each instance is what actually
+    frees the port, and it is the same path mitmproxy drives internally when the
+    proxy mode is reconfigured to empty. It degrades quietly on versions whose
+    addon shape differs so the bare ``shutdown()`` still runs.
+    """
+    proxyserver = None
+    with contextlib.suppress(Exception):
+        proxyserver = master.addons.get("proxyserver")
+    if proxyserver is not None:
+        with contextlib.suppress(Exception):
+            servers = list(getattr(proxyserver, "servers", []) or [])
+            for instance in servers:
+                stop = getattr(instance, "stop", None)
+                if stop is None:
+                    continue
+                with contextlib.suppress(Exception):
+                    result = stop()
+                    if inspect.isawaitable(result):
+                        await result
+    master.shutdown()
 
 
 def _port_accepts(host: str, port: int, timeout: float = 0.25) -> bool:
@@ -358,8 +388,20 @@ class _ProxyInstance:
         master = self._master
         loop = self._loop
         if master is not None and loop is not None:
-            with contextlib.suppress(Exception):
-                loop.call_soon_threadsafe(master.shutdown)
+            future: concurrent.futures.Future[Any] | None = None
+            try:
+                # Close the listening sockets from inside the still-running loop:
+                # a coroutine is the only way to await the servers' async stop,
+                # which is what frees the port. Scheduling can only fail when the
+                # loop never started (a start() that died before run()), where
+                # the bare shutdown below is all that is needed.
+                future = asyncio.run_coroutine_threadsafe(_shutdown_master(master), loop)
+            except Exception:  # noqa: BLE001 - loop not running yet
+                with contextlib.suppress(Exception):
+                    loop.call_soon_threadsafe(master.shutdown)
+            if future is not None:
+                with contextlib.suppress(Exception):
+                    future.result(timeout=10.0)
         if self._thread is not None:
             self._thread.join(timeout=10.0)
         # Also here, not only in the thread's own unwind: a thread that is wedged
