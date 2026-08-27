@@ -3178,8 +3178,28 @@ class TestDeviceListsDiscloseTruncation:
         raw = "\n".join(f"[ro.item{index}]: [{index}]" for index in range(12))
         result = self._backend(raw).properties("emulator-5554", limit=4)
         assert result["count"] == 4
+        assert result["total"] == 12
         assert result["has_more"] is True
         assert "ro.item4" not in result["properties"]
+
+    def test_capped_properties_are_the_alphabetical_prefix_not_a_getprop_slice(
+        self,
+    ) -> None:
+        """A capped property view must be the alphabetically-first cap, deterministically.
+
+        getprop is not guaranteed to emit sorted output on every device/shell, so
+        keeping the first cap lines returned an arbitrary subset there. Feed an
+        unsorted getprop dump and require the alphabetical prefix (and an honest
+        total) regardless.
+        """
+        order = ["sys.z", "ro.a", "persist.m", "ro.b", "init.svc.k", "ro.c"]
+        raw = "\n".join(f"[{name}]: [{name}-val]" for name in order)
+        result = self._backend(raw).properties("emulator-5554", limit=3)
+        assert list(result["properties"].keys()) == ["init.svc.k", "persist.m", "ro.a"]
+        assert result["properties"]["ro.a"] == "ro.a-val"
+        assert result["count"] == 3
+        assert result["total"] == 6
+        assert result["has_more"] is True
 
     def test_frida_application_list_past_the_cap_says_so(self) -> None:
         from headless_re_mcp.backends.frida.client import FridaClient

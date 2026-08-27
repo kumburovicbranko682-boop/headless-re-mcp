@@ -64,9 +64,11 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Return getprop key/value pairs for a device.
 
-        Answers with properties (the name-to-value map), count, and has_more
-        so a page that filled the cap is not read as every property. There
-        is no props or items field.
+        Answers with properties (the name-to-value map), count, total, and
+        has_more so a page that filled the cap is not read as every property.
+        properties is the alphabetically-first cap of all keys, not the first
+        cap in getprop order, so paging by raising limit is stable. There is
+        no props or items field.
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 

@@ -398,17 +398,24 @@ class AdbBackend:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PROPERTIES))
         raw = _device_shell(dev, "getprop")
-        props: dict[str, str] = {}
-        has_more = False
+        all_props: dict[str, str] = {}
         for line in str(raw).splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if not match:
                 continue
-            if len(props) >= capped:
-                has_more = True
-                break
-            props[match.group(1)] = match.group(2)
-        return {"properties": props, "count": len(props), "has_more": has_more}
+            all_props[match.group(1)] = match.group(2)
+        # Rank every key, not the first `capped` lines. getprop output is not
+        # guaranteed sorted across devices/shells, so keeping the first `capped`
+        # lines returned an arbitrary subset there; taking the alphabetically-first
+        # keys makes a capped view stable and paging by raising limit monotonic.
+        keys = heapq.nsmallest(capped, all_props)
+        props = {key: all_props[key] for key in keys}
+        return {
+            "properties": props,
+            "count": len(props),
+            "total": len(all_props),
+            "has_more": len(all_props) > capped,
+        }
 
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500
