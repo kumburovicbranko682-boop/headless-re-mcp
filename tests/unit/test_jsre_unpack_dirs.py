@@ -8,11 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from headless_re_mcp.core.service_jsre import (
-    _MAX_JSRE_UNPACK_DIRS,
-    JsReAnalysisMixin,
-    prune_jsre_unpack_dirs,
+from headless_re_mcp.backends.jsre import JsReError
+from headless_re_mcp.core.limits import (
+    JSRE_UNPACK_MAX_ENTRIES,
+    prune_capped_dir,
 )
+from headless_re_mcp.core.service_jsre import JsReAnalysisMixin
 
 
 def _fill_unpack(directory: Path, *, files: int = 100, size: int = 10 * 1024) -> None:
@@ -22,6 +23,11 @@ def _fill_unpack(directory: Path, *, files: int = 100, size: int = 10 * 1024) ->
 
 
 def test_prune_keeps_only_the_newest_unpack_trees(tmp_path: Path) -> None:
+    """js.unpack_bundle retires its count-only prune for prune_capped_dir.
+
+    Pin the behaviour the jsre directory now relies on: the newest
+    JSRE_UNPACK_MAX_ENTRIES trees survive, oldest evicted by mtime first.
+    """
     root = tmp_path / "jsre"
     root.mkdir()
     for index in range(20):
@@ -29,12 +35,12 @@ def test_prune_keeps_only_the_newest_unpack_trees(tmp_path: Path) -> None:
         _fill_unpack(directory)
         os.utime(directory, (index + 1, index + 1))
 
-    prune_jsre_unpack_dirs(root, keep=8)
+    prune_capped_dir(root, max_entries=JSRE_UNPACK_MAX_ENTRIES, max_bytes=1 << 40)
 
     left = sorted(path.name for path in root.iterdir())
-    assert left == [f"unpack-{index:03d}" for index in range(12, 20)]
+    assert left == [f"unpack-{index:03d}" for index in range(20 - JSRE_UNPACK_MAX_ENTRIES, 20)]
     total = sum(path.stat().st_size for path in root.rglob("*.js"))
-    assert total == 8 * 100 * 10 * 1024
+    assert total == JSRE_UNPACK_MAX_ENTRIES * 100 * 10 * 1024
 
 
 class _FakeJs:
@@ -74,9 +80,50 @@ def test_an_unpack_loop_cannot_grow_jsre_without_bound(
 
     root = tmp_path / "jsre"
     dirs = [path for path in root.iterdir() if path.is_dir()]
-    assert len(dirs) == _MAX_JSRE_UNPACK_DIRS
+    assert len(dirs) == JSRE_UNPACK_MAX_ENTRIES
     total = sum(path.stat().st_size for path in root.rglob("*.js"))
-    assert total == _MAX_JSRE_UNPACK_DIRS * 100 * 10 * 1024
+    assert total == JSRE_UNPACK_MAX_ENTRIES * 100 * 10 * 1024
+
+
+class _FailingJs:
+    """Creates the tree (like webcrack half-running) then reports failure."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def unpack_bundle(
+        self,
+        path: Path,
+        out_dir: Path,
+        *,
+        timeout: float = 300.0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        del path, timeout, offset, limit
+        _fill_unpack(out_dir)
+        raise JsReError("backend_error", "webcrack unpack failed")
+
+
+def test_a_failing_unpack_loop_still_reclaims_old_trees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retention runs in finally, so even failed unpacks that wrote a tree are capped.
+
+    The old code pruned the byte cap only on success; a loop of failures kept
+    only the count cap. prune_capped_dir now runs on every call, pass or fail.
+    """
+    monkeypatch.setattr("headless_re_mcp.core.service_jsre.JsClient", _FailingJs)
+    harness = _Harness(tmp_path)
+    bundle = tmp_path / "app.js"
+    bundle.write_text("bundle", encoding="utf-8")
+    for _ in range(20):
+        result = harness.js_unpack_bundle(str(bundle))
+        assert result.ok is False
+
+    root = tmp_path / "jsre"
+    dirs = [path for path in root.iterdir() if path.is_dir()]
+    assert len(dirs) == JSRE_UNPACK_MAX_ENTRIES
 
 
 def test_unpack_file_list_is_paged_and_says_what_it_left_behind(
