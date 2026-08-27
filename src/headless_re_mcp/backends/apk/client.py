@@ -234,19 +234,35 @@ class ApkClient:
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
+        # get_permissions() is the manifest's uses-permission list (what the
+        # app REQUESTS). The local used to be named "declared", which it never
+        # was: the <permission> elements the app itself DEFINES come from
+        # get_declared_permissions() and are exposed separately below.
+        uses, uses_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
         try:
             requested, requested_more = _cap_names(
                 apk.get_requested_permissions(), _MAX_PERMISSIONS
             )
         except Exception:  # noqa: BLE001 - older androguard lacks this
-            requested, requested_more = declared, declared_more
-        return {
-            "permissions": declared,
+            requested, requested_more = uses, uses_more
+        result: JsonObject = {
+            "permissions": uses,
             "requested_permissions": requested,
-            "count": len(declared),
-            "has_more": declared_more or requested_more,
+            "count": len(uses),
+            "has_more": uses_more or requested_more,
         }
+        # Custom <permission> definitions guard exported components and are a
+        # separate axis from requests; when the field is absent androguard
+        # could not enumerate them, which is different from "none defined".
+        try:
+            defined, defined_more = _cap_names(apk.get_declared_permissions(), _MAX_PERMISSIONS)
+        except Exception:  # noqa: BLE001 - API varies by androguard version
+            pass
+        else:
+            result["declared_permissions"] = defined
+            if defined_more:
+                result["has_more"] = True
+        return result
 
     def certificates(self, path: Path) -> JsonObject:
         apk = self._apk(path)

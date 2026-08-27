@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 改进（`apk.permissions` 名义上列 declared 权限实则从未列过，应用自定义的 `<permission>` 声明补上了）
+
+- `apk.permissions` 的描述写着 "List **declared** and requested permissions"，后端局部变量也叫 `declared`，
+  可它取的是 androguard 的 `get_permissions()`——那是清单里 **uses-permission（申请）** 列表；真正的
+  `<permission>` 自定义权限声明（`get_declared_permissions()`）从未暴露。更糟的是现代 androguard（4.x）已
+  移除 `get_requested_permissions`，现有 fallback 使 `requested_permissions` 恒为 `permissions` 的复制品——
+  两个字段互为冗余，而名义上声称覆盖的「声明」轴完全缺席。自定义权限恰是分析导出组件访问控制与权限抢注
+  （permission squatting）的关键信号，逆向者按描述向这个工具要 declared 却系统性地拿不到。
+- 现在结果新增 `declared_permissions`（应用自己定义的 `<permission>` 名单，经排序与封顶，超出封顶并入
+  `has_more`）；枚举失败（androguard 版本缺该 API）时**整字段缺席**，与空列表（「确实没定义」）语义区分开。
+  既有 `permissions`/`requested_permissions`/`count` 不变；误导性的局部变量 `declared` 更名为 `uses`。
+  `apk.permissions` 描述改为如实说明各字段的轴（申请 vs 自定义）及字段缺席的含义。
+- 新增回归：自定义权限乱序给出 → `declared_permissions` 排序返回、描述点名该字段；300 份定义、封顶 256 →
+  截断并入 `has_more`；伪 APK 无 `get_declared_permissions` → 字段缺席而非空列表。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
