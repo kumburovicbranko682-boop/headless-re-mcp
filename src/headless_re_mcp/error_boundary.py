@@ -33,9 +33,18 @@ JsonObject = dict[str, Any]
 _LOGGER_NAME = "headless_re_mcp.incidents"
 _LOCK = threading.Lock()
 _LOG_PATH: Path | None = None
+# The keyword set is kept in step with the structured redactor in
+# ``redaction.py``: a value masked when it sits under a dict key must also be
+# masked when it appears inline in an exception message, because that message is
+# what reaches the on-disk incident log, the HTTP 500 body and the CLI stderr
+# envelope. The strict ``[:=]`` boundary (rather than a trailing ``\w*``) is
+# deliberate -- it keeps "tokenized=false" and similar diagnostics readable.
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
-    re.compile(r"(?i)((?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s,;]+"),
+    re.compile(
+        r"(?i)((?:api[_-]?key|private[_-]?key|access[_-]?key|token|secret"
+        r"|password|passwd|credential)\s*[:=]\s*)[^\s,;]+"
+    ),
 )
 
 
