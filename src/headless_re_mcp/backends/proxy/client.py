@@ -75,6 +75,28 @@ def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
+# CLI-only DumpMaster addons that have no business in an embedded live proxy:
+# both exist to serve ``mitmdump -r <file>`` / stdin replay and to keep that
+# process alive afterwards, and both read ``ctx.options.rfile`` in their
+# ``running()`` hook. mitmproxy is not built to run several masters in several
+# threads at once (which is exactly what one proxy-per-session does), and under
+# that concurrency ``ctx.options`` intermittently resolves to a bare default
+# Options where ``rfile`` was never registered -- the addon raises "No such
+# option: rfile", the ``errorcheck`` addon escalates it to SystemExit(1), and an
+# otherwise healthy capture dies at startup roughly one start in six. We never
+# replay from a file, so dropping these two removes the only readers of ``rfile``
+# and with them the race, without touching the capture path.
+_CLI_ONLY_ADDONS = ("keepserving", "readfile", "readfilestdin")
+
+
+def _drop_cli_only_addons(master: Any) -> None:
+    for name in _CLI_ONLY_ADDONS:
+        with contextlib.suppress(Exception):
+            addon = master.addons.get(name)
+            if addon is not None:
+                master.addons.remove(addon)
+
+
 def _close_proxy_servers(master: Any, loop: asyncio.AbstractEventLoop | None) -> None:
     """Stop the Proxyserver addon's listeners so the port is actually released.
 
@@ -536,6 +558,7 @@ class _ProxyInstance:
                 master = DumpMaster(opts, loop=loop, with_termlog=False, with_dumper=False)
             except TypeError:
                 master = DumpMaster(opts)
+            _drop_cli_only_addons(master)
             master.addons.add(self.recorder)
             self._master = master
             self._started.set()

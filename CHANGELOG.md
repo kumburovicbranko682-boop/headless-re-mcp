@@ -24,6 +24,8 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+抓包代理不再在启动时偶发自杀。每个会话一个 mitmproxy master、各跑在自己的线程和事件循环里，而 mitmproxy 并非为「一个进程内多 master 并发」设计：`keepserving` 与 `readfile`/`readfilestdin` 这几个只服务 `mitmdump -r <文件>` 回放、并在其 `running()` 钩子里读 `ctx.options.rfile` 的 CLI 专用 addon，在这种并发下 `ctx.options` 会偶发落到一个没注册过 `rfile` 的裸默认 Options 上，addon 抛 `No such option: rfile`，`errorcheck` 再把它升级成 `SystemExit(1)`——一条本来健康的抓包大约每六次启动就这么在启动阶段猝死一次（`test_close_all_releases_every_running_capture` 因此偶发翻红）。我们从不从文件回放，故 `_drop_cli_only_addons` 在 `master.run()` 前把这几个 addon（`rfile` 的唯二读者）摘掉，连带消除竞态，且完全不碰抓包/重放路径；新增单测钉住「这些 addon 被摘、`proxyserver`/`errorcheck` 保留、且摘除发生在启动之前」，实测下压测 20 次 0 失败（此前约 1/6）。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
