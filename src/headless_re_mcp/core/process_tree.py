@@ -51,8 +51,20 @@ class _PROCESSENTRY32W(ctypes.Structure):
 
 def process_image_path(pid: int) -> str | None:
     """Return the full image path for ``pid``, or None on failure."""
-    if os.name != "nt" or type(pid) is not int or pid <= 0:
+    if type(pid) is not int or pid <= 0:
         return None
+    if os.name != "nt":
+        # Returning None here used to be unconditional, which quietly disabled
+        # every image-gated reap on Linux: _reap_driver_pid saw no name, matched
+        # no marker, and a wedged web session leaked its node driver plus the
+        # whole Chromium tree. /proc/<pid>/exe answers for our own processes --
+        # exactly the population those reapers target -- and a deleted binary
+        # keeps its name in the link target, which is all marker matching needs.
+        # Failure still reads as None so identity-gated kills stay fail-closed.
+        try:
+            return os.readlink(f"/proc/{pid}/exe") or None
+        except OSError:
+            return None
     kernel32 = ctypes.windll.kernel32
     handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
     if not handle:
@@ -331,7 +343,7 @@ def collect_process_tree(parent_pid: int) -> list[int]:
     return list(dict.fromkeys(pid for pid in found if pid != parent_pid))
 
 
-def _pid_still_running(pid: int) -> bool:
+def pid_still_running(pid: int) -> bool:
     """True while ``pid`` is scheduled work, treating a POSIX zombie as gone.
 
     ``os.kill(pid, 0)`` succeeds on a zombie, so a killed-but-unreaped orphan
@@ -392,7 +404,7 @@ def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> lis
         killed = terminate_process_tree(process, wait_s=wait_s)
     deadline = time.monotonic() + max(0.1, wait_s)
     while time.monotonic() < deadline:
-        leftovers = [child for child in leftovers if _pid_still_running(child)]
+        leftovers = [child for child in leftovers if pid_still_running(child)]
         if not leftovers:
             break
         time.sleep(0.02)
