@@ -8,8 +8,11 @@ reported as a running capture.
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
 import json
+import os
 import socket
 import threading
 import time
@@ -522,3 +525,203 @@ def test_close_all_releases_every_running_capture() -> None:
             time.sleep(0.1)
         else:
             pytest.fail(f"port {port} still accepting after close_all")
+
+
+# --- WebSocket-through-proxy gate ------------------------------------------
+# A hand-rolled RFC 6455 origin plus a proxy-aware client, so the gate proves
+# mitmproxy actually records WebSocket frames end to end without pulling in a
+# websocket dependency. mitmproxy bridges the two legs (it does its own
+# handshake with the client and with the origin), so each side just needs a
+# valid handshake and framing.
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+_WS_PATH = "/ws"
+_WS_CLIENT_TEXT = "proxy-ws-client-9449"
+_WS_TEXT_REPLY = "proxy-ws-server-9449"
+_WS_BINARY_REPLY = b"\x00\x01\x02\x03\xfd\xfe\xff"
+
+
+def _ws_frame(opcode: int, payload: bytes, *, mask: bool = False) -> bytes:
+    """Build one WebSocket frame; masked when acting as the client leg."""
+    out = bytes([0x80 | opcode])
+    length = len(payload)
+    mask_bit = 0x80 if mask else 0x00
+    if length < 126:
+        out += bytes([mask_bit | length])
+    elif length < 65536:
+        out += bytes([mask_bit | 126]) + length.to_bytes(2, "big")
+    else:
+        out += bytes([mask_bit | 127]) + length.to_bytes(8, "big")
+    if mask:
+        key = os.urandom(4)
+        out += key
+        payload = bytes(byte ^ key[i % 4] for i, byte in enumerate(payload))
+    return out + payload
+
+
+def _ws_read(rfile: Any) -> tuple[int | None, bytes]:
+    """Read one frame (masked or not); returns (opcode, payload)."""
+    first = rfile.read(1)
+    if not first:
+        return None, b""
+    opcode = first[0] & 0x0F
+    second = rfile.read(1)
+    if not second:
+        return None, b""
+    masked = bool(second[0] & 0x80)
+    length = second[0] & 0x7F
+    if length == 126:
+        length = int.from_bytes(rfile.read(2), "big")
+    elif length == 127:
+        length = int.from_bytes(rfile.read(8), "big")
+    key = rfile.read(4) if masked else b""
+    data = rfile.read(length)
+    if masked:
+        data = bytes(byte ^ key[i % 4] for i, byte in enumerate(data))
+    return opcode, data
+
+
+class _WsOriginHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:  # silence per-request logging
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.headers.get("Upgrade", "").lower() != "websocket":
+            self.send_response(426)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        accept = base64.b64encode(
+            hashlib.sha1((key + _WS_GUID).encode()).digest()  # noqa: S324 - RFC 6455 mandates SHA-1
+        ).decode()
+        self.wfile.write(
+            b"HTTP/1.1 101 Switching Protocols\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Accept: " + accept.encode() + b"\r\n\r\n"
+        )
+        self.wfile.flush()
+        self.close_connection = True
+        # mitmproxy connects as the client on this leg, so its frames are masked;
+        # _ws_read handles that. Push a text and a binary reply back.
+        self.wfile.write(_ws_frame(0x1, _WS_TEXT_REPLY.encode()))
+        self.wfile.write(_ws_frame(0x2, _WS_BINARY_REPLY))
+        self.wfile.flush()
+        self.connection.settimeout(8.0)
+        with contextlib.suppress(Exception):
+            while True:
+                opcode, _data = _ws_read(self.rfile)
+                if opcode is None or opcode in (0x1, 0x8):
+                    break
+        with contextlib.suppress(Exception):
+            self.wfile.write(_ws_frame(0x8, b""))
+            self.wfile.flush()
+
+
+@contextlib.contextmanager
+def _ws_origin() -> Iterator[tuple[str, int]]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _WsOriginHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield host, int(port)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        server.server_close()
+
+
+def _drive_ws_through_proxy(proxy_port: int, origin_host: str, origin_port: int) -> None:
+    """Open a ws:// through the forward proxy, send a frame, read the replies."""
+    sock = socket.create_connection(("127.0.0.1", proxy_port), timeout=10.0)
+    sock.settimeout(10.0)
+    try:
+        key = base64.b64encode(os.urandom(16)).decode()
+        # Absolute-form request line is how a forward proxy is asked to reach the
+        # origin; mitmproxy upgrades it to a WebSocket flow.
+        handshake = (
+            f"GET http://{origin_host}:{origin_port}{_WS_PATH} HTTP/1.1\r\n"
+            f"Host: {origin_host}:{origin_port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        sock.sendall(handshake.encode())
+        rfile = sock.makefile("rb")
+        status_line = rfile.readline()
+        assert b"101" in status_line, status_line
+        while True:  # drain the rest of the handshake response headers
+            line = rfile.readline()
+            if line in (b"\r\n", b"", b"\n"):
+                break
+        # Client leg frames must be masked.
+        sock.sendall(_ws_frame(0x1, _WS_CLIENT_TEXT.encode(), mask=True))
+        # Read the two replies the origin pushed (relayed unmasked by the proxy).
+        for _ in range(2):
+            _ws_read(rfile)
+        sock.sendall(_ws_frame(0x8, b"", mask=True))
+    finally:
+        with contextlib.suppress(Exception):
+            sock.close()
+
+
+@pytest.mark.integration
+def test_proxy_captures_websocket_frames_end_to_end(tmp_path: Path) -> None:
+    """Prove mitmproxy records WebSocket frames the proxy line can surface.
+
+    The proxy captured HTTP flows but ignored WebSocket traffic, so a socket
+    routed through it looked like a lone 101 handshake. Route a real ws:// through
+    the running proxy: the client sends one text frame and the origin pushes back
+    a text and a binary frame; proxy.flows must then flag the flow as a WebSocket
+    with a message count, and proxy.flow.get must return the frames with their
+    direction, type and payloads (binary as base64). skip != pass without
+    mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy WebSocket Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("ws", host="127.0.0.1", port=proxy_port)
+    try:
+        with _ws_origin() as (origin_host, origin_port):
+            _drive_ws_through_proxy(proxy_port, origin_host, origin_port)
+
+            def _ws_flow() -> dict[str, Any] | None:
+                listing = backend.flows("ws", limit=100)
+                return next(
+                    (
+                        f
+                        for f in listing["flows"]
+                        if str(f.get("url", "")).endswith(_WS_PATH)
+                        and f.get("websocket")
+                        and int(f.get("ws_messages", 0)) >= 3
+                    ),
+                    None,
+                )
+
+            flow = _poll(_ws_flow, lambda f: f is not None, tries=80)
+            assert flow is not None, "no WebSocket flow with frames was captured"
+
+            detail = backend.flow_get("ws", str(flow["id"]), tmp_path)
+            assert "websocket" in detail, detail
+            frames = detail["websocket"]["messages"]
+
+            sent = [f for f in frames if f["direction"] == "sent"]
+            assert any(f["payload"] == _WS_CLIENT_TEXT for f in sent), frames
+
+            recv_text = [
+                f for f in frames if f["direction"] == "received" and f["type"] == "text"
+            ]
+            assert any(f["payload"] == _WS_TEXT_REPLY for f in recv_text), frames
+
+            recv_binary = [
+                f for f in frames if f["direction"] == "received" and f["type"] == "binary"
+            ]
+            assert recv_binary, frames
+            assert any(
+                base64.b64decode(f["payload"]) == _WS_BINARY_REPLY for f in recv_binary
+            ), recv_binary
+    finally:
+        backend.close_all()

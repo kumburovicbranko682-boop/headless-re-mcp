@@ -167,7 +167,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   console、已解析脚本与 WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘
   为产物并回引用，不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。
 - **抓包**：`proxy.*` 8 个工具，mitmproxy 以 addon 形式跑在独立线程，Web 与 Android 共用，
-  含 `proxy.ca.install_android`。
+  含 `proxy.ca.install_android`。WebSocket 流也被记录：`proxy.flows` 给握手流标上 `websocket`
+  与 `ws_messages` 帧数，`proxy.flow.get` 回传帧（方向、text/binary、二进制帧 base64 载荷），
+  与浏览器 CDP 侧同一套语义并有界。
 
 ### 新增（工作方向）
 
