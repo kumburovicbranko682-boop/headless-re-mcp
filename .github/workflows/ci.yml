@@ -152,6 +152,46 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-r2-exports-info:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package and radare2
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev]"
+          sudo apt-get update
+          sudo apt-get install -y radare2
+
+      - name: radare2 exports/info gate runs for real (skip != pass)
+        # Compiles a shared object with gcc (present on ubuntu-latest) and drives
+        # r2's iEj/i on it, so a skip here means r2 or the compiler is missing --
+        # the false-green "skip != pass" warns about.
+        run: |
+          r2 -v | head -1
+          gcc --version | head -1
+          python -m pytest tests/integration/test_r2_exports_info_live_gate.py \
+            -rs --tb=short --junitxml=r2-exports-info-gate.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("r2-exports-info-gate.xml")
+          cases = list(tree.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          if not cases:
+              sys.exit("no r2 exports/info gate was collected")
+          if skipped:
+              sys.exit(f"r2 exports/info gate skipped despite installed r2/gcc: {skipped}")
+          print(f"r2 exports/info gate ran for real: {[c.get('name') for c in cases]}")
+          PY
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+r2 线补齐最后两个没有真机覆盖的命令：`r2.exports`（`iEj`）与 `r2.info`（`i`）。此前它们只对合成 JSON 跑过单测，
+唯一的 r2 集成 gate 用的是 Windows PE 夹具、在 Linux 上 skip；其余命令（aflj/izj/iij/disasm/xrefs）已有覆盖。
+新增 `tests/integration/test_r2_exports_info_live_gate.py`：用 gcc 编译一个导出集可控的共享库（三个
+visibility-default 函数 + 一个必须保持隐藏的 static helper），断言 `iEj` 解析出的 `items` 含这三个导出名、每个都是
+`FUNC`/`GLOBAL` 且带真实 `va` 的 `address`，而隐藏 helper 不出现（证明列的是导出表而非整张符号表）——这条路径此前
+只被手写 dict 验证过 `enrich_r2_payload` 的地址映射；再断言 `i` 以 raw 文本回二进制身份（非 JSON 命令，`parsed`
+为 False、无 items），标明这是 ELF64 镜像。新增 `linux-r2-exports-info` CI job：装 radare2、跑该 gate 并解析
+junitxml，r2/gcc 已装却 skip 时判失败（skip ≠ pass）。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
