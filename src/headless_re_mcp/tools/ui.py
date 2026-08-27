@@ -370,8 +370,10 @@ def build_ui_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """OCR a debuggee hwnd via screenshot + Windows OCR / tesseract (PID-bounded).
 
-        Answers with text, lines, ocr_backend, artifact_id, format bmp and path.
-        There is no ocr_text field.
+        Answers with text, lines, ocr_backend, truncated, artifact_id, format bmp
+        and path. There is no ocr_text field. truncated is true only when the OCR
+        text overran the capture bound and was cut, so text/lines hold the head of
+        the page rather than the whole of it.
         """
         return _dump(
             analysis.ui_ocr(

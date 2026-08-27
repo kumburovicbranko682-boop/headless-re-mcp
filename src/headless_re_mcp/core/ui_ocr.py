@@ -25,12 +25,24 @@ _T = TypeVar("_T")
 class _OcrOutput:
     """Decoded output from an OCR run that had a deadline binding its children."""
 
-    __slots__ = ("returncode", "stdout", "stderr")
+    __slots__ = ("returncode", "stdout", "stderr", "stdout_truncated")
 
-    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+    def __init__(
+        self,
+        returncode: int,
+        stdout: str,
+        stderr: str,
+        *,
+        stdout_truncated: bool = False,
+    ) -> None:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+        # run_bounded discards stdout past its per-stream capture cap. The OCR
+        # text is that stdout, so a cut leaves a plausible-looking string that
+        # is actually missing its tail -- carry the flag out so the caller is
+        # not handed a partial transcript as the whole page.
+        self.stdout_truncated = stdout_truncated
 
 
 def _run_ocr(command: list[str], *, timeout: float, env: Any = None) -> _OcrOutput:
@@ -45,6 +57,7 @@ def _run_ocr(command: list[str], *, timeout: float, env: Any = None) -> _OcrOutp
         completed.returncode,
         completed.stdout.decode("utf-8", errors="replace"),
         completed.stderr.decode("utf-8", errors="replace"),
+        stdout_truncated=completed.stdout_truncated,
     )
 
 
@@ -190,6 +203,11 @@ def ocr_bmp_windows(path: str | Path, *, language: str = "en-US") -> JsonObject:
     payload = json.loads(lines_out[-1])
     if not isinstance(payload, dict):
         raise UiPidBoundaryError("backend_error", "Windows OCR returned non-object")
+    # The worker emits one JSON object; a stdout cut mid-object makes json.loads
+    # fail above, so a payload that parsed is whole. Carry the flag anyway
+    # (defensively True should the cut ever land on a JSON boundary) and so
+    # every backend answers with the same truncated field the caller can trust.
+    payload.setdefault("truncated", bool(completed.stdout_truncated))
     return payload
 
 
@@ -239,6 +257,11 @@ def ocr_bmp_tesseract(path: str | Path, *, tesseract: Path | None = None) -> Jso
         "backend": "tesseract",
         "text": text.strip(),
         "lines": [line for line in text.splitlines() if line.strip()],
+        # tesseract prints the recognised text on stdout, and stdout is what the
+        # capture cap trims. When it was trimmed, text/lines hold only the head
+        # of the page and reading them as the complete transcript is wrong, so
+        # say which of the two the caller is holding.
+        "truncated": bool(completed.stdout_truncated),
         "path": str(bmp),
         "tesseract": str(exe),
     }
