@@ -406,6 +406,21 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def _ghidra_project_dir(self, session_id: str) -> Path:
+        # Fail-closed on the id itself: ghidra imports the binary into -- and
+        # with -deleteProject sweeps -- a project under artifact_root/ghidra/<id>,
+        # and drops export_<mode>.json beside it. The single-component check
+        # alone lets ``..`` through (Path("..").name == ".."), collapsing that
+        # onto artifact_root itself so the project and its exports land outside
+        # the ghidra subtree. Callers gate a bogus id at registry.get first, but
+        # the path guard must not depend on that -- this matches the traversal
+        # fix already applied to the web/proxy/apk/jadx artifact dirs.
+        from headless_re_mcp.core.service import _is_safe_session_segment
+
+        if not _is_safe_session_segment(session_id):
+            raise GhidraError("invalid_params", "invalid session id")
+        return self.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
+
     def ghidra_analyze(self, session_id: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)
@@ -418,7 +433,7 @@ class ExtAnalysisMixin(UiDriveMixin):
                     f"ghidra.analyze cannot run in {session.state.value} state"
                 )
             client = GhidraClient(home=getattr(self.settings, "ghidra_home", None))
-            project = self.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
+            project = self._ghidra_project_dir(session_id)
             data = client.analyze_binary(session.require_binary(), project, timeout=timeout)
             session = self.registry.get(session_id)
             if session.state in {
@@ -1136,7 +1151,7 @@ def _ghidra_export(
                 f"ghidra.{mode} cannot run in {session.state.value} state"
             )
         client = GhidraClient(home=getattr(service.settings, "ghidra_home", None))
-        project = service.settings.artifact_root.expanduser().resolve() / "ghidra" / session_id
+        project = service._ghidra_project_dir(session_id)
         if mode == "functions":
             data = client.functions(session.require_binary(), project, limit=limit, timeout=timeout)
         elif mode == "symbols":
