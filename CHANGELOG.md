@@ -127,6 +127,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（审计日志读取披露被裁剪掉的行,而非把幸存者当成完整历史）
+
+- 审计日志是唯一没有自然终点的表:长期运行的服务一直往里追加,SQLite 版每 256 次写摊还地把表
+  裁剪到 50,000 行上限,内存版按同一上限裁剪。但两者的 `list_audit` 都只报 `total`＝当前表中
+  幸存的行数,对已裁掉的旧行只字不提——一个跑了数月的服务器,读回来的 `total` 却读起来像整段
+  审计历史,而审计恰恰是最不该把「被裁掉」说成「不存在」的安全/取证日志。审计日志是单一全局流,
+  故其丢失是一个累计数:SQLite 版新增一个 `meta(key,value)` 键值表,裁剪时把 `DELETE` 的
+  `rowcount` 累加到 `audit_dropped`(仅真的删了行时写,跨重启持久),`list_audit` 读出后作为
+  `dropped_total` 返回;内存版用一个全局计数器同样披露。`total` 仍是幸存行数,`dropped_total>0`
+  即表示表不是日志的完整历史(即使按 session 过滤,该数也是全局日志的丢失量,语义如此)。`meta`
+  表为 `CREATE TABLE IF NOT EXISTS`,随既有 schema 在每次打开时建好,旧库自动获得。新增测试:
+  SQLite 版写 12 行、留 5、如实报 `dropped_total=7` 且 `total+dropped_total=12`,并跨重开同库仍
+  为 7(证明持久);内存版写 8 留 3 报丢 5;仓库契约测试(内存/SQLite 双参数)钉住未裁剪时为 0。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
