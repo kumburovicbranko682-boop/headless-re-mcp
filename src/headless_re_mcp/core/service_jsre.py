@@ -24,6 +24,7 @@ from headless_re_mcp.core.limits import (
 )
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.results import _failure, _success
+from headless_re_mcp.core.service_ext import _ensure_repository
 
 JsonObject = dict[str, Any]
 
@@ -112,14 +113,47 @@ class JsReAnalysisMixin:
                 max_entries=JSRE_UNPACK_MAX_ENTRIES,
                 max_bytes=JSRE_UNPACK_MAX_BYTES,
             )
-            return _success(data, backend="webcrack")
+            result: Result[JsonObject] = _success(data, backend="webcrack")
         except JsReError as exc:
-            return _failure(_as_rpc(exc))
+            result = _failure(_as_rpc(exc))
         except BaseException as exc:
-            return _failure(exc)
+            result = _failure(exc)
         finally:
             if out_dir is not None:
                 prune_jsre_unpack_dirs(out_dir.parent)
+        self._audit_unpack_bundle(path, result)
+        return result
+
+    def _audit_unpack_bundle(self, path: str, result: Result[JsonObject]) -> None:
+        """Record a session-less bundle unpack in the audit log, best-effort.
+
+        js.unpack_bundle writes an unpack-<uuid>/ tree under artifact_root/jsre/
+        but keys by a file path, not a session, so -- exactly like
+        device.pull/screenshot -- the artifact table (which needs a session_id)
+        never registers it and it owns no timeline. This audit line is therefore
+        the only provenance the unpacked tree ever gets: which bundle was
+        unpacked, where it landed and how many files it produced. Best-effort so
+        a bookkeeping failure cannot fail an unpack that already wrote to disk;
+        a failed call is recorded with its error code, and only structural
+        fields (the output dir and file count) are copied -- the store redacts
+        regardless.
+        """
+        if result.ok and isinstance(result.data, dict):
+            summary: JsonObject = {
+                name: result.data.get(name) for name in ("output_dir", "file_count")
+            }
+        else:
+            summary = {}
+            if result.error is not None:
+                summary["code"] = result.error.code
+        with suppress(Exception):
+            _ensure_repository(self).append_audit(
+                session_id=None,
+                action="js.unpack_bundle",
+                params_summary={"path": path},
+                ok=result.ok,
+                result_summary=summary,
+            )
 
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:

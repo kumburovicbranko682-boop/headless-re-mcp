@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（js.unpack_bundle 补记会话无关出处）
+
+- `js.unpack_bundle` 把拆出来的文件树写到 `artifact_root/jsre/unpack-<uuid>/`,但它按文件路径寻址、不
+  属于任何会话——和 device.pull/screenshot 一模一样:制品表需要 `session_id` 而它给不出,所以那棵树从不
+  登记、也没有会话时间线可落。于是它成了 JS 线里唯一"落盘却毫无出处"的操作:拆了哪个 bundle、落到哪个
+  目录、拆出多少文件,事后全无记录。现在成功的拆包会像 device.* 一样以空 `session_id` 写入全局审计日志,
+  记输入路径、输出目录与文件数。
+- 记账尽力而为:树已经写到磁盘,一次审计写入失败绝不能把已成功的拆包变成失败的工具调用;失败的调用也
+  照记(带其错误码),只拷贝结构化字段(输出目录、文件数)。`audit.list` 描述更新为点名 js.unpack_bundle;
+  新增 `tests/unit/test_jsre_unpack_audit.py` 钉住:成功记一条带出处的空会话审计、失败记错误码、审计写
+  失败不拖垮拆包。
+
 ### 新增（workspace.mode.set 补记会话无关审计）
 
 - `workspace.mode.set` 在 `tools/catalog.py` 里被归为写操作:它改写全局的工作方向 profile、持久化到用户

@@ -217,9 +217,11 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         captures (pull, screenshot, whose files are never registered elsewhere)
         -- are keyed by serial and own no session timeline, so they are audited
         here with a null session_id; pass no session_id to see them alongside
-        the session-scoped rows. workspace.mode.set, which rewrites the global
-        work-direction profile that persists across restarts, is audited the
-        same session-less way. The frida-path device mutations, frida.spawn
+        the session-scoped rows. js.unpack_bundle keys by a file path rather
+        than a session and likewise never registers its unpacked tree, so it is
+        audited the same session-less way, as is workspace.mode.set, which
+        rewrites the global work-direction profile that persists across
+        restarts. The frida-path device mutations, frida.spawn
         (launches a process) and frida.server.ensure (pushes and starts a
         frida-server binary), are the same class of change and are audited too,
         but they run inside a session, so they carry that session_id and survive
