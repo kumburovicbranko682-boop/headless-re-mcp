@@ -686,6 +686,13 @@ class TraceMixin:
         arguments are read off the stack above the return address. The breakpoint
         is always removed again, and a stop at another address ends the trace
         rather than mislabelling someone else's break as a hit.
+
+        The trace ends in exactly one of three ways, each reported: it fills the
+        hit budget (truncated), it pauses at another address (stopped_elsewhere),
+        or a resume could not continue (resume_failed, with resume_error naming
+        why -- the debuggee exited, or the debugger errored mid-trace). Fewer
+        hits than max_hits with all three false cannot happen, so a short trace
+        always says which of the latter two ended it.
         """
         try:
             if (expression is None) == (address is None):
@@ -731,6 +738,7 @@ class TraceMixin:
 
             hits: list[JsonObject] = []
             stopped_elsewhere = False
+            resume_error: JsonObject | None = None
             try:
                 for sequence in range(int(max_hits)):
                     resumed = self.dynamic_resume(
@@ -739,6 +747,25 @@ class TraceMixin:
                         timeout=float(timeout),
                     )
                     if not resumed.ok:
+                        # The loop's other two exits -- spending the hit budget
+                        # and pausing somewhere else -- each set a flag, so a
+                        # resume that could not continue (the debuggee exited,
+                        # or the debugger errored mid-trace) was the one stop
+                        # that returned looking like a clean short trace:
+                        # hit_count below max_hits with truncated and
+                        # stopped_elsewhere both false. Carry the resume's own
+                        # error so "called exactly N times, the run finished"
+                        # is distinguishable from "the trace broke after N".
+                        if resumed.error is not None:
+                            resume_error = {
+                                "code": resumed.error.code,
+                                "message": resumed.error.message,
+                            }
+                        else:
+                            resume_error = {
+                                "code": "resume_incomplete",
+                                "message": "resume did not reach a paused state",
+                            }
                         break
                     register_result = self.dynamic_registers_read(session_id)
                     registers = register_result.data if register_result.ok else None
@@ -786,6 +813,12 @@ class TraceMixin:
                     "max_hits": int(max_hits),
                     "truncated": len(hits) >= int(max_hits),
                     "stopped_elsewhere": stopped_elsewhere,
+                    # True only when a resume/wait ended the trace before the
+                    # budget or an off-target pause did; resume_error is the
+                    # underlying reason, so a trace broken partway is not read
+                    # as a complete count of the hits.
+                    "resume_failed": resume_error is not None,
+                    "resume_error": resume_error,
                 },
                 session_id=session_id,
                 backend=BackendKind.X64DBG.value,
