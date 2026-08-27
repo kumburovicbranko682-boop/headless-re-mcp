@@ -57,6 +57,17 @@ _VMP_NAME = re.compile(
     r"(vmp|themida|\.fk|\.\'|\.boot|\.vmp\d*)",
     re.IGNORECASE,
 )
+# UPX names its sections UPX0, UPX1, ... The compressed payload and the
+# decompression stub live in UPX1+; UPX0 is the (RWX, hence executable) region
+# the stub decompresses the original code *into* -- the real post-unpack code,
+# never a stub. ``_UPX_STUB_SECTION`` matches only the numbered stub sections
+# (UPX1+); UPX0 is the destination. Without excluding UPX0 the generic
+# "short executable unknown name" heuristic below folds it into the VMP-like
+# stub set, which drops it from ``code_section_ranges`` and leaves a fully
+# unpacked UPX dump reporting no code sections, zero code bytes, and a zero
+# non-zero ratio.
+_UPX_FAMILY_SECTION = re.compile(r"^\.?upx\d+$", re.IGNORECASE)
+_UPX_STUB_SECTION = re.compile(r"^\.?upx[1-9]\d*$", re.IGNORECASE)
 _IMAGE_SCN_MEM_EXECUTE = 0x20000000
 
 
@@ -81,6 +92,10 @@ def vmp_like_section_ranges(
         known = name_key in known_fold
         vmp_named = bool(_VMP_NAME.search(name))
         executable = bool(chars & _IMAGE_SCN_MEM_EXECUTE)
+        # A UPX-family section that is not a numbered stub (i.e. UPX0) is the
+        # unpack destination, never a stub range.
+        if _UPX_FAMILY_SECTION.match(name) and not _UPX_STUB_SECTION.match(name):
+            continue
         weird = (not known) and (executable or vmp_named or (0 < len(name) <= 4))
         if vmp_named or (weird and not known):
             if known and not vmp_named:

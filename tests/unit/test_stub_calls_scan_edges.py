@@ -57,6 +57,30 @@ def test_vmp_like_flags_short_weird_executable_name() -> None:
     assert [n for _, _, n in out] == [".xz"]
 
 
+def test_upx0_destination_is_not_a_stub_range_but_upx1_is() -> None:
+    """UPX0 holds the unpacked code, so it must scan as code, not a protector stub.
+
+    UPX names its sections UPX0, UPX1, ... The decompression stub and compressed
+    payload live in UPX1+; UPX0 is the RWX region the stub decompresses the
+    original code into -- the post-unpack code itself. A real UPX0 carries
+    MEM_EXECUTE and is a 4-char unknown name, so the generic short-executable
+    heuristic used to fold it into the VMP-like set. That dropped UPX0 from
+    ``code_section_ranges`` (which excludes stub ranges), leaving a fully
+    unpacked UPX dump with an empty code list. Only UPX1 is the stub.
+    """
+    sections: list[Any] = [
+        _sec("UPX0", 0x1000, 0x3000),
+        _sec("UPX1", 0x4000, 0x2000),
+        _sec(".rsrc", 0x6000, 0x500, chars=_DATA),
+    ]
+    assert [n for _, _, n in vmp_like_section_ranges(sections)] == ["UPX1"]
+    assert [n for _, _, n in code_section_ranges(sections)] == ["UPX0"]
+    # The exclusion is narrow: other short executable unknown names stay stubs.
+    assert [n for _, _, n in vmp_like_section_ranges([_sec(".xz", 0x1000, 0x400)])] == [
+        ".xz"
+    ]
+
+
 def test_code_section_skips_non_dict_bad_geometry_and_vmp_overlap() -> None:
     sections: list[Any] = [
         "nope",
@@ -240,3 +264,35 @@ def test_code_fallback_finds_nothing_leaves_code_empty(
     assert result["ok"] is True
     assert result["code_sections"] == []
     assert result["e8_total"] == 0
+
+
+def test_upx_dump_scans_unpacked_code_in_upx0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fully unpacked UPX dump keeps its code (UPX0) analysable, not empty.
+
+    Before the UPX0 exclusion, both UPX0 and UPX1 landed in the VMP-like stub
+    set, so the classifier and the fallback both refused UPX0 as code: the tool
+    reported ``code_sections == []`` and ``code_bytes == 0`` for a dump whose
+    real code sits in UPX0. Now UPX0 is scanned as code and UPX1 stays the stub.
+    """
+    dump = tmp_path / "upx.bin"
+    data = bytearray(0x7000)
+    data[0x1500:0x1520] = b"\x90" * 0x20  # non-zero bytes inside UPX0
+    dump.write_bytes(bytes(data))
+    sections: list[Any] = [
+        _sec("UPX0", 0x1000, 0x3000),
+        _sec("UPX1", 0x4000, 0x2000),
+        _sec(".rsrc", 0x6000, 0x500, chars=_DATA),
+    ]
+    monkeypatch.setattr(
+        stub_calls,
+        "parse_runtime_headers",
+        lambda _data: _headers(sections),
+    )
+    result = analyze_dump_stub_coupling(dump)
+    assert result["ok"] is True
+    assert result["code_sections"] == [{"rva": 0x1000, "size": 0x3000, "name": "UPX0"}]
+    assert result["stub_sections"] == [{"rva": 0x4000, "size": 0x2000, "name": "UPX1"}]
+    assert result["code_bytes"] == 0x3000
+    assert result["code_nonzero_ratio"] > 0
