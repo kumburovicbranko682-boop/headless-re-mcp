@@ -371,6 +371,21 @@ def test_every_integration_gate_is_classified_for_linux_ci() -> None:
         f"linux CI lists gate files that do not exist: {sorted(missing_files)}"
     )
 
+    # The exclusion buckets must not name a gate that no longer exists either.
+    # A stale entry outlives the file it excused, and later silently re-excuses a
+    # new gate that reuses the name -- the same silent skip this partition guards
+    # against, just entered through the exclusion list instead of omission.
+    stale_windows_only = windows_only - all_gates
+    assert not stale_windows_only, (
+        "_WINDOWS_ONLY_MODULES names integration gates that no longer exist: "
+        f"{sorted(stale_windows_only)}"
+    )
+    stale_pe_static = _PE_STATIC_EXCLUDED_FROM_LINUX_CI - all_gates
+    assert not stale_pe_static, (
+        "_PE_STATIC_EXCLUDED_FROM_LINUX_CI names integration gates that no longer exist: "
+        f"{sorted(stale_pe_static)}"
+    )
+
     classified = ci_set | windows_only | _PE_STATIC_EXCLUDED_FROM_LINUX_CI
     unclassified = all_gates - classified
     assert not unclassified, (
