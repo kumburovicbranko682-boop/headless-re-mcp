@@ -425,6 +425,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   过的 start 原样回填，于是 `offset=-1` 被悄悄当成第 0 页作答、请求被低报——要负页的调用方以为
   翻到了别处，其实是又读了一遍首屏模块。现在与其余分页工具一致，在 schema 上标 `minimum: 0`，
   负数在边界即被拒绝。
+- **`session.list` 的分页 offset 也漏标了下界**。这是 Web / APK / PE 各线共用的会话列表分页器，
+  它的 `limit` 早已用 `Field(ge=1, le=1000)` 声明边界，唯独 `offset` 还是裸 `int`。后端
+  `list_sessions` 用 `start = max(0, int(offset))` 兜底，所以负 offset 不会翻错页——但会被
+  悄悄当成第 0 页作答，而不是像其余分页工具（`apk.*`、`js.unpack_bundle`）那样在 schema 层
+  直接拒成 `invalid_params`。这种「悄悄夹取」正是下界要拦的坑：传了负页的调用方拿到首屏却收不到
+  任何报错。现在 `offset` 与兄弟工具一致带 `minimum: 0`（见 `test_session_list_offset_schema.py`）。
 - **抓包停不掉，端口永不释放**。`proxy.stop()` 会立刻返回且线程确实退出，但事件循环是在
   mitmproxy 的 accept 任务仍挂起时被直接关闭的，监听 socket 因此从未关闭：端口一直被占，
   下一次抓包再也起不来。现在先取消并等待所有挂起任务、再 `shutdown_asyncgens`，最后才关闭
