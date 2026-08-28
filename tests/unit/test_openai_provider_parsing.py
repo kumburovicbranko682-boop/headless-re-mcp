@@ -155,6 +155,29 @@ def test_usage_output_tokens_returns_none_when_nothing_is_present() -> None:
     assert oc._usage_output_tokens({"completion_tokens_details": {}}) is None
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_usage_output_tokens_ignores_a_non_finite_float(value: float) -> None:
+    # json.loads accepts Infinity/-Infinity/NaN and parses 1e400 to inf, so a
+    # provider can land a non-finite float here. int(inf) raises OverflowError
+    # and int(nan) raises ValueError; either would escape stream_chat as an
+    # unexpected error mid-response. The usage must simply be ignored instead.
+    assert oc._usage_output_tokens({"completion_tokens": value}) is None
+
+
+def test_usage_output_tokens_ignores_a_json_overflow_completion_count() -> None:
+    # The exact shape stream_chat feeds this: 1e400 comes back from json.loads
+    # as float infinity, which used to crash int() one line later.
+    usage = json.loads('{"completion_tokens": 1e400}')
+    assert usage["completion_tokens"] == float("inf")
+    assert oc._usage_output_tokens(usage) is None
+
+
+def test_usage_output_tokens_rejects_a_boolean_count() -> None:
+    # bool is an int subclass, so ``true`` would otherwise be read as one token.
+    assert oc._usage_output_tokens({"completion_tokens": True}) is None
+    assert oc._usage_output_tokens({"output_tokens": False}) is None
+
+
 # ---------------------------------------------------------------------------
 # _normalize_chunk
 

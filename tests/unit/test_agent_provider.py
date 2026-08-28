@@ -268,6 +268,37 @@ async def test_stream_counts_reasoning_usage_and_message_snapshots(
 
 
 @pytest.mark.asyncio
+async def test_stream_survives_a_non_finite_usage_count(tmp_path: Path) -> None:
+    del tmp_path
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        # 1e400 is finite-looking JSON that json.loads turns into float
+        # infinity; a hostile or buggy provider can send it in the usage frame.
+        # int(inf) used to crash the whole response one line later. The stream
+        # must instead ignore the usage and keep delivering content.
+        body = (
+            'data: {"choices": [{"delta": {"content": "hi"}}]}\n\n'
+            'data: {"choices": [], "usage": {"completion_tokens": 1e400}}\n\n'
+            'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=body)
+
+    provider = OpenAICompatibleProvider(
+        ProviderProfile("default", "https://provider.example/v1", "m", api_key="k"),
+        transport=httpx.MockTransport(respond),
+    )
+    events = [
+        event async for event in provider.stream_chat(messages=[], tools=[], model="m")
+    ]
+    assert [event.text for event in events if event.type == "text_delta"] == ["hi"]
+    # The bogus usage is ignored rather than surfaced as a usage event.
+    assert not [event for event in events if event.type == "usage"]
+    assert events[-1].output_tokens is None
+
+
+@pytest.mark.asyncio
 async def test_json_lines_without_sse_prefix_still_stream(tmp_path: Path) -> None:
     del tmp_path
 

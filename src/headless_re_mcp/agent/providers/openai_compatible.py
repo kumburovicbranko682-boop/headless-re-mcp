@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Sequence
+from math import isfinite
 from threading import Lock
 from typing import Any
 
@@ -83,9 +84,18 @@ def _usage_output_tokens(usage: Any) -> int | None:
         return None
     for key in ("completion_tokens", "output_tokens", "completionTokens", "outputTokens"):
         value = usage.get(key)
+        # bool is an int subclass; a provider sending ``true`` here is not a
+        # token count, and returning 1 would invent usage no round produced.
+        if isinstance(value, bool):
+            continue
         if isinstance(value, int) and value >= 0:
             return value
-        if isinstance(value, float) and value >= 0:
+        # json.loads accepts Infinity/-Infinity/NaN and parses 1e400 to inf, so
+        # a hostile or buggy provider can land a non-finite float here. int(inf)
+        # raises OverflowError and int(nan) raises ValueError, either of which
+        # would escape stream_chat as an unexpected error mid-response instead
+        # of the usage simply being ignored. isfinite() rejects both first.
+        if isinstance(value, float) and isfinite(value) and value >= 0:
             return int(value)
     details = usage.get("completion_tokens_details")
     if isinstance(details, dict):
