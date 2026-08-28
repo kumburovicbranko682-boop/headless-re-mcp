@@ -390,9 +390,16 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 81 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、
+  工作区 profile 工具面过滤经真实 MCP 端到端(每个 profile 各起一个 stdio 服务、比对 tools/list)：
+  full 不隐藏任何工具、是每个 profile 的严格超集;每个非 full profile 精确移除其隐藏前缀下的工具而
+  不误伤核心工具(pe 隐藏 Android+Web+共享 proxy、android 只隐藏 Web 静态面、web 只隐藏 Android 面)——
+  served 集恰等于 full 减去这些前缀;抓包 proxy.* 为 Android/Web 共享,故在 android 与 web 都可见、
+  仅 pe 隐藏,且 android 专属的 proxy.ca.install_android 在 android 面里可见(钉住「proxy 曾被误归
+  web 前缀而从 android 方向整体隐藏」的回归);session/static/artifacts/report/capabilities/meta 等
+  核心工具在四个 profile 里都存活）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
