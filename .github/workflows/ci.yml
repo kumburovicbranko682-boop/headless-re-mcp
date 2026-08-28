@@ -280,6 +280,7 @@ jobs:
           tests/integration/test_m11_ghidra_live_gate.py
           tests/integration/test_m11_optional_backends_gate.py
           tests/integration/test_m5_unpack_live_gate.py
+          tests/integration/test_m12_persist_gate.py
           tests/integration/test_proxy_lifecycle_gate.py
           tests/integration/test_web_lifecycle_gate.py
           tests/integration/test_web_re_gate.py

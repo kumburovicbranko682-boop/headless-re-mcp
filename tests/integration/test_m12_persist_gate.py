@@ -12,11 +12,43 @@ from headless_re_mcp.core.service import AnalysisService
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _write_minimal_elf(path: Path) -> None:
+    """A header-only x86-64 ELF: enough magic for classify_target + create.
+
+    The persistence contract under test (artifacts / timeline / audit / unclean
+    marking) is target-agnostic, so any file that yields a session will do. The
+    committed PE fixture is Windows-built and absent on a stock Linux runner,
+    which left this whole gate skipping there -- so the SQLite foundation every
+    line shares was only ever exercised on the self-hosted Windows runner. A
+    generated ELF (a first-class Linux target) lets it run for real on Linux.
+    """
+    image = bytearray(0x40)
+    image[:4] = b"\x7fELF"
+    image[4] = 2  # ELFCLASS64
+    image[5] = 1  # little-endian
+    image[6] = 1  # EV_CURRENT
+    image[0x10:0x12] = (2).to_bytes(2, "little")  # ET_EXEC
+    image[0x12:0x14] = (62).to_bytes(2, "little")  # EM_X86_64
+    path.write_bytes(image)
+
+
+def _persist_fixture(tmp_path: Path) -> Path:
+    """The committed PE fixture when present, else a generated ELF stand-in.
+
+    Preserves the exact Windows self-hosted behaviour (real PE session) while
+    letting the Linux CI job run the gate for real instead of skipping.
+    """
+    pe_fixture = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "headless_fixture.exe"
+    if pe_fixture.is_file():
+        return pe_fixture
+    elf = tmp_path / "persist_fixture.elf"
+    _write_minimal_elf(elf)
+    return elf
+
+
 @pytest.mark.integration
 def test_m12_session_artifact_timeline_roundtrip(tmp_path: Path) -> None:
-    fixture = _PROJECT_ROOT / "artifacts" / "fixtures-x64" / "headless_fixture.exe"
-    if not fixture.is_file():
-        pytest.skip("fixture missing")
+    fixture = _persist_fixture(tmp_path)
     settings = Settings(
         ida_home=None,
         x64dbg_source=None,

@@ -59,7 +59,6 @@ _WINDOWS_ONLY_MODULES = frozenset(
         "test_m10_ui_interact_gate.py",
         "test_m10_ui_pid_gate.py",
         "test_m11_windbg_live_gate.py",
-        "test_m12_persist_gate.py",
         "test_mcp_dynamic_xdbg.py",
         "test_unpack_live_gate.py",
         "test_workflow_xdbg.py",
