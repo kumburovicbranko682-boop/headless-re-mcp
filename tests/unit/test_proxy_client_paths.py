@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -728,7 +728,7 @@ def test_backend_flows_paginates_and_reports_dropped() -> None:
     entries = [{"id": f"f{i}", "seq": i + 10} for i in range(5)]
     recorder = SimpleNamespace(snapshot=lambda: entries)
     backend = ProxyBackend()
-    backend._get = lambda session_id: SimpleNamespace(recorder=recorder)  # type: ignore[method-assign, assignment]
+    backend._get = cast(Any, lambda session_id: SimpleNamespace(recorder=recorder))
     payload = backend.flows("s", offset=1, limit=2)
     assert payload["count"] == 2
     assert payload["total"] == 5
@@ -741,7 +741,7 @@ def test_backend_flows_paginates_and_reports_dropped() -> None:
 def test_backend_flows_on_an_empty_capture() -> None:
     recorder = SimpleNamespace(snapshot=lambda: [])
     backend = ProxyBackend()
-    backend._get = lambda session_id: SimpleNamespace(recorder=recorder)  # type: ignore[method-assign]
+    backend._get = cast(Any, lambda session_id: SimpleNamespace(recorder=recorder))
     payload = backend.flows("s")
     assert payload == {
         "flows": [],
@@ -887,7 +887,7 @@ def test_export_har_refuses_over_the_cap(monkeypatch: pytest.MonkeyPatch, tmp_pa
     )
     recorder = SimpleNamespace(snapshot=lambda: [{"method": "GET", "url": "http://x"}])
     backend = ProxyBackend()
-    backend._get = lambda session_id: SimpleNamespace(recorder=recorder)  # type: ignore[method-assign]
+    backend._get = cast(Any, lambda session_id: SimpleNamespace(recorder=recorder))
     with pytest.raises(ProxyError) as exc:
         backend.export_har("s", tmp_path / "out.har")
     assert exc.value.code == "too_large"
@@ -906,7 +906,7 @@ def test_export_har_writes_a_bounded_file(tmp_path: Path) -> None:
         ]
     )
     backend = ProxyBackend()
-    backend._get = lambda session_id: SimpleNamespace(recorder=recorder)  # type: ignore[method-assign]
+    backend._get = cast(Any, lambda session_id: SimpleNamespace(recorder=recorder))
     out = tmp_path / "cap.har"
     payload = backend.export_har("s", out)
     assert out.is_file()
