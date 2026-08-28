@@ -164,6 +164,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 200,
         name_filter: str = "",
+        min_len: Annotated[int, Field(ge=0, le=2000)] = 0,
     ) -> dict[str, Any]:
         """List distinct DEX string constants with pagination.
 
@@ -175,10 +176,21 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         name_filter keeps only strings containing that substring
         (case-sensitive), applied during the scan before the cap, so a
         URL/domain/key fragment in a >5000-string app is findable rather
-        than stranded past the collect boundary.
+        than stranded past the collect boundary. min_len drops strings
+        shorter than that many characters -- the strings(1) idiom: a DEX pool
+        is mostly short noise (type descriptors, single letters, obfuscated
+        a/b/c names), so a floor of e.g. 6-8 is what surfaces URLs/keys/
+        commands that would otherwise sit past the 5000-string collect cap.
+        min_len and name_filter combine (both must pass).
         """
         return _dump(
-            analysis.apk_strings(session_id, offset=offset, limit=limit, name_filter=name_filter)
+            analysis.apk_strings(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                min_len=min_len,
+            )
         )
 
     @tools.tool(name="apk.xrefs")

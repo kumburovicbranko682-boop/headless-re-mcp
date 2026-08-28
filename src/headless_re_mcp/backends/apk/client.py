@@ -858,18 +858,32 @@ class ApkClient:
         }
 
     def strings(
-        self, path: Path, *, offset: int = 0, limit: int = 200, name_filter: str = ""
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        min_len: int = 0,
     ) -> JsonObject:
         parsed = self._parsed(path)
         needle = name_filter.strip() if isinstance(name_filter, str) else ""
+        floor = min_len if isinstance(min_len, int) and min_len > 0 else 0
         seen: set[str] = set()
         scan_more = False
         for item in parsed.analysis.get_strings():
             value = str(item.get_value())[:_MAX_STRING_LEN]
-            # Filter during the scan, before the collect cap: searching for a
-            # URL/domain/key fragment across a >5000-string app is the common
-            # case, and without narrowing the scan the fragment may sit past the
-            # collected prefix, unreachable by any offset.
+            # Both narrowings run during the scan, before the collect cap, for
+            # the same reason: the collected set is a prefix of get_strings(),
+            # so anything they would have dropped that sits past _MAX_STRINGS_
+            # COLLECT is unreachable by any offset. min_len is the strings(1)
+            # idiom -- a DEX pool is dominated by short noise (type descriptors
+            # like I/V/Ljava/lang/Object;, single letters, obfuscated a/b/c), so
+            # a length floor is what makes a URL/key/command sitting past 5000
+            # noise entries actually reachable, not just tidier. name_filter then
+            # matches a known fragment.
+            if floor and len(value) < floor:
+                continue
             if needle and needle not in value:
                 continue
             if len(seen) >= _MAX_STRINGS_COLLECT:

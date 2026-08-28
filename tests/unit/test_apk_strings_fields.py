@@ -90,3 +90,58 @@ def test_apk_strings_name_filter_reaches_a_string_past_the_collect_cap(
     assert filtered["strings"] == ["s24"]
     assert filtered["total"] == 1
     assert filtered["scan_capped"] is False
+
+
+class _NoisyParsed:
+    """Short DEX noise up front, one long payload string behind it."""
+
+    def __init__(self) -> None:
+        self.analysis = self
+
+    def get_strings(self) -> list[_FakeString]:
+        noise = [_FakeString(v) for v in ("I", "V", "a", "b", "ok")]
+        return [*noise, _FakeString("https://c2.example.com/collect")]
+
+
+def test_apk_strings_min_len_drops_short_noise() -> None:
+    """A length floor is the strings(1) idiom -- short pool entries go away."""
+    client = ApkClient()
+    client._parsed = lambda _path: _NoisyParsed()  # type: ignore[method-assign]
+    payload = client.strings(Path("dummy.apk"), offset=0, limit=2000, min_len=6)
+    assert payload["strings"] == ["https://c2.example.com/collect"]
+    assert payload["total"] == 1
+    doc = _tool_docstring("apk.strings")
+    assert "min_len" in doc
+
+
+def test_apk_strings_min_len_reaches_a_long_string_past_the_collect_cap(
+    monkeypatch: Any,
+) -> None:
+    """Applying the floor during the scan (not after) is what makes a long
+    string reachable when short noise would otherwise fill the collect cap."""
+    from headless_re_mcp.backends.apk import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_STRINGS_COLLECT", 3)
+    client = ApkClient()
+    client._parsed = lambda _path: _NoisyParsed()  # type: ignore[method-assign]
+    unfiltered = client.strings(Path("dummy.apk"), offset=0, limit=2000)
+    assert "https://c2.example.com/collect" not in unfiltered["strings"]
+    assert unfiltered["scan_capped"] is True
+    floored = client.strings(Path("dummy.apk"), offset=0, limit=2000, min_len=6)
+    assert floored["strings"] == ["https://c2.example.com/collect"]
+    assert floored["scan_capped"] is False
+
+
+def test_apk_strings_min_len_and_name_filter_combine() -> None:
+    """Both narrowings must pass: a long string not matching the fragment is out."""
+    client = ApkClient()
+    client._parsed = lambda _path: _NoisyParsed()  # type: ignore[method-assign]
+    payload = client.strings(
+        Path("dummy.apk"), offset=0, limit=2000, min_len=6, name_filter="c2.example"
+    )
+    assert payload["strings"] == ["https://c2.example.com/collect"]
+    none_match = client.strings(
+        Path("dummy.apk"), offset=0, limit=2000, min_len=6, name_filter="nomatch"
+    )
+    assert none_match["strings"] == []
+    assert none_match["total"] == 0

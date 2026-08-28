@@ -188,11 +188,18 @@ class ApkAnalysisMixin:
             return _failure(exc, session_id=session_id)
 
     def apk_strings(
-        self, session_id: str, offset: int = 0, limit: int = 200, name_filter: str = ""
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        min_len: int = 0,
     ) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)
-            data = ApkClient().strings(binary, offset=offset, limit=limit, name_filter=name_filter)
+            data = ApkClient().strings(
+                binary, offset=offset, limit=limit, name_filter=name_filter, min_len=min_len
+            )
             return _success(data, session_id=session_id, backend="apk")
         except ApkError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
