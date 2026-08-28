@@ -267,6 +267,24 @@ def _collect_output_pe(
     return newest[0]
 
 
+def _require_positive_number(value: float, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise VmpDumperError(
+            VmpDumperErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive number",
+            details={name: value},
+        )
+
+
+def _require_positive_int(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise VmpDumperError(
+            VmpDumperErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive integer",
+            details={name: value},
+        )
+
+
 def run_vmp_dumper(
     executable: Path,
     input_path: Path,
@@ -288,6 +306,8 @@ def run_vmp_dumper(
     only (never passed as argv). File-only ``exe <path>`` mode is intentionally
     unsupported — that is not the upstream CLI.
     """
+    _require_positive_number(timeout, "timeout")
+    _require_positive_int(max_output_size, "max_output_size")
     del max_file_size  # retained for call-site compatibility; unused in process mode
     exe = Path(executable).expanduser()
     # resolve() without strict=True so a missing input surfaces as the structured

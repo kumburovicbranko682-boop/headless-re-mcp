@@ -153,6 +153,24 @@ def _collect_newest_pe(work_dir: Path, work_input: Path) -> Path:
     return newest[0]
 
 
+def _require_positive_number(value: float, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ScyllaError(
+            ScyllaErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive number",
+            details={name: value},
+        )
+
+
+def _require_positive_int(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ScyllaError(
+            ScyllaErrorCode.INVALID_ARGUMENT,
+            f"{name} must be a positive integer",
+            details={name: value},
+        )
+
+
 def run_scylla(
     executable: Path,
     input_path: Path,
@@ -164,6 +182,9 @@ def run_scylla(
     max_output_size: int = DEFAULT_MAX_OUTPUT_SIZE,
 ) -> ScyllaResult:
     """Run Scylla on a work copy; publish the newest PE output to output_path."""
+    _require_positive_number(timeout, "timeout")
+    _require_positive_int(max_file_size, "max_file_size")
+    _require_positive_int(max_output_size, "max_output_size")
     exe = Path(executable).expanduser()
     # resolve() without strict=True so a missing input surfaces as the structured
     # INPUT_NOT_FOUND error below instead of a raw FileNotFoundError from resolve().
