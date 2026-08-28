@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from headless_re_mcp.agent import (
     AgentOrchestrator,
@@ -68,7 +68,7 @@ def register_agent_routes(
     settings: Settings,
     catalog: CommandCatalog = COMMAND_CATALOG,
 ) -> None:
-    from fastapi import Header, HTTPException, Query, Request
+    from fastapi import Header, HTTPException, Query
     from fastapi.responses import JSONResponse, StreamingResponse
 
     # Bind handlers and schemas directly from protocol-independent tool domains.

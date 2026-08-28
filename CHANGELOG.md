@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Agent SSE 事件流在客户端断开后仍空转轮询）
+
+- `web/routes/agent.py` 的 `GET /api/agent/runs/{id}/events` 生成器每 0.25s 轮询一次
+  `store.list_events`/`get_run`，只有当运行进入终态才 break。一个存活且无事件的运行永远
+  不会自行终止，于是客户端离开后（标签页关闭、连接断开）这个循环仍会为该运行持续查库到
+  它终态为止——每次被遗弃的重连都会泄漏一个还在打 DB 的生成器。改为注入 `Request` 并在
+  下一次轮询前先检查 `request.is_disconnected()`，断开即 break，与已有此守卫的监控流路由
+  （monitor-stream）保持一致。因文件启用了 `from __future__ import annotations`，`Request`
+  注解须在模块层可解析，故把导入提到模块顶层而非路由函数内部。
+- 新增 `tests/unit/test_agent_routes_paths.py::test_a_disconnected_event_stream_stops_before_polling`：
+  一个持有事件的终态运行在 `is_disconnected` 被置真时，生成器在流出积压前就 break，响应体
+  里不含该事件；去掉守卫则该事件会被流出，用例转红（非平凡）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
