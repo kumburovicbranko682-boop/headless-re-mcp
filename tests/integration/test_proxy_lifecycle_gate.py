@@ -264,6 +264,61 @@ def test_proxy_flows_filter_narrows_a_live_capture(tmp_path: Path) -> None:
         backend.close_all()
 
 
+@pytest.mark.integration
+def test_proxy_export_har_writes_only_the_filtered_subset(tmp_path: Path) -> None:
+    """HAR export must be able to write just the flows a filter selects.
+
+    The filter gate proves proxy.flows narrows the listing; this proves the same
+    filter narrows what export_har writes to disk -- the "triage the capture,
+    then hand exactly that slice to DevTools" workflow. Route two GETs and a POST
+    through the running proxy, export with method=POST, and assert the HAR file
+    holds exactly the one POST entry while captured reports the whole ring.
+    skip != pass without mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy HAR filter Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("harfilter", host="127.0.0.1", port=proxy_port)
+    try:
+        with _origin_site() as origin:
+            handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+            opener = urllib.request.build_opener(handler)
+            for path in ("/alpha", "/beta"):
+                with opener.open(f"{origin}{path}", timeout=15.0) as response:
+                    response.read()
+            with opener.open(
+                urllib.request.Request(f"{origin}/submit", data=b"x=1", method="POST"),
+                timeout=15.0,
+            ) as response:
+                response.read()
+
+            _poll(
+                lambda: backend.flows("harfilter", limit=100),
+                lambda r: r["captured"] >= 3
+                and any(str(f.get("method")) == "POST" for f in r["flows"]),
+            )
+
+            out = tmp_path / "posts.har"
+            result = backend.export_har("harfilter", out, method="post")
+            assert result["entry_count"] == 1, result
+            assert result["captured"] >= 3, result
+            assert result["filter"] == {"method": "POST"}, result
+            doc = json.loads(out.read_text(encoding="utf-8"))
+            entries = doc["log"]["entries"]
+            assert len(entries) == 1, entries
+            assert entries[0]["request"]["method"] == "POST", entries[0]
+            assert str(entries[0]["request"]["url"]).endswith("/submit"), entries[0]
+
+            # Unfiltered export still writes the whole ring, no filter key.
+            whole = tmp_path / "all.har"
+            whole_result = backend.export_har("harfilter", whole)
+            assert whole_result["entry_count"] == whole_result["captured"] >= 3, whole_result
+            assert "filter" not in whole_result
+    finally:
+        backend.close_all()
+
+
 _REQUIRED_ENTRY = {"startedDateTime", "time", "request", "response", "cache", "timings"}
 _REQUIRED_REQUEST = {
     "method",

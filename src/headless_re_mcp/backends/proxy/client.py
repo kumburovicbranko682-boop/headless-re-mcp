@@ -1062,12 +1062,29 @@ class ProxyBackend:
             raise ProxyError("backend_error", f"replay failed: {exc}", flow_id=flow_id) from exc
         return {"replayed": True, "flow_id": flow_id}
 
-    def export_har(self, session_id: str, out_path: Path) -> JsonObject:
+    def export_har(
+        self,
+        session_id: str,
+        out_path: Path,
+        *,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: int = 0,
+    ) -> JsonObject:
         inst = self._get(session_id)
         import json
 
+        items = inst.recorder.snapshot()
+        captured = len(items)
+        # Same filter surface as proxy.flows: export exactly the slice a caller
+        # narrowed to, rather than the whole ring, so triage and export share one
+        # vocabulary. No filter == the whole capture, as before.
+        active = _flow_filter(method, host, url_contains, content_type, status)
+        rows = [row for row in items if _flow_matches(row, active)] if active else items
         entries: list[JsonObject] = []
-        for summary in inst.recorder.snapshot():
+        for summary in rows:
             flow_id = str(summary.get("id"))
             raw = inst.recorder.raw(flow_id)
             # A flow whose body was omitted/evicted keeps its summary but not the
@@ -1077,7 +1094,16 @@ class ProxyBackend:
         doc = har.document(entries)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
-        return {"path": str(out_path), "entry_count": len(entries)}
+        # captured discloses the whole ring so entry_count is read as "exported N
+        # of captured M", not "the capture only had N".
+        result: JsonObject = {
+            "path": str(out_path),
+            "entry_count": len(entries),
+            "captured": captured,
+        }
+        if active:
+            result["filter"] = active
+        return result
 
     def ca_cert_path(self) -> Path | None:
         for name in ("mitmproxy-ca-cert.cer", "mitmproxy-ca-cert.pem"):

@@ -152,10 +152,17 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         return _dump(analysis.proxy_replay(session_id, flow_id))
 
     @tools.tool(name="proxy.export_har")
-    def proxy_export_har(session_id: str) -> dict[str, Any]:
-        """Export captured flows to a spec-compliant HAR 1.2 artifact.
+    def proxy_export_har(
+        session_id: str,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: Annotated[int, Field(ge=0, le=599)] = 0,
+    ) -> dict[str, Any]:
+        """Export captured flows to a spec-compliant HAR 1.2 artifact, filterable.
 
-        Answers with path and entry_count. There is no har, output or
+        Answers with path, entry_count and captured. There is no har, output or
         artifact field. path is the file; looking for har after a successful
         export reads as a missing capture. The file is valid HAR 1.2 that a HAR
         viewer or Chrome DevTools can import: each entry carries request and
@@ -165,8 +172,26 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         real timings for every flow still retained. A WebSocket flow's frames
         ride along as DevTools' _webSocketMessages (with _resourceType
         websocket), so a captured socket re-imports into DevTools.
+
+        The same filters as proxy.flows narrow what is exported instead of paging
+        it: method is an exact verb, host and url_contains and content_type are
+        case-insensitive substrings, status is an exact code (0 means any), and
+        they combine with AND. When any filter is set the reply echoes it as
+        filter and entry_count is the number of matching flows written; captured
+        always reports every flow in the ring, so entry_count reads as "exported
+        N of captured M" and a narrow export is never misread as a small capture.
+        No filter exports the whole retained capture, as before.
         """
-        return _dump(analysis.proxy_export_har(session_id))
+        return _dump(
+            analysis.proxy_export_har(
+                session_id,
+                method=method,
+                host=host,
+                url_contains=url_contains,
+                content_type=content_type,
+                status=status,
+            )
+        )
 
     @tools.tool(name="proxy.ca.install_android")
     def proxy_ca_install_android(session_id: str, serial: str) -> dict[str, Any]:

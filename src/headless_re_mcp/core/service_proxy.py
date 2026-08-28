@@ -151,10 +151,26 @@ class ProxyAnalysisMixin:
     def proxy_replay(self, session_id: str, flow_id: str) -> Result[JsonObject]:
         return self._proxy_wrap(session_id, "replay", session_id, flow_id)
 
-    def proxy_export_har(self, session_id: str) -> Result[JsonObject]:
+    def proxy_export_har(
+        self,
+        session_id: str,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: int = 0,
+    ) -> Result[JsonObject]:
         try:
             out = self._proxy_artifact_dir(session_id) / f"capture-{uuid4().hex}.har"
-            data = self._proxy.export_har(session_id, out)
+            data = self._proxy.export_har(
+                session_id,
+                out,
+                method=method,
+                host=host,
+                url_contains=url_contains,
+                content_type=content_type,
+                status=status,
+            )
             data = _register_capture(
                 self, session_id, out, kind="proxy_har", source="proxy.export_har", payload=data
             )

@@ -416,7 +416,51 @@ def test_proxy_export_har_names_path_and_entry_count(
     assert "har" not in payload
     assert "output" not in payload
     assert payload["entry_count"] == 4
+    assert payload["captured"] == 4
+    assert "filter" not in payload
     assert payload["path"].endswith("capture.har")
     doc = _tool_docstring("proxy.export_har")
     assert "path" in doc
     assert "entry_count" in doc
+
+
+def test_proxy_export_har_filters_the_exported_subset(tmp_path: Path, monkeypatch: Any) -> None:
+    """The same filters as proxy.flows must narrow what HAR export writes.
+
+    entry_count becomes the matching-flow count, captured stays the whole ring
+    (so entry_count reads as N of M), and the echoed filter records what was
+    applied. The written HAR must contain exactly the matching entries.
+    """
+    import json as _json
+
+    backend = _filterable_backend(monkeypatch)
+
+    out = tmp_path / "posts.har"
+    payload = backend.export_har("s", out, method="post")
+    assert payload["entry_count"] == 1
+    assert payload["captured"] == 4
+    assert payload["filter"] == {"method": "POST"}
+    doc = _json.loads(out.read_text(encoding="utf-8"))
+    urls = [e["request"]["url"] for e in doc["log"]["entries"]]
+    assert len(urls) == 1
+    assert urls[0].endswith("/login")
+
+    # A substring filter over host, and an AND combination, each narrow the file.
+    host_out = tmp_path / "api.har"
+    host_payload = backend.export_har("s", host_out, host="api.example.com")
+    assert host_payload["entry_count"] == 3
+    assert host_payload["captured"] == 4
+
+    # A filter matching nothing writes a valid, empty HAR -- not the whole log.
+    empty_out = tmp_path / "none.har"
+    empty_payload = backend.export_har("s", empty_out, host="nonexistent.invalid")
+    assert empty_payload["entry_count"] == 0
+    assert empty_payload["captured"] == 4
+    empty_doc = _json.loads(empty_out.read_text(encoding="utf-8"))
+    assert empty_doc["log"]["entries"] == []
+
+
+def test_proxy_export_har_docstring_names_the_filter_fields() -> None:
+    doc = _tool_docstring("proxy.export_har")
+    for token in ("captured", "filter", "url_contains", "content_type", "status"):
+        assert token in doc, token
