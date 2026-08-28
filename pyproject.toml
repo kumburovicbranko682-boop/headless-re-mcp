@@ -28,7 +28,14 @@ pe = ["pefile>=2024.8.26"]
 web = ["fastapi>=0.115", "uvicorn>=0.34", "httpx>=0.28"]
 native = ["PySide6>=6.6"]
 # Android reverse engineering: pure-Python ADB + APK static analysis + Frida.
-android = ["adbutils>=2.12", "androguard>=4.1", "frida>=16.5"]
+# frida is capped below 17: 17.0 removed the built-in Java/ObjC bridges from the
+# agent runtime, so the `Java` global our injected scripts rely on
+# (Java.perform / Java.use / Java.enumerateLoadedClasses in the java-enumerate
+# script and the SSL-pinning/crypto/file hook templates) is undefined there and
+# every Java device operation fails with "ReferenceError: 'Java' is not defined".
+# Using >=16.5 with no ceiling let a default install pull 17.x and silently break
+# those features. Bump the ceiling only once the scripts bundle frida-java-bridge.
+android = ["adbutils>=2.12", "androguard>=4.1", "frida>=16.5,<17"]
 # Web reverse engineering: Chrome DevTools Protocol via Playwright.
 browser = ["playwright>=1.40"]
 # HTTP(S) interception shared by Web and Android workflows.
