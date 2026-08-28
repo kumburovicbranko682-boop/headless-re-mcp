@@ -11,14 +11,46 @@ is exactly the property a path-traversal fix must not silently lose.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
 
+import headless_re_mcp
 from headless_re_mcp.core.service import (
     _session_artifact_roots,
     _session_owns_artifact_path,
 )
+
+# A session-scoped artifact tree is built as ``<artifact_root>/<category>/<session_id>``
+# in the service layer. This captures the ``<category>`` literal of each such
+# construction so the completeness guard below can compare the categories that are
+# actually written against the categories ``_session_artifact_roots`` advertises as
+# owned. ``\s`` spans newlines, so a path split across lines is still matched.
+_CATEGORY_IN_SESSION_PATH = re.compile(r"""["']([a-z_]+)["']\s*/\s*session_id""")
+
+# ``sessions`` is deliberately not an artifact-ownership category. ``<root>/sessions/<id>/``
+# is the session-metadata store: the timeline lives there (core/store/timeline.py), and
+# the Windows virtual-desktop line drops frames under ``sessions/<id>/desktop/``. That
+# tree is retained and reclaimed by the session-record lifecycle, not the artifact GC
+# path -- adding it to ``_session_artifact_roots`` would make session-close cleanup
+# delete the timeline. So it is excluded from the completeness check rather than demanded
+# to be an owned (reclaimable) category. Any *other* new category must still be advertised.
+_NON_ARTIFACT_SESSION_STORES = frozenset({"sessions"})
+
+
+def _declared_ownership_categories(root: Path, session_id: str) -> set[str]:
+    """The category name of every ``<root>/<category>/<session_id>`` tree owned."""
+    return {owned.parent.name for owned in _session_artifact_roots(root, session_id)}
+
+
+def _session_scoped_categories_in_source() -> set[str]:
+    """Every ``<category>`` a ``.../<category>/session_id`` path is built under."""
+    pkg_dir = Path(headless_re_mcp.__file__).parent
+    found: set[str] = set()
+    for path in pkg_dir.rglob("*.py"):
+        found |= set(_CATEGORY_IN_SESSION_PATH.findall(path.read_text(encoding="utf-8")))
+    return found
 
 
 def test_a_path_under_the_sessions_own_tree_is_owned(tmp_path: Path) -> None:
@@ -100,6 +132,42 @@ def test_a_dotdot_session_id_cannot_claim_another_sessions_artifacts(tmp_path: P
 
     assert _session_owns_artifact_path(root, "..", stolen) is False
     assert _session_owns_artifact_path(root, "..", root / "detection" / "x.json") is False
+
+
+def test_every_session_scoped_artifact_category_is_advertised_as_owned(tmp_path: Path) -> None:
+    """Every ``<root>/<category>/<session_id>`` tree written anywhere in the package
+    must be one ``_session_artifact_roots`` advertises, or the session cannot own it.
+
+    ``_session_artifact_roots`` is the single source of truth for what a session
+    owns: session-close cleanup only reclaims trees it lists, and the ownership
+    guard only lets a tool touch a path under one. A backend that starts spilling
+    to a new ``<root>/newcat/<session_id>`` but forgets to add ``newcat`` here does
+    not fail loudly -- the tree is simply judged foreign, so it is never cleaned on
+    close (a slow leak that only global size/age GC eventually reaps) and the owning
+    session cannot even read back its own capture. That is exactly how ``apk/`` was
+    missed once before.     This scans the whole package for the category literal of
+    every session-keyed artifact path and fails if any is absent from the advertised
+    set (bar the documented session-metadata store), turning that silent omission into
+    a red test the moment the category is added.
+    """
+    declared = _declared_ownership_categories(tmp_path / "artifacts", "s" * 32)
+    written = _session_scoped_categories_in_source()
+
+    # Non-vacuous both ways: the advertised list must actually enumerate roots, and
+    # the source scan must reach several service modules -- otherwise a broken list
+    # or a broken scan would let this pass by comparing nothing to nothing.
+    assert declared, "_session_artifact_roots advertised no categories"
+    assert {"web", "apk", "proxy", "unpack", "dotnet", "dump"} <= written, (
+        "the category scan looks broken -- expected the known session-scoped "
+        f"writers, saw {sorted(written)}"
+    )
+
+    unowned = written - declared - _NON_ARTIFACT_SESSION_STORES
+    assert unowned == set(), (
+        "these categories build <root>/<category>/<session_id> artifact paths but are "
+        "missing from _session_artifact_roots, so a session neither owns nor cleans "
+        f"them on close: {sorted(unowned)}"
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")

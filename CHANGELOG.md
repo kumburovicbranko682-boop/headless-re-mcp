@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（会话制品“所有权目录”补完整性守卫：任何 <root>/<类别>/<session_id> 写入路径都必须在 _session_artifact_roots 里登记，否则会话既不拥有也不清理它）
+
+- `_session_artifact_roots` 是“会话拥有哪些制品子树”的唯一真相:会话关闭时的清理只回收它列出的目录,所有权守卫\
+  (`_session_owns_artifact_path`)也只放行落在其下的路径。某后端若开始往新的 `<root>/newcat/<session_id>` 落盘却忘了\
+  把 `newcat` 加进这张表,不会有任何报错——那棵树被判为“外人”,于是关闭时永不清理(只能等全局按体积 / 时龄的 GC 兜底,\
+  是一处慢泄漏),且拥有它的会话连自己的产物都读不回来。`apk/` 早先就这么漏过一次。新增\
+  `test_every_session_scoped_artifact_category_is_advertised_as_owned`:扫描整个包,用正则抓出每一处\
+  `"<类别>" / session_id` 的构造(`\s` 跨行,容多行路径),断言其类别集合⊆ `_session_artifact_roots` 通告的类别集合;\
+  正反双向非空校验(通告表须真的列了根,扫描须触及多个 service 模块)避免“拿空集比空集”地假过。当前 14 个类别\
+  (dotnet / unpack / dump / detection / web / proxy / apktool / jadx / apk / ghidra / trace / ui / reports / static)\
+  全部对齐;`jsre` / `device` 因无会话键(以路径而非 session 为键、从不登记进制品表、靠 `prune_capped_dir` 或全局审计\
+  兜底)本就不该在表内,故不会被扫进。唯一显式排除的是 `sessions`:`<root>/sessions/<id>/` 是会话元数据存储\
+  (时间线落在此,Windows 虚拟桌面把帧写到 `sessions/<id>/desktop/`),由会话记录生命周期保管回收,而非制品 GC 路径——\
+  把它塞进所有权表反而会让关闭清理误删时间线,故以带注释的排除集列明,其余任何新类别仍须登记。
+
 ### 测试（device.logcat 的 lines 是唯一逃出通用分页守卫的“页大小”参数，补钉 schema 上限 == 后端 clamp 常量 的对等与越界钳制）
 
 - `device.logcat` 的 `lines`(返回多少条尾部日志)本质是页大小,和其它非 PE 读取器的 `limit` 同类,但名字叫 `lines`,\
