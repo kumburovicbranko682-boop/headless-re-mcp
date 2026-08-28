@@ -198,29 +198,30 @@ class FridaError(RuntimeError):
         self.details = details
 
 
-# class_name and name_filter cross the Frida RPC to the device as call
-# arguments to the fixed _JAVA_SCRIPT -- they are marshalled as data, never
-# interpolated into the script -- so this bound is about resources and
-# marshalling, not injection. A fully-qualified Java name with generics and
-# inner classes stays far under it; the cap keeps a caller from shipping a
-# megabyte string across the RPC on every enumerate, the same discipline the
-# serial, package, module and selector inputs already follow. A NUL can
-# truncate a value mid-marshal, so it is refused outright rather than silently
-# cut. Unlike package/serial there is no strict pattern: a Java name legitimately
-# carries '$' (inner classes), '[' (arrays) and '.' (packages), so bounding the
-# length is the honest guard and a regex would reject valid targets.
-_MAX_JAVA_NAME_BYTES = 512
+# class_name, name_filter and module_name all cross the Frida RPC to the device
+# as call arguments to a fixed enumeration script -- they are marshalled as data,
+# never interpolated into the script -- so this bound is about resources and
+# marshalling, not injection. A fully-qualified Java name with generics and inner
+# classes, or a native module name/path, stays far under it; the cap keeps a
+# caller from shipping a megabyte string across the RPC on every enumerate, the
+# same discipline the serial, package and selector inputs already follow. A NUL
+# can truncate a value mid-marshal, so it is refused outright rather than
+# silently cut. Unlike package/serial there is no strict pattern: a Java name
+# legitimately carries '$' (inner classes), '[' (arrays) and '.' (packages) and a
+# module path carries '/', so bounding the length is the honest guard and a regex
+# would reject valid targets.
+_MAX_RPC_NAME_BYTES = 512
 
 
-def _reject_unbounded_java_text(text: str, *, field: str) -> None:
+def _reject_unbounded_rpc_name(text: str, *, field: str) -> None:
     if "\x00" in text:
         raise FridaError("invalid_params", f"{field} must not contain a NUL byte", field=field)
-    if len(text.encode("utf-8", "surrogatepass")) > _MAX_JAVA_NAME_BYTES:
+    if len(text.encode("utf-8", "surrogatepass")) > _MAX_RPC_NAME_BYTES:
         raise FridaError(
             "invalid_params",
-            f"{field} exceeds {_MAX_JAVA_NAME_BYTES} bytes",
+            f"{field} exceeds {_MAX_RPC_NAME_BYTES} bytes",
             field=field,
-            limit=_MAX_JAVA_NAME_BYTES,
+            limit=_MAX_RPC_NAME_BYTES,
         )
 
 
@@ -231,7 +232,7 @@ def _bounded_class_name(value: Any) -> str:
     name = value.strip()
     if not name:
         raise FridaError("invalid_params", "class_name is required")
-    _reject_unbounded_java_text(name, field="class_name")
+    _reject_unbounded_rpc_name(name, field="class_name")
     return name
 
 
@@ -241,8 +242,24 @@ def _bounded_name_filter(value: Any) -> str:
         return ""
     if not isinstance(value, str):
         raise FridaError("invalid_params", "name_filter must be a string")
-    _reject_unbounded_java_text(value, field="name_filter")
+    _reject_unbounded_rpc_name(value, field="name_filter")
     return value
+
+
+def _bounded_module_name(value: Any) -> str:
+    """A required, length-bounded native module name for frida.exports.
+
+    Like class_name it is marshalled across the Frida RPC to the device (as the
+    argument to the export-enumeration script), so it gets the same length / NUL
+    guard rather than being shipped unbounded on every call.
+    """
+    if not isinstance(value, str):
+        raise FridaError("invalid_params", "module_name must be a string")
+    name = value.strip()
+    if not name:
+        raise FridaError("invalid_params", "module_name is required")
+    _reject_unbounded_rpc_name(name, field="module_name")
+    return name
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -417,10 +434,8 @@ class FridaClient:
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         self._require(pid, allowed_pid)
-        if not isinstance(module_name, str) or not module_name.strip():
-            raise FridaError("invalid_params", "module_name is required")
+        name = _bounded_module_name(module_name)
         capped = max(1, min(int(limit), 512))
-        name = module_name.strip()
 
         def use(script: Any) -> JsonObject:
             raw = script.exports_sync.exports(name, capped + 1)

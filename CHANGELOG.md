@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`frida.exports` 的 `module_name` 此前未在后端限长/拒 NUL:`exports()` 只 strip 并判非空,便把 `module_name` 直接经 Frida RPC 作为枚举脚本参数下发到设备(`exports_sync.exports(name, ...)`)——与 `class_name`/`name_filter` 同一“作为 RPC 数据编组、非拼接进脚本”的资源/编组暴露面,却漏了那道限长。更糟:后端 `_MAX_JAVA_NAME_BYTES` 注释与兄弟边界测试的 docstring 都白纸黑字把 “module” 列为已遵循 512B/拒 NUL 纪律的一员,而代码并未落实——是一处“文档声称、代码没做”的假不变式）
+
+- 把共享的 RPC 名限长收敛为通用命名并覆盖 module_name:`_MAX_JAVA_NAME_BYTES`→`_MAX_RPC_NAME_BYTES`、`_reject_unbounded_java_text`→`_reject_unbounded_rpc_name`(值仍 512),新增 `_bounded_module_name` 复用之;`exports()` 改走 `name = _bounded_module_name(module_name)`,在 `_require` 授权之后、`_run_local_script` 附着之前完成校验(非字符串报 `module_name must be a string`、空报 `module_name is required`、超长/含 NUL 报 `invalid_params`)。`frida.exports` 工具 docstring 补上该 512B/拒 NUL/非字符串契约,让 agent 从 schema 即可读到。
+- 新增 `test_frida_exports_module_name_bounds.py`:超长/NUL/非字符串/空各自在附着前被拒(断言 `attached==[]` 且 RPC 未被调用)、恰到上界的名被接受并 strip 后原样过 RPC、授权边界先于限长校验(未授权 pid 即便超长名也先报 `permission_denied`)。带外验证:把 `exports()` 回退成旧的“仅判非空”后,超长/NUL/非字符串三例如期失败(旧码会把兆字节名下发设备),恰到上界/空/授权三例仍过——证明守卫有牙。`test_frida_java_input_bounds.py` 随符号改名同步更新。
+
 ### 测试（审计持久化脱敏漂移守卫：审计日志是可回读的持久行(`audit.list`),“凭据绝不明文落盘”此前只靠每个 `append_audit` 实现自觉地对 params 与 result 都跑 `redact_audit_payload`——SQLite 存储与内存仓各做一遍、仓门面转发给存储——是纪律而非机制,新存储后端或长出直写的门面都可能把原始载荷写进去而无人察觉）
 
 - 结构化钉住该安全不变式(与 adb shell 命令白名单同门):持久化层里每个非桩 `append_audit` 必须要么把 `params_summary` **与** `result_summary` 都经 `redact`/`redact_audit_payload`,要么转发给另一个 `append_audit`(由后者递归脱敏);Protocol 桩(`...` 空体)因不落盘而豁免。新增 `test_audit_persistence_redaction_guard.py` AST 扫 `core/repository.py` 与 `core/store/sqlite_store.py`,把每个 `append_audit` 判为 stub/redacts/delegates/UNSAFE,断言无 UNSAFE。附带一条:`redact_audit_payload` 必须底层调用 `redact`,使审计脱敏不能悄悄偏离 timeline 用的同一个 masker。

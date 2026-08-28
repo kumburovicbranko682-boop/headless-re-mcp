@@ -52,7 +52,9 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with found, module, base, and exports (name, address, type),
         plus count and has_more so a page that filled the limit is not read
-        as the whole export table. Limited to the debuggee pid.
+        as the whole export table. Limited to the debuggee pid. module_name is
+        required and bounded to 512 bytes: a longer name, a NUL byte, or a
+        non-string is rejected as invalid_params before the probe attaches.
         """
         return _dump(analysis.frida_exports(session_id, module_name, limit=limit))
 

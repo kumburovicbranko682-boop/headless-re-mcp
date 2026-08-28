@@ -21,7 +21,7 @@ from typing import Any, cast
 import pytest
 
 from headless_re_mcp.backends.frida.client import (
-    _MAX_JAVA_NAME_BYTES,
+    _MAX_RPC_NAME_BYTES,
     FridaClient,
     FridaError,
 )
@@ -127,11 +127,11 @@ def test_class_name_is_required_and_the_device_is_never_touched_when_missing() -
 
 def test_class_name_over_the_cap_fails_before_any_device_work() -> None:
     client, resolved, attached = _client(_RecordingApi())
-    over = "x" * (_MAX_JAVA_NAME_BYTES + 1)
+    over = "x" * (_MAX_RPC_NAME_BYTES + 1)
     with pytest.raises(FridaError) as caught:
         client.java_enumerate(None, 1, allowed_pids={1}, mode="methods", class_name=over)
     assert caught.value.code == "invalid_params"
-    assert caught.value.details.get("limit") == _MAX_JAVA_NAME_BYTES
+    assert caught.value.details.get("limit") == _MAX_RPC_NAME_BYTES
     # The guard runs before _resolve_device, so a hostile length never reaches
     # a device attach -- it is refused as the cheap local fact it is.
     assert resolved == []
@@ -141,7 +141,7 @@ def test_class_name_over_the_cap_fails_before_any_device_work() -> None:
 def test_class_name_at_the_cap_is_accepted_and_reaches_the_script() -> None:
     api = _RecordingApi()
     client, resolved, attached = _client(api)
-    at_cap = "a" * _MAX_JAVA_NAME_BYTES
+    at_cap = "a" * _MAX_RPC_NAME_BYTES
     payload = client.java_enumerate(
         None, 1, allowed_pids={1}, mode="methods", class_name=at_cap, limit=5
     )
@@ -192,11 +192,11 @@ def test_class_name_is_stripped_before_it_reaches_the_device() -> None:
 
 def test_name_filter_over_the_cap_fails_before_any_device_work() -> None:
     client, resolved, attached = _client(_RecordingApi())
-    over = "y" * (_MAX_JAVA_NAME_BYTES + 1)
+    over = "y" * (_MAX_RPC_NAME_BYTES + 1)
     with pytest.raises(FridaError) as caught:
         client.java_enumerate(None, 1, allowed_pids={1}, mode="classes", name_filter=over)
     assert caught.value.code == "invalid_params"
-    assert caught.value.details.get("limit") == _MAX_JAVA_NAME_BYTES
+    assert caught.value.details.get("limit") == _MAX_RPC_NAME_BYTES
     assert resolved == []
     assert attached == []
 
