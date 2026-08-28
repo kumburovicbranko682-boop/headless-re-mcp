@@ -145,6 +145,29 @@ def test_policy_keeps_windows_paths_intact(tmp_path, monkeypatch) -> None:  # ty
     assert policy.command == ("pwsh", "-File", r"C:\Program Files\vm\revert.ps1")
 
 
+def test_policy_refuses_a_windows_command_carrying_a_nul(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The Windows split smuggles backslashes through a NUL sentinel.
+
+    A raw command that already contains a NUL would round-trip back into a
+    backslash and silently rewrite the operator's argv -- turning, say, a
+    argument boundary into a path separator. Rather than corrupt the one
+    command whose whole job is to give the next sample a clean machine, the
+    splitter refuses it. (POSIX hosts never reach this arm; pin it under a
+    forced Windows host.)
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core import isolation as isolation_mod
+
+    base = replace(Settings.load(), artifact_root=tmp_path)
+    monkeypatch.setattr(isolation_mod, "is_windows_host", lambda: True)
+    with pytest.raises(ValueError, match="must not contain NUL"):
+        IsolationPolicy.from_settings(
+            replace(base, isolation_command="revert.ps1\x00--snapshot clean")
+        )
+
+
 def test_settings_load_splits_an_env_command_as_argv(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The env var is a command line, not a comma-separated set."""
     from headless_re_mcp.config import Settings
