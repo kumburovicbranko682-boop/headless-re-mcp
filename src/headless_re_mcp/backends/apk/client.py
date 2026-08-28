@@ -55,6 +55,14 @@ _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
 _MAX_COMPONENTS_PAGE = 1000
 _MAX_EXPORTED_COLLECT = 2000
+_MAX_FILTERS_COLLECT = 2000
+# Per intent-filter, the ceiling on each of the action/category/data lists so a
+# pathological manifest cannot blow one filter row up unbounded.
+_MAX_FILTER_ITEMS = 256
+# The <data> attributes worth surfacing for a deep link / MIME route; each row
+# carries this fixed set (null when the element omits one) so the shape is
+# predictable rather than varying with whatever the manifest happened to set.
+_DATA_ATTRS = ("scheme", "host", "port", "path", "pathPrefix", "pathPattern", "mimeType")
 
 
 class ApkError(RuntimeError):
@@ -433,11 +441,11 @@ class ApkClient:
                 if len(rows) >= _MAX_EXPORTED_COLLECT:
                     scan_more = True
                     break
-                declared = element.get(f"{{{_ANDROID_NS}}}exported")
+                declared = _android_attr(element, "exported")
                 has_intent_filter = element.find("intent-filter") is not None
                 if not _effective_exported(comp_type, declared, has_intent_filter, target_sdk):
                     continue
-                name = element.get(f"{{{_ANDROID_NS}}}name", "")
+                name = _android_attr(element, "name") or ""
                 counts[comp_type] += 1
                 rows.append(
                     {
@@ -445,7 +453,7 @@ class ApkClient:
                         "type": comp_type,
                         "exported_declared": declared,
                         "has_intent_filter": has_intent_filter,
-                        "permission": element.get(f"{{{_ANDROID_NS}}}permission"),
+                        "permission": _android_attr(element, "permission"),
                     }
                 )
         start, cap = _clamp_page(offset, limit, max_limit=_MAX_COMPONENTS_PAGE)
@@ -453,6 +461,80 @@ class ApkClient:
         return {
             "exported": window,
             "counts": counts,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+            "truncated": truncated,
+        }
+
+    def intent_filters(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List the intent filters each component advertises (deep links, actions).
+
+        Manifest-level (uses the cheap _apk parse, no DEX analysis): it walks
+        AndroidManifest.xml and reports every <intent-filter> on an activity,
+        activity-alias, service, receiver or provider -- the actions a component
+        answers to, the categories it carries and the data (scheme/host/port/
+        path.../mimeType) it routes, i.e. the deep-link URIs and MIME types an
+        implicit intent can reach. Each row also carries the owning component's
+        name, type and resolved exported status (see _effective_exported), so a
+        VIEW filter on an exported activity -- a classic deep-link entry point
+        -- stands out from an internal one.
+        """
+        apk = self._apk(path)
+        package = apk.get_package() or ""
+        target_sdk = _int_or_none(apk.get_target_sdk_version())
+        try:
+            xml_bytes = apk.get_android_manifest_axml().get_xml()
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
+
+        rows: list[JsonObject] = []
+        scan_more = False
+        truncated = False
+        try:
+            root = ET.fromstring(xml_bytes)
+        except ET.ParseError:
+            root = None
+            truncated = True
+        application = root.find("application") if root is not None else None
+        if application is not None:
+            for element in application:
+                tag = element.tag if isinstance(element.tag, str) else ""
+                comp_type = _COMPONENT_TAGS.get(tag)
+                if comp_type is None:
+                    continue
+                filters = element.findall("intent-filter")
+                if not filters:
+                    continue
+                declared = _android_attr(element, "exported")
+                exported = _effective_exported(comp_type, declared, True, target_sdk)
+                name = _resolve_component_name(package, _android_attr(element, "name") or "")
+                for intent_filter in filters:
+                    if len(rows) >= _MAX_FILTERS_COLLECT:
+                        scan_more = True
+                        break
+                    actions, a_more = _filter_names(intent_filter, "action")
+                    categories, c_more = _filter_names(intent_filter, "category")
+                    data, d_more = _filter_data(intent_filter)
+                    scan_more = scan_more or a_more or c_more or d_more
+                    rows.append(
+                        {
+                            "component": name,
+                            "type": comp_type,
+                            "exported": exported,
+                            "actions": actions,
+                            "categories": categories,
+                            "data": data,
+                        }
+                    )
+                if scan_more and len(rows) >= _MAX_FILTERS_COLLECT:
+                    break
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_COMPONENTS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "filters": window,
             "count": len(window),
             "total": len(rows),
             "offset": start,
@@ -710,6 +792,12 @@ class ApkClient:
         }
 
 
+def _android_attr(elem: Any, name: str) -> str | None:
+    """Read an android:* manifest attribute through its namespace URI."""
+    value: str | None = elem.get(f"{{{_ANDROID_NS}}}{name}")
+    return value
+
+
 def _resolve_component_name(package: str, name: str) -> str:
     """Expand a manifest android:name to a fully qualified class name.
 
@@ -748,6 +836,34 @@ def _effective_exported(
     if comp_type == "provider":
         return target_sdk is not None and target_sdk < _PROVIDER_DEFAULT_EXPORT_SDK
     return has_intent_filter
+
+
+def _filter_names(intent_filter: Any, tag: str) -> tuple[list[str], bool]:
+    """Collect the android:name of an intent-filter's <action>/<category> children."""
+    names: list[str] = []
+    more = False
+    for child in intent_filter.findall(tag):
+        if len(names) >= _MAX_FILTER_ITEMS:
+            more = True
+            break
+        value = _android_attr(child, "name")
+        if value is not None:
+            names.append(value)
+    return names, more
+
+
+def _filter_data(intent_filter: Any) -> tuple[list[JsonObject], bool]:
+    """Collect an intent-filter's <data> elements as fixed-shape spec dicts."""
+    specs: list[JsonObject] = []
+    more = False
+    for child in intent_filter.findall("data"):
+        if len(specs) >= _MAX_FILTER_ITEMS:
+            more = True
+            break
+        spec = {attr: _android_attr(child, attr) for attr in _DATA_ATTRS}
+        if any(value is not None for value in spec.values()):
+            specs.append(spec)
+    return specs, more
 
 
 def _dotted_to_smali(name: str) -> str:

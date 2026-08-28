@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **296（179 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **297（180 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -616,6 +616,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   面小得多)、`exported_declared`(原始 "true"/"false" 或 null,让推断结论可审计)与 `has_intent_filter`。
   输出 `exported`、`counts`(各类型导出数)、`count`/`total`/`offset`/`has_more`;`total` 上限 2000、越限置
   `scan_capped`;清单 XML 解析失败时 `truncated` 为真。与其余分项工具共用清单解析。
+- **`apk.intent_filters`**：与 `apk.exported_components` 配对的"路由视角"——后者说哪些组件可达,本工具说
+  "怎么达"。走一遍 AndroidManifest.xml,列出 activity/activity-alias/service/receiver/provider 上的每个
+  `<intent-filter>`,把隐式 intent 能命中的 VIEW/深链 URI、自定义 scheme 与 MIME 类型摊开(可浏览的 https
+  过滤器、导出 activity 上的 `app://` 自定义 scheme,正是深链劫持与未校验输入类问题的起点)。清单级解析、
+  **不需要 DEX 分析**。每行含 `component`(全限定属主)、`type`、`exported`(属主的解析导出状态,让别的应用可达
+  的过滤器凸显出来)、`actions`(android.intent.action.* 名)、`categories`(android.intent.category.* 名)与
+  `data`(每个 `<data>` 一个定形 dict:scheme/host/port/path/pathPrefix/pathPattern/mimeType,缺省为 null)。
+  输出 `filters`、`count`/`total`/`offset`/`has_more`;`total` 上限 2000、越限(或单个过滤器的
+  action/category/data 列表被裁到 256)置 `scan_capped`;清单 XML 解析失败时 `truncated` 为真。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
 - **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、

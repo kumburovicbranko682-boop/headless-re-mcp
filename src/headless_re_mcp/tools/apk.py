@@ -130,6 +130,35 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_exported_components(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.intent_filters")
+    def apk_intent_filters(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the intent filters components advertise (deep links and actions).
+
+        The routing view that pairs with apk.exported_components: where that
+        says which components are reachable, this says how -- it walks
+        AndroidManifest.xml and reports every <intent-filter> on an activity,
+        activity-alias, service, receiver or provider, so the VIEW/deep-link
+        URIs, custom schemes and MIME types an implicit intent can hit are laid
+        out for review (a browsable https filter or a custom app:// scheme on an
+        exported activity is where deep-link hijacking and unvalidated-input
+        bugs start). Manifest-level, so it needs no DEX analysis. Each row is
+        component (the fully qualified owner), type, exported (the owner's
+        resolved exported status, so a filter reachable by other apps stands
+        out), actions (the android.intent.action.* names), categories (the
+        android.intent.category.* names) and data (one fixed-shape dict per
+        <data> element with scheme, host, port, path, pathPrefix, pathPattern
+        and mimeType, each null when unset). Answers with filters, count, total,
+        offset and has_more so a filled page is not read as every filter; total
+        is capped at 2000 with scan_capped when more may exist (also set when a
+        single filter's action/category/data list is clipped at 256), and
+        truncated is true when the manifest XML could not be parsed.
+        """
+        return _dump(analysis.apk_intent_filters(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
