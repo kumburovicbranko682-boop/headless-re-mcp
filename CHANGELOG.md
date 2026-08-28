@@ -1119,6 +1119,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **`web.scripts` / `web.wasm.list` 分页窗口在客户端的钳制被钉死**：web 工具 schema 虽已约束
+  `offset >= 0`、`limit` 在范围内,但只有 MCP 传输会跑那道 pydantic 校验;agent 与 OpenAI 桥
+  传输直接以模型参数调用已绑定的处理器,越界分页会原样抵达后端。`WebBackend.scripts` 因此在源头
+  钳制——`start = max(0, int(offset))`、`cap = max(1, min(int(limit), 1000))`——与
+  `apk.classes/methods/strings`、`proxy.flows`、`web.network_list` 早已带的同一道护栏一致(`apk`
+  的钳制 docstring 更点名“web……列表后端已经这么做”)。要害在于:既有每个 `.scripts(...)` 用例
+  传的都是非负 offset 与正 limit,两处 `max` 在被覆盖到的场景里全是 no-op——删掉它们,测试套毫无
+  察觉。此时负 offset 会退化成 Python 尾切片(`values[-1 : -1+limit]` 是一页空却仍报 `has_more`
+  True)、零/负 limit 变成空页或“除尾之外全部”被读作第 0 页、超大 limit 越过两条传输本应达成一致的
+  1000 行天花板。新增 6 个用例逐条钉住钳制的每条腿——普通列表与 `wasm_only` 路径(其过滤发生在钳制
+  *之前*,故过滤后窗口仍须有界)——用假的脚本环夹具驱动,无需真实浏览器:负 offset 读作第 0 页而非
+  空尾切片、负 limit 与零 limit 各自钳到 1 行、超大 limit 封顶在 1000、越过总数的 offset 是空的
+  末页(`has_more` 为 False)。四处变异(去掉 offset 下限、去掉 limit 下限、去掉 1000 上限、`has_more`
+  丢掉 start 项)分别被对应用例逐一逮住,源文件 `backends/web/client.py` 未改。
 - **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
   崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
   非法 architecture、天真/垃圾时间戳、`resolve()` 抛 OSError 的死挂载——一律安静跳过或
