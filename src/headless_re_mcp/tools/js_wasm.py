@@ -213,6 +213,52 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.wasm_functions(path, offset=offset, limit=limit, timeout=timeout)
         )
 
+    @tools.tool(name="wasm.disasm_function")
+    def wasm_disasm_function(
+        path: str,
+        index: Annotated[int, Field(ge=0)],
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=5000)] = 200,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Disassemble one wasm function's body (the wasm twin of r2.disasm_function).
+
+        Where wasm.wat / wasm.decompile render the whole module -- spilling to an
+        artifact for anything sizeable -- this decodes a single function picked
+        by its index (from wasm.functions) into a linear op listing, the wasm
+        parallel to r2.disasm_function / apk.method_bytecode. It reads the bytes
+        directly (no wabt) and cannot drift with a wabt release.
+
+        The listing is trustworthy by construction: the decoder knows the
+        immediate shape of every opcode it emits and STOPS at the first opcode
+        whose shape it does not (SIMD 0xFD / threads 0xFE / reserved), rather
+        than guessing and desynchronising. It covers the MVP instruction set,
+        sign-extension, the 0xFC prefix (saturating truncation, bulk memory and
+        table ops) and reference types.
+
+        Answers with index, kind ("import" or "local"), name (from the name
+        section, else null), type_index, signature, params, results, has_code,
+        and for a defined function local_count, local_types, body_size and ops
+        (a page). Each op is {offset (its absolute byte offset in the module),
+        opcode (the hex byte, or "0xfc N" for a prefixed op), name (the
+        mnemonic), text (the rendered instruction, e.g. "local.get 0",
+        "i32.const 42", "call 3"), depth (its block-nesting level), bytes (the
+        instruction's raw hex) and immediates (structured operands) when it has
+        any}. Also answers with count, total, offset and has_more for paging, and
+        decoded_all -- false when the walk stopped early, with stopped_at_offset
+        and stopped_opcode naming where and on what (usually a SIMD/threads op).
+        scan_capped marks a body with more than 100000 ops. An imported function
+        has no body: has_code false and an empty ops list, not an error. An index
+        past the module's function count is invalid_params; a malformed module is
+        a clean backend_error and a missing file is not_found. An input over 16
+        MiB is refused as too_large.
+        """
+        return _dump(
+            analysis.wasm_disasm_function(
+                path, index, offset=offset, limit=limit, timeout=timeout
+            )
+        )
+
     @tools.tool(name="wasm.names")
     def wasm_names(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0

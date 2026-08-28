@@ -1528,6 +1528,51 @@ def test_wasm_functions_lists_the_whole_table_without_wabt() -> None:
 
 
 @pytest.mark.integration
+def test_wasm_disasm_function_decodes_a_body_without_wabt() -> None:
+    """One function's instruction stream must decode straight from the bytes.
+
+    The wasm twin of r2.disasm_function, and pure-Python like wasm.functions.
+    The fixture's sole function adds its two args, so disassembling index 0 must
+    yield the canonical local.get 0 / local.get 1 / i32.add / end sequence, fully
+    decoded (decoded_all True), with each op mapped to a byte offset and the
+    signature resolved -- no wabt in the loop.
+    """
+    assert _WASM_FIXTURE.is_file(), f"fixture missing: {_WASM_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_disasm_function(str(_WASM_FIXTURE), 0)
+        assert result.ok and result.data is not None, result.error
+        data = result.data
+        assert data["kind"] == "local"
+        assert data["has_code"] is True
+        assert data["signature"] == "(i32, i32) -> i32"
+        assert data["decoded_all"] is True
+        names = [op["name"] for op in data["ops"]]
+        assert names == ["local.get", "local.get", "i32.add", "end"]
+        assert data["ops"][0]["immediates"] == {"local_index": 0}
+        assert data["ops"][-1]["depth"] == 0  # the closing end terminates the body
+        # Every op carries a strictly increasing byte offset and its raw bytes.
+        offsets = [op["offset"] for op in data["ops"]]
+        assert offsets == sorted(offsets)
+        assert all(op.get("bytes") for op in data["ops"])
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_disasm_function_rejects_an_index_past_the_module() -> None:
+    """An index beyond the module's function count is a clean invalid_params."""
+    assert _WASM_FIXTURE.is_file(), f"fixture missing: {_WASM_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_disasm_function(str(_WASM_FIXTURE), 9999)
+        assert not result.ok and result.error is not None
+        assert result.error.code == "invalid_params", result.error
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_summary_faults_soft_on_a_bad_module(tmp_path: Path) -> None:
     """A non-wasm file must be a clean backend_error, never a crash."""
     bad = tmp_path / "bad.wasm"

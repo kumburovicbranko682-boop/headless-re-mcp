@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import struct
 import subprocess
 from contextlib import suppress
 from pathlib import Path
@@ -1116,6 +1117,493 @@ def _parse_wasm_functions(data: bytes, *, module: str) -> JsonObject:
     }
 
 
+# --- wasm.disasm_function: a bounded, honest single-function disassembler ----
+#
+# The listing is only ever as correct as its immediate-decoding table: skip one
+# opcode's immediates wrong and every op after it is garbage. So the decoder
+# knows the immediate *shape* of every opcode it emits and STOPS cleanly at the
+# first opcode whose shape it does not know (disclosed via decoded_all /
+# stopped_at), rather than guessing and desynchronising. That covers the MVP
+# instruction set, sign-extension, the 0xFC prefix (saturating trunc + bulk
+# memory / table) and reference types; SIMD (0xFD) and threads (0xFE) stop the
+# walk for now (their ops carry it far enough to read the structure first).
+_WOP_NONE = "none"          # no immediates (arithmetic, comparisons, drop, ...)
+_WOP_U32 = "u32"            # one uleb index (call, local.get, br, ...)
+_WOP_BLOCKTYPE = "blocktype"  # block / loop / if
+_WOP_MEMARG = "memarg"      # align + offset (every load / store)
+_WOP_I32 = "i32"            # i32.const (sleb32)
+_WOP_I64 = "i64"            # i64.const (sleb64)
+_WOP_F32 = "f32"            # f32.const (4 raw bytes)
+_WOP_F64 = "f64"            # f64.const (8 raw bytes)
+_WOP_CALL_INDIRECT = "call_indirect"  # type index + table index
+_WOP_BR_TABLE = "br_table"  # vec of labels + default
+_WOP_SELECT_T = "select_t"  # typed select: vec of valtypes
+_WOP_REFTYPE = "reftype"    # ref.null: one heaptype byte
+_WOP_RESERVED1 = "reserved1"  # memory.size / grow: one reserved uleb
+
+# byte -> (mnemonic, shape) for every opcode with a non-NONE shape or a name we
+# want to read; the whole numeric range 0x45..0xC4 is NONE and named below.
+_WASM_OPCODES: dict[int, tuple[str, str]] = {
+    0x00: ("unreachable", _WOP_NONE),
+    0x01: ("nop", _WOP_NONE),
+    0x02: ("block", _WOP_BLOCKTYPE),
+    0x03: ("loop", _WOP_BLOCKTYPE),
+    0x04: ("if", _WOP_BLOCKTYPE),
+    0x05: ("else", _WOP_NONE),
+    0x0B: ("end", _WOP_NONE),
+    0x0C: ("br", _WOP_U32),
+    0x0D: ("br_if", _WOP_U32),
+    0x0E: ("br_table", _WOP_BR_TABLE),
+    0x0F: ("return", _WOP_NONE),
+    0x10: ("call", _WOP_U32),
+    0x11: ("call_indirect", _WOP_CALL_INDIRECT),
+    0x1A: ("drop", _WOP_NONE),
+    0x1B: ("select", _WOP_NONE),
+    0x1C: ("select", _WOP_SELECT_T),
+    0x20: ("local.get", _WOP_U32),
+    0x21: ("local.set", _WOP_U32),
+    0x22: ("local.tee", _WOP_U32),
+    0x23: ("global.get", _WOP_U32),
+    0x24: ("global.set", _WOP_U32),
+    0x25: ("table.get", _WOP_U32),
+    0x26: ("table.set", _WOP_U32),
+    0x3F: ("memory.size", _WOP_RESERVED1),
+    0x40: ("memory.grow", _WOP_RESERVED1),
+    0x41: ("i32.const", _WOP_I32),
+    0x42: ("i64.const", _WOP_I64),
+    0x43: ("f32.const", _WOP_F32),
+    0x44: ("f64.const", _WOP_F64),
+    0xD0: ("ref.null", _WOP_REFTYPE),
+    0xD1: ("ref.is_null", _WOP_NONE),
+    0xD2: ("ref.func", _WOP_U32),
+}
+# Memory loads/stores 0x28..0x3E are all memarg; name them in order.
+_WASM_MEMORY_OPS = [
+    "i32.load", "i64.load", "f32.load", "f64.load",
+    "i32.load8_s", "i32.load8_u", "i32.load16_s", "i32.load16_u",
+    "i64.load8_s", "i64.load8_u", "i64.load16_s", "i64.load16_u",
+    "i64.load32_s", "i64.load32_u",
+    "i32.store", "i64.store", "f32.store", "f64.store",
+    "i32.store8", "i32.store16", "i64.store8", "i64.store16", "i64.store32",
+]
+for _i, _nm in enumerate(_WASM_MEMORY_OPS):
+    _WASM_OPCODES[0x28 + _i] = (_nm, _WOP_MEMARG)
+# The numeric range 0x45..0xC4 has no immediates; name each for a readable dump.
+_WASM_NUMERIC_OPS = [
+    "i32.eqz", "i32.eq", "i32.ne", "i32.lt_s", "i32.lt_u", "i32.gt_s", "i32.gt_u",
+    "i32.le_s", "i32.le_u", "i32.ge_s", "i32.ge_u",
+    "i64.eqz", "i64.eq", "i64.ne", "i64.lt_s", "i64.lt_u", "i64.gt_s", "i64.gt_u",
+    "i64.le_s", "i64.le_u", "i64.ge_s", "i64.ge_u",
+    "f32.eq", "f32.ne", "f32.lt", "f32.gt", "f32.le", "f32.ge",
+    "f64.eq", "f64.ne", "f64.lt", "f64.gt", "f64.le", "f64.ge",
+    "i32.clz", "i32.ctz", "i32.popcnt", "i32.add", "i32.sub", "i32.mul",
+    "i32.div_s", "i32.div_u", "i32.rem_s", "i32.rem_u", "i32.and", "i32.or",
+    "i32.xor", "i32.shl", "i32.shr_s", "i32.shr_u", "i32.rotl", "i32.rotr",
+    "i64.clz", "i64.ctz", "i64.popcnt", "i64.add", "i64.sub", "i64.mul",
+    "i64.div_s", "i64.div_u", "i64.rem_s", "i64.rem_u", "i64.and", "i64.or",
+    "i64.xor", "i64.shl", "i64.shr_s", "i64.shr_u", "i64.rotl", "i64.rotr",
+    "f32.abs", "f32.neg", "f32.ceil", "f32.floor", "f32.trunc", "f32.nearest",
+    "f32.sqrt", "f32.add", "f32.sub", "f32.mul", "f32.div", "f32.min", "f32.max",
+    "f32.copysign",
+    "f64.abs", "f64.neg", "f64.ceil", "f64.floor", "f64.trunc", "f64.nearest",
+    "f64.sqrt", "f64.add", "f64.sub", "f64.mul", "f64.div", "f64.min", "f64.max",
+    "f64.copysign",
+    "i32.wrap_i64", "i32.trunc_f32_s", "i32.trunc_f32_u", "i32.trunc_f64_s",
+    "i32.trunc_f64_u", "i64.extend_i32_s", "i64.extend_i32_u", "i64.trunc_f32_s",
+    "i64.trunc_f32_u", "i64.trunc_f64_s", "i64.trunc_f64_u", "f32.convert_i32_s",
+    "f32.convert_i32_u", "f32.convert_i64_s", "f32.convert_i64_u", "f32.demote_f64",
+    "f64.convert_i32_s", "f64.convert_i32_u", "f64.convert_i64_s",
+    "f64.convert_i64_u", "f64.promote_f32", "i32.reinterpret_f32",
+    "i64.reinterpret_f64", "f32.reinterpret_i32", "f64.reinterpret_i64",
+    "i32.extend8_s", "i32.extend16_s", "i64.extend8_s", "i64.extend16_s",
+    "i64.extend32_s",
+]
+for _i, _nm in enumerate(_WASM_NUMERIC_OPS):
+    _WASM_OPCODES.setdefault(0x45 + _i, (_nm, _WOP_NONE))
+# The 0xFC prefix family: sub-opcode -> (mnemonic, index-operand count).
+_WASM_FC_OPS: dict[int, tuple[str, int]] = {
+    0: ("i32.trunc_sat_f32_s", 0), 1: ("i32.trunc_sat_f32_u", 0),
+    2: ("i32.trunc_sat_f64_s", 0), 3: ("i32.trunc_sat_f64_u", 0),
+    4: ("i64.trunc_sat_f32_s", 0), 5: ("i64.trunc_sat_f32_u", 0),
+    6: ("i64.trunc_sat_f64_s", 0), 7: ("i64.trunc_sat_f64_u", 0),
+    8: ("memory.init", 2), 9: ("data.drop", 1), 10: ("memory.copy", 2),
+    11: ("memory.fill", 1), 12: ("table.init", 2), 13: ("elem.drop", 1),
+    14: ("table.copy", 2), 15: ("table.grow", 1), 16: ("table.size", 1),
+    17: ("table.fill", 1),
+}
+_WASM_U32_KEY = {
+    0x0C: "label", 0x0D: "label", 0x10: "function_index", 0xD2: "function_index",
+    0x20: "local_index", 0x21: "local_index", 0x22: "local_index",
+    0x23: "global_index", 0x24: "global_index",
+    0x25: "table_index", 0x26: "table_index",
+}
+# Bounds so a crafted body cannot build an unbounded reply.
+_MAX_WASM_OPS_COLLECT = 100_000
+_MAX_WASM_OPS_PAGE = 5000
+_MAX_WASM_BRTABLE = 4096
+
+
+def _read_wasm_blocktype(data: bytes, pos: int, end: int) -> tuple[str, int]:
+    if pos >= end:
+        raise _WasmParseError("blocktype truncated")
+    byte = data[pos]
+    if byte == 0x40:
+        return "void", pos + 1
+    if byte in _WASM_VALTYPES:
+        # A single valtype (i32..v128, funcref, externref). Type-index encodings
+        # are non-negative slebs whose first byte is < 0x40, so they never
+        # collide with these bytes (all >= 0x6F, i.e. negative as sleb).
+        return _WASM_VALTYPES[byte], pos + 1
+    val, pos = _read_sleb128(data, pos)
+    return f"type[{val}]", pos
+
+
+def _read_wasm_immediates(
+    data: bytes, pos: int, end: int, shape: str, op_byte: int
+) -> tuple[JsonObject | None, str, int]:
+    """Consume one opcode's immediates, returning (structured, rendered, pos)."""
+    if shape == _WOP_NONE:
+        return None, "", pos
+    if shape == _WOP_U32:
+        value, pos = _read_uleb128(data, pos)
+        key = _WASM_U32_KEY.get(op_byte, "index")
+        return {key: value}, str(value), pos
+    if shape == _WOP_RESERVED1:
+        value, pos = _read_uleb128(data, pos)
+        return {"memory": value}, str(value), pos
+    if shape == _WOP_MEMARG:
+        align, pos = _read_uleb128(data, pos)
+        offset, pos = _read_uleb128(data, pos)
+        return {"align": align, "offset": offset}, f"align={align} offset={offset}", pos
+    if shape == _WOP_I32:
+        value, pos = _read_sleb128(data, pos)
+        return {"value": value}, str(value), pos
+    if shape == _WOP_I64:
+        value, pos = _read_sleb128(data, pos)
+        return {"value": value}, str(value), pos
+    if shape == _WOP_F32:
+        if pos + 4 > end:
+            raise _WasmParseError("f32 immediate truncated")
+        value = struct.unpack("<f", data[pos : pos + 4])[0]
+        return {"value": value}, repr(value), pos + 4
+    if shape == _WOP_F64:
+        if pos + 8 > end:
+            raise _WasmParseError("f64 immediate truncated")
+        value = struct.unpack("<d", data[pos : pos + 8])[0]
+        return {"value": value}, repr(value), pos + 8
+    if shape == _WOP_BLOCKTYPE:
+        rendered, pos = _read_wasm_blocktype(data, pos, end)
+        return {"blocktype": rendered}, rendered, pos
+    if shape == _WOP_CALL_INDIRECT:
+        type_index, pos = _read_uleb128(data, pos)
+        table_index, pos = _read_uleb128(data, pos)
+        imm = {"type_index": type_index, "table_index": table_index}
+        return imm, f"type={type_index} table={table_index}", pos
+    if shape == _WOP_REFTYPE:
+        if pos >= end:
+            raise _WasmParseError("reftype truncated")
+        byte = data[pos]
+        pos += 1
+        rendered = _WASM_VALTYPES.get(byte, f"0x{byte:02x}")
+        return {"reftype": rendered}, rendered, pos
+    if shape == _WOP_SELECT_T:
+        count, pos = _read_uleb128(data, pos)
+        types: list[str] = []
+        for _ in range(count):
+            if pos >= end:
+                raise _WasmParseError("select type vec overruns body")
+            types.append(_WASM_VALTYPES.get(data[pos], f"0x{data[pos]:02x}"))
+            pos += 1
+        return {"types": types}, " ".join(types), pos
+    if shape == _WOP_BR_TABLE:
+        count, pos = _read_uleb128(data, pos)
+        targets: list[int] = []
+        for _ in range(count):
+            label, pos = _read_uleb128(data, pos)
+            if len(targets) < _MAX_WASM_BRTABLE:
+                targets.append(label)
+        default, pos = _read_uleb128(data, pos)
+        imm2: JsonObject = {"targets": targets, "default": default}
+        if count > _MAX_WASM_BRTABLE:
+            imm2["targets_truncated"] = True
+            imm2["targets_total"] = count
+        return imm2, f"[{len(targets)} targets] default={default}", pos
+    raise _WasmParseError(f"unhandled immediate shape {shape}")
+
+
+def _decode_wasm_body(
+    data: bytes, pos: int, end: int, *, max_ops: int
+) -> tuple[list[JsonObject], bool, JsonObject]:
+    """Decode a function body's instruction stream into a bounded op list.
+
+    Returns (ops, decoded_all, meta). ``decoded_all`` is False when the walk hit
+    an opcode whose immediate shape is unknown (SIMD/threads/reserved); meta then
+    carries stopped_at_offset / stopped_opcode. meta.scan_capped is set when the
+    op cap clipped the listing. Correctness is preserved either way: every op
+    emitted was decoded with a known shape, and the walk never guesses.
+    """
+    ops: list[JsonObject] = []
+    depth = 0
+    decoded_all = True
+    meta: JsonObject = {"scan_capped": False}
+    while pos < end:
+        if len(ops) >= max_ops:
+            meta["scan_capped"] = True
+            break
+        op_off = pos
+        byte = data[pos]
+        pos += 1
+        if byte == 0xFC:
+            sub, after = _read_uleb128(data, pos)
+            info = _WASM_FC_OPS.get(sub)
+            if info is None:
+                decoded_all = False
+                meta["stopped_at_offset"] = op_off
+                meta["stopped_opcode"] = f"0xfc {sub}"
+                break
+            name, nindex = info
+            operands: list[int] = []
+            p = after
+            for _ in range(nindex):
+                value, p = _read_uleb128(data, p)
+                operands.append(value)
+            pos = p
+            entry: JsonObject = {
+                "offset": op_off,
+                "opcode": f"0xfc {sub}",
+                "name": name,
+                "depth": depth,
+                "bytes": data[op_off:pos].hex(),
+            }
+            operand_text = " ".join(str(v) for v in operands)
+            entry["text"] = f"{name} {operand_text}".strip()
+            if operands:
+                entry["immediates"] = {"operands": operands}
+            ops.append(entry)
+            continue
+        if byte in (0xFD, 0xFE):
+            decoded_all = False
+            meta["stopped_at_offset"] = op_off
+            meta["stopped_opcode"] = f"0x{byte:02x}"
+            break
+        looked = _WASM_OPCODES.get(byte)
+        if looked is None:
+            decoded_all = False
+            meta["stopped_at_offset"] = op_off
+            meta["stopped_opcode"] = f"0x{byte:02x}"
+            break
+        name, shape = looked
+        try:
+            imm, operand_text, pos = _read_wasm_immediates(data, pos, end, shape, byte)
+        except _WasmParseError:
+            decoded_all = False
+            meta["stopped_at_offset"] = op_off
+            meta["stopped_opcode"] = f"0x{byte:02x}"
+            break
+        this_depth = depth
+        if byte == 0x0B:  # end: closes a block, or the function itself at depth 0
+            if depth == 0:
+                ops.append(
+                    {
+                        "offset": op_off,
+                        "opcode": f"0x{byte:02x}",
+                        "name": name,
+                        "depth": 0,
+                        "bytes": data[op_off:pos].hex(),
+                        "text": name,
+                    }
+                )
+                break
+            this_depth = depth - 1
+            depth -= 1
+        entry = {
+            "offset": op_off,
+            "opcode": f"0x{byte:02x}",
+            "name": name,
+            "depth": this_depth,
+            "bytes": data[op_off:pos].hex(),
+        }
+        entry["text"] = f"{name} {operand_text}".strip()
+        if imm is not None:
+            entry["immediates"] = imm
+        ops.append(entry)
+        if byte in (0x02, 0x03, 0x04):  # block / loop / if open a new depth
+            depth += 1
+    return ops, decoded_all, meta
+
+
+def _disasm_wasm_function(data: bytes, *, module: str, index: int) -> JsonObject:
+    """Locate one function by index and disassemble its body (imports have none).
+
+    Walks the section table once to place the function in the combined index
+    space (imports first, then defined), resolve its signature and readable
+    name, and -- for a defined function -- find its code body, read its local
+    declarations and decode its instruction stream. An imported function has no
+    body, reported as has_code false rather than an error, the wasm parallel to
+    r2.disasm_function answering an address outside any function with empty ops.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("backend_error", "not a WebAssembly module (bad magic)")
+    if index < 0:
+        raise JsReError("invalid_params", "function index must be non-negative")
+    version = int.from_bytes(data[4:8], "little")
+    pos = 8
+    n = len(data)
+    type_sigs: list[tuple[list[str], list[str]]] = []
+    func_import_types: list[int] = []
+    defined_types: list[int] = []
+    code_ranges: list[tuple[int, int]] = []  # (body_off, body_end) per defined func
+    try:
+        while pos < n:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb128(data, pos)
+            sec_end = pos + sec_size
+            if sec_size < 0 or sec_end > n:
+                raise _WasmParseError("section overruns module")
+            if sec_id == 0:
+                pos = sec_end
+                continue
+            count, body = _read_uleb128(data, pos)
+            if sec_id == 1:  # Type
+                p = body
+                with suppress(_WasmParseError):
+                    for _ in range(count):
+                        if len(type_sigs) >= _MAX_WASM_ITEMS:
+                            break
+                        params, results, p = _read_wasm_functype_parts(data, p, sec_end)
+                        type_sigs.append((params, results))
+            elif sec_id == 2:  # Import
+                p = body
+                for _ in range(count):
+                    _mod, p = _read_wasm_name(data, p, sec_end)
+                    _fld, p = _read_wasm_name(data, p, sec_end)
+                    if p >= sec_end:
+                        raise _WasmParseError("import entry truncated")
+                    kind = data[p]
+                    p += 1
+                    if kind == 0:
+                        type_index, p = _read_uleb128(data, p)
+                        if len(func_import_types) < _MAX_WASM_FUNCS:
+                            func_import_types.append(type_index)
+                    elif kind == 1:
+                        p = _skip_wasm_limits(data, p + 1)
+                    elif kind == 2:
+                        p = _skip_wasm_limits(data, p)
+                    elif kind == 3:
+                        p += 2
+                    else:
+                        raise _WasmParseError(f"unknown import kind {kind}")
+            elif sec_id == 3:  # Function
+                p = body
+                with suppress(_WasmParseError):
+                    for _ in range(count):
+                        if len(defined_types) >= _MAX_WASM_FUNCS:
+                            break
+                        type_index, p = _read_uleb128(data, p)
+                        defined_types.append(type_index)
+            elif sec_id == 10:  # Code
+                p = body
+                with suppress(_WasmParseError):
+                    for _ in range(count):
+                        if len(code_ranges) >= _MAX_WASM_FUNCS:
+                            break
+                        body_size, p = _read_uleb128(data, p)
+                        body_end = p + body_size
+                        if body_size < 0 or body_end > sec_end:
+                            raise _WasmParseError("code body overruns section")
+                        code_ranges.append((p, body_end))
+                        p = body_end
+            pos = sec_end
+    except _WasmParseError as exc:
+        raise JsReError("backend_error", f"malformed WebAssembly module: {exc}") from exc
+    except IndexError as exc:
+        raise JsReError(
+            "backend_error", "malformed WebAssembly module: unexpected end of data"
+        ) from exc
+
+    num_imports = len(func_import_types)
+    total = num_imports + len(defined_types)
+    if index >= total:
+        raise JsReError(
+            "invalid_params",
+            f"function index {index} out of range (module has {total} functions)",
+        )
+
+    name_map: dict[int, str] = {}
+    with suppress(JsReError):
+        for named in _parse_wasm_names(data, module=module).get("functions", []):
+            if isinstance(named, dict) and isinstance(named.get("index"), int):
+                text = str(named.get("name") or "")
+                if text:
+                    name_map[named["index"]] = text
+
+    if index < num_imports:
+        type_index = func_import_types[index]
+        func_kind = "import"
+    else:
+        type_index = defined_types[index - num_imports]
+        func_kind = "local"
+    result: JsonObject = {
+        "module": module,
+        "version": version,
+        "index": index,
+        "kind": func_kind,
+        "name": name_map.get(index),
+        "type_index": type_index,
+        "has_code": func_kind == "local",
+    }
+    if 0 <= type_index < len(type_sigs):
+        params, results = type_sigs[type_index]
+        result["signature"] = _render_wasm_sig(params, results)
+        result["params"] = list(params)
+        result["results"] = list(results)
+    if func_kind == "import":
+        result["ops"] = []
+        result["decoded_all"] = True
+        return result
+
+    defined_index = index - num_imports
+    if defined_index >= len(code_ranges):
+        raise JsReError(
+            "backend_error", "function has no code body (malformed Code section)"
+        )
+    body_off, body_end = code_ranges[defined_index]
+    pos = body_off
+    local_types: list[str] = []
+    local_count = 0
+    try:
+        groups, pos = _read_uleb128(data, pos)
+        for _ in range(groups):
+            if pos >= body_end:
+                raise _WasmParseError("local decl overruns body")
+            gcount, pos = _read_uleb128(data, pos)
+            if pos >= body_end:
+                raise _WasmParseError("local decl overruns body")
+            valtype = _WASM_VALTYPES.get(data[pos], f"0x{data[pos]:02x}")
+            pos += 1
+            local_count += gcount
+            if len(local_types) < _MAX_WASM_ITEMS:
+                local_types.extend([valtype] * min(gcount, _MAX_WASM_ITEMS))
+    except _WasmParseError as exc:
+        raise JsReError("backend_error", f"malformed WebAssembly module: {exc}") from exc
+
+    ops, decoded_all, meta = _decode_wasm_body(
+        data, pos, body_end, max_ops=_MAX_WASM_OPS_COLLECT
+    )
+    result["body_size"] = body_end - body_off
+    result["local_count"] = local_count
+    result["local_types"] = local_types[:_MAX_WASM_ITEMS]
+    result["ops"] = ops
+    result["decoded_all"] = decoded_all
+    if not decoded_all:
+        result["stopped_at_offset"] = meta.get("stopped_at_offset")
+        result["stopped_opcode"] = meta.get("stopped_opcode")
+    if meta.get("scan_capped"):
+        result["scan_capped"] = True
+    return result
+
+
 # The "name" custom section (WebAssembly binary Appendix, plus the extended
 # name section proposal): subsection ids to a human space name. 0/1/2 are the
 # standard ones; 3..11 come from the extended proposal that LLVM/wasm-tools emit.
@@ -1670,6 +2158,43 @@ class WasmClient:
         cap = max(1, min(int(limit), _MAX_WASM_FUNCTIONS_PAGE))
         window = collected[start : start + cap]
         parsed["functions"] = window
+        parsed["count"] = len(window)
+        parsed["total"] = total
+        parsed["offset"] = start
+        parsed["has_more"] = start + len(window) < total
+        return parsed
+
+    def disasm_function(
+        self,
+        path: Path,
+        *,
+        index: int,
+        offset: int = 0,
+        limit: int = 200,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Disassemble one function's body (the wasm twin of r2.disasm_function).
+
+        Where wasm.wat / wasm.decompile render the whole module (spilling to an
+        artifact for anything sizeable), this decodes a single function picked by
+        its index from wasm.functions, so an agent can read one routine's
+        instruction stream without materialising the module. Pure-Python: it
+        knows the immediate shape of every opcode it emits and stops cleanly at
+        the first it does not (SIMD/threads), disclosed via decoded_all, rather
+        than desynchronising. An imported function has no body (has_code false).
+        Paginated by offset/limit; needs no wabt.
+        """
+        _ = timeout
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        parsed = _disasm_wasm_function(
+            resolved.read_bytes(), module=resolved.name, index=index
+        )
+        collected: list[JsonObject] = parsed["ops"]
+        total = len(collected)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_WASM_OPS_PAGE))
+        window = collected[start : start + cap]
+        parsed["ops"] = window
         parsed["count"] = len(window)
         parsed["total"] = total
         parsed["offset"] = start
