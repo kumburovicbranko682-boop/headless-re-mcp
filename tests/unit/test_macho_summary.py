@@ -9,14 +9,18 @@ where no real Mach-O exists): a 64-bit LE dylib with segments/dylibs/rpath/uuid/
 platform/symtab, an executable with PIE/LC_MAIN/encryption-info, a 32-bit
 big-endian image, a fat binary with per-slice summaries, the LC_SYMTAB symbol
 page with its import/export classification and library resolution (64- and
-32-bit nlist), honest pagination, resilience to truncated load commands, out-of-
-file slices and symbol records, refusal of a non-Mach-O (including a Java class
-file that shares the 0xcafebabe magic), and the service routing that turns a bad
-file into a precise envelope rather than a fault.
+32-bit nlist), honest pagination, the code-signature decode (CodeDirectory
+identity/team/flags/cdhash, entitlements plist, adhoc vs hardened-runtime vs
+linker-signed verdicts, unsigned images, corrupt superblobs), resilience to
+truncated load commands, out-of-file slices and symbol records, refusal of a
+non-Mach-O (including a Java class file that shares the 0xcafebabe magic), and
+the service routing that turns a bad file into a precise envelope rather than a
+fault.
 """
 
 from __future__ import annotations
 
+import hashlib
 import struct
 from dataclasses import replace
 from pathlib import Path
@@ -26,6 +30,7 @@ import pytest
 from headless_re_mcp.backends.common.macho import (
     MachoParseError,
     list_macho_symbols,
+    read_macho_signature,
     summarize_macho,
 )
 from headless_re_mcp.config import Settings
@@ -367,6 +372,192 @@ def test_list_symbols_rejects_non_macho() -> None:
         list_macho_symbols(b"MZ\x00\x00" + b"\x00" * 60)
 
 
+# --- code signature (LC_CODE_SIGNATURE) -----------------------------------------
+
+_ENTITLEMENTS_XML = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n'
+    b'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"'
+    b' "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+    b'<plist version="1.0"><dict>'
+    b"<key>com.apple.security.get-task-allow</key><true/>"
+    b"<key>application-identifier</key><string>TEAMID1234.com.example.gate</string>"
+    b"</dict></plist>"
+)
+
+
+def _cs_blob(magic: int, content: bytes) -> bytes:
+    return struct.pack(">II", magic, 8 + len(content)) + content
+
+
+def _code_directory(
+    *, flags: int, identifier: str = "com.example.gate", team: str | None = None
+) -> bytes:
+    """A version-0x20200 CodeDirectory with no hash slots: identity and flags."""
+    ident_bytes = identifier.encode() + b"\x00"
+    team_bytes = (team.encode() + b"\x00") if team else b""
+    head = 52  # 44 fixed + scatterOffset + teamOffset
+    ident_off = head
+    team_off = head + len(ident_bytes) if team else 0
+    length = head + len(ident_bytes) + len(team_bytes)
+    fixed = struct.pack(
+        ">IIIIIIIIIBBBBI",
+        0xFADE0C02,  # CSMAGIC_CODEDIRECTORY
+        length,
+        0x20200,
+        flags,
+        length,  # hashOffset: no slots, points at the end
+        ident_off,
+        0,  # nSpecialSlots
+        0,  # nCodeSlots
+        0x4000,  # codeLimit
+        32,
+        2,  # hashType sha256
+        0,  # platform
+        12,  # pageSize log2 -> 4096
+        0,  # spare2
+    )
+    return fixed + struct.pack(">II", 0, team_off) + ident_bytes + team_bytes
+
+
+def _superblob(entries: list[tuple[int, bytes]]) -> bytes:
+    offset = 12 + 8 * len(entries)
+    index = b""
+    body = b""
+    for slot_type, blob in entries:
+        index += struct.pack(">II", slot_type, offset)
+        body += blob
+        offset += len(blob)
+    return struct.pack(">III", 0xFADE0CC0, offset, len(entries)) + index + body
+
+
+def _build_signed_dylib(sig: bytes) -> bytes:
+    """An arm64 dylib whose LC_CODE_SIGNATURE points at ``sig`` appended at EOF."""
+
+    def commands(dataoff: int) -> list[bytes]:
+        return [
+            _segment64(b"__TEXT", 0x5, 1),
+            _dylib_cmd(0xC, "/usr/lib/libSystem.B.dylib"),
+            _cmd(0x1D, struct.pack("<II", dataoff, len(sig))),
+        ]
+
+    payload = b"".join(commands(0))
+    payload = b"".join(commands(32 + len(payload)))
+    header = _MAGIC_64_LE + struct.pack(
+        "<iiIIIII", 0x0100000C, 0, 6, 3, len(payload), 0, 0
+    )
+    return header + payload + sig
+
+
+def test_signature_full_decode() -> None:
+    cd = _code_directory(flags=0x10000, team="TEAMID1234")  # RUNTIME
+    sig = _superblob(
+        [
+            (0, cd),
+            (2, _cs_blob(0xFADE0C01, b"\x00\x00\x00\x00")),  # requirements
+            (5, _cs_blob(0xFADE7171, _ENTITLEMENTS_XML)),
+            (0x10000, _cs_blob(0xFADE0B01, b"\x30\x82" + b"\x00" * 62)),  # CMS
+        ]
+    )
+    out = read_macho_signature(_build_signed_dylib(sig))
+    assert out["signed"] is True
+    directory = out["code_directory"]
+    assert directory["identifier"] == "com.example.gate"
+    assert directory["team_id"] == "TEAMID1234"
+    assert directory["flags"] == ["RUNTIME"]
+    assert directory["hash_type"] == "sha256"
+    assert directory["page_size"] == 4096
+    assert directory["cdhash"] == hashlib.sha256(cd).digest()[:20].hex()
+    assert out["adhoc"] is False
+    assert out["hardened_runtime"] is True
+    assert out["linker_signed"] is False
+    assert out["has_requirements"] is True
+    assert out["has_der_entitlements"] is False
+    assert out["cms_signature_size"] == 64
+    entitlements = out["entitlements"]
+    assert entitlements["com.apple.security.get-task-allow"] is True
+    assert entitlements["application-identifier"] == "TEAMID1234.com.example.gate"
+    slot_names = [s["slot"] for s in out["slots"]]
+    assert slot_names == ["code_directory", "requirements", "entitlements", "cms_signature"]
+    assert out["warnings"] == []
+
+
+def test_adhoc_linker_signed_has_no_team_and_no_cms() -> None:
+    sig = _superblob([(0, _code_directory(flags=0x20002))])  # ADHOC | LINKER_SIGNED
+    out = read_macho_signature(_build_signed_dylib(sig))
+    assert out["adhoc"] is True
+    assert out["linker_signed"] is True
+    assert out["hardened_runtime"] is False
+    assert out["code_directory"]["team_id"] is None
+    assert out["cms_signature_size"] == 0
+    assert out["entitlements"] is None
+
+
+def test_unsigned_images_say_so() -> None:
+    absent = read_macho_signature(_build_executable64())  # no LC_CODE_SIGNATURE
+    assert absent["signed"] is False
+    assert absent["code_directory"] is None
+    assert absent["adhoc"] is None
+    assert any("unsigned" in w for w in absent["warnings"])
+
+    empty = read_macho_signature(_build_dylib64())  # LC_CODE_SIGNATURE, datasize 0
+    assert empty["signed"] is False
+    assert any("unsigned" in w for w in empty["warnings"])
+
+
+def test_signature_region_past_eof_is_a_warning() -> None:
+    sig = _superblob([(0, _code_directory(flags=0x2))])
+    data = bytearray(_build_signed_dylib(sig))
+    marker = struct.pack("<II", 0x1D, 16)
+    pos = data.find(marker)
+    struct.pack_into("<I", data, pos + 8, 0xFFFFFF00)  # dataoff -> past EOF
+    out = read_macho_signature(bytes(data))
+    assert out["signed"] is False
+    assert any("past end of file" in w for w in out["warnings"])
+
+
+def test_wrong_superblob_magic_is_a_warning() -> None:
+    out = read_macho_signature(_build_signed_dylib(b"\xde\xad\xbe\xef" + b"\x00" * 12))
+    assert out["signed"] is True  # the command is there, the region is not a superblob
+    assert out["code_directory"] is None
+    assert any("wrong magic" in w for w in out["warnings"])
+
+
+def test_a_slot_pointing_past_the_region_is_skipped() -> None:
+    sig = struct.pack(">III", 0xFADE0CC0, 20, 1) + struct.pack(">II", 0, 0xFFFF)
+    out = read_macho_signature(_build_signed_dylib(sig))
+    assert out["signed"] is True
+    assert out["code_directory"] is None
+    assert any("points past the region end" in w for w in out["warnings"])
+
+
+def test_bad_entitlements_plist_is_a_warning() -> None:
+    sig = _superblob(
+        [
+            (0, _code_directory(flags=0x2)),
+            (5, _cs_blob(0xFADE7171, b"this is not xml at all")),
+        ]
+    )
+    out = read_macho_signature(_build_signed_dylib(sig))
+    assert out["entitlements"] is None
+    assert any("did not parse" in w for w in out["warnings"])
+
+
+def test_fat_signature_reads_first_slice() -> None:
+    signed = _build_signed_dylib(_superblob([(0, _code_directory(flags=0x2))]))
+    out = read_macho_signature(_build_fat([signed, _build_executable64()]))
+    assert out["fat"] is True
+    assert out["arch"] == "AArch64"
+    assert out["available_arches"] == ["AArch64", "x86-64"]
+    assert out["signed"] is True
+    assert out["adhoc"] is True
+    assert any("fat binary" in w for w in out["warnings"])
+
+
+def test_signature_rejects_non_macho() -> None:
+    with pytest.raises(MachoParseError):
+        read_macho_signature(b"MZ\x00\x00" + b"\x00" * 60)
+
+
 # --- service routing ----------------------------------------------------------
 
 
@@ -427,5 +618,30 @@ def test_service_symbols_refuses_a_non_macho(tmp_path: Path) -> None:
 
 def test_service_symbols_reports_missing_file(tmp_path: Path) -> None:
     result = _service(tmp_path).macho_symbols(str(tmp_path / "nope.dylib"))
+    assert not result.ok
+    assert result.error.code == "not_found"
+
+
+def test_service_reads_a_signature(tmp_path: Path) -> None:
+    binary = tmp_path / "libsigned.dylib"
+    binary.write_bytes(
+        _build_signed_dylib(_superblob([(0, _code_directory(flags=0x2, team="TEAMID1234"))]))
+    )
+    result = _service(tmp_path).macho_signature(str(binary))
+    assert result.ok, result.model_dump(mode="json")
+    assert result.data["adhoc"] is True
+    assert result.data["code_directory"]["team_id"] == "TEAMID1234"
+
+
+def test_service_signature_refuses_a_non_macho(tmp_path: Path) -> None:
+    junk = tmp_path / "not.dylib"
+    junk.write_bytes(b"this is not a mach-o binary")
+    result = _service(tmp_path).macho_signature(str(junk))
+    assert not result.ok
+    assert result.error.code == "invalid_params"
+
+
+def test_service_signature_reports_missing_file(tmp_path: Path) -> None:
+    result = _service(tmp_path).macho_signature(str(tmp_path / "nope.dylib"))
     assert not result.ok
     assert result.error.code == "not_found"

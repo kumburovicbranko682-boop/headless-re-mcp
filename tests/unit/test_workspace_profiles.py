@@ -26,7 +26,7 @@ async def test_full_profile_exposes_every_tool(tmp_path) -> None:
     finally:
         analysis.close_all()
     names = {tool.name for tool in tools}
-    assert len(names) == 274
+    assert len(names) == 275
     assert "apk.open" in names
     assert "web.open" in names
     assert "dex.summary" in names
@@ -38,6 +38,7 @@ async def test_full_profile_exposes_every_tool(tmp_path) -> None:
     assert "elf.dynamic" in names
     assert "macho.summary" in names
     assert "macho.symbols" in names
+    assert "macho.signature" in names
 
 
 @pytest.mark.asyncio
@@ -78,6 +79,7 @@ async def test_web_profile_hides_android_domain(tmp_path) -> None:
     assert "elf.dynamic" in names
     assert "macho.summary" in names
     assert "macho.symbols" in names
+    assert "macho.signature" in names
 
 
 @pytest.mark.asyncio
@@ -98,6 +100,7 @@ async def test_pe_profile_hides_both_android_and_web(tmp_path) -> None:
     assert "elf.dynamic" in names
     assert "macho.summary" in names
     assert "macho.symbols" in names
+    assert "macho.signature" in names
 
 
 def test_workspace_mode_get_and_set_roundtrip(tmp_path, monkeypatch) -> None:

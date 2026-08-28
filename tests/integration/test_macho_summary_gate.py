@@ -3,9 +3,12 @@
 With PE covered by a whole tool line and ELF by elf.summary/elf.symbols, Mach-O
 was the one native format that could not be opened here at all. The header and
 load commands are an exact binary format that reads with the stdlib alone. This
-gate drives the real stdio server end to end on a hand-assembled Mach-O
-(portable, so it runs anywhere) and pins the round trip: macho.summary is
-advertised, it returns the cpu, filetype, segments, linked dylibs and platform,
+gate drives the real stdio server end to end on hand-assembled Mach-O images
+(portable, so it runs anywhere) and pins the round trip: macho.summary,
+macho.symbols and macho.signature are advertised, the summary returns the cpu,
+filetype, segments, linked dylibs and platform, the symbol page classifies
+imports and exports, the signature decode surfaces the CodeDirectory identity,
+team ID, flags and entitlements (and says unsigned when there is no signature),
 and a file that is not a Mach-O fails with invalid_params rather than an
 internal fault. It needs no analysis backend, so it always runs.
 """
@@ -70,6 +73,60 @@ def _build_dylib64() -> bytes:
     return header + payload + nlist + strtab
 
 
+def _build_signed_dylib() -> bytes:
+    """An arm64 dylib carrying a real code-signature superblob at end of file.
+
+    The CodeDirectory (version 0x20200, hardened-runtime flag, sha256) names
+    the signing identifier and a team ID; an entitlements blob grants
+    get-task-allow -- the pieces macho.signature must surface over the wire.
+    """
+    ident = b"com.example.gate\x00"
+    team = b"TEAMID1234\x00"
+    cd_len = 52 + len(ident) + len(team)
+    cd = (
+        struct.pack(
+            ">IIIIIIIIIBBBBI",
+            0xFADE0C02, cd_len, 0x20200, 0x10000,  # RUNTIME
+            cd_len, 52, 0, 0, 0x4000, 32, 2, 0, 12, 0,
+        )
+        + struct.pack(">II", 0, 52 + len(ident))
+        + ident
+        + team
+    )
+    xml = (
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b'<plist version="1.0"><dict>'
+        b"<key>com.apple.security.get-task-allow</key><true/>"
+        b"</dict></plist>"
+    )
+    ent = struct.pack(">II", 0xFADE7171, 8 + len(xml)) + xml
+    sig = (
+        struct.pack(">III", 0xFADE0CC0, 28 + len(cd) + len(ent), 2)
+        + struct.pack(">II", 0, 28)
+        + struct.pack(">II", 5, 28 + len(cd))
+        + cd
+        + ent
+    )
+
+    def commands(dataoff: int) -> list[bytes]:
+        return [
+            _cmd(
+                0x19,
+                struct.pack(
+                    "<16sQQQQiiII", b"__TEXT", 0x100000000, 0x4000, 0, 0x4000, 0x5, 0x5, 1, 0
+                ),
+            ),
+            _cmd(0x1D, struct.pack("<II", dataoff, len(sig))),
+        ]
+
+    payload = b"".join(commands(0))
+    payload = b"".join(commands(32 + len(payload)))
+    header = b"\xcf\xfa\xed\xfe" + struct.pack(
+        "<iiIIIII", 0x0100000C, 0, 6, 2, len(payload), 0, 0
+    )
+    return header + payload + sig
+
+
 def _structured(result: object) -> dict[str, Any]:
     content = getattr(result, "structuredContent", None)
     assert isinstance(content, dict), result
@@ -84,6 +141,8 @@ async def _call(client: ClientSession, tool: str, args: dict[str, Any]) -> dict[
 async def test_mcp_stdio_macho_summary(tmp_path: Path) -> None:
     binary = tmp_path / "libgate.dylib"
     binary.write_bytes(_build_dylib64())
+    signed = tmp_path / "libsigned.dylib"
+    signed.write_bytes(_build_signed_dylib())
     junk = tmp_path / "bad.dylib"
     junk.write_bytes(b"not a mach-o binary at all")
 
@@ -102,6 +161,7 @@ async def test_mcp_stdio_macho_summary(tmp_path: Path) -> None:
         tools = {tool.name for tool in (await client.list_tools()).tools}
         assert "macho.summary" in tools
         assert "macho.symbols" in tools
+        assert "macho.signature" in tools
 
         full = await _call(client, "macho.summary", {"path": str(binary)})
         assert full["ok"] is True, full
@@ -124,6 +184,23 @@ async def test_mcp_stdio_macho_summary(tmp_path: Path) -> None:
         assert by_name["_malloc"]["library"] == "/usr/lib/libSystem.B.dylib"
         assert by_name["_gate_open"]["exported"] is True
 
+        signature = await _call(client, "macho.signature", {"path": str(signed)})
+        assert signature["ok"] is True, signature
+        sig_data = signature["data"]
+        assert sig_data["signed"] is True
+        directory = sig_data["code_directory"]
+        assert directory["identifier"] == "com.example.gate"
+        assert directory["team_id"] == "TEAMID1234"
+        assert directory["flags"] == ["RUNTIME"]
+        assert directory["hash_type"] == "sha256"
+        assert sig_data["hardened_runtime"] is True
+        assert sig_data["adhoc"] is False
+        assert sig_data["entitlements"]["com.apple.security.get-task-allow"] is True
+
+        unsigned = await _call(client, "macho.signature", {"path": str(binary)})
+        assert unsigned["ok"] is True, unsigned
+        assert unsigned["data"]["signed"] is False
+
         bad = await _call(client, "macho.summary", {"path": str(junk)})
         assert bad["ok"] is False
         assert bad["error"]["code"] == "invalid_params"
@@ -131,3 +208,7 @@ async def test_mcp_stdio_macho_summary(tmp_path: Path) -> None:
         bad_symbols = await _call(client, "macho.symbols", {"path": str(junk)})
         assert bad_symbols["ok"] is False
         assert bad_symbols["error"]["code"] == "invalid_params"
+
+        bad_signature = await _call(client, "macho.signature", {"path": str(junk)})
+        assert bad_signature["ok"] is False
+        assert bad_signature["error"]["code"] == "invalid_params"

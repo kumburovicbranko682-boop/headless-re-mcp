@@ -1,6 +1,6 @@
 # Headless RE-MCP
 
-Windows 与 Linux x86_64 上的无分析器窗口逆向 MCP（v0.2.1）。跨平台核心包含 MCP/Web 服务、会话管理、纯 Python 检测与 Android/Web/Ghidra/radare2 等可移植后端；授权 IDA `idalib` 可按宿主平台选配，Windows 另提供 x64dbg `headless.exe` 动态调试和 Win32 UI 能力。274 个受限语义工具供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传。
+Windows 与 Linux x86_64 上的无分析器窗口逆向 MCP（v0.2.1）。跨平台核心包含 MCP/Web 服务、会话管理、纯 Python 检测与 Android/Web/Ghidra/radare2 等可移植后端；授权 IDA `idalib` 可按宿主平台选配，Windows 另提供 x64dbg `headless.exe` 动态调试和 Win32 UI 能力。275 个受限语义工具供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传。
 
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -123,7 +123,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - 会话：`session.create/get/list/close`
 - 静态：`static.open/functions/strings/decompile` 等
 - 原生 ELF 速览：`elf.summary` 纯 stdlib 离线读取单个 ELF（Linux 可执行文件或 `.so`）——头部（位宽/字节序/类型/机器/入口）、节表、依赖库（DT_NEEDED）/SONAME/运行时搜索路径、是否 stripped——无需 r2/Ghidra，等价于离线 `readelf -h -S -d`；`elf.symbols` 分页读取动态符号表 `.dynsym`（等价离线 `nm -D`），每条符号带绑定/类型/value/size 与 `imported`/`exported` 布尔，直接看出二进制导入哪些库函数、导出哪些接口，strip 后依然可用；`elf.segments` 读取程序头表（等价离线 `readelf -l`，即内核实际映射的可加载视图）——每个段的类型/rwx 权限/偏移/大小，外加分析者最先看的安全态势：动态链接器路径（PT_INTERP）、栈是否不可执行（nx）、是否有 RELRO、以及是否存在可写又可执行的加载段（W^X 违规）；`elf.dynamic` 完整解码 `.dynamic` 数组（等价离线 `readelf -d`）——每个 tag 具名带值、字符串型 tag（NEEDED/SONAME/RPATH/RUNPATH）就地解析，DT_FLAGS 与 DT_FLAGS_1 两个标志字逐位展开（SYMBOLIC/TEXTREL/BIND_NOW/NOW/PIE/NODELETE…），并直接给出结论：pie、bind_now、textrel（加载期可写代码）、以及升级为 checksec 三态的 relro（full 需 PT_GNU_RELRO 加 bind-now，partial 只有段，none 都没有）；节表被剥离的样本经 PT_DYNAMIC 回退依旧可读，库名经 DT_STRTAB→PT_LOAD 映射解析。适合从 APK 抽出的 `lib/**/*.so` 或 Linux 原生样本（核心工具，各工作方向均可见）
-- 原生 Mach-O 速览：`macho.summary` 纯 stdlib 离线读取 macOS/iOS 二进制（可执行文件、`.dylib`、bundle，thin 或 universal/fat）——CPU 架构、文件类型、段表（名字/地址/权限）、依赖 dylib 与 rpath、UUID、目标平台与最低系统版本，外加 pie/signed/encrypted（iOS 商店加密标志）/stripped 四个初判布尔；fat 二进制逐 slice 给出完整摘要——等价于离线 `otool -h -l`。与 Java class 共享 `0xcafebabe` 魔数的文件会被指名拒绝；`macho.symbols` 分页读取 `LC_SYMTAB` 符号表（等价离线 `nm -m`），每条符号带类型/value 与 `imported`/`exported` 布尔，导入符号还解析出来自哪个 dylib（库序号 → 依赖名，或 self/executable/dynamic_lookup），fat 二进制读取首个架构 slice（核心工具，各工作方向均可见）
+- 原生 Mach-O 速览：`macho.summary` 纯 stdlib 离线读取 macOS/iOS 二进制（可执行文件、`.dylib`、bundle，thin 或 universal/fat）——CPU 架构、文件类型、段表（名字/地址/权限）、依赖 dylib 与 rpath、UUID、目标平台与最低系统版本，外加 pie/signed/encrypted（iOS 商店加密标志）/stripped 四个初判布尔；fat 二进制逐 slice 给出完整摘要——等价于离线 `otool -h -l`。与 Java class 共享 `0xcafebabe` 魔数的文件会被指名拒绝；`macho.symbols` 分页读取 `LC_SYMTAB` 符号表（等价离线 `nm -m`），每条符号带类型/value 与 `imported`/`exported` 布尔，导入符号还解析出来自哪个 dylib（库序号 → 依赖名，或 self/executable/dynamic_lookup），fat 二进制读取首个架构 slice；`macho.signature` 解码 `LC_CODE_SIGNATURE` 指向的 SuperBlob（等价离线 `codesign -dvv --entitlements`）——CodeDirectory 里分析者最先问的"谁签的、按什么规则跑"：签名标识符、Apple Developer **Team ID**、cdhash（CodeDirectory 摘要截断 20 字节，公证与威胁情报检索用的就是它）、哈希类型/页大小，标志位逐个展开（ADHOC/HARD/KILL/RESTRICT/ENFORCEMENT/LIBRARY_VALIDATION/RUNTIME/LINKER_SIGNED）并直接给出结论 `adhoc`/`hardened_runtime`/`linker_signed`；entitlements plist 解析成有界字典（get-task-allow、沙箱例外都在这），`cms_signature_size` 为 0 即无证书链的 adhoc 签名；未签名镜像如实返回 `signed=false`（核心工具，各工作方向均可见）
 - 动态：`dynamic.open/state/events/wait/launch/attach/stop/pause/resume`、单步、寄存器/内存、模块与断点
 - 地址：`sync.*`、`modules.list/resolve`；`sync.resolve_runtime_address` 把 static VA / 模块 RVA / runtime VA 一次解析成运行时地址，`dynamic.breakpoint.set` 可用 `address_space=static|rva` 直接下断（内部重定位，调用方不做地址运算）
 - 复合工作流：`dynamic.analyze_function`（反编译 + 重定位下断 + 运行 + 寄存器，一次调用）、`dynamic.trace_api_arguments`（按符号或地址断 API 并捕获整型参数：x64 取 RCX/RDX/R8/R9，x86 从返回地址之上的栈读取；结束必清断点）
@@ -209,7 +209,7 @@ worker 进程真正死亡时只上报不自动重启：重启后的调试器不�
 
 `local_full_access: false` 会让所有会改变状态或写文件的工具返回 `write_disabled` 错误，
 只读查询不受影响。工具仍然可见——调用方拿到的是能理解的拒绝，而不是工具凭空消失。
-274 个工具的读写归类（157 只读 / 117 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
+275 个工具的读写归类（158 只读 / 117 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
 读取，改配置不必重启。工具面裁剪（`workspace_profile`）与读写策略是两条独立的边界：前者决定
 「看得见什么」，后者决定「能不能改」。
 
@@ -399,7 +399,7 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
   纯 stdlib 离线读取单个 .dex 不依赖 androguard）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
-- 273 个工具（全部 274 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
+- 274 个工具（全部 275 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
   结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
   校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。
   敌意**环境**同样覆盖：产物库被删除、变成只读或被损坏时，工具照常返回信封（存储类故障有专门的

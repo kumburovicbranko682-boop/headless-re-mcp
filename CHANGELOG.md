@@ -7,6 +7,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 新增（原生 Mach-O 离线速览，无需任何外部后端）
 
+- 新增 `macho.signature`：纯 stdlib 解码 `LC_CODE_SIGNATURE` 指向的代码签名 SuperBlob——即离线
+  `codesign -dvv --entitlements`。`macho.summary` 只说"有没有签名"，这里打开签名本体，读出分析 macOS/iOS
+  样本最先问的"**谁签的、按什么规则跑**"：CodeDirectory 的签名标识符（identifier）、Apple Developer
+  **Team ID**（实际意义上的署名）、**cdhash**（CodeDirectory 按自身哈希类型的摘要截断 20 字节——公证票据、
+  内核日志与威胁情报检索用的正是这个值，stdlib hashlib 现算）、哈希类型/大小、code_limit 与页大小；标志字
+  逐位展开（ADHOC/HARD/KILL/RESTRICT/ENFORCEMENT/LIBRARY_VALIDATION/RUNTIME/LINKER_SIGNED）并直接给出
+  三个结论布尔：`adhoc`、`hardened_runtime`、`linker_signed`；**entitlements** XML plist 用 stdlib
+  plistlib 解析成有界的 JSON 安全字典（get-task-allow、沙箱与钥匙串例外都在这里），DER entitlements 与
+  requirements 报在场与否，`cms_signature_size` 报 CMS 证书链大小（0 即 adhoc 无证书）。签名 blob 内部
+  一律大端、与镜像字节序无关；主 CodeDirectory 优先、alternate 只补缺；superblob 槽位越界、子 blob 魔数
+  错误、entitlements 不是合法 plist 都记 warning 降级而非异常；未签名镜像（无 LC_CODE_SIGNATURE 或
+  datasize=0）如实返回 `signed=false` 加 warning；fat 二进制读首个架构 slice 并列出全部架构。已对真实
+  二进制验证：PyPI macOS arm64 wheel 里的 CPython 扩展解出 `ADHOC|LINKER_SIGNED`（Apple 链接器对 arm64
+  的标准产物），且**代码页哈希自校验 13/13 全中**——用解析出的 pageSize/codeLimit/hashOffset 重算每页
+  SHA-256 与 CodeDirectory 存储值逐字节一致，证明偏移解析精确；universal2 wheel 的 x86-64 首 slice 如实
+  报未签名（x86 不强制链接器签名）。工具为**核心、按路径、只读**，各工作方向均可见。新增手工汇编夹具单测
+  （全字段解码含 cdhash 对拍、adhoc/linker-signed、未签名两形态、签名区越界、superblob 魔数错误、槽位
+  越界、坏 plist、fat 首 slice、非 Mach-O 拒绝、服务三类信封）；Mach-O MCP stdio Gate 扩到同时打
+  `macho.signature`（断言身份/标志/entitlements 与未签名路径）。
 - 新增 `macho.symbols`：纯 stdlib 分页读取 `LC_SYMTAB` 的 nlist 符号表——即离线 `nm -m`，与 `elf.symbols`
   对齐。符号表是二进制的链接面:它从其它 dylib **导入**的函数（undefined 的外部项）与它**导出**给别人
   链接的函数/对象（已定义的外部项）。每条符号给出名字（经字符串表解引用）、类型（undefined/section/
@@ -166,7 +185,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **274（157 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **275（158 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
