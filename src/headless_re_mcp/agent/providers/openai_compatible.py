@@ -346,6 +346,7 @@ class OpenAICompatibleProvider:
         finish_reason: str | None = None
         output_tokens: int | None = None
         saw_incremental = False
+        saw_done = False
         timeout = httpx.Timeout(self.timeout, connect=min(self.timeout, 30.0))
         async with (
             build_client(
@@ -377,6 +378,7 @@ class OpenAICompatibleProvider:
                 if data is None:
                     continue
                 if data == "[DONE]":
+                    saw_done = True
                     break
                 try:
                     chunk = _normalize_chunk(json.loads(data))
@@ -427,6 +429,21 @@ class OpenAICompatibleProvider:
                     )
                     for piece in pieces:
                         yield ProviderEvent("output_delta", text=piece)
+        if not saw_done and finish_reason is None:
+            # The SSE body ended without [DONE] and without any terminal
+            # finish_reason. A conforming stream ends with one or the other;
+            # neither means the connection closed cleanly mid-response -- a
+            # truncated answer, not a complete one. httpx raises on an
+            # *unclean* close, but a clean EOF after partial deltas looks like
+            # success here, so this used to yield "completed" and the
+            # orchestrator recorded cut-off work as a finished run. That is the
+            # exact case its stream_completed guard exists to catch, defeated
+            # because this terminal event was emitted unconditionally. Raising
+            # keeps a truncated response from masquerading as a full one.
+            raise RuntimeError(
+                "provider stream ended without [DONE] or a finish_reason; "
+                "the response was truncated"
+            )
         calls_out: list[ProviderToolCall] = []
         for index, item in sorted(tool_fragments.items()):
             try:

@@ -404,6 +404,64 @@ async def test_completion_synthesizes_a_call_id_when_the_provider_omits_one() ->
 
 
 @pytest.mark.asyncio
+async def test_a_clean_eof_without_done_or_finish_reason_is_a_truncation() -> None:
+    """A stream that just stops mid-answer must not report success.
+
+    Chat-completions streams end with data: [DONE] or a terminal
+    finish_reason. httpx raises on an *unclean* close, but a clean TCP EOF
+    after a few content deltas -- no [DONE], no finish_reason -- looks
+    identical to a finished response at this layer. The provider used to emit
+    "completed" unconditionally, so the orchestrator recorded the cut-off
+    answer as a finished run; its own guard against that ('stream ended
+    without a completed event') never fired because a completed event was
+    always produced.
+    """
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        # Two content deltas, then the body just ends -- no [DONE], and no
+        # chunk ever carried a finish_reason.
+        body = (
+            f"data: {json.dumps({'choices': [{'delta': {'content': 'half '}}]})}\n\n"
+            f"data: {json.dumps({'choices': [{'delta': {'content': 'an answer'}}]})}\n\n"
+        )
+        return httpx.Response(200, text=body)
+
+    collected: list[Any] = []
+    with pytest.raises(RuntimeError, match="truncated"):
+        async for event in _provider(respond).stream_chat(messages=[], tools=[], model="m"):
+            collected.append(event)
+    # The visible deltas were still surfaced before the truncation was
+    # detected; what must not appear is a completed event calling it done.
+    deltas = [event.text for event in collected if event.type == "text_delta"]
+    assert deltas == ["half ", "an answer"]
+    assert not any(event.type == "completed" for event in collected)
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_finish_reason_without_done_is_a_complete_stream() -> None:
+    """finish_reason alone is a valid terminal signal; [DONE] is not required.
+
+    Some OpenAI-compatible providers close the body right after the final
+    chunk without a [DONE] sentinel. That chunk still carries finish_reason,
+    which is a conforming end-of-stream, so it must complete normally.
+    """
+    def respond(request: httpx.Request) -> httpx.Response:
+        del request
+        body = (
+            f"data: {json.dumps({'choices': [{'delta': {'content': 'done'}}]})}\n\n"
+            f"data: {json.dumps({'choices': [{'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+        )
+        return httpx.Response(200, text=body)
+
+    events = [
+        event async for event in _provider(respond).stream_chat(messages=[], tools=[], model="m")
+    ]
+    assert events[-1].type == "completed"
+    assert events[-1].finish_reason == "stop"
+    assert [event.text for event in events if event.type == "text_delta"] == ["done"]
+
+
+@pytest.mark.asyncio
 async def test_a_rejected_stream_with_an_empty_body_reraises_the_bare_status() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         del request

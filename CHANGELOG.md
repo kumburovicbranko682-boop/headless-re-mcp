@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（provider 流被干净 EOF 截断时被当成完整回答）
+
+- `OpenAICompatibleProvider.stream_chat` 逐行消费 SSE 响应体后,无论是否见过
+  `data: [DONE]` 或任何终态 `finish_reason`,末尾都**无条件** `yield
+  ProviderEvent("completed")`。而 orchestrator 恰恰以"收到 completed 事件"判
+  定远端回答完整——其注释明说"干净的迭代器 EOF 不能证明回答完整,provider 用
+  这个终态事件区分完整响应与在部分增量后断掉的连接"。但此 provider 从不做这
+  个区分:httpx 只在**非正常**关闭时抛错,而对端在发出几条 content 增量后
+  **干净** TCP EOF(无 `[DONE]`、无 `finish_reason`)在这一层看起来与成功收尾
+  完全一样,于是截断的半截回答被 orchestrator 记为成功完成的 run——正是那条
+  `stream_completed` 守卫本应拦截、却因终态事件被无条件发出而失效的情形。修复:
+  循环后若既没见过 `[DONE]` 也没见过任何 `finish_reason`,判为截断并抛
+  RuntimeError,让 orchestrator 走失败路径而非静默吞掉半截答复。回归两条:干净
+  EOF 无终态信号 → 抛 truncated(可见增量仍先如实透出、但不产生 completed;修前
+  红),以及仅有 `finish_reason` 而无 `[DONE]` 仍属正常完整流(守卫我方不误伤;
+  修前已绿)。provider 两个测试文件 + orchestrator + 响应边界共 119 passed + 1
+  合法 Windows-only skip,ruff / mypy 干净。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
