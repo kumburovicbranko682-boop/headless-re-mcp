@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import socket
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
 
 import pytest
 
@@ -28,14 +28,27 @@ def _playwright_available() -> bool:
     return True
 
 
-def _this_process() -> Any:
-    """psutil if it happens to be installed; it is not a project dependency."""
+def _handle_counter() -> Callable[[], int] | None:
+    """A per-process handle/fd counter, or None when psutil is unavailable.
+
+    The leak this file guards -- console remote objects nobody disposed -- shows
+    up as OS handles on Windows and as open file descriptors on POSIX. psutil
+    exposes ``num_handles()`` only on Windows and ``num_fds()`` only on POSIX, so
+    the old helper's ``num_handles`` check silently returned None on Linux and
+    the regression never ran there. Pick whichever counter this platform has so
+    the bound is enforced on both. psutil is not a project dependency; skip when
+    it is absent rather than pretend the bound was checked.
+    """
     try:
         import psutil
     except ImportError:
         return None
     process = psutil.Process()
-    return process if hasattr(process, "num_handles") else None
+    if hasattr(process, "num_handles"):
+        return process.num_handles
+    if hasattr(process, "num_fds"):
+        return process.num_fds
+    return None
 
 
 def _free_port() -> int:
@@ -154,9 +167,9 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
     """
     if not _playwright_available():
         pytest.skip("playwright not installed — browser lifecycle Gate not run (skip != pass)")
-    process = _this_process()
-    if process is None:
-        pytest.skip("handle counts are not available here (skip != pass)")
+    count_handles = _handle_counter()
+    if count_handles is None:
+        pytest.skip("handle/fd counts are not available here (skip != pass)")
 
     backend = WebBackend()
     try:
@@ -167,16 +180,16 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
 
         for _ in range(5):
             backend.navigate("loud", _LOUD)
-        settled = process.num_handles()
+        settled = count_handles()
         for _ in range(20):
             backend.navigate("loud", _LOUD)
-        after = process.num_handles()
+        after = count_handles()
 
         captured = backend.console("loud", limit=500)
         assert captured["count"] > 0, "the console must still be captured"
         assert any("line " in str(item.get("text")) for item in captured["console"])
-        # A few handles of ordinary churn are fine; per-navigation growth is not.
-        assert after - settled < 100, f"handles grew by {after - settled} over 20 navigations"
+        # A few of ordinary churn are fine; per-navigation growth is not.
+        assert after - settled < 100, f"handles/fds grew by {after - settled} over 20 navigations"
     finally:
         backend.close_all()
 
