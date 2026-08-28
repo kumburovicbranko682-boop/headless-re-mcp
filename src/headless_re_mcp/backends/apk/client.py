@@ -451,6 +451,40 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def callees(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
+        parsed = self._parsed(path)
+        target = method_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "method_name is required")
+        _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
+        callees: list[JsonObject] = []
+        has_more = False
+        for method in parsed.analysis.get_methods():
+            if method.is_external() or method.name != target:
+                continue
+            # get_xref_to is the mirror of xrefs' get_xref_from: the methods this
+            # one invokes rather than the methods that invoke it. Same 3-tuple
+            # shape (class, callee-method, offset), so the middle element carries
+            # the callee's class_name and name.
+            for _, callee, _ in method.get_xref_to():
+                if len(callees) >= cap:
+                    has_more = True
+                    break
+                callees.append(
+                    {
+                        "class": str(callee.class_name),
+                        "method": str(callee.name),
+                    }
+                )
+            if has_more:
+                break
+        return {
+            "method_name": target,
+            "callees": callees,
+            "count": len(callees),
+            "has_more": has_more,
+        }
+
 
 def _dotted_to_smali(name: str) -> str:
     """com.example.Foo -> Lcom/example/Foo; so either form resolves a class."""

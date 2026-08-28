@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **281（164 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **282（165 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -539,8 +539,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 新增（Android）
 
-- **静态**：`apk.*` 12 个工具，androguard 进程内解析 manifest/权限/证书/组件/DEX 类与方法/
+- **静态**：`apk.*` 工具，androguard 进程内解析 manifest/权限/证书/组件/DEX 类与方法/
   字符串/xrefs，jadx CLI 负责 `apk.decompile` 与 `apk.export_sources`。
+- **`apk.callees`**：`apk.xrefs`（谁调用本方法，`get_xref_from`）的对称补充——给定方法名列出
+  该方法调用了谁（`get_xref_to`，静态调用图的出边，含框架与应用代码），复用已加载的
+  androguard 分析，与 `apk.xrefs` 共用 1000 的分页上限；输出 `callees`（class/method）、
+  `method_name`、`count` 与仅在真丢行时才为真的 `has_more`。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
 - **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、
