@@ -1032,7 +1032,15 @@ class ExtAnalysisMixin(UiDriveMixin):
             markdown = render_markdown_report(
                 session={
                     "id": session_id,
-                    "binary": str(session.require_binary()),
+                    # The report summarises knowledge/artifacts/audit, none of
+                    # which need a local file -- and a web session has a URL, not
+                    # a binary, so require_binary() would refuse it outright.
+                    # Name the file when there is one, else the locator (the URL
+                    # a web session carries), so a web analyst's findings still
+                    # render into a report instead of a target_mismatch.
+                    "binary": str(session.binary)
+                    if session.binary is not None
+                    else (session.locator or ""),
                     "sha256": session.sha256 or "",
                     "target": session.target.value,
                     "architecture": (

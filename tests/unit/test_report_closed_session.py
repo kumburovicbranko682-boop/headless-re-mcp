@@ -69,6 +69,39 @@ def test_report_generate_on_a_closed_session_does_not_write(tmp_path: Path) -> N
         service.close_all()
 
 
+def test_report_generate_renders_a_web_session_from_its_url(tmp_path: Path) -> None:
+    """A web session has a URL, not a file, and the report must still render.
+
+    report.generate summarises knowledge, artifacts and audit -- none of which
+    need a local binary -- yet it called require_binary(), which refuses a web
+    session outright because no file backs it. A web analyst who captured
+    traffic and recorded findings could therefore never produce a report. The
+    target reference falls back to the locator, so the report names the URL and
+    a real finding lands in the Markdown instead of a target_mismatch.
+    """
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    url = "https://example.com/app.js"
+    try:
+        created = service.create_session(url)
+        assert created.ok and created.data is not None, created.error
+        session_id = str(created.data["session"]["id"])
+        assert created.data["session"]["target"] == "web"
+
+        recorded = service.knowledge_record(session_id, "note", "captured-xhr", {"text": "x"})
+        assert recorded.ok, recorded.error
+
+        result = service.report_generate(session_id, title="web report")
+
+        assert result.ok and result.data is not None, result.error
+        markdown = str(result.data["markdown"])
+        assert url in markdown
+        assert "captured-xhr" in markdown
+        assert Path(str(result.data["path"])).is_file()
+    finally:
+        service.close_all()
+
+
 def test_reports_generated_in_the_same_second_use_distinct_artifact_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
