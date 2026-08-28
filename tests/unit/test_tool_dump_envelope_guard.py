@@ -1,14 +1,16 @@
-"""Every non-PE tool module's ``_dump`` refuses an envelope that is not an object.
+"""Every tool module's ``_dump`` refuses an envelope that is not an object.
 
 Each protocol-independent tool module turns a :class:`Result` into a plain dict
 via a private ``_dump`` helper before handing it to the MCP layer. The helper
 asserts the serialised envelope is a JSON object and raises ``TypeError`` if it
 is not, because a caller that receives a bare list or scalar where an
 ``ok/data/error/meta`` object is promised cannot tell success from failure. The
-guard is the same across the Android (``apk``/``device``/``frida``), web
-(``web``/``js_wasm``/``proxy``) and radare2/Ghidra (``r2``/``ghidra``) surfaces;
-this pins that contract on all of them at once so a refactor cannot quietly drop
-it from one module.
+guard is identical across the Android (``apk``/``device``/``frida``), web
+(``web``/``js_wasm``/``proxy``), radare2/Ghidra (``r2``/``ghidra``) and PE
+(``core``/``dynamic``/``trace``/``unpack``/``windbg``/…) surfaces; this pins
+that contract on all of them at once so a refactor cannot quietly drop it from
+one module. The tools layer itself is protocol-independent, so every module
+imports fine even on hosts that cannot run the PE backends.
 """
 
 from __future__ import annotations
@@ -18,8 +20,8 @@ from typing import Any
 
 import pytest
 
-# The non-PE tool modules, one per track dimension. Each exposes a module-level
-# ``_dump`` with the identical envelope-shape guard.
+# Every tool module that exposes a module-level ``_dump`` with the identical
+# envelope-shape guard.
 _MODULES = [
     "headless_re_mcp.tools.apk",
     "headless_re_mcp.tools.device",
@@ -31,6 +33,15 @@ _MODULES = [
     "headless_re_mcp.tools.ghidra",
     # The work-direction selector that gates the Android/Web tool surface.
     "headless_re_mcp.tools.workspace",
+    # PE-side modules share the same guard; importing them is host-independent.
+    "headless_re_mcp.tools.core",
+    "headless_re_mcp.tools.dynamic",
+    "headless_re_mcp.tools.dynamic_analysis",
+    "headless_re_mcp.tools.meta",
+    "headless_re_mcp.tools.trace",
+    "headless_re_mcp.tools.ui",
+    "headless_re_mcp.tools.unpack",
+    "headless_re_mcp.tools.windbg",
 ]
 
 

@@ -16,7 +16,10 @@ StaticAddress = Annotated[int, Field(ge=0)]
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
-    return result.model_dump(mode="json")
+    value = result.model_dump(mode="json")
+    if not isinstance(value, dict):
+        raise TypeError("result envelope did not serialize to an object")
+    return value
 
 
 def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
