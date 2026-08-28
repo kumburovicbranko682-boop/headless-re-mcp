@@ -24,6 +24,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（与 main 的 ghidra/proxy 客户端守卫测试语义合并冲突·第二轮）
+
+- main 侧新落的客户端守卫测试又有两条钉在本分支重写过的面上：ghidra 守卫断言
+  "ExportJson.py missing"，而本分支已把导出脚本重写为 Java（报
+  "ExportJson.java missing from package"）；proxy 的 start 就绪测试用假 `_run`
+  只等事件，而本分支的 `start()` 就绪条件多了 running() 钩子标记 `_ready`，
+  假 worker 不举旗便永远超时。合并 main 时一并调和：ghidra 断言改钉稳定语义
+  （消息包含 `ExportJson` 与 `missing`，不钉扩展名）；proxy 假 `_run` 像真实
+  worker 一样先举 `_ready`（用 getattr 守卫，旧树无此属性时照常通过）。
+
 ### 修复（与 main 的 dotnet 元数据测试语义合并冲突）
 
 - main 侧新增的 ECMA-335 索引宽度边界测试直接钉 `metadata_enum` 的私有

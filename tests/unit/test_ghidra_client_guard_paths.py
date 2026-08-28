@@ -166,13 +166,16 @@ def test_export_reports_a_missing_binary_as_not_found(tmp_path: Path) -> None:
 def test_export_reports_a_missing_bundled_script(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ExportJson.py ships in the package; if it is gone, say so before the JVM."""
+    """The ExportJson script ships in the package; if it is gone, say so before the JVM."""
     monkeypatch.setattr(ghidra_client, "_SCRIPT_DIR", tmp_path / "no-scripts")
     client = _client(tmp_path)
     with pytest.raises(GhidraError) as caught:
         client.functions(_binary(tmp_path), tmp_path / "project")
     assert caught.value.code == "backend_error"
-    assert "ExportJson.py missing" in caught.value.message
+    # The bundled script was ExportJson.py and is ExportJson.java since the
+    # Java rewrite; the guard's contract is naming the missing script, not
+    # its extension.
+    assert "ExportJson" in caught.value.message and "missing" in caught.value.message
 
 
 def test_export_reports_a_nonzero_exit_with_no_file_as_backend_error(

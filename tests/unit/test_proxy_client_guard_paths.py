@@ -390,7 +390,16 @@ def test_instance_start_returns_once_the_port_accepts(monkeypatch: pytest.Monkey
     monkeypatch.setattr(proxy_client, "_port_accepts", accepts)
     monkeypatch.setattr(proxy_client, "_port_bindable", lambda *a, **k: True)
     inst = _free_instance()
-    inst._run = lambda: release.wait(5.0)  # type: ignore[method-assign, assignment]
+
+    def fake_run() -> None:
+        # start() now also waits for the running()-hook marker, not just the
+        # port probe; a fake worker must raise it like the real one does.
+        ready = getattr(inst, "_ready", None)
+        if ready is not None:
+            ready.set()
+        release.wait(5.0)
+
+    inst._run = fake_run  # type: ignore[method-assign]
     try:
         # Success is a normal return; a failure would raise ProxyError instead.
         inst.start(timeout=2.0)
