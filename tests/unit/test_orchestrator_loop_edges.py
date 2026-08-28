@@ -548,6 +548,33 @@ async def test_a_cancelled_run_cannot_enter_a_tool_call(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+async def test_a_non_finite_argument_is_refused_not_raised(
+    tmp_path: Path, bad: float
+) -> None:
+    """A NaN/Infinity argument comes back as a tool result, not a run-killing raise.
+
+    json.loads parses NaN/Infinity from a model's tool call, and the canonical
+    args hash (allow_nan=False) then raised ValueError -- which, uncaught, failed
+    the whole run with an incident. The refusal must instead be a result the model
+    can read and resend, the way an oversized argument already is.
+    """
+    runner, store = _runner(tmp_path, spec=_spec(lambda **_: {"ok": True}))
+    run_id, _ = _new_run(store)
+
+    result = await runner._handle_tool_call(run_id, "c1", "test.tool", {"value": bad})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "arguments_not_finite"
+    completed = [
+        event.data
+        for event in store.list_events(run_id)
+        if event.type == "tool.completed"
+    ]
+    assert completed and completed[-1]["error"] == "arguments_not_finite"
+
+
+@pytest.mark.asyncio
 async def test_a_tool_outside_the_agent_transport_is_refused(tmp_path: Path) -> None:
     mcp_only = CommandSpec(
         "test.tool",

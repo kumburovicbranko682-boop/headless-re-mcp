@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import threading
 import time
 import uuid
@@ -200,6 +201,32 @@ def _arguments_too_deep(value: Any, *, limit: int = _MAX_ARGUMENT_DEPTH) -> bool
             stack.extend((item, depth + 1) for item in current.values())
         elif isinstance(current, list):
             stack.extend((item, depth + 1) for item in current)
+    return False
+
+
+def _arguments_have_non_finite_float(value: Any) -> bool:
+    """True when a JSON value carries a NaN or Infinity anywhere inside it.
+
+    json.loads parses NaN/Infinity/-Infinity into float("nan")/float("inf") by
+    default, so a model tool call can arrive carrying one. The argument size and
+    depth checks encode with allow_nan=True and miss it, but the args hash uses
+    allow_nan=False (a NaN has no canonical JSON form and never equals itself, so
+    it cannot key an approval) and raises ValueError -- which, uncaught, fails the
+    whole run with a logged incident instead of the readable refusal an
+    oversized/too-deep argument already earns. Detecting it here keeps the refusal
+    a tool result the model can correct from. Iterative to match _arguments_too_deep;
+    a bool is an int, never a float, so it is skipped.
+    """
+    stack: list[Any] = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, float):
+            if not math.isfinite(current):
+                return True
+        elif isinstance(current, dict):
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
     return False
 
 
@@ -639,6 +666,27 @@ class AgentOrchestrator:
                 {"tool_call_id": call_id, "name": name, "ok": False, "error": "arguments_too_large"},
             )
             return oversized
+        if _arguments_have_non_finite_float(arguments):
+            # A NaN/Infinity survives the size and depth checks (both encode with
+            # allow_nan=True) but breaks the canonical args hash (allow_nan=False),
+            # whose ValueError would otherwise escape to _execute and fail the run
+            # with an incident. Refuse it the way an oversized argument is refused,
+            # as a tool result the model reads and can resend without the bad value.
+            self.store.append_event(
+                run_id,
+                "tool.completed",
+                {"tool_call_id": call_id, "name": name, "ok": False, "error": "arguments_not_finite"},
+            )
+            return {
+                "ok": False,
+                "error": {
+                    "code": "arguments_not_finite",
+                    "message": (
+                        "arguments contain a non-finite number (NaN or Infinity), which "
+                        "is not valid JSON; resend the call with a finite value"
+                    ),
+                },
+            }
         effects = sorted(effect.value for effect in spec.effects)
         proposed = self.store.propose_tool_call(run_id, call_id, name, arguments, effects)
         self.store.append_event(run_id, "tool.proposed", {"tool_call_id": call_id, "name": name, "arguments": redact(arguments), "args_sha256": proposed["args_sha256"], "effects": effects})

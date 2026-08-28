@@ -12,12 +12,15 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.orchestrator import (
     _DESKTOP_RULE,
     _STEALTH_RULE,
     _SYSTEM_PROMPT,
     AgentOrchestrator,
+    _arguments_have_non_finite_float,
     _arguments_too_deep,
     _LlmOutputMeter,
     estimate_output_tokens,
@@ -159,6 +162,35 @@ def test_arguments_too_deep_flags_a_deep_list() -> None:
 
 def test_arguments_too_deep_allows_a_value_at_exactly_the_limit() -> None:
     assert _arguments_too_deep({"a": {"b": 1}}, limit=2) is False
+
+
+# ---------------------------------------------------------------------------
+# _arguments_have_non_finite_float
+
+
+def test_non_finite_float_accepts_finite_numbers() -> None:
+    assert _arguments_have_non_finite_float({"a": 1, "b": [1.0, -2.5, 3]}) is False
+
+
+def test_non_finite_float_treats_a_bool_as_a_finite_int() -> None:
+    assert _arguments_have_non_finite_float({"flag": True, "n": 0}) is False
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_float_flags_a_top_level_value(bad: float) -> None:
+    assert _arguments_have_non_finite_float(bad) is True
+
+
+def test_non_finite_float_flags_a_value_nested_in_a_dict() -> None:
+    assert _arguments_have_non_finite_float({"a": {"b": float("inf")}}) is True
+
+
+def test_non_finite_float_flags_a_value_nested_in_a_list() -> None:
+    assert _arguments_have_non_finite_float([1, 2, [3, float("nan")]]) is True
+
+
+def test_non_finite_float_ignores_the_string_nan() -> None:
+    assert _arguments_have_non_finite_float({"note": "nan is fine as text"}) is False
 
 
 # ---------------------------------------------------------------------------
