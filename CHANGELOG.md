@@ -277,10 +277,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   会把会话整个拖崩、掩盖其后所有结果。全仓库清点出剩余 15 处,分布在
   `test_dotnet_de4dot_run_paths.py`(4)、`test_doctor_probe_edges.py`(4)、
   `test_process_group_windows_job_paths.py`(2)、`test_die_adapter_paths.py`(2)、
-  `test_web_setup_steps.py`(2)、`test_web_app_launch_guards.py`(1)。全部改为
+  `test_web_setup_steps.py`(2)、`test_web_app_launch_guards.py`(1),另有随
+  cover-ui-ocr-paths 新落地的 `test_ui_ocr_paths.py`(4)。全部改为
   已两度落地的 `_OsProxy` 惯例:只把消费模块(de4dot、doctor、process_group、
-  die、web.setup、web.app)视野内的 `os` 换成钉住 `name` 的转发代理。六文件
-  132 例在 3.11 与 3.12 下均过,全库不再有进程级 os.name 补丁。
+  die、web.setup、web.app、ui_ocr)视野内的 `os` 换成钉住 `name` 的转发代理。
+  七文件受测用例在 3.11 与 3.12 下均过,全库不再有进程级 os.name 补丁。
 
 - 加绊线测试 `test_no_process_wide_platform_fakes.py` 使清理自我强制:扫描
   tests/ 下所有文件,发现 `setattr(os, "name", ...)` 即失败并指名文件行号、

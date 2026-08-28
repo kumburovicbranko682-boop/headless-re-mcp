@@ -35,6 +35,21 @@ from headless_re_mcp.core.ui_ocr import (
 from headless_re_mcp.core.windows import UiPidBoundaryError
 
 
+class _OsProxy:
+    """Pin ``name`` for the module under test; forward the rest to the real os.
+
+    Faking ``os.name`` process-wide poisons ``pathlib.Path`` on Python 3.11
+    (``Path()`` mints the other platform's flavour, which raises
+    ``NotImplementedError``) and crashes pytest's failure reporting.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __getattr__(self, attr: str) -> Any:
+        return getattr(os, attr)
+
+
 def _bmp(tmp_path: Path) -> Path:
     path = tmp_path / "shot.bmp"
     path.write_bytes(b"BM" + b"\x00" * 40)
@@ -198,14 +213,14 @@ class _Engine:
 def test_windows_ocr_available_is_false_off_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(ocr, "os", _OsProxy("posix"))
     assert windows_ocr_available() is False
 
 
 def test_windows_ocr_available_true_when_engine_creates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(ocr, "os", _OsProxy("nt"))
     engine = SimpleNamespace(try_create_from_user_profile_languages=lambda: object())
     _install_winsdk(monkeypatch, ocr_engine=engine)
     assert windows_ocr_available() is True
@@ -214,7 +229,7 @@ def test_windows_ocr_available_true_when_engine_creates(
 def test_windows_ocr_available_false_when_engine_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(ocr, "os", _OsProxy("nt"))
     engine = SimpleNamespace(try_create_from_user_profile_languages=lambda: None)
     _install_winsdk(monkeypatch, ocr_engine=engine)
     assert windows_ocr_available() is False
@@ -223,7 +238,7 @@ def test_windows_ocr_available_false_when_engine_absent(
 def test_windows_ocr_available_false_when_import_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(ocr, "os", _OsProxy("nt"))
 
     def boom() -> Any:
         raise RuntimeError("engine exploded")
