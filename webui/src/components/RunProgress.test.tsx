@@ -40,6 +40,29 @@ describe("RunProgress harness metrics", () => {
     expect(formatHarnessLine(metrics)).toContain("\u6b63\u5728\u8c03\u7528 static.open");
   });
 
+  it("sums rounds and steps across runs in the session-scoped strip", () => {
+    // The strip keeps every run on the thread and llmMs/toolMs/tools all
+    // accumulate; round numbers reset per run, so maxing them showed "2 轮"
+    // for a two-message conversation that actually ran four LLM rounds.
+    const t0 = Date.parse("2026-08-17T08:00:00.000Z");
+    const events: RunEvent[] = [
+      { run_id: "r1", seq: 1, type: "llm.started", data: { round: 1 }, created_at: "2026-08-17T08:00:00.000Z" },
+      { run_id: "r1", seq: 2, type: "llm.completed", data: { round: 1 }, created_at: "2026-08-17T08:00:01.000Z" },
+      { run_id: "r1", seq: 3, type: "llm.started", data: { round: 2 }, created_at: "2026-08-17T08:00:01.000Z" },
+      { run_id: "r1", seq: 4, type: "tool.started", data: { tool_call_id: "a", name: "static.open" }, created_at: "2026-08-17T08:00:02.000Z" },
+      { run_id: "r1", seq: 5, type: "tool.completed", data: { tool_call_id: "a", name: "static.open" }, created_at: "2026-08-17T08:00:03.000Z" },
+      { run_id: "r1", seq: 6, type: "run.completed", data: {}, created_at: "2026-08-17T08:00:03.000Z" },
+      { run_id: "r2", seq: 1, type: "llm.started", data: { round: 1 }, created_at: "2026-08-17T08:00:04.000Z" },
+      { run_id: "r2", seq: 2, type: "llm.completed", data: { round: 1 }, created_at: "2026-08-17T08:00:05.000Z" },
+      { run_id: "r2", seq: 3, type: "llm.started", data: { round: 2 }, created_at: "2026-08-17T08:00:05.000Z" },
+      { run_id: "r2", seq: 4, type: "tool.started", data: { tool_call_id: "b", name: "dynamic.open" }, created_at: "2026-08-17T08:00:06.000Z" },
+      { run_id: "r2", seq: 5, type: "tool.completed", data: { tool_call_id: "b", name: "dynamic.open" }, created_at: "2026-08-17T08:00:07.000Z" },
+    ];
+    const metrics = computeRunMetrics(events, t0 + 8000, 2);
+    expect(metrics.rounds).toBe(4);
+    expect(metrics.steps).toBe(6);
+  });
+
   it("shows elapsed seconds while a long tool is still running", () => {
     const t0 = Date.parse("2026-08-17T08:00:00.000Z");
     const events = [

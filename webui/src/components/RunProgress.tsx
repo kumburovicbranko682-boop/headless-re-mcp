@@ -52,7 +52,14 @@ export function computeRunMetrics(events: RunEvent[], now: number, rounds: numbe
   let llmOpen: number | null = null;
   let llmRoundStart: number | null = null;
   let sawLlmStarted = false;
-  let llmRounds = 0;
+  // The strip is session-scoped: it keeps every run on the thread (see the
+  // agent store's list_thread_events), and llmMs / toolMs / the tool ids in
+  // `tools` all accumulate across those runs. Round numbers reset to 1 per run
+  // (orchestrator emits round_index + 1), so maxing the round field counted
+  // only the deepest single run and left `轮`/`步` inconsistent with the
+  // durations beside them. Track the max round per run and sum, so the count
+  // aggregates the same way the adjacent quantities do.
+  const roundsByRun = new Map<string, number>();
   let gotDelta = false;
   let currentRoundText = "";
   let firstDeltaAt: number | null = null;
@@ -111,7 +118,11 @@ export function computeRunMetrics(events: RunEvent[], now: number, rounds: numbe
     if (event.type === "llm.started") {
       sawLlmStarted = true;
       const marked = Number(event.data.round);
-      llmRounds = Number.isFinite(marked) && marked > 0 ? Math.max(llmRounds, marked) : llmRounds + 1;
+      const prior = roundsByRun.get(event.run_id) ?? 0;
+      roundsByRun.set(
+        event.run_id,
+        Number.isFinite(marked) && marked > 0 ? Math.max(prior, marked) : prior + 1,
+      );
       openLlm(at);
       continue;
     }
@@ -190,6 +201,7 @@ export function computeRunMetrics(events: RunEvent[], now: number, rounds: numbe
 
   const tokPerSec = lastTokPerSec;
 
+  const llmRounds = [...roundsByRun.values()].reduce((sum, count) => sum + count, 0);
   const ttftMs = ttfts.length ? ttfts.reduce((sum, item) => sum + item, 0) / ttfts.length : waitingFirst ? Math.max(0, waitElapsed) : 0;
   const steps = Math.max(1, llmRounds + tools.size);
 

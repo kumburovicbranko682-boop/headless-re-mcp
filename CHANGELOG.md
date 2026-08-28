@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Agent 工作台状态条把多 run 的"轮/步"按单 run 峰值计，与相邻累计量自相矛盾）
+
+- 监控台底部的状态条是**会话级**的（agent 存储 `list_thread_events` 保留 thread 上
+  每个 run 的事件，`RunProgress` 收到的是全量 `state.events` 而非当前 run），且
+  `computeRunMetrics` 里 `llmMs`/`toolMs` 与工具集合 `tools`（按 tool_call_id 去重）
+  都**跨 run 累加**。唯独轮数用 `Math.max(llmRounds, event.data.round)` 取峰值——而
+  `round` 是每个 run 内从 1 起的（orchestrator 发 `round_index + 1`，每个 run 归零）。
+  于是同一 thread 连发两条消息、每条各跑 2 轮时，状态条显示 `2 轮 · 4 步`，而真实是
+  4 轮 · 6 步：轮数只取了"最深的那个 run"，`步 = 轮 + 工具数` 又把"每-run 峰值轮数"
+  与"累计工具数"相加，同一行里量纲自相矛盾（`工具调用` 时长明明累计了两个 run，`轮`
+  却只算一个）。速率 `tok/s` 取"最近一轮"是快照量、本就不该累加，反衬出轮数作为计数
+  量应当与时长、工具数一样累加。修法：按 run_id 记录各自的峰值轮数再求和
+  （`roundsByRun`），单 run 行为逐字不变（现有 7 条用例全绿）、多 run 正确累加。新增
+  一条双 run 回归用例（两 run 各 2 轮 + 1 工具，断言 `rounds===4`、`steps===6`），
+  修前 `rounds===2` 报红、修后转绿；全量 vitest 64 例通过，`tsc --noEmit` 干净。
+  已用 CI 同版 node 24 重建并提交 SPA（CSS 哈希不变、JS 随本次改动更新）。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
