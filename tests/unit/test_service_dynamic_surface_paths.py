@@ -19,7 +19,7 @@ import pytest
 import headless_re_mcp.core.process_tree as process_tree
 import headless_re_mcp.core.service as service_mod
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
-from headless_re_mcp.core.models import Result
+from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from tests.unit.test_dynamic_service import (
     FakeDynamicWorker,
@@ -255,7 +255,7 @@ def test_launch_returns_the_open_failure_when_implicit_open_fails(
     # Do not open the dynamic backend: launch will try an implicit open, which
     # we force to fail so the failure is surfaced verbatim.
     failure = Result[JsonObject](
-        ok=False, error=service_mod.RpcError(code="backend_unavailable", message="cannot open")
+        ok=False, error=RpcError(code="backend_unavailable", message="cannot open")
     )
     monkeypatch.setattr(
         type(service.services.runtime),

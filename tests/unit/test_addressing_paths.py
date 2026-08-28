@@ -10,6 +10,7 @@ parsing guards in ``_read_pe_image_layout`` / ``_resolve_runtime_module_path``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -106,8 +107,9 @@ def test_select_rejects_identity_mismatch_on_extra_constraints() -> None:
             ModuleSelector(base=0x180000000, path="c:/wrong/other.dll", name="other.dll")
         )
     assert exc.value.code == "module_identity_mismatch"
-    assert exc.value.details["actual"]["path"] == r"C:\real\real.dll"
-    assert exc.value.details["actual"]["name"] == "real.dll"
+    actual = cast(dict[str, str], exc.value.details["actual"])
+    assert actual["path"] == r"C:\real\real.dll"
+    assert actual["name"] == "real.dll"
 
 
 def test_catalog_round_trips_to_dict() -> None:
