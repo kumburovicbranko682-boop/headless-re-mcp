@@ -5,7 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 修复（Agent 审批超时被当作服务器缺陷上报并留下悬空的工具调用行）
+
+- `AgentOrchestrator._handle_tool_call` 中审批等待超时后直接
+  `raise RuntimeError("tool approval timed out")`,异常一路落入 `_execute` 的
+  缺陷兜底分支:`record_exception` 铸造一个 incident id,run 的 error 变成
+  "RuntimeError: tool approval timed out (incident xxx)",并原样透传到 Web 控制台
+  和调度器的任务失败原因里——把"审批人不在场"包装成了服务器 bug。与此同时,
+  `tool_calls` 行永远停在 `proposed` 状态、时间线上也没有 `tool.completed` 帧,
+  审计轨迹显示一条仍在等决定的调用挂在一个早已失败的 run 上。这与已修复的
+  "回合预算耗尽不是缺陷"(`RUN_ROUNDS_EXHAUSTED`)同类:预算被用完不该走缺陷路径。
+  修复:超时分支先以 `approval_timeout` 结果闭合工具调用行并追加 `tool.completed`
+  事件,再抛出专用的 `_ApprovalTimeout`,由 `_execute` 在缺陷兜底之前捕获并以稳定
+  文案 `RUN_APPROVAL_TIMED_OUT`("tool approval timed out")干净地 FAILED——不再
+  铸造 incident。该常量刻意不加入 `RUN_BUDGET_ENDINGS`:调度器对预算类结束会续跑
+  下一个 run,而续跑只会重新提议同一个受门控的调用再等一整个窗口,无人值守任务
+  会把整个 run 预算烧在没人回答的问题上。回归测试钉死 error 全文、工具调用行的
+  `failed`/`approval_timeout` 终态及两类事件帧,在未修复代码上按预期失败。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +

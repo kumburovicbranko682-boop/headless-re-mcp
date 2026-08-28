@@ -17,6 +17,7 @@ from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.context import bounded_tool_result, compact_messages
 from headless_re_mcp.agent.models import (
+    RUN_APPROVAL_TIMED_OUT,
     RUN_DEADLINE_EXCEEDED,
     RUN_ROUNDS_EXHAUSTED,
     TERMINAL_RUN_STATUSES,
@@ -132,6 +133,17 @@ def estimate_output_tokens(text: str) -> int:
     if latin + other <= 0:
         return 0
     return max(1, other + int(latin / 4 + 0.5))
+
+
+class _ApprovalTimeout(Exception):
+    """A required approval nobody answered inside its window.
+
+    Distinct from every other exception the loop can raise so _execute can end
+    the run with the stable RUN_APPROVAL_TIMED_OUT text instead of routing it
+    through the defect handler, which would mint an incident id and prefix the
+    error with an exception class name for what is just a human who was away.
+    Not a TimeoutError: that except clause reports the run deadline.
+    """
 
 
 class _LlmOutputMeter:
@@ -346,6 +358,14 @@ class AgentOrchestrator:
         except asyncio.CancelledError:
             await self._finish_cancel(run_id)
             raise
+        except _ApprovalTimeout:
+            # A bound that was spent is not a defect, same as the round budget
+            # above: nobody answered the approval inside its window. Routed
+            # through the defect handler this minted an incident id and showed
+            # "RuntimeError: tool approval timed out (incident ...)" in the
+            # console and in the mission's failure reason, dressing an absent
+            # reviewer up as a server bug.
+            await self._finish_failure(run_id, RUN_APPROVAL_TIMED_OUT, event="run.failed")
         except BaseException as exc:  # keep provider defects from terminating the server
             incident = record_exception(exc, context=f"agent-run:{run_id}")
             await self._finish_failure(
@@ -678,7 +698,29 @@ class AgentOrchestrator:
                     break
                 await asyncio.sleep(0.1)
             else:
-                raise RuntimeError("tool approval timed out")
+                # Close the proposal before failing the run. Raising alone left
+                # the tool_calls row 'proposed' forever and the timeline without
+                # a tool.completed frame, so the audit trail showed a call still
+                # waiting for a decision on a run that had already failed.
+                failure = {
+                    "ok": False,
+                    "error": {
+                        "code": "approval_timeout",
+                        "message": f"no decision within {self.approval_timeout:g}s",
+                    },
+                }
+                self.store.complete_tool_call(run_id, call_id, failure, ok=False)
+                self.store.append_event(
+                    run_id,
+                    "tool.completed",
+                    {
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "ok": False,
+                        "error": "approval_timeout",
+                    },
+                )
+                raise _ApprovalTimeout
         if self._check_cancelled(run_id):
             raise asyncio.CancelledError
         self.store.transition(run_id, RunStatus.EXECUTING_TOOL)

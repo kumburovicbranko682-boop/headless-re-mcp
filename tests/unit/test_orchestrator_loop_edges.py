@@ -455,6 +455,14 @@ async def test_a_usage_event_without_tokens_is_ignored(tmp_path: Path) -> None:
 async def test_an_approval_nobody_answers_times_out_and_fails_the_run(
     tmp_path: Path,
 ) -> None:
+    """An unanswered approval is an absent reviewer, not a server defect.
+
+    This used to travel the defect path: the run's error read
+    "RuntimeError: tool approval timed out (incident ...)" -- an exception
+    class and a minted incident id for a human who was away -- and the
+    tool_calls row stayed 'proposed' forever, so the audit trail showed a call
+    still waiting for a decision on a run that had already failed.
+    """
     provider = FakeProvider(
         [[ProviderEvent("completed", tool_calls=(ProviderToolCall("c1", "test.tool", {}),))]]
     )
@@ -470,7 +478,16 @@ async def test_an_approval_nobody_answers_times_out_and_fails_the_run(
 
     assert await _wait_status(store, run["id"], {RunStatus.FAILED}) is RunStatus.FAILED
     stored = store.get_run(run["id"])
-    assert stored is not None and "approval timed out" in str(stored.error)
+    assert stored is not None and stored.error == "tool approval timed out"
+
+    call = store.get_tool_call(run["id"], "c1")
+    assert call["status"] == "failed"
+    assert call["result"] is not None
+    assert call["result"]["error"]["code"] == "approval_timeout"
+
+    events = {event.type: event.data for event in store.list_events(run["id"])}
+    assert events["tool.completed"]["error"] == "approval_timeout"
+    assert events["run.failed"]["error"] == "tool approval timed out"
 
 
 @pytest.mark.asyncio

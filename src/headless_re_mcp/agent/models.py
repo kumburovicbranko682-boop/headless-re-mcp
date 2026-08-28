@@ -92,6 +92,14 @@ RUN_ROUNDS_EXHAUSTED = "maximum tool rounds exceeded"
 RUN_DEADLINE_EXCEEDED = "run deadline exceeded"
 RUN_BUDGET_ENDINGS = (RUN_ROUNDS_EXHAUSTED, RUN_DEADLINE_EXCEEDED)
 
+# A required approval nobody answered inside its window. Deliberately not a
+# budget ending: the scheduler retries budget endings, and a retry here would
+# only re-propose the same gated call and wait the whole window again -- an
+# unattended mission would spend its entire run budget on a question nobody is
+# there to answer. It is also not a defect, so the run must end FAILED with
+# exactly this text and no incident.
+RUN_APPROVAL_TIMED_OUT = "tool approval timed out"
+
 
 @dataclass(frozen=True, slots=True)
 class AgentThread:
