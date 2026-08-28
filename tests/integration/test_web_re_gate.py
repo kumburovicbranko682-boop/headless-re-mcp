@@ -1450,8 +1450,9 @@ def test_web_links_maps_outbound_refs_off_a_real_page() -> None:
             assert by_text["Contact"]["external"] is True  # mailto is off-origin
 
             res_by_kind = {(r["kind"], r["url"]) for r in data["resources"]}
-            # The protocol-relative script resolves to https against this origin.
-            assert ("script", "https://cdn.example/lib.js") in res_by_kind
+            # The protocol-relative script inherits the page's scheme (http here),
+            # which is exactly the resolution dom.query could not do.
+            assert ("script", "http://cdn.example/lib.js") in res_by_kind
             assert ("image", "https://img.example/logo.png") in res_by_kind
             assert ("iframe", "https://frame.evil.test/track") in res_by_kind
 
