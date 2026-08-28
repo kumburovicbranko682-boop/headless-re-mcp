@@ -99,7 +99,7 @@ class SessionRegistry:
         text = str(reference).strip()
         kind = target if target is not None else classify_target(text)
         if kind is TargetKind.WEB:
-            candidate = Path(text).expanduser()
+            candidate = _safe_expanduser(text)
             # A web target can be a remote URL (any scheme) or a local asset
             # such as a downloaded .js/.wasm; only the latter has a binary.
             if not is_http_url(text) and candidate.is_file():
@@ -113,7 +113,15 @@ class SessionRegistry:
             else:
                 session = Session(target=kind, locator=text)
         else:
-            path = Path(text).expanduser().resolve(strict=True)
+            try:
+                path = _safe_expanduser(text).resolve(strict=True)
+            except ValueError as exc:
+                # An embedded NUL reaches resolve() as ValueError. A missing
+                # path is FileNotFoundError, which is allowed to propagate to
+                # the file_not_found mapping; this only reclassifies the
+                # genuinely malformed string as invalid_request rather than an
+                # internal_error incident.
+                raise ValueError(f"session target is not a usable path ({exc})") from exc
             if not path.is_file():
                 raise ValueError(f"session target is not a regular file: {path}")
             architecture: Architecture | None = None
@@ -295,10 +303,10 @@ def session_from_store_row(row: Mapping[str, Any]) -> Session | None:
     if kind is TargetKind.WEB and is_http_url(locator):
         pass
     else:
-        candidate = Path(locator).expanduser()
+        candidate = _safe_expanduser(locator)
         try:
             resolved = candidate.resolve()
-        except OSError:
+        except (OSError, ValueError):
             resolved = candidate
         if resolved.is_file():
             binary = resolved
@@ -363,6 +371,24 @@ _APK_MANIFEST = "AndroidManifest.xml"
 _MAGIC_BYTES = 8
 
 
+def _safe_expanduser(text: str) -> Path:
+    """``Path(text).expanduser()`` that never raises on a hostile ``~``.
+
+    ``expanduser`` raises RuntimeError when the user in ``~someone/...`` cannot
+    be resolved -- a service account with no home, or a literal typo -- and the
+    binary path is caller-supplied, so an unguarded call turned a bad string
+    into an ``internal_error`` incident instead of a clean rejection. The raw
+    path is returned so the existing existence checks decide the outcome:
+    ``resolve(strict=True)`` then answers ``file_not_found`` for the literal
+    ``~someone`` directory, which is the truth.
+    """
+    candidate = Path(text)
+    try:
+        return candidate.expanduser()
+    except RuntimeError:
+        return candidate
+
+
 def is_http_url(reference: str) -> bool:
     return reference.lower().startswith(("http://", "https://"))
 
@@ -378,7 +404,7 @@ def classify_target(reference: str | Path) -> TargetKind:
     text = str(reference).strip()
     if is_http_url(text):
         return TargetKind.WEB
-    path = Path(text).expanduser()
+    path = _safe_expanduser(text)
     suffix = path.suffix.lower()
     if suffix in _APK_SUFFIXES:
         return TargetKind.APK
@@ -387,7 +413,11 @@ def classify_target(reference: str | Path) -> TargetKind:
     try:
         with path.open("rb") as stream:
             magic = stream.read(_MAGIC_BYTES)
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError, not just OSError: a path carrying an embedded NUL raises
+        # it from open() rather than a normal "no such file". Either way the
+        # file cannot be read, so the classification stays PE and the caller
+        # gets the original "not a PE file" error instead of an incident.
         return TargetKind.PE
     if magic.startswith(b"MZ"):
         return TargetKind.PE

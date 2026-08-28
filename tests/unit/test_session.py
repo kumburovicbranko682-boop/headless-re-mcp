@@ -9,11 +9,13 @@ from headless_re_mcp.core.models import (
     BackendHandle,
     BackendKind,
     SessionState,
+    TargetKind,
 )
 from headless_re_mcp.core.session import (
     InvalidStateTransition,
     SessionNotFound,
     SessionRegistry,
+    classify_target,
     detect_pe_architecture,
     hydrate_persisted_sessions,
     session_from_store_row,
@@ -232,6 +234,42 @@ def test_hydrate_restores_unclean_rows_as_created(tmp_path: Path) -> None:
     assert restored.architecture == Architecture.X64
     with pytest.raises(SessionNotFound):
         registry.get("cd" * 16)
+
+
+@pytest.mark.parametrize("hostile", ["~nosuchuser-headless-re/sample.exe", "sample\x00.exe"])
+def test_classify_target_never_raises_on_a_hostile_path(hostile: str) -> None:
+    """A tilde no user resolves, or an embedded NUL, must classify, not crash.
+
+    expanduser raises RuntimeError for the former and open() raises ValueError
+    (not OSError) for the latter; both used to escape classify_target and, one
+    level up, land the caller's create_session on an internal_error incident.
+    """
+    assert classify_target(hostile) is TargetKind.PE
+
+
+def test_create_maps_an_unresolvable_tilde_target_to_file_not_found() -> None:
+    """The literal ~nosuchuser directory does not exist, so this is file_not_found.
+
+    resolve(strict=True) raises FileNotFoundError for it, which the error
+    envelope already keys to a clean file_not_found -- not the RuntimeError
+    incident expanduser used to throw first.
+    """
+    from headless_re_mcp.core.results import _failure
+
+    registry = SessionRegistry()
+    with pytest.raises(FileNotFoundError) as caught:
+        registry.create("~nosuchuser-headless-re/sample.exe")
+    assert _failure(caught.value).error.code == "file_not_found"
+
+
+def test_create_maps_an_embedded_nul_target_to_invalid_request() -> None:
+    """A NUL byte is a malformed path, not a missing file: ValueError, not incident."""
+    from headless_re_mcp.core.results import _failure
+
+    registry = SessionRegistry()
+    with pytest.raises(ValueError, match="not a usable path") as caught:
+        registry.create("sample\x00.exe")
+    assert _failure(caught.value).error.code == "invalid_request"
 
 
 def test_store_row_survives_a_missing_file(tmp_path: Path) -> None:
