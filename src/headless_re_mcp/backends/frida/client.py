@@ -465,6 +465,15 @@ class FridaClient:
         self, pid: int, address: int, size: int, *, allowed_pid: int
     ) -> JsonObject:
         self._require(pid, allowed_pid)
+        # Guard the address the way r2.disasm/xrefs guard theirs: a negative or
+        # non-integer address is a caller mistake, so name it invalid_params
+        # before any attach. Left ungated it reached ptr(address) inside the
+        # script, where frida raised an access-violation the broad except then
+        # reported as backend_error -- a wrong verdict (the fault was the
+        # argument, not the target) and a wasted attach/detach. bool is an int
+        # subclass, so exclude it explicitly; True as an address is a mistake.
+        if type(address) is not int or address < 0:
+            raise FridaError("invalid_params", "address must be a non-negative int")
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
         session = self._attach_local(pid)

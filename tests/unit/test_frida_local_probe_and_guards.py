@@ -120,6 +120,25 @@ def test_memory_read_bounds_the_requested_size() -> None:
     assert frida.attached_pids == []
 
 
+def test_memory_read_rejects_a_bad_address_before_attach() -> None:
+    """A negative or non-integer address is a caller mistake, not a target fault.
+
+    The address feeds ptr(address) inside the injected script; left ungated a
+    negative or non-int value reached frida as an access violation that the
+    broad except then reported as backend_error -- the wrong verdict for a bad
+    argument, and a wasted attach. It must be refused as invalid_params before
+    any attach, exactly as r2.disasm/xrefs guard their address. bool is an int
+    subclass, so True must be rejected too rather than read as address 1.
+    """
+    client, frida = _client()
+    for bad in (-1, "0x1000", 3.5, True, None):
+        with pytest.raises(FridaError) as info:
+            client.memory_read(1, bad, 16, allowed_pid=1)  # type: ignore[arg-type]
+        assert info.value.code == "invalid_params"
+        assert "address" in info.value.message
+    assert frida.attached_pids == []
+
+
 def test_local_ops_bound_a_wedged_rpc_and_detach(monkeypatch: pytest.MonkeyPatch) -> None:
     """A frozen target must time out each local op, not wedge the worker forever.
 
