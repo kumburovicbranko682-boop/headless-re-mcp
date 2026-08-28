@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（wasm.names：纯 Python 解析 WASM name 段的函数名，无需 wabt）
+
+- 新增只读工具 `wasm.names`：直接走 WASM 段头，解析自定义 `name` 段（段 id 0、段名
+  "name"）里的模块名与「函数下标→名字」映射，把原本只有下标的反汇编还原成可读符号——
+  这是一个 stripped 外观的模块能给出的最有价值静态线索。返回 `present`（是否存在 name
+  段；release 构建通常剥掉，`present=False` 本身就是「已剥符号」的信号）、`module_name`、
+  `items`（每项 index + name，按 index 排序），以及 `count`、`items_total`、`items_limit`
+  与填满 4096 上限时的 `items_truncated`，段畸形则 `truncated=True`。非 WASM 输入报
+  `invalid_params`。与 `wasm.wat` / `wasm.info` 不同，纯 Python 解析、无需安装 wabt。
+  已用 `wat2wasm --debug-names` 构建真实模块，与 `wasm-objdump -j name` 逐项核对一致；
+  未带 `--debug-names` 的模块正确回 `present=False`。工具总数 265 → 266（只读 149）。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言

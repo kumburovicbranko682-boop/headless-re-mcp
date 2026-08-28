@@ -98,4 +98,19 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 
+    @tools.tool(name="wasm.names")
+    def wasm_names(path: str) -> dict[str, Any]:
+        """Module and function names from a .wasm "name" section (no wabt).
+
+        Answers with present (whether a "name" section exists at all -- release
+        builds strip it, so False is the common "stripped" signal), module_name,
+        and items: each a function index and its name, the human labels that
+        turn an index-only disassembly into readable code. Also count,
+        items_total, items_limit and items_truncated when the map filled the cap
+        (4096), and truncated when the section was malformed past a point. A
+        file that is not a WebAssembly module is invalid_params. Parsed
+        in-process, so unlike wasm.wat and wasm.info no wabt is required.
+        """
+        return _dump(analysis.wasm_names(path))
+
     return tools.bindings

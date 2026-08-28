@@ -142,3 +142,12 @@ class JsReAnalysisMixin:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
+
+    def wasm_names(self, path: str) -> Result[JsonObject]:
+        try:
+            data = WasmClient(getattr(self.settings, "wabt", None)).names(Path(path))
+            return _success(data, backend="wasm")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)

@@ -229,6 +229,148 @@ class JsClient:
         return _note_nonzero_exit(result, code=code, stderr=stderr)
 
 
+# --- pure-Python WASM "name" section parsing (needs no wabt) ----------------
+# The custom "name" section (section id 0, section name "name") carries the
+# module name and, most usefully, a function-index -> name map. Release
+# toolchains usually strip it, so its absence is itself a signal; when present
+# it is the richest static artifact an otherwise index-only module can hand
+# you. We decode it directly rather than shelling out to wasm-objdump so triage
+# needs no wabt installed -- the same reasoning as wasm.summary / wasm.strings.
+_MAX_WASM_NAMES = 4096
+_WASM_HEADER = 8  # 4-byte magic + 4-byte version
+
+
+class _WasmTruncated(Exception):
+    """A LEB128 or name read ran past the bytes it was handed."""
+
+
+def _read_uleb(data: bytes, pos: int, end: int) -> tuple[int, int]:
+    """Decode an unsigned LEB128 at ``pos``, bounded by ``end``."""
+    result = 0
+    shift = 0
+    while pos < end:
+        byte = data[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return result, pos
+        shift += 7
+        if shift > 63:  # a plausible module never needs this many bytes
+            raise _WasmTruncated
+    raise _WasmTruncated
+
+
+def _read_name(data: bytes, pos: int, end: int) -> tuple[str, int]:
+    """Decode a WASM name: a ULEB length followed by that many UTF-8 bytes."""
+    length, pos = _read_uleb(data, pos, end)
+    if length < 0 or pos + length > end:
+        raise _WasmTruncated
+    return data[pos : pos + length].decode("utf-8", errors="replace"), pos + length
+
+
+def _parse_name_section(body: bytes, *, limit: int) -> tuple[str, list[JsonObject], int, bool]:
+    """(module name, [{index, name}], declared function-name count, truncated)."""
+    module_name = ""
+    functions: list[JsonObject] = []
+    declared = 0
+    truncated = False
+    end = len(body)
+    pos = 0
+    try:
+        while pos < end:
+            sub_id = body[pos]
+            pos += 1
+            sub_size, pos = _read_uleb(body, pos, end)
+            sub_end = pos + sub_size
+            if sub_size < 0 or sub_end > end:
+                truncated = True
+                break
+            if sub_id == 0:  # module-name subsection
+                try:
+                    module_name, _ = _read_name(body, pos, sub_end)
+                except _WasmTruncated:
+                    truncated = True
+            elif sub_id == 1:  # function-name map: count, then (idx, name) pairs
+                cursor = pos
+                count, cursor = _read_uleb(body, cursor, sub_end)
+                # An entry costs at least two bytes, so the subsection's byte
+                # length caps how many can really be here -- guard against a
+                # bogus count spinning the loop.
+                declared += min(max(0, count), sub_size)
+                for _ in range(count):
+                    if cursor >= sub_end:
+                        truncated = True
+                        break
+                    idx, cursor = _read_uleb(body, cursor, sub_end)
+                    name, cursor = _read_name(body, cursor, sub_end)
+                    if len(functions) < limit:
+                        functions.append({"index": idx, "name": name})
+            # locals (2) and later subsections (globals=7, ...) are skipped
+            pos = sub_end
+    except _WasmTruncated:
+        truncated = True
+    functions.sort(key=lambda item: item["index"])
+    return module_name, functions, declared, truncated
+
+
+def _parse_wasm_names(data: bytes, *, limit: int) -> JsonObject:
+    """Walk section headers for the "name" custom section and decode it."""
+    module_name = ""
+    functions: list[JsonObject] = []
+    declared = 0
+    present = False
+    truncated = False
+    total = len(data)
+    if total < _WASM_HEADER:
+        return {
+            "present": False,
+            "module_name": "",
+            "items": [],
+            "count": 0,
+            "items_total": 0,
+            "items_limit": limit,
+            "items_truncated": False,
+            "truncated": True,
+        }
+    pos = _WASM_HEADER
+    try:
+        while pos < total:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb(data, pos, total)
+            body_start = pos
+            body_end = body_start + sec_size
+            if sec_size < 0 or body_end > total:
+                truncated = True
+                break
+            if sec_id == 0:  # custom section: named payload
+                try:
+                    custom_name, name_end = _read_name(data, body_start, body_end)
+                except _WasmTruncated:
+                    pos = body_end
+                    continue
+                if custom_name == "name":
+                    present = True
+                    module_name, functions, declared, sub_trunc = _parse_name_section(
+                        data[name_end:body_end], limit=limit
+                    )
+                    truncated = truncated or sub_trunc
+                    break
+            pos = body_end
+    except _WasmTruncated:
+        truncated = True
+    return {
+        "present": present,
+        "module_name": module_name,
+        "items": functions,
+        "count": len(functions),
+        "items_total": declared,
+        "items_limit": limit,
+        "items_truncated": declared > len(functions),
+        "truncated": truncated,
+    }
+
+
 class WasmClient:
     """wabt-backed WebAssembly inspection (wasm2wat, wasm-objdump)."""
 
@@ -279,6 +421,28 @@ class WasmClient:
         return _note_nonzero_exit(
             _bounded_output(stdout, "objdump", include_bytes=False), code=code, stderr=stderr
         )
+
+    def names(self, path: Path) -> JsonObject:
+        """Module and function names from the custom "name" section, in-process.
+
+        Unlike wat and info this needs no wabt: it walks the section headers and
+        decodes the name map directly. Release builds usually strip the section,
+        so ``present`` is False then -- a "stripped" signal in itself.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        return _parse_wasm_names(data, limit=_MAX_WASM_NAMES)
 
 
 def _discover_webcrack() -> Path | None:
