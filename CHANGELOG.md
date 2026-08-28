@@ -37,6 +37,13 @@ until 1.0 the tool surface may still change between minor versions.
   `fixtures/web/sample.wat` 经 wat2wasm 现编一个**真模块**（带导出函数、函数体、常量 global 与内存），
   再断言 wasm2wat 往返回来的 wat 里有 `(func`/`i32.add`/`(export "add"`/`i32.const 42`，以及 wasm-objdump
   的 `-h -x` 报出导出表（`-> "add"`、`<add>`）与 Code 段。缺 wat2wasm/webcrack 仍如实跳过。
+- proxy 线新增真流量捕获 Gate `tests/integration/test_proxy_capture_gate.py`：`test_proxy_lifecycle_gate.py`
+  只验端口契约（起监听、停释放、占用拒绝），从没真发一个请求过代理，所以「拦截 HTTP 并记录可回读的 flow」
+  这个 proxy 的本职一直没有端到端覆盖。新 Gate 现搭一个 127.0.0.1 上的一次性 origin（`http.server`），
+  把请求经代理打过去，再断言 flow 被记录且可回读：`flows` 摘要（method/url/host/status/response_size）、
+  `flow_get` 的完整请求/响应（含 POST 的请求体原样落地）、以及 `export_har` 导出一条 HAR。全程明文 HTTP
+  打本机，不需要 CA 信任也不需要外网；mitmproxy 已在 `linux-integration` 的 proxy extra 里，故 CI 直接真跑。
+  以上三项把托管 Linux 上真跑的 Gate 从 19 个提到 21 个。
 - 修 `tests/integration/test_agent_browser_smoke.py` 三处长期漂移（这条 Gate 从未在 Linux 跑过，也就
   没人发现它已经烂了）：
   - 顶层 `from playwright.sync_api import ...` 会让缺 browser extra 的机器在收集阶段直接 ImportError、
