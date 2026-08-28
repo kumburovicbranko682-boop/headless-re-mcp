@@ -71,6 +71,21 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.security")
+    def device_security(serial: str) -> dict[str, Any]:
+        """Probe SELinux mode and su reachability (security posture).
+
+        A focused posture read, not a full audit, of two authoritative facts no
+        other tool reports: the SELinux enforcement mode (getenforce) and
+        whether su is reachable on PATH. Answers with selinux (normalised
+        Enforcing/Permissive/Disabled or null), selinux_raw (the exact reply),
+        su_on_path and su_path. su detection is best-effort -- hidden-root
+        frameworks will not appear on PATH. A probe the device refuses is named
+        under unavailable rather than guessed, and only when both probes fail is
+        the call an error.
+        """
+        return _dump(analysis.device_security(serial))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,

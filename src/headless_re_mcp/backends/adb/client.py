@@ -41,6 +41,7 @@ _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
+_SELINUX_MODES = frozenset({"enforcing", "permissive", "disabled"})
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -525,6 +526,70 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def security(self, serial: str) -> JsonObject:
+        """Probe two authoritative security-posture facts no other tool reports.
+
+        A focused posture read, not a full audit: the SELinux enforcement mode
+        (from ``getenforce``) and whether ``su`` is reachable on PATH (a
+        best-effort root indicator). An RE session uses this to tell a hardened
+        stock device from a permissive, rooted one before trusting the rest of
+        a capture.
+
+        selinux is the normalised mode (Enforcing/Permissive/Disabled) or null
+        when getenforce is absent or answers something unexpected, with
+        selinux_raw kept so the exact reply is never hidden. su_on_path is a
+        bool with su_path the resolved location when found; it is best-effort,
+        as hidden-root frameworks (Magisk deny-list) will not appear on PATH.
+        A probe the device refuses is named under unavailable rather than
+        guessed, and only when both probes fail is the call an error.
+        """
+        dev = self._device(serial)
+        result: JsonObject = {}
+        unavailable: list[str] = []
+
+        try:
+            ge_raw = str(_device_shell(dev, "getenforce"))
+            ge_failed = _is_host_error_output(ge_raw)
+        except AdbError:
+            ge_failed = True
+            ge_raw = ""
+        ge_line = ""
+        if not ge_failed:
+            ge_line = next((ln.strip() for ln in ge_raw.splitlines() if ln.strip()), "")
+        mode = ge_line.capitalize() if ge_line.lower() in _SELINUX_MODES else None
+        if mode is None:
+            unavailable.append("selinux")
+            result["selinux"] = None
+            if ge_line:
+                result["selinux_raw"] = ge_line
+        else:
+            result["selinux"] = mode
+            result["selinux_raw"] = ge_line
+
+        try:
+            su_raw = str(_device_shell(dev, "command -v su"))
+            su_failed = _is_host_error_output(su_raw)
+        except AdbError:
+            su_failed = True
+            su_raw = ""
+        if su_failed:
+            unavailable.append("su")
+            result["su_on_path"] = None
+            result["su_path"] = None
+        else:
+            su_line = next((ln.strip() for ln in su_raw.splitlines() if ln.strip()), "")
+            found = su_line.startswith("/")
+            result["su_on_path"] = found
+            result["su_path"] = su_line if found else None
+
+        if len(unavailable) == 2:
+            raise AdbError(
+                "backend_error", "security probes failed", sources=unavailable
+            )
+        if unavailable:
+            result["unavailable"] = unavailable
+        return result
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
