@@ -188,6 +188,118 @@ def test_analysis_repository_contract(repository: AnalysisRepository, tmp_path: 
     assert repository.list_unclean_sessions() == ([], 0)
 
 
+class _FrozenClock:
+    """A datetime stand-in whose now() always returns the same instant."""
+
+    @staticmethod
+    def now(tz: object = None) -> object:
+        from datetime import UTC, datetime
+
+        return datetime(2026, 1, 1, tzinfo=UTC)
+
+
+class _CountingUuid:
+    """uuid4() stand-in handing out ids 00, 01, 02 ... in call order.
+
+    So insertion order is *ascending* id order, the opposite of the descending
+    order the tiebreak imposes -- which is exactly what lets the test tell a real
+    ``id DESC`` tiebreak apart from SQLite's incidental (insertion-order) handling
+    of a tied sort column.
+    """
+
+    def __init__(self) -> None:
+        self._n = -1
+
+    def __call__(self) -> _CountingUuid:
+        self._n += 1
+        return self
+
+    @property
+    def hex(self) -> str:
+        return f"{self._n:02d}"
+
+
+def test_sqlite_audit_read_breaks_a_tied_at_by_id_so_paging_is_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tied ``at`` must page by a unique key, in the same order the trim keeps.
+
+    ``at`` is a wall-clock isoformat string; under load or a coarse clock,
+    consecutive audit writes share a microsecond. The read ordered by ``at DESC``
+    alone -- a non-unique key -- so LIMIT/OFFSET over a tied group was unstable (a
+    row can repeat on one page and vanish from the next when the set shifts) and
+    it disagreed with the trim, which keeps rows by ``at DESC, id DESC`` and whose
+    comment promises "what survives is what a caller would see". This freezes the
+    clock so every row ties, and hands out ascending ids so insertion order is the
+    *opposite* of ``id DESC``: only a real id tiebreak yields the descending order
+    asserted here, and a page-by-page walk reproduces the single-page order
+    exactly. Without the tiebreak the read falls back to insertion order (ascending
+    ids), which fails these assertions.
+    """
+    from headless_re_mcp.core.store import sqlite_store as sqlite_mod
+
+    monkeypatch.setattr(sqlite_mod, "datetime", _FrozenClock)
+    monkeypatch.setattr(sqlite_mod, "uuid4", _CountingUuid())
+    repository = SqliteAnalysisRepository(tmp_path / "audit-ties")
+
+    for index in range(12):
+        repository.append_audit(
+            session_id="s1",
+            action=f"action-{index:02d}",
+            params_summary={},
+            ok=True,
+            result_summary={},
+        )
+
+    full = [entry["id"] for entry in repository.list_audit("s1", limit=50)["entries"]]
+    # Every row present once, ordered strictly by id DESC (the trim's keep order),
+    # not the ascending insertion order a bare ``at DESC`` would surface.
+    assert full == [f"{index:02d}" for index in reversed(range(12))]
+
+    paged: list[str] = []
+    for offset in range(0, 12, 3):
+        page = repository.list_audit("s1", offset=offset, limit=3)
+        paged.extend(entry["id"] for entry in page["entries"])
+    # Walking three at a time reproduces the single-page order: no repeats, no gaps.
+    assert paged == full
+
+
+def test_sqlite_artifact_read_breaks_a_tied_created_at_by_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """list_artifacts shares the bug shape: a tied created_at needs the id tiebreak.
+
+    Same story as the audit reader -- ``created_at`` is a wall-clock string that
+    can tie, and paging a non-unique sort is unstable. Frozen clock ties every
+    row; ascending ids make insertion order the reverse of ``id DESC``, so the
+    descending order asserted here holds only with the tiebreak the read now
+    carries.
+    """
+    from headless_re_mcp.core.store import sqlite_store as sqlite_mod
+
+    monkeypatch.setattr(sqlite_mod, "datetime", _FrozenClock)
+    monkeypatch.setattr(sqlite_mod, "uuid4", _CountingUuid())
+    repository = SqliteAnalysisRepository(tmp_path / "artifact-ties")
+
+    for index in range(9):
+        repository.register_artifact(
+            session_id="s1",
+            kind="dump",
+            path=f"/nonexistent/a{index:02d}.bin",
+            sha256="0" * 64,
+            source="test",
+            size=0,
+        )
+
+    full = [row["id"] for row in repository.list_artifacts("s1", limit=50)["artifacts"]]
+    assert full == [f"{index:02d}" for index in reversed(range(9))]
+    paged: list[str] = []
+    for offset in range(0, 9, 2):
+        page = repository.list_artifacts("s1", offset=offset, limit=2)
+        paged.extend(row["id"] for row in page["artifacts"])
+    assert paged == full
+
+
 def test_the_audit_log_is_trimmed_to_the_newest_entries(tmp_path: Path) -> None:
     """The audit table is the one store with no natural end.
 

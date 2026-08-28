@@ -374,8 +374,14 @@ class SessionStore:
                 conn.execute("SELECT COUNT(*) FROM sessions WHERE closed_cleanly=0").fetchone()[0]
             )
             rows = conn.execute(
+                # id DESC, not updated_at alone: updated_at is a wall-clock string
+                # that can tie across rows, and LIMIT/OFFSET over a non-unique sort
+                # is unstable -- a tied row can repeat on one page and vanish from
+                # the next, or be skipped entirely. The closed-session trim already
+                # keeps rows by (updated_at DESC, id DESC); reading by the same total
+                # order makes what a caller pages match what the trim decided to keep.
                 "SELECT * FROM sessions WHERE closed_cleanly=0"
-                " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 (window, start),
             ).fetchall()
             return [dict(row) for row in rows], total
@@ -456,13 +462,14 @@ class SessionStore:
                     "SELECT COUNT(*) AS c FROM artifacts WHERE session_id=?", (session_id,)
                 ).fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM artifacts WHERE session_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM artifacts WHERE session_id=?"
+                    " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
             else:
                 total = conn.execute("SELECT COUNT(*) AS c FROM artifacts").fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM artifacts ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM artifacts ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         items = [dict(row) for row in rows]
@@ -533,13 +540,20 @@ class SessionStore:
                     "SELECT COUNT(*) AS c FROM audit WHERE session_id=?", (session_id,)
                 ).fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM audit WHERE session_id=? ORDER BY at DESC LIMIT ? OFFSET ?",
+                    # id DESC breaks ties on the wall-clock ``at`` string. Without a
+                    # unique secondary key, LIMIT/OFFSET over rows sharing an ``at``
+                    # is unstable: a tied row can appear on two pages or be skipped,
+                    # and the read would not agree with the trim below (which already
+                    # keeps rows by ``at DESC, id DESC``), breaking that trim's stated
+                    # "what survives is what a caller would see".
+                    "SELECT * FROM audit WHERE session_id=?"
+                    " ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
             else:
                 total = conn.execute("SELECT COUNT(*) AS c FROM audit").fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM audit ORDER BY at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM audit ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         items = []
