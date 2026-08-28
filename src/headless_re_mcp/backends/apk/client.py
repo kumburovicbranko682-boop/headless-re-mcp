@@ -69,6 +69,15 @@ _DATA_ATTRS = ("scheme", "host", "port", "path", "pathPrefix", "pathPattern", "m
 _VIEW_ACTION = "android.intent.action.VIEW"
 _BROWSABLE_CATEGORY = "android.intent.category.BROWSABLE"
 _PATH_ATTRS = (("path", "literal"), ("pathPrefix", "prefix"), ("pathPattern", "pattern"))
+# The <uses-permission*> tag variants a manifest requests permissions through;
+# permission_details reads maxSdkVersion off whichever one carries the name.
+_USES_PERMISSION_TAGS = ("uses-permission", "uses-permission-sdk-23", "uses-permission-sdk-m")
+# The low nibble of an android:protectionLevel flags int is the base level; the
+# upper bits are modifiers (privileged, appop, ...). Declared permissions store
+# the raw AXML int, so this maps the base to the same word get_details_permissions
+# resolves AOSP permissions to. The categories permission_details buckets into.
+_BASE_PROTECTION = {0: "normal", 1: "dangerous", 2: "signature", 3: "signatureOrSystem"}
+_PERMISSION_CATEGORIES = ("dangerous", "normal", "signature", "other", "unknown")
 
 
 class ApkError(RuntimeError):
@@ -631,6 +640,126 @@ class ApkClient:
             "truncated": truncated,
         }
 
+    def permission_details(self, path: Path) -> JsonObject:
+        """Classify the app's permissions by protection level (triage roll-up).
+
+        Manifest-level (uses the cheap _apk parse, no DEX analysis): where
+        apk.permissions just lists names, this resolves each requested
+        <uses-permission> to its protection level via androguard's AOSP
+        permission database and buckets it -- dangerous (gates runtime consent
+        and sensitive data: location, contacts, SMS, camera...), signature (held
+        only by same-signer apps), normal (auto-granted) or unknown (a
+        third-party permission androguard cannot resolve). It also lists the
+        <permission> entries the app itself declares -- the custom permissions
+        another app could hold to reach this one, a surface worth auditing when
+        their protection level is weak. Requested rows carry name,
+        protection_level (the raw resolved word, e.g. "signature|privileged", so
+        the bucket is auditable), category, max_sdk (the maxSdkVersion cap when
+        the request is version-scoped, else null) and app_defined (true when the
+        app declares this permission itself). Declared rows carry name,
+        protection_level, category and group (the android:permissionGroup, or
+        null). Answers with requested, declared, counts (the per-category tally
+        over every requested permission, not just the returned page), package,
+        target_sdk, requested_count, declared_count and has_more so a list capped
+        at 256 is not read as complete; truncated is true when the manifest XML
+        could not be parsed for the maxSdkVersion enrichment.
+        """
+        apk = self._apk(path)
+        package = apk.get_package() or ""
+        target_sdk = _int_or_none(apk.get_target_sdk_version())
+
+        try:
+            details = apk.get_details_permissions() or {}
+        except Exception:  # noqa: BLE001 - androguard raises many types
+            details = {}
+        try:
+            declared_details = apk.get_declared_permissions_details() or {}
+        except Exception:  # noqa: BLE001 - older androguard variants
+            declared_details = {}
+        declared_names = set(declared_details)
+
+        # maxSdkVersion is only in the manifest, not in androguard's permission
+        # list, so read it from the AXML the way the sibling manifest tools do; a
+        # parse failure only costs the enrichment, not the classification.
+        maxsdk: dict[str, int] = {}
+        truncated = False
+        try:
+            root: Any = ET.fromstring(apk.get_android_manifest_axml().get_xml())
+        except Exception:  # noqa: BLE001 - decode or XML parse can both fail
+            root = None
+            truncated = True
+        if root is not None:
+            for tag in _USES_PERMISSION_TAGS:
+                for elem in root.iter(tag):
+                    name = _android_attr(elem, "name")
+                    if name is None:
+                        continue
+                    value = _int_or_none(_android_attr(elem, "maxSdkVersion"))
+                    if value is not None:
+                        maxsdk[name] = value
+
+        try:
+            raw_requested = apk.get_permissions() or []
+        except Exception:  # noqa: BLE001
+            raw_requested = []
+        requested_rows: list[JsonObject] = []
+        counts = {category: 0 for category in _PERMISSION_CATEGORIES}
+        requested_total = 0
+        req_more = False
+        seen: set[str] = set()
+        for value in raw_requested:
+            name = str(value)
+            if name in seen:
+                continue
+            seen.add(name)
+            requested_total += 1
+            level = (details.get(name) or [None])[0]
+            category = _permission_category(level)
+            counts[category] += 1
+            if len(requested_rows) >= _MAX_PERMISSIONS:
+                req_more = True
+                continue
+            requested_rows.append(
+                {
+                    "name": name,
+                    "protection_level": _protection_level_label(level),
+                    "category": category,
+                    "max_sdk": maxsdk.get(name),
+                    "app_defined": name in declared_names,
+                }
+            )
+
+        declared_rows: list[JsonObject] = []
+        dec_more = False
+        for name, info in declared_details.items():
+            if len(declared_rows) >= _MAX_PERMISSIONS:
+                dec_more = True
+                break
+            raw_level = info.get("protectionLevel") if isinstance(info, dict) else None
+            group = info.get("permissionGroup") if isinstance(info, dict) else None
+            if group in (None, "None", ""):
+                group = None
+            declared_rows.append(
+                {
+                    "name": str(name),
+                    "protection_level": _protection_level_label(raw_level),
+                    "category": _permission_category(raw_level),
+                    "group": group,
+                }
+            )
+
+        return {
+            "package": package,
+            "target_sdk": target_sdk,
+            "requested": requested_rows,
+            "declared": declared_rows,
+            "counts": counts,
+            "requested_count": requested_total,
+            "declared_count": len(declared_details),
+            "has_more": req_more or dec_more,
+            "truncated": truncated,
+        }
+
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
@@ -907,6 +1036,58 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _protection_level_label(raw: Any) -> str | None:
+    """Normalise an android:protectionLevel to a human word (best-effort).
+
+    AOSP permissions arrive already resolved by androguard ("dangerous",
+    "signature|privileged"); declared custom permissions carry the raw AXML value,
+    which for a compiled APK is a flags int (2 -> signature, 3 -> signature or
+    system). Pass strings through untouched and map an int's base nibble; anything
+    unrecognised falls back to a hex rendering so it is never silently dropped.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text.lower() == "none":
+        return None
+    try:
+        num = int(text, 0)
+    except ValueError:
+        return text
+    return _BASE_PROTECTION.get(num & 0xF, f"0x{num:x}")
+
+
+def _permission_category(raw: Any) -> str:
+    """Bucket a protection level into dangerous/normal/signature/other/unknown.
+
+    The base level (before the "|" modifiers, or the low nibble of a flags int)
+    is what governs triage: dangerous permissions gate runtime consent, signature
+    ones are held only by same-signer apps, normal ones are auto-granted. Anything
+    resolvable but off that axis (internal, role, ...) is "other"; anything
+    missing or unparseable is "unknown".
+    """
+    if raw is None:
+        return "unknown"
+    text = str(raw).strip()
+    if not text or text.lower() == "none":
+        return "unknown"
+    try:
+        num = int(text, 0)
+    except ValueError:
+        base = text.split("|", 1)[0].strip().lower()
+    else:
+        base = _BASE_PROTECTION.get(num & 0xF, "").lower()
+    if base == "dangerous":
+        return "dangerous"
+    if base == "normal":
+        return "normal"
+    if base.startswith("signature"):
+        return "signature"
+    if base.startswith("unknown"):
+        return "unknown"
+    return "other" if base else "unknown"
 
 
 def _effective_exported(

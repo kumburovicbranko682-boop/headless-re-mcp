@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **298（181 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **299（182 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -633,6 +633,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   外加属主 `component`、`type`、`exported`(解析后)、`browsable`(带 BROWSABLE 类别、即可从网页链接触达)与
   `auto_verify`(App Links 的 `android:autoVerify` 域名校验标志)。输出 `deep_links`、
   `count`/`total`/`offset`/`has_more`;`total` 上限 2000、越限(或单个过滤器的叉乘被裁到 256)置 `scan_capped`;
+  清单 XML 解析失败时 `truncated` 为真。
+- **`apk.permission_details`**：`apk.permissions` 缺的安全视角——后者只列权限名,本工具把每个申请的
+  `<uses-permission>` 经 androguard 的 AOSP 权限库解析出保护级别并归桶,不用再手翻 Android 文档就能答
+  "哪些授予了敏感的运行时访问"。`dangerous` 表示需运行时授权、触达敏感数据(定位、通讯录、短信、相机、
+  麦克风);`signature` 只有同签名应用能持有;`normal` 自动授予;`unknown` 是 androguard 解析不出的第三方
+  权限。同时列出本应用**自己声明**的 `<permission>`——别的应用可申请来触达本应用的自定义权限,保护级别弱时
+  值得审。清单级解析、**不需要 DEX 分析**。每条申请行含 `name`、`protection_level`(原始解析词,如
+  `signature|privileged`,让归桶可审计)、`category`(dangerous/normal/signature/other/unknown 之一)、
+  `max_sdk`(按版本限定申请时的 maxSdkVersion 上限,否则 null)与 `app_defined`(本应用是否自声明该权限);每条
+  声明行含 `name`、`protection_level`、`category` 与 `group`(android:permissionGroup,或 null)。输出
+  `requested`、`declared`、`counts`(对全部申请权限的按类计数,不止返回行)、`package`、`target_sdk`、
+  `requested_count`、`declared_count` 与 `has_more`,列表上限 256、满不当作全集;maxSdkVersion 增补所需的
   清单 XML 解析失败时 `truncated` 为真。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。

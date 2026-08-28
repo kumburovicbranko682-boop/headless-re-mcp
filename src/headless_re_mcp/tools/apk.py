@@ -187,6 +187,36 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_deep_links(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.permission_details")
+    def apk_permission_details(session_id: str) -> dict[str, Any]:
+        """Classify the app's permissions by protection level (triage roll-up).
+
+        The security lens apk.permissions lacks: where that just lists names,
+        this resolves each requested permission to its protection level through
+        androguard's AOSP permission database and buckets it, so "which of these
+        grant sensitive runtime access" is answered without cross-referencing
+        the Android docs by hand. dangerous means it gates runtime consent and
+        sensitive data (location, contacts, SMS, camera, microphone); signature
+        means only a same-signer app holds it; normal is auto-granted; unknown is
+        a third-party permission androguard cannot resolve. It also lists the
+        permissions the app declares itself -- the custom permissions another app
+        could request to reach this one, worth auditing when their level is weak.
+        Manifest-level, so it needs no DEX analysis. Each requested row is name,
+        protection_level (the raw resolved word, e.g. "signature|privileged", so
+        the bucket is auditable), category (one of dangerous, normal, signature,
+        other, unknown), max_sdk (the maxSdkVersion cap when the request is
+        version-scoped, else null) and app_defined (true when the app declares
+        this permission itself). Each declared row is name, protection_level,
+        category and group (the android:permissionGroup, or null). Answers with
+        requested, declared, counts (the per-category tally over every requested
+        permission, not just the returned rows), package, target_sdk,
+        requested_count, declared_count and has_more so a list capped at 256 is
+        not read as complete; truncated is true when the manifest XML could not
+        be parsed for the maxSdkVersion enrichment. There is no permissions or
+        dangerous field.
+        """
+        return _dump(analysis.apk_permission_details(session_id))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
