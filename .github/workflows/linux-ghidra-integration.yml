@@ -1,0 +1,72 @@
+# Linux Ghidra agreement gates — free but heavy, so scheduled rather than per-PR.
+#
+# The radare2 side of the native lines already runs on every change in
+# linux-integration.yml. The Ghidra headless backend and the r2 <-> Ghidra
+# agreement cross-checks -- that both tools resolve the same functions, symbols,
+# xrefs and coordinates on ELF, Mach-O, fat Mach-O and ARM binaries -- need a
+# ~400 MB JVM download and run a fresh Ghidra analysis per gate (~11 minutes for
+# the set), which is far too slow to put on every pull request. They run on a
+# weekly schedule and on demand instead.
+#
+# i386 gates pick up gcc-multilib best-effort; PE (mingw) fixtures skip here as
+# they do everywhere off Windows. A gate whose backend is missing skips with an
+# explicit "skip != pass" message, and -rs prints every reason.
+name: linux-ghidra-integration
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ghidra-agreement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GHIDRA_VERSION: "11.2.1"
+      GHIDRA_RELEASE: "ghidra_11.2.1_PUBLIC_20241105"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,browser,proxy,android]"
+
+      - name: Install radare2, ARM cross-compilers and a JDK
+        run: |
+          sudo apt-get update
+          # radare2 is the other half of every agreement check; the cross-compilers
+          # build the aarch64 / arm32 fixtures; Ghidra 11.2 needs a JDK 21 runtime.
+          sudo apt-get install -y \
+            radare2 \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabihf \
+            openjdk-21-jdk
+
+      - name: Best-effort 32-bit toolchain for the i386 gates
+        # Present in the standard Ubuntu repos on the hosted runner; if a mirror
+        # ever lacks it the i386 gates skip rather than failing the whole job.
+        run: sudo apt-get install -y gcc-multilib || echo "gcc-multilib unavailable — i386 gates will skip"
+
+      - name: Install Ghidra
+        run: |
+          curl -fsSL -o /tmp/ghidra.zip \
+            "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/${GHIDRA_RELEASE}.zip"
+          sudo unzip -q /tmp/ghidra.zip -d /opt
+          echo "HEADLESS_RE_GHIDRA_HOME=/opt/ghidra_${GHIDRA_VERSION}_PUBLIC" >> "$GITHUB_ENV"
+
+      - name: Ghidra agreement gates
+        # Only the Ghidra-dependent gates; the r2-only, web and proxy gates run
+        # in linux-integration.yml. A fresh JVM per gate is slow, so the per-test
+        # bound is generous.
+        timeout-minutes: 40
+        run: python -m pytest tests/integration -k ghidra -rs --tb=short --timeout=900
