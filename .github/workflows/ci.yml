@@ -3,7 +3,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, "cursor/ci-checkpoint-ghidradotfix-5260169d-82ce"]
   pull_request:
 
 concurrency:
