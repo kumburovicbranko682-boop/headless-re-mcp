@@ -190,7 +190,9 @@ def run_xvlkc(
             "output_path must not already exist",
             details={"output_path": str(destination)},
         )
-    if destination.resolve() == source.resolve():
+    # Unreachable: an output equal to the input would have already tripped the
+    # destination.exists() guard above, so this only documents the invariant.
+    if destination.resolve() == source.resolve():  # pragma: no cover
         raise XvlkcError(
             XvlkcErrorCode.INVALID_ARGUMENT,
             "output_path must differ from input_path",
@@ -279,7 +281,9 @@ def run_xvlkc(
             )
     except XvlkcError:
         with suppress(OSError):
-            if destination.is_file():
+            # Unreachable True arm: no XvlkcError is raised after the destination
+            # file is written, so a partial output never exists at cleanup time.
+            if destination.is_file():  # pragma: no cover
                 destination.unlink()
         raise
 
