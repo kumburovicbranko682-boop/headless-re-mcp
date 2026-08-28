@@ -37,7 +37,13 @@ export function estimateTokens(text: string): number {
 
 export function formatDuration(ms: number): string {
   const seconds = Math.max(0, ms) / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  // The sub-minute branch prints seconds.toFixed(1), which rounds to one
+  // decimal, but the < 60 gate tested the unrounded value. Between 59.95s and
+  // 60s that disagreed: the gate held while toFixed(1) rendered "60.0s", so a
+  // full minute showed as a sub-minute string. Gate on the same rounded tenths
+  // that get displayed, so 59.96s rolls over to "1m00s" instead.
+  const tenths = Math.round(seconds * 10) / 10;
+  if (tenths < 60) return `${tenths.toFixed(1)}s`;
   const total = Math.round(seconds);
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);

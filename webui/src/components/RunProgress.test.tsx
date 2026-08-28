@@ -13,6 +13,16 @@ describe("RunProgress harness metrics", () => {
     expect(formatDuration(980000)).toBe("16m20s");
   });
 
+  it("rolls a sub-minute value that rounds up to 60s over to the minute form", () => {
+    // toFixed(1) rounds 59.96s to "60.0", so the sub-minute branch must not
+    // claim it -- it is a full minute and should read "1m00s".
+    expect(formatDuration(59_960)).toBe("1m00s");
+    expect(formatDuration(59_950)).toBe("1m00s");
+    // Just below the rounding boundary still stays in the seconds form.
+    expect(formatDuration(59_940)).toBe("59.9s");
+    expect(formatDuration(59_900)).toBe("59.9s");
+  });
+
   it("matches the 1 round / 5 step status line", () => {
     const t0 = Date.parse("2026-08-17T08:00:00.000Z");
     const events = [

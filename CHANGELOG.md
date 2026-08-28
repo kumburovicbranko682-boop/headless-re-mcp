@@ -5,6 +5,16 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（运行指标的时长格式化在 59.95–60s 之间把整分钟显示成 "60.0s"）
+
+- `webui/src/components/RunProgress.tsx` 的 `formatDuration` 用 `seconds < 60` 判分支，
+  却在秒分支里以 `seconds.toFixed(1)` 显示——`toFixed(1)` 会四舍五入到一位小数。当
+  `seconds` 落在 `[59.95, 60)`（约 59960ms）时，`< 60` 仍成立走进秒分支，而 `toFixed(1)`
+  把它渲染成 `"60.0s"`：一整分钟被显示成秒形态，且违反 `Xm00s` 的进位约定。改法是先把
+  秒数按将要显示的一位小数取整（`Math.round(seconds * 10) / 10`）再判分支，于是 59.96s
+  正确滚动为 `"1m00s"`；所有真正低于进位边界的值（如 59.94s→`"59.9s"`）显示不变。
+  `RunProgress.test.tsx` 增补边界回归：59960/59950ms 应为 `"1m00s"`，59940/59900ms 应为 `"59.9s"`。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
