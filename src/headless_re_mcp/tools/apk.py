@@ -473,6 +473,30 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_methods(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.urls")
+    def apk_urls(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Extract the schemed URLs hard-coded in the DEX string pool.
+
+        The Android counterpart to js.endpoints and the "what does this app
+        contact" pivot over apk.strings: it runs a URL match across the same DEX
+        string constants apk.strings lists and keeps only tokens carrying a scheme
+        -- http, https, ws, wss, ftp and the like -- the API/CDN/C2 hosts that are
+        the first network IOCs of a triage. Schemeless paths (/api/x) stay with
+        apk.strings; a URL split across concatenated strings or built at runtime
+        is invisible here, since the string pool holds only literal fragments.
+        Each row is url, host (the authority after :// up to the first /?#, with
+        any userinfo stripped) and scheme (lowercased). Rows are de-duplicated by
+        url and sorted. Needs the full DEX analysis (like apk.strings).
+        Answers with urls rows, count, total, offset, has_more so a filled page is
+        not read as every URL, and scan_capped when the string-scan or URL-collect
+        ceiling was hit.
+        """
+        return _dump(analysis.apk_urls(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.decompile")
     def apk_decompile(
         session_id: str,

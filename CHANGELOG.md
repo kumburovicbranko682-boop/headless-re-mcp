@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **304（187 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **305（188 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -618,6 +618,12 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   首选名、非唯一名。需要全量 DEX 分析(同 `apk.classes`/`apk.methods`)。输出 `native_methods`(每行 `class`、
   `method`、`descriptor`、`access`、`jni_symbol`,按类再按方法排序)、`count`、`total`(找到的 native 方法总数)、
   `offset`、`has_more`,以及命中 5000 收集上限时的 `scan_capped`。
+- **`apk.urls`**：`js.endpoints` 的 Android 对应物、`apk.strings` 之上的"这个应用连哪儿"视角——在 DEX
+  字符串常量上跑 URL 匹配,只留带 scheme 的(http/https/ws/wss/ftp 等),即一次排查最先看的 API/CDN/C2 主机。
+  无 scheme 的相对路径(`/api/x`)留给 `apk.strings`;跨拼接字符串或运行时拼出的 URL 看不到(字符串池只有字面
+  片段)。每行含 `url`、`host`(`://` 之后到首个 /?# 的 authority、去掉 userinfo)与 `scheme`(小写)。按 `url`
+  去重并排序。需要全量 DEX 分析(同 `apk.strings`)。输出 `urls`、`count`、`total`、`offset`、`has_more`,以及
+  命中字符串扫描或 URL 收集上限时的 `scan_capped`。
 - **`apk.files`**：`apk.native_libs`(只看 lib/)给不了的整包清单——遍历 zip,报每个文件的解压/压缩大小
   与按路径判定的类型:`dex`(多出的 classesN.dex 提示多 dex 或动态加载代码)、`native_lib`、`resource`、
   `asset`(内嵌配置、JS bundle、ML 模型常藏在这)、`arsc` 与 `manifest` 单例、META-INF 下的 v1 签名文件,

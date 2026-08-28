@@ -8,6 +8,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -65,6 +66,18 @@ _MAX_CAP_CALLERS = 25
 # a generated binding layer can produce thousands).
 _MAX_NATIVE_COLLECT = 5000
 _MAX_NATIVE_PAGE = 1000
+# apk.urls: how many DEX strings to run the URL match over, how many distinct URLs
+# to hold, and the page ceiling. The scan bound is generous (most strings are not
+# URLs) but finite so a pathological string pool cannot run unbounded.
+_MAX_URL_STRINGS_SCAN = 50000
+_MAX_URLS_COLLECT = 5000
+_MAX_URLS_PAGE = 1000
+# A scheme://rest token: a scheme (letter then letters/digits/+.-), "://", then a
+# run of non-delimiter characters. Mirrors js.endpoints so the two backends agree
+# on what counts as a URL.
+_APK_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]{0,31}://[^\s\"'`<>\\)\]}]{1,2048}")
+# Punctuation that commonly trails a URL rather than belonging to it.
+_APK_URL_TRAILING = ".,;:!?)]}'\""
 # The security-relevant platform APIs apk.capabilities fingerprints: each row is
 # (category, label, class-name regex, method-name regex). The regexes are matched
 # with re.match (start-anchored) exactly as androguard's find_methods does, so a
@@ -1525,6 +1538,59 @@ class ApkClient:
             "total": len(collected),
             "offset": start,
             "has_more": start + len(window) < len(collected),
+            "scan_capped": scan_more,
+        }
+
+    def urls(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """Extract the schemed URLs hard-coded in the DEX string pool.
+
+        The Android counterpart to js.endpoints and the "what does this app
+        contact" pivot over apk.strings: it runs a URL match across the same DEX
+        string constants apk.strings lists and keeps only tokens that carry a
+        scheme -- http, https, ws, wss, ftp and the like -- the API/CDN/C2 hosts
+        that are the first network IOCs of a triage. Schemeless paths (``/api/x``)
+        stay with apk.strings; a URL split across concatenated strings or built at
+        runtime is invisible here (the string pool holds only literal fragments).
+        Each row is url, host (the authority after ``://`` up to the first /?#,
+        userinfo stripped) and scheme (lowercased). Rows are de-duplicated by url
+        and sorted. Needs the full DEX analysis (like apk.strings). Answers with
+        urls rows, count, total, offset, has_more so a filled page is not read as
+        every URL, and scan_capped when the string-scan or URL-collect ceiling was
+        hit.
+        """
+        parsed = self._parsed(path)
+        seen: dict[str, str] = {}
+        scan_more = False
+        scanned = 0
+        for item in parsed.analysis.get_strings():
+            if len(seen) >= _MAX_URLS_COLLECT or scanned >= _MAX_URL_STRINGS_SCAN:
+                scan_more = True
+                break
+            scanned += 1
+            value = str(item.get_value())[:_MAX_STRING_LEN]
+            for match in _APK_URL_RE.finditer(value):
+                url = match.group().rstrip(_APK_URL_TRAILING)
+                if not url or url in seen:
+                    continue
+                if len(seen) >= _MAX_URLS_COLLECT:
+                    scan_more = True
+                    break
+                authority = url.split("://", 1)[1]
+                for sep in ("/", "?", "#"):
+                    authority = authority.split(sep, 1)[0]
+                seen[url] = authority.rsplit("@", 1)[-1]
+        rows = [
+            {"url": url, "host": host, "scheme": url.split("://", 1)[0].lower()}
+            for url, host in sorted(seen.items())
+        ]
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_URLS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "urls": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
             "scan_capped": scan_more,
         }
 
