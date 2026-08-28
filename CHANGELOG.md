@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（补齐 capture→wasm 跨后端交接 gate：network.get 的 body_path 喂给 wasm.wat/info）
+
+- `web.script.source` 的 is_wasm note 与 `service_jsre` 的模块 docstring 都告诉 agent 同一件
+  事：WASM 模块没有文本源，用 `web.network.get` 取响应体、再用 `wasm.wat`/`wasm.info` 分析存下
+  的 .wasm。可这条交接从没有 gate 证过它真的接得上——capture gate 把模块内嵌进 JS（没有网络
+  体可取），web_re_gate 的 wasm.wat 又是对独立夹具跑的，两头都不碰"从抓包产物喂给 wasm 工具"
+  这一步。
+- 用真实 playwright Chromium 151 + wabt 1.0.34 实跑确认整条链路：页面 `fetch('/module.wasm')`
+  真走网络 → `web.network.get` 得 `base64_encoded=True` 且 `body_path` 指向一个含**原始**
+  wasm 字节的 .bin（39 字节，字节级等于源模块，开头 `\x00asm`）→ `wasm.wat` 对该 body_path 直接
+  解出 `answer` 与 `i32.const 42`、`wasm.info` 解出 `Export`。这正是 is_wasm note 承诺的工作流。
+- 在 `test_web_capture_gate.py` 新增一条 gate（新增 `/wasmfetch` + `/module.wasm` 路由，页面走
+  网络取模块）把这条链路钉死：body_path 必须以 wasm 魔数开头、wasm.wat 必须从两个不同 section
+  分别解出导出名与指令。需要 playwright 与 wabt 同时在场，缺任一诚实跳过（skip != pass）。
+- 变异验证承重：把 `network.get` 里 `_spill_bytes(raw, ...)` 改回历史 bug——写 base64 文本而非
+  解码字节（`body.encode()`）——gate 立即失败（body_path 变 `b'AGFz...'` 而非 `b'\x00asm'`），
+  正是 network.get 注释里点名警告的那个回归。改回后复绿。
+
 ### 测试（web capture gate 补齐 WASM script.source 的 is_wasm；真实 Chromium 151 实跑验证）
 
 - 上一轮给 `web.script.source` 加的 `is_wasm` 旗标（scriptSource 空但 bytecode 在场时置

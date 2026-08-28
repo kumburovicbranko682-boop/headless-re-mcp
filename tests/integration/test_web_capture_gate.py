@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from headless_re_mcp.backends.jsre import WasmClient
 from headless_re_mcp.backends.web import WebBackend
 from headless_re_mcp.core.service import AnalysisService
 
@@ -59,6 +60,16 @@ _APP_JS = (
     "// capture-gate-script-marker\n"
 )
 
+# A second page whose script fetches the module *over the network* (rather than
+# embedding it as a byte array the way /app.js does), so the .wasm is a real
+# response body web.network.get can retrieve -- the input the capture -> wasm
+# handoff needs and the embedded case cannot provide.
+_WASM_FETCH_JS = (
+    "fetch('/module.wasm').then(r => r.arrayBuffer())"
+    ".then(b => WebAssembly.instantiate(b))"
+    ".then(m => console.log('wasm-fetch-answer:' + m.instance.exports.answer()));\n"
+)
+
 _PAGES: dict[str, tuple[str, bytes]] = {
     "/": (
         "text/html",
@@ -68,6 +79,13 @@ _PAGES: dict[str, tuple[str, bytes]] = {
     "/app.js": ("application/javascript", _APP_JS.encode("utf-8")),
     "/data.json": ("application/json", json.dumps({"secret": "net-gate-payload"}).encode()),
     "/page2": ("text/html", b"<html><head><title>second</title></head><body>2</body></html>"),
+    "/wasmfetch": (
+        "text/html",
+        b"<html><head><title>wasmfetch</title>"
+        b"<script src='/wasmfetch.js'></script></head><body>wf</body></html>",
+    ),
+    "/wasmfetch.js": ("application/javascript", _WASM_FETCH_JS.encode("utf-8")),
+    "/module.wasm": ("application/wasm", _WASM_MODULE),
 }
 
 
@@ -319,6 +337,87 @@ def test_web_capture_chain_records_real_traffic(site: str) -> None:
             dom = service.web_dom_snapshot(session_id)
             assert dom.ok, dom.error
             assert dom.data["title"] == "second"
+        finally:
+            service.web_close(session_id)
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_network_captured_wasm_body_feeds_wasm_wat(site: str) -> None:
+    """A network-fetched .wasm body round-trips through network.get into wasm.wat.
+
+    The is_wasm note on web.script.source, and the service_jsre docstring, both
+    tell an agent the same thing: a WebAssembly module has no text source, so
+    fetch its response body with web.network.get and analyse the saved .wasm
+    with wasm.wat / wasm.info. Nothing proved that handoff actually connects.
+    The capture gate above embeds its module in JS, so there is no network body
+    to fetch; the wasm gate in test_web_re_gate runs wasm.wat on a standalone
+    fixture. This joins the two backends on real infrastructure: a page fetches
+    a genuine .wasm over the wire, network.get spills the decoded bytes to
+    body_path, and wasm.wat/info decode that very file.
+
+    It guards the exact regression network.get's own comment warns about --
+    spilling the base64 *text* into body_path instead of the bytes, which the
+    old code did and which would make wasm.wat choke on non-wasm input. So the
+    body_path must open with the WebAssembly magic and wasm.wat must recover the
+    export and instruction from two different sections. Needs both playwright
+    and wabt; skips honestly (skip != pass) when either is absent.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — capture→wasm Gate not run (skip != pass)")
+    if not WasmClient().available:
+        pytest.skip("wabt (wasm2wat) not installed — capture→wasm Gate not run (skip != pass)")
+    service = AnalysisService()
+    try:
+        created = service.create_session(site + "/wasmfetch", target="web")
+        assert created.ok, created.error
+        session_id = created.data["session"]["id"]
+        opened = service.web_open(session_id, headless=True, timeout=30.0)
+        if not opened.ok:
+            pytest.skip(
+                f"chromium could not launch (browser not installed?): "
+                f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+            )
+        try:
+            def find_wasm_request() -> dict[str, Any] | None:
+                listing = service.web_network_list(session_id)
+                assert listing.ok, listing.error
+                for row in listing.data["requests"]:
+                    if row.get("url", "").endswith("/module.wasm") and row.get("status") == 200:
+                        return dict(row)
+                return None
+
+            row = _poll(
+                find_wasm_request, message="the page's /module.wasm fetch was never recorded"
+            )
+            assert row["mimeType"] == "application/wasm"
+
+            # network.get must hand back the decoded module, not the base64 text.
+            # A wasm body is binary, so CDP returns it base64-encoded and
+            # network.get spills the *decoded* bytes to body_path -- inlining
+            # nothing. body_path opening with the four-byte WebAssembly magic is
+            # what proves the bytes, not the base64, reached the file.
+            body = service.web_network_get(session_id, row["requestId"])
+            assert body.ok, body.error
+            assert body.data["base64_encoded"] is True, body.data
+            wasm_path = body.data["body_path"]
+            raw = Path(wasm_path).read_bytes()
+            assert raw[:4] == b"\x00asm", f"body_path is not raw wasm: {raw[:16]!r}"
+
+            # The captured file feeds wasm.wat directly -- the documented handoff.
+            # The export name and the instruction come from two different
+            # sections, so together they prove wabt decoded the captured module
+            # rather than echoing a header.
+            wat = service.wasm_wat(wasm_path)
+            assert wat.ok, wat.error
+            assert "answer" in wat.data["wat"], wat.data["wat"][:200]
+            assert "i32.const 42" in wat.data["wat"], wat.data["wat"][:200]
+
+            # wasm.info reads the same captured file through the other wabt tool.
+            info = service.wasm_info(wasm_path)
+            assert info.ok, info.error
+            assert "Export" in info.data["objdump"], info.data["objdump"][:200]
         finally:
             service.web_close(session_id)
     finally:
