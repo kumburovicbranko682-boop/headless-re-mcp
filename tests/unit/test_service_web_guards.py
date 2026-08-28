@@ -268,6 +268,29 @@ def test_navigate_passes_the_url_and_timeout_through(tmp_path: Path) -> None:
     ]
 
 
+def test_navigate_maps_backend_and_unexpected_errors(tmp_path: Path) -> None:
+    """navigate refusals and surprises become envelopes, never tracebacks.
+
+    Every sibling read has this pair; navigate only had its happy path, leaving
+    the surprise arm -- an unexpected non-WebError from the backend -- uncovered.
+    A WebError keeps its domain code; anything else (here a raised
+    InvalidStateTransition) is contained as invalid_request rather than escaping
+    to the RPC layer.
+    """
+    service = _Service(tmp_path)
+    sid = service.web_session()
+
+    service.fake.raises["navigate"] = WebError("navigation_failed", "load did not complete")
+    refused = service.web_navigate(sid, "https://example.test/next")
+    assert not refused.ok and refused.error is not None
+    assert refused.error.code == "navigation_failed"
+
+    service.fake.raises["navigate"] = InvalidStateTransition("interrupted")
+    broken = service.web_navigate(sid, "https://example.test/next")
+    assert not broken.ok and broken.error is not None
+    assert broken.error.code == "invalid_request"
+
+
 def test_close_appends_a_timeline_event(tmp_path: Path) -> None:
     service = _Service(tmp_path)
     sid = service.web_session()

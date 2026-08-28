@@ -233,6 +233,29 @@ def test_status_and_flows_pass_paging_through_the_wrapper(tmp_path: Path) -> Non
     ]
 
 
+def test_replay_maps_backend_and_unexpected_errors(tmp_path: Path) -> None:
+    """replay refusals and surprises become envelopes, never tracebacks.
+
+    replay is a mutating action (it re-sends a captured request upstream), so an
+    error escaping it is worse than a read leaking one. Its siblings all pin this
+    pair; replay only had its happy path, leaving the surprise arm -- an
+    unexpected non-ProxyError from the backend -- uncovered. A ProxyError keeps
+    its domain code; anything else is contained as invalid_request.
+    """
+    service = _Service(tmp_path)
+    sid = service.web_session()
+
+    service.fake.raises["replay"] = ProxyError("flow_not_found", "unknown flow id")
+    refused = service.proxy_replay(sid, "flow-1")
+    assert not refused.ok and refused.error is not None
+    assert refused.error.code == "flow_not_found"
+
+    service.fake.raises["replay"] = InvalidStateTransition("interrupted")
+    broken = service.proxy_replay(sid, "flow-1")
+    assert not broken.ok and broken.error is not None
+    assert broken.error.code == "invalid_request"
+
+
 def test_flows_maps_a_backend_refusal(tmp_path: Path) -> None:
     service = _Service(tmp_path)
     sid = service.web_session()
