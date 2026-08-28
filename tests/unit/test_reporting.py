@@ -144,6 +144,41 @@ def test_report_finding_kind_newlines_cannot_inject_a_section_heading() -> None:
     ]
 
 
+def test_report_cell_carriage_returns_cannot_break_a_table_row() -> None:
+    """A bare \\r in a table value must not split the row.
+
+    _cell is the sink every table value flows through, and a markdown table row
+    is one line. CommonMark/GFM treat a lone \\r as a line ending just like \\n,
+    so a finding value carrying \\r (a captured string, an agent note) would end
+    its row early -- terminating the table and spilling the tail as body text,
+    the same breakout _inline already blocks for headings. _cell collapsed \\n
+    but not \\r; this pins that both are neutralised so the row stays intact.
+    """
+    knowledge = {
+        "entries": [
+            {
+                "kind": "note",
+                # The key flows through _cell exactly once (the value column is
+                # summarised then re-celled, which double-escapes pipes), so the
+                # key is where the \r-plus-pipes payload reads cleanly.
+                "key": "before\r| injected | fake | row",
+                "value": {"a": "b"},
+                "updated_at": "t",
+            }
+        ]
+    }
+    markdown = render_markdown_report(session=_SESSION, knowledge=knowledge, generated_at="t")
+    lines = markdown.splitlines()
+    row = next(line for line in lines if line.startswith("| before"))
+    # The whole key stayed on the one row line: the \r became a space and the
+    # pipes were escaped, so nothing spilled onto a new line markdown would read
+    # as body text or a fresh row.
+    assert "\r" not in row
+    assert "before \\| injected \\| fake \\| row" in row
+    row_index = lines.index(row)
+    assert not lines[row_index + 1].startswith("| injected")
+
+
 def test_report_states_empty_sections_explicitly() -> None:
 
     markdown = render_markdown_report(session=_SESSION, generated_at="t")

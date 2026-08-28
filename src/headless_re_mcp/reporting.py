@@ -61,7 +61,15 @@ def _cell(value: object) -> str:
 
     text = "" if value is None else str(value)
 
-    text = text.replace("|", "\\|").replace("\n", " ").strip()
+    # Neutralise BOTH line terminators, not just \n. A markdown table row is one
+    # line, and CommonMark/GFM treat a lone \r (as well as \n and \r\n) as a line
+    # ending -- so a value carrying a bare \r (a captured string from the binary,
+    # an agent-supplied finding) would split its row, ending the table early and
+    # spilling the rest of the cell as body text: the same structure breakout
+    # _inline already guards for headings, on the field every table value flows
+    # through. Pipes are escaped first so a value cannot open a new column.
+
+    text = text.replace("|", "\\|").replace("\n", " ").replace("\r", " ").strip()
 
     if len(text) > _MAX_CELL:
 
