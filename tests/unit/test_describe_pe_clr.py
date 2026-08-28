@@ -11,6 +11,7 @@ facts flowing through session creation.
 
 from __future__ import annotations
 
+import hashlib
 import struct
 import uuid
 from pathlib import Path
@@ -239,6 +240,132 @@ def test_authenticode_is_none_for_a_non_pe(tmp_path: Path) -> None:
     path = tmp_path / "notpe.bin"
     path.write_bytes(b"not a PE")
     assert _pe_authenticode(path) is None
+
+
+def _der(tag: int, content: bytes) -> bytes:
+    if len(content) < 0x80:
+        return bytes([tag, len(content)]) + content
+    length = len(content).to_bytes((len(content).bit_length() + 7) // 8, "big")
+    return bytes([tag, 0x80 | len(length)]) + length + content
+
+
+def _der_name(cn: bytes) -> bytes:
+    # Name ::= SEQUENCE OF RDN (SET OF SEQUENCE { OID commonName, value }).
+    atv = _der(0x30, _der(0x06, bytes.fromhex("550403")) + _der(0x13, cn))
+    return _der(0x30, _der(0x31, atv))
+
+
+def _der_cert(serial: int, issuer: bytes, *, version_tag: bool = False) -> bytes:
+    """A Certificate carrying exactly what the census walks: serial then issuer."""
+    fields = b""
+    if version_tag:
+        fields += _der(0xA0, _der(0x02, b"\x02"))  # [0] EXPLICIT version v3
+    fields += _der(0x02, bytes([serial]))
+    fields += _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d01010b")))  # sig algorithm
+    fields += issuer
+    fields += _der(0x30, b"")  # validity stand-in; the walk stops at issuer
+    tbs = _der(0x30, fields)
+    algorithm = _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d01010b")))
+    return _der(0x30, tbs + algorithm + _der(0x03, b"\x00"))
+
+
+def _der_signer_info(issuer: bytes, serial: int) -> bytes:
+    sid = _der(0x30, issuer + _der(0x02, bytes([serial])))
+    return _der(0x30, _der(0x02, b"\x01") + sid)
+
+
+def _pkcs7_signed_data(certs: list[bytes], signer_infos: list[bytes]) -> bytes:
+    signed_data = _der(
+        0x30,
+        _der(0x02, b"\x01")  # version
+        + _der(0x31, b"")  # digestAlgorithms
+        + _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010701")))  # contentInfo
+        + _der(0xA0, b"".join(certs))
+        + _der(0x31, b"".join(signer_infos)),
+    )
+    return _der(
+        0x30, _der(0x06, bytes.fromhex("2a864886f70d010702")) + _der(0xA0, signed_data)
+    )
+
+
+class TestPeSignerCensus:
+    """_pe_authenticode resolves *who* signed, not just that someone did.
+
+    The blob is PKCS#7 SignedData: its certificates field carries the chain,
+    its SignerInfos name the signing certificate by issuer+serial, and the
+    SHA-256 of that certificate's DER is the pinnable identity -- the PE pair
+    to the APK signer digests and the Mach-O signing identifier. A blob the
+    DER walk cannot account for omits the identity keys and keeps presence.
+    """
+
+    def test_the_signer_digest_is_the_certificates_der_sha256(self, tmp_path: Path) -> None:
+        issuer = _der_name(b"Probe Signer")
+        cert = _der_cert(7, issuer)
+        blob = _pkcs7_signed_data([cert], [_der_signer_info(issuer, 7)])
+        path = tmp_path / "signed.exe"
+        path.write_bytes(_sign_native_pe(payload=blob))
+        info = _pe_authenticode(path)
+        assert info is not None
+        assert info["signers"] == [{"certificate_sha256": hashlib.sha256(cert).hexdigest()}]
+        assert info["certificate_count"] == 1
+
+    def test_a_chain_resolves_to_the_leaf_not_the_ca(self, tmp_path: Path) -> None:
+        ca_issuer = _der_name(b"Probe CA")
+        leaf_issuer = _der_name(b"Probe CA")  # leaf's issuer names the CA
+        ca = _der_cert(1, _der_name(b"Probe Root"))
+        leaf = _der_cert(9, leaf_issuer, version_tag=True)
+        blob = _pkcs7_signed_data([leaf, ca], [_der_signer_info(ca_issuer, 9)])
+        path = tmp_path / "chained.exe"
+        path.write_bytes(_sign_native_pe(payload=blob))
+        info = _pe_authenticode(path)
+        assert info is not None
+        # Two certificates embedded, one signer: the issuer+serial match picks
+        # the leaf; the CA's digest is never claimed as the signer.
+        assert info["signers"] == [{"certificate_sha256": hashlib.sha256(leaf).hexdigest()}]
+        assert info["certificate_count"] == 2
+
+    def test_an_unresolvable_signer_claims_nothing(self, tmp_path: Path) -> None:
+        issuer = _der_name(b"Probe Signer")
+        cert = _der_cert(7, issuer)
+        # The SignerInfo names a serial no embedded certificate carries.
+        blob = _pkcs7_signed_data([cert], [_der_signer_info(issuer, 8)])
+        path = tmp_path / "orphan.exe"
+        path.write_bytes(_sign_native_pe(payload=blob))
+        info = _pe_authenticode(path)
+        assert info is not None
+        assert info["signers"] == []
+        assert info["certificate_count"] == 1
+
+    def test_an_opaque_blob_keeps_presence_and_omits_identity(self, tmp_path: Path) -> None:
+        path = tmp_path / "opaque.exe"
+        path.write_bytes(_sign_native_pe(payload=b"PKCS7-BODY"))
+        info = _pe_authenticode(path)
+        assert info is not None
+        assert info["signed"] is True
+        assert "signers" not in info
+        assert "certificate_count" not in info
+
+    def test_a_non_signeddata_oid_is_not_walked(self, tmp_path: Path) -> None:
+        # Well-formed DER, wrong content type (pkcs7 data, not signedData).
+        blob = _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010701")) + _der(0xA0, b""))
+        path = tmp_path / "data.exe"
+        path.write_bytes(_sign_native_pe(payload=blob))
+        info = _pe_authenticode(path)
+        assert info is not None
+        assert "signers" not in info
+
+    def test_session_metadata_carries_the_signer_census(self, tmp_path: Path) -> None:
+        issuer = _der_name(b"Probe Signer")
+        cert = _der_cert(3, issuer)
+        blob = _pkcs7_signed_data([cert], [_der_signer_info(issuer, 3)])
+        path = tmp_path / "signed.exe"
+        path.write_bytes(_sign_native_pe(payload=blob))
+        session = SessionRegistry().create(str(path))
+        authenticode = session.metadata["pe"]["authenticode"]
+        assert authenticode["signers"] == [
+            {"certificate_sha256": hashlib.sha256(cert).hexdigest()}
+        ]
+        assert authenticode["certificate_count"] == 1
 
 
 class TestPeOverlay:

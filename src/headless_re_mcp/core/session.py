@@ -3769,6 +3769,26 @@ _WIN_CERT_TYPES = {
     0x0003: "reserved_1",
     0x0004: "ts_stack_signed",
 }
+# Who signed it, not just that someone did -- the PE pair to the APK signer
+# digests and the Mach-O signing identifier/team id. The WIN_CERTIFICATE blob
+# is a PKCS#7 SignedData whose ``certificates`` field carries the signer's
+# chain and whose SignerInfos name the signing certificate by issuer+serial;
+# the SHA-256 of that certificate's DER is the identity Windows policy pins
+# (and what ``openssl x509 -fingerprint -sha256`` prints). Everything is
+# definite-length DER (signtool and osslsigncode both write it), so a bounded
+# TLV walk suffices; a BER indefinite length or any structural surprise drops
+# the census, never the presence facts. The caps bound a hostile blob: no
+# real chain carries more than a handful of certificates or signers.
+_PE_MAX_CERT_BLOB = 1024 * 1024
+_PE_MAX_SIGNER_CERTS = 16
+_PE_MAX_SIGNER_INFOS = 8
+_OID_PKCS7_SIGNED_DATA = bytes.fromhex("2a864886f70d010702")
+_DER_INTEGER = 0x02
+_DER_OID = 0x06
+_DER_SEQUENCE = 0x30
+_DER_SET = 0x31
+_DER_CONTEXT_0 = 0xA0
+_DER_CONTEXT_1 = 0xA1
 _PE_MAX_SECTIONS = 96
 # The resource data directory (index 2) roots a tree a Windows dropper hides
 # stage two in -- a nested PE in an RT_RCDATA blob, released and run at
@@ -4006,6 +4026,162 @@ def describe_pe_clr(path: Path) -> dict[str, Any]:
     }
 
 
+def _der_tlv(data: bytes, pos: int) -> tuple[int, int, int] | None:
+    """The DER TLV at ``pos``: (tag, content start, content end), or None.
+
+    Definite lengths only -- DER forbids the indefinite form and both real
+    Authenticode writers (signtool, osslsigncode) emit DER -- and single-byte
+    tags only, which covers every type PKCS#7/X.509 put on this path. Any
+    other shape, or a length running past the data, is a malformation the
+    caller treats as "census unavailable".
+    """
+    if pos + 2 > len(data):
+        return None
+    tag = data[pos]
+    if tag & 0x1F == 0x1F:  # high-tag-number form: not used by PKCS#7/X.509
+        return None
+    first = data[pos + 1]
+    if first < 0x80:
+        start = pos + 2
+        length = first
+    elif first == 0x80:  # indefinite length: BER, not DER
+        return None
+    else:
+        count = first & 0x7F
+        if count > 4 or pos + 2 + count > len(data):
+            return None
+        start = pos + 2 + count
+        length = int.from_bytes(data[pos + 2 : pos + 2 + count], "big")
+    end = start + length
+    if end > len(data):
+        return None
+    return tag, start, end
+
+
+def _der_cert_identity(data: bytes, pos: int) -> tuple[bytes, bytes] | None:
+    """A Certificate's (issuer TLV bytes, serial bytes) -- what a SignerInfo names.
+
+    Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signature },
+    and tbsCertificate opens with an optional [0] version, then serialNumber,
+    the signature algorithm and the issuer Name. DER is canonical, so the
+    issuer's raw TLV bytes and the serial's content bytes compare byte for
+    byte against the SignerInfo's issuerAndSerialNumber -- no Name decoding.
+    """
+    cert = _der_tlv(data, pos)
+    if cert is None or cert[0] != _DER_SEQUENCE:
+        return None
+    tbs = _der_tlv(data, cert[1])
+    if tbs is None or tbs[0] != _DER_SEQUENCE:
+        return None
+    cursor = tbs[1]
+    field = _der_tlv(data, cursor)
+    if field is not None and field[0] == _DER_CONTEXT_0:  # [0] EXPLICIT version
+        cursor = field[2]
+        field = _der_tlv(data, cursor)
+    if field is None or field[0] != _DER_INTEGER:  # serialNumber
+        return None
+    serial = data[field[1] : field[2]]
+    algorithm = _der_tlv(data, field[2])
+    if algorithm is None or algorithm[0] != _DER_SEQUENCE:
+        return None
+    issuer = _der_tlv(data, algorithm[2])
+    if issuer is None or issuer[0] != _DER_SEQUENCE:
+        return None
+    return data[algorithm[2] : issuer[2]], serial
+
+
+def _der_signer_sid(data: bytes, pos: int) -> tuple[bytes, bytes] | None:
+    """A SignerInfo's (issuer TLV bytes, serial bytes), or None.
+
+    SignerInfo ::= SEQUENCE { version, sid, ... } where Authenticode's sid is
+    always issuerAndSerialNumber (a SEQUENCE; the CMS subjectKeyIdentifier
+    alternative would show a context tag and yields None -- an unmatched
+    signer, not a parse failure).
+    """
+    version = _der_tlv(data, pos)
+    if version is None or version[0] != _DER_INTEGER:
+        return None
+    sid = _der_tlv(data, version[2])
+    if sid is None or sid[0] != _DER_SEQUENCE:
+        return None
+    issuer = _der_tlv(data, sid[1])
+    if issuer is None or issuer[0] != _DER_SEQUENCE:
+        return None
+    serial = _der_tlv(data, issuer[2])
+    if serial is None or serial[0] != _DER_INTEGER:
+        return None
+    return data[sid[1] : issuer[2]], data[serial[1] : serial[2]]
+
+
+def _pe_signer_census(blob: bytes) -> dict[str, Any] | None:
+    """The signer identities inside an Authenticode PKCS#7 blob, or None.
+
+    Walks ContentInfo -> SignedData, hashes every embedded certificate's DER
+    (``certificate_count`` counts them: the leaf plus whatever chain the
+    signer attached), then resolves each SignerInfo's issuer+serial to its
+    certificate -- ``signers`` carries the SHA-256 of each signing
+    certificate, the pinnable "who" the presence facts cannot answer. An
+    unresolvable signer contributes nothing; a malformed blob yields None so
+    a lying WIN_CERTIFICATE cannot invent an identity.
+    """
+    content_info = _der_tlv(blob, 0)
+    if content_info is None or content_info[0] != _DER_SEQUENCE:
+        return None
+    oid = _der_tlv(blob, content_info[1])
+    if oid is None or oid[0] != _DER_OID or blob[oid[1] : oid[2]] != _OID_PKCS7_SIGNED_DATA:
+        return None
+    wrapper = _der_tlv(blob, oid[2])  # [0] EXPLICIT content
+    if wrapper is None or wrapper[0] != _DER_CONTEXT_0:
+        return None
+    signed_data = _der_tlv(blob, wrapper[1])
+    if signed_data is None or signed_data[0] != _DER_SEQUENCE:
+        return None
+    # SignedData ::= SEQUENCE { version, digestAlgorithms SET, contentInfo,
+    # [0] certificates OPTIONAL, [1] crls OPTIONAL, signerInfos SET }.
+    cursor = signed_data[1]
+    for expected in (_DER_INTEGER, _DER_SET, _DER_SEQUENCE):
+        field = _der_tlv(blob, cursor)
+        if field is None or field[0] != expected:
+            return None
+        cursor = field[2]
+    certificates: list[tuple[str, tuple[bytes, bytes] | None]] = []
+    signers: list[str] = []
+    while cursor < signed_data[2]:
+        field = _der_tlv(blob, cursor)
+        if field is None:
+            return None
+        tag, start, end = field
+        if tag == _DER_CONTEXT_0:  # certificates: back-to-back Certificate TLVs
+            child = start
+            while child < end and len(certificates) < _PE_MAX_SIGNER_CERTS:
+                cert = _der_tlv(blob, child)
+                if cert is None or cert[0] != _DER_SEQUENCE or cert[2] > end:
+                    return None
+                digest = hashlib.sha256(blob[child : cert[2]]).hexdigest()
+                certificates.append((digest, _der_cert_identity(blob, child)))
+                child = cert[2]
+        elif tag == _DER_SET:  # signerInfos
+            child = start
+            walked = 0
+            while child < end and walked < _PE_MAX_SIGNER_INFOS:
+                info = _der_tlv(blob, child)
+                if info is None or info[0] != _DER_SEQUENCE or info[2] > end:
+                    return None
+                sid = _der_signer_sid(blob, info[1])
+                if sid is not None:
+                    for digest, identity in certificates:
+                        if identity is not None and identity == sid:
+                            signers.append(digest)
+                            break
+                child = info[2]
+                walked += 1
+        cursor = end
+    return {
+        "signers": [{"certificate_sha256": digest} for digest in signers],
+        "certificate_count": len(certificates),
+    }
+
+
 def _pe_authenticode(path: Path) -> dict[str, Any] | None:
     """Whether a PE carries an embedded Authenticode signature, and its range.
 
@@ -4018,6 +4194,13 @@ def _pe_authenticode(path: Path) -> dict[str, Any] | None:
     (offset/size), the certificate type (Authenticode is pkcs_signed_data) and
     revision, and whether the declared blob actually fits the file, which a
     truncated or lying directory would fail.
+
+    When the blob is a well-formed PKCS#7 SignedData it also answers *who*:
+    ``signers`` (the SHA-256 of each signing certificate, resolved through the
+    SignerInfos) and ``certificate_count`` -- the pair to the APK signer
+    digests and the Mach-O signing identifier. A blob the DER walk cannot
+    account for simply omits those keys: presence stays measured, identity
+    stays unclaimed.
 
     Returns None only for a non-PE or an unreadable header, so a valid PE
     always gets a verdict -- ``{"signed": False}`` for the common unsigned
@@ -4056,6 +4239,7 @@ def _pe_authenticode(path: Path) -> dict[str, Any] | None:
             within_file = cert_offset + cert_size <= file_size
             revision: int | None = None
             cert_type: int | None = None
+            census: dict[str, Any] | None = None
             if within_file:
                 # WIN_CERTIFICATE: dwLength (u32), wRevision (u16), wCertificateType (u16).
                 stream.seek(cert_offset)
@@ -4063,6 +4247,10 @@ def _pe_authenticode(path: Path) -> dict[str, Any] | None:
                 if len(header) >= 8:
                     revision = int.from_bytes(header[4:6], "little")
                     cert_type = int.from_bytes(header[6:8], "little")
+                if cert_type == _WIN_CERT_TYPE_PKCS_SIGNED_DATA and cert_size > 8:
+                    census = _pe_signer_census(
+                        stream.read(min(cert_size - 8, _PE_MAX_CERT_BLOB))
+                    )
     except OSError:
         return None
     result: dict[str, Any] = {
@@ -4076,6 +4264,8 @@ def _pe_authenticode(path: Path) -> dict[str, Any] | None:
         result["authenticode"] = cert_type == _WIN_CERT_TYPE_PKCS_SIGNED_DATA
     if revision is not None:
         result["revision"] = f"{revision >> 8}.{revision & 0xFF}"
+    if census is not None:
+        result.update(census)
     return result
 
 

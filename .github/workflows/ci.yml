@@ -249,8 +249,12 @@ jobs:
         # binutils objcopy/readelf and file (libmagic), both on the runner.
         # mono-mcs supplies mcs, whose compiled output gives the PE hardening
         # gate one real-producer binary (subsystem/DllCharacteristics/entry
-        # written by Mono's linker, not by either test builder).
-        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils mono-mcs llvm unzip
+        # written by Mono's linker, not by either test builder). osslsigncode
+        # is an independent, production Authenticode signer/verifier that runs
+        # on Linux (the Windows analogue of rcodesign below): the PE signer
+        # gate signs the fixture with it and cross-checks the signer
+        # certificate digests the tool-free PKCS#7 walk recovers.
+        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils mono-mcs llvm unzip osslsigncode
 
       - name: Install rcodesign for the Mach-O code-signature gate
         # apple-codesign is an independent, production Apple code-signing
