@@ -318,6 +318,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "web.wasm.list",
         "web.dom.snapshot",
         "web.storage",
+        "web.cookies",
         "web.screenshot",
         "web.har.export",
         # Interception (proxy.*)

@@ -210,6 +210,24 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_storage(session_id))
 
+    @tools.tool(name="web.cookies")
+    def web_cookies(session_id: str) -> dict[str, Any]:
+        """Read the browser context's cookie jar (all cookies, all domains).
+
+        Where web.storage reads the page's key/value stores, this reads the
+        cookie jar -- session ids, CSRF tokens, tracking cookies -- across every
+        domain the context has visited, not just the current page.
+
+        Answers with url (the active page), cookies, count, total and truncated.
+        Each cookie carries name, value (clipped with value_truncated when long),
+        domain, path, http_only, secure, same_site (Strict/Lax/None or null when
+        unset), expires (a Unix timestamp, or null for a session cookie) and
+        session (true when it has no persistent expiry). http_only false plus
+        secure false on a session id is the classic weakness worth flagging.
+        Read truncated: a large jar is capped.
+        """
+        return _dump(analysis.web_cookies(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

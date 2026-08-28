@@ -49,6 +49,10 @@ _MAX_TOP_STATS = 50
 # into Web Storage, so both the key list and each value are bounded.
 _MAX_STORAGE_KEYS = 500
 _MAX_STORAGE_VALUE_CHARS = 8192
+# web.cookies caps: a context can hold a large jar and each value can be a long
+# signed token, so both the list and each value are bounded.
+_MAX_COOKIES = 500
+_MAX_COOKIE_VALUE_CHARS = 4096
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -954,6 +958,59 @@ class WebBackend:
                     session_err, _MAX_METADATA_BYTES
                 )[0]
             return result
+
+        return self._runner(handle).call(work)
+
+    def cookies(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.context.cookies()
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"cookie read failed: {exc}") from exc
+            rows = raw if isinstance(raw, list) else []
+            cookies: list[JsonObject] = []
+            truncated = False
+            for item in rows:
+                if len(cookies) >= _MAX_COOKIES:
+                    truncated = True
+                    break
+                if not isinstance(item, dict):
+                    continue
+                value = item.get("value")
+                value = value if isinstance(value, str) else ("" if value is None else str(value))
+                value_cut = len(value) > _MAX_COOKIE_VALUE_CHARS
+                if value_cut:
+                    value = value[:_MAX_COOKIE_VALUE_CHARS]
+                expires = item.get("expires")
+                expires_num = (
+                    float(expires)
+                    if isinstance(expires, (int, float)) and expires >= 0
+                    else None
+                )
+                same_site = item.get("sameSite")
+                cookies.append(
+                    {
+                        "name": _bounded_metadata(item.get("name"), _MAX_METADATA_BYTES)[0],
+                        "value": value,
+                        "value_truncated": value_cut,
+                        "domain": _bounded_metadata(item.get("domain"), _MAX_METADATA_BYTES)[0],
+                        "path": _bounded_metadata(item.get("path"), _MAX_METADATA_BYTES)[0],
+                        "http_only": bool(item.get("httpOnly")),
+                        "secure": bool(item.get("secure")),
+                        "same_site": same_site if isinstance(same_site, str) else None,
+                        "expires": expires_num,
+                        "session": expires_num is None,
+                    }
+                )
+            return {
+                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
+                "cookies": cookies,
+                "count": len(cookies),
+                "total": len(rows),
+                "truncated": truncated,
+            }
 
         return self._runner(handle).call(work)
 

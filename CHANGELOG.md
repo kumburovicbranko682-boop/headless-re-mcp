@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **276（159 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **277（160 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -429,6 +429,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   抢先执行的落点)以及 `min_sdk` / `target_sdk`。清单里未声明的布尔位回 `null`(「未设置」,
   不等于 false),调用方据此套用对应目标 SDK 的平台默认,而不是想当然;androguard 版本差异
   以逐属性 `try` 兜底,`is_debuggable()` 不可用时退回读 `debuggable` 属性。
+
+### 新增（浏览器 Cookie 罐）
+
+- 新增 `web.cookies`:读浏览器 context 的整罐 cookie——session id、CSRF token、跟踪 cookie——
+  覆盖 context 访问过的每个域,不止当前页(补 `web.storage` 只读当前页键值存储的缺口)。回 `url`、
+  `cookies`、`count`、`total`、`truncated`。每条带 `name`、`value`(过长时截断并置 `value_truncated`)、
+  `domain`、`path`、`http_only`、`secure`、`same_site`(Strict/Lax/None,未设为 null)、`expires`
+  (Unix 时间戳,会话 cookie 为 null)与 `session`(无持久过期为 true)。session id 上 http_only 与
+  secure 双 false 是经典弱点。罐大时按 500 条封顶,读 `truncated`。
 
 ### 新增（浏览器 Web 存储）
 
