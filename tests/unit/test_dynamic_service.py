@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import zipfile
 from collections import deque
 from pathlib import Path
 
@@ -2413,6 +2414,45 @@ def test_batch_analyze_reports_per_binary_outcomes(tmp_path: Path) -> None:
     assert len(failed) == 1
     assert failed[0]["binary"] == str(missing)
     assert failed[0]["session_id"] is None
+
+
+def test_batch_analyze_open_static_does_not_fail_non_pe_samples(tmp_path: Path) -> None:
+    """A created APK in an open_static batch was reported as a failed sample.
+
+    Measured: open_static drives the PE/IDA backend, which answers
+    target_mismatch for an APK; batch.analyze folded that into ok=false, so a
+    mixed folder triage said every non-PE sample failed even though its session
+    was created and identified. Not applicable is not a failure.
+    """
+    pe = tmp_path / "one.exe"
+    _write_minimal_pe(pe)
+    apk = tmp_path / "two.apk"
+    with zipfile.ZipFile(apk, "w") as bundle:
+        bundle.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00m")
+        bundle.writestr("classes.dex", b"dex\n035\x00")
+    missing = tmp_path / "missing.exe"
+    service = _service(tmp_path, FakeDynamicWorker(), FakeStaticWorker())
+
+    result = service.batch_analyze(
+        [str(pe), str(apk), str(missing)],
+        max_workers=2,
+        open_static=True,
+    )
+
+    assert result.ok and result.data is not None
+    data = result.data
+    by_name = {Path(str(entry["binary"])).name: entry for entry in data["entries"]}
+    assert by_name["one.exe"]["ok"] is True
+    assert by_name["one.exe"]["static_open"] is True
+    assert by_name["one.exe"]["static_open_applicable"] is True
+    assert by_name["two.apk"]["ok"] is True, by_name["two.apk"]
+    assert by_name["two.apk"]["session_id"]
+    assert by_name["two.apk"]["static_open"] is False
+    assert by_name["two.apk"]["static_open_applicable"] is False
+    assert "error" not in by_name["two.apk"]
+    assert by_name["missing.exe"]["ok"] is False
+    assert data["succeeded"] == 2
+    assert data["failed"] == 1
 
 
 def test_batch_analyze_validates_inputs(tmp_path: Path) -> None:
