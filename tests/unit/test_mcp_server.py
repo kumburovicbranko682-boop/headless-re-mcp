@@ -330,6 +330,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "web.wasm.list",
         "web.dom.query",
         "web.dom.snapshot",
+        "web.forms",
         "web.frames",
         "web.screenshot",
         "web.har.export",

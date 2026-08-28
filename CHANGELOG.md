@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **290（170 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **291（171 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -631,6 +631,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_params`。活体门经真服务用手搓模块断言导入/自定义拆分、签名解析与按索引挂名（导入的 memory 不占函数索引），
   并另有 `wat2wasm --debug-names` 交叉校验（缺 wabt 时 skip≠pass）；单测另覆盖过滤、`signature_unknown`、4096 截断、
   损坏名字段降级与非模块拒绝。该工具计入读效果，工具面因此 289→290。
+- **页面里「哪个输入属于哪个表单」之前拼不出来**。`web.dom.query` 回的是一张扁平元素列表，说不清某个 `<input>` 归属哪个
+  `<form>`，于是一个登录/CSRF/搜索表单——它的提交目标、方法、以及包含隐藏 token 的字段集——没法一次调用重建出来。新增
+  只读的 `web.forms`：在页内遍历 `document.forms`，对每个表单经 `form.elements` 收其控件，把提交面与每个隐藏字段分组
+  带回。回 `forms`，每条带 `action`（解析后的绝对提交 URL）、`method`（get/post）、`enctype`、`name`、`id`，以及
+  `fields`——每个字段是 `{tag, type, name, value, hidden}` 记录，`hidden` 对 `type=hidden` 控件（CSRF token、预填 id）
+  为真好让它凸显——外加 `field_count`、`field_total` 与超过每表单上限（200）时的 `fields_truncated`，再加 `count`、
+  `total`、`has_more`，好让被 100 表单上限截断的一页不被读成全部。字段值按字节界收紧，值在页内先切片以免大 token 过桥；
+  没有 html 字段——要裸标记去 `web.dom.snapshot`。活体门起本地站点、主页放一个带隐藏 CSRF token 的登录表单与一个搜索
+  表单，断言 `web.forms` 把两个表单各自分组、`action`/`method`/字段正确、隐藏 token 带值且 `hidden` 为真；单测 mock
+  page.evaluate 钉住整形、隐藏标记、字段与表单溢出、空页、非 dict 载荷降级、传给页面的上限与 docstring 形状。该工具计入
+  读效果，工具面因此 290→291。
 - **抓包上了几百条流就没法先看全貌再筛**。`proxy.flows` 是分页列表，`proxy.flows` 的方法/主机/URL/状态过滤要先知道
   「这次抓包里到底有哪些主机、哪些状态、哪些内容类型」才好下手，可这信息只能靠一页页翻整个 ring 才能拼出来。新增只读的
   `proxy.stats`：把整条 ring 折叠一次成三角摘要。回 `total`、`by_method`（每个 HTTP 方法一个计数）、`by_status_class`

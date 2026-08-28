@@ -344,6 +344,26 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_frames(session_id))
 
+    @tools.tool(name="web.forms")
+    def web_forms(session_id: str) -> dict[str, Any]:
+        """List the page's forms with their submit target and input controls.
+
+        web.dom.query returns a flat element list and cannot say which inputs
+        belong to which form, so a login/CSRF/search form -- its action URL, its
+        method, and its fields including the hidden token -- was not
+        reconstructible in one call. This groups each form with its controls.
+
+        Answers with forms, each carrying action (the resolved submit URL),
+        method (get/post), enctype, name and id, plus fields -- each field a
+        {tag, type, name, value, hidden} record, where hidden is true for a
+        type=hidden control (a CSRF token or a pre-filled id) so it stands out --
+        and field_count, field_total and fields_truncated when a form had more
+        controls than the per-form cap (200). Also count, total and has_more so a
+        page capped at 100 forms is not read as all of them. Field values are
+        bounded. There is no html field -- use web.dom.snapshot for raw markup.
+        """
+        return _dump(analysis.web_forms(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

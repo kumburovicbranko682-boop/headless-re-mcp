@@ -1182,6 +1182,92 @@ def test_web_frames_lists_the_page_frames_in_a_nested_site() -> None:
             service.close_all()
 
 
+_FORMS_PAGE = (
+    b"<!doctype html><html><head><title>forms-gate</title></head><body>"
+    b'<form name="login" id="loginForm" action="/session" method="POST" '
+    b'enctype="application/x-www-form-urlencoded">'
+    b'<input type="text" name="user">'
+    b'<input type="password" name="pass">'
+    b'<input type="hidden" name="csrf" value="tok-abc123">'
+    b'<button type="submit" name="go">Sign in</button>'
+    b"</form>"
+    b'<form action="/search" method="get"><input type="search" name="q"></form>'
+    b"</body></html>"
+)
+
+
+@contextmanager
+def _forms_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(_FORMS_PAGE)))
+            self.end_headers()
+            self.wfile.write(_FORMS_PAGE)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_web_forms_reads_a_login_form_off_a_real_page() -> None:
+    """A form's submit surface was not reconstructible from dom.query alone.
+
+    dom.query returns a flat element list; nothing said which inputs belonged to
+    which form. Drive a page with a login form (including a hidden CSRF token)
+    and a search form, then assert web.forms groups each form with its action,
+    method and fields, and flags the hidden token.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web forms Gate not run (skip != pass)")
+    with _forms_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            res = service.web_forms(session_id)
+            assert res.ok, res.error
+            data = res.data
+            assert data["total"] == data["count"] == 2
+            assert data["has_more"] is False
+
+            login = next(f for f in data["forms"] if f["name"] == "login")
+            # form.action resolves against the page, so it comes back absolute.
+            assert login["action"].endswith("/session")
+            assert login["method"] == "post"
+            assert login["id"] == "loginForm"
+            by_name = {f["name"]: f for f in login["fields"]}
+            assert by_name["user"]["type"] == "text"
+            assert by_name["pass"]["type"] == "password"
+            assert by_name["csrf"]["hidden"] is True
+            assert by_name["csrf"]["value"] == "tok-abc123"
+
+            search = next(f for f in data["forms"] if f["action"].endswith("/search"))
+            assert search["method"] == "get"
+            assert any(field["name"] == "q" for field in search["fields"])
+        finally:
+            service.close_all()
+
+
 @pytest.mark.integration
 def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:

@@ -73,6 +73,11 @@ _MAX_DOM_TEXT_BYTES = 8 * 1024
 # A page's frame tree. An ad-heavy or malicious page can nest dozens of iframes,
 # so the list is capped; each frame's url/name is bounded like other metadata.
 _MAX_FRAMES = 200
+# The page's forms and their controls. A generated page can carry many forms and
+# a form many inputs, so both are capped; each control's value is bounded (a
+# hidden field can hold a large token) and overflow is announced.
+_MAX_FORMS = 100
+_MAX_FORM_FIELDS = 200
 # Kept in the per-request entry but stripped from network.list rows so a page of
 # the list stays cheap; network.get returns them in full.
 _HEADER_KEYS = ("request_headers", "response_headers")
@@ -1481,6 +1486,131 @@ class WebBackend:
                 "count": len(frames),
                 "total": total,
                 "has_more": total > len(frames),
+            }
+
+        return self._runner(handle).call(work)
+
+    def forms(self, session_id: str) -> JsonObject:
+        """The page's forms with their action, method, and input controls.
+
+        dom.query returns a flat element list and cannot express which inputs
+        belong to which form, so a login/CSRF/search form -- its submit target,
+        its method, and its fields including the hidden token -- was not
+        reconstructible in one call. This walks ``document.forms`` in-page and,
+        per form, collects its controls (via ``form.elements``) with name, type
+        and value, so the submit surface and every hidden field come back
+        grouped. Values are sliced in-page and re-bounded in Python; the form
+        and per-form field counts are capped and overflow is announced.
+        """
+        handle = self._get(session_id)
+
+        # Walk document.forms and, per form, its .elements collection. Each read
+        # is guarded so one exotic control (a custom element whose .value getter
+        # throws) cannot sink the form; the field value is sliced in-page so a
+        # multi-megabyte hidden token never crosses the bridge.
+        script = """
+        (cfg) => {
+          const forms = document.forms || [];
+          const total = forms.length;
+          const n = Math.min(total, cfg.maxForms);
+          const out = [];
+          for (let i = 0; i < n; i++) {
+            const f = forms[i];
+            let fields = [];
+            let fieldTotal = 0;
+            try {
+              const els = f.elements || [];
+              fieldTotal = els.length;
+              const m = Math.min(fieldTotal, cfg.maxFields);
+              for (let j = 0; j < m; j++) {
+                const el = els[j];
+                if (!el) continue;
+                const tag = String(el.tagName || "").toLowerCase();
+                let type = tag;
+                try { type = String(el.type || tag || "").toLowerCase(); } catch (e) {}
+                let name = "";
+                try { name = String(el.name == null ? "" : el.name); } catch (e) {}
+                let value = "";
+                try {
+                  value = String(el.value == null ? "" : el.value).slice(0, cfg.maxValueChars);
+                } catch (e) {}
+                fields.push({ tag: tag, type: type, name: name, value: value });
+              }
+            } catch (e) { fields = []; fieldTotal = 0; }
+            const read = (fn) => { try { return String(fn() || ""); } catch (e) { return ""; } };
+            out.push({
+              action: read(() => f.action),
+              method: read(() => f.method).toLowerCase() || "get",
+              enctype: read(() => f.enctype),
+              name: read(() => f.getAttribute && f.getAttribute("name")),
+              id: read(() => f.id),
+              fields: fields,
+              field_total: fieldTotal,
+            });
+          }
+          return { forms: out, total: total };
+        }
+        """
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.page.evaluate(
+                    script,
+                    {
+                        "maxForms": _MAX_FORMS,
+                        "maxFields": _MAX_FORM_FIELDS,
+                        "maxValueChars": _MAX_DOM_VALUE_CHARS,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"forms read failed: {exc}") from exc
+            if not isinstance(raw, dict):
+                raw = {}
+            raw_forms = raw.get("forms")
+            forms_in = raw_forms if isinstance(raw_forms, list) else []
+            total = int(raw.get("total") or 0)
+            forms: list[JsonObject] = []
+            for form in forms_in:
+                if not isinstance(form, dict):
+                    continue
+                fields_in = form.get("fields")
+                fields: list[JsonObject] = []
+                for control in fields_in if isinstance(fields_in, list) else []:
+                    if not isinstance(control, dict):
+                        continue
+                    ctype = _bounded_metadata(control.get("type"), _MAX_METADATA_BYTES)[0]
+                    fields.append(
+                        {
+                            "tag": _bounded_metadata(control.get("tag"), _MAX_METADATA_BYTES)[0],
+                            "type": ctype,
+                            "name": _bounded_metadata(control.get("name"), _MAX_METADATA_BYTES)[0],
+                            "value": _bounded_metadata(
+                                control.get("value"), _MAX_DOM_VALUE_BYTES
+                            )[0],
+                            # A hidden control is where a CSRF token or a
+                            # pre-filled id sits; flag it so it stands out.
+                            "hidden": ctype == "hidden",
+                        }
+                    )
+                field_total = int(form.get("field_total") or 0)
+                forms.append(
+                    {
+                        "action": _bounded_metadata(form.get("action"), _MAX_URL_BYTES)[0],
+                        "method": _bounded_metadata(form.get("method"), _MAX_METADATA_BYTES)[0],
+                        "enctype": _bounded_metadata(form.get("enctype"), _MAX_METADATA_BYTES)[0],
+                        "name": _bounded_metadata(form.get("name"), _MAX_METADATA_BYTES)[0],
+                        "id": _bounded_metadata(form.get("id"), _MAX_METADATA_BYTES)[0],
+                        "fields": fields,
+                        "field_count": len(fields),
+                        "field_total": field_total,
+                        "fields_truncated": field_total > len(fields),
+                    }
+                )
+            return {
+                "forms": forms,
+                "count": len(forms),
+                "total": total,
+                "has_more": total > len(forms),
             }
 
         return self._runner(handle).call(work)
