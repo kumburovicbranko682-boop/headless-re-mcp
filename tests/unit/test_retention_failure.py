@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
 import pytest
 
 from headless_re_mcp.core import retention as retention_module
+
+
+def test_measure_usage_skips_a_child_it_cannot_stat(tmp_path: Path) -> None:
+    (tmp_path / "real.bin").write_bytes(b"xyz")
+    try:
+        os.symlink(tmp_path / "missing-target", tmp_path / "dangling")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+    # The dangling link's stat() raises mid-walk; it is skipped, and the real
+    # file is still counted rather than the whole measurement failing.
+    usage = retention_module.measure_usage(tmp_path)
+    assert usage.files == 1
+    assert usage.bytes == 3
+    assert usage.truncated is False
 
 
 def test_measure_usage_truncates_at_the_file_limit(tmp_path: Path) -> None:
