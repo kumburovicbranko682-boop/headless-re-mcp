@@ -461,6 +461,61 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def class_summary(self, path: Path, class_name: str) -> JsonObject:
+        """A class header at a glance: superclass, interfaces, access and counts.
+
+        ``apk.classes`` lists names and ``apk.methods`` / ``apk.fields`` enumerate
+        members, but placing a class in the app -- what it extends, which
+        interfaces it implements, whether it is public/abstract/final, and how big
+        it is -- meant paging both member lists just to count them. This resolves
+        one class (dotted or ``Lsmali/`` form) and answers with ``superclass``,
+        ``interfaces`` (both smali descriptors), the ``access`` flag string,
+        ``method_count`` and ``field_count``, plus ``is_external`` for a class only
+        referenced, not defined, in the DEX. It is the Android analogue of reading
+        a type's header before diving into its members.
+        """
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        parsed = self._parsed(path)
+        smali = _dotted_to_smali(target)
+        found = [
+            klass
+            for klass in parsed.analysis.get_classes()
+            if klass.name == target or klass.name == smali
+        ]
+        if not found:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        # A name can resolve to both a defined class and an external stub; prefer
+        # the defined one so the summary describes the real body, not the shadow.
+        klass = next((k for k in found if not k.is_external()), found[0])
+        try:
+            superclass = str(getattr(klass, "extends", "") or "")
+            interfaces = [str(i) for i in (getattr(klass, "implements", None) or [])]
+            access = ""
+            vm = klass.get_vm_class() if hasattr(klass, "get_vm_class") else None
+            if vm is not None and hasattr(vm, "get_access_flags_string"):
+                access = str(vm.get_access_flags_string() or "")
+            if not superclass and vm is not None and hasattr(vm, "get_superclassname"):
+                superclass = str(vm.get_superclassname() or "")
+            method_count = sum(1 for _ in klass.get_methods())
+            field_count = sum(1 for _ in klass.get_fields())
+        except ApkError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError(
+                "backend_error", f"failed to read class summary: {exc}", class_name=class_name
+            ) from exc
+        return {
+            "class_name": klass.name,
+            "superclass": superclass,
+            "interfaces": interfaces,
+            "access": access,
+            "method_count": method_count,
+            "field_count": field_count,
+            "is_external": bool(klass.is_external()),
+        }
+
     def methods(
         self,
         path: Path,

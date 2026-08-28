@@ -116,6 +116,21 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_classes(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="apk.class_summary")
+    def apk_class_summary(session_id: str, class_name: str) -> dict[str, Any]:
+        """A class header at a glance: superclass, interfaces, access and counts.
+
+        apk.classes lists names and apk.methods/apk.fields enumerate members; this
+        places one class in the app without paging either list. Resolve by
+        class_name (dotted com.example.App or Lsmali/form). Answers with class_name
+        (smali), superclass and interfaces (smali descriptors, interfaces a list),
+        access (the flag string, e.g. "public abstract"), method_count and
+        field_count, plus is_external for a class only referenced, not defined, in
+        the DEX. It is the Android analogue of reading a type's header before its
+        members. A class the DEX does not carry is a clean not_found.
+        """
+        return _dump(analysis.apk_class_summary(session_id, class_name))
+
     @tools.tool(name="apk.methods")
     def apk_methods(
         session_id: str,

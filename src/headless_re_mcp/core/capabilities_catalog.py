@@ -100,7 +100,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "apk.androguard",
         "backend": "apk",
         "status_probe": "androguard",
-        "tools": ["apk.open", "apk.manifest", "apk.permissions", "apk.classes", "apk.methods", "apk.method_bytecode", "apk.method_refs", "apk.fields", "apk.strings", "apk.xrefs", "apk.string_xrefs", "apk.field_xrefs", "apk.extract_native_lib"],
+        "tools": ["apk.open", "apk.manifest", "apk.permissions", "apk.classes", "apk.class_summary", "apk.methods", "apk.method_bytecode", "apk.method_refs", "apk.fields", "apk.strings", "apk.xrefs", "apk.string_xrefs", "apk.field_xrefs", "apk.extract_native_lib"],
         "summary": "In-process APK static analysis via androguard",
         "optional": True,
     },

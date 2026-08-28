@@ -1008,6 +1008,26 @@ def test_apk_dex_readers_decode_a_populated_dex(tmp_path: Path) -> None:
         missing = service.apk_method_bytecode(session_id, _DEX_CLASS_SMALI, "noSuchMethod")
         assert not missing.ok
         assert missing.error is not None and missing.error.code == "not_found", missing.error
+
+        # Class summary: the header of the same class, without paging its members.
+        # App extends Object, implements nothing, and declares the two methods the
+        # method list enumerated and no fields -- the counts and the recovered
+        # superclass are the version-drift surface a name-only listing never hits.
+        for spelling in (_DEX_CLASS_SMALI, "com.example.App"):
+            summary = service.apk_class_summary(session_id, spelling)
+            assert summary.ok and summary.data is not None, (spelling, summary.error)
+            assert summary.data["class_name"] == _DEX_CLASS_SMALI, spelling
+            assert summary.data["superclass"] == "Ljava/lang/Object;", summary.data
+            assert summary.data["interfaces"] == [], summary.data
+            assert summary.data["method_count"] == 2, summary.data
+            assert summary.data["field_count"] == 0, summary.data
+            assert summary.data["is_external"] is False, summary.data
+            assert "public" in summary.data["access"], summary.data
+
+        # A class the DEX does not carry is a clean not_found, not a crash.
+        no_class = service.apk_class_summary(session_id, "com.example.Nope")
+        assert not no_class.ok
+        assert no_class.error is not None and no_class.error.code == "not_found", no_class.error
     finally:
         service.close_all()
 
@@ -1216,6 +1236,15 @@ def test_apk_field_xrefs_resolve_read_and_write_sites(tmp_path: Path) -> None:
         assert save_refs.data["fields"] == [
             {"field": field_ref, "reads": 0, "writes": 1}
         ], save_refs.data
+
+        # Class summary counts the same one field the field readers pivot on, plus
+        # the load/save pair, without paging either member list.
+        cls_summary = service.apk_class_summary(session_id, "com.example.Store")
+        assert cls_summary.ok and cls_summary.data is not None, cls_summary.error
+        assert cls_summary.data["class_name"] == _DEX_STORE_SMALI, cls_summary.data
+        assert cls_summary.data["field_count"] == 1, cls_summary.data
+        assert cls_summary.data["method_count"] == 2, cls_summary.data
+        assert cls_summary.data["superclass"] == "Ljava/lang/Object;", cls_summary.data
 
         # A class the DEX does not declare is a clean not_found, not a crash.
         missing = service.apk_fields(session_id, "com.example.Nope")
