@@ -930,6 +930,37 @@ _DEX_MAX_COUNT = 64_000_000
 _DEX_MAX_BYTES = 32 * 1024 * 1024
 _DEX_MAX_NAMES = 8192
 _DEX_MAX_TOTAL_NAMES = 512
+# The map_list enumerates every structural section the DEX carries, each a
+# (type, count) the loader itself reads. It is the DEX structural census, the
+# Dalvik analogue of a WASM section table -- and its debug_info_item entry is
+# the "how much does the analyst get for free" fact: the source-line and
+# local-variable records a -g / debuggable build ships, the pair to DWARF and
+# a PDB. Names match androguard's TypeMapItem so the gate compares directly.
+_DEX_MAP_TYPE_NAMES: dict[int, str] = {
+    0x0000: "header_item",
+    0x0001: "string_id_item",
+    0x0002: "type_id_item",
+    0x0003: "proto_id_item",
+    0x0004: "field_id_item",
+    0x0005: "method_id_item",
+    0x0006: "class_def_item",
+    0x0007: "call_site_id_item",
+    0x0008: "method_handle_item",
+    0x1000: "map_list",
+    0x1001: "type_list",
+    0x1002: "annotation_set_ref_list",
+    0x1003: "annotation_set_item",
+    0x2000: "class_data_item",
+    0x2001: "code_item",
+    0x2002: "string_data_item",
+    0x2003: "debug_info_item",
+    0x2004: "annotation_item",
+    0x2005: "encoded_array_item",
+    0x2006: "annotations_directory_item",
+    0xF000: "hiddenapi_class_data_item",
+}
+# A map_list has one entry per section type; the spec caps it well under this.
+_DEX_MAX_MAP_ITEMS = 64
 # method_ids rows are indexed by 16-bit operands in Dalvik instructions, so a
 # single DEX holds at most 65536; a header claiming more is walked no further.
 _DEX_MAX_METHOD_IDS = 65_536
@@ -1231,6 +1262,7 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
     external_classes: set[str] = set()
     external_method_count = 0
     signatures: list[dict[str, str]] = []
+    map_counts: dict[str, int] = {}
     found = False
     try:
         with zipfile.ZipFile(path) as archive:
@@ -1262,6 +1294,11 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
                 entry.update(_dex_integrity(data, facts, complete))
                 signatures.append(entry)
                 if len(data) > _DEX_HEADER_SIZE:
+                    # The structural census needs the whole member (the
+                    # map_list lives in the data section); summed across
+                    # members like the other counts.
+                    for section, count in _dex_map_counts(data, facts["map_off"]).items():
+                        map_counts[section] = map_counts.get(section, 0) + count
                     if len(class_names) < _DEX_MAX_TOTAL_NAMES:
                         for cname in _dex_class_names(data, facts):
                             class_names.add(cname)
@@ -1286,7 +1323,43 @@ def _apk_dex_facts(path: Path) -> dict[str, Any]:
         "external_classes": sorted(external_classes),
         "external_method_count": external_method_count,
         "signatures": signatures,
+        # The DEX structural census (map_list), summed across members -- the
+        # Dalvik analogue of a WASM section table.
+        "map_counts": map_counts,
+        # How many methods ship source-line/local-variable debug info -- what
+        # a -g / debuggable build carries and a release build does not, the
+        # DEX pair to DWARF, a PDB and the WASM name section. Zero is a real
+        # "no debug info" answer.
+        "debug_info_items": map_counts.get("debug_info_item", 0),
     }
+
+
+def _dex_map_counts(data: bytes, map_off: int) -> dict[str, int]:
+    """The DEX map_list as ``{section type name: count}``.
+
+    The map_list is a u32 size then that many 12-byte entries (u16 type, u16
+    unused, u32 count, u32 offset) -- the structural census the loader reads,
+    the Dalvik analogue of a WASM section table. The debug_info_item entry is
+    the debug-availability fact. Bounded and fail-closed: the entry count is
+    capped, an out-of-range offset yields ``{}``, and an unknown type is named
+    ``unknown_<hex>`` rather than dropped so the census stays total.
+    """
+    if map_off <= 0 or map_off + 4 > len(data):
+        return {}
+    size = int.from_bytes(data[map_off : map_off + 4], "little")
+    if size <= 0 or size > _DEX_MAX_MAP_ITEMS:
+        return {}
+    counts: dict[str, int] = {}
+    pos = map_off + 4
+    for _ in range(size):
+        if pos + 12 > len(data):
+            return {}
+        type_id = int.from_bytes(data[pos : pos + 2], "little")
+        count = int.from_bytes(data[pos + 4 : pos + 8], "little")
+        pos += 12
+        name = _DEX_MAP_TYPE_NAMES.get(type_id, f"unknown_{type_id:#06x}")
+        counts[name] = counts.get(name, 0) + count
+    return counts
 
 
 def _dex_integrity(data: bytes, header: dict[str, Any], complete: bool) -> dict[str, Any]:
@@ -1343,6 +1416,9 @@ def _parse_dex_header(header: bytes) -> dict[str, Any] | None:
         # was read.
         "checksum": int.from_bytes(header[8:12], "little"),
         "file_size": int.from_bytes(header[32:36], "little"),
+        # The map_list offset: the structural census (every section type and
+        # count), read only when the whole member is in hand.
+        "map_off": int.from_bytes(header[52:56], "little"),
         "string_count": string_count,
         "string_ids_off": int.from_bytes(header[60:64], "little"),
         "type_count": int.from_bytes(header[64:68], "little"),

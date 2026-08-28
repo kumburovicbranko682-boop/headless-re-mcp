@@ -1455,6 +1455,80 @@ class TestDexFactsWithoutAndroguard:
         assert describe_apk(path)["apk"]["dex"] == {}
 
 
+def _dex_with_map(entries: list[tuple[int, int]]) -> bytes:
+    """A DEX whose map_list carries the given (type_id, count) entries.
+
+    The header's map_off points at a map_list laid down right after the
+    0x70-byte header. Only the header and map_list need to be well-formed --
+    the reader's census reads nothing else.
+    """
+    header = bytearray(0x70)
+    header[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", header, 40, 0x12345678)  # endian tag
+    map_off = 0x70
+    struct.pack_into("<I", header, 52, map_off)  # map_off
+    body = struct.pack("<I", len(entries))
+    for type_id, count in entries:
+        body += struct.pack("<HHII", type_id, 0, count, 0)
+    return bytes(header) + body
+
+
+class TestDexMapCensus:
+    """describe_apk reports the DEX map_list census and the debug-info count.
+
+    The map_list is the DEX structural census -- every section type and its
+    count, the Dalvik analogue of a WASM section table -- and its
+    debug_info_item entry is the debug-availability fact: what a -g /
+    debuggable build ships, the pair to DWARF, a PDB and the WASM name
+    section. Zero is a real "no debug info" answer.
+    """
+
+    def test_reads_the_section_counts_and_debug_items(self, tmp_path: Path) -> None:
+        dex = _apk_with_dex(
+            tmp_path,
+            _dex_with_map(
+                [(0x0000, 1), (0x0001, 5), (0x2001, 3), (0x2003, 3), (0x1000, 1)]
+            ),
+        )
+        assert dex["map_counts"] == {
+            "header_item": 1,
+            "string_id_item": 5,
+            "code_item": 3,
+            "debug_info_item": 3,
+            "map_list": 1,
+        }
+        # The headline: three methods carry source-line/local debug info.
+        assert dex["debug_info_items"] == 3
+
+    def test_a_build_without_debug_info_reads_zero(self, tmp_path: Path) -> None:
+        dex = _apk_with_dex(
+            tmp_path, _dex_with_map([(0x0000, 1), (0x2001, 2), (0x1000, 1)])
+        )
+        assert "debug_info_item" not in dex["map_counts"]
+        assert dex["debug_info_items"] == 0
+
+    def test_an_unknown_section_type_is_named_not_dropped(self, tmp_path: Path) -> None:
+        dex = _apk_with_dex(tmp_path, _dex_with_map([(0x0000, 1), (0x9999, 2)]))
+        assert dex["map_counts"]["unknown_0x9999"] == 2
+
+    def test_a_map_off_past_the_end_yields_no_census(self, tmp_path: Path) -> None:
+        header = bytearray(_dex_with_map([(0x0000, 1)])[:0x70])
+        struct.pack_into("<I", header, 52, 0x9000)  # map_off past the member
+        dex = _apk_with_dex(tmp_path, bytes(header) + b"\x00" * 32)
+        assert dex["map_counts"] == {}
+        assert dex["debug_info_items"] == 0
+
+    def test_counts_sum_across_multidex_members(self, tmp_path: Path) -> None:
+        path = tmp_path / "multidex.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("classes.dex", _dex_with_map([(0x2003, 2), (0x2001, 4)]))
+            archive.writestr("classes2.dex", _dex_with_map([(0x2003, 5), (0x2001, 1)]))
+        dex = describe_apk(path)["apk"]["dex"]
+        assert dex["debug_info_items"] == 7
+        assert dex["map_counts"]["code_item"] == 5
+
+
 def _so_with_exports(names: list[str], *, machine: int = 62) -> bytes:
     """A section-header-only ELF64 shared object exporting ``names``.
 
