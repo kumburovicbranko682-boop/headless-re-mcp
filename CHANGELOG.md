@@ -258,6 +258,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_params`、超限封到 schema 上限（120s）。补回归测试钉住负超时被干净拒绝且不 wedge 活
   会话（随后正常导航仍可用）、巨大超时被封到上限。
 
+### 修复（`android_crypto_monitor` 只盯一个 doFinal 重载，漏掉大半加密调用）
+
+- 该 canned hook 只改写 `Cipher.doFinal(byte[])` 一个重载。真实 app 里加密走的常是
+  `update()` 流式喂数据再 `doFinal()` 收尾、或 `doFinal(input, offset, len)`、或写入现成
+  输出缓冲的 `doFinal(output, outOffset)` 等其它重载——这些一律不触发事件，监控台读起来就是
+  「这 app 没做加密」，恰恰是这个监控本该暴露的东西反被漏报（假阴性）。现改为遍历
+  `Cipher.doFinal.overloads` 挂上每一个重载；调原始实现沿用本文件 `android_ssl_unpin` 里
+  `SSLContext.init` 的 `overload.call(this, ...)` 同款写法（捕获重载对象再 `apply`）。各重载上报的
+  「输入字节数」逻辑抽成模板内的 `headlessReCipherInputLen` 函数：单参 `doFinal(byte[])` 取
+  `input.length`，三/四/五参形取第三个实参（inputLen），无参与 `(output, offset)` 形的输入来自
+  先前 `update()`、此处不可知故报 `-1`。新增 `tests/unit/test_frida_crypto_monitor_template.py`：把该
+  函数从模板串里原样抽出，用 Node.js 按每个真实重载的实参形状实跑核对上报字节数（无 Node 时跳过，
+  skip≠pass），并用 `vm.Script` 校验整段模板是合法 JS（parse 失败的模板等于什么都没挂），另有一条
+  不依赖 Node 的守卫钉住单重载写法已消失、`doFinal.overloads` 已就位。frida 原生 runtime 在 CI 跑
+  不了，故按仓库既有做法（见 hook-template schema 与 memory.read 测试）在模板文本与可独立运行的判定
+  逻辑层面加固。
+
 ### 修复（`frida.hook.template` 在设备会话关闭后仍会注入钩子）
 
 - close 只翻状态、不清 `frida_authorized` 元数据，已关闭会话仍可解析；其它设备 frida 操作都经
