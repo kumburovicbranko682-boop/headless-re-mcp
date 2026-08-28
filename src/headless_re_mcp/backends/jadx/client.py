@@ -28,6 +28,15 @@ _MAX_TIMEOUT_S = 1800.0
 _MAX_STDERR = 8000
 _MAX_LISTED_FILES = 2000
 _MAX_COUNTED_FILES = 50_000
+# A class_name maps to a filesystem path under the jadx sources tree, so its
+# segments are bounded by what a filesystem can name. 255 bytes is NAME_MAX on
+# ext4 and most POSIX filesystems (a single directory or file component); the
+# 1024-byte whole-path ceiling keeps the joined path well under PATH_MAX even
+# with the session's output prefix in front. jadx itself cannot write a source
+# file whose component exceeds NAME_MAX, so a name past these bounds names no
+# class jadx could ever emit -- rejecting it loses nothing reachable.
+_MAX_PATH_SEGMENT_BYTES = 255
+_MAX_CLASS_PATH_BYTES = 1024
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool, bool]:
@@ -285,4 +294,18 @@ def _class_to_java_path(class_name: str) -> Path:
     parts = dotted.split(".")
     if not parts or any(not part or part in {".", ".."} for part in parts):
         raise JadxError("invalid_params", "class_name contains an invalid path segment")
-    return Path(*parts).with_suffix(".java")
+    rel = Path(*parts).with_suffix(".java")
+    # Bound the path length here, before decompile.decompile pays for a whole-APK
+    # export: an over-long segment makes the later ``candidate.is_file()`` raise a
+    # raw ENAMETOOLONG OSError -- which pathlib does *not* suppress the way it
+    # swallows ENOENT -- so the tool would crash on a caller's bad argument instead
+    # of failing cleanly. rel.parts already carries the ``.java`` suffix on its
+    # final element, so this checks the real component names.
+    if any(
+        len(segment.encode("utf-8", "surrogatepass")) > _MAX_PATH_SEGMENT_BYTES
+        for segment in rel.parts
+    ):
+        raise JadxError("invalid_params", "class_name path segment is too long")
+    if len(str(rel).encode("utf-8", "surrogatepass")) > _MAX_CLASS_PATH_BYTES:
+        raise JadxError("invalid_params", "class_name is too long")
+    return rel
