@@ -13,7 +13,7 @@ PROFILES: tuple[str, ...] = ("full", "pe", "android", "web")
 # Tool-name prefixes that belong to each optional work direction. Anything not
 # listed here (session/static/dynamic/frida/workspace/...) is core and stays in
 # every non-full profile.
-_ANDROID_PREFIXES = ("apk.", "device.")
+_ANDROID_PREFIXES = ("apk.", "dex.", "device.")
 _WEB_PREFIXES = ("web.", "js.", "wasm.")
 # The interception proxy (mitmproxy) is shared by the android and web directions
 # -- it captures browser traffic in a web session and, via

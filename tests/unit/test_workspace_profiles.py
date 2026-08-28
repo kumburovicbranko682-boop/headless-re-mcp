@@ -26,9 +26,10 @@ async def test_full_profile_exposes_every_tool(tmp_path) -> None:
     finally:
         analysis.close_all()
     names = {tool.name for tool in tools}
-    assert len(names) == 265
+    assert len(names) == 266
     assert "apk.open" in names
     assert "web.open" in names
+    assert "dex.summary" in names
 
 
 @pytest.mark.asyncio
@@ -40,6 +41,7 @@ async def test_android_profile_hides_web_domain(tmp_path) -> None:
     finally:
         analysis.close_all()
     assert "apk.open" in names
+    assert "dex.summary" in names
     assert "device.list" in names
     assert not any(n.startswith(("web.", "js.", "wasm.")) for n in names)
     # The interception proxy is shared by Android and Web, and
@@ -60,7 +62,7 @@ async def test_web_profile_hides_android_domain(tmp_path) -> None:
     finally:
         analysis.close_all()
     assert "web.open" in names
-    assert not any(n.startswith(("apk.", "device.")) for n in names)
+    assert not any(n.startswith(("apk.", "dex.", "device.")) for n in names)
 
 
 @pytest.mark.asyncio
@@ -72,7 +74,7 @@ async def test_pe_profile_hides_both_android_and_web(tmp_path) -> None:
     finally:
         analysis.close_all()
     assert not any(
-        n.startswith(("apk.", "device.", "web.", "js.", "wasm.", "proxy.")) for n in names
+        n.startswith(("apk.", "dex.", "device.", "web.", "js.", "wasm.", "proxy.")) for n in names
     )
     assert "static.open" in names
     assert "workspace.mode.get" in names

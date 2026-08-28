@@ -268,6 +268,8 @@ async def test_minimal_mcp_tool_surface() -> None:
         "apk.decode",
         "apk.repack",
         "apk.sign",
+        # Standalone Dalvik executable (dex.*)
+        "dex.summary",
         # Device control (device.*)
         "device.list",
         "device.connect",

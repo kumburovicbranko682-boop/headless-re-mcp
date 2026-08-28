@@ -44,6 +44,12 @@ UNREGISTERED_CAPTURE_MAX_ENTRIES = 32
 UNREGISTERED_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
 JSRE_UNPACK_MAX_ENTRIES = 8
 JSRE_UNPACK_MAX_BYTES = 256 * 1024 * 1024
+
+# dex.summary reads a whole .dex into memory to walk its header and string table.
+# A single Dalvik executable is bounded by the 64K method/field reference limit,
+# so even a large multidex member sits well under this; the file is refused above
+# it before the read is paid.
+DEX_SUMMARY_MAX_BYTES = 64 * 1024 * 1024
 _DIR_SIZE_FILE_CAP = 4096
 
 

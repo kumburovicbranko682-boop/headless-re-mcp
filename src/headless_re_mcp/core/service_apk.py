@@ -14,10 +14,15 @@ from typing import Any
 
 from headless_re_mcp.backends.apk import ApkClient, ApkError
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
+from headless_re_mcp.backends.common.dex import DexParseError, summarize_dex
 from headless_re_mcp.backends.jadx import JadxClient, JadxError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, _dir_size
+from headless_re_mcp.core.limits import (
+    DEX_SUMMARY_MAX_BYTES,
+    UNREGISTERED_CAPTURE_MAX_BYTES,
+    _dir_size,
+)
 from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
@@ -100,6 +105,43 @@ class ApkAnalysisMixin:
             return _failure(_as_rpc(exc), session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
+
+    def dex_summary(self, path: str, *, offset: int = 0, limit: int = 200) -> Result[JsonObject]:
+        """Summarise a standalone .dex with the stdlib -- no androguard needed.
+
+        The apk.* tools open an APK container; this reads a lone Dalvik
+        executable (dropped by malware, loaded at runtime, or pulled from an
+        APK) by path. It reports the DEX version and section counts and returns
+        a bounded, paginated page of the string table -- the class/method names
+        and literals an analyst greps first. A file that is not a DEX is
+        invalid_params, one over the 64 MiB cap too_large.
+        """
+        try:
+            resolved = Path(path).expanduser()
+            if not resolved.is_file():
+                raise ApkError("not_found", "dex file not found", path=str(resolved))
+            try:
+                size = int(resolved.stat().st_size)
+            except OSError as exc:
+                raise ApkError(
+                    "backend_error", f"dex unreadable: {exc}", path=str(resolved)
+                ) from exc
+            if size > DEX_SUMMARY_MAX_BYTES:
+                raise ApkError(
+                    "too_large",
+                    f"dex is {size} bytes, over the {DEX_SUMMARY_MAX_BYTES}-byte limit",
+                    path=str(resolved),
+                    size=size,
+                    cap=DEX_SUMMARY_MAX_BYTES,
+                )
+            summary = summarize_dex(resolved.read_bytes(), offset=offset, limit=limit)
+            return _success(summary, backend="dex")
+        except DexParseError as exc:
+            return _failure(_as_rpc(ApkError("invalid_params", str(exc))))
+        except ApkError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
 
     def apk_manifest(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "manifest")
