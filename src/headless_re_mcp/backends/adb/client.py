@@ -526,6 +526,50 @@ class AdbBackend:
             "third_party_only": third_party_only,
         }
 
+    def loadavg(self, serial: str) -> JsonObject:
+        """Report the scheduler load snapshot from ``/proc/loadavg``.
+
+        A point-in-time reading, not a list: the 1/5/15-minute load averages,
+        the run-queue as ``running_entities`` (currently runnable) over
+        ``total_entities`` (all threads and processes), and ``last_pid`` (the
+        most recently allocated pid). The run-queue and a jumping ``last_pid``
+        are the useful bits -- a fork-heavy or CPU-bound workload under dynamic
+        analysis shows up as a rising run-queue and a fast-climbing last pid
+        that the load averages alone smooth over.
+
+        Honesty: the line is accepted only when all three loads parse as floats
+        and the ``running/total`` and ``last_pid`` fields parse as integers, so
+        an adb host-error line yields nothing. ``/proc/loadavg`` is present on
+        every live kernel, so failing to parse it means the read failed
+        (permission denied, offline device) and is a ``backend_error`` rather
+        than an empty result.
+        """
+        dev = self._device(serial)
+        text = str(_device_shell(dev, "cat /proc/loadavg"))
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 5 or "/" not in fields[3]:
+                continue
+            running_raw, _, total_raw = fields[3].partition("/")
+            try:
+                load1 = float(fields[0])
+                load5 = float(fields[1])
+                load15 = float(fields[2])
+                running_entities = int(running_raw)
+                total_entities = int(total_raw)
+                last_pid = int(fields[4])
+            except ValueError:
+                continue
+            return {
+                "load1": load1,
+                "load5": load5,
+                "load15": load15,
+                "running_entities": running_entities,
+                "total_entities": total_entities,
+                "last_pid": last_pid,
+            }
+        raise AdbError("backend_error", "reading /proc/loadavg failed", output=text[:800])
+
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
         # cheap local fact and the most common caller mistake, while _device

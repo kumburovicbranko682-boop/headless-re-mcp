@@ -89,6 +89,24 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.loadavg")
+    def device_loadavg(serial: str) -> dict[str, Any]:
+        """Report the scheduler load snapshot from /proc/loadavg.
+
+        A point-in-time reading, not a list. Answers with load1, load5, load15
+        (the 1/5/15-minute load averages), running_entities over
+        total_entities (the run-queue: currently runnable over all threads and
+        processes), and last_pid (the most recently allocated pid). A rising
+        run-queue and a fast-climbing last_pid flag a fork-heavy or CPU-bound
+        workload the load averages alone smooth over.
+
+        Honesty: the line is accepted only when all three loads parse as floats
+        and running/total plus last_pid parse as integers. /proc/loadavg is on
+        every live kernel, so failing to parse it is a read failure (permission
+        denied, offline device), not an empty result.
+        """
+        return _dump(analysis.device_loadavg(serial))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True
