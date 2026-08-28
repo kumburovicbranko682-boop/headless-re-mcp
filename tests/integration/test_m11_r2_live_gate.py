@@ -48,6 +48,14 @@ def test_m11_r2_live_address_mapping() -> None:
     if "rva" in item["address"]:
         assert item["address"].get("module") == fixture.name
 
+    # The raw entry key the r2.functions docstring promises must survive whatever
+    # r2 is installed. r2 6.x renamed aflj's entry from `offset` to `addr`; the
+    # adapter restores `offset` so a caller reads the documented field on any r2,
+    # and asserting it here against the real tool is what catches a future rename
+    # the alias does not yet cover -- a class of drift CI's pinned r2 hides.
+    assert "offset" in item, "r2.functions dropped its documented offset key"
+    assert item["offset"] == item["address"]["va"]
+
     # Past function listing into the analysis core. disasm (pdj) at a real
     # function entry runs the parameterized command past the whitelist, r2
     # returns instructions, and the request address round-trips through the
@@ -71,3 +79,17 @@ def test_m11_r2_live_address_mapping() -> None:
     assert xrefs.get("parsed") is True
     assert isinstance(xrefs.get("count"), int)
     assert xrefs.get("address_va") == va
+
+    # imports (iij) is the other tool whose raw key drifted: r2 6.x renamed the
+    # import library from `lib` to `libname`, and unlike an address the library
+    # name is recoverable from no other field. A real PE imports from at least
+    # one DLL, so the documented `lib` must be present and name a library --
+    # pinning the adapter's restore against the installed r2, not just a stub.
+    imports = client.run(fixture, ["iij"], timeout=60.0)
+    assert imports.get("parsed") is True
+    import_items = imports.get("items") or []
+    assert import_items, "r2 found no imports in the PE"
+    assert isinstance(import_items[0].get("address"), dict)
+    assert any(
+        isinstance(row.get("lib"), str) and row["lib"] for row in import_items
+    ), "no import carried the documented lib key"
