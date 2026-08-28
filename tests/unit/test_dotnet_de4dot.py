@@ -96,7 +96,9 @@ def test_dotnet_deobfuscate_mocked(tmp_path: Path) -> None:
         ),
         de4dot_runner=fake_runner,
     )
-    session_id = service.create_session(str(binary)).data["session"]["id"]
+    created = service.create_session(str(binary))
+    assert created.data is not None
+    session_id = created.data["session"]["id"]
     result = service.dotnet_deobfuscate(session_id)
     assert result.ok and result.data is not None
     assert result.data["claims_universal_unpack"] is False
@@ -127,8 +129,11 @@ def test_dotnet_verify_rejects_other_session_artifact(tmp_path: Path) -> None:
             de4dot=None,
         )
     )
-    session_a = service.create_session(str(binary_a)).data["session"]["id"]
-    session_b = service.create_session(str(binary_b)).data["session"]["id"]
+    created_a = service.create_session(str(binary_a))
+    created_b = service.create_session(str(binary_b))
+    assert created_a.data is not None and created_b.data is not None
+    session_a = created_a.data["session"]["id"]
+    session_b = created_b.data["session"]["id"]
 
     foreign_dir = artifact_root / "dotnet" / session_b
     foreign_dir.mkdir(parents=True, exist_ok=True)
