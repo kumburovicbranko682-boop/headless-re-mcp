@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Android 设备线首次真机证明 adb 客户端↔服务端链路在 Linux 上确实通了）
+
+`test_android_re_gate.py` 对 `device.list` 的断言只有 `ok or error is not None`——对任何
+`Result` 都恒真，等于什么都没证明；真机装/删/pull 确实需要硬件没法测，但 adbutils↔adb-server
+这条链路本身在 Linux 上到底通不通，此前从没验证过。新增
+`tests/integration/test_android_device_gate.py`，在没有任何设备接入的前提下，把这条线**能**测的
+部分对着真 adb server 跑通：
+
+- **device.list**：adbutils 拉起它自带的 adb server（binaries/adb 里那个），`device.list()` 被
+  解析成有界的 `{devices, count, has_more}` 信封——一个空但真实的列表，而不是降级错误；断言
+  count 与列表长度自洽、has_more 为 False。
+- **device.connect 到死端口**：本地绑一个随即释放的端口（没人监听），连它必然失败。断言这是一个
+  失败信封，绝不是 ok-with-connected-false（那个老坑曾让调用方把 APK「装」到一台根本不存在的
+  设备上）。
+- **对不存在的 serial 做设备操作**：`device.info("nonexistent-...")` 必须回一个结构化错误信封而
+  非抛异常——无硬件时的错误契约。
+
+skip ≠ pass：仅当 adbutils 确实缺失（未装 android extra）、或本机压根拉不起任何 adb 时才干净
+skip。已在装有 adbutils 2.12（自带 adb daemon）的 Linux x86_64 上三条全部实跑通过（非 skip）。
+
 ### 修复（js.unpack_bundle 对当前 webcrack 从来没成功过：输出目录被提前建好导致每次都失败）
 
 给 Web 静态线补 bundle 拆包真机 Gate 时发现 `js.unpack_bundle` 有一处只有跑真 webcrack 才会
