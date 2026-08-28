@@ -21,6 +21,7 @@ from headless_re_mcp.core.session import (
     SessionRegistry,
     _dotnet_resource_payloads,
     _pe_authenticode,
+    _pe_capability_surface,
     _pe_overlay,
     _pe_resource_payloads,
     describe_pe_clr,
@@ -369,8 +370,207 @@ def _pe_with_resources(resources: list[tuple[int, int, bytes]]) -> bytes:
     return bytes(out)
 
 
+def _pe_with_imports_exports(
+    imports: list[tuple[str, list[object]]],
+    exports: list[str],
+    *,
+    magic: int = 0x20B,
+) -> bytes:
+    """A minimal PE whose import (index 1) and export (index 0) directories hold
+    the given tables, all in one section, the shape pefile and dumpbin parse.
+
+    Each import is ``(dll, functions)`` where a function is a name (by name) or
+    an int (by ordinal). ``magic`` selects PE32+ (0x20B) or PE32 (0x10B), which
+    sets the thunk width and the ordinal flag the reader must key off.
+    """
+    sect_rva = 0x1000
+    sec = bytearray()
+
+    def emit(data: bytes) -> int:
+        off = len(sec)
+        sec.extend(data)
+        return off
+
+    def align(n: int) -> None:
+        while len(sec) % n:
+            sec.append(0)
+
+    def rva(off: int) -> int:
+        return sect_rva + off
+
+    thunk_fmt = "<Q" if magic == 0x20B else "<I"
+    thunk_size = 8 if magic == 0x20B else 4
+    ordinal_flag = (1 << 63) if magic == 0x20B else (1 << 31)
+
+    n = len(imports)
+    desc_off = emit(b"\x00" * (20 * (n + 1)))  # descriptors + null terminator
+    descriptors: list[tuple[int, int]] = []
+    for dll, funcs in imports:
+        thunks: list[int] = []
+        for fn in funcs:
+            if isinstance(fn, int):
+                thunks.append(ordinal_flag | fn)
+                continue
+            align(2)  # IMAGE_IMPORT_BY_NAME is WORD-aligned
+            hint_name = emit(struct.pack("<H", 0) + fn.encode() + b"\x00")
+            thunks.append(rva(hint_name))
+        align(thunk_size)
+        ilt_off = len(sec)
+        for value in thunks:
+            emit(struct.pack(thunk_fmt, value))
+        emit(struct.pack(thunk_fmt, 0))  # null thunk ends the list
+        dll_off = emit(dll.encode() + b"\x00")
+        descriptors.append((rva(ilt_off), rva(dll_off)))
+    for i, (ilt_rva, dll_rva) in enumerate(descriptors):
+        struct.pack_into("<IIIII", sec, desc_off + i * 20, ilt_rva, 0, 0, dll_rva, ilt_rva)
+    imp_dir_rva, imp_dir_size = rva(desc_off), 20 * (n + 1)
+
+    exp_dir_rva = exp_dir_size = 0
+    if exports:
+        name_rvas = [rva(emit(name.encode() + b"\x00")) for name in exports]
+        align(4)
+        eat_off = len(sec)
+        for _ in exports:
+            emit(struct.pack("<I", sect_rva))  # a plausible function RVA
+        align(4)
+        names_off = len(sec)
+        for name_rva in name_rvas:
+            emit(struct.pack("<I", name_rva))
+        ord_off = len(sec)
+        for i in range(len(exports)):
+            emit(struct.pack("<H", i))
+        dll_name = emit(b"self.dll\x00")
+        align(4)
+        exp_off = len(sec)
+        emit(b"\x00" * 40)  # IMAGE_EXPORT_DIRECTORY
+        struct.pack_into(
+            "<IIHHIIIIIII", sec, exp_off,
+            0, 0, 0, 0, rva(dll_name), 1,
+            len(exports), len(exports), rva(eat_off), rva(names_off), rva(ord_off),
+        )
+        exp_dir_rva, exp_dir_size = rva(exp_off), 40
+
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x40)
+    opt_size = 0xF0
+    machine = 0x8664 if magic == 0x20B else 0x14C
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", machine, 1, 0, 0, 0, opt_size, 0x2022)
+    opt = bytearray(opt_size)
+    struct.pack_into("<H", opt, 0, magic)
+    dir_count_off = 108 if magic == 0x20B else 92
+    struct.pack_into("<I", opt, 32, 0x1000)  # SectionAlignment
+    struct.pack_into("<I", opt, 36, 0x200)  # FileAlignment
+    struct.pack_into("<I", opt, dir_count_off, 16)  # NumberOfRvaAndSizes
+    dir_arr = dir_count_off + 4
+    struct.pack_into("<II", opt, dir_arr + 0 * 8, exp_dir_rva, exp_dir_size)
+    struct.pack_into("<II", opt, dir_arr + 1 * 8, imp_dir_rva, imp_dir_size)
+
+    raw_off = 0x40 + len(coff) + opt_size
+    if raw_off % 0x200:
+        raw_off += 0x200 - (raw_off % 0x200)
+    rsize = (len(sec) + 0x1FF) & ~0x1FF
+    struct.pack_into("<I", opt, 56, 0x2000 + rsize)  # SizeOfImage
+    struct.pack_into("<I", opt, 60, raw_off)  # SizeOfHeaders
+
+    sect = bytearray(40)
+    sect[0:6] = b".idata"
+    struct.pack_into("<I", sect, 8, len(sec))
+    struct.pack_into("<I", sect, 12, sect_rva)
+    struct.pack_into("<I", sect, 16, rsize)
+    struct.pack_into("<I", sect, 20, raw_off)
+    struct.pack_into("<I", sect, 36, 0xC0000040)
+
+    out = bytearray(dos + coff + opt + sect)
+    if len(out) < raw_off:
+        out += b"\x00" * (raw_off - len(out))
+    out += sec
+    if len(out) % 0x200:
+        out += b"\x00" * (0x200 - (len(out) % 0x200))
+    return bytes(out)
+
+
 # A DOS/PE-header-sized nested image: MZ padded past the sniffer's 0x40 floor.
 _NESTED_PE = b"MZ" + b"\x90" * 62 + b"stage-two body"
+
+
+class TestPeCapabilitySurface:
+    """_pe_capability_surface reads the native PE import and export directories.
+
+    The strongest triage signal after arch: which native functions from which
+    DLLs the loader must bind (what the binary can actually do), and, for a DLL,
+    what it offers back -- the PE pair to an ELF/Mach-O's imported/exported
+    symbols. Imports keep import-table order and group by DLL; ordinal-only
+    imports read as ``#N``; exports come back name-sorted.
+    """
+
+    def test_named_imports_group_under_their_dll(self, tmp_path: Path) -> None:
+        path = tmp_path / "imports.exe"
+        path.write_bytes(
+            _pe_with_imports_exports(
+                [
+                    ("KERNEL32.dll", ["CreateFileA", "ExitProcess"]),
+                    ("USER32.dll", ["MessageBoxW"]),
+                ],
+                [],
+            )
+        )
+        imports, exports = _pe_capability_surface(path)
+        assert exports == []
+        assert imports == [
+            {"dll": "KERNEL32.dll", "functions": ["CreateFileA", "ExitProcess"]},
+            {"dll": "USER32.dll", "functions": ["MessageBoxW"]},
+        ]
+
+    def test_ordinal_only_imports_read_as_hash_n(self, tmp_path: Path) -> None:
+        path = tmp_path / "ordinal.exe"
+        path.write_bytes(_pe_with_imports_exports([("WS2_32.dll", [115, 116])], []))
+        imports, _ = _pe_capability_surface(path)
+        assert imports == [{"dll": "WS2_32.dll", "functions": ["#115", "#116"]}]
+
+    def test_exports_come_back_name_sorted(self, tmp_path: Path) -> None:
+        path = tmp_path / "exports.dll"
+        path.write_bytes(_pe_with_imports_exports([], ["ZetaFunc", "AlphaFunc", "MidFunc"]))
+        _, exports = _pe_capability_surface(path)
+        assert exports == ["AlphaFunc", "MidFunc", "ZetaFunc"]
+
+    def test_a_pe32_import_table_reads_at_the_narrow_thunk_width(self, tmp_path: Path) -> None:
+        # PE32 thunks are 4 bytes with the ordinal flag at bit 31; a reader that
+        # assumed PE32+ 8-byte thunks would desync immediately.
+        path = tmp_path / "x86.exe"
+        path.write_bytes(
+            _pe_with_imports_exports([("msvcrt.dll", ["printf"])], [], magic=0x10B)
+        )
+        imports, _ = _pe_capability_surface(path)
+        assert imports == [{"dll": "msvcrt.dll", "functions": ["printf"]}]
+
+    def test_a_pe_without_either_directory_reads_empty(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_capability_surface(path) == ([], [])
+
+    def test_a_non_pe_reads_empty(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_capability_surface(path) == ([], [])
+
+    def test_the_import_list_is_bounded(self, tmp_path: Path) -> None:
+        many = [(f"lib{i:03d}.dll", ["Fn"]) for i in range(300)]
+        path = tmp_path / "many.exe"
+        path.write_bytes(_pe_with_imports_exports(many, []))
+        imports, _ = _pe_capability_surface(path)
+        assert len(imports) == 256  # _PE_MAX_IMPORT_DLLS
+
+    def test_session_over_a_pe_carries_the_capability_surface(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(
+            _pe_with_imports_exports([("KERNEL32.dll", ["ExitProcess"])], ["Start"])
+        )
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["imports"] == [
+            {"dll": "KERNEL32.dll", "functions": ["ExitProcess"]}
+        ]
+        assert session.metadata["pe"]["exports"] == ["Start"]
 
 
 class TestPeResourcePayloads:
@@ -550,12 +750,14 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
     assert session.architecture is Architecture.X86
     # A native PE has no .NET block, but it does now carry the whole-PE
     # Authenticode verdict -- unsigned here, a real answer rather than empty --
-    # and an (empty) resource-payload census.
+    # an (empty) resource-payload census, and an (empty) import/export surface.
     assert session.metadata == {
         "pe": {
             "authenticode": {"signed": False},
             "resource_payloads": [],
             "resource_payload_count": 0,
+            "imports": [],
+            "exports": [],
         }
     }
 

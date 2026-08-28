@@ -150,6 +150,13 @@ class SessionRegistry:
                 res_payloads, res_count = _pe_resource_payloads(path)
                 metadata.setdefault("pe", {})["resource_payloads"] = res_payloads
                 metadata["pe"]["resource_payload_count"] = res_count
+                # The import/export directories -- the native PE capability
+                # surface, the pair to an ELF/Mach-O's imported/exported
+                # symbols. Always reported: empty lists are a real answer (a
+                # static EXE with no imports, a non-DLL with no exports).
+                imports, exports = _pe_capability_surface(path)
+                metadata["pe"]["imports"] = imports
+                metadata["pe"]["exports"] = exports
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -3423,6 +3430,19 @@ _PE_RESOURCE_KINDS: tuple[tuple[bytes, str], ...] = (
     (b"\xfe\xed\xfa\xce", "macho"),
     (b"MZ", "pe"),
 )
+# The import (index 1) and export (index 0) data directories -- the native PE
+# capability surface, the pair to an ELF/Mach-O's imported/exported symbols. The
+# import table names which functions from which DLLs the loader must resolve
+# (the strongest triage signal after arch: what the binary can actually do); the
+# export table names what a DLL offers. Both walks are bounded so a hostile or
+# malformed table degrades to shorter lists rather than an unbounded read.
+_PE_IMPORT_DIR = 1
+_PE_EXPORT_DIR = 0
+_PE_MAX_IMPORT_DLLS = 256
+_PE_MAX_IMPORTS_PER_DLL = 4096
+_PE_MAX_EXPORTS = 8192
+_PE_MAX_SYMBOL_NAME = 512
+_PE_MAX_IMPORT_FILE = 128 * 1024 * 1024
 _CLR_METADATA_MAGIC = b"BSJB"
 _CLR_MAX_VERSION_LEN = 256
 _COMIMAGE_FLAGS_ILONLY = 0x00000001
@@ -3858,6 +3878,177 @@ def _clr_stream_map(raw: bytes, meta_off: int) -> dict[str, tuple[int, int]]:
         pos = (pos + 3) & ~3  # names are padded to a 4-byte boundary
         out[name] = (offset, length)
     return out
+
+
+def _pe_header_view(
+    raw: bytes,
+) -> tuple[int, int, int, list[tuple[int, int, int, int]]] | None:
+    """``(magic, dir_count, dir_array_off, sections)`` for a PE, or None.
+
+    ``dir_array_off`` is the offset in ``raw`` where the data-directory array
+    begins; ``sections`` is the parsed section table for RVA->offset mapping.
+    Shared by the import/export walk; fail-closed on any malformed header.
+    """
+    if len(raw) < 0x40 or raw[:2] != b"MZ":
+        return None
+    e_lfanew = int.from_bytes(raw[0x3C:0x40], "little")
+    if e_lfanew < 0 or e_lfanew + 24 > len(raw) or raw[e_lfanew : e_lfanew + 4] != b"PE\x00\x00":
+        return None
+    coff = raw[e_lfanew : e_lfanew + 24]
+    num_sections = min(int.from_bytes(coff[6:8], "little"), _PE_MAX_SECTIONS)
+    opt_size = int.from_bytes(coff[20:22], "little")
+    opt_start = e_lfanew + 24
+    optional = raw[opt_start : opt_start + opt_size]
+    magic = int.from_bytes(optional[0:2], "little") if len(optional) >= 2 else 0
+    if magic == 0x10B:
+        dir_count_off = 92
+    elif magic == 0x20B:
+        dir_count_off = 108
+    else:
+        return None
+    if dir_count_off + 4 > len(optional):
+        return None
+    dir_count = int.from_bytes(optional[dir_count_off : dir_count_off + 4], "little")
+    dir_array_off = opt_start + dir_count_off + 4
+    sect_start = opt_start + opt_size
+    sections = _pe_sections(raw[sect_start : sect_start + num_sections * 40])
+    return magic, dir_count, dir_array_off, sections
+
+
+def _pe_read_cstr(raw: bytes, off: int | None, cap: int) -> str:
+    """A NUL-terminated ASCII string at ``off`` in ``raw``, bounded by ``cap``."""
+    if off is None or off <= 0 or off >= len(raw):
+        return ""
+    end = raw.find(b"\x00", off, off + cap + 1)
+    if end < 0:
+        end = min(off + cap, len(raw))
+    return raw[off:end].decode("ascii", errors="replace")
+
+
+def _pe_capability_surface(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """``(imports, exports)`` read straight off the PE import/export directories.
+
+    The native PE capability surface -- the pair to an ELF/Mach-O's imported and
+    exported symbols, and the strongest triage signal after arch: which native
+    functions from which DLLs the loader must bind (what the binary can actually
+    do), and, for a DLL, what it offers back. ``imports`` is a list of
+    ``{"dll", "functions"}`` in import-table order (the shape pefile and dumpbin
+    render); ``exports`` is the sorted export-name table. Ordinal-only imports
+    read as ``#N``.
+
+    Bounded and fail-closed: the whole read is capped, the descriptor walk, the
+    per-DLL thunk walk and both reported lists are bounded, and any structural
+    surprise yields whatever parsed cleanly rather than raising.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return [], []
+        with path.open("rb") as stream:
+            raw = stream.read(_PE_MAX_IMPORT_FILE)
+    except OSError:
+        return [], []
+    view = _pe_header_view(raw)
+    if view is None:
+        return [], []
+    magic, dir_count, dir_off, sections = view
+    imports = _pe_imports(raw, magic, dir_count, dir_off, sections)
+    exports = _pe_exports(raw, dir_count, dir_off, sections)
+    return imports, exports
+
+
+def _pe_imports(
+    raw: bytes,
+    magic: int,
+    dir_count: int,
+    dir_off: int,
+    sections: list[tuple[int, int, int, int]],
+) -> list[dict[str, Any]]:
+    """The import directory (index 1) as ``[{"dll", "functions"}, ...]``."""
+    if dir_count <= _PE_IMPORT_DIR:
+        return []
+    entry = dir_off + _PE_IMPORT_DIR * 8
+    if entry + 8 > len(raw):
+        return []
+    imp_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if imp_rva == 0:
+        return []
+    desc_off = _pe_rva_to_offset(sections, imp_rva)
+    if desc_off is None:
+        return []
+    thunk_size = 8 if magic == 0x20B else 4
+    ordinal_flag = (1 << 63) if magic == 0x20B else (1 << 31)
+    rva_mask = 0x7FFFFFFFFFFFFFFF if magic == 0x20B else 0x7FFFFFFF
+    imports: list[dict[str, Any]] = []
+    for i in range(_PE_MAX_IMPORT_DLLS):
+        desc = desc_off + i * 20  # IMAGE_IMPORT_DESCRIPTOR is 20 bytes
+        if desc + 20 > len(raw):
+            break
+        oft = int.from_bytes(raw[desc : desc + 4], "little")  # OriginalFirstThunk (ILT)
+        name_rva = int.from_bytes(raw[desc + 12 : desc + 16], "little")
+        first_thunk = int.from_bytes(raw[desc + 16 : desc + 20], "little")  # IAT
+        if oft == 0 and name_rva == 0 and first_thunk == 0:
+            break  # the all-zero descriptor terminates the array
+        dll = _pe_read_cstr(raw, _pe_rva_to_offset(sections, name_rva), _PE_MAX_SYMBOL_NAME)
+        # Prefer the import lookup table (import names survive here even after
+        # the loader overwrites the IAT with addresses); fall back to the IAT.
+        thunk_rva = oft or first_thunk
+        thunk_off = _pe_rva_to_offset(sections, thunk_rva) if thunk_rva else None
+        functions: list[str] = []
+        if thunk_off is not None:
+            for j in range(_PE_MAX_IMPORTS_PER_DLL):
+                thunk = thunk_off + j * thunk_size
+                if thunk + thunk_size > len(raw):
+                    break
+                value = int.from_bytes(raw[thunk : thunk + thunk_size], "little")
+                if value == 0:
+                    break  # the zero thunk terminates this DLL's list
+                if value & ordinal_flag:
+                    functions.append(f"#{value & 0xFFFF}")  # import by ordinal
+                    continue
+                hint_off = _pe_rva_to_offset(sections, value & rva_mask)
+                # IMAGE_IMPORT_BY_NAME: a 2-byte hint then the ASCII name.
+                name = _pe_read_cstr(
+                    raw, hint_off + 2 if hint_off is not None else None, _PE_MAX_SYMBOL_NAME
+                )
+                if name:
+                    functions.append(name)
+        imports.append({"dll": dll, "functions": functions})
+    return imports
+
+
+def _pe_exports(
+    raw: bytes,
+    dir_count: int,
+    dir_off: int,
+    sections: list[tuple[int, int, int, int]],
+) -> list[str]:
+    """The export name table (index 0) as a sorted list of names."""
+    if dir_count <= _PE_EXPORT_DIR:
+        return []
+    entry = dir_off + _PE_EXPORT_DIR * 8
+    if entry + 8 > len(raw):
+        return []
+    exp_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if exp_rva == 0:
+        return []
+    exp_off = _pe_rva_to_offset(sections, exp_rva)
+    if exp_off is None or exp_off + 40 > len(raw):
+        return []
+    num_names = int.from_bytes(raw[exp_off + 24 : exp_off + 28], "little")
+    names_rva = int.from_bytes(raw[exp_off + 32 : exp_off + 36], "little")
+    names_off = _pe_rva_to_offset(sections, names_rva)
+    if names_off is None:
+        return []
+    exports: list[str] = []
+    for i in range(min(num_names, _PE_MAX_EXPORTS)):
+        pointer = names_off + i * 4
+        if pointer + 4 > len(raw):
+            break
+        name_off = _pe_rva_to_offset(sections, int.from_bytes(raw[pointer : pointer + 4], "little"))
+        name = _pe_read_cstr(raw, name_off, _PE_MAX_SYMBOL_NAME)
+        if name:
+            exports.append(name)
+    return sorted(exports)
 
 
 def _pe_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
