@@ -14,12 +14,14 @@ import concurrent.futures
 import contextlib
 import logging
 import os
+import re
 import socket
 import threading
 import time
 from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends import har
@@ -818,6 +820,51 @@ def _ranked(counts: dict[str, int], key_name: str, cap: int) -> tuple[list[JsonO
     return rows, len(ordered) > cap
 
 
+# proxy.endpoints bounds: the page of endpoint rows and the ranked content-type
+# list kept per endpoint, so a capture that touched thousands of routes or one
+# route that returned many media types cannot make a reply unbounded.
+_MAX_ENDPOINTS_PAGE = 1000
+_MAX_ENDPOINT_CTYPES = 20
+_UUID_RE = re.compile(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_HEX_RE = re.compile(r"(?i)^[0-9a-f]+$")
+_TOKENISH_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
+
+
+def _is_variable_segment(seg: str) -> bool:
+    """True when a path segment looks like an id/hash/token, not a route name.
+
+    Collapsing these to a placeholder is what turns ``/users/123`` and
+    ``/users/456`` into one endpoint. Conservative on purpose: a plain numeric
+    segment, a UUID, a hex string of 12+ chars (an object id / md5 / sha) or a
+    long (24+) mixed alnum token qualifies, but an ordinary word never does.
+    """
+    if seg.isdigit():
+        return True
+    if _UUID_RE.match(seg):
+        return True
+    if len(seg) >= 12 and _HEX_RE.match(seg):
+        return True
+    return bool(
+        len(seg) >= 24 and _TOKENISH_RE.match(seg) and any(c.isdigit() for c in seg)
+    )
+
+
+def _normalize_endpoint_path(path: str) -> str:
+    """Replace id-like path segments with ``{id}`` so routes group together."""
+    if not path:
+        return "/"
+    return "/".join("{id}" if _is_variable_segment(seg) else seg for seg in path.split("/"))
+
+
+def _endpoint_path(url: str) -> tuple[str, bool]:
+    """Split a captured URL into (path, has_query); path defaults to ``/``."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "/", False
+    return (parts.path or "/"), bool(parts.query)
+
+
 def _flow_matches(row: JsonObject, active: JsonObject) -> bool:
     """True when one summary row satisfies every field of an active filter.
 
@@ -1188,6 +1235,125 @@ class ProxyBackend:
             result["content_types_truncated"] = True
         if len(status_ordered) > _MAX_STATS_GROUPS:
             result["statuses_truncated"] = True
+        if active:
+            result["filter"] = active
+        return result
+
+    def endpoints(
+        self,
+        session_id: str,
+        *,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: int = 0,
+        normalize: bool = True,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Collapse the capture into the target's API surface, grouped by route.
+
+        proxy.stats counts flows by method/host/status/content-type but never by
+        URL path, so it cannot answer "what endpoints does this app call". This
+        groups the retained flows by (host, path) -- normalising id-like path
+        segments (numeric, UUID, long hex, long mixed-alnum token) to {id} by
+        default so /users/1 and /users/2 fold into one /users/{id} route -- and
+        reports each route's method set, request count, status-class mix,
+        response content types and an example flow id to drill into with
+        proxy.flow.get. It is the traffic-side analogue of an imports table: the
+        backend routes the app depends on. Set normalize false to key on the
+        exact path instead.
+
+        Accepts the same filter surface as proxy.flows
+        (method/host/url_contains/content_type/status), echoed back as filter.
+        Answers with endpoints (host, path, count, methods, status_classes,
+        content_types, example_id, plus websocket / has_query when seen), ranked
+        by count then host then path and paged with count, total (distinct
+        routes), offset and has_more; captured is the whole ring, dropped how
+        many the ring evicted, and normalized whether {id} folding was applied.
+        The list field is endpoints, not routes or results.
+        """
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        captured = len(items)
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        active = _flow_filter(method, host, url_contains, content_type, status)
+        rows = [row for row in items if _flow_matches(row, active)] if active else items
+        groups: OrderedDict[tuple[str, str], JsonObject] = OrderedDict()
+        for row in rows:
+            hostname = str(row.get("host") or "")
+            raw_path, has_query = _endpoint_path(str(row.get("url") or ""))
+            path = _normalize_endpoint_path(raw_path) if normalize else (raw_path or "/")
+            key = (hostname, path)
+            agg = groups.get(key)
+            if agg is None:
+                agg = {
+                    "host": hostname,
+                    "path": path,
+                    "count": 0,
+                    "methods": {},
+                    "status_classes": {},
+                    "content_types": {},
+                    "websocket": False,
+                    "has_query": False,
+                    "example_id": row.get("id"),
+                }
+                groups[key] = agg
+            agg["count"] += 1
+            verb = str(row.get("method") or "").upper()
+            if verb:
+                agg["methods"][verb] = agg["methods"].get(verb, 0) + 1
+            code = row.get("status")
+            cls = f"{code // 100}xx" if isinstance(code, int) else "pending"
+            agg["status_classes"][cls] = agg["status_classes"].get(cls, 0) + 1
+            ctype = str(row.get("content_type") or "").split(";", 1)[0].strip().lower()
+            if ctype:
+                agg["content_types"][ctype] = agg["content_types"].get(ctype, 0) + 1
+            if row.get("websocket"):
+                agg["websocket"] = True
+            if has_query:
+                agg["has_query"] = True
+        ordered = sorted(
+            groups.values(), key=lambda a: (-int(a["count"]), a["host"], a["path"])
+        )
+        total = len(ordered)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_ENDPOINTS_PAGE))
+        window = ordered[start : start + cap]
+        endpoints: list[JsonObject] = []
+        for agg in window:
+            ctype_rows, ctypes_truncated = _ranked(
+                agg["content_types"], "content_type", _MAX_ENDPOINT_CTYPES
+            )
+            item: JsonObject = {
+                "host": agg["host"],
+                "path": agg["path"],
+                "count": agg["count"],
+                "methods": sorted(agg["methods"].keys()),
+                "status_classes": agg["status_classes"],
+                "content_types": ctype_rows,
+                "example_id": agg["example_id"],
+            }
+            if agg["websocket"]:
+                item["websocket"] = True
+            if agg["has_query"]:
+                item["has_query"] = True
+            if ctypes_truncated:
+                item["content_types_truncated"] = True
+            endpoints.append(item)
+        result: JsonObject = {
+            "captured": captured,
+            "dropped": dropped,
+            "endpoints": endpoints,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            "normalized": bool(normalize),
+        }
         if active:
             result["filter"] = active
         return result

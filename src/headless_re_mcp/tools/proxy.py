@@ -87,6 +87,55 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="proxy.endpoints")
+    def proxy_endpoints(
+        session_id: str,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: Annotated[int, Field(ge=0, le=599)] = 0,
+        normalize: bool = True,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Collapse the capture into the target's API surface, grouped by route.
+
+        proxy.stats counts flows by method/host/status/content-type but never by
+        URL path, so it cannot answer "what endpoints does this app call". This
+        groups the retained flows by (host, path) -- normalising id-like path
+        segments (numeric, UUID, long hex, long mixed-alnum token) to {id} by
+        default, so /users/1 and /users/2 fold into one /users/{id} route -- and
+        reports each route's method set, request count, status-class mix,
+        response content types and an example flow id to open with
+        proxy.flow.get. It is the traffic-side analogue of an imports table: the
+        backend routes the app depends on. Set normalize false to key on the
+        exact path instead.
+
+        Accepts the same filters as proxy.flows (method exact verb; host,
+        url_contains, content_type case-insensitive substrings; status exact
+        code, 0 means any; combined with AND), echoed back as filter. Answers
+        with endpoints (host, path, count, methods, status_classes,
+        content_types, example_id, plus websocket / has_query when seen), ranked
+        by count then host then path and paged with count, total (distinct
+        routes), offset and has_more; captured is every flow in the ring,
+        dropped how many the ring evicted, and normalized whether {id} folding
+        was applied. The list field is endpoints, not routes or results.
+        """
+        return _dump(
+            analysis.proxy_endpoints(
+                session_id,
+                method=method,
+                host=host,
+                url_contains=url_contains,
+                content_type=content_type,
+                status=status,
+                normalize=normalize,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="proxy.search")
     def proxy_search(
         session_id: str,
