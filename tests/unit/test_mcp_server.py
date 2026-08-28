@@ -330,6 +330,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         # Interception (proxy.*)
         "proxy.start",
         "proxy.stop",
+        "proxy.clear",
         "proxy.status",
         "proxy.flows",
         "proxy.stats",

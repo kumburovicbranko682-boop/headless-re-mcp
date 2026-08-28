@@ -96,6 +96,16 @@ class ProxyAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def proxy_clear(self, session_id: str) -> Result[JsonObject]:
+        try:
+            data = self._proxy.clear(session_id)
+            _timeline_append(self, session_id, "proxy.clear", "capture ring cleared")
+            return _success(data, session_id=session_id, backend="proxy")
+        except ProxyError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def proxy_status(self, session_id: str) -> Result[JsonObject]:
         return self._proxy_wrap(session_id, "status", session_id)
 

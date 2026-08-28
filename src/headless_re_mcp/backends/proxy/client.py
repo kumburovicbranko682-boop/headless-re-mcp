@@ -837,6 +837,22 @@ class _FlowRecorder:
         with self._lock:
             return self._retained_bytes
 
+    def clear(self) -> int:
+        """Drop every captured flow and reset the sequence, keeping the ring live.
+
+        Returns the number of flow summaries that were held. ``_seq`` is reset so
+        the next capture window starts at 1 and the dropped accounting (seq minus
+        retained) stays honest instead of reporting the pre-clear gap forever.
+        """
+        with self._lock:
+            cleared = len(self.flows)
+            self.flows.clear()
+            self._raw.clear()
+            self._raw_sizes.clear()
+            self._retained_bytes = 0
+            self._seq = 0
+            return cleared
+
 
 class _ProxyInstance:
     def __init__(self, host: str, port: int) -> None:
@@ -1056,6 +1072,11 @@ class ProxyBackend:
         if items:
             dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
         return summarize_flows(items, dropped=dropped, top=top)
+
+    def clear(self, session_id: str) -> JsonObject:
+        inst = self._get(session_id)
+        cleared = inst.recorder.clear()
+        return {"cleared": cleared, "running": True}
 
     def endpoints(self, session_id: str, *, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)

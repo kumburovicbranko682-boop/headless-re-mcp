@@ -39,6 +39,20 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Stop the session's interception proxy."""
         return _dump(analysis.proxy_stop(session_id))
 
+    @tools.tool(name="proxy.clear")
+    def proxy_clear(session_id: str) -> dict[str, Any]:
+        """Drop every captured flow, keeping the proxy running.
+
+        Resets the capture ring so the next action records into a clean window --
+        the way to isolate one operation's traffic without the stop/start churn
+        that would drop the client's proxy settings. Answers with cleared (how
+        many flow summaries were held) and running (always true; use proxy.stop
+        to actually stop). The sequence counter resets too, so proxy.flows
+        dropped accounting starts fresh. A session with no proxy is refused
+        invalid_state.
+        """
+        return _dump(analysis.proxy_clear(session_id))
+
     @tools.tool(name="proxy.status")
     def proxy_status(session_id: str) -> dict[str, Any]:
         """Report whether the proxy is running and how many flows it captured.

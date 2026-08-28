@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **285（168 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **286（168 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -516,6 +516,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `path`/`http_only`/`secure`/`same_site`(Strict/Lax/None 或 null)、`set_count`(在 Set-Cookie
   中出现次数)、`sent_count`(在请求 Cookie 中出现次数)与 `sources`(set-cookie/cookie/两者)。
   没有 http_only 与 secure 的会话 cookie 是要标记的弱点。
+- 新增 `proxy.clear`(写):清空抓包环形缓冲但保持代理在跑——把下一次操作的流量隔进干净窗口,不必
+  走 stop/start 那套(那会丢掉客户端的代理设置)。回 `cleared`(清掉的流摘要数)与 `running`(恒为
+  true;真要停用 `proxy.stop`)。序号计数一并归零,于是 `proxy.flows` 的 dropped 从头算。会话没有代理
+  报 `invalid_state`。
 
 ### 新增（抓包端点归并）
 
