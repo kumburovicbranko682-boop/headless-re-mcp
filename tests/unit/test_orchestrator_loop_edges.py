@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time as real_time
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
@@ -404,6 +405,154 @@ async def test_cancel_after_the_stream_refuses_to_start_the_tool(tmp_path: Path)
 
     run = store.get_run(run_id)
     assert run is not None and run.status is RunStatus.CANCELLED
+    assert executed == []
+
+
+def _one_call_provider() -> FakeProvider:
+    return FakeProvider(
+        [[ProviderEvent("completed", tool_calls=(ProviderToolCall("c1", "test.tool", {}),))]]
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_set_by_the_tool_is_seen_before_its_result_is_used(tmp_path: Path) -> None:
+    """The tool finished fine, but the run was cancelled while it ran.
+
+    The bounded invoker must consume the finished task's exception slot and
+    raise CancelledError instead of handing the result back.
+    """
+    box: dict[str, str] = {}
+
+    def tool() -> JsonObject:
+        store.request_cancel(box["run_id"])
+        return {"ok": True}
+
+    runner, store = _runner(tmp_path, _one_call_provider(), spec=_spec(tool))
+    run_id, _ = _new_run(store)
+    box["run_id"] = run_id
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._run_loop(run_id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_the_tool_is_still_running_abandons_it(tmp_path: Path) -> None:
+    """Cancel discovered while the worker thread is still busy must not wait it out."""
+    release = threading.Event()
+
+    def tool() -> JsonObject:
+        release.wait(5)
+        return {"ok": True}
+
+    runner, store = _runner(tmp_path, _one_call_provider(), spec=_spec(tool))
+    run_id, _ = _new_run(store)
+    # 1: round preflight, 2: pre-stream, 3: the stream event, 4: before the
+    # call, 5: handler entry, 6: post-approval; 7 is the invoke polling loop.
+    _cancel_after(runner, falses=6)
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await runner._run_loop(run_id)
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_cancel_between_the_invoke_and_its_bookkeeping_raises(tmp_path: Path) -> None:
+    runner, store = _runner(tmp_path, _one_call_provider(), spec=_spec(lambda: {"ok": True}))
+    run_id, _ = _new_run(store)
+
+    async def invoke_and_cancel(
+        run_id: str,
+        name: str,
+        arguments: JsonObject,
+        timeout: float,
+        *,
+        call_id: str | None = None,
+    ) -> JsonObject:
+        store.request_cancel(run_id)
+        return {"ok": True}
+
+    runner._invoke_tool_bounded = invoke_and_cancel  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._run_loop(run_id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_arriving_with_the_stored_tool_message_stops_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancel lands after the tool result is stored but before the next step."""
+    runner, store = _runner(tmp_path, _one_call_provider(), spec=_spec(lambda: {"ok": True}))
+    run_id, _ = _new_run(store)
+    real_add = store.add_message
+
+    def add_then_cancel(thread_id: str, role: str, content: str, **kwargs: Any) -> Any:
+        message = real_add(thread_id, role, content, **kwargs)
+        if role == "tool":
+            store.request_cancel(run_id)
+        return message
+
+    monkeypatch.setattr(store, "add_message", add_then_cancel)
+
+    await runner._run_loop(run_id)
+
+    run = store.get_run(run_id)
+    assert run is not None and run.status is RunStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_cancel_arriving_with_the_approval_wins_over_consuming_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The user approved and cancelled at once: cancel wins, nothing executes."""
+    executed: list[str] = []
+
+    def tool() -> JsonObject:
+        executed.append("ran")
+        return {"ok": True}
+
+    runner, store = _runner(
+        tmp_path, _one_call_provider(), spec=_spec(tool, effect=ToolEffect.STATE_CHANGE)
+    )
+    run_id, _ = _new_run(store)
+
+    def approved_and_cancelled(run_id: str, call_id: str) -> JsonObject:
+        store.request_cancel(run_id)
+        return {"approved": True}
+
+    monkeypatch.setattr(store, "get_tool_call", approved_and_cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._run_loop(run_id)
+    assert executed == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_arriving_as_the_approval_is_consumed_stops_the_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executed: list[str] = []
+
+    def tool() -> JsonObject:
+        executed.append("ran")
+        return {"ok": True}
+
+    runner, store = _runner(
+        tmp_path, _one_call_provider(), spec=_spec(tool, effect=ToolEffect.STATE_CHANGE)
+    )
+    run_id, _ = _new_run(store)
+    monkeypatch.setattr(store, "get_tool_call", lambda run_id, call_id: {"approved": True})
+
+    def consume_then_cancel(run_id: str, call_id: str, args_sha256: str) -> bool:
+        store.request_cancel(run_id)
+        return True
+
+    monkeypatch.setattr(store, "consume_approval", consume_then_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._run_loop(run_id)
     assert executed == []
 
 

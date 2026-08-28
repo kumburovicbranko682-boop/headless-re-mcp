@@ -389,7 +389,9 @@ class AgentOrchestrator:
         self.store.transition(run_id, RunStatus.STREAMING)
         self.store.append_event(run_id, "run.started", {"status": RunStatus.STREAMING.value})
         tools = self._provider_tools()
-        for round_index in range(self.max_tool_rounds + 1):
+        # The last round always returns (rounds exhausted, completion, or
+        # cancel), so the range is never left by exhaustion.
+        for round_index in range(self.max_tool_rounds + 1):  # pragma: no branch
             if self._check_cancelled(run_id):
                 await self._finish_cancel(run_id)
                 return
@@ -617,7 +619,9 @@ class AgentOrchestrator:
                     last_progress = now
                 await asyncio.wait({work}, timeout=min(0.05, remaining))
             if self._check_cancelled(run_id):
-                if work.done() and not work.cancelled():
+                # The while above only exits once work is done, and nothing has
+                # cancelled it yet, so the guard cannot be false here.
+                if work.done() and not work.cancelled():  # pragma: no branch
                     work.exception()
                 raise asyncio.CancelledError
             return work.result()
