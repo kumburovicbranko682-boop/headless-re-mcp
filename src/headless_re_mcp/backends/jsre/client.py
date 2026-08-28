@@ -35,6 +35,7 @@ from headless_re_mcp.backends.jsre.wasm_summary import parse_data_endpoints as p
 from headless_re_mcp.backends.jsre.wasm_summary import parse_data_secrets as parse_wasm_secrets
 from headless_re_mcp.backends.jsre.wasm_summary import parse_data_strings as parse_wasm_strings
 from headless_re_mcp.backends.jsre.wasm_summary import parse_function_names as parse_wasm_names
+from headless_re_mcp.backends.jsre.wasm_summary import parse_functions as parse_wasm_functions
 from headless_re_mcp.backends.jsre.wasm_summary import summarize as summarize_wasm
 
 JsonObject = dict[str, Any]
@@ -68,6 +69,8 @@ _MAX_WASM_STRINGS_PAGE = 2000
 _MAX_WASM_ENDPOINTS_PAGE = 2000
 # Same rationale for wasm.secrets.
 _MAX_WASM_SECRETS_PAGE = 2000
+# Same rationale for wasm.functions.
+_MAX_WASM_FUNCTIONS_PAGE = 2000
 # Same rationale for js.strings.
 _MAX_JS_STRINGS_PAGE = 2000
 # Same rationale for js.endpoints.
@@ -617,6 +620,52 @@ class WasmClient:
             "total": len(entries),
             "offset": start,
             "has_more": start + len(window) < len(entries),
+            "scan_capped": scan_capped,
+        }
+
+    def functions(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_imports: bool = True,
+    ) -> JsonObject:
+        """Function table (index -> name, signature, size, origin), no wabt.
+
+        The inventory companion to summary()/names(): it joins the type, import,
+        function and code sections into one function-index-ordered table, then
+        layers export names and the name section over it. Dependency-free, paged;
+        total is the count that matched the filter, summary carries the module's
+        pre-filter totals, and scan_capped marks a section past the collect
+        ceiling.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        try:
+            rows, summary, scan_capped = parse_wasm_functions(
+                data, include_imports=include_imports, name_filter=name_filter
+            )
+        except WasmParseError as exc:
+            raise JsReError(
+                "invalid_params", f"not a readable wasm module: {exc}", path=str(resolved)
+            ) from exc
+        start = max(0, int(offset))
+        capped = max(1, min(int(limit), _MAX_WASM_FUNCTIONS_PAGE))
+        window = rows[start : start + capped]
+        return {
+            "functions": window,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "summary": summary,
             "scan_capped": scan_capped,
         }
 

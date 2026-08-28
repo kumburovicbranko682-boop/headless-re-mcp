@@ -275,6 +275,28 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
+    def wasm_functions(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_imports: bool = True,
+    ) -> Result[JsonObject]:
+        try:
+            data = WasmClient(getattr(self.settings, "wabt", None)).functions(
+                Path(path),
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_imports=include_imports,
+            )
+            return _success(data, backend="wabt")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
     def wasm_strings(
         self,
         path: str,

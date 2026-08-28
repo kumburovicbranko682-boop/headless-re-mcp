@@ -310,6 +310,52 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.wasm_names(path, offset=offset, limit=limit, name_filter=name_filter)
         )
 
+    @tools.tool(name="wasm.functions")
+    def wasm_functions(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_imports: bool = True,
+    ) -> dict[str, Any]:
+        """List a .wasm module's functions with signatures and sizes, without wabt.
+
+        The inventory r2.functions and ghidra.functions give a native binary,
+        which wasm.summary (imports/exports only) and wasm.names (names only) each
+        show a slice of: this joins the type, import, function and code sections
+        into one function-index-ordered table, so you can see every function, its
+        signature and its body size and pick one to read with wasm.wat -- parsed
+        in-process (no wabt). Answers with functions, each {index (the module's
+        function index -- what a call operand and an export index refer to), name
+        (from the name section, else the export name, else ""), origin (import or
+        local), type_index, params, results (valtype name lists like ["i32"]),
+        signature (readable, e.g. "(i32, i32) -> (i32)"), exported}, plus
+        module/field for an import, export_name when exported, and code_size (body
+        bytes) for a local function when the code section is present. Imports come
+        first in the index space, then the module's own functions. Also answers
+        count, total, offset, has_more, scan_capped when a section exceeded the
+        collect ceiling, and summary {imported_total, local_total, type_count,
+        has_type_section, has_function_section, has_code_section} -- the module's
+        pre-filter totals, so its true size is known regardless of the filter.
+        include_imports false drops the imported functions to leave only the
+        module's own code -- the usual reversing view. name_filter keeps rows
+        whose name, export name or module.field contains that substring
+        (case-sensitive, since wasm names are symbols), applied before paging so
+        total is the match count. A stripped release build has no names, so name
+        is "" except for exported functions -- use the index and signature then.
+        The list field is functions. A file that is not a readable wasm module is
+        invalid_params; one over 16 MiB is too_large.
+        """
+        return _dump(
+            analysis.wasm_functions(
+                path,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_imports=include_imports,
+            )
+        )
+
     @tools.tool(name="wasm.strings")
     def wasm_strings(
         path: str,

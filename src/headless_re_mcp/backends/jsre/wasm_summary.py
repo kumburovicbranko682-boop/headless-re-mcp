@@ -34,6 +34,20 @@ WASM_MAGIC = b"\x00asm"
 # external_kind (import/export descriptor tag) -> readable name.
 _KIND_NAMES = {0: "func", 1: "table", 2: "memory", 3: "global"}
 
+# valtype byte -> readable name, covering the MVP numeric types, the vector type
+# (v128) and the reference types. A byte outside this set (a GC/typed-ref heap
+# type, or corruption) is rendered as its hex so a signature is never silently
+# wrong; it just reads "0x6e" instead of a name.
+_VALTYPES = {
+    0x7F: "i32",
+    0x7E: "i64",
+    0x7D: "f32",
+    0x7C: "f64",
+    0x7B: "v128",
+    0x70: "funcref",
+    0x6F: "externref",
+}
+
 _SECTION_NAMES = {
     0: "custom",
     1: "type",
@@ -86,6 +100,13 @@ _MAX_DATA_HOSTS = 512
 # cannot bloat a finding.
 _MAX_DATA_SECRETS_COLLECT = 20000
 _MAX_DATA_SECRET_VALUE = 512
+# Function-table caps. A real module has thousands of functions/types; these bound
+# what wasm.functions materialises (scan_capped when hit) so a hostile section
+# cannot grow the answer without bound. The per-functype vector cap bounds one
+# signature's parameter/result count.
+_MAX_TYPES_COLLECT = 200000
+_MAX_FUNCTIONS_COLLECT = 200000
+_MAX_TYPE_VEC = 4096
 
 
 class WasmParseError(ValueError):
@@ -633,3 +654,301 @@ def parse_function_names(
             pos = sub_end
         return module_name, entries, True, scan_capped
     return "", [], False, False
+
+
+def _read_valtypes(data: bytes, pos: int, end: int) -> tuple[list[str], int]:
+    """Read a vec(valtype), returning (names, next_pos). Each valtype is one byte."""
+    count, pos = _uleb(data, pos)
+    names: list[str] = []
+    read = 0
+    while read < count:
+        if pos >= end:
+            raise WasmParseError("valtype vector overruns section")
+        if len(names) < _MAX_TYPE_VEC:
+            byte = data[pos]
+            names.append(_VALTYPES.get(byte, f"{byte:#x}"))
+        pos += 1
+        read += 1
+    return names, pos
+
+
+def _parse_types(data: bytes, pos: int, end: int) -> list[JsonObject]:
+    """Parse the type section: a vec of function types ``{params, results}``.
+
+    Best-effort: a form we do not model (a GC struct/array type, or corruption)
+    ends the walk with the function types decoded so far, so the common low type
+    indices still resolve to signatures rather than the whole section being lost.
+    """
+    count, pos = _uleb(data, pos)
+    types: list[JsonObject] = []
+    parsed = 0
+    while parsed < count and pos < end and len(types) < _MAX_TYPES_COLLECT:
+        try:
+            if pos >= end:
+                break
+            tag = data[pos]
+            pos += 1
+            if tag != 0x60:  # only plain function types are modelled
+                break
+            params, pos = _read_valtypes(data, pos, end)
+            results, pos = _read_valtypes(data, pos, end)
+        except WasmParseError:
+            break
+        if pos > end:
+            break
+        types.append({"params": params, "results": results})
+        parsed += 1
+    return types
+
+
+def _collect_func_imports(
+    data: bytes, pos: int, end: int
+) -> tuple[list[JsonObject], int, bool]:
+    """Return (function imports collected, total func-import count, capped).
+
+    Only kind==func imports are returned (each ``{module, field, type_index}``),
+    but every import is walked so the returned count is the number of function
+    imports -- which is where the module's own functions start numbering.
+    """
+    count, pos = _uleb(data, pos)
+    funcs: list[JsonObject] = []
+    func_count = 0
+    capped = False
+    parsed = 0
+    while parsed < count and pos < end:
+        try:
+            module, pos = _name(data, pos)
+            field, pos = _name(data, pos)
+            _need(pos, 1, end, "import kind")
+            kind = data[pos]
+            pos += 1
+            if kind == 0:  # func
+                type_index, pos = _uleb(data, pos)
+                if len(funcs) >= _MAX_FUNCTIONS_COLLECT:
+                    capped = True
+                else:
+                    funcs.append(
+                        {"module": module, "field": field, "type_index": type_index}
+                    )
+                func_count += 1
+            elif kind == 1:  # table
+                _need(pos, 1, end, "table reftype")
+                pos = _skip_limits(data, pos + 1)
+            elif kind == 2:  # memory
+                pos = _skip_limits(data, pos)
+            elif kind == 3:  # global
+                _need(pos, 2, end, "global type")
+                pos += 2
+            else:
+                break
+        except WasmParseError:
+            break
+        if pos > end:
+            break
+        parsed += 1
+    return funcs, func_count, capped
+
+
+def _parse_func_section(data: bytes, pos: int, end: int) -> tuple[list[int], int, bool]:
+    """Parse the function section: a vec of type indices, one per local function.
+
+    Returns (type indices collected, declared count, capped).
+    """
+    count, pos = _uleb(data, pos)
+    out: list[int] = []
+    capped = False
+    parsed = 0
+    while parsed < count and pos < end:
+        try:
+            type_index, pos = _uleb(data, pos)
+        except WasmParseError:
+            break
+        if len(out) >= _MAX_FUNCTIONS_COLLECT:
+            capped = True
+        else:
+            out.append(type_index)
+        parsed += 1
+    return out, count, capped
+
+
+def _parse_code_sizes(data: bytes, pos: int, end: int) -> tuple[list[int], bool]:
+    """Parse the code section, returning (per-function body byte sizes, capped).
+
+    Only each entry's declared body size is read; the body itself is skipped, so
+    a huge code section costs a size read per function, not a decode.
+    """
+    count, pos = _uleb(data, pos)
+    sizes: list[int] = []
+    capped = False
+    parsed = 0
+    while parsed < count and pos < end:
+        try:
+            body_size, pos = _uleb(data, pos)
+        except WasmParseError:
+            break
+        if pos + body_size > end:
+            break
+        if len(sizes) >= _MAX_FUNCTIONS_COLLECT:
+            capped = True
+        else:
+            sizes.append(body_size)
+        pos += body_size
+        parsed += 1
+    return sizes, capped
+
+
+def _func_exports_by_index(data: bytes, pos: int, end: int) -> dict[int, list[str]]:
+    """Map function index -> exported name(s) from the export section (kind func)."""
+    count, pos = _uleb(data, pos)
+    out: dict[int, list[str]] = {}
+    parsed = 0
+    while parsed < count and pos < end and len(out) < _MAX_FUNCTIONS_COLLECT:
+        try:
+            name, pos = _name(data, pos)
+            _need(pos, 1, end, "export kind")
+            kind = data[pos]
+            pos += 1
+            index, pos = _uleb(data, pos)
+        except WasmParseError:
+            break
+        if pos > end:
+            break
+        if kind == 0:
+            out.setdefault(index, []).append(name)
+        parsed += 1
+    return out
+
+
+def _signature(type_index: int | None, types: list[JsonObject]) -> tuple[list[str], list[str], str]:
+    """Resolve a type index to (params, results, readable) against the type list."""
+    if type_index is None or type_index < 0 or type_index >= len(types):
+        return [], [], ""
+    entry = types[type_index]
+    params = [str(p) for p in entry.get("params", [])]
+    results = [str(r) for r in entry.get("results", [])]
+    readable = f"({', '.join(params)}) -> ({', '.join(results)})"
+    return params, results, readable
+
+
+def parse_functions(
+    data: bytes, *, include_imports: bool = True, name_filter: str = ""
+) -> tuple[list[JsonObject], JsonObject, bool]:
+    """Build the module's function table: index -> name, signature, size, origin.
+
+    Returns ``(functions, summary, scan_capped)``. This is the ``functions`` of a
+    wasm module -- the inventory r2.functions / ghidra.functions give a native
+    binary, which wasm.summary (imports/exports only) and wasm.names (names only)
+    each show a slice of. It joins four sections the other wasm tools skip: the
+    type section (each function's signature), the import section (imported
+    functions, which occupy the low function indices), the function section (the
+    module's own functions and their type), and the code section (each local
+    function's body byte size), then layers the export names and the ``name``
+    section over the resulting function-index space.
+
+    Each row is ``{index (the module's function index -- what a call operand and
+    an export index refer to), name (from the name section, else the export name,
+    else ""), origin ("import" | "local"), type_index, params, results (valtype
+    name lists), signature (readable, e.g. "(i32, i32) -> (i32)"), exported}``,
+    plus ``module``/``field`` for an import, ``export_name`` when exported, and
+    ``code_size`` for a local function when the code section is present. Rows are
+    in function-index order (imports first, then locals). ``summary`` carries the
+    module totals ``{imported_total, local_total, type_count, has_type_section,
+    has_function_section, has_code_section}`` (pre-filter, so the module's true
+    size is known regardless of the filter). ``include_imports`` false drops the
+    imported functions to leave only the module's own code. ``name_filter`` keeps
+    rows whose name, export name or ``module.field`` contains that substring
+    (case-sensitive: wasm names are symbols). Every section decode is best-effort
+    and bounded, so a malformed or hostile section degrades to a partial table
+    (scan_capped True when a collect ceiling was hit) rather than raising.
+    """
+    types: list[JsonObject] = []
+    func_imports: list[JsonObject] = []
+    func_import_total = 0
+    local_type_indices: list[int] = []
+    local_total = 0
+    code_sizes: list[int] = []
+    exports_by_index: dict[int, list[str]] = {}
+    has_type = has_function = has_code = False
+    scan_capped = False
+
+    for sec_id, body, end in _iter_sections(data):
+        if sec_id == 1:
+            has_type = True
+            with suppress(WasmParseError):
+                types = _parse_types(data, body, end)
+        elif sec_id == 2:
+            with suppress(WasmParseError):
+                func_imports, func_import_total, capped = _collect_func_imports(data, body, end)
+                scan_capped = scan_capped or capped
+        elif sec_id == 3:
+            has_function = True
+            with suppress(WasmParseError):
+                local_type_indices, local_total, capped = _parse_func_section(data, body, end)
+                scan_capped = scan_capped or capped
+        elif sec_id == 7:
+            with suppress(WasmParseError):
+                exports_by_index = _func_exports_by_index(data, body, end)
+        elif sec_id == 10:
+            has_code = True
+            with suppress(WasmParseError):
+                code_sizes, capped = _parse_code_sizes(data, body, end)
+                scan_capped = scan_capped or capped
+
+    _module_name, name_entries, _has_names, names_capped = parse_function_names(data)
+    scan_capped = scan_capped or names_capped
+    name_map = {int(e["index"]): str(e["name"]) for e in name_entries}
+
+    def _row(index: int, origin: str, type_index: int | None) -> JsonObject:
+        params, results, readable = _signature(type_index, types)
+        exported = exports_by_index.get(index)
+        name = name_map.get(index, "")
+        if not name and exported:
+            name = exported[0]
+        row: JsonObject = {
+            "index": index,
+            "name": name,
+            "origin": origin,
+            "type_index": type_index,
+            "params": params,
+            "results": results,
+            "signature": readable,
+            "exported": bool(exported),
+        }
+        if exported:
+            row["export_name"] = exported[0]
+        return row
+
+    rows: list[JsonObject] = []
+    for idx, imp in enumerate(func_imports):
+        row = _row(idx, "import", imp.get("type_index"))
+        row["module"] = imp["module"]
+        row["field"] = imp["field"]
+        rows.append(row)
+    base = func_import_total
+    for offset, type_index in enumerate(local_type_indices):
+        row = _row(base + offset, "local", type_index)
+        if offset < len(code_sizes):
+            row["code_size"] = code_sizes[offset]
+        rows.append(row)
+
+    if not include_imports:
+        rows = [r for r in rows if r["origin"] == "local"]
+
+    if name_filter:
+        def _keep(row: JsonObject) -> bool:
+            hay = [str(row.get("name", "")), str(row.get("export_name", ""))]
+            if row["origin"] == "import":
+                hay.append(f'{row.get("module", "")}.{row.get("field", "")}')
+            return any(name_filter in text for text in hay)
+
+        rows = [r for r in rows if _keep(r)]
+
+    summary: JsonObject = {
+        "imported_total": func_import_total,
+        "local_total": local_total,
+        "type_count": len(types),
+        "has_type_section": has_type,
+        "has_function_section": has_function,
+        "has_code_section": has_code,
+    }
+    return rows, summary, scan_capped

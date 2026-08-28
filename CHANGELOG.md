@@ -294,6 +294,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **WASM 线补上函数清单（r2.functions / ghidra.functions 的 wasm 对应物）**：新增只读 `wasm.functions`，把此前所有 wasm 工具都跳过的
+  类型段、导入段、函数段、代码段拼成一张按函数索引排序的表，再叠上导出名与 name 段——依旧纯 Python、不依赖 wabt。此前 `wasm.summary`
+  只给导入/导出、`wasm.names` 只给名字，二者各是这张表的一个切片；现在能看到每个函数的索引、签名、体大小并据此挑一个用 `wasm.wat`
+  细读。返回 functions（每项 {index（调用操作数/导出索引所指的模块函数索引）、name（取自 name 段，其次导出名，再次 ""）、origin
+  (import|local)、type_index、params/results（valtype 名字列表如 ["i32"]）、signature（可读，如 "(i32, i32) -> (i32)"）、
+  exported}，导入项另带 module/field，导出项带 export_name，本地函数在有代码段时带 code_size）加 count/total/offset/has_more、
+  scan_capped（某段超过采集上限）与 summary {imported_total、local_total、type_count、has_type_section、has_function_section、
+  has_code_section}（过滤前的模块总量，无论过滤都能知道真实规模）。导入函数排在索引空间前段，其后是模块自有函数；include_imports
+  置 false 只留本地代码（常用逆向视角）；name_filter 对 name/导出名/module.field 子串过滤（大小写敏感，wasm 名字是符号），在分页前施加
+  故 total 即匹配数。每段解码都是尽力而为且有界，畸形/敌意段降级为部分结果（scan_capped）而非抛错。只读，工具总数 319→320（200 只读 / 120 写）。
 - **活进程线补齐 strings→endpoints→secrets 三件套（与 r2/apk/dotnet 等静态线对齐）**：`frida.strings` 之上新增两个只读
   工具，跑在同一批活内存字符串上、复用共享的 `finding_aggregate.py`（`aggregate_endpoints` / `aggregate_secrets`）。
   `frida.endpoints` 抽取 URL/host/请求路径——运行时才解密出的 C2 host、内存里拼出的 base URL，静态扫壳后的二进制只
