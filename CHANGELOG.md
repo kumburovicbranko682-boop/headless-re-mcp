@@ -24,6 +24,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+++ b/CHANGELOG.md
+### 修复（device.screenshot 拒绝空截图而不是当成功返回）
+
+- `AdbBackend.screenshot` 先 `dev.screenshot()` 再 `image.save(path)`,随后用
+  `capped_file_size` 读回大小。但 `image.save` 可能返回却没落下可用 PNG(设备什么都没
+  截到,或桩图把零字节/空文件写了出来);`capped_file_size` 对空文件与缺失文件都报 0,于是
+  回包成了一条 `size` 为 0 的「成功」,调用方照 `path` 打开只看到一张白屏。现与 `pull` 对
+  size-0 传输的既有拒绝对齐:删掉这个空文件并抛 `backend_error`(消息「screenshot produced
+  no image file」),让两条采集路径一致,而不是把空文件当截图递出去。回归测试以注入的假设备
+  驱动:有真实字节的截图照常返回其大小,零字节的截图删除文件并报错。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
