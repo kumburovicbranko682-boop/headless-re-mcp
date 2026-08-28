@@ -120,6 +120,8 @@ class SessionRegistry:
             metadata: dict[str, Any] = {}
             if kind is TargetKind.PE:
                 architecture = detect_pe_architecture(path)
+            elif kind is TargetKind.MACHO:
+                architecture = detect_macho_architecture(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             session = Session(
@@ -362,6 +364,31 @@ _APK_MANIFEST = "AndroidManifest.xml"
 # Enough for every magic number below without pulling a large header into memory.
 _MAGIC_BYTES = 8
 
+# Single-architecture Mach-O, in both byte orders (MH_MAGIC/MH_CIGAM, 32/64).
+_MACHO_THIN_MAGICS = frozenset(
+    {
+        b"\xce\xfa\xed\xfe",  # MH_MAGIC   (little-endian on disk, 32-bit)
+        b"\xcf\xfa\xed\xfe",  # MH_MAGIC_64 (little-endian, 64-bit)
+        b"\xfe\xed\xfa\xce",  # MH_CIGAM   (big-endian, 32-bit)
+        b"\xfe\xed\xfa\xcf",  # MH_CIGAM_64 (big-endian, 64-bit)
+    }
+)
+# Fat/universal Mach-O whose leading four bytes do not also open another
+# format. 0xCAFEBABE is handled separately because it is the Java class magic.
+_MACHO_FAT_UNAMBIGUOUS = frozenset(
+    {
+        b"\xca\xfe\xba\xbf",  # FAT_MAGIC_64
+        b"\xbe\xba\xfe\xca",  # FAT_CIGAM
+        b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64
+    }
+)
+_MACHO_FAT_JAVA_AMBIGUOUS = b"\xca\xfe\xba\xbe"  # FAT_MAGIC, also a Java .class
+# A Mach-O fat header counts its architecture slices here; a Java class file
+# puts major_version in the same bytes, and that is always >= 45 (Java 1.1).
+_MACHO_MAX_FAT_ARCH = 45
+_MACHO_CPU_X86 = 7
+_MACHO_CPU_X86_64 = 0x01000007
+
 
 def is_http_url(reference: str) -> bool:
     return reference.lower().startswith(("http://", "https://"))
@@ -391,11 +418,59 @@ def classify_target(reference: str | Path) -> TargetKind:
         return TargetKind.PE
     if magic.startswith(b"MZ"):
         return TargetKind.PE
+    if _looks_like_macho(magic):
+        return TargetKind.MACHO
     if magic.startswith(b"\x00asm"):
         return TargetKind.WEB
     if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
         return TargetKind.APK
     return TargetKind.PE
+
+
+def _looks_like_macho(magic: bytes) -> bool:
+    """Whether the leading bytes are a Mach-O image (thin or fat).
+
+    The fat magic 0xCAFEBABE also opens a Java class file, so it is accepted
+    only when the following big-endian word is a plausible architecture count.
+    A Java class puts major_version there, which is always at least 45, above
+    any real fat slice count.
+    """
+    head = magic[:4]
+    if head in _MACHO_THIN_MAGICS or head in _MACHO_FAT_UNAMBIGUOUS:
+        return True
+    if head == _MACHO_FAT_JAVA_AMBIGUOUS and len(magic) >= 8:
+        nfat = int.from_bytes(magic[4:8], "big")
+        return 1 <= nfat < _MACHO_MAX_FAT_ARCH
+    return False
+
+
+def detect_macho_architecture(path: Path) -> Architecture | None:
+    """Machine type from a thin Mach-O header, or None when it has none to give.
+
+    Like detect_elf_architecture this never raises. A fat/universal image
+    carries several architectures rather than one, and an arm64 or ppc thin
+    image is a machine this tool does not model; both report None while still
+    opening for radare2 and Ghidra.
+    """
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(8)
+    except OSError:
+        return None
+    if len(head) < 8:
+        return None
+    magic = head[:4]
+    if magic in (b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe"):
+        cputype = int.from_bytes(head[4:8], "little")
+    elif magic in (b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf"):
+        cputype = int.from_bytes(head[4:8], "big")
+    else:
+        return None
+    if cputype == _MACHO_CPU_X86:
+        return Architecture.X86
+    if cputype == _MACHO_CPU_X86_64:
+        return Architecture.X64
+    return None
 
 
 def _is_android_package(path: Path) -> bool:
