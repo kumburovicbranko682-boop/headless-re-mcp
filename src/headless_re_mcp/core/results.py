@@ -26,8 +26,8 @@ JsonObject = dict[str, Any]
 
 # Backend error codes that name a transient condition worth retrying. A timeout
 # is the one code every bounded backend (adb, playwright, frida, apktool/jadx,
-# webcrack/wabt, ghidra, radare2) can raise, and the one the native TimedOut /
-# workflow_timeout paths in _failure already mark retryable. A code that says
+# webcrack/wabt, ghidra, radare2, windbg) can raise, and the one the native
+# TimedOut / workflow_timeout paths in _failure already mark retryable. A code that says
 # nothing about transience -- capability_unavailable, not_found, invalid_params,
 # too_large, backend_error -- stays non-retryable so an unattended caller does
 # not re-run a deterministic failure (a corrupt file, a bad argument) on a loop.
@@ -43,8 +43,8 @@ def _rpc_from_backend(exc: Any) -> XdbgRpcError:
 
     The per-line ``_as_rpc`` helpers and the ``service_ext`` conversion sites all
     minted ``XdbgRpcError`` with the constructor default ``retryable=False``, so a
-    frida / adb / apktool / webcrack / ghidra / radare2 / playwright ``timeout``
-    reached the caller (and the workflow failure record, which reads
+    frida / adb / apktool / webcrack / ghidra / radare2 / playwright / windbg
+    ``timeout`` reached the caller (and the workflow failure record, which reads
     ``exc.retryable``) as non-retryable -- while an identical native ``TimedOut``
     did not. Deriving ``retryable`` from the code here keeps that one contract
     consistent across every backend. It is only for errors that carry their own

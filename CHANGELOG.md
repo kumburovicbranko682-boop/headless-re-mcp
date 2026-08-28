@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（windbg 后端超时错误被标为不可重试,与其余所有后端的错误契约不一致)
+
+- 之前我把"后端 `timeout` 要像原生 `TimedOut` 一样对调用方回带 `retryable=True`"这条契约统一到共享的 `_rpc_from_backend`,
+  并让 frida/adb/apk/jsre/proxy/web/ghidra/radare2 各条线的 `_as_rpc` 都走它。但 windbg 没有 `_as_rpc` 辅助函数——`service_ext`
+  里 8 个 windbg 端点(open_dump/threads/modules/disasm 及 attach/live_threads/live_modules/live_disasm)是内联直接构造
+  `XdbgRpcError(exc.code, exc.message, details=...)`,用的是构造器默认 `retryable=False`。而 windbg 客户端在 cdb 超时时确实会抛
+  `"timeout"` 码(它附着到活进程,截止时限必须绑住 JVM/cdb),于是一次 cdb 超时到达调用方(以及读取 `exc.retryable` 的工作流失败
+  记录)时被判为不可重试,而同样的原生超时、乃至其余每个后端的超时都是可重试——无人值守的调用方因此对一次本该重试的瞬时超时直接
+  放弃。现在这 8 个内联转换点都改走 `_rpc_from_backend`,`retryable` 一律按错误码派生,windbg 的 `timeout` 与全代码库对齐;
+  `_rpc_from_backend` 的文档与 `_RETRYABLE_BACKEND_CODES` 的后端清单补上 windbg。同一文件里 `ui.drive` 对 `UiPidBoundaryError`
+  的内联转换点(码恒为 permission_denied/invalid_params,行为不变)也一并改走同一入口,使 `service_ext` 内不再残留任何裸的
+  `_failure(XdbgRpcError(exc.code, ...))` 转换写法。新增测试:`_rpc_from_backend` 对 `WindbgError` 的 timeout/非 timeout 分别判
+  可重试/不可重试;并以真实 service 调用(假客户端在 `threads` 抛 `WindbgError`)断言 windbg 内联转换点确实经由该策略——timeout →
+  `retryable=True`、backend_error → `retryable=False`,且 `killed_pids` 等细节照常透出。纯错误契约对齐,不改任何成功路径。
+
 ### 修复（js/wasm 工具的 bytes 在 run_bounded 8 MiB 流上限处会变成低估值却不声明)
 
 - `js.deobfuscate`/`js.beautify`/`wasm.wat`/`wasm.info` 回带的 `bytes` 取自 `completed.stdout`,但 `run_bounded` 会在每条流
