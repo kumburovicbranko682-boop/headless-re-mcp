@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（POSIX 超时清扫把同一个 launcher 在 killed_pids 里报两次）
+
+- `terminate_process_tree` 在 POSIX 上对组长进程的击杀清单重复记名：组清扫
+  `_kill_own_process_group` 已把 leader pid 记入返回值（killpg 打到了它），紧接着的
+  直接击杀分支里 `process.poll()` 与异步 SIGKILL 竞速、几乎总是仍读到 None，于是
+  `process.kill()` 后又把同一个 pid 追加一次。实测：每次组长式超时击杀都返回
+  `[pid, pid, child]`（5/5 复现）。`terminate_pid_tree` 更是**必然**双记——它没有
+  Popen 句柄可 wait，组信号后 leader 以未收尸的僵尸滞留，而 `os.kill` 对僵尸照样
+  成功，直接击杀的追加无条件发生。这份清单原样流入用户可见的失败细节：r2/ghidra/
+  jsre/windbg 超时错误的 `killed_pids`、IDA gate 结果 payload、以及 `core.isolation`
+  直接内插进报错文本的 `killed [123, 123, 456]`——同一个进程被报成杀了两次，还会骗过
+  任何"按 killed 数量断言清扫范围"的消费方（现有 Win32 r2 用例的 `len(killed) >= 2`
+  若移植到 POSIX 会仅凭 launcher 双记就满足）。修法与家族里已存在的口径对齐：
+  `terminate_leftover_process_tree` 本就 `dict.fromkeys` 保序去重，给
+  `terminate_process_tree` / `terminate_pid_tree` 的返回补上同一去重（Windows 上
+  组清扫返回空表、无双记，行为不变）。回归钉在 `test_process_group_kill.py`：复用
+  组长+孙进程夹具新增两条"每个被杀 pid 至多记名一次"的用例（真实进程、POSIX-only，
+  与该文件既有口径一致），修前两条均红、修后全文件 7 条绿；相邻 8 个进程/超时测试
+  文件 205 条全绿，ruff / mypy 干净（`process_tree.py` 两处 format 漂移系 main 既有，
+  非本轮引入）。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

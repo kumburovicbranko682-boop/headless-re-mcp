@@ -378,7 +378,13 @@ def terminate_process_tree(process: Any, *, wait_s: float = 5.0, kill_group: boo
         with suppress(Exception):
             os.killpg(pid, 9)
     _reap_terminated(descendants, min(wait_s, 1.0))
-    return killed
+    # On POSIX the group sweep already named the launcher (killpg reached the
+    # leader) and the direct kill above named the same pid again -- measured:
+    # every group-led timeout kill returned [pid, pid, child]. This list goes
+    # into error payloads verbatim as killed_pids (r2/ghidra/jsre/windbg
+    # timeout details, isolation's message text), so dedupe it the way
+    # terminate_leftover_process_tree already does.
+    return list(dict.fromkeys(killed))
 
 
 def terminate_leftover_process_tree(process: Any, *, wait_s: float = 5.0) -> list[int]:
@@ -433,7 +439,11 @@ def terminate_pid_tree(pid: int) -> list[int]:
             _kill_pid(child)
             killed.append(child)
     _reap_terminated([pid, *descendants], 1.0)
-    return killed
+    # Dedupe as in terminate_process_tree: when the pid leads its group the
+    # sweep names it and the direct kill names it again -- and here the double
+    # count is unconditional, because os.kill succeeds on the not-yet-reaped
+    # zombie the group signal leaves behind.
+    return list(dict.fromkeys(killed))
 
 
 def _kill_pid(pid: int) -> None:

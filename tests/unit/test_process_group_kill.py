@@ -81,8 +81,12 @@ def _leader_code(pidfile: Path) -> str:
     )
 
 
-def _start_group_leader(pidfile: Path) -> tuple[int, int]:
-    """Start a session-leader that records its grandchild's pid; return both."""
+def _start_group_leader_process(pidfile: Path) -> tuple[subprocess.Popen[bytes], int]:
+    """Start a session-leader that records its grandchild's pid.
+
+    Returns the leader's Popen handle (for callers that exercise the
+    handle-taking sweeps) together with the grandchild pid.
+    """
     leader = subprocess.Popen(
         [sys.executable, "-c", _leader_code(pidfile), str(pidfile)],
         start_new_session=True,
@@ -95,10 +99,16 @@ def _start_group_leader(pidfile: Path) -> tuple[int, int]:
                 grandchild = int(text)
                 # The leader must actually lead its group for the premise to hold.
                 assert os.getpgid(leader.pid) == leader.pid
-                return leader.pid, grandchild
+                return leader, grandchild
         time.sleep(0.02)
     _kill(leader.pid)
     raise AssertionError("group leader never recorded its grandchild pid")
+
+
+def _start_group_leader(pidfile: Path) -> tuple[int, int]:
+    """Pid-only view of ``_start_group_leader_process``."""
+    leader, grandchild = _start_group_leader_process(pidfile)
+    return leader.pid, grandchild
 
 
 def test_collect_process_group_finds_the_orphan_and_excludes_the_leader(
@@ -217,4 +227,52 @@ def test_kill_own_process_group_still_reaches_survivors_of_a_reaped_leader(
             _kill(grandchild)
         with suppress(Exception):
             leader.kill()
+            leader.wait(timeout=2.0)
+
+
+def test_terminate_process_tree_names_each_killed_pid_once(tmp_path: Path) -> None:
+    """The killed list reaches error payloads verbatim; the leader was named twice.
+
+    ``terminate_process_tree`` on a group leader collected the leader pid from
+    the group sweep (killpg reached it) and then appended the same pid again on
+    the direct ``process.kill()`` branch, whose poll() races an asynchronous
+    SIGKILL and almost always still reads None. Measured before the dedupe:
+    every group-led kill returned ``[pid, pid, child]``. That list flows
+    unfiltered into user-visible failure details -- ``killed_pids`` on
+    r2/ghidra/jsre/windbg timeouts and the interpolated "killed [...]" text in
+    core.isolation -- so a process must be named at most once.
+    """
+    leader, grandchild = _start_group_leader_process(tmp_path / "gc.pid")
+    try:
+        killed = process_tree.terminate_process_tree(leader, kill_group=True)
+        assert _wait_gone(leader.pid), "the leader survived the tree kill"
+        assert _wait_gone(grandchild), "the grandchild survived the tree kill"
+        assert leader.pid in killed
+        assert grandchild in killed
+        assert len(killed) == len(set(killed)), f"a pid is named twice: {killed}"
+    finally:
+        _kill(grandchild, leader.pid)
+        with suppress(Exception):
+            leader.wait(timeout=2.0)
+
+
+def test_terminate_pid_tree_names_each_killed_pid_once(tmp_path: Path) -> None:
+    """Same contract for the handle-less sweep, where the double count was certain.
+
+    ``terminate_pid_tree`` has no Popen handle to wait on, so after the group
+    signal the leader lingers as an unreaped zombie -- and ``os.kill`` succeeds
+    on a zombie, making the direct-kill append unconditional rather than a
+    race. Before the dedupe this sweep always reported ``[pid, pid, child]``.
+    """
+    leader, grandchild = _start_group_leader_process(tmp_path / "gc.pid")
+    try:
+        killed = process_tree.terminate_pid_tree(leader.pid)
+        assert _wait_gone(leader.pid), "the leader survived the pid-tree kill"
+        assert _wait_gone(grandchild), "the grandchild survived the pid-tree kill"
+        assert leader.pid in killed
+        assert grandchild in killed
+        assert len(killed) == len(set(killed)), f"a pid is named twice: {killed}"
+    finally:
+        _kill(grandchild, leader.pid)
+        with suppress(Exception):
             leader.wait(timeout=2.0)
