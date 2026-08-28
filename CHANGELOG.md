@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（web 补真浏览器网络捕获 gate：network.list/get 与 HAR 首次对真 Chromium 验证）
+
+- 缺口：web 侧的 live gate 验了生命周期（open/close/多线程驱动）与页面侧检查
+  （scripts/console/dom），但**网络侧从没对真浏览器跑过**：`web.network.list` 靠 CDP
+  `Network.requestWillBeSent`/`responseReceived` 事件喂数据，`web.network.get` 用裸
+  `Network.getResponseBody` 取体——这些契约至今只活在单测假件里。Chromium 的事件字段
+  或取体语义一漂移，假件照绿、活捕获列空——与 webcrack `-f`、proxy 捕获是同形缺口。
+- 补法：新增 `test_web_network_gate.py`，全程回环零外网：本机 origin 供一页 HTML（脚本
+  fetch 一个 JSON 子资源），走 service 层 `web.open` 后带截止时间轮询 `network.list`
+  （fetch 晚于 open 返回、status 要等 responseReceived），断言文档与子资源两条请求的
+  method/status/mimeType；`network.get` 轮询到响应体可取后断言逐字节等于 origin 真身
+  且非 base64；`web.har.export` 断言条目数与子资源的 URL/200 落进 HAR。Playwright 或
+  Chromium 缺席时按 skip != pass 惯例显式跳过。
+- 过程中得到一条真机确认的语义：页面若不消费 fetch 响应体（无 `.then(r=>r.text())`），
+  Chromium 不会从网络栈拉体、`getResponseBody` 报 "No resource with given identifier"，
+  客户端按文档形状降级为 `body_error`（行为正确）；gate 的页面因此显式读取响应体，并在
+  注释里钉住这条边界，防止未来把 body_error 误判为回归。
+- 实测（真 Playwright 1.62 + Chromium 151 headless shell）：连续五轮全过（每轮约 0.9s）。
+  变异验证：把 `Network.responseReceived` 的订阅改错名后，gate 在轮询截止处失败——证明
+  它抓得住"事件断线、捕获列空"这类回归。仅加测试、不改源码。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
