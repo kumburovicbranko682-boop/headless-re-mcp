@@ -32,6 +32,8 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 同一"schema 通告 == 后端执行"的对齐也补到唯一带枚举的非 PE 工具 `frida.hook.template` 上（它按名字加载一段*注入*脚本，枚举漂移意味着 agent 被误导能注入什么）。三处必须命名同一集合：schema 的正则枚举 `^(a|b|c)$`、后端真正执行的 `_HOOK_TEMPLATES` 注册表、以及命中失败时回给调用方自纠的 `allowed=sorted(_HOOK_TEMPLATES)`。旧 `test_frida_template_schema.py` 只用源码文本判定四个固定名字"存在于"注册表（`⊇`，单向），于是往 `_HOOK_TEMPLATES` 新增一个模板却没放宽 schema（agent 永远够不着的注入能力），或 schema 仍通告后端已删的名字，都能溜过去。现改为从活的注册表与 schema 正则两头解析并断言二者*相等*、把失败 `allowed` 提示也钉到同一集合、并统一锁到一个显式的受审集合，使新增可注入模板成为需要三处一并对齐的自觉改动而非静默的字典编辑。
 
+Android 线的包名校验现在跨 adb 与 frida 两后端锁定一致。`device.packages` / `device.launch` / `force_stop` / `uninstall`（adb）与 `frida.spawn`（frida）都收 Android 包名，各自用*自己那份*同样的正则（adb `_PACKAGE_RE`、frida `_ANDROID_PACKAGE_RE`，且都先 `.strip()`）校验；两份此前逐字节相同却分处两个文件、无任何关联，任一收紧或放宽都会与另一份悄悄漂移——既伤工作流连贯性（agent 用 `device.packages` 列出的名字，adb 已放行，`frida.spawn` 却可能拒收），又是安全边界（值会进 `adb shell` / `su -c` 命令行，一份不再拒某个 shell 元字符而另一份仍拒，两个 Android 后端就对"什么能安全执行"产生分歧）。新增 `test_android_package_regex_contract.py`：断言两份 `pattern` 相等，并对合法包名与畸形/注入包名（空串、无点单段、首字符非字母、空段、尾点、空格、`;`/`|`/`&&`/`$()`/反引号/斜杠/换行/引号等）逐个固定"两后端一致接受或一致拒绝"，把任一侧漂移变成红灯而非工作流断裂或注入缺口。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
