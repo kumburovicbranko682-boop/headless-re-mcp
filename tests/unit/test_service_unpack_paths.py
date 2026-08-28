@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
+from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.unpack.session import (
     UnpackPhase,
@@ -390,3 +391,16 @@ def test_confirm_oep_reports_a_failed_auto_dump(tmp_path: Path) -> None:
     )
 
     assert not result.ok and result.error is not None
+
+
+def test_unpack_start_dotnet_route_fails_when_inspect_fails(tmp_path: Path) -> None:
+    service, _worker, session_id = _open_session(tmp_path)
+    service.dotnet_inspect = lambda _sid, **_k: Result(  # type: ignore[method-assign]
+        ok=False, error=RpcError(code="dotnet_broken", message="no CLR metadata")
+    )
+
+    result = service.unpack_start(session_id, use_die=False, force_route="dotnet")
+
+    assert result.ok and result.data is not None
+    assert result.data["unpack"]["phase"] == UnpackPhase.FAILED.value
+    assert result.data["bounded_probe"]["dotnet_inspect_ok"] is False
