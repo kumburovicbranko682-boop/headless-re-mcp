@@ -110,7 +110,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
   `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
-  创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+    创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+
+### 测试（地址同步层补齐失败关闭分支）
+
+- `core/addressing.py` 把 x64dbg 的模块快照和磁盘上的 PE 头翻译成静态/运行时地址映射，
+  三处输入都受攻击者影响（模块列表走 RPC、selector 来自模型、PE 字节来自被调试进程映射
+  的任意文件）。既有测试覆盖了主路径与常见拒绝，新增
+  `tests/unit/test_addressing_hostile_input.py` 钉住其余失败关闭分支：模块结果不是对象 /
+  没有 modules 数组 / 条目既无名也无路径一律 `module_list_invalid`；selector 命中某模块后
+  附带的 path/name 约束不符报 `module_identity_mismatch`（两处不符都如实回报）、命不中报
+  `module_not_found`、`\??\` 设备前缀被规整后仍可匹配；`ModuleAddressSpace` 的 RVA 越界报
+  `address_out_of_range`、负地址在做任何运算前即 `invalid_address`；运行时元数据架构非字符串
+  或不受支持报 `runtime_metadata_invalid`、同一会话路径命中多个模块报 `module_ambiguous`；
+  运行时模块无路径 / 指向目录报 `module_file_unavailable`、`\??\` 前缀路径能被解析读出；
+  非 PE / 截断的 COFF 头 / 截断的可选头 / 可选头 magic 不符 / 镜像基址为 0 分别报
+  `module_file_invalid`；并补 `RuntimeModuleCatalog` 与 `RebasedModuleMapping` 的 `to_dict`
+  序列化。模块覆盖率 88% → 99%。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
@@ -1103,6 +1119,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
+  崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
+  非法 architecture、天真/垃圾时间戳、`resolve()` 抛 OSError 的死挂载——一律安静跳过或
+  归一化恢复而不是让 hydration 崩掉;store 源本身抛异常或返回非 Mapping 行时启动照常。
+  注册表护栏直测:同态迁移是无副作用的 no-op(不更新 `updated_at`)、CLOSING/CLOSED
+  会话拒绝挂 backend、`remove_closed` 拒删活会话、重启后 adopt 进来的 closed 行可被
+  正常退休。目标分类直面伪造文件:PK 魔数但 zip 损坏回落 PE、无扩展名时按 wasm/带
+  manifest 的 zip 魔数识别、`.apk` 非 zip 或缺 `AndroidManifest.xml` 报结构化 ValueError、
+  伪造 MZ/PE 头与不支持的 machine 各自 fail-closed;本地 `.js` 资产建会话时哈希入册,
+  远程 URL 不碰磁盘。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
