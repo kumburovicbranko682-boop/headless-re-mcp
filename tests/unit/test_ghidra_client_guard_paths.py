@@ -259,6 +259,65 @@ def test_export_maps_a_timeout_to_a_timeout_error(
     assert caught.value.details["killed_pids"] == [4321, 4322]
 
 
+def _run_recording_timeout(seen: dict[str, Any]) -> Any:
+    """A run_bounded stub that records the deadline it was handed and writes."""
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        seen["timeout"] = kwargs.get("timeout")
+        for arg in map(str, cmd):
+            if arg.endswith(".json"):
+                Path(arg).write_text('{"items": [], "count": 0}', encoding="utf-8")
+        return Completed(0, b"analyze log", b"")
+
+    return fake_run
+
+
+@pytest.mark.parametrize("bad", [0, 0.0, -1, -30.0, float("nan")])
+def test_a_non_positive_or_nan_timeout_is_invalid_params(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    """The transport calls handlers straight from model arguments; a deadline the
+    schema forbids must be refused as invalid_params before the JVM is launched.
+    """
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(ghidra_client, "run_bounded", _run_recording_timeout(seen))
+    client = _client(tmp_path)
+
+    with pytest.raises(GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "project", timeout=bad)
+
+    assert caught.value.code == "invalid_params"
+    assert "timeout" not in seen, "run_bounded must not launch for a bad deadline"
+
+
+@pytest.mark.parametrize("huge", [10**12, float("inf")])
+def test_an_oversized_timeout_is_capped_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, huge: float
+) -> None:
+    """A huge (or infinite) deadline cannot pin a worker: it is capped to the
+    adapter maximum before the JVM is launched.
+    """
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(ghidra_client, "run_bounded", _run_recording_timeout(seen))
+    client = _client(tmp_path)
+
+    client.functions(_binary(tmp_path), tmp_path / "project", timeout=huge)
+
+    assert seen["timeout"] == ghidra_client._MAX_TIMEOUT_S
+
+
+def test_a_timeout_within_bounds_reaches_run_bounded_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(ghidra_client, "run_bounded", _run_recording_timeout(seen))
+    client = _client(tmp_path)
+
+    client.functions(_binary(tmp_path), tmp_path / "project", timeout=42.0)
+
+    assert seen["timeout"] == 42.0
+
+
 # --- _find_analyze_headless --------------------------------------------------
 
 

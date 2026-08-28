@@ -8,13 +8,21 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
 _SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
 _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
+# analyzeHeadless launches a JVM; matched to the other JVM adapters (jadx,
+# apktool). See clamp_cli_timeout for why every CLI adapter bounds this itself.
+_MAX_TIMEOUT_S = 1800.0
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
 
 
@@ -290,6 +298,16 @@ class GhidraClient:
         delete_project: bool,
     ) -> tuple[str, str, int]:
         assert self.analyze is not None
+        # The ghidra.* tool schemas declare 0 < timeout <= _MAX_TIMEOUT_S, but the
+        # agent transport calls handlers straight from model arguments with no
+        # schema enforcement. Clamp at this single choke point so a non-positive
+        # value cannot launch the JVM only to have run_bounded kill it on the
+        # first loop iteration and report a misleading timeout, and a huge one
+        # cannot pin a worker for as long as the caller named.
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise GhidraError("invalid_params", str(exc)) from exc
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         env = os.environ.copy()
         # Bound JVM heap; CREATE_NO_WINDOW keeps analyzer GUI-free. Prepend, do
