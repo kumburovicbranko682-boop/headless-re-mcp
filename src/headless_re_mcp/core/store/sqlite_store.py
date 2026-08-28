@@ -373,9 +373,14 @@ class SessionStore:
             total = int(
                 conn.execute("SELECT COUNT(*) FROM sessions WHERE closed_cleanly=0").fetchone()[0]
             )
+            # id breaks updated_at ties: the Windows clock steps ~15.6 ms, so a
+            # crash that leaves several sessions open stamps them identically,
+            # and an OFFSET page over a tie order the query plan chooses can
+            # repeat or drop a row at the boundary. _trim_closed_sessions
+            # already ties on id.
             rows = conn.execute(
                 "SELECT * FROM sessions WHERE closed_cleanly=0"
-                " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 (window, start),
             ).fetchall()
             return [dict(row) for row in rows], total
@@ -455,14 +460,17 @@ class SessionStore:
                 total = conn.execute(
                     "SELECT COUNT(*) AS c FROM artifacts WHERE session_id=?", (session_id,)
                 ).fetchone()["c"]
+                # id breaks created_at ties (a workflow registers artifacts in
+                # bursts; the Windows clock steps ~15.6 ms), so pages are a
+                # total order instead of whatever the query plan yields.
                 rows = conn.execute(
-                    "SELECT * FROM artifacts WHERE session_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM artifacts WHERE session_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
             else:
                 total = conn.execute("SELECT COUNT(*) AS c FROM artifacts").fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM artifacts ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM artifacts ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         items = [dict(row) for row in rows]
@@ -532,14 +540,20 @@ class SessionStore:
                 total = conn.execute(
                     "SELECT COUNT(*) AS c FROM audit WHERE session_id=?", (session_id,)
                 ).fetchone()["c"]
+                # id breaks `at` ties the same way the trim above decides
+                # survival. Without it the two branches here disagreed on this
+                # machine: the unfiltered listing walks idx_audit_at and
+                # returned same-tick rows newest-inserted-first, while this
+                # filtered branch sorts and returned them oldest-inserted-first
+                # -- the same five rows in opposite orders from one API.
                 rows = conn.execute(
-                    "SELECT * FROM audit WHERE session_id=? ORDER BY at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM audit WHERE session_id=? ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
             else:
                 total = conn.execute("SELECT COUNT(*) AS c FROM audit").fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM audit ORDER BY at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM audit ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         items = []
@@ -673,8 +687,14 @@ class SessionStore:
         if type(max_total_bytes) is not int or max_total_bytes < 1:
             raise ValueError("max_total_bytes must be a positive integer")
         with self._lock, self._connect() as conn:
+            # rowid breaks created_at ties with insertion order, because the
+            # newest-artifact protection below is positional: rows[-1] must be
+            # the artifact registered last, not whichever tied row the query
+            # plan happens to emit last. Today's sort emits ties in insertion
+            # order by luck; an index on created_at would reorder them and let
+            # this loop delete the file its caller is about to return.
             rows = conn.execute(
-                "SELECT id, path, size FROM artifacts ORDER BY created_at ASC"
+                "SELECT id, path, size FROM artifacts ORDER BY created_at ASC, rowid ASC"
             ).fetchall()
             total = sum(int(row["size"]) for row in rows)
             removed: list[str] = []

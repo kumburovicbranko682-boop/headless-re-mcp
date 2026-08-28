@@ -143,6 +143,32 @@ def test_thread_events_stay_grouped_when_runs_share_a_created_at_tick(
         assert len(seqs) == 3  # run.started + the two appended events
 
 
+def test_thread_listing_breaks_updated_at_ties_deterministically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same-tick threads must list in a fixed order, not the query plan's.
+
+    list_threads ordered by updated_at alone; every other ordering in this
+    store ties on an id column. Threads created inside one coarse Windows
+    clock tick (~15.6 ms) share their stamp, and the rail's order among them
+    was then whatever the engine emitted -- measured: insertion order today,
+    reversed the moment an index covers the sort. Pin (updated_at, id) DESC.
+    """
+    frozen = datetime(2024, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(
+        store_module, "datetime", SimpleNamespace(now=lambda tz=UTC: frozen)
+    )
+    ids = iter(["t-c", "t-a", "t-b"])
+    monkeypatch.setattr(
+        store_module, "uuid", SimpleNamespace(uuid4=lambda: SimpleNamespace(hex=next(ids)))
+    )
+    store = AgentStore(tmp_path / "threads.db")
+    for _ in range(3):
+        store.create_thread()
+
+    assert [thread.id for thread in store.list_threads()] == ["t-c", "t-b", "t-a"]
+
+
 def test_tool_call_identity_is_run_scoped_and_arguments_are_redacted(tmp_path: Path) -> None:
     store = AgentStore(tmp_path / "agent.db")
     first_thread = store.create_thread()

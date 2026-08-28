@@ -612,7 +612,10 @@ class InMemoryAnalysisRepository:
             items = [dict(item) for item in self._artifacts.values()]
         if session_id is not None:
             items = [item for item in items if item["session_id"] == session_id]
-        items.sort(key=lambda item: str(item["created_at"]), reverse=True)
+        # (created_at, id) mirrors the SQLite twin's tie order exactly; a bare
+        # created_at key left same-tick rows in insertion order here and in
+        # plan-dependent order there.
+        items.sort(key=lambda item: (str(item["created_at"]), str(item["id"])), reverse=True)
         total = len(items)
         page = items[offset : offset + limit]
         return {
@@ -708,7 +711,10 @@ class InMemoryAnalysisRepository:
     ) -> tuple[list[JsonObject], int]:
         with self._lock:
             items = [dict(item) for item in self._sessions.values() if not item["closed_cleanly"]]
-        ordered = sorted(items, key=lambda item: str(item["updated_at"]), reverse=True)
+        # (updated_at, id) mirrors the SQLite twin's tie order.
+        ordered = sorted(
+            items, key=lambda item: (str(item["updated_at"]), str(item["id"])), reverse=True
+        )
         window = max(1, min(int(limit), 1000))
         start = max(0, int(offset))
         return ordered[start : start + window], len(ordered)
@@ -758,7 +764,8 @@ class InMemoryAnalysisRepository:
             entries = [dict(item) for item in self._audit]
         if session_id is not None:
             entries = [item for item in entries if item["session_id"] == session_id]
-        entries.sort(key=lambda item: str(item["at"]), reverse=True)
+        # (at, id) mirrors the SQLite twin and its trim's survival order.
+        entries.sort(key=lambda item: (str(item["at"]), str(item["id"])), reverse=True)
         total = len(entries)
         page = entries[offset : offset + limit]
         return {

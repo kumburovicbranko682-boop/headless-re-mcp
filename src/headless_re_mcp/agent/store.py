@@ -322,7 +322,10 @@ class AgentStore:
 
     def list_threads(self, *, limit: int = 100) -> list[AgentThread]:
         with self._reading() as con:
-            rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
+            # id breaks updated_at ties (the Windows clock steps ~15.6 ms), as
+            # every other ordering in this store already does; without it the
+            # rail's order among same-tick threads is the query plan's choice.
+            rows = con.execute("SELECT * FROM threads ORDER BY updated_at DESC, id DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
         return [AgentThread(**dict(row)) for row in rows]
 
     def get_thread(self, thread_id: str) -> AgentThread | None:

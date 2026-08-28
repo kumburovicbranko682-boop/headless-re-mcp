@@ -5,6 +5,34 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（时间戳平局时各存储列表的顺序由查询计划决定，两个入口甚至互为反序）
+
+- 上一条 thread 事件史的平局缺陷全库清扫后又挖出同族六处：核心存储的
+  `list_audit`（两个分支）、`list_artifacts`（两个分支）、`list_unclean_sessions`
+  与 agent 存储的 `list_threads` 都只按时间戳排序、无 id 平局键。平局在支持的
+  Windows 3.12 上是常态（时钟 ~15.6ms 一跳、audit trim 修复实测六次写共享一
+  stamp），此时顺序完全由查询计划决定——本机实测：audit 无过滤分支走
+  `idx_audit_at` 索引扫描、平局按插入逆序返回，带 session 过滤分支走排序计划、
+  按插入正序返回，**同一批五行从同一个 API 的两个入口拿到完全相反的顺序**；
+  给任意表加一个覆盖排序的索引即可让平局顺序整体翻转（实验证实）。三个列表
+  全部带 OFFSET 分页，非全序之上翻页可在边界重复或漏行；audit 的 trim
+  （`at DESC, id DESC`）与 list（`at DESC`）也已不同序，"幸存者集合"与"列表前
+  N 名"可以不一致——trim 处"Ordered the same way list_audit reads"的注释已不成
+  立。内存孪生仓的稳定排序则按插入序打平局，与 SQLite 侧两个入口三个顺序互不
+  相同，破坏"same observable contract"的孪生承诺。另有一处更实质：
+  `gc_artifacts` 的"最新产物永不回收"保护是位置性的（`rows[:-1]`），
+  `ORDER BY created_at ASC` 平局时"谁是最后一行"由计划决定——今天排序器恰好按
+  rowid 供行、插入序侥幸成立，加一个 created_at 索引就会让 gc 删掉调用方正要
+  返回路径的那个文件。修法：六个列表统一钉 `(时间戳 DESC, id DESC)` 全序
+  （SQLite 补 SQL 平局键，内存仓排序键改为二元组，与 audit trim 的幸存序一
+  致）；gc 独立钉 `(created_at ASC, rowid ASC)` 即插入序（保护不变量要的是
+  "最后注册"而非"id 最大"，测试里刻意给刚注册的产物更小的 id 以区分两种选
+  择）。回归钉在新文件 `test_store_listing_tie_order.py`（冻结时钟 + 脚本化
+  uuid4，SQLite 三列表 + 内存三列表 + gc 保护共 7 条）与
+  `test_agent_store.py`（threads 列表 1 条），修前 7 红 1 绿（gc 条今天靠运
+  气绿、钉住防将来）、修后全绿；store/repo/agent 邻域 486 passed + 1 合法
+  Windows-only skip，全量单测另跑，ruff / mypy 干净。
+
 ### 修复（agent 存储的 thread 事件史在 created_at 平局时按 seq 交织两个 run）
 
 - `AgentStore.list_thread_events` 是 web 监控台会话级事件史的唯一来源，其最终
