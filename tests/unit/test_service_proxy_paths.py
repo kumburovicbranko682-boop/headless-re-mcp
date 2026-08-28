@@ -248,7 +248,7 @@ def test_proxy_flow_get_reports_artifact_error_without_failing(tmp_path: Path) -
         def explode(**_: object) -> dict[str, Any]:
             raise RuntimeError("repository is down")
 
-        service.record_artifact = explode  # type: ignore[assignment]
+        service.record_artifact = explode  # type: ignore[method-assign]
         result = service.proxy_flow_get(sid, "flow-x")
         assert result.ok, result.error
         assert result.data is not None
@@ -314,7 +314,7 @@ def test_proxy_ca_install_android_pushes_the_cert(tmp_path: Path) -> None:
     fake.cert = cert
     service._proxy_backend = fake  # type: ignore[assignment]
     adb = _FakeAdb()
-    service._adb_backend = adb  # type: ignore[attr-defined]
+    service._adb_backend = adb  # type: ignore[assignment]
     try:
         sid = _web_session(service)
         result = service.proxy_ca_install_android(sid, "emulator-5554")
@@ -349,7 +349,7 @@ def test_proxy_ca_install_android_maps_adb_error(tmp_path: Path) -> None:
     service._proxy_backend = fake  # type: ignore[assignment]
     adb = _FakeAdb()
     adb.raise_on_push = AdbError("not_found", "device offline")
-    service._adb_backend = adb  # type: ignore[attr-defined]
+    service._adb_backend = adb  # type: ignore[assignment]
     try:
         sid = _web_session(service)
         result = service.proxy_ca_install_android(sid, "emulator-5554")
