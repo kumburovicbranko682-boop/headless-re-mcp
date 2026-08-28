@@ -1084,6 +1084,74 @@ def test_apk_dex_readers_resolve_a_cross_class_xref(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_apk_method_xrefs_pin_a_cross_class_call_site(tmp_path: Path) -> None:
+    """apk.method_xrefs must resolve a precise, offset-bearing edge across classes.
+
+    apk.xrefs proves the name-wide caller/callee sweep; this proves the pinned
+    refinement. App.run invoke-virtuals Helper.greet, so pinning greet by class +
+    name + descriptor and walking callers must return exactly App.run, carrying
+    run's descriptor and the bytecode offset of the call site (so an agent can
+    jump straight there with apk.method_bytecode); the callee direction mirrors
+    it. skip != pass when androguard is absent.
+    """
+    if not ApkClient().available:
+        pytest.skip("androguard not installed — APK live gate not run (skip != pass)")
+    apk = _build_apk(tmp_path / "two_class_xref.apk", dex=_build_two_class_dex())
+    service = AnalysisService()
+    try:
+        created = service.create_session(str(apk))
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+
+        # Read greet's descriptor from the class so the pin is exact, not name-only.
+        helper_methods = service.apk_methods(session_id, _DEX_HELPER_SMALI)
+        assert helper_methods.ok and helper_methods.data is not None, helper_methods.error
+        greet = next(
+            m for m in helper_methods.data["methods"] if m["name"] == _DEX_CROSS_CALLEE
+        )
+
+        callers = service.apk_method_xrefs(
+            session_id,
+            _DEX_HELPER_SMALI,
+            _DEX_CROSS_CALLEE,
+            descriptor=greet["descriptor"],
+        )
+        assert callers.ok and callers.data is not None, callers.error
+        assert callers.data["descriptor"] == greet["descriptor"], callers.data
+        assert callers.data["direction"] == "callers", callers.data
+        assert callers.data["total"] == 1, callers.data
+        edge = callers.data["xrefs"][0]
+        assert edge["class"] == _DEX_APP_SMALI, edge
+        assert edge["method"] == _DEX_CROSS_CALLER, edge
+        assert isinstance(edge["descriptor"], str) and edge["descriptor"], edge
+        assert isinstance(edge["offset"], int) and edge["offset"] >= 0, edge
+
+        # run itself has no callers -- a clean empty enumeration, not a miss.
+        run_callers = service.apk_method_xrefs(session_id, _DEX_APP_SMALI, _DEX_CROSS_CALLER)
+        assert run_callers.ok and run_callers.data is not None, run_callers.error
+        assert run_callers.data["xrefs"] == [], run_callers.data
+
+        # Forward: run's callees include greet across the class boundary, offset-tagged.
+        callees = service.apk_method_xrefs(
+            session_id, _DEX_APP_SMALI, _DEX_CROSS_CALLER, direction="callees"
+        )
+        assert callees.ok and callees.data is not None, callees.error
+        assert callees.data["direction"] == "callees"
+        hit = next(
+            (
+                e
+                for e in callees.data["xrefs"]
+                if e["class"] == _DEX_HELPER_SMALI and e["method"] == _DEX_CROSS_CALLEE
+            ),
+            None,
+        )
+        assert hit is not None, callees.data
+        assert isinstance(hit["offset"], int) and hit["offset"] >= 0, hit
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_apk_readers_merge_classes_across_secondary_dex(tmp_path: Path) -> None:
     """Classes and xrefs must span classes.dex + classes2.dex, not just the first.
 
