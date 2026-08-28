@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（PE 导入读取器：thunk 表跑出节区却谎报导入完整）
+
+- `detection/pe.py` 的 `_parse_imports` 逐项读每个库的 thunk（IAT/ILT）数组，直到读到
+  NUL 终止符为止。但当该数组一直读到所在节区 raw 字节的末尾都没遇到终止符时（文件里根本
+  没有它的尾部——加壳/截断样本常见），内层循环只是静默退出，`truncated` 仍为假：于是一个
+  从被截断转储构建的摘要会被当成“导入列表完整”，`function_count` 被少计却毫无标注，属于往
+  危险方向的失实。姊妹读取器 `_parse_tls` 的回调数组早就用 `while ... else: truncated = True`
+  标注了同样的形状，导入读取器却漏了。改法照 TLS 先例，给 thunk 循环补上 `else: truncated =
+  True`：只有循环因越过节区边界（而非 break 到 NUL / 命中 `_MAX_IMPORT_FUNCTIONS`）而退出时
+  才触发，正常 NUL 终止的表不受影响。既有的 `if truncated: break` 随即如实停下并标注，与外层
+  描述符循环、TLS 读取器行为一致。新增 `tests/unit/test_pe_imports_thunk_truncation.py`：
+  ordinal thunk 表贴着节区末尾无终止符时标 `truncated`、按名 thunk 同理（含可疑 API 仍被识别）、
+  以及带 NUL 终止的对照表不被误标。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言

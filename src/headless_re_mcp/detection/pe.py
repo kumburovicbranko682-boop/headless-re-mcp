@@ -445,6 +445,13 @@ def _parse_imports(data: bytes, layout: _Layout) -> ImportSummary:
                 if api.casefold() in _SUSPICIOUS_APIS:
                     suspicious.add(api)
             thunk_offset += pointer_size
+        else:
+            # The thunk array ran to the end of its section's raw bytes with no
+            # NUL terminator: its tail is not in the file, so this library's
+            # imports are undercounted. The TLS callback reader flags the same
+            # shape; without this, a summary of a truncated dump would read as a
+            # complete import list.
+            truncated = True
         if truncated:
             break
         descriptor_offset += 20
