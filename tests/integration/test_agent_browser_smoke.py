@@ -73,7 +73,16 @@ _ROUND_TRIP_MS = 45_000
 @pytest.mark.integration
 def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEADLESS_RE_PROVIDER_CONFIG", str(tmp_path / "providers.json"))
-    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    # Pin the fail-closed (request) approval mode. Settings.load() otherwise
+    # fills the packed-analysis preset that auto-approves state_change, so
+    # workflow.cancel would auto-run and the approve/reject flow this gate
+    # exercises would never render an approval card.
+    settings = replace(
+        Settings.load(),
+        artifact_root=tmp_path / "artifacts",
+        agent_auto_approve_effects=(),
+        agent_auto_approve_tools=(),
+    )
     token = "browser-web-token-0123456789"
     app = create_app(AnalysisService(settings), token=token, settings=settings)
     app.state.agent_orchestrator.provider_factory = lambda _profile: BrowserFakeProvider()
@@ -91,9 +100,13 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
     secret = "browser-provider-secret-value"
     try:
         with sync_playwright() as playwright:
+            # Use Playwright's bundled Chromium, the same launch the production
+            # WebBackend uses (backends/web/client.py). The old hardcoded system
+            # Chrome path (C:\Program Files\...\chrome.exe) pinned this gate to a
+            # Windows host with Chrome installed at that exact path, so it could
+            # not run on Linux even though it is not a Windows-only gate.
             browser = playwright.chromium.launch(
                 headless=True,
-                executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
                 args=["--disable-gpu", "--no-first-run"],
             )
             page = browser.new_page()
@@ -110,7 +123,7 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
             page.on("response", capture)
             # A fresh profile lands on the work-direction screen first.
             page.goto(f"http://127.0.0.1:{port}/?token={token}")
-            expect(page.get_by_role("heading", name="你想逆向什么？")).to_be_visible()
+            expect(page.get_by_role("heading", name="开始一段分析")).to_be_visible()
 
             # Skip past it for the agent flow. Seeding the stored choice rather
             # than clicking keeps this gate from persisting a workspace profile
@@ -118,42 +131,64 @@ def test_browser_agent_workbench_smoke(tmp_path: Path, monkeypatch: pytest.Monke
             # webui/src/components/WorkspaceLanding.test.tsx.
             page.evaluate("localStorage.setItem('headless_ws_profile','full')")
             page.goto(f"http://127.0.0.1:{port}/?token={token}")
-            expect(page.get_by_role("heading", name="Agent analysis")).to_be_visible()
+            expect(page.get_by_role("heading", name="有什么想分析的？")).to_be_visible()
             assert "token=" not in page.url
 
-            page.get_by_label("Message").fill("run read-only tool")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_text("tool round finished")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            transcript = page.locator(".transcript")
+            page.get_by_label("消息").fill("run read-only tool")
+            page.get_by_role("button", name="发送").click()
+            # Scope to the transcript: the same delta text is also quoted in the
+            # inspector's (hidden) raw event feed, which would make an unscoped
+            # locator ambiguous under Playwright strict mode.
+            expect(
+                transcript.get_by_text("tool round finished", exact=True)
+            ).to_be_visible(timeout=_ROUND_TRIP_MS)
+            # Raw run events live on the inspector's events tab now.
+            page.get_by_role("tab", name="事件").click()
             expect(page.get_by_text("tool.completed").first).to_be_visible()
 
-            page.get_by_role("button", name="Provider & setup").click()
-            page.get_by_label("Base URL").fill("https://example.invalid/v1")
-            page.get_by_label("Model").fill("browser-fake")
-            page.get_by_label("API key").fill(secret)
-            page.get_by_role("button", name="Save server-side").click()
+            page.get_by_role("button", name="设置", exact=True).click()
+            dialog = page.get_by_role("dialog")
+            dialog.get_by_label("接口地址").fill("https://example.invalid/v1")
+            dialog.get_by_label("模型", exact=True).fill("browser-fake")
+            dialog.get_by_label("API 密钥").fill(secret)
+            dialog.get_by_role("button", name="保存模型").click()
+            # The modal stays open after saving and reports the outcome inline.
+            expect(dialog.get_by_text("模型设置已保存到本机服务。")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            dialog.get_by_role("button", name="×").click()
             expect(page.get_by_role("dialog")).not_to_be_visible()
 
-            page.get_by_label("Message").fill("danger approve")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_role("button", name="Approve once")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_label("消息").fill("danger approve")
+            page.get_by_role("button", name="发送").click()
+            expect(page.get_by_role("button", name="批准一次")).to_be_visible(timeout=_ROUND_TRIP_MS)
             prior_seq = int(page.evaluate("window.history.state.runSeq"))
             assert prior_seq > 0
             page.reload()
-            expect(page.get_by_role("button", name="Approve once")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            expect(page.get_by_role("button", name="批准一次")).to_be_visible(timeout=_ROUND_TRIP_MS)
             assert "token=" not in page.url
-            page.get_by_role("button", name="Approve once").click()
-            expect(page.get_by_text("tool round finished")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_role("button", name="批准一次").click()
+            # Approving consumes the parked write, so the card goes away and the
+            # resumed run runs the tool to completion. The reload dropped the
+            # in-memory transcript (the thread is resumed by run id, not
+            # reselected), so assert on the run's own terminal event in the feed
+            # rather than on a persisted assistant message.
+            expect(page.get_by_role("button", name="批准一次")).to_have_count(0, timeout=_ROUND_TRIP_MS)
+            page.get_by_role("tab", name="事件").click()
+            expect(page.get_by_text("run.completed").first).to_be_visible(timeout=_ROUND_TRIP_MS)
             assert any(f"after={prior_seq}" in url for url in sse_urls)
 
-            page.get_by_label("Message").fill("danger reject")
-            page.get_by_role("button", name="Send").click()
-            expect(page.get_by_role("button", name="Reject", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
+            page.get_by_label("消息").fill("danger reject")
+            page.get_by_role("button", name="发送").click()
+            expect(page.get_by_role("button", name="拒绝", exact=True)).to_be_visible(timeout=_ROUND_TRIP_MS)
             with page.expect_response(
                 lambda response: response.url.endswith("/reject"), timeout=_ROUND_TRIP_MS
             ) as rejected_response:
-                page.get_by_role("button", name="Reject", exact=True).click()
+                page.get_by_role("button", name="拒绝", exact=True).click()
             assert rejected_response.value.status == 200
-            expect(page.get_by_text("run.rejected")).to_be_visible(timeout=_ROUND_TRIP_MS)
+            # Sending a message reselects a fresh thread and clears the feed, so
+            # re-open the events tab and wait for this run's rejection.
+            page.get_by_role("tab", name="事件").click()
+            expect(page.get_by_text("run.rejected").first).to_be_visible(timeout=_ROUND_TRIP_MS)
 
             providers = page.evaluate(
                 """async ({token}) => (await fetch('/api/providers', {headers:{Authorization:`Bearer ${token}`}})).text()""",
