@@ -433,7 +433,7 @@ def test_instance_start_returns_once_the_port_accepts(
     monkeypatch.setattr(proxy_client, "_port_bindable", lambda host, port: True)
     release = threading.Event()
     inst = _ProxyInstance("127.0.0.1", 8080)
-    inst._run = lambda: release.wait(5.0)  # type: ignore[method-assign]
+    inst._run = lambda: release.wait(5.0)  # type: ignore[method-assign, assignment]
     try:
         inst.start(timeout=2.0)
     finally:
@@ -728,7 +728,7 @@ def test_backend_flows_paginates_and_reports_dropped() -> None:
     entries = [{"id": f"f{i}", "seq": i + 10} for i in range(5)]
     recorder = SimpleNamespace(snapshot=lambda: entries)
     backend = ProxyBackend()
-    backend._get = lambda session_id: SimpleNamespace(recorder=recorder)  # type: ignore[method-assign]
+    backend._get = lambda session_id: SimpleNamespace(recorder=recorder)  # type: ignore[method-assign, assignment]
     payload = backend.flows("s", offset=1, limit=2)
     assert payload["count"] == 2
     assert payload["total"] == 5

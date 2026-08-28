@@ -17,7 +17,6 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.frida import client as frida_client
 from headless_re_mcp.backends.frida.client import (
     _ENUM_SCRIPT,
     FridaClient,
@@ -31,6 +30,7 @@ from headless_re_mcp.backends.frida.client import (
     _page,
     _run_deadline,
 )
+from headless_re_mcp.core.limits import MAX_WORKFLOW_TIMEOUT
 
 # --------------------------------------------------------------------------- #
 # Fakes
@@ -246,7 +246,7 @@ def test_bound_timeout_rejects_non_positive_and_caps() -> None:
         _bound_timeout(0)
     assert exc.value.code == "invalid_params"
     assert _bound_timeout(5.0) == 5.0
-    assert _bound_timeout(10_000.0) == frida_client.MAX_WORKFLOW_TIMEOUT
+    assert _bound_timeout(10_000.0) == MAX_WORKFLOW_TIMEOUT
 
 
 def test_is_timeout_reads_name_and_message() -> None:
