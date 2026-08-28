@@ -368,40 +368,37 @@ def _parse_tables_and_names(
     assembly_name: str | None = None
     if not strings:
         return None, None, stats
+    # Deferred import: metadata_enum imports this module for its error type.
+    from headless_re_mcp.dotnet.metadata_enum import table_row_size
+
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
     for bit in range(64):
         rows = row_counts.get(bit)
         if not rows:
             continue
-        if bit == 0x00:  # Module
+        if bit == 0x00:  # Module: Name follows Generation(2)
             name_idx, _ = read_string_index(tables, cursor + 2)
             module_name = string_at(name_idx)
-            guid_index_size = 4 if (heap_sizes & 0x02) else 2
-            row_size = (
-                2
-                + string_index_size
-                + guid_index_size
-                + guid_index_size
-                + guid_index_size
-            )
-            cursor += row_size * rows
-            continue
-        if bit == 0x20:  # Assembly
-            blob_index_size = 4 if (heap_sizes & 0x04) else 2
+        elif bit == 0x20:  # Assembly: Name follows HashAlgId(4)+Version(8)+Flags(4)+PublicKey
             name_at = cursor + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
             name_idx, _ = read_string_index(tables, name_at)
             assembly_name = string_at(name_idx)
-            row_size = (
-                4
-                + 2
-                + 2
-                + 2
-                + 2
-                + 4
-                + blob_index_size
-                + string_index_size
-                + string_index_size
+            break  # nothing this walk needs lies past the Assembly table
+        # The Assembly table sits at bit 0x20, after TypeRef/TypeDef/MethodDef
+        # and every other table a real assembly always carries. This walk used
+        # to stop at the first table it was not extracting from, so it never
+        # reached Assembly and the report's assembly_name was always None.
+        # Skip intervening tables by their real ECMA-335 row size instead.
+        try:
+            row_size = table_row_size(
+                row_counts,
+                bit,
+                string_index_size=string_index_size,
+                blob_index_size=blob_index_size,
+                guid_index_size=guid_index_size,
             )
-            cursor += row_size * rows
-            continue
-        break
+        except DotnetInspectError:
+            break  # unsizable table: keep the names found so far
+        cursor += row_size * rows
     return module_name, assembly_name, stats
