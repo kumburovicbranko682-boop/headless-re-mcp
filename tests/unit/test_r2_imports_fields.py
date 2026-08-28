@@ -39,7 +39,9 @@ def test_r2_imports_says_when_the_list_was_cut(tmp_path: Path) -> None:
     binary = tmp_path / "f.exe"
     binary.write_bytes(b"MZ" + b"\x00" * 200)
     entries = [
-        {"name": f"n{index}", "lib": "k.dll", "plt": 0x140001000 + index}
+        # "libname" is the field radare2 actually prints (measured on 5.5.0);
+        # the fake used to say "lib", teaching a field no backend emits.
+        {"name": f"n{index}", "libname": "k.dll", "plt": 0x140001000 + index}
         for index in range(_MAX_ITEMS + 3)
     ]
     payload = enrich_r2_payload(

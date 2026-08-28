@@ -49,7 +49,9 @@ def test_r2_imports_puts_the_plt_va_under_address_object(tmp_path: Path) -> None
     payload = enrich_r2_payload(
         {
             "raw": json.dumps(
-                [{"name": "NtClose", "plt": 0x140001000, "lib": "ntdll"}]
+                # "libname" mirrors what radare2 prints (measured on 5.5.0);
+                # the old "lib" fake matched no real backend.
+                [{"name": "NtClose", "plt": 0x140001000, "libname": "ntdll"}]
             ),
             "commands": ["iij"],
         },
@@ -59,7 +61,12 @@ def test_r2_imports_puts_the_plt_va_under_address_object(tmp_path: Path) -> None
     assert payload["items"][0]["address"]["va"] == 0x140001000
     assert payload["items"][0]["address"]["rva"] == 0x1000
     assert type(payload["items"][0]["address"]) is not int
+    assert payload["items"][0]["libname"] == "ntdll"
     described = _tool_docstring("r2.imports")
     assert "Answers with items" in described
     assert "va/rva/module" in described
     assert "no integer address" in described.replace("\n", " ")
+    # The description must name the field that exists (libname), and say the
+    # invented one (lib) does not: a caller reading item["lib"] gets nothing.
+    assert "libname" in described
+    assert "no lib field" in described

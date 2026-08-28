@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（r2.imports 文档承诺的 lib 字段在真实输出里不存在，实为 libname）
+
+- `r2.imports` 的工具描述承诺每个条目携带 `name, lib, plt`，两个单测 fake 也用
+  `"lib"` 构造 iij 载荷——但真机实测（radare2 5.5.0，PE fixture）：条目字段是
+  `libname`，从来没有 `lib`。富化层原样透传字段，所以消费者按文档取
+  `item["lib"]` 只会拿到空。fake 自己发明的字段永远测不出来，与 r2.xrefs 的
+  `axj` 命令被 fake 钉成期望值是同一类"fake 把虚构编码成契约"。
+- 改法：工具描述改为点名 `libname` 并明说没有 `lib` 字段；两个 fake 改用
+  `libname` 镜像真实输出，并断言富化后条目保留该字段、文档含上述说明。新增真机
+  集成 gate `test_m11_r2_live_imports_contract.py`：对真 radare2 断言至少一条
+  具名 import、`libname` 存在且非空、`lib` 不存在（若后端未来长出 `lib`，gate
+  会指回文档同步更新）。strings/exports/functions/info 的文档字段经同一轮真机
+  核验均属实，未动。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
