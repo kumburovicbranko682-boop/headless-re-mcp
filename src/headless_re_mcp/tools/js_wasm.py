@@ -79,7 +79,10 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         the buffer, and exit_code / tool_failed / stderr when wasm2wat exits
         non-zero but still emitted text. An input over 16 MiB is refused as
         too_large, and a file that is not a WebAssembly module as
-        invalid_params, rather than handed to wasm2wat.
+        invalid_params, rather than handed to wasm2wat. Post-MVP features
+        (tail calls, SIMD, reference types, bulk memory, exceptions, threads,
+        GC) are enabled, so a module a modern toolchain emitted converts
+        instead of failing on an unexpected opcode.
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 

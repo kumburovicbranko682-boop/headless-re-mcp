@@ -293,6 +293,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 - 新增回归：卡死的 USB 解析与卡死的 host:port `add_remote_device` 都在截止时间内抛 `timeout`
   而非空等(把 `_PROBE_TIMEOUT_S` 打小后计时断言)。
 
+### 修复（`wasm.wat` 只认 MVP 模块，现代 WASM 一律报失败）
+
+- `wasm.wat` 调 `wasm2wat` 时没带任何特性开关。`wasm2wat` 默认把 MVP 之后的所有提案**关掉**，
+  于是一旦模块用到尾调用、SIMD、引用类型、批量内存、异常处理、线程或 GC——也就是今天任何真实
+  工具链都会吐出的东西——就以 `error: unexpected opcode` 收场，整个反汇编被当成失败回报（实测 wabt
+  1.0.36：一个只含 `return_call` 的 33 字节模块，`wasm2wat` 默认即报 `unexpected opcode: 0x12`，加
+  `--enable-all` 后正常转出）。现在 `wat()` 传 `--enable-all`：它是纯超集，普通 MVP 模块转换结果不变。
+  `wasm-objdump` 没有这个开关（它本就不按特性设门，`-h -x` 对上述模块直接成功；传 `--enable-all` 反而
+  会 `unknown option` 退出），故只改 `wat` 一侧。新增 `tests/unit/test_wasm_wat_post_mvp_features.py`：
+  一条 mock 守卫钉住 `--enable-all` 在 `wasm2wat` argv 里且排在模块路径之前（无 wabt 也能跑，防回归把
+  它删掉），一条实机闸把内嵌的尾调用模块喂给真 `wasm2wat`——仅当该 wabt 确实对此特性设门时才断言
+  （默认就放行则跳过，skip≠pass），核对 `wat()` 转出的文本含 `return_call`。
+
 ### 修复（js/wasm 工具非零退出不再伪装成干净结果）
 
 - `js.deobfuscate` / `js.beautify` / `js.unpack_bundle` / `wasm.wat` / `wasm.info` 走的是「工具死了也把

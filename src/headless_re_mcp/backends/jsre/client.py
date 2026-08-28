@@ -257,7 +257,17 @@ class WasmClient:
     def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
-        stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
+        # --enable-all turns on every finished proposal wabt knows. wasm2wat
+        # gates post-MVP features off by default, so a module using tail calls,
+        # SIMD, reference types, bulk memory, exception handling, threads or GC
+        # -- everything a real toolchain emits today -- otherwise dies with
+        # "unexpected opcode" and the whole disassembly is reported as failed.
+        # The flag is a pure superset: plain MVP modules parse unchanged.
+        # (wasm-objdump has no such switch; it already parses every feature, so
+        # info() must not pass this flag or the tool exits with "unknown option".)
+        stdout, stderr, code = _run(
+            [str(self._wasm2wat), "--enable-all", str(resolved)], timeout=timeout
+        )
         if code != 0 and not stdout:
             raise JsReError(
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
