@@ -34,6 +34,7 @@ from headless_re_mcp.backends.jsre import (
     parse_wasm_start,
     parse_wasm_strings,
     parse_wasm_tables,
+    scan_js_endpoints,
     scan_js_strings,
 )
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
@@ -59,9 +60,7 @@ def prune_jsre_unpack_dirs(root: Path, *, keep: int = _MAX_JSRE_UNPACK_DIRS) -> 
     """Drop the oldest unpack trees once the jsre directory is full."""
     try:
         dirs = [
-            path
-            for path in root.iterdir()
-            if path.is_dir() and path.name.startswith("unpack-")
+            path for path in root.iterdir() if path.is_dir() and path.name.startswith("unpack-")
         ]
     except OSError:
         return
@@ -150,9 +149,16 @@ class JsReAnalysisMixin:
         min_length: int = 4,
     ) -> Result[JsonObject]:
         try:
-            data = scan_js_strings(
-                Path(path), offset=offset, limit=limit, min_length=min_length
-            )
+            data = scan_js_strings(Path(path), offset=offset, limit=limit, min_length=min_length)
+            return _success(data, backend="jsre")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def js_endpoints(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
+        try:
+            data = scan_js_endpoints(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
@@ -161,9 +167,7 @@ class JsReAnalysisMixin:
 
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
-            data = WasmClient(getattr(self.settings, "wabt", None)).wat(
-                Path(path), timeout=timeout
-            )
+            data = WasmClient(getattr(self.settings, "wabt", None)).wat(Path(path), timeout=timeout)
             return _success(data, backend="wabt")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
@@ -181,9 +185,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_imports(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_imports(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_imports(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -192,9 +194,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_exports(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_exports(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_exports(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -203,9 +203,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_sections(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_sections(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_sections(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -214,9 +212,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_names(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_names(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_names(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -225,9 +221,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_functions(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_functions(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_functions(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -244,18 +238,14 @@ class JsReAnalysisMixin:
         min_length: int = 4,
     ) -> Result[JsonObject]:
         try:
-            data = parse_wasm_strings(
-                Path(path), offset=offset, limit=limit, min_length=min_length
-            )
+            data = parse_wasm_strings(Path(path), offset=offset, limit=limit, min_length=min_length)
             return _success(data, backend="jsre")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_globals(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_globals(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_globals(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -264,9 +254,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_data(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_data(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_data(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -275,9 +263,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_memory(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_memory(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_memory(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -286,9 +272,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_tables(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_tables(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_tables(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -297,9 +281,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_elements(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_elements(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_elements(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -308,9 +290,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_calls(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_calls(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_calls(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -323,18 +303,14 @@ class JsReAnalysisMixin:
         self, path: str, function: int, offset: int = 0, limit: int = 100
     ) -> Result[JsonObject]:
         try:
-            data = parse_wasm_callers(
-                Path(path), function=function, offset=offset, limit=limit
-            )
+            data = parse_wasm_callers(Path(path), function=function, offset=offset, limit=limit)
             return _success(data, backend="jsre")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_producers(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_producers(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_producers(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
@@ -343,9 +319,7 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
-    def wasm_features(
-        self, path: str, offset: int = 0, limit: int = 100
-    ) -> Result[JsonObject]:
+    def wasm_features(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = parse_wasm_features(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")

@@ -65,9 +65,7 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         a partial unpack is not read as complete. An input over 16 MiB is
         refused as too_large rather than handed to webcrack.
         """
-        return _dump(
-            analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
-        )
+        return _dump(analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit))
 
     @tools.tool(name="js.strings")
     def js_strings(
@@ -95,11 +93,33 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         when the text ended inside an open literal or block comment. A missing
         file is not_found, one over 16 MiB too_large.
         """
-        return _dump(
-            analysis.js_strings(
-                path, offset=offset, limit=limit, min_length=min_length
-            )
-        )
+        return _dump(analysis.js_strings(path, offset=offset, limit=limit, min_length=min_length))
+
+    @tools.tool(name="js.endpoints")
+    def js_endpoints(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Extract the URLs a JavaScript file talks to, node-free.
+
+        The "what does this bundle contact" pivot: it surfaces the
+        scheme://host URLs -- http, https, ws, wss, ftp and the like --
+        hard-coded in a script's string literals, the C2/API/CDN hosts that are
+        the first IOCs of web triage. It reuses js.strings' comment-aware,
+        escape-decoding literal scan, so a URL obfuscated as \\x68\\x74\\x74\\x70
+        is caught once decoded, and needs no webcrack or Node. To stay
+        high-signal it matches only URLs carrying a scheme (schemeless relative
+        paths like /api/x are left to js.strings) and reports each url with its
+        host (the authority after ://, userinfo stripped). Results are
+        de-duplicated by url in first-appearance order. Answers with
+        input_bytes and endpoints with count, total, offset and has_more so a
+        filled page is not read as every URL; total is capped at 10000 with
+        scan_capped when more may exist, and truncated is true when the text
+        ended inside an open literal or block comment. A missing file is
+        not_found, one over 16 MiB too_large.
+        """
+        return _dump(analysis.js_endpoints(path, offset=offset, limit=limit))
 
     @tools.tool(name="wasm.callers")
     def wasm_callers(
@@ -134,11 +154,7 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         found so far are still returned). A file that is not a WebAssembly module
         is refused as invalid_params, one over 16 MiB as too_large.
         """
-        return _dump(
-            analysis.wasm_callers(
-                path, function=function, offset=offset, limit=limit
-            )
-        )
+        return _dump(analysis.wasm_callers(path, function=function, offset=offset, limit=limit))
 
     @tools.tool(name="wasm.calls")
     def wasm_calls(
@@ -571,11 +587,7 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         malformed length. A file that is not a WebAssembly module is refused as
         invalid_params, one over 16 MiB as too_large.
         """
-        return _dump(
-            analysis.wasm_strings(
-                path, offset=offset, limit=limit, min_length=min_length
-            )
-        )
+        return _dump(analysis.wasm_strings(path, offset=offset, limit=limit, min_length=min_length))
 
     @tools.tool(name="wasm.tables")
     def wasm_tables(

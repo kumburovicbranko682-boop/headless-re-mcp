@@ -46,6 +46,11 @@ _JS_MAX_MIN_STRING = 256
 _MAX_JS_STRINGS_COLLECT = 50000
 _MAX_JS_STRINGS_PAGE = 1000
 _MAX_JS_STRING_LEN = 2048
+# js.endpoints runs a URL match over the same decoded literals js.strings finds,
+# so a scheme://host URL obfuscated as \x68\x74\x74\x70... is caught once
+# decoded. Its own dedup and caps sit on top of the literal scan's.
+_MAX_JS_ENDPOINTS_COLLECT = 10000
+_MAX_JS_ENDPOINTS_PAGE = 1000
 # Every WebAssembly binary opens with these four bytes. Checking them before
 # launching wasm2wat / wasm-objdump turns a cryptic tool failure and a wasted
 # subprocess into a precise invalid_params -- the same reason the size cap
@@ -386,13 +391,9 @@ def parse_wasm_imports(path: Path, *, offset: int = 0, limit: int = 100) -> Json
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     rows: list[JsonObject] = []
     scan_more = False
     truncated = False
@@ -483,13 +484,9 @@ def parse_wasm_exports(path: Path, *, offset: int = 0, limit: int = 100) -> Json
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     rows: list[JsonObject] = []
     scan_more = False
     truncated = False
@@ -574,13 +571,9 @@ def parse_wasm_sections(path: Path, *, offset: int = 0, limit: int = 100) -> Jso
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     rows: list[JsonObject] = []
     scan_more = False
     truncated = False
@@ -730,13 +723,9 @@ def parse_wasm_names(path: Path, *, offset: int = 0, limit: int = 100) -> JsonOb
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     body, truncated = _find_custom_section(raw, "name")
     module_name: str | None = None
     func_rows: list[JsonObject] = []
@@ -773,9 +762,7 @@ def _valtype_name(byte: int) -> str:
     return _WASM_VALTYPES.get(byte, f"0x{byte:02x}")
 
 
-def _collect_section_bodies(
-    raw: bytes, ids: frozenset[int]
-) -> tuple[dict[int, bytes], bool]:
+def _collect_section_bodies(raw: bytes, ids: frozenset[int]) -> tuple[dict[int, bytes], bool]:
     """Capture the first body of each wanted section id; flag walk truncation."""
     bodies: dict[int, bytes] = {}
     truncated = False
@@ -861,9 +848,7 @@ def _parse_func_imports(body: bytes) -> tuple[list[tuple[str, str, int]], bool]:
     return out, False
 
 
-def parse_wasm_functions(
-    path: Path, *, offset: int = 0, limit: int = 100
-) -> JsonObject:
+def parse_wasm_functions(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
     """List a WebAssembly module's functions with signatures, wabt-free.
 
     The capstone of the wabt-free WASM readers: it joins the type (1), import
@@ -890,16 +875,10 @@ def parse_wasm_functions(
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
-    wanted = frozenset(
-        {_WASM_TYPE_SECTION_ID, _WASM_IMPORT_SECTION_ID, _WASM_FUNCTION_SECTION_ID}
-    )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
+    wanted = frozenset({_WASM_TYPE_SECTION_ID, _WASM_IMPORT_SECTION_ID, _WASM_FUNCTION_SECTION_ID})
     bodies, truncated = _collect_section_bodies(raw, wanted)
     sigs: list[tuple[list[str], list[str]]] = []
     func_imports: list[tuple[str, str, int]] = []
@@ -911,9 +890,7 @@ def parse_wasm_functions(
         func_imports, imp_trunc = _parse_func_imports(bodies[_WASM_IMPORT_SECTION_ID])
         truncated = truncated or imp_trunc
     if _WASM_FUNCTION_SECTION_ID in bodies:
-        local_typeidxs, fn_trunc = _parse_function_section(
-            bodies[_WASM_FUNCTION_SECTION_ID]
-        )
+        local_typeidxs, fn_trunc = _parse_function_section(bodies[_WASM_FUNCTION_SECTION_ID])
         truncated = truncated or fn_trunc
     name_body, name_walk_trunc = _find_custom_section(raw, "name")
     names: dict[int, str] = {}
@@ -1037,16 +1014,10 @@ def parse_wasm_strings(
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
-    bodies, truncated = _collect_section_bodies(
-        raw, frozenset({_WASM_DATA_SECTION_ID})
-    )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
+    bodies, truncated = _collect_section_bodies(raw, frozenset({_WASM_DATA_SECTION_ID}))
     data_body = bodies.get(_WASM_DATA_SECTION_ID, b"")
     has_data_section = _WASM_DATA_SECTION_ID in bodies
     min_len = max(1, min(int(min_length), _WASM_MAX_MIN_STRING))
@@ -1160,9 +1131,7 @@ def _parse_global_section(body: bytes) -> tuple[list[tuple[int, int]], bool]:
     return out, False
 
 
-def parse_wasm_globals(
-    path: Path, *, offset: int = 0, limit: int = 100
-) -> JsonObject:
+def parse_wasm_globals(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
     """List a WebAssembly module's globals (its module-level state), wabt-free.
 
     Globals are a module's mutable state cells -- the stack pointer, heap base,
@@ -1188,27 +1157,19 @@ def parse_wasm_globals(
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     bodies, truncated = _collect_section_bodies(
         raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_GLOBAL_SECTION_ID})
     )
     global_imports: list[tuple[str, str, int, int]] = []
     local_globals: list[tuple[int, int]] = []
     if _WASM_IMPORT_SECTION_ID in bodies:
-        global_imports, imp_trunc = _parse_global_imports(
-            bodies[_WASM_IMPORT_SECTION_ID]
-        )
+        global_imports, imp_trunc = _parse_global_imports(bodies[_WASM_IMPORT_SECTION_ID])
         truncated = truncated or imp_trunc
     if _WASM_GLOBAL_SECTION_ID in bodies:
-        local_globals, glob_trunc = _parse_global_section(
-            bodies[_WASM_GLOBAL_SECTION_ID]
-        )
+        local_globals, glob_trunc = _parse_global_section(bodies[_WASM_GLOBAL_SECTION_ID])
         truncated = truncated or glob_trunc
     rows: list[JsonObject] = []
     scan_more = False
@@ -1307,9 +1268,7 @@ def _parse_data_section(body: bytes) -> tuple[list[JsonObject], bool, bool]:
             row: JsonObject = {"index": index}
             if flag == 0:  # active, memory 0: offset expr + bytes
                 memory_offset, pos = _eval_offset_expr(body, pos)
-                row.update(
-                    {"mode": "active", "memory_index": 0, "memory_offset": memory_offset}
-                )
+                row.update({"mode": "active", "memory_index": 0, "memory_offset": memory_offset})
             elif flag == 1:  # passive: bytes only
                 row["mode"] = "passive"
             elif flag == 2:  # active, explicit memidx: memidx + offset expr + bytes
@@ -1361,23 +1320,15 @@ def parse_wasm_data(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObj
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
-    bodies, truncated = _collect_section_bodies(
-        raw, frozenset({_WASM_DATA_SECTION_ID})
-    )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
+    bodies, truncated = _collect_section_bodies(raw, frozenset({_WASM_DATA_SECTION_ID}))
     has_data_section = _WASM_DATA_SECTION_ID in bodies
     rows: list[JsonObject] = []
     scan_more = False
     if has_data_section:
-        rows, scan_more, body_truncated = _parse_data_section(
-            bodies[_WASM_DATA_SECTION_ID]
-        )
+        rows, scan_more, body_truncated = _parse_data_section(bodies[_WASM_DATA_SECTION_ID])
         truncated = truncated or body_truncated
     start = max(0, int(offset))
     cap = max(1, min(int(limit), _MAX_WASM_DATA_PAGE))
@@ -1470,13 +1421,9 @@ def parse_wasm_memory(path: Path, *, offset: int = 0, limit: int = 100) -> JsonO
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     bodies, truncated = _collect_section_bodies(
         raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_MEMORY_SECTION_ID})
     )
@@ -1606,13 +1553,9 @@ def parse_wasm_tables(path: Path, *, offset: int = 0, limit: int = 100) -> JsonO
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     bodies, truncated = _collect_section_bodies(
         raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_TABLE_SECTION_ID})
     )
@@ -1729,9 +1672,7 @@ def _parse_elem_section(body: bytes) -> tuple[list[JsonObject], int, bool, bool]
                     func_index, pos = _eval_ref_expr(body, pos)
                 else:
                     func_index, pos = _read_uleb(body, pos)
-                slot = (
-                    table_offset + position if table_offset is not None else None
-                )
+                slot = table_offset + position if table_offset is not None else None
                 rows.append(
                     {
                         "segment": segment,
@@ -1748,9 +1689,7 @@ def _parse_elem_section(body: bytes) -> tuple[list[JsonObject], int, bool, bool]
     return rows, segments, scan_more, False
 
 
-def parse_wasm_elements(
-    path: Path, *, offset: int = 0, limit: int = 100
-) -> JsonObject:
+def parse_wasm_elements(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
     """Map table slots to functions (the call_indirect targets), wabt-free.
 
     The element section is where a module fills its tables, so this answers the
@@ -1777,16 +1716,10 @@ def parse_wasm_elements(
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
-    bodies, truncated = _collect_section_bodies(
-        raw, frozenset({_WASM_ELEMENT_SECTION_ID})
-    )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
+    bodies, truncated = _collect_section_bodies(raw, frozenset({_WASM_ELEMENT_SECTION_ID}))
     has_element_section = _WASM_ELEMENT_SECTION_ID in bodies
     rows: list[JsonObject] = []
     segments = 0
@@ -1941,13 +1874,9 @@ def parse_wasm_calls(path: Path, *, offset: int = 0, limit: int = 100) -> JsonOb
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     bodies, truncated = _collect_section_bodies(
         raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_CODE_SECTION_ID})
     )
@@ -1970,9 +1899,7 @@ def parse_wasm_calls(path: Path, *, offset: int = 0, limit: int = 100) -> JsonOb
                 size, pos = _read_uleb(body, pos)
                 if pos + size > len(body):
                     raise _WasmParseError("function body runs past the section")
-                callees, direct, indirect, decoded = _walk_body(
-                    body[pos : pos + size]
-                )
+                callees, direct, indirect, decoded = _walk_body(body[pos : pos + size])
                 pos += size
                 distinct = sorted(set(callees))
                 clipped = len(distinct) > _MAX_WASM_CALLEES
@@ -2036,13 +1963,9 @@ def parse_wasm_callers(
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     target = int(function)
     bodies, truncated = _collect_section_bodies(
         raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_CODE_SECTION_ID})
@@ -2064,9 +1987,7 @@ def parse_wasm_callers(
                 size, pos = _read_uleb(body, pos)
                 if pos + size > len(body):
                     raise _WasmParseError("function body runs past the section")
-                callees, _direct, _indirect, decoded = _walk_body(
-                    body[pos : pos + size]
-                )
+                callees, _direct, _indirect, decoded = _walk_body(body[pos : pos + size])
                 pos += size
                 if not decoded:
                     undecoded += 1
@@ -2117,9 +2038,7 @@ def _parse_producers(body: bytes) -> tuple[list[JsonObject], bool, bool]:
                 if len(rows) >= _MAX_WASM_PRODUCERS_COLLECT:
                     scan_more = True
                     break
-                rows.append(
-                    {"field": field_name, "name": name, "version": version}
-                )
+                rows.append({"field": field_name, "name": name, "version": version})
             if scan_more:
                 break
     except _WasmParseError:
@@ -2127,9 +2046,7 @@ def _parse_producers(body: bytes) -> tuple[list[JsonObject], bool, bool]:
     return rows, scan_more, False
 
 
-def parse_wasm_producers(
-    path: Path, *, offset: int = 0, limit: int = 100
-) -> JsonObject:
+def parse_wasm_producers(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
     """Decode a WebAssembly module's build-toolchain fingerprint, wabt-free.
 
     The "producers" custom section records what built the module -- the source
@@ -2155,13 +2072,9 @@ def parse_wasm_producers(
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     body, truncated = _find_custom_section(raw, "producers")
     has_producers_section = body is not None
     rows: list[JsonObject] = []
@@ -2200,9 +2113,7 @@ def _parse_target_features(body: bytes) -> tuple[list[JsonObject], bool, bool]:
             rows.append(
                 {
                     "name": name,
-                    "prefix": _WASM_FEATURE_PREFIXES.get(
-                        prefix_byte, f"0x{prefix_byte:02x}"
-                    ),
+                    "prefix": _WASM_FEATURE_PREFIXES.get(prefix_byte, f"0x{prefix_byte:02x}"),
                 }
             )
     except _WasmParseError:
@@ -2210,9 +2121,7 @@ def _parse_target_features(body: bytes) -> tuple[list[JsonObject], bool, bool]:
     return rows, scan_more, False
 
 
-def parse_wasm_features(
-    path: Path, *, offset: int = 0, limit: int = 100
-) -> JsonObject:
+def parse_wasm_features(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
     """List the WebAssembly features a module was built to use, wabt-free.
 
     The "target_features" custom section is the capability requirement a
@@ -2240,13 +2149,9 @@ def parse_wasm_features(
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     body, truncated = _find_custom_section(raw, "target_features")
     has_target_features_section = body is not None
     rows: list[JsonObject] = []
@@ -2292,13 +2197,9 @@ def parse_wasm_start(path: Path) -> JsonObject:
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     if raw[:4] != _WASM_MAGIC:
-        raise JsReError(
-            "invalid_params", "not a WebAssembly module", path=str(resolved)
-        )
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
     bodies, truncated = _collect_section_bodies(
         raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_START_SECTION_ID})
     )
@@ -2473,9 +2374,7 @@ def scan_js_strings(
     try:
         raw = resolved.read_bytes()
     except OSError as exc:
-        raise JsReError(
-            "backend_error", f"input unreadable: {exc}", path=str(resolved)
-        ) from exc
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
     text = raw.decode("utf-8", errors="replace")
     min_len = max(1, min(int(min_length), _JS_MAX_MIN_STRING))
     found, scan_more, truncated = _scan_js_string_literals(
@@ -2491,6 +2390,94 @@ def scan_js_strings(
         "strings": window,
         "input_bytes": len(raw),
         "min_length": min_len,
+        "count": len(window),
+        "total": len(found),
+        "offset": start,
+        "has_more": start + len(window) < len(found),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+# A scheme, "://", then a run of URL-legal bytes. The trailing class excludes
+# whitespace, quotes, brackets and backslashes, so the match stops at the
+# literal's edge; the bounded {1,2048} keeps it linear with no backtracking.
+_JS_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]{0,31}://[^\s\"'`<>\\)\]}]{1,2048}")
+# Punctuation that commonly trails a URL in prose rather than belonging to it.
+_JS_URL_TRAILING = ".,;:!?)]}'\""
+
+
+def _extract_js_endpoints(
+    literals: list[str], *, collect_cap: int
+) -> tuple[list[JsonObject], bool]:
+    """Pull scheme://host URLs out of already-decoded string literals.
+
+    Returns (rows, scan_more). Each row is url and host (the authority after
+    ``://`` up to the first ``/?#``, with any ``userinfo@`` dropped). URLs are
+    de-duplicated in first-seen order; scan_more is True once collect_cap
+    distinct URLs are held and another is seen.
+    """
+    seen: dict[str, str] = {}
+    scan_more = False
+    for literal in literals:
+        for match in _JS_URL_RE.finditer(literal):
+            url = match.group().rstrip(_JS_URL_TRAILING)
+            if not url or url in seen:
+                continue
+            if len(seen) >= collect_cap:
+                scan_more = True
+                break
+            authority = url.split("://", 1)[1]
+            for sep in ("/", "?", "#"):
+                authority = authority.split(sep, 1)[0]
+            host = authority.rsplit("@", 1)[-1]
+            seen[url] = host
+        if scan_more:
+            break
+    rows = [{"url": url, "host": host} for url, host in seen.items()]
+    return rows, scan_more
+
+
+def scan_js_endpoints(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """Extract the URLs a JavaScript file talks to, node-free.
+
+    The "what does this bundle contact" pivot: it surfaces the ``scheme://host``
+    URLs -- http, https, ws, wss, ftp and the like -- hard-coded in a script's
+    string literals, the C2/API/CDN hosts that are the first IOCs of web triage.
+    It reuses js.strings' comment-aware, escape-decoding literal scan, so a URL
+    obfuscated as ``\\x68\\x74\\x74\\x70...`` is caught once decoded, and needs
+    no webcrack or Node. To stay high-signal it matches only URLs carrying a
+    scheme (schemeless relative paths like ``/api/x`` are left to js.strings)
+    and reports each url with its host (the authority after ``://``, userinfo
+    stripped). Results are de-duplicated by url in first-appearance order.
+    Answers with input_bytes and endpoints with count, total, offset and
+    has_more so a filled page is not read as every URL; total is capped at
+    10000 with scan_capped when more may exist, and truncated is true when the
+    text ended inside an open literal or block comment. A missing file is
+    not_found, one over 16 MiB too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
+    text = raw.decode("utf-8", errors="replace")
+    literals, literal_more, truncated = _scan_js_string_literals(
+        text,
+        min_len=1,
+        collect_cap=_MAX_JS_STRINGS_COLLECT,
+        str_cap=_MAX_JS_STRING_LEN,
+    )
+    found, endpoint_more = _extract_js_endpoints(literals, collect_cap=_MAX_JS_ENDPOINTS_COLLECT)
+    # Either cap -- the literal scan's or the endpoint dedup's -- means more
+    # URLs may exist, so both fold into the one scan_capped the caller reads.
+    scan_more = endpoint_more or literal_more
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_JS_ENDPOINTS_PAGE))
+    window = found[start : start + cap]
+    return {
+        "endpoints": window,
+        "input_bytes": len(raw),
         "count": len(window),
         "total": len(found),
         "offset": start,

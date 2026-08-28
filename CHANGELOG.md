@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **285（168 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **286（169 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -624,6 +624,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   代价）。短于 min_length（默认 4）丢弃、长于 2048 字符裁剪；去重并按首次出现排序。返回 `input_bytes`、
   `min_length` 与含 `count/total/offset/has_more` 的 `strings`；`total` 上限 50000、越限置 `scan_capped`；
   `truncated` 在文本于未闭合字面量或块注释中戛然而止时为真。缺文件报 not_found、超 16 MiB 报 too_large。
+- `js.endpoints`：从 JS 里提取它对话的 URL（`scheme://host` 形式的 http/https/ws/wss/ftp 等——
+  硬编码的 C2/API/CDN 主机,web triage 的头号 IOC),纯 Python、**不需要 webcrack 或 Node**。复用
+  `js.strings` 那套带注释感知、解码转义的字面量扫描,故被混淆成 `\x68\x74\x74\x70...` 的 URL 解码后也能命中。
+  为保持高信噪比只匹配**带 scheme** 的 URL(无 scheme 的相对路径如 `/api/x` 交给 `js.strings`),每条返回
+  `url` 与 `host`(`://` 后到首个 `/?#` 的 authority,去掉 `userinfo@`);按 `url` 去重、首见排序。返回
+  `input_bytes` 与含 `count/total/offset/has_more` 的 `endpoints`；`total` 上限 10000、越限(含字面量扫描
+  自身触顶)置 `scan_capped`;`truncated` 在文本于未闭合字面量或块注释中戛然而止时为真。缺文件报
+  not_found、超 16 MiB 报 too_large。
 - `wasm.imports`：纯 Python 解析 .wasm 的 import 段，列出模块的导入，**不需要 wabt**（`wasm.info/
   wat` 依赖 wabt CLI）。导入就是模块从宿主拿的东西——它离不开的 JS 函数、内存、表与全局量——读它是
   看清一个模块到底干什么的最快路径（带 `env.emscripten_*` 的内存导入是一回事，孤零零一个 crypto
