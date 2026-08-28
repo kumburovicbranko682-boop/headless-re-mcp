@@ -28,6 +28,7 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from headless_re_mcp.backends import har as har_builder
+from headless_re_mcp.backends.common.urlpath import endpoint_parts, normalize_endpoint_path
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
 
@@ -38,6 +39,11 @@ _MAX_REQUESTS = 3000
 _MAX_CONSOLE = 2000
 _MAX_SCRIPTS = 2000
 _MAX_INLINE_BODY = 200_000
+# web.network.endpoints bounds: the page of endpoint rows and the ranked
+# content-type list kept per endpoint, mirroring proxy.endpoints so a page that
+# touched thousands of routes or one route with many media types stays bounded.
+_MAX_NETWORK_ENDPOINTS_PAGE = 1000
+_MAX_ENDPOINT_CTYPES = 20
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 # A cookie jar is small (browsers cap ~180 cookies/domain, ~4 KB each), but a
@@ -1109,6 +1115,147 @@ class WebBackend:
             "has_more": start + len(window) < len(items),
             "dropped": dropped,
         }
+
+    def network_endpoints(
+        self,
+        session_id: str,
+        *,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        resource_type: str = "",
+        status: int = 0,
+        normalize: bool = True,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Collapse the captured requests into the page's API surface, by route.
+
+        web.network.list is a flat, chronological log of every request; this
+        groups those requests by (host, path) -- normalising id-like path
+        segments (numeric, UUID, long hex, long mixed-alnum token) to {id} by
+        default so /users/1 and /users/2 fold into one /users/{id} route -- and
+        reports each route's method set, request count, status-class mix,
+        response content types, the CDP resource types seen and an example
+        requestId to open with web.network.get. It is the browser-side analogue
+        of proxy.endpoints: the backend routes the page actually depends on. Set
+        normalize false to key on the exact path instead.
+        """
+        handle = self._get(session_id)
+        with handle.lock:
+            items = [_without_har(entry) for entry in handle.requests.values()]
+            dropped = handle.requests_dropped
+        captured = len(items)
+        active: JsonObject = {}
+        verb = method.strip().upper()
+        if verb:
+            active["method"] = verb
+        host_f = host.strip().lower()
+        if host_f:
+            active["host"] = host_f
+        url_f = url_contains.strip().lower()
+        if url_f:
+            active["url_contains"] = url_f
+        ctype_f = content_type.strip().lower()
+        if ctype_f:
+            active["content_type"] = ctype_f
+        rtype_f = resource_type.strip().lower()
+        if rtype_f:
+            active["resource_type"] = rtype_f
+        if status:
+            active["status"] = int(status)
+        groups: OrderedDict[tuple[str, str], JsonObject] = OrderedDict()
+        for row in items:
+            url = str(row.get("url") or "")
+            hostname, raw_path, has_query = endpoint_parts(url)
+            row_method = str(row.get("method") or "").upper()
+            row_ctype = str(row.get("mimeType") or "").split(";", 1)[0].strip().lower()
+            row_rtype = str(row.get("resourceType") or "")
+            code = row.get("status")
+            if "method" in active and row_method != active["method"]:
+                continue
+            if "host" in active and active["host"] not in hostname.lower():
+                continue
+            if "url_contains" in active and active["url_contains"] not in url.lower():
+                continue
+            if "content_type" in active and active["content_type"] not in row_ctype:
+                continue
+            if "resource_type" in active and active["resource_type"] != row_rtype.lower():
+                continue
+            if "status" in active and code != active["status"]:
+                continue
+            path = normalize_endpoint_path(raw_path) if normalize else (raw_path or "/")
+            key = (hostname, path)
+            agg = groups.get(key)
+            if agg is None:
+                agg = {
+                    "host": hostname,
+                    "path": path,
+                    "count": 0,
+                    "methods": {},
+                    "status_classes": {},
+                    "content_types": {},
+                    "resource_types": {},
+                    "has_query": False,
+                    "example_id": row.get("requestId"),
+                }
+                groups[key] = agg
+            agg["count"] += 1
+            if row_method:
+                agg["methods"][row_method] = agg["methods"].get(row_method, 0) + 1
+            cls = f"{code // 100}xx" if isinstance(code, int) else "pending"
+            agg["status_classes"][cls] = agg["status_classes"].get(cls, 0) + 1
+            if row_ctype:
+                agg["content_types"][row_ctype] = agg["content_types"].get(row_ctype, 0) + 1
+            if row_rtype:
+                agg["resource_types"][row_rtype] = agg["resource_types"].get(row_rtype, 0) + 1
+            if has_query:
+                agg["has_query"] = True
+        ordered = sorted(
+            groups.values(), key=lambda a: (-int(a["count"]), a["host"], a["path"])
+        )
+        total = len(ordered)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_NETWORK_ENDPOINTS_PAGE))
+        window = ordered[start : start + cap]
+        endpoints: list[JsonObject] = []
+        for agg in window:
+            ctypes_sorted = sorted(
+                agg["content_types"].items(), key=lambda kv: (-kv[1], kv[0])
+            )
+            ctype_rows = [
+                {"content_type": name, "count": num}
+                for name, num in ctypes_sorted[:_MAX_ENDPOINT_CTYPES]
+            ]
+            item: JsonObject = {
+                "host": agg["host"],
+                "path": agg["path"],
+                "count": agg["count"],
+                "methods": sorted(agg["methods"].keys()),
+                "status_classes": agg["status_classes"],
+                "content_types": ctype_rows,
+                "resource_types": sorted(agg["resource_types"].keys()),
+                "example_id": agg["example_id"],
+            }
+            if agg["has_query"]:
+                item["has_query"] = True
+            if len(ctypes_sorted) > _MAX_ENDPOINT_CTYPES:
+                item["content_types_truncated"] = True
+            endpoints.append(item)
+        result: JsonObject = {
+            "captured": captured,
+            "dropped": dropped,
+            "endpoints": endpoints,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            "normalized": bool(normalize),
+        }
+        if active:
+            result["filter"] = active
+        return result
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)

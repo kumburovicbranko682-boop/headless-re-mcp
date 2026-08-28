@@ -77,6 +77,58 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="web.network.endpoints")
+    def web_network_endpoints(
+        session_id: str,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        resource_type: str = "",
+        status: Annotated[int, Field(ge=0, le=599)] = 0,
+        normalize: bool = True,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Collapse the captured requests into the page's API surface, by route.
+
+        web.network.list is a flat, chronological log of every request and cannot
+        answer "what endpoints does this page call". This groups the captured
+        requests by (host, path) -- normalising id-like path segments (numeric,
+        UUID, long hex, long mixed-alnum token) to {id} by default, so /users/1
+        and /users/2 fold into one /users/{id} route -- and reports each route's
+        method set, request count, status-class mix, response content types and
+        the CDP resource types seen (Document, Script, XHR, Fetch, ...) with an
+        example requestId to open with web.network.get. It is the browser-side
+        analogue of proxy.endpoints. Set normalize false to key on the exact path.
+
+        Filters (all optional, combined with AND): method exact verb; host,
+        url_contains, content_type case-insensitive substrings (content_type
+        matches the response mimeType); resource_type an exact CDP type
+        (case-insensitive); status exact code, 0 means any. The active filter is
+        echoed back as filter. Answers with endpoints (host, path, count, methods,
+        status_classes, content_types, resource_types, example_id, plus has_query
+        when a query string was seen), ranked by count then host then path and
+        paged with count, total (distinct routes), offset and has_more; captured
+        is every request still retained, dropped how many the ring evicted, and
+        normalized whether {id} folding was applied. The list field is endpoints,
+        not routes or requests.
+        """
+        return _dump(
+            analysis.web_network_endpoints(
+                session_id,
+                method=method,
+                host=host,
+                url_contains=url_contains,
+                content_type=content_type,
+                resource_type=resource_type,
+                status=status,
+                normalize=normalize,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
         """Fetch one request's response body (large bodies spill to an artifact).

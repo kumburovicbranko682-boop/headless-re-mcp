@@ -27,6 +27,12 @@ from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends import har
+from headless_re_mcp.backends.common.urlpath import (
+    endpoint_parts as _endpoint_parts,
+)
+from headless_re_mcp.backends.common.urlpath import (
+    normalize_endpoint_path as _normalize_endpoint_path,
+)
 
 JsonObject = dict[str, Any]
 _MAX_FLOWS = 2000
@@ -827,44 +833,16 @@ def _ranked(counts: dict[str, int], key_name: str, cap: int) -> tuple[list[JsonO
 # route that returned many media types cannot make a reply unbounded.
 _MAX_ENDPOINTS_PAGE = 1000
 _MAX_ENDPOINT_CTYPES = 20
-_UUID_RE = re.compile(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-_HEX_RE = re.compile(r"(?i)^[0-9a-f]+$")
-_TOKENISH_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
-
-
-def _is_variable_segment(seg: str) -> bool:
-    """True when a path segment looks like an id/hash/token, not a route name.
-
-    Collapsing these to a placeholder is what turns ``/users/123`` and
-    ``/users/456`` into one endpoint. Conservative on purpose: a plain numeric
-    segment, a UUID, a hex string of 12+ chars (an object id / md5 / sha) or a
-    long (24+) mixed alnum token qualifies, but an ordinary word never does.
-    """
-    if seg.isdigit():
-        return True
-    if _UUID_RE.match(seg):
-        return True
-    if len(seg) >= 12 and _HEX_RE.match(seg):
-        return True
-    return bool(
-        len(seg) >= 24 and _TOKENISH_RE.match(seg) and any(c.isdigit() for c in seg)
-    )
-
-
-def _normalize_endpoint_path(path: str) -> str:
-    """Replace id-like path segments with ``{id}`` so routes group together."""
-    if not path:
-        return "/"
-    return "/".join("{id}" if _is_variable_segment(seg) else seg for seg in path.split("/"))
 
 
 def _endpoint_path(url: str) -> tuple[str, bool]:
-    """Split a captured URL into (path, has_query); path defaults to ``/``."""
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return "/", False
-    return (parts.path or "/"), bool(parts.query)
+    """Split a captured URL into (path, has_query); path defaults to ``/``.
+
+    The proxy already stores the host on the flow row, so only the path and the
+    presence of a query are taken from the shared parser here.
+    """
+    _host, path, has_query = _endpoint_parts(url)
+    return path, has_query
 
 
 def _flow_matches(row: JsonObject, active: JsonObject) -> bool:

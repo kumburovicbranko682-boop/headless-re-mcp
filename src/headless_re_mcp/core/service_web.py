@@ -129,6 +129,34 @@ class WebAnalysisMixin:
     ) -> Result[JsonObject]:
         return self._web_wrap(session_id, "network_list", session_id, offset=offset, limit=limit)
 
+    def web_network_endpoints(
+        self,
+        session_id: str,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        resource_type: str = "",
+        status: int = 0,
+        normalize: bool = True,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "network_endpoints",
+            session_id,
+            method=method,
+            host=host,
+            url_contains=url_contains,
+            content_type=content_type,
+            resource_type=resource_type,
+            status=status,
+            normalize=normalize,
+            offset=offset,
+            limit=limit,
+        )
+
     def web_network_get(self, session_id: str, request_id: str) -> Result[JsonObject]:
         try:
             data = self._web.network_get(session_id, request_id, self._web_artifact_dir(session_id))

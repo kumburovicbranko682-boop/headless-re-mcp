@@ -14,11 +14,15 @@ from typing import Any
 
 import pytest
 
+from headless_re_mcp.backends.common.urlpath import (
+    is_variable_segment as _is_variable_segment,
+)
+from headless_re_mcp.backends.common.urlpath import (
+    normalize_endpoint_path as _normalize_endpoint_path,
+)
 from headless_re_mcp.backends.proxy.client import (
     ProxyBackend,
     _endpoint_path,
-    _is_variable_segment,
-    _normalize_endpoint_path,
 )
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
