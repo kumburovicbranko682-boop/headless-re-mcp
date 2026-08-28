@@ -24,6 +24,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（APK 解析缓存的 mtime 键与 release 全清）
+
+- `backends/apk/client.py` 的 light/full 解析缓存以 `(路径, mtime_ns)` 为键，`release`
+  按会话关闭时清空一个 APK 的全部缓存。既有 `test_apk_client_parse_layer.py` 证明"解析
+  一次后走缓存"和越限逐出最旧项,但每次"命中"都用未改动、mtime 不变的同一文件,于是键的
+  mtime 部分被执行却从未被观测：把 `_key` 换成 `(str(path), 0)`,整套仍全绿——而 apk.decode
+  → 编辑 → apk.build 在同路径回写后,缓存会把编辑前的陈旧解析当作命中返回，apk.* 便在回答
+  一个磁盘上已不存在的文件。`release` 也只测了 OSError→False 一条弧;它真正的职责——跨两个
+  缓存、跨该路径曾经缓存过的每一个 mtime 变体清空、同时不动其它 APK——完全未钉：把它的循环
+  缩成 `(cls._light_cache,)` 会在会话关闭后把最重的全 DEX 分析继续驻留（正是 release 要防的
+  泄漏),既有套件照样全绿。新增 `tests/unit/test_apk_cache_mtime_key_and_release.py`（6 个用例，
+  用 `os.utime` 强制严格更新的 mtime 使命中/未命中确定）钉住：改动文件后 light 与 full 缓存
+  各自重新解析/分析;`release` 丢弃并返回 True、跨两缓存丢弃、丢弃同路径的全部 mtime 变体、
+  且不误伤旁观 APK。四个针对性变异（去 mtime／只清 light／只清首个匹配／清空全部）分别被对应
+  用例捕获;无产品代码改动。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
