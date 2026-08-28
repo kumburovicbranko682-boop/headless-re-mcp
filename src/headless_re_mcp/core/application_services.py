@@ -17,6 +17,30 @@ from headless_re_mcp.core.runtime_state import (
 from headless_re_mcp.core.session import SessionNotFound
 
 
+def _page_bound(value: object, name: str) -> int:
+    """Coerce one paging bound to int, or raise ValueError for the caller.
+
+    Both repositories (in-memory and sqlite) fed offset/limit straight to
+    ``int(...)`` and only then clamped. The list.* schemas type both as
+    integers, but the agent and OpenAI-bridge transports bind them from model
+    output with no pydantic coercion, so a null/list/dict raised TypeError --
+    filed as an internal_error incident by the service's ``except
+    BaseException`` -- an inf (a JSON 1e400 parsed to float) raised
+    OverflowError the same way, and a non-numeric string raised a ValueError
+    whose "invalid literal for int()" text echoed the caller's value back.
+    Coerce here, at the one place both stores share, so a bad page window is
+    the invalid_request caller fault it is instead of a store crash, while the
+    numeric strings and floats int() already accepted still work. A bool is an
+    int subclass but never a real page coordinate.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
 class ServicePort(Protocol):
     """Narrow callable surface delegated by domain-specific application services."""
 
@@ -89,6 +113,8 @@ class ArtifactApplicationService:
         offset: int = 0,
         limit: int = 50,
     ) -> Any:
+        offset = _page_bound(offset, "offset")
+        limit = _page_bound(limit, "limit")
         return self.repository.list_artifacts(session_id, offset=offset, limit=limit)
 
     def describe_artifact(self, artifact_id: str) -> Any:
@@ -117,6 +143,8 @@ class ArtifactApplicationService:
         offset: int = 0,
         limit: int = 100,
     ) -> Any:
+        offset = _page_bound(offset, "offset")
+        limit = _page_bound(limit, "limit")
         return self.repository.list_knowledge(
             session_id,
             kind=kind,
@@ -142,6 +170,8 @@ class ArtifactApplicationService:
         restart would take the first for an answer. Every other session-scoped
         call reports session_not_found, and a KeyError is what produces it.
         """
+        offset = _page_bound(offset, "offset")
+        limit = _page_bound(limit, "limit")
         page = self.repository.list_timeline(session_id, offset=offset, limit=limit)
         if isinstance(page, dict) and page.get("exists") is False:
             raise SessionNotFound.for_id(session_id)
@@ -154,6 +184,8 @@ class ArtifactApplicationService:
         offset: int = 0,
         limit: int = 50,
     ) -> Any:
+        offset = _page_bound(offset, "offset")
+        limit = _page_bound(limit, "limit")
         return self.repository.list_audit(session_id, offset=offset, limit=limit)
 
     def call(self, operation: str, *args: object, **kwargs: object) -> Any:

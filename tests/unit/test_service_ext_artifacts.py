@@ -316,6 +316,56 @@ def test_artifacts_list_maps_a_store_failure(tmp_path: Path) -> None:
     assert result.error.code == "internal_error"
 
 
+@pytest.mark.parametrize("bad", [None, [1], {"a": 1}, "x", float("inf"), True])
+def test_repository_list_pages_refuse_a_non_int_bound(tmp_path: Path, bad: Any) -> None:
+    """A malformed offset/limit is the caller's fault, not a store outage.
+
+    list.* schemas type offset/limit as integers, but the agent and
+    OpenAI-bridge transports bind them from model output with no pydantic
+    coercion, and both repositories fed the value straight to ``int(...)``. A
+    null/list/dict raised TypeError and an inf (a JSON 1e400) raised
+    OverflowError -- both filed as a logged internal_error incident -- while a
+    non-numeric string raised a ValueError whose message echoed the caller's
+    value. The shared ArtifactApplicationService now refuses all of them as the
+    invalid_request they are, across every list.* method and both stores.
+    """
+    service = _Service(tmp_path)
+    service.pe_session()
+
+    for label, result in (
+        ("artifacts_list.offset", service.artifacts_list("sid", offset=bad)),
+        ("artifacts_list.limit", service.artifacts_list("sid", limit=bad)),
+        ("audit_list.offset", service.audit_list("sid", offset=bad)),
+        ("audit_list.limit", service.audit_list("sid", limit=bad)),
+        ("timeline_list.offset", service.timeline_list("sid", offset=bad)),
+        ("timeline_list.limit", service.timeline_list("sid", limit=bad)),
+        ("knowledge_query.offset", service.knowledge_query("sid", offset=bad)),
+        ("knowledge_query.limit", service.knowledge_query("sid", limit=bad)),
+    ):
+        assert not result.ok and result.error is not None, label
+        assert result.error.code == "invalid_request", f"{label}: {result.error.code}"
+
+
+@pytest.mark.parametrize(
+    ("offset", "limit"),
+    [(0, 50), (5, 10), ("5", "10"), (1.9, 2.9)],
+)
+def test_repository_list_pages_keep_coercible_bounds(
+    tmp_path: Path, offset: Any, limit: Any
+) -> None:
+    """The numeric strings and floats int() already accepted still page."""
+    service = _Service(tmp_path)
+    service.pe_session()
+    blob = tmp_path / "a.bin"
+    blob.write_bytes(b"x" * 8)
+    _register(service, blob)
+
+    result = service.artifacts_list("sid", offset=offset, limit=limit)
+
+    assert result.ok and result.data is not None
+    assert result.data["offset"] == int(offset)
+
+
 def test_artifacts_describe_reports_a_missing_artifact(tmp_path: Path) -> None:
     result = _Service(tmp_path).artifacts_describe("nope")
 
