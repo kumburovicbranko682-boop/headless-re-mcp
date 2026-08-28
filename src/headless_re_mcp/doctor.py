@@ -1187,6 +1187,16 @@ def probe_optional_tool(
     exactly as probe_ghidra does. Without it the doctor would call a JRE-less
     machine's jadx or a Node-less machine's webcrack "detected" and the operator
     would only discover the missing runtime when a call actually failed.
+
+    A configured path that is not a file is MISSING, never a silent PATH
+    fallback: every backend behind this probe pins itself to the configured
+    path (the clients take settings.<attr> and do not rediscover -- radare2 /
+    jadx / apktool / apksigner refuse with capability_unavailable, webcrack
+    fails at spawn, adb exports it as ADBUTILS_ADB_PATH and poisons server
+    auto-spawn), so a typo in HEADLESS_RE_* with the tool separately on PATH
+    used to read DETECTED while every call failed -- the exact misconfiguration
+    the doctor exists to surface. Mirrors probe_ghidra's treatment of a
+    ghidra_home without analyzeHeadless.
     """
     configured = getattr(settings, settings_attr, None)
     remediation: str | None = None
@@ -1199,13 +1209,27 @@ def probe_optional_tool(
                 f"before {name} can run."
             )
             runtime_note = f" but {runtime_command} is not on PATH"
-    if configured is not None and Path(str(configured)).is_file():
+    if configured is not None:
+        if Path(str(configured)).is_file():
+            return Probe(
+                name,
+                ProbeStatus.DETECTED,
+                f"{name} configured{runtime_note}",
+                {"path": str(configured)},
+                remediation,
+            )
+        env_var = f"HEADLESS_RE_{settings_attr.upper()}"
         return Probe(
             name,
-            ProbeStatus.DETECTED,
-            f"{name} configured{runtime_note}",
+            ProbeStatus.MISSING,
+            f"{name} configured path is not a file",
             {"path": str(configured)},
-            remediation,
+            (
+                f"{env_var} points at {configured}, which is not a file. The "
+                f"backend uses only the configured path and does not fall back "
+                f"to PATH; fix the path or unset {env_var} (or the config file "
+                f"entry) so discovery uses PATH."
+            ),
         )
     found = {candidate: shutil.which(candidate) for candidate in commands}
     found = {candidate: path for candidate, path in found.items() if path}

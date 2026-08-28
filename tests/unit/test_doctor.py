@@ -233,6 +233,85 @@ def test_wabt_probe_missing_when_unconfigured_and_off_path(
     assert "HEADLESS_RE_WABT" in probe.remediation
 
 
+def test_optional_tool_probe_reports_a_dangling_configured_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured path that is not a file must read MISSING, not PATH-DETECTED.
+
+    Every backend behind probe_optional_tool pins itself to settings.<attr>:
+    JadxClient(settings.jadx) refuses with capability_unavailable when the path
+    is not a file, and never rediscovers from PATH. The probe used to silently
+    fall back to PATH when the configured path was dangling, so a typo in
+    HEADLESS_RE_JADX on a host with jadx also on PATH read DETECTED while every
+    apk.decompile failed -- the exact misconfiguration doctor exists to
+    surface. Assert parity against the client itself so the two cannot diverge.
+    """
+    from headless_re_mcp.backends.jadx.client import JadxClient
+
+    dangling = tmp_path / "vendor" / "jadx"  # never created
+    on_path = tmp_path / "jadx"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(on_path) if cmd in ("jadx", "java") else None,
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), jadx=dangling)
+
+    assert JadxClient(dangling).available is False
+    probe = probe_optional_tool(
+        "jadx", settings, "jadx", ("jadx", "jadx.bat"), needs_runtime=("java", "a JRE")
+    )
+
+    assert probe.status == ProbeStatus.MISSING
+    assert probe.details["path"] == str(dangling)
+    assert probe.remediation is not None
+    assert "HEADLESS_RE_JADX" in probe.remediation
+
+
+@pytest.mark.parametrize(
+    ("probe_name", "attr", "commands"),
+    [
+        ("radare2", "r2", R2_BINARY_NAMES),
+        ("adb", "adb", ("adb",)),
+        ("jadx", "jadx", ("jadx", "jadx.bat")),
+        ("apktool", "apktool", ("apktool", "apktool.bat")),
+        ("apksigner", "apksigner", ("apksigner", "apksigner.bat")),
+        ("webcrack", "webcrack", ("webcrack",)),
+    ],
+)
+def test_run_doctor_reports_dangling_configured_paths_for_every_optional_cli(
+    probe_name: str,
+    attr: str,
+    commands: tuple[str, ...],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dangling-config honesty must hold at every real call site.
+
+    The tool's own command names resolve on PATH (to a real file, so the old
+    fallback would genuinely have read DETECTED), but the configured path is a
+    typo: the probe run_doctor emits must say MISSING and name the env var.
+    """
+    on_path = tmp_path / commands[0]
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: str(on_path) if cmd in commands else None,
+    )
+    dangling = tmp_path / "typo" / commands[0]
+    settings = replace(_settings(None, tmp_path / "artifacts"), **{attr: dangling})
+
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == probe_name)
+    assert probe.status == ProbeStatus.MISSING, probe_name
+    assert probe.details.get("path") == str(dangling)
+    assert probe.remediation is not None
+    assert f"HEADLESS_RE_{attr.upper()}" in probe.remediation
+
+
 def test_jvm_tool_probe_flags_missing_java_on_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
