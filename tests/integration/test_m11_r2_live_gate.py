@@ -204,6 +204,33 @@ def test_m11_r2_live_elf_address_mapping(tmp_path: Path) -> None:
     assert disasm.get("address_va") == va
     assert disasm["address"]["rva"] == va - image_base
 
+    # xrefs (axtj) on ELF exercises the aac+axtj path where it matters most: the
+    # call graph aac builds is what lets axtj recover a function's callers, and
+    # the fixture wires exactly one -- main calls helper -- so the reference is
+    # data-independent rather than depending on which functions analysis names.
+    # The PE gate can only prove xrefs against a referent-free entry (count 0);
+    # this pins the populated side, with the caller's address threaded through
+    # the same ELF load base as everything above.
+    helper_fns = [
+        item
+        for item in funcs["items"]
+        if "helper" in (item.get("name") or "") and isinstance(item.get("address"), dict)
+    ]
+    assert helper_fns, "r2 did not recover the helper function to take xrefs of"
+    helper_va = helper_fns[0]["address"]["va"]
+    xrefs = client.xrefs(fixture, helper_va, timeout=60.0)
+    assert xrefs.get("parsed") is True
+    assert xrefs.get("address_va") == helper_va
+    assert xrefs.get("count", 0) >= 1, "aac+axtj found no caller of a function main calls"
+    xref_rows = xrefs.get("items") or []
+    assert any(
+        row.get("type") == "CALL" and "main" in (row.get("fcn_name") or "")
+        for row in xref_rows
+    ), f"the call from main to helper was not among the xrefs: {xref_rows}"
+    for row in xref_rows:
+        if isinstance(row.get("address"), dict) and "rva" in row["address"]:
+            assert row["address"]["rva"] == row["address"]["va"] - image_base
+
     # imports (iij) on an ELF: the rows carry no lib -- an ELF resolves imports
     # at runtime through DT_NEEDED, not per symbol -- and, measured against a
     # real toolchain, an import reached only through the GOT carries no plt or
