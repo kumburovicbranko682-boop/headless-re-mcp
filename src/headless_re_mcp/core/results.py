@@ -24,6 +24,40 @@ from headless_re_mcp.unpack.upx import UpxScanError
 
 JsonObject = dict[str, Any]
 
+# Non-PE backends raise their own error classes (WebError, AdbError, FridaError,
+# ProxyError, ApkError, JadxError, ApktoolError, JsReError), each carrying a
+# canonical code/message/details but -- unlike the PE-line UpxScanError and
+# ExeinfopeScanError -- no retryable flag. The six non-PE service mixins convert
+# them to XdbgRpcError before handing them to _failure, which reports
+# XdbgRpcError.retryable verbatim (and cannot re-derive it: by then the WebError
+# vs. a genuine x64dbg fault are the same type). Deriving the flag here, at the
+# one conversion point, is what stops that hand-off from flattening every non-PE
+# failure to retryable=False. A timeout is a transient bound the caller may
+# usefully retry, exactly as _failure already treats the generic TimedOut,
+# TimeoutError and a DIE/Exeinfo scan timeout; leaving it False told an
+# unattended caller a slow adb/browser/frida call had failed permanently. Every
+# other non-PE code -- invalid_params, not_found, capability_unavailable,
+# invalid_state, permission_denied, too_large, backend_error -- returns the
+# identical failure on retry, so it stays non-retryable and the caller does not
+# spin on a deterministic fault.
+_RETRYABLE_BACKEND_CODES = frozenset({"timeout"})
+
+
+def backend_error_as_rpc(exc: Any) -> XdbgRpcError:
+    """Map a non-PE backend error to an XdbgRpcError, deriving retryable from its
+    code so a transient timeout is not reported as a permanent failure.
+
+    ``exc`` is any of the non-PE backend error classes: each exposes ``code``,
+    ``message`` and ``details``. Centralised so all six ``_as_rpc`` converters
+    share one retryable rule instead of each defaulting the flag to False.
+    """
+    return XdbgRpcError(
+        exc.code,
+        exc.message,
+        details=dict(exc.details),
+        retryable=exc.code in _RETRYABLE_BACKEND_CODES,
+    )
+
 
 def _success(data: JsonObject, **meta: object) -> Result[JsonObject]:
     return Result[JsonObject](ok=True, data=data, meta=dict(meta))

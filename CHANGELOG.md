@@ -24,6 +24,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 非 PE 后端 `timeout` 现在如实上报为 `retryable=True`：六个 `_as_rpc` 转换器此前都用 `XdbgRpcError` 的构造默认 `retryable=False`，把每一类非 PE 失败(含 timeout)拍平为“永久失败”，与 `_failure` 对 TimedOut / TimeoutError / DIE·Exeinfo 扫描 timeout 一律判 retryable 的全局约定相悖
+
+- `RpcError.retryable` 是与 `code` 并列的机器契约:无人值守的调用方据此决定是否重试(见 `test_result_failure_mapping`
+  的 docstring——存储故障可重试、`invalid_request` 不可)。`results._failure` 里全线一致:通用 `TimedOut`、stdlib
+  `TimeoutError`、以及 DIE / Exeinfo 的扫描 timeout 都判 `retryable=True`——超时是可重试的瞬时上界。唯独非 PE 后端是例外:
+  它们的错误类(`WebError` / `AdbError` / `FridaError` / `ProxyError` / `ApkError` / `JadxError` / `ApktoolError` /
+  `JsReError`)不带 retryable 字段,而六个服务 mixin 的 `_as_rpc` 都写成 `XdbgRpcError(exc.code, exc.message, details=...)`,
+  吃下构造函数默认 `retryable=False`。于是一次慢的 `web` / `frida` / `device` / `proxy` 调用抛出 `timeout`,到调用方却成了
+  *永久* 失败——一个“跳过确定性错误”的 agent 会拒绝重试一次很可能第二次就成功的调用。转换点还把类型抹平(到 `_failure`
+  时 `WebError` 与真正的 x64dbg 故障已是同一个 `XdbgRpcError`,无从回溯),所以推导只能落在 `_as_rpc` 这唯一有非 PE 类型
+  信息的位置。新增共享 `backend_error_as_rpc`,在这一处按 code 推导 retryable(仅 `timeout` 判真,其余
+  `invalid_params` / `not_found` / `capability_unavailable` / `invalid_state` / `permission_denied` / `too_large` /
+  `backend_error` 皆为确定性失败,重试返回同一结果,保持假),六个转换器全部改走它,任何单点回退到丢标志的构造式都无法
+  再悄悄降级。`_RETRYABLE_BACKEND_CODES` 收敛为 `{"timeout"}`,且约束为 canonical 词表的子集。新增
+  `test_non_pe_error_retryable.py`:钉住规则本身(可重试码恰为 `{"timeout"}` 且 ⊆ 词表)、helper 跨整套词表只让 timeout
+  可重试且 code/message/details 原样保留、六个转换器经 `_failure` 端到端各自让 `timeout` 上报为 retryable(断言里点名
+  backend,单点回退即精确指认)、以及镜像方向(确定性码 `invalid_params` 经每个转换器仍 retryable=False,防止在某处放宽
+  规则)。以非空注入验证:把 `service_web._as_rpc` 临时退回丢标志的裸构造式,守卫精确报出 `web`,还原后转绿。
+
 ### 测试（非 PE 后端错误码词表守卫：八个后端的 code 是 agent 路由所依的机器契约，此前为散落的裸字符串、无枚举无校验，新增守卫钉住“抛出的 code 恰等于 canonical 词表”——拼写错 / 混入 PE 线方言 / 词表烂成宽集三向皆拦）
 
 - 每个非 PE 后端(web / proxy / adb / apk 静态 / apktool / frida / jsre / jadx)抛出的类型化错误,其首参 `code` 经
