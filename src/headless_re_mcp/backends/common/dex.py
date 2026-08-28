@@ -35,6 +35,23 @@ _ENDIAN_CONSTANT = 0x12345678
 _REVERSE_ENDIAN = 0x78563412
 _NO_INDEX = 0xFFFFFFFF
 _CLASS_DEF_SIZE = 32  # bytes per class_def_item
+_METHOD_ID_SIZE = 8  # bytes per method_id_item (class_idx u16, proto_idx u16, name_idx u32)
+_PROTO_ID_SIZE = 12  # bytes per proto_id_item (shorty_idx u32, return_type_idx u32, params_off u32)
+_MAX_PARAMS = 128  # cap on a single method's parameter list
+
+# Dalvik type descriptors for the primitives; anything else is a class (L...;) or
+# an array ([ prefix). Used only to render a human-readable signature.
+_PRIMITIVE_TYPES = {
+    "V": "void",
+    "Z": "boolean",
+    "B": "byte",
+    "S": "short",
+    "C": "char",
+    "I": "int",
+    "J": "long",
+    "F": "float",
+    "D": "double",
+}
 
 # One returned string, and the bytes scanned to find its terminator, are bounded
 # so a pathological table cannot inflate a reply. Real identifiers sit far below.
@@ -159,6 +176,68 @@ def _dotted(descriptor: str | None) -> str:
     if descriptor and descriptor.startswith("L") and descriptor.endswith(";"):
         return descriptor[1:-1].replace("/", ".")
     return descriptor or ""
+
+
+def _u16(data: bytes, offset: int) -> int:
+    return int(struct.unpack_from("<H", data, offset)[0])
+
+
+def _readable_type(descriptor: str | None) -> str:
+    """A Dalvik descriptor rendered for a human: ``[I`` -> ``int[]``, ``Ljava/lang/String;`` -> dotted."""
+    if not descriptor:
+        return ""
+    depth = 0
+    while descriptor.startswith("["):
+        depth += 1
+        descriptor = descriptor[1:]
+    if descriptor in _PRIMITIVE_TYPES:
+        base = _PRIMITIVE_TYPES[descriptor]
+    elif descriptor.startswith("L") and descriptor.endswith(";"):
+        base = descriptor[1:-1].replace("/", ".")
+    else:
+        base = descriptor
+    return base + "[]" * depth
+
+
+def _read_type_list(data: bytes, header: dict[str, int], offset: int) -> list[str]:
+    """A DEX type_list at ``offset`` resolved to descriptors, bounded and defensive."""
+    if not offset or offset + 4 > len(data):
+        return []
+    size = _u32(data, offset)
+    descriptors: list[str] = []
+    for index in range(min(size, _MAX_PARAMS)):
+        entry = offset + 4 + index * 2
+        if entry + 2 > len(data):
+            break
+        descriptor = _type_descriptor(data, header, _u16(data, entry))
+        descriptors.append(descriptor or "")
+    return descriptors
+
+
+def _resolve_proto(data: bytes, header: dict[str, int], proto_idx: int) -> JsonObject | None:
+    """The prototype at ``proto_idx``: shorty, return type and parameter descriptors."""
+    if proto_idx == _NO_INDEX or proto_idx >= header["proto_ids_size"]:
+        return None
+    base = header["proto_ids_off"] + proto_idx * _PROTO_ID_SIZE
+    if base + _PROTO_ID_SIZE > len(data):
+        return None
+    shorty_idx = _u32(data, base)
+    return_type_idx = _u32(data, base + 4)
+    params_off = _u32(data, base + 8)
+    return {
+        "shorty": _string_by_index(data, header, shorty_idx),
+        "return_type": _type_descriptor(data, header, return_type_idx),
+        "parameters": _read_type_list(data, header, params_off),
+    }
+
+
+def _method_signature(
+    class_name: str, name: str, parameters: list[str], return_type: str | None
+) -> str:
+    """A readable ``owner.name(p1, p2): ret`` line for grepping the method surface."""
+    params = ", ".join(_readable_type(param) for param in parameters)
+    owner = f"{class_name}." if class_name else ""
+    return f"{owner}{name}({params}): {_readable_type(return_type) or '?'}"
 
 
 def summarize_dex(data: bytes, *, offset: int = 0, limit: int = 200) -> JsonObject:
@@ -293,5 +372,75 @@ def list_dex_classes(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonO
         "offset": start,
         "limit": window,
         "has_more": start + len(classes) < total,
+        "warnings": warnings,
+    }
+
+
+def list_dex_methods(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """A bounded, paginated page of the method-reference table.
+
+    Raises DexParseError when the bytes are not a Dalvik executable. Each
+    method_id_item is a fixed 8-byte record; this resolves the method's name,
+    its defining class (descriptor and dotted name) and its prototype (return
+    type, parameter descriptors and the shorty), then renders a readable
+    ``owner.name(params): ret`` signature. Every index is bounds-checked so a
+    corrupt entry yields a warning and a partial row rather than an exception.
+
+    The table lists every method *referenced* by the dex, both those it defines
+    and those it calls into the framework, so it is the API surface an analyst
+    greps -- the offline, androguard-free counterpart of apk.methods.
+    """
+    version, _checksum, _signature, header = _read_header(data)
+
+    warnings: list[str] = []
+
+    def warn(message: str) -> None:
+        if len(warnings) < _MAX_WARNINGS:
+            warnings.append(message)
+
+    total = header["method_ids_size"]
+    method_ids_off = header["method_ids_off"]
+    start = max(0, int(offset))
+    window = max(1, min(int(limit), 1000))
+    methods: list[JsonObject] = []
+    if total and method_ids_off:
+        upper = min(total, start + window)
+        for index in range(start, upper):
+            base = method_ids_off + index * _METHOD_ID_SIZE
+            if base + _METHOD_ID_SIZE > len(data):
+                warn(f"method_id {index} is past end of file")
+                break
+            class_idx = _u16(data, base)
+            proto_idx = _u16(data, base + 2)
+            name_idx = _u32(data, base + 4)
+            name = _string_by_index(data, header, name_idx) or ""
+            class_desc = _type_descriptor(data, header, class_idx)
+            if class_desc is None:
+                warn(f"method_id {index} class type out of bounds")
+            proto = _resolve_proto(data, header, proto_idx)
+            return_type = proto["return_type"] if proto else None
+            parameters = proto["parameters"] if proto else []
+            shorty = proto["shorty"] if proto else None
+            class_name = _dotted(class_desc)
+            methods.append(
+                {
+                    "name": name,
+                    "class": class_desc or "",
+                    "class_name": class_name,
+                    "return_type": return_type,
+                    "parameters": parameters,
+                    "shorty": shorty,
+                    "signature": _method_signature(class_name, name, parameters, return_type),
+                }
+            )
+
+    return {
+        "version": version,
+        "methods": methods,
+        "methods_count": len(methods),
+        "methods_total": total,
+        "offset": start,
+        "limit": window,
+        "has_more": start + len(methods) < total,
         "warnings": warnings,
     }

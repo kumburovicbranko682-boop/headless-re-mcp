@@ -17,6 +17,7 @@ from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.common.dex import (
     DexParseError,
     list_dex_classes,
+    list_dex_methods,
     summarize_dex,
 )
 from headless_re_mcp.backends.jadx import JadxClient, JadxError
@@ -173,6 +174,26 @@ class ApkAnalysisMixin:
         """
         try:
             listing = list_dex_classes(self._read_dex_bytes(path), offset=offset, limit=limit)
+            return _success(listing, backend="dex")
+        except DexParseError as exc:
+            return _failure(_as_rpc(ApkError("invalid_params", str(exc))))
+        except ApkError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def dex_methods(self, path: str, *, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
+        """List a standalone .dex's methods with the stdlib -- no androguard needed.
+
+        Mirrors apk.methods for a lone .dex: it walks the method-reference table
+        and returns, per method, the name, defining class, prototype (return
+        type, parameters, shorty) and a readable signature, honestly paginated
+        (methods_total / has_more). A corrupt table index yields a warning and a
+        partial row, not a fault. A file that is not a DEX is invalid_params, one
+        over the 64 MiB cap too_large.
+        """
+        try:
+            listing = list_dex_methods(self._read_dex_bytes(path), offset=offset, limit=limit)
             return _success(listing, backend="dex")
         except DexParseError as exc:
             return _failure(_as_rpc(ApkError("invalid_params", str(exc))))
