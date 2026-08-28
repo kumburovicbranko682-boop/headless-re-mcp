@@ -223,6 +223,26 @@ def test_module_refresh_rejects_blank_empty_or_duplicate_keys(keys: list[str]) -
     assert not host.calls
 
 
+@pytest.mark.parametrize("method_name", ["workflow_module_track", "workflow_module_untrack"])
+@pytest.mark.parametrize("key", [123, None, ["libc"], {"k": "v"}, b"libc"])
+def test_module_track_and_untrack_refuse_a_non_string_key(method_name: str, key: Any) -> None:
+    # key is schema-typed as a string, but the agent transport binds it from model
+    # output with no coercion. track_module/untrack_module normalize it with
+    # key.strip() inside the action closure, so a non-string raised a raw
+    # AttributeError that _failure filed as a logged internal_error incident. It must
+    # instead read as the caller fault it is, and never reach the runtime lock.
+    host = _Double()
+    method = getattr(host, method_name)
+    if method_name == "workflow_module_track":
+        result = method("sess", cast(Any, key), SimpleNamespace())
+    else:
+        result = method("sess", cast(Any, key))
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    assert not host.calls
+
+
 def test_module_refresh_of_every_key_runs_the_transition(
     engine: dict[str, list[Any]],
 ) -> None:

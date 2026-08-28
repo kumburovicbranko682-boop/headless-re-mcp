@@ -287,6 +287,18 @@ class WorkflowAnalysisMixin:
         validated = _workflow_timeout(timeout)
         if isinstance(validated, ValueError):
             return _failure(validated, session_id=session_id)
+        # key is a handler kwarg the workflow.module.track tool schema types as a
+        # string, but the agent and OpenAI-bridge transports bind it straight from
+        # model output with no pydantic coercion. track_module normalizes it with
+        # key.strip(), which raises a raw AttributeError on a non-string -- and that
+        # runs inside the action closure under _workflow_request, so _failure maps it
+        # to a logged internal_error incident rather than the invalid_request a blank
+        # key already earns. Reject the wrong type up front so it stays a caller fault.
+        if not isinstance(key, str):
+            return _failure(
+                ValueError("module key must be a string"),
+                session_id=session_id,
+            )
 
         def action(runtime: _BackendRuntime) -> JsonObject:
             workflow = self._require_mutable_workflow(session_id)
@@ -323,6 +335,15 @@ class WorkflowAnalysisMixin:
         validated = _workflow_timeout(timeout)
         if isinstance(validated, ValueError):
             return _failure(validated, session_id=session_id)
+        # See workflow_module_track: untrack_module also normalizes key with
+        # key.strip() inside the action closure, so a non-string key raised a raw
+        # AttributeError that _failure filed as an internal_error incident. Reject the
+        # wrong type up front so it stays the invalid_request caller fault it is.
+        if not isinstance(key, str):
+            return _failure(
+                ValueError("module key must be a string"),
+                session_id=session_id,
+            )
 
         def action(runtime: _BackendRuntime) -> JsonObject:
             workflow = self._require_mutable_workflow(session_id)
