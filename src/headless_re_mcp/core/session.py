@@ -145,6 +145,11 @@ class SessionRegistry:
                 overlay = _pe_overlay(path)
                 if overlay is not None:
                     metadata.setdefault("pe", {})["overlay"] = overlay
+                # Executable magic hidden in the resource directory -- a nested
+                # PE in an RT_RCDATA blob is the dropper's stage two.
+                res_payloads, res_count = _pe_resource_payloads(path)
+                metadata.setdefault("pe", {})["resource_payloads"] = res_payloads
+                metadata["pe"]["resource_payload_count"] = res_count
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -3341,6 +3346,53 @@ _WIN_CERT_TYPES = {
     0x0004: "ts_stack_signed",
 }
 _PE_MAX_SECTIONS = 96
+# The resource data directory (index 2) roots a tree a Windows dropper hides
+# stage two in -- a nested PE in an RT_RCDATA blob, released and run at
+# runtime. These bound the walk of a hostile or malformed tree.
+_PE_RESOURCE_DIR = 2
+_PE_RES_MAX_DEPTH = 8
+_PE_RES_MAX_ENTRIES = 8192
+_PE_RES_MAX_PAYLOADS = 64
+_PE_RES_MAX_TREE = 32 * 1024 * 1024
+_PE_RES_MAX_NAME = 128
+# The standard RT_* resource type ids, so a flagged payload names the resource
+# it hid in (RT_RCDATA is the dropper's usual choice, but a PE in a "bitmap" is
+# just as much a lie).
+_PE_RESOURCE_TYPES = {
+    1: "cursor",
+    2: "bitmap",
+    3: "icon",
+    4: "menu",
+    5: "dialog",
+    6: "string",
+    7: "fontdir",
+    8: "font",
+    9: "accelerator",
+    10: "rcdata",
+    11: "messagetable",
+    12: "group_cursor",
+    14: "group_icon",
+    16: "version",
+    17: "dlginclude",
+    19: "plugplay",
+    20: "vxd",
+    21: "anicursor",
+    22: "aniicon",
+    23: "html",
+    24: "manifest",
+}
+# Executable/container magic worth flagging as the head of a resource blob.
+# MZ needs a DOS-header-sized head so a two-byte coincidence is not a PE.
+_PE_RESOURCE_KINDS: tuple[tuple[bytes, str], ...] = (
+    (b"\x7fELF", "elf"),
+    (b"dex\n", "dex"),
+    (b"PK\x03\x04", "zip"),
+    (b"\xcf\xfa\xed\xfe", "macho"),
+    (b"\xce\xfa\xed\xfe", "macho"),
+    (b"\xfe\xed\xfa\xcf", "macho"),
+    (b"\xfe\xed\xfa\xce", "macho"),
+    (b"MZ", "pe"),
+)
 _CLR_METADATA_MAGIC = b"BSJB"
 _CLR_MAX_VERSION_LEN = 256
 _COMIMAGE_FLAGS_ILONLY = 0x00000001
@@ -3577,6 +3629,127 @@ def _pe_overlay(path: Path) -> dict[str, Any] | None:
         "certificate_size": certificate_size,
         "extra_size": total - certificate_size,
     }
+
+
+def _pe_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Resources whose bytes open with executable magic -- the dropper's stash.
+
+    The Windows analogue of the APK ``assets/`` and WASM data-segment censuses:
+    the resource directory (data directory index 2) is where a dropper hides
+    stage two -- a nested PE in an RT_RCDATA blob it writes to disk and runs, an
+    ELF payload for a cross-platform loader, a ZIP of tooling. Each flagged
+    entry names the resource type it hid under (RT_RCDATA, or a "bitmap" that
+    is really a PE), the sniffed kind and the resource's byte size. A census,
+    not a verdict: a legitimate archive resource lists here too, for triage.
+
+    Bounded and fail-closed: the tree walk is capped in depth, entries and
+    reported payloads; only the first 0x40 bytes of each resource are read; and
+    any structural surprise yields what parsed cleanly rather than raising.
+    """
+    try:
+        with path.open("rb") as stream:
+            dos = stream.read(0x40)
+            if len(dos) < 0x40 or dos[:2] != b"MZ":
+                return [], 0
+            e_lfanew = int.from_bytes(dos[0x3C:0x40], "little")
+            stream.seek(e_lfanew)
+            coff = stream.read(24)
+            if len(coff) < 24 or coff[:4] != b"PE\x00\x00":
+                return [], 0
+            num_sections = min(int.from_bytes(coff[6:8], "little"), _PE_MAX_SECTIONS)
+            opt_size = int.from_bytes(coff[20:22], "little")
+            optional = stream.read(opt_size)
+            magic = int.from_bytes(optional[0:2], "little") if len(optional) >= 2 else 0
+            if magic == 0x10B:
+                dir_count_off = 92
+            elif magic == 0x20B:
+                dir_count_off = 108
+            else:
+                return [], 0
+            if dir_count_off + 4 > len(optional):
+                return [], 0
+            dir_count = int.from_bytes(optional[dir_count_off : dir_count_off + 4], "little")
+            if dir_count <= _PE_RESOURCE_DIR:
+                return [], 0
+            entry = dir_count_off + 4 + _PE_RESOURCE_DIR * 8
+            if entry + 8 > len(optional):
+                return [], 0
+            res_rva = int.from_bytes(optional[entry : entry + 4], "little")
+            res_size = int.from_bytes(optional[entry + 4 : entry + 8], "little")
+            if res_rva == 0 or res_size == 0:
+                return [], 0
+            sections = _pe_sections(stream.read(num_sections * 40))
+            res_base = _pe_rva_to_offset(sections, res_rva)
+            if res_base is None:
+                return [], 0
+            stream.seek(res_base)
+            tree = stream.read(min(res_size, _PE_RES_MAX_TREE))
+    except OSError:
+        return [], 0
+
+    payloads: list[dict[str, Any]] = []
+    counters = {"found": 0, "entries": 0}
+
+    def sniff(data_rva: int, size: int, type_label: str, name_label: str) -> None:
+        # A resource's bytes live inside the .rsrc section it was read from, so
+        # its RVA resolves within the tree buffer; a data entry pointing
+        # elsewhere is malformed and skipped.
+        if not res_rva <= data_rva < res_rva + len(tree):
+            return
+        ro = data_rva - res_rva
+        head = tree[ro : ro + min(size, 0x40)]
+        kind = next((k for m, k in _PE_RESOURCE_KINDS if head.startswith(m)), None)
+        if kind == "pe" and len(head) < 0x40:
+            kind = None
+        if kind is None:
+            return
+        counters["found"] += 1
+        if len(payloads) < _PE_RES_MAX_PAYLOADS:
+            payloads.append(
+                {"type": type_label, "name": name_label, "kind": kind, "size": size}
+            )
+
+    def entry_label(name_field: int) -> str:
+        if name_field & 0x80000000:  # a UTF-16 string at a resource-relative offset
+            so = name_field & 0x7FFFFFFF
+            if so + 2 <= len(tree):
+                length = int.from_bytes(tree[so : so + 2], "little")
+                raw = tree[so + 2 : so + 2 + min(length, _PE_RES_MAX_NAME) * 2]
+                return raw.decode("utf-16-le", errors="replace")
+            return "?"
+        return str(name_field)
+
+    def walk(node_off: int, depth: int, type_label: str, name_label: str) -> None:
+        if depth > _PE_RES_MAX_DEPTH or node_off + 16 > len(tree):
+            return
+        named = int.from_bytes(tree[node_off + 12 : node_off + 14], "little")
+        idd = int.from_bytes(tree[node_off + 14 : node_off + 16], "little")
+        cursor = node_off + 16
+        for _ in range(named + idd):
+            if counters["entries"] >= _PE_RES_MAX_ENTRIES or cursor + 8 > len(tree):
+                return
+            counters["entries"] += 1
+            name_field = int.from_bytes(tree[cursor : cursor + 4], "little")
+            offset_field = int.from_bytes(tree[cursor + 4 : cursor + 8], "little")
+            cursor += 8
+            label = entry_label(name_field)
+            if depth == 0:  # the top level names the resource TYPE
+                type_here = _PE_RESOURCE_TYPES.get(name_field, label) if not (
+                    name_field & 0x80000000
+                ) else label
+                name_here = name_label
+            else:
+                type_here = type_label
+                name_here = label if depth == 1 else name_label
+            if offset_field & 0x80000000:  # a subdirectory
+                walk(offset_field & 0x7FFFFFFF, depth + 1, type_here, name_here)
+            elif offset_field + 16 <= len(tree):  # an IMAGE_RESOURCE_DATA_ENTRY
+                data_rva = int.from_bytes(tree[offset_field : offset_field + 4], "little")
+                size = int.from_bytes(tree[offset_field + 4 : offset_field + 8], "little")
+                sniff(data_rva, size, type_here, name_here)
+
+    walk(0, 0, "", "")
+    return payloads, counters["found"]
 
 
 def _pe_sections(table: bytes) -> list[tuple[int, int, int, int]]:

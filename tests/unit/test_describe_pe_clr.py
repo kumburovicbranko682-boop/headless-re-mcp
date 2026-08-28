@@ -21,6 +21,7 @@ from headless_re_mcp.core.session import (
     SessionRegistry,
     _pe_authenticode,
     _pe_overlay,
+    _pe_resource_payloads,
     describe_pe_clr,
 )
 
@@ -269,6 +270,152 @@ class TestPeOverlay:
         assert _pe_overlay(path) is None
 
 
+def _pe_with_resources(resources: list[tuple[int, int, bytes]]) -> bytes:
+    """A minimal PE32+ whose .rsrc holds a 3-level tree of the given resources.
+
+    Each resource is (type_id, name_id, payload). The tree is Type -> Name ->
+    Language, the shape Windows tools and pefile expect, with each data entry's
+    OffsetToData an image RVA into the same .rsrc section.
+    """
+    dirh, ent, datae = 16, 8, 16
+    n = len(resources)
+    sect_align = 0x1000
+    rsrc_rva = sect_align
+    type_dir_size = dirh + n * ent
+    off = type_dir_size
+    name_dir_offs = [off + i * (dirh + ent) for i in range(n)]
+    off += n * (dirh + ent)
+    lang_dir_offs = [off + i * (dirh + ent) for i in range(n)]
+    off += n * (dirh + ent)
+    data_entry_offs = [off + i * datae for i in range(n)]
+    off += n * datae
+    payload_offs: list[int] = []
+    for _type_id, _name_id, payload in resources:
+        if off % 8:
+            off += 8 - (off % 8)
+        payload_offs.append(off)
+        off += len(payload)
+    rsrc_size = off
+    buf = bytearray(rsrc_size)
+    struct.pack_into("<IIHHHH", buf, 0, 0, 0, 0, 0, 0, n)
+    for i, (type_id, name_id, payload) in enumerate(resources):
+        name_dir, lang_dir = name_dir_offs[i], lang_dir_offs[i]
+        struct.pack_into("<II", buf, dirh + i * ent, type_id, 0x80000000 | name_dir)
+        struct.pack_into("<IIHHHH", buf, name_dir, 0, 0, 0, 0, 0, 1)
+        struct.pack_into("<II", buf, name_dir + dirh, name_id, 0x80000000 | lang_dir)
+        struct.pack_into("<IIHHHH", buf, lang_dir, 0, 0, 0, 0, 0, 1)
+        struct.pack_into("<II", buf, lang_dir + dirh, 0x0409, data_entry_offs[i])
+        struct.pack_into(
+            "<IIII", buf, data_entry_offs[i], rsrc_rva + payload_offs[i], len(payload), 0, 0
+        )
+        buf[payload_offs[i] : payload_offs[i] + len(payload)] = payload
+    rsrc = bytes(buf)
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x40)
+    opt_size = 0xF0
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, opt_size, 0x2022)
+    opt = bytearray(opt_size)
+    struct.pack_into("<H", opt, 0, 0x20B)  # PE32+
+    struct.pack_into("<I", opt, 108, 16)  # NumberOfRvaAndSizes
+    struct.pack_into("<II", opt, 112 + 2 * 8, rsrc_rva, rsrc_size)  # resource dir entry
+    raw_off = 0x40 + len(coff) + opt_size
+    if raw_off % 0x200:
+        raw_off += 0x200 - (raw_off % 0x200)
+    sect = bytearray(40)
+    sect[0:5] = b".rsrc"
+    struct.pack_into("<I", sect, 8, rsrc_size)
+    struct.pack_into("<I", sect, 12, rsrc_rva)
+    struct.pack_into("<I", sect, 16, len(rsrc))
+    struct.pack_into("<I", sect, 20, raw_off)
+    struct.pack_into("<I", sect, 36, 0x40000040)
+    out = bytearray(dos + coff + opt + sect)
+    if len(out) < raw_off:
+        out += b"\x00" * (raw_off - len(out))
+    out += rsrc
+    return bytes(out)
+
+
+# A DOS/PE-header-sized nested image: MZ padded past the sniffer's 0x40 floor.
+_NESTED_PE = b"MZ" + b"\x90" * 62 + b"stage-two body"
+
+
+class TestPeResourcePayloads:
+    """_pe_resource_payloads lists executable magic hidden in the resources.
+
+    The Windows dropper's stash: a nested PE in an RT_RCDATA blob it writes out
+    and runs, an ELF for a cross-platform loader, a ZIP of tooling -- even a
+    "bitmap" whose bytes are really an executable. Each flagged entry names the
+    resource type it hid under, the sniffed kind and the byte size; benign
+    resources (a manifest, an icon) are never listed.
+    """
+
+    def test_a_resourceless_pe_lists_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_resource_payloads(path) == ([], 0)
+
+    def test_each_hidden_kind_reads_under_its_resource_type(self, tmp_path: Path) -> None:
+        path = tmp_path / "dropper.exe"
+        path.write_bytes(
+            _pe_with_resources(
+                [
+                    (10, 101, _NESTED_PE),  # RT_RCDATA -> PE
+                    (10, 102, b"\x7fELF" + b"\x00" * 20),  # RT_RCDATA -> ELF
+                    (24, 1, b'<?xml version="1.0"?><assembly/>'),  # RT_MANIFEST -> XML
+                    (2, 103, b"PK\x03\x04" + b"\x00" * 20),  # "bitmap" -> ZIP
+                ]
+            )
+        )
+        payloads, count = _pe_resource_payloads(path)
+        assert count == 3
+        listed = {(p["type"], p["name"]): p["kind"] for p in payloads}
+        assert listed == {
+            ("rcdata", "101"): "pe",
+            ("rcdata", "102"): "elf",
+            ("bitmap", "103"): "zip",
+        }
+        pe_entry = next(p for p in payloads if p["kind"] == "pe")
+        assert pe_entry["size"] == len(_NESTED_PE)
+
+    def test_prose_opening_with_mz_is_not_an_executable(self, tmp_path: Path) -> None:
+        path = tmp_path / "prose.exe"
+        path.write_bytes(_pe_with_resources([(10, 1, b"MZ region of the report")]))
+        assert _pe_resource_payloads(path) == ([], 0)
+
+    def test_a_resource_pointing_out_of_bounds_is_skipped(self, tmp_path: Path) -> None:
+        # A data entry whose RVA lands outside the .rsrc section is malformed;
+        # the walk skips it rather than reading arbitrary file bytes.
+        raw = bytearray(_pe_with_resources([(10, 1, _NESTED_PE)]))
+        # The single data entry's OffsetToData is the first RVA field inside the
+        # .rsrc raw data; find .rsrc raw offset and rewrite the entry's RVA.
+        e_lfanew = struct.unpack_from("<I", raw, 0x3C)[0]
+        sect = e_lfanew + 4 + 20 + 0xF0
+        raw_off = struct.unpack_from("<I", raw, sect + 20)[0]
+        # Scan the .rsrc for the data entry whose size equals the payload.
+        target = len(_NESTED_PE)
+        for probe in range(raw_off, len(raw) - 8, 4):
+            if struct.unpack_from("<I", raw, probe + 4)[0] == target:
+                struct.pack_into("<I", raw, probe, 0x7000_0000)  # RVA far outside .rsrc
+                break
+        path = tmp_path / "oob.exe"
+        path.write_bytes(bytes(raw))
+        assert _pe_resource_payloads(path) == ([], 0)
+
+    def test_the_list_is_bounded_but_the_count_exact(self, tmp_path: Path) -> None:
+        resources = [(10, 200 + i, b"\x7fELF" + b"\x00" * 20) for i in range(80)]
+        path = tmp_path / "many.exe"
+        path.write_bytes(_pe_with_resources(resources))
+        payloads, count = _pe_resource_payloads(path)
+        assert count == 80
+        assert len(payloads) == 64
+
+    def test_non_pe_lists_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe, just bytes")
+        assert _pe_resource_payloads(path) == ([], 0)
+
+
 def test_native_pe_has_no_dotnet_block(tmp_path: Path) -> None:
     path = tmp_path / "native.exe"
     path.write_bytes(_native_pe())
@@ -299,8 +446,15 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
     assert session.target is TargetKind.PE
     assert session.architecture is Architecture.X86
     # A native PE has no .NET block, but it does now carry the whole-PE
-    # Authenticode verdict -- unsigned here, a real answer rather than empty.
-    assert session.metadata == {"pe": {"authenticode": {"signed": False}}}
+    # Authenticode verdict -- unsigned here, a real answer rather than empty --
+    # and an (empty) resource-payload census.
+    assert session.metadata == {
+        "pe": {
+            "authenticode": {"signed": False},
+            "resource_payloads": [],
+            "resource_payload_count": 0,
+        }
+    }
 
 
 def test_session_over_a_signed_pe_carries_the_authenticode_range(tmp_path: Path) -> None:
