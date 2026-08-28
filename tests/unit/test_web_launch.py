@@ -59,6 +59,46 @@ def test_choose_preferred_when_free() -> None:
     assert reason == "preferred"
 
 
+def test_probe_healthz_gives_up_when_the_deadline_lapses_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from headless_re_mcp.web import launch_util
+
+    ticks = iter([100.0, 200.0])
+    monkeypatch.setattr(launch_util.time, "monotonic", lambda: next(ticks, 1e9))
+    assert probe_our_healthz("127.0.0.1", 1, timeout=0.5) is None
+
+
+def test_probe_healthz_gives_up_and_closes_the_socket_when_the_connect_ate_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from headless_re_mcp.web import launch_util
+
+    lifecycle: list[str] = []
+
+    class _FakeSock:
+        def settimeout(self, value: float) -> None:
+            lifecycle.append("settimeout")
+
+        def sendall(self, payload: bytes) -> None:
+            lifecycle.append("sendall")
+
+        def shutdown(self, how: int) -> None:
+            lifecycle.append("shutdown")
+
+        def close(self) -> None:
+            lifecycle.append("close")
+
+    monkeypatch.setattr(
+        socket, "create_connection", lambda addr, timeout: _FakeSock()
+    )
+    ticks = iter([0.0, 0.1, 9.0])
+    monkeypatch.setattr(launch_util.time, "monotonic", lambda: next(ticks, 1e9))
+    assert probe_our_healthz("127.0.0.1", 1, timeout=0.5) is None
+    assert "close" in lifecycle, "the abandoned probe must release its socket"
+    assert "sendall" not in lifecycle
+
+
 def test_probe_our_healthz_none_on_closed_port() -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))

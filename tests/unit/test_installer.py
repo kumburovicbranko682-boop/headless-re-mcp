@@ -218,3 +218,144 @@ def test_bundle_manifest_is_rejected_before_an_unbounded_read(
     with pytest.raises(installer.InstallError, match="manifest exceeds 64 bytes"):
         installer.configure_dependency_bundle(bundle)
 
+def test_an_unreadable_manifest_path_names_its_label(tmp_path: Path) -> None:
+    with pytest.raises(installer.InstallError, match="probe file is unreadable"):
+        installer._read_manifest(tmp_path, label="probe file")
+
+
+def test_a_release_manifest_that_is_not_json_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        installer, "_read_manifest", lambda path, *, label: b"\xff\xfe not json"
+    )
+    with pytest.raises(installer.InstallError, match="manifest is unreadable"):
+        installer.load_dependency_release()
+
+
+def test_a_url_that_cannot_even_be_split_is_unsafe() -> None:
+    assert installer._is_safe_download_url("http://[bad") is False
+
+
+def test_every_source_failing_sha_verification_fails_the_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, release = _bundle_zip(tmp_path / "source.zip")
+    monkeypatch.setattr(installer, "load_dependency_release", lambda: release)
+
+    def poisoned(url: str, destination: Path, *, expected_size: int) -> None:
+        destination.write_bytes(b"X" * expected_size)
+
+    monkeypatch.setattr(installer, "_download_one", poisoned)
+    with pytest.raises(installer.InstallError, match="all dependency release sources failed"):
+        installer.download_dependency_release(tmp_path / "downloads")
+    assert not list((tmp_path / "downloads").glob(".*.part-*"))
+
+
+def test_extract_refuses_a_bundle_without_a_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "no-manifest.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("bundle/readme.txt", b"nothing here")
+    release = {
+        "schema_version": 1,
+        "tag": "test-release",
+        "asset": archive.name,
+        "size": archive.stat().st_size,
+        "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        "never_bundles_ida": True,
+        "download_urls": ["https://primary.invalid/a.zip"],
+    }
+    monkeypatch.setattr(installer, "load_dependency_release", lambda: release)
+    with pytest.raises(installer.InstallError, match="MANIFEST.json missing"):
+        installer.extract_dependency_release(archive, tmp_path / "installed")
+
+
+def test_extract_refuses_a_bundle_that_does_not_disclaim_ida(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "with-ida.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(
+            "bundle/MANIFEST.json",
+            json.dumps({"schema_version": 1, "never_bundles_ida": False, "included": []}),
+        )
+    release = {
+        "schema_version": 1,
+        "tag": "test-release",
+        "asset": archive.name,
+        "size": archive.stat().st_size,
+        "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        "never_bundles_ida": True,
+        "download_urls": ["https://primary.invalid/a.zip"],
+    }
+    monkeypatch.setattr(installer, "load_dependency_release", lambda: release)
+    with pytest.raises(installer.InstallError, match="does not prove that IDA is excluded"):
+        installer.extract_dependency_release(archive, tmp_path / "installed")
+
+
+def test_extract_notices_a_bundle_that_vanishes_after_activation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, release = _bundle_zip(tmp_path / "bundle.zip")
+    monkeypatch.setattr(installer, "load_dependency_release", lambda: release)
+    real_find = installer._find_bundle_root
+    final = (tmp_path / "installed" / str(release["tag"])).resolve()
+
+    def flaky(root: Path) -> Path | None:
+        if root.resolve() == final:
+            return None
+        return real_find(root)
+
+    monkeypatch.setattr(installer, "_find_bundle_root", flaky)
+    with pytest.raises(installer.InstallError, match="disappeared after activation"):
+        installer.extract_dependency_release(archive, tmp_path / "installed")
+
+
+def test_extract_replaces_a_stale_install_directory_without_a_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, release = _bundle_zip(tmp_path / "bundle.zip")
+    monkeypatch.setattr(installer, "load_dependency_release", lambda: release)
+    stale = tmp_path / "installed" / str(release["tag"])
+    stale.mkdir(parents=True)
+    (stale / "leftover.txt").write_text("junk", encoding="utf-8")
+    extracted = installer.extract_dependency_release(archive, tmp_path / "installed")
+    assert extracted["ok"] is True
+    assert extracted["cached"] is False
+    assert not (stale / "leftover.txt").exists()
+
+
+def test_the_interactive_ida_prompt_takes_skip_or_a_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import builtins
+
+    monkeypatch.setattr(builtins, "input", lambda prompt="": " - ")
+    assert installer._prompt_ida_path() is None
+    monkeypatch.setattr(builtins, "input", lambda prompt="": f'"{tmp_path}"')
+    assert installer._prompt_ida_path() == tmp_path.resolve()
+
+
+def test_the_setup_summary_prints_steps_and_the_missing_ida_hint(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    installer.print_setup_summary(
+        {
+            "config_path": "/tmp/config.json",
+            "steps": [
+                {"ok": True, "step": "deps"},
+                "not-a-dict",
+                {"ok": False, "step": "doctor"},
+            ],
+            "doctor_ready": False,
+            "ida_configured": False,
+            "platform": "windows",
+        }
+    )
+    out = capsys.readouterr().out
+    assert "[OK] deps" in out
+    assert "[WARN] doctor" in out
+    assert "IDA 尚未配置" in out
+    assert "Windows 必需" in out
