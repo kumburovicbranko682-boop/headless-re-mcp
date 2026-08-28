@@ -6,6 +6,7 @@ happy paths (which need a real device and live in the integration gates).
 
 from __future__ import annotations
 
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,10 +72,21 @@ class TestAdbArgumentValidation:
     def test_valid_package_names_pass(self, package: str) -> None:
         assert _check_package(package) == package
 
-    def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
+    def test_missing_adbutils_degrades_instead_of_raising_import_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A device call with adbutils unimportable refuses, it does not crash.
+
+        The ``.[android]`` extra installs adbutils, so skipping when it is present
+        meant this ran the refusal on no full-extras host and never on CI -- skip
+        != pass, and "happens to be uninstalled" is not a test. A ``None`` sentinel
+        in ``sys.modules`` forces the constructor's ``import adbutils`` to raise, so
+        the degradation branch (available False) and the tool-call refusal
+        (capability_unavailable from _client) run on every host.
+        """
+        monkeypatch.setitem(sys.modules, "adbutils", None)
         backend = AdbBackend()
-        if backend.available:
-            pytest.skip("adbutils installed — degradation path not exercised (skip != pass)")
+        assert backend.available is False
         with pytest.raises(AdbError) as info:
             backend.list_devices()
         assert info.value.code == "capability_unavailable"

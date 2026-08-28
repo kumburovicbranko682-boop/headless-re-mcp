@@ -210,22 +210,45 @@ class TestCapturesAreReachableAndReclaimable:
 
 
 class TestJsReDegradation:
-    def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
+    def test_missing_webcrack_degrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With webcrack off PATH, deobfuscate refuses instead of launching.
+
+        JsClient(None) discovers webcrack via shutil.which, so on a host that has
+        it (a full-extras CI installs the toolchain) this used to skip -- skip !=
+        pass, and the refusal never ran where it mattered. Force which to find
+        nothing so executable stays None and the capability_unavailable guard runs
+        on every host.
+        """
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client.shutil.which", lambda _cmd: None
+        )
         source = tmp_path / "a.js"
         source.write_text("var a=1;", encoding="utf-8")
         client = JsClient(None)
-        if client.available:
-            pytest.skip("webcrack installed — degradation path not exercised (skip != pass)")
+        assert client.available is False
         with pytest.raises(JsReError) as info:
             client.deobfuscate(source)
         assert info.value.code == "capability_unavailable"
 
-    def test_missing_wabt_degrades(self, tmp_path: Path) -> None:
+    def test_missing_wabt_degrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With wasm2wat off PATH, wat refuses instead of launching.
+
+        WasmClient(None) resolves wasm2wat via shutil.which, so skipping when wabt
+        is installed left this refusal untested on any full-extras host. Force
+        which to find nothing so _wasm2wat stays None and the
+        capability_unavailable guard runs on every host.
+        """
+        monkeypatch.setattr(
+            "headless_re_mcp.backends.jsre.client.shutil.which", lambda _cmd: None
+        )
         module = tmp_path / "m.wasm"
         module.write_bytes(b"\x00asm\x01\x00\x00\x00")
         client = WasmClient(None)
-        if client.available:
-            pytest.skip("wabt installed — degradation path not exercised (skip != pass)")
+        assert client.available is False
         with pytest.raises(JsReError) as info:
             client.wat(module)
         assert info.value.code == "capability_unavailable"
