@@ -1,12 +1,21 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
 from headless_re_mcp.core.models import ModuleSelector, Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
+
+# The coordinate system a caller's address is expressed in. Closed set: the
+# service (AnalysisService.resolve_runtime_address) rejects anything outside
+# {static, rva, runtime}. Typed as a bare str the schema advertised only
+# "string", so an agent had to read the prose to learn the three words and a
+# typo ("virtual", "abs") only failed one layer down. A Literal makes the schema
+# an enum and refuses the bad value up front. (The service still casefolds and
+# strips for its non-tool callers, so tightening only this surface is safe.)
+AddressSource = Literal["static", "rva", "runtime"]
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -76,7 +85,7 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def sync_resolve_runtime_address(
         session_id: str,
         address: Annotated[int, Field(ge=0)],
-        source: str = "static",
+        source: AddressSource = "static",
     ) -> dict[str, Any]:
         """Resolve a static VA, module RVA, or runtime VA to the live runtime VA.
 
