@@ -444,14 +444,23 @@ class AnalysisService(
         open web sessions: 878 KiB. A page of 100 is 29 KiB. ``limit=None``
         keeps the unpaged reply for the web console, which is not the agent.
         """
+        # session.list is the one meta listing whose paging lives here rather than
+        # in the store, and int(offset)/int(limit) had no envelope around them. The
+        # MCP path is pydantic-typed, but the agent transport binds offset/limit
+        # straight from model output, so a JSON null or object raised an *uncaught*
+        # TypeError -- not even the internal_error envelope the store-backed
+        # listings returned -- and a non-numeric string raised ValueError. Route
+        # both to the invalid_request a malformed page is, and keep the ints,
+        # floats and numeric strings int() already accepted (limit=None stays the
+        # unpaged reply for the web console).
+        try:
+            start = max(0, int(offset))
+            cap = None if limit is None else max(1, min(int(limit), 1000))
+        except (TypeError, ValueError):
+            return _failure(ValueError("offset and limit must be integers"))
         sessions = [_session_json(session) for session in self.registry.list()]
         total = len(sessions)
-        start = max(0, int(offset))
-        if limit is None:
-            page = sessions[start:]
-        else:
-            cap = max(1, min(int(limit), 1000))
-            page = sessions[start : start + cap]
+        page = sessions[start:] if cap is None else sessions[start : start + cap]
         return _success(
             {
                 "sessions": page,
