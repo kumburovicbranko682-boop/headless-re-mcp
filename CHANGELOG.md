@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **301（184 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **302（185 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -600,6 +600,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   字段的类）、`field_name`、`matched_fields`（该名解析到多少个不同字段）、`found`（是否匹配到任一
   字段，借此把"未被访问"与"根本不存在"区分开）、`count` 与仅在真丢行时才为真的 `has_more`。
   与 `apk.xrefs` 共用 1000 的分页上限。
+- **`apk.files`**：`apk.native_libs`(只看 lib/)给不了的整包清单——遍历 zip,报每个文件的解压/压缩大小
+  与按路径判定的类型:`dex`(多出的 classesN.dex 提示多 dex 或动态加载代码)、`native_lib`、`resource`、
+  `asset`(内嵌配置、JS bundle、ML 模型常藏在这)、`arsc` 与 `manifest` 单例、META-INF 下的 v1 签名文件,
+  以及 `other`。大小取自 zip 中央目录,不读文件内容、**不需要 DEX 分析**。每行含 `name`、`type`、`size`、
+  `compressed_size`(该条中央目录记录读不到时为 null),按名排序。输出 `files`、`counts`(全包按类计数、不止
+  当前页)、`total_size` 与 `total_compressed_size`(全包字节和)、`count`/`total`/`offset`/`has_more`;
+  `total` 上限 50000、越限置 `scan_capped`。
 - **`apk.summary`**：`wasm.summary`/`js.summary` 的 Android 对应物，一次调用给出 APK 全貌。把
   `apk.open`/`apk.components`/`apk.permissions`/`apk.certificates`/`apk.native_libs` 五次调用的清单级
   事实汇成一个答案,且用便宜的清单解析(共享 `_apk`),跳过类/字符串/xref 工具才需要的昂贵全量 DEX 分析。

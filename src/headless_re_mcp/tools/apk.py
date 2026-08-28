@@ -81,6 +81,31 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.files")
+    def apk_files(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List every entry in the APK zip with its size and coarse type.
+
+        The whole-archive inventory apk.native_libs (which covers only lib/)
+        does not give: it walks the zip and reports each file's uncompressed and
+        compressed size plus a path-based type -- dex (an extra classesN.dex
+        flags multidex or dynamically loaded code), native_lib, resource, asset
+        (where embedded configs, JS bundles and ML models hide), the arsc and
+        manifest singletons, the v1 signature files under META-INF, and other.
+        Sizes are read from the zip central directory, so it never reads a
+        file's contents and needs no DEX analysis. Each row is name, type, size
+        and compressed_size (null when that entry's central-directory record
+        could not be read), sorted by name. Answers with files, counts (the
+        per-type tally over the whole archive, not just the page), total_size and
+        total_compressed_size (byte sums over the archive), count, total, offset
+        and has_more so a filled page is not read as every entry; total is capped
+        at 50000 with scan_capped when an archive somehow holds more.
+        """
+        return _dump(analysis.apk_files(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.summary")
     def apk_summary(session_id: str) -> dict[str, Any]:
         """Profile an APK in one call -- its identity and shape at a glance.

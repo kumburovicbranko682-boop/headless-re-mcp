@@ -42,6 +42,22 @@ _MAX_STRINGS_COLLECT = 5000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
+# A classic zip caps entries near 65535; a safety valve keeps a pathological
+# archive from building an unbounded row list while staying well above real APKs.
+_MAX_FILES_COLLECT = 50_000
+_MAX_FILES_PAGE = 1000
+# The coarse buckets apk.files sorts every zip entry into; kept fixed so the
+# counts dict has a stable shape rather than varying with the archive.
+_APK_FILE_TYPES = (
+    "dex",
+    "native_lib",
+    "resource",
+    "asset",
+    "arsc",
+    "manifest",
+    "signature",
+    "other",
+)
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
@@ -378,6 +394,72 @@ class ApkClient:
             "abis": sorted(abis),
             "count": len(libs),
             "has_more": has_more,
+        }
+
+    def files(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List every entry in the APK zip with its size and coarse type.
+
+        The whole-archive inventory apk.native_libs (lib/ only) does not give:
+        it walks the zip and reports each file's uncompressed and compressed
+        size and a path-based type -- dex (extra classesN.dex flags multidex or
+        dynamically loaded code), native_lib, resource, asset (where embedded
+        configs, JS bundles and models hide), the arsc/manifest singletons, the
+        v1 signature files, and other. Sizes come from the central directory, so
+        it never reads a file's contents. Answers with files (each name, type,
+        size and compressed_size, sorted by name), counts (the per-type tally
+        over the whole archive), total_size and total_compressed_size (byte sums
+        over the archive), count, total, offset and has_more so a filled page is
+        not read as every entry; total is capped at 50000 with scan_capped when
+        an archive somehow holds more. size/compressed_size are null for an entry
+        whose central-directory record could not be read.
+        """
+        apk = self._apk(path)
+        names = apk.get_files() or []
+        try:
+            info = apk.zip.infolist()
+        except Exception:  # noqa: BLE001 - androguard/apkInspector internal
+            info = {}
+
+        rows: list[JsonObject] = []
+        counts = {file_type: 0 for file_type in _APK_FILE_TYPES}
+        total_size = 0
+        total_compressed = 0
+        scan_capped = False
+        for name in sorted(str(entry) for entry in names):
+            if len(rows) >= _MAX_FILES_COLLECT:
+                scan_capped = True
+                break
+            file_type = _classify_apk_file(name)
+            counts[file_type] += 1
+            entry = info.get(name) if isinstance(info, dict) else None
+            size = getattr(entry, "uncompressed_size", None)
+            compressed = getattr(entry, "compressed_size", None)
+            size = size if isinstance(size, int) else None
+            compressed = compressed if isinstance(compressed, int) else None
+            if size is not None:
+                total_size += size
+            if compressed is not None:
+                total_compressed += compressed
+            rows.append(
+                {
+                    "name": name,
+                    "type": file_type,
+                    "size": size,
+                    "compressed_size": compressed,
+                }
+            )
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_FILES_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "files": window,
+            "counts": counts,
+            "total_size": total_size,
+            "total_compressed_size": total_compressed,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_capped,
         }
 
     def summary(self, path: Path) -> JsonObject:
@@ -1235,6 +1317,32 @@ def _str_or_none(value: Any) -> str | None:
     if not text or text.lower() == "none":
         return None
     return text
+
+
+def _classify_apk_file(name: str) -> str:
+    """Bucket a zip entry by its path/extension (no content sniffing).
+
+    Deliberately path-based so it needs neither python-magic nor a read of the
+    file: the buckets a triage pass cares about are code (dex), native_lib,
+    resource, asset, the arsc/manifest singletons, the v1 signature files under
+    META-INF, and everything else.
+    """
+    lower = name.lower()
+    if name == "AndroidManifest.xml":
+        return "manifest"
+    if name == "resources.arsc":
+        return "arsc"
+    if lower.endswith(".dex"):
+        return "dex"
+    if name.startswith("lib/"):
+        return "native_lib"
+    if name.startswith("res/"):
+        return "resource"
+    if name.startswith("assets/"):
+        return "asset"
+    if name.startswith("META-INF/") and lower.endswith((".rsa", ".dsa", ".ec", ".sf", ".mf")):
+        return "signature"
+    return "other"
 
 
 def _protection_level_label(raw: Any) -> str | None:

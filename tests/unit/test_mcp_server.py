@@ -259,6 +259,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "apk.certificates",
         "apk.components",
         "apk.native_libs",
+        "apk.files",
         "apk.summary",
         "apk.exported_components",
         "apk.intent_filters",
