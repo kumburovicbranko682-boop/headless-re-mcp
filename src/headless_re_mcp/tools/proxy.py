@@ -77,9 +77,12 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Fetch one flow's headers and body (large bodies spill to an artifact).
 
         Answers with id, request (method, url, headers) and response (status,
-        headers, size). A body at most 200000 bytes is response.body; anything
-        larger is response.body_path and there is no body key. There are no
-        top-level headers or body fields. A WebSocket flow also carries
+        headers, size). A text body at most 200000 bytes is response.body; a
+        larger body -- or a binary body of any size (one holding a NUL byte or
+        non-UTF-8 bytes, such as a captured .wasm, image or font) -- is
+        response.body_path and there is no body key, so the exact bytes survive
+        for the static tools rather than being mangled into inline text. There
+        are no top-level headers or body fields. A WebSocket flow also carries
         websocket with the captured messages (direction sent or received, type
         text or binary, payload, payload_len, ts), count, total, offset,
         has_more, dropped and closed; a binary message's payload is base64 and

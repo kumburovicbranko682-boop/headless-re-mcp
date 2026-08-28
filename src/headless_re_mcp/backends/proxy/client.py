@@ -48,6 +48,33 @@ _MAX_WS_MESSAGES = 500
 # no matter how long a socket stays open.
 _MAX_WS_RETAINED = 2000
 _MAX_WS_RETAINED_BYTES = 16 * 1024 * 1024
+# A flow body at or below this inlines as text; a larger one spills to a file.
+_MAX_INLINE_BODY = 200_000
+
+
+def _looks_textual(data: bytes) -> bool:
+    """True when the bytes are safe to inline as text rather than spill to a file.
+
+    A binary body (a .wasm, an image, a font) inlined via ``decode`` is useless
+    for the very static tools a proxy capture exists to feed: either it comes
+    back as mojibake (bytes >= 0x80) or, for an all-low-byte module, it reads as
+    a string a path-taking tool cannot open. Two cheap sniffs decide it:
+
+    * a NUL byte never appears in real text (HTML/JSON/JS/CSS) but is pervasive
+      in binary formats -- and it catches an all-ASCII-range wasm module that a
+      strict utf-8 decode would otherwise wrongly accept as text;
+    * bytes that are not valid UTF-8 at all.
+
+    Anything that trips either is spilled to a file where the exact bytes
+    survive, the same contract the web line already keeps for a binary body.
+    """
+    if b"\x00" in data:
+        return False
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 class ProxyError(RuntimeError):
@@ -867,7 +894,13 @@ class ProxyBackend:
                 "size": len(body),
             },
         }
-        if len(body) > 200_000:
+        # Spill when the body is too big to inline OR when it is binary: a
+        # utf-8-with-replacement decode of binary bytes is lossy and irreversible,
+        # so a captured .wasm/image/font would come back as mojibake with no path
+        # to the real bytes. Writing the exact bytes to a file keeps the proxy
+        # capture feedable to the static tools (wasm.*, ghidra, ...), matching the
+        # web line's binary-body contract. An empty body still inlines as "".
+        if body and (len(body) > _MAX_INLINE_BODY or not _looks_textual(body)):
             artifact_dir.mkdir(parents=True, exist_ok=True)
             out = artifact_dir / f"flow-{uuid4().hex}.bin"
             out.write_bytes(body)

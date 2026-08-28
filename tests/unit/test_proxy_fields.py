@@ -161,6 +161,84 @@ def test_proxy_flow_get_names_body_path_on_the_response(tmp_path: Path, monkeypa
     assert "response" in doc
 
 
+def test_proxy_flow_get_spills_a_small_binary_body_as_real_bytes(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A small binary body must spill to a file, not mangle into inline text.
+
+    A captured .wasm (well under the 200 KB inline cap) used to come back inline
+    -- useless for the very static tools a proxy capture exists to feed. The
+    subtle case is a module whose bytes are all in the ASCII range, so a strict
+    utf-8 decode wrongly accepts it as text; the NUL byte a real module carries
+    is what marks it binary. Measured: a WASM header (all bytes <= 0x7f, with
+    NULs) plus some high bytes -> response.body absent, response.body_path set,
+    and the file holds the exact bytes (magic intact).
+    """
+    # Deliberately all-low-byte-with-NUL like a real wasm header: every byte is
+    # <= 0x7f, so a strict-utf-8-only check would inline it; it spills purely
+    # because of the NUL sniff, which is exactly the case that regressed.
+    wasm = b"\x00asm\x01\x00\x00\x00\x01\x07\x01\x60\x02\x7f\x7f\x01\x7f"
+    assert all(b <= 0x7F for b in wasm) and b"\x00" in wasm
+    assert len(wasm) < 200_000
+    request = SimpleNamespace(
+        method="GET", pretty_url="http://x/m.wasm", headers={"accept": "*/*"}
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "application/wasm"},
+        raw_content=wasm,
+    )
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert "body" not in payload["response"], payload["response"]
+    body_path = Path(str(payload["response"]["body_path"]))
+    assert body_path.is_file()
+    assert body_path.read_bytes() == wasm
+    assert payload["response"]["size"] == len(wasm)
+
+
+def test_proxy_flow_get_still_inlines_a_small_text_body(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A small text body must still inline as response.body, not spill.
+
+    The binary-spill guard must not sweep up ordinary text: a short UTF-8 body
+    stays inline (that is what callers read for a captured JSON/HTML response),
+    so only genuinely binary or oversized bodies land on disk.
+    """
+    text = "hello-\u00e9\u4e2d\u6587-9449"  # multi-byte but valid UTF-8
+    request = SimpleNamespace(
+        method="GET", pretty_url="http://x/p", headers={"accept": "text/plain"}
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        headers={"content-type": "text/plain; charset=utf-8"},
+        raw_content=text.encode("utf-8"),
+    )
+    flow = SimpleNamespace(request=request, response=response)
+
+    class _Recorder:
+        def raw(self, flow_id: str) -> Any:
+            return flow
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=_Recorder())
+    )
+    payload = backend.flow_get("s", "f1", tmp_path)
+    assert "body_path" not in payload["response"], payload["response"]
+    assert payload["response"]["body"] == text
+
+
 def test_proxy_status_names_flow_count_and_retained_max() -> None:
     """The catalog said how many flows and never named the count field.
 
