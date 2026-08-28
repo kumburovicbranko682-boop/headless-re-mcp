@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（把 frida 封顶到 <17：17.0 移除了内建 Java/ObjC 桥，会让所有 Java 设备操作直接报错）
+
+`android` extra 原本写的是 `frida>=16.5` 无上界，于是默认安装会拉到 frida 17.x。而 frida 17.0 把
+Java/ObjC/Swift 三座桥从 agent 运行时里**移除**了——它们改成了要用 frida-compile 单独打包的
+`frida-java-bridge` 等模块。我们注入的脚本全程依赖全局 `Java`（java-enumerate 脚本里的
+`Java.perform`/`Java.use`/`Java.enumerateLoadedClasses`，以及 SSL pinning 绕过、crypto、文件监控
+这几个 hook 模板），在 17.x 下一律以 `ReferenceError: 'Java' is not defined` 失败。也就是说
+`frida.java.classes` / `frida.java.methods` 以及所有 Java hook 在默认安装下**是坏的**，而单测 mock
+掉子进程/脚本执行，从没碰到过真运行时。
+
+改为 `frida>=16.5,<17`，让声明的依赖与脚本实际依赖的运行时契约对齐。已实测验证：在 KVM 上的
+aosp_atd android-31 x86_64 模拟器上，配 frida 16.7.19 + 对应版本 frida-server，
+`frida.spawn` 起一个自建 APK 后，`frida.java.classes` 能枚举到自建的
+`com.example.gateapp.MainActivity`、`frida.java.methods` 能枚举到它的
+`headlessCompute(int,int)`；换回 frida 17.17.0 则两者都以上面的 ReferenceError 失败。等脚本改成
+自带 frida-java-bridge 后再抬这个上界。
+
 ### 测试（Android 设备线首次对着真模拟器端到端跑通 info/packages/logcat/截图/推拉/forward/装卸）
 
 上一条证明的是「无设备时链路通、错误契约硬」；这条把**有设备**时的另一半补上。在本机用 KVM 拉起一台
