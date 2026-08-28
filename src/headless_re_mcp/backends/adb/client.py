@@ -40,6 +40,9 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_CPU_BLOCKS = 128
+_MAX_CPU_FIELDS = 128
+_MAX_CPU_VALUE = 2048
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -525,6 +528,82 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def cpuinfo(self, serial: str) -> JsonObject:
+        """Report the CPU description from /proc/cpuinfo, block by block.
+
+        The device's processor layout: how many cores, and per core the raw
+        key/value lines the kernel prints -- architecture, the feature/flags
+        string (arm ``Features`` or x86 ``flags``), implementer, and any
+        trailing Hardware block. An RE session uses this to know the ISA and
+        which crypto/SIMD extensions a native library may target.
+        /proc/cpuinfo is world-readable, so no root is needed.
+
+        The output is architecture-agnostic: blocks is the list of per-block
+        key->value maps exactly as the kernel wrote them, and processors counts
+        the blocks that carry a processor key (the real core count, ignoring a
+        trailing summary block). blocks is capped with has_more, an oversized
+        value is cut and flagged value_truncated, and a read that yields no
+        blocks -- which a live device never has -- is an error rather than an
+        empty list.
+        """
+        dev = self._device(serial)
+        raw = _device_shell(dev, "cat /proc/cpuinfo")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError(
+                "backend_error", "reading /proc/cpuinfo failed", output=text[:800]
+            )
+        blocks: list[JsonObject] = []
+        current: JsonObject = {}
+        has_more = False
+        value_truncated = False
+
+        def _flush() -> bool:
+            nonlocal current, has_more
+            if not current:
+                return True
+            if len(blocks) >= _MAX_CPU_BLOCKS:
+                has_more = True
+                current = {}
+                return False
+            blocks.append(current)
+            current = {}
+            return True
+
+        for line in text.splitlines():
+            if not line.strip():
+                if not _flush():
+                    break
+                continue
+            if ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            key = key.strip()
+            if not key or len(current) >= _MAX_CPU_FIELDS:
+                continue
+            value = value.strip()
+            if len(value) > _MAX_CPU_VALUE:
+                value = value[:_MAX_CPU_VALUE]
+                value_truncated = True
+            current[key] = value
+        _flush()
+        if not blocks:
+            raise AdbError(
+                "backend_error",
+                "reading /proc/cpuinfo returned no blocks",
+                output=text[:800],
+            )
+        processors = sum(1 for block in blocks if "processor" in block)
+        result: JsonObject = {
+            "processors": processors or len(blocks),
+            "blocks": blocks,
+            "count": len(blocks),
+            "has_more": has_more,
+        }
+        if value_truncated:
+            result["value_truncated"] = True
+        return result
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a

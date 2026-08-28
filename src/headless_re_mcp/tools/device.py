@@ -71,6 +71,22 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_properties(serial, limit=limit))
 
+    @tools.tool(name="device.cpuinfo")
+    def device_cpuinfo(serial: str) -> dict[str, Any]:
+        """Report the CPU description (/proc/cpuinfo), block by block.
+
+        The device's processor layout, so an RE session knows the ISA and which
+        crypto/SIMD extensions a native library may target. Answers with blocks
+        (per-block key->value maps exactly as the kernel wrote them, covering
+        architecture, the arm Features / x86 flags string, implementer, and any
+        trailing Hardware block), processors (the real core count, counting
+        blocks with a processor key), count, and has_more. /proc/cpuinfo is
+        world-readable so no root is needed; a capped list says has_more, an
+        oversized value is cut and flagged value_truncated, and a read yielding
+        no blocks is an error rather than an empty list.
+        """
+        return _dump(analysis.device_cpuinfo(serial))
+
     @tools.tool(name="device.packages")
     def device_packages(
         serial: str,
