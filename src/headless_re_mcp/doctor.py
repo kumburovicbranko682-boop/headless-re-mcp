@@ -205,6 +205,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         # Web reverse-engineering (all optional).
         probe_python_module("playwright", "playwright"),
         probe_python_module("mitmproxy", "mitmproxy"),
+        probe_node(),
         probe_optional_tool("webcrack", current, "webcrack", ("webcrack",)),
         probe_optional_tool("wabt", current, "wabt", ("wasm2wat",)),
     ]
@@ -1095,6 +1096,37 @@ def probe_optional_tool(
     if found:
         return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
     return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+
+
+def probe_node() -> Probe:
+    """Surface the Node.js runtime the webcrack (JS) backend needs.
+
+    webcrack is a Node CLI -- its own capability message says "needs Node 22/24"
+    -- but doctor reported only whether the webcrack launcher existed, never
+    node, unlike the JVM tools whose java is a top-level probe. With node absent,
+    "webcrack: detected" gave the operator no signal that the missing runtime was
+    the blocker. Report node's presence and version. The version is
+    informational, not a gate: the 22/24 requirement is webcrack's, and
+    hardcoding it here would drift the way a hardcoded Ghidra JDK would.
+    """
+    node = shutil.which("node") or shutil.which("nodejs")
+    if node is None:
+        return Probe(
+            "node",
+            ProbeStatus.MISSING,
+            "Optional Node.js runtime is not installed",
+            {},
+            "Install Node.js (webcrack, the JS backend, needs 22 or newer).",
+        )
+    details: dict[str, Any] = {"path": node}
+    try:
+        result = _probe_run([node, "--version"], timeout=5)
+    except (OSError, TimedOut) as exc:
+        details["error"] = f"{type(exc).__name__}: {exc}"
+    else:
+        version = _bounded_text(result.stdout, result.stderr, limit=100)
+        details["version"] = version or None
+    return Probe("node", ProbeStatus.DETECTED, "Node.js runtime detected", details)
 
 
 def probe_python_module(name: str, module: str) -> Probe:

@@ -19,6 +19,7 @@ from headless_re_mcp.doctor import (
     format_report,
     probe_die,
     probe_exeinfope,
+    probe_node,
     probe_optional_tool,
     probe_upx,
     probe_x64dbg_binaries,
@@ -598,3 +599,52 @@ def test_linux_hidden_desktop_setting_is_not_an_isolation_signal(tmp_path: Path)
     assert probe.status == ProbeStatus.MISSING
     assert probe.details["hidden_desktop"] is True
     assert probe.details["hidden_desktop_supported"] is False
+
+
+def test_node_probe_missing_names_the_js_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With node absent, doctor must say so: webcrack cannot run without it.
+
+    Before this probe, node had no representation in doctor at all, so a missing
+    Node.js runtime showed up only as an opaque webcrack launch failure.
+    """
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: None)
+    probe = probe_node()
+
+    assert probe.status == ProbeStatus.MISSING
+    assert "Node.js" in (probe.remediation or "")
+
+
+def test_node_probe_reports_the_version_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        doctor_module.shutil, "which", lambda name: "/usr/bin/node" if name == "node" else None
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(command, 0, stdout="v22.14.0\n", stderr="")
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_node()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details["version"] == "v22.14.0"
+    assert probe.details["path"] == "/usr/bin/node"
+
+
+def test_node_probe_stays_detected_when_version_call_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A node that answers no version is still detected, not a false missing."""
+    monkeypatch.setattr(
+        doctor_module.shutil, "which", lambda name: "/usr/bin/node" if name == "node" else None
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del command, kwargs
+        raise OSError("cannot exec")
+
+    monkeypatch.setattr(doctor_module, "_probe_run", _as_probe_run(fake_run))
+    probe = probe_node()
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert "error" in probe.details

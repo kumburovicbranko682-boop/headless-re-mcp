@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（doctor 增加 Node.js 运行时探针）
+
+- webcrack（JS 反混淆后端）是个 Node CLI，其自身的 `capability_unavailable` 文案都写着"needs Node 22/24"，
+  但 doctor 此前只探 `webcrack` 启动器在不在，从不探 node——而 JVM 系工具还有个顶层 `java` 探针可对照。
+  于是 node 缺失时只表现为一次不透明的 webcrack 启动失败，doctor 里没有任何信号指向真正的缺失项。新增顶层
+  `node` 探针（与 `java` 对称）：node 在则报 `detected` 并附路径与 `node --version`，node 缺失则报 `missing`
+  并提示 JS 后端需要 Node 22+。版本仅作展示、不做门槛判定——22/24 是 webcrack 的要求，硬编码进 doctor 会像
+  硬编码 Ghidra 的 JDK 版本一样随之漂移。已在真机验证：有 node 报 detected（v22.14.0），无 node 报 missing。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
