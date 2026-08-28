@@ -175,6 +175,10 @@ class SessionRegistry:
                 # an ELF .comment and a Mach-O build-tool entry; only
                 # Microsoft linkers write it, so absence is a real answer.
                 metadata["pe"].update(_pe_rich_header(path))
+                # Sections mapped writable and executable at once -- the PE
+                # W^X violation, the pair to the native wx_segments counts;
+                # an empty list is a real answer.
+                metadata["pe"].update(_pe_wx_sections(path))
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -571,6 +575,11 @@ _DF_1_PIE = 0x08000000
 _PT_GNU_RELRO = 0x6474E552
 _PT_GNU_STACK = 0x6474E551
 _PF_X = 0x1
+# PF_W with PF_X on the same PT_LOAD is the W^X violation: a mapping the
+# process can both write and run -- the packer/self-modifying-code tell (a
+# stock toolchain never emits one). readelf -l prints the same flags column
+# ("RWE"), so the native gate can cross-check the count.
+_PF_W = 0x2
 _DF_BIND_NOW = 0x08
 _DF_1_NOW = 0x01
 # Stack-protector ("canary") detection: the guard symbols a -fstack-protector
@@ -679,6 +688,11 @@ _MACHO_TOOLS = {1: "clang", 2: "swift", 3: "ld", 4: "lld"}
 _MACHO_MAX_TOOLS = 16
 _LC_SEGMENT = 0x01
 _LC_SEGMENT_64 = 0x19
+# initprot carrying both write and execute is the Mach-O W^X violation, the
+# pair to a RWE PT_LOAD: a mapping the process can write and run, which no
+# stock Apple toolchain emits. llvm-objdump prints the same initprot field.
+_VM_PROT_WRITE = 0x2
+_VM_PROT_EXECUTE = 0x4
 # The embedded code signature (a linkedit_data_command naming where the
 # SuperBlob lives). Whether an image is signed at all -- and by whom -- is the
 # macOS analogue of the APK signer facts: the CodeDirectory inside carries the
@@ -3446,6 +3460,12 @@ _PE_RICH_MARKER = b"Rich"
 _PE_DANS = 0x536E6144  # 'DanS' as a little-endian dword
 _PE_MAX_RICH_ENTRIES = 64
 _PE_MAX_RICH_SCAN = 0x1000
+# Section characteristics carrying both write and execute: the PE W^X
+# violation, the pair to a RWE PT_LOAD and a rwx Mach-O segment -- the shape a
+# packer's unpack-into section (UPX0) takes and no stock toolchain emits.
+# pefile exposes the same Characteristics field, so it referees the gate.
+_PE_SCN_MEM_EXECUTE = 0x2000_0000
+_PE_SCN_MEM_WRITE = 0x8000_0000
 _PE_RES_MAX_NAME = 128
 # The standard RT_* resource type ids, so a flagged payload names the resource
 # it hid in (RT_RCDATA is the dropper's usual choice, but a PE in a "bitmap" is
@@ -4364,6 +4384,44 @@ def _pe_debug_fingerprint(path: Path) -> dict[str, Any]:
     return {}
 
 
+def _pe_wx_sections(path: Path) -> dict[str, Any]:
+    """Sections both writable and executable -- as ``{"wx_sections": [names]}``.
+
+    The PE W^X violation, the pair to the ELF and Mach-O ``wx_segments``
+    counts: a section the loader maps so the process can write it and then run
+    it, which is what a packer's unpack-into section (UPX0's shape) needs and
+    no stock compiler emits. Named, because on PE the section name is the
+    triage handle an analyst greps for.
+
+    Reported for every PE whose section table parses -- an empty list is a
+    real "nothing writable is executable" answer -- and absent only when the
+    headers are malformed. Bounded by the section-count cap; fail-closed.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return {}
+        raw = path.read_bytes()
+    except OSError:
+        return {}
+    if len(raw) < 0x40 or raw[:2] != b"MZ":
+        return {}
+    e_lfanew = int.from_bytes(raw[0x3C:0x40], "little")
+    if e_lfanew < 0 or e_lfanew + 24 > len(raw) or raw[e_lfanew : e_lfanew + 4] != b"PE\x00\x00":
+        return {}
+    num_sections = min(int.from_bytes(raw[e_lfanew + 6 : e_lfanew + 8], "little"), _PE_MAX_SECTIONS)
+    opt_size = int.from_bytes(raw[e_lfanew + 20 : e_lfanew + 22], "little")
+    table = e_lfanew + 24 + opt_size
+    names: list[str] = []
+    for index in range(num_sections):
+        base = table + index * 40
+        if base + 40 > len(raw):
+            break
+        characteristics = int.from_bytes(raw[base + 36 : base + 40], "little")
+        if characteristics & _PE_SCN_MEM_WRITE and characteristics & _PE_SCN_MEM_EXECUTE:
+            names.append(raw[base : base + 8].rstrip(b"\x00").decode("ascii", errors="replace"))
+    return {"wx_sections": names}
+
+
 def _pe_rich_header(path: Path) -> dict[str, Any]:
     """The Rich header -- MSVC's toolchain census -- as ``{"rich_header": ...}``.
 
@@ -4887,6 +4945,10 @@ def _elf_layout_facts(
         # RELRO is "none" without PT_GNU_RELRO, "partial" with it, and "full"
         # when the dynamic section also forces eager binding.
         facts["nx"] = program["has_gnu_stack"] and not program["gnu_stack_exec"]
+        # PT_LOAD mappings both writable and executable -- the W^X violation
+        # a packer or self-modifying loader needs and a stock toolchain never
+        # emits. Always present alongside nx: zero is a real answer.
+        facts["wx_segments"] = program["wx_loads"]
         if program["has_gnu_relro"]:
             bind_now = program["has_dynamic"] and _elf_dynamic_bind_now(
                 stream, order, bits, program["dyn_off"], program["dyn_sz"]
@@ -4957,6 +5019,7 @@ def _elf_program_headers(
     dyn_off = dyn_sz = 0
     loads: list[tuple[int, int, int]] = []
     notes: list[tuple[int, int]] = []
+    wx_loads = 0
     for i in range(phnum):
         entry = table[i * entsize : i * entsize + want]
         if len(entry) < want:
@@ -4972,8 +5035,13 @@ def _elf_program_headers(
             p_vaddr = int.from_bytes(entry[8:12], order)  # type: ignore[arg-type]
             p_filesz = int.from_bytes(entry[16:20], order)  # type: ignore[arg-type]
             p_flags = int.from_bytes(entry[24:28], order)  # type: ignore[arg-type]
-        if p_type == _PT_LOAD and p_filesz > 0:
-            loads.append((p_vaddr, p_offset, p_filesz))
+        if p_type == _PT_LOAD:
+            # Writable and executable at once: the W^X violation, counted
+            # even for a file-less mapping (the bytes arrive at runtime).
+            if p_flags & _PF_W and p_flags & _PF_X:
+                wx_loads += 1
+            if p_filesz > 0:
+                loads.append((p_vaddr, p_offset, p_filesz))
         elif p_type == _PT_DYNAMIC:
             has_dynamic = True
             dyn_off, dyn_sz = p_offset, p_filesz
@@ -4999,6 +5067,7 @@ def _elf_program_headers(
         "dyn_sz": dyn_sz,
         "loads": loads,
         "notes": notes,
+        "wx_loads": wx_loads,
     }
 
 
@@ -5797,6 +5866,10 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         cmd_off = 32 if bits == 64 else 28
         cmds = _macho_read_load_commands(stream, cmd_off, sizeofcmds, head)
         lc = _macho_load_commands(cmds, order, ncmds)
+        # Segments mapped writable and executable at once -- the W^X
+        # violation, the pair to the ELF wx_segments count. Always present:
+        # zero is a real answer.
+        facts["wx_segments"] = lc["wx_segments"]
         if lc["dylibs"] is not None:
             facts["dylibs"] = lc["dylibs"]
         # LC_RPATH entries, the ELF rpath/runpath analogue; absent stays absent.
@@ -6163,6 +6236,9 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         # (name, file offset, size) per section that occupies file bytes, for
         # the section-level payload census.
         "sections": [],
+        # Segments mapped writable and executable at once (initprot), the
+        # Mach-O W^X violation count.
+        "wx_segments": 0,
     }
     if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
         return result
@@ -6275,6 +6351,11 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
                     int.from_bytes(cmds[pos + 48 : pos + 56], order),  # type: ignore[arg-type]
                 )
             )
+            # initprot at +60: write+execute together is the W^X violation.
+            if cmdsize >= 64:
+                initprot = int.from_bytes(cmds[pos + 60 : pos + 64], order)  # type: ignore[arg-type]
+                if initprot & _VM_PROT_WRITE and initprot & _VM_PROT_EXECUTE:
+                    result["wx_segments"] += 1
             # nsects section_64 headers (80 bytes: size u64 at +40, flags u32
             # at +64) follow the 72-byte segment header; the walk is bounded
             # by the command's own size, so a lying nsects reads nothing.
@@ -6301,6 +6382,11 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
                     int.from_bytes(cmds[pos + 36 : pos + 40], order),  # type: ignore[arg-type]
                 )
             )
+            # initprot at +44: write+execute together is the W^X violation.
+            if cmdsize >= 48:
+                initprot = int.from_bytes(cmds[pos + 44 : pos + 48], order)  # type: ignore[arg-type]
+                if initprot & _VM_PROT_WRITE and initprot & _VM_PROT_EXECUTE:
+                    result["wx_segments"] += 1
             # nsects section headers (68 bytes: size u32 at +36, flags u32 at
             # +56) follow the 56-byte segment header, bounded the same way.
             if cmdsize >= 56:

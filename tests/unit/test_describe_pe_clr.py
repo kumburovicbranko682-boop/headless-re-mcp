@@ -30,6 +30,7 @@ from headless_re_mcp.core.session import (
     _pe_rich_header,
     _pe_tls_facts,
     _pe_version_info,
+    _pe_wx_sections,
     describe_pe_clr,
 )
 
@@ -1195,6 +1196,90 @@ def _pe_with_rich(
     return stub + coff + bytes(optional)
 
 
+def _pe_with_section_flags(sections: list[tuple[bytes, int]]) -> bytes:
+    """A minimal PE32 whose section headers carry the given (name, characteristics)."""
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    dos[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x014C, len(sections), 0, 0, 0, 0xE0, 0)
+    optional = bytearray(0xE0)
+    optional[0:2] = (0x10B).to_bytes(2, "little")  # PE32
+    optional[92:96] = (16).to_bytes(4, "little")  # NumberOfRvaAndSizes
+    table = bytearray()
+    for name, characteristics in sections:
+        sect = bytearray(40)
+        sect[0 : len(name)] = name
+        struct.pack_into("<I", sect, 36, characteristics)
+        table += sect
+    return bytes(dos) + coff + bytes(optional) + bytes(table)
+
+
+class TestPeWxSections:
+    """_pe_wx_sections names sections mapped writable and executable at once.
+
+    The PE W^X violation, the pair to the ELF and Mach-O wx_segments counts:
+    the shape a packer's unpack-into section takes (UPX0 famously) and no
+    stock compiler emits. Named, because on PE the section name is the handle
+    an analyst greps for; an empty list is a real "nothing writable runs".
+    """
+
+    _R = 0x4000_0000
+    _W = 0x8000_0000
+    _X = 0x2000_0000
+
+    def test_a_sectionless_pe_lists_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_wx_sections(path) == {"wx_sections": []}
+
+    def test_only_the_wx_section_is_named(self, tmp_path: Path) -> None:
+        path = tmp_path / "packed.exe"
+        path.write_bytes(
+            _pe_with_section_flags(
+                [
+                    (b".text", self._R | self._X),
+                    (b"UPX0", self._R | self._W | self._X),
+                    (b".data", self._R | self._W),
+                ]
+            )
+        )
+        assert _pe_wx_sections(path) == {"wx_sections": ["UPX0"]}
+
+    def test_multiple_violations_list_in_table_order(self, tmp_path: Path) -> None:
+        path = tmp_path / "multi.exe"
+        path.write_bytes(
+            _pe_with_section_flags(
+                [
+                    (b"UPX0", self._R | self._W | self._X),
+                    (b".data", self._R | self._W),
+                    (b"UPX1", self._R | self._W | self._X),
+                ]
+            )
+        )
+        assert _pe_wx_sections(path) == {"wx_sections": ["UPX0", "UPX1"]}
+
+    def test_a_truncated_section_table_fails_closed(self, tmp_path: Path) -> None:
+        raw = _pe_with_section_flags([(b"UPX0", self._R | self._W | self._X)])
+        path = tmp_path / "cut.exe"
+        path.write_bytes(raw[:-8])  # the table's last header is cut short
+        assert _pe_wx_sections(path) == {"wx_sections": []}
+
+    def test_a_non_pe_reports_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "not.exe"
+        path.write_bytes(b"\x7fELF" + bytes(0x100))
+        assert _pe_wx_sections(path) == {}
+
+    def test_session_over_a_packed_shape_carries_the_census(self, tmp_path: Path) -> None:
+        path = tmp_path / "packed.exe"
+        path.write_bytes(
+            _pe_with_section_flags(
+                [(b".text", self._R | self._X), (b"UPX0", self._R | self._W | self._X)]
+            )
+        )
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["wx_sections"] == ["UPX0"]
+
+
 class TestPeRichHeader:
     """_pe_rich_header decodes MSVC's toolchain census -- the PE provenance.
 
@@ -1438,7 +1523,8 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
     # Authenticode verdict -- unsigned here, a real answer rather than empty --
     # an (empty) resource-payload census, an (empty) import/export surface, the
     # optional-header posture (all-zero fields: unknown subsystem, no
-    # mitigations, no declared entry) and the (absent) TLS-callback surface.
+    # mitigations, no declared entry), the (absent) TLS-callback surface and
+    # an (empty) W^X section census.
     assert session.metadata == {
         "pe": {
             "authenticode": {"signed": False},
@@ -1455,6 +1541,7 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "appcontainer": False,
             "cfg": False,
             "tls": {"present": False, "callbacks": 0},
+            "wx_sections": [],
         }
     }
 

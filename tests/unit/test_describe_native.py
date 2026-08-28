@@ -244,7 +244,7 @@ def _lc_main(entryoff: int) -> bytes:
     )
 
 
-def _lc_segment64(vmaddr: int, fileoff: int, filesize: int) -> bytes:
+def _lc_segment64(vmaddr: int, fileoff: int, filesize: int, *, initprot: int = 0) -> bytes:
     cmd = bytearray(72)
     cmd[0:4] = (0x19).to_bytes(4, "little")  # LC_SEGMENT_64
     cmd[4:8] = (72).to_bytes(4, "little")
@@ -253,10 +253,11 @@ def _lc_segment64(vmaddr: int, fileoff: int, filesize: int) -> bytes:
     cmd[32:40] = (0x1000).to_bytes(8, "little")  # vmsize
     cmd[40:48] = fileoff.to_bytes(8, "little")
     cmd[48:56] = filesize.to_bytes(8, "little")
+    cmd[60:64] = initprot.to_bytes(4, "little")
     return bytes(cmd)
 
 
-def _lc_segment32(vmaddr: int, fileoff: int, filesize: int) -> bytes:
+def _lc_segment32(vmaddr: int, fileoff: int, filesize: int, *, initprot: int = 0) -> bytes:
     cmd = bytearray(56)
     cmd[0:4] = (0x01).to_bytes(4, "little")  # LC_SEGMENT
     cmd[4:8] = (56).to_bytes(4, "little")
@@ -265,6 +266,7 @@ def _lc_segment32(vmaddr: int, fileoff: int, filesize: int) -> bytes:
     cmd[28:32] = (0x1000).to_bytes(4, "little")  # vmsize
     cmd[32:36] = fileoff.to_bytes(4, "little")
     cmd[36:40] = filesize.to_bytes(4, "little")
+    cmd[44:48] = initprot.to_bytes(4, "little")
     return bytes(cmd)
 
 
@@ -1237,6 +1239,44 @@ def test_nx_reflects_the_gnu_stack_permissions(tmp_path: Path) -> None:
     assert exec_stack["relro"] == "none"
 
 
+def test_wx_segments_counts_only_the_rwe_loads(tmp_path: Path) -> None:
+    # A clean split maps text R+X and data R+W; a mapping carrying W and X at
+    # once is the packer/self-modifying-code tell, counted exactly.
+    program = (
+        _phdr64(1, 0x1000, 0x100, 0x1000, p_flags=0x5)  # R+X text
+        + _phdr64(1, 0x2000, 0x100, 0x2000, p_flags=0x6)  # R+W data
+        + _phdr64(1, 0x3000, 0x100, 0x3000, p_flags=0x7)  # R+W+E: the violation
+    )
+    ehdr = _ehdr64(2, phoff=64, phnum=3, shoff=0, shnum=0)
+    facts = describe_native(_write(tmp_path, "wx.elf", ehdr + program))["native"]
+    assert facts["wx_segments"] == 1
+
+
+def test_a_clean_load_split_counts_zero_wx_segments(tmp_path: Path) -> None:
+    program = _phdr64(1, 0x1000, 0x100, 0x1000, p_flags=0x5) + _phdr64(
+        1, 0x2000, 0x100, 0x2000, p_flags=0x6
+    )
+    ehdr = _ehdr64(2, phoff=64, phnum=2, shoff=0, shnum=0)
+    facts = describe_native(_write(tmp_path, "clean.elf", ehdr + program))["native"]
+    assert facts["wx_segments"] == 0
+
+
+def test_a_file_less_wx_mapping_still_counts(tmp_path: Path) -> None:
+    # p_filesz 0: the bytes arrive at runtime (a decompression target), but
+    # the mapping is W+X from the first instruction -- it must count.
+    program = _phdr64(1, 0, 0, 0x4000, p_flags=0x7)
+    ehdr = _ehdr64(2, phoff=64, phnum=1, shoff=0, shnum=0)
+    facts = describe_native(_write(tmp_path, "bss.elf", ehdr + program))["native"]
+    assert facts["wx_segments"] == 1
+
+
+def test_a_header_only_elf_omits_the_wx_census(tmp_path: Path) -> None:
+    # No program headers to walk: the census is omitted (like nx/relro), not
+    # reported as a misleading zero.
+    facts = describe_native(_write(tmp_path, "hdr.elf", _elf64_le()))["native"]
+    assert "wx_segments" not in facts
+
+
 def test_relro_is_partial_without_eager_binding(tmp_path: Path) -> None:
     # PT_GNU_RELRO alone is partial RELRO: the segment exists but the loader is
     # not told to resolve every relocation up front.
@@ -1585,6 +1625,32 @@ def test_macho_nx_reflects_the_stack_execution_flag(tmp_path: Path) -> None:
     assert describe_native(_write(tmp_path, "a.bin", hardened))["native"]["nx"] is True
     execstack = _macho64_full(filetype=2, flags=0x4 | 0x00020000, load_cmds=b"", ncmds=0)
     assert describe_native(_write(tmp_path, "b.bin", execstack))["native"]["nx"] is False
+
+
+def test_macho_wx_segments_counts_rwx_initprot(tmp_path: Path) -> None:
+    # initprot carrying write and execute at once is the Mach-O W^X
+    # violation, the pair to a RWE PT_LOAD; a clean R+X text does not count.
+    cmds = _lc_segment64(0x1000, 0, 0x1000, initprot=0x5) + _lc_segment64(
+        0x2000, 0x1000, 0x100, initprot=0x7
+    )
+    data = _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=2)
+    facts = describe_native(_write(tmp_path, "wx.macho", data))["native"]
+    assert facts["wx_segments"] == 1
+
+
+def test_macho_a_clean_image_counts_zero_wx_segments(tmp_path: Path) -> None:
+    cmds = _lc_segment64(0x1000, 0, 0x1000, initprot=0x5)
+    data = _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1)
+    facts = describe_native(_write(tmp_path, "clean.macho", data))["native"]
+    assert facts["wx_segments"] == 0
+
+
+def test_macho32_wx_reads_initprot_at_its_32bit_offset(tmp_path: Path) -> None:
+    # The 32-bit segment_command packs initprot at +44, not +60.
+    cmds = _lc_segment32(0x1000, 0, 0x1000, initprot=0x7)
+    data = _macho32_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1)
+    facts = describe_native(_write(tmp_path, "wx32.macho", data))["native"]
+    assert facts["wx_segments"] == 1
 
 
 def test_macho_encrypted_from_the_encryption_info_cryptid(tmp_path: Path) -> None:
