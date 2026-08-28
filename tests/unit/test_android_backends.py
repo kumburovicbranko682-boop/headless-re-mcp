@@ -13,7 +13,13 @@ from typing import Any
 
 import pytest
 
-from headless_re_mcp.backends.adb.client import AdbBackend, AdbError, _check_package, _check_serial
+from headless_re_mcp.backends.adb.client import (
+    _PACKAGE_RE,
+    AdbBackend,
+    AdbError,
+    _check_package,
+    _check_serial,
+)
 from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.core.models import TargetKind
@@ -70,6 +76,22 @@ class TestAdbArgumentValidation:
     @pytest.mark.parametrize("package", ["com.example.app", "a.b", "com.foo_bar.baz2"])
     def test_valid_package_names_pass(self, package: str) -> None:
         assert _check_package(package) == package
+
+    def test_a_structurally_valid_but_overlong_package_is_refused_by_length(self) -> None:
+        """The package pattern is length-unbounded, so a well-formed id long
+        enough to be resource abuse ("a.a.a..." past the cap) must be refused for
+        its length -- before it can reach a device shell command line -- rather
+        than sailing through the regex it structurally satisfies."""
+        from headless_re_mcp.backends.adb.client import _MAX_PACKAGE_LEN
+
+        oversized = ("a." * _MAX_PACKAGE_LEN) + "a"
+        assert len(oversized) > _MAX_PACKAGE_LEN
+        assert _PACKAGE_RE.match(oversized) is not None, "must be structurally valid"
+        with pytest.raises(AdbError) as info:
+            _check_package(oversized)
+        assert info.value.code == "invalid_params"
+        assert "too long" in info.value.message
+        assert info.value.details.get("cap") == _MAX_PACKAGE_LEN
 
     def test_missing_adbutils_degrades_instead_of_raising_import_error(self) -> None:
         backend = AdbBackend()

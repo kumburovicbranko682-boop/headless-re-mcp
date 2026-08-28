@@ -27,6 +27,12 @@ JsonObject = dict[str, Any]
 # constrained so nothing that reaches a shell command can carry metacharacters.
 _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+# _PACKAGE_RE constrains structure but not length, unlike _SERIAL_RE's {1,128}.
+# A structurally valid but arbitrarily long id ("a.a.a..." repeated) would pass
+# and reach a device shell command line, so bound it the way the serial already
+# is. Real package ids sit far under this; the cap matches the frida backend's
+# RPC-name bound for cross-backend parity.
+_MAX_PACKAGE_LEN = 512
 # frida-server's -l listen host. An IPv4 address or a simple hostname; the
 # strict set keeps a value that reaches the su -c command line from carrying
 # shell metacharacters, quotes, or the colon that separates host from port.
@@ -81,6 +87,13 @@ def _check_serial(serial: str) -> str:
 
 def _check_package(package: str) -> str:
     value = (package or "").strip()
+    # Length first, before the (length-unbounded) pattern: a megabyte-long but
+    # structurally valid id must be refused as the resource abuse it is, not run
+    # through the regex and onto a shell command line.
+    if len(value) > _MAX_PACKAGE_LEN:
+        raise AdbError(
+            "invalid_params", "package name too long", package=package, cap=_MAX_PACKAGE_LEN
+        )
     if not _PACKAGE_RE.match(value):
         raise AdbError("invalid_params", "invalid package name", package=package)
     return value

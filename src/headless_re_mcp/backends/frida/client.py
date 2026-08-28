@@ -742,6 +742,11 @@ class FridaClient:
         if not isinstance(package, str) or not package.strip():
             raise FridaError("invalid_params", "package is required")
         pkg = package.strip()
+        # Length-bound before the regex, the same helper class_name / module_name
+        # use: _ANDROID_PACKAGE_RE constrains structure but not length, so a
+        # megabyte-long but well-formed id would otherwise be marshalled to
+        # device.spawn across the RPC. Real package ids sit far under the cap.
+        _reject_unbounded_rpc_name(pkg, field="package")
         if not _ANDROID_PACKAGE_RE.match(pkg):
             raise FridaError(
                 "invalid_params",

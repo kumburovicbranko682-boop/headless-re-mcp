@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（Android 包名此前只限结构、不限长度:`_check_package`(adb)与 `spawn`(frida)都用 `^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$` 校验包名,该模式约束结构却不封顶长度——与限长的 `_SERIAL_RE{1,128}`/selector 2048B 不同。一个结构合法但兆字节长的 id(`a.a.a...` 重复)能过校验,进而经 Frida RPC 下发到 `device.spawn`、或落到 adb 设备 shell 命令行。frida 侧注释(上一条改写后)把 “package” 列为已遵循该限长纪律的一员,而代码并未落实,是同类“文档声称、代码没做”）
+
+- 两个后端一致封顶包名长度(512 字节,与 frida 的 `_MAX_RPC_NAME_BYTES` 对齐):adb 新增 `_MAX_PACKAGE_LEN=512`,`_check_package` 在跑正则前先判长(超长报 `invalid_params`/`package name too long`/`cap`);frida `spawn` 在正则前调用共享的 `_reject_unbounded_rpc_name(pkg, field="package")`,使限长在 `_resolve_device` 之前完成——超长包名不再触达设备解析,注释里“package 已遵循该纪律”遂成真。长度检查置于正则之前,兆字节输入不会先喂给正则。
+- 测试:`test_android_backends.py` 新增“结构合法但超 512 的包名按长度被拒”(断言其确能过 `_PACKAGE_RE`、报错含 `too long` 与 `cap`);`test_frida_fields.py` 新增 spawn 对超长合法包名的拒绝(断言 `details.limit==512` 且 `_resolve_device` 未被调用)。带外验证:抽掉两处长度检查后两例如期失败(旧码 adb 直接返回、frida 会解析设备)——证明有牙。
+
 ### 修复（`frida.exports` 的 `module_name` 此前未在后端限长/拒 NUL:`exports()` 只 strip 并判非空,便把 `module_name` 直接经 Frida RPC 作为枚举脚本参数下发到设备(`exports_sync.exports(name, ...)`)——与 `class_name`/`name_filter` 同一“作为 RPC 数据编组、非拼接进脚本”的资源/编组暴露面,却漏了那道限长。更糟:后端 `_MAX_JAVA_NAME_BYTES` 注释与兄弟边界测试的 docstring 都白纸黑字把 “module” 列为已遵循 512B/拒 NUL 纪律的一员,而代码并未落实——是一处“文档声称、代码没做”的假不变式）
 
 - 把共享的 RPC 名限长收敛为通用命名并覆盖 module_name:`_MAX_JAVA_NAME_BYTES`→`_MAX_RPC_NAME_BYTES`、`_reject_unbounded_java_text`→`_reject_unbounded_rpc_name`(值仍 512),新增 `_bounded_module_name` 复用之;`exports()` 改走 `name = _bounded_module_name(module_name)`,在 `_require` 授权之后、`_run_local_script` 附着之前完成校验(非字符串报 `module_name must be a string`、空报 `module_name is required`、超长/含 NUL 报 `invalid_params`)。`frida.exports` 工具 docstring 补上该 512B/拒 NUL/非字符串契约,让 agent 从 schema 即可读到。

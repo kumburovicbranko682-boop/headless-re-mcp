@@ -478,6 +478,37 @@ def test_frida_spawn_refuses_a_bad_package_before_resolving_the_device() -> None
     assert resolved == ["usb"], "a well-formed package resolves the device exactly once"
 
 
+def test_frida_spawn_refuses_a_structurally_valid_but_overlong_package() -> None:
+    """A well-formed package id long enough to be resource abuse is refused.
+
+    _ANDROID_PACKAGE_RE constrains structure but not length, so before the length
+    guard a megabyte-long "a.a.a..." would sail through the regex and be
+    marshalled to device.spawn across the RPC. The guard now bounds it the same
+    way class_name / module_name are bounded, and -- like a malformed package --
+    it fails before the device is resolved.
+    """
+    from headless_re_mcp.backends.frida.client import _MAX_RPC_NAME_BYTES, FridaError
+
+    resolved: list[str | None] = []
+
+    def _recording_resolve(device_id: str | None) -> _SpawnDevice:
+        resolved.append(device_id)
+        return _SpawnDevice()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = _recording_resolve  # type: ignore[method-assign]
+
+    oversized = ("a." * _MAX_RPC_NAME_BYTES) + "a"
+    assert len(oversized) > _MAX_RPC_NAME_BYTES
+    with pytest.raises(FridaError) as caught:
+        client.spawn("usb", oversized)
+    assert caught.value.code == "invalid_params"
+    assert caught.value.details.get("limit") == _MAX_RPC_NAME_BYTES
+    assert resolved == [], "an over-long package must not reach _resolve_device"
+
+
 def test_frida_spawn_times_out_and_kills_the_probe_process() -> None:
     """device.spawn / resume with no deadline parked a worker forever.
 
