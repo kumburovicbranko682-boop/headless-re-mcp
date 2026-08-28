@@ -46,7 +46,29 @@ export function formatDuration(ms: number): string {
   return `${minutes}m${String(rest).padStart(2, "0")}s`;
 }
 
-export function computeRunMetrics(events: RunEvent[], now: number, rounds: number): RunMetrics {
+function eventsForLatestRun(events: RunEvent[]): RunEvent[] {
+  // The event buffer holds every run in the thread -- the reducer's "run" action
+  // clears streaming text and approvals but keeps events -- so a thread with
+  // earlier runs used to fold their LLM and tool time into this run's harness,
+  // reporting "LLM 67s" for a run that spent 22s. The harness is a per-run view
+  // (rounds is a single run's count, first-token averages that run's rounds, and
+  // the activity line describes the current call), so keep only the newest run.
+  // The run with the latest event timestamp is the current or just-finished one.
+  if (events.length === 0) return events;
+  let latestRun = events[0].run_id;
+  let latestAt = eventTime(events[0], 0);
+  for (const event of events) {
+    const at = eventTime(event, 0);
+    if (at >= latestAt) {
+      latestAt = at;
+      latestRun = event.run_id;
+    }
+  }
+  return events.filter((event) => event.run_id === latestRun);
+}
+
+export function computeRunMetrics(allEvents: RunEvent[], now: number, rounds: number): RunMetrics {
+  const events = eventsForLatestRun(allEvents);
   let llmMs = 0;
   let toolMs = 0;
   let llmOpen: number | null = null;

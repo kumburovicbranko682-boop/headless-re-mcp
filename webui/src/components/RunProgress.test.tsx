@@ -40,6 +40,26 @@ describe("RunProgress harness metrics", () => {
     expect(formatHarnessLine(metrics)).toContain("\u6b63\u5728\u8c03\u7528 static.open");
   });
 
+  it("scopes the harness to the latest run, ignoring earlier runs in the thread", () => {
+    const t0 = Date.parse("2026-08-17T08:00:00.000Z");
+    const events: RunEvent[] = [
+      // Earlier run r1: a 40s LLM round plus a 20s tool call, still in the buffer.
+      { run_id: "r1", seq: 1, type: "llm.started", data: { round: 1 }, created_at: "2026-08-17T08:00:00.000Z" },
+      { run_id: "r1", seq: 2, type: "llm.completed", data: { round: 1 }, created_at: "2026-08-17T08:00:40.000Z" },
+      { run_id: "r1", seq: 3, type: "tool.started", data: { tool_call_id: "a", name: "static.open" }, created_at: "2026-08-17T08:00:40.000Z" },
+      { run_id: "r1", seq: 4, type: "tool.completed", data: { tool_call_id: "a", name: "static.open" }, created_at: "2026-08-17T08:01:00.000Z" },
+      // Current run r2: one short 5s LLM round with no tools.
+      { run_id: "r2", seq: 1, type: "llm.started", data: { round: 1 }, created_at: "2026-08-17T08:02:00.000Z" },
+      { run_id: "r2", seq: 2, type: "message.delta", data: { delta: "ok" }, created_at: "2026-08-17T08:02:01.000Z" },
+      { run_id: "r2", seq: 3, type: "llm.completed", data: { round: 1 }, created_at: "2026-08-17T08:02:05.000Z" },
+    ];
+    const metrics = computeRunMetrics(events, t0 + 130_000, 1);
+    // Only r2's 5s round counts; r1's 40s LLM and 20s tool must not leak in.
+    expect(metrics.llmMs).toBe(5000);
+    expect(metrics.toolMs).toBe(0);
+    expect(metrics.steps).toBe(1);
+  });
+
   it("shows elapsed seconds while a long tool is still running", () => {
     const t0 = Date.parse("2026-08-17T08:00:00.000Z");
     const events = [
