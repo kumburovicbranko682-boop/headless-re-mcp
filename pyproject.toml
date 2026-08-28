@@ -162,7 +162,9 @@ explicit-preview-rules = true
 "src/headless_re_mcp/native_app/bootstrap.py" = ["E501"]
 "src/headless_re_mcp/native_app/gui.py" = ["E501"]
 "src/headless_re_mcp/web/monitor.py" = ["E501"]
-"tests/integration/test_agent_browser_smoke.py" = ["E501"]
+# E402: real imports must follow the pytest.importorskip guards for the
+# optional [browser]/[web] extras, or a partial install aborts collection.
+"tests/integration/test_agent_browser_smoke.py" = ["E501", "E402"]
 "tests/unit/test_agent_*.py" = ["E501"]
 "tests/unit/test_attach_ux.py" = ["E501"]
 "tests/unit/test_m7_external_adapters.py" = ["E501"]

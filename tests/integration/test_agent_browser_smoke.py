@@ -11,6 +11,26 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+# playwright ships in the [browser] extra and uvicorn/FastAPI in [web]; both
+# are optional. Importing them unguarded at module level turns a partial
+# install into a collection *error* that aborts the entire tests/integration
+# run — no other gate can even start — instead of the per-module skip every
+# sibling gate degrades to when its tool is absent (skip != pass, but a
+# collection abort is neither).
+pytest.importorskip(
+    "playwright.sync_api",
+    reason="playwright is not installed (pip install -e '.[browser]') — browser smoke gate skipped",
+)
+pytest.importorskip(
+    "uvicorn",
+    reason="uvicorn is not installed (pip install -e '.[web]') — browser smoke gate skipped",
+)
+pytest.importorskip(
+    "headless_re_mcp.web.app",
+    reason="web extra is not installed (pip install -e '.[web]') — browser smoke gate skipped",
+)
+
 import uvicorn
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Response, expect, sync_playwright

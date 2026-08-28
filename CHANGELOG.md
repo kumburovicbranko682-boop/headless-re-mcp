@@ -30,6 +30,12 @@ until 1.0 the tool surface may still change between minor versions.
   流回到刷新后的客户端（转录区为空）——刷新后 `useWorkbench` 只恢复运行事件并从 `runSeq` 续订
   SSE、并不重载线程消息。拒绝链路走 POST、不依赖刷新后再来一轮助手流，故 smoke 的刷新覆盖落在
   拒绝一侧；「刷新后批准是否应把续跑内容流回」需要 orchestrator/SSE 侧单独排查。
+- 守住可选依赖缺席下的**收集**：本模块曾在顶层无守卫地 `import playwright/uvicorn/web.app`，
+  于是没装 `[browser]` 或 `[web]` extra 的机器上，`pytest tests/integration` 不是跳过这个模块，
+  而是整个集成套件在收集阶段就报错中断——其他后端的 gate 一个都跑不了（CI 的 `--deselect`
+  也救不了：deselect 不阻止模块被导入）。改为模块顶部 `pytest.importorskip`（分别点名缺的
+  extra 与安装命令），实测：卸掉 playwright 后全套 `tests/integration` 正常收集 86 项、本模块
+  以可行动的理由干净 skip；装回后 smoke 实跑仍过（真 Chromium，约 3.5s）。
 
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
