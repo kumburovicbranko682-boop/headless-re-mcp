@@ -1548,3 +1548,129 @@ def list_wasm_tables(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonO
     result["offset"] = start
     result["has_more"] = start + len(window) < len(all_tables)
     return result
+
+
+_MAX_CODE_COLLECT = 50_000
+_MAX_CODE_PAGE = 2000
+_MAX_LOCAL_GROUPS = 100
+
+
+def _parse_code_section(payload: bytes) -> tuple[list[JsonObject], bool]:
+    """Decode the code section (id 10): one body per defined function.
+
+    Each body is a size-prefixed blob whose head is a vector of local
+    declaration groups (count + valtype); the rest is the instruction stream.
+    We do not disassemble -- the useful triage signal is the body size (a giant
+    function is the shape of a VM interpreter or an unrolled/obfuscated blob)
+    and the local layout, so we read the locals vector and skip past the body
+    by the declared size, which also resyncs cleanly across a malformed head.
+    """
+    count, pos = _uleb(payload, 0)
+    out: list[JsonObject] = []
+    capped = False
+    for _ in range(count):
+        if len(out) >= _MAX_CODE_COLLECT:
+            capped = True
+            break
+        body_size, pos = _uleb(payload, pos)
+        end = pos + body_size
+        if end > len(payload):
+            raise _WasmTruncated
+        bpos = pos
+        groups: list[JsonObject] = []
+        total_locals = 0
+        groups_truncated = False
+        try:
+            group_count, bpos = _uleb(payload, bpos)
+            for _ in range(group_count):
+                # The locals vector lives at the head of the body; never let a
+                # hostile group_count march the reader into the instructions.
+                if bpos >= end:
+                    groups_truncated = True
+                    break
+                n, bpos = _uleb(payload, bpos)
+                vt, bpos = _u8(payload, bpos)
+                total_locals += n
+                if len(groups) < _MAX_LOCAL_GROUPS:
+                    groups.append({"count": n, "type": _valtype(vt)})
+                else:
+                    groups_truncated = True
+        except (_WasmTruncated, _WasmMalformed):
+            groups_truncated = True
+        out.append(
+            {
+                "body_size": body_size,
+                "local_count": total_locals,
+                "local_groups": groups,
+                "local_groups_truncated": groups_truncated,
+            }
+        )
+        pos = end
+    return out, capped
+
+
+def list_wasm_code(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List per-function code bodies (section 10): body size and local layout.
+
+    The code section is the one big section no other tool exposes: functions
+    lists signatures, this lists what each defined function actually weighs.
+    Each row is keyed to the function index (imported functions have no body,
+    so indices start after them), carries the body_size in bytes and the local
+    declaration groups, and picks up the debug name from the name section when
+    present. body_size is the fastest obfuscation tell in a wasm module -- one
+    function dwarfing the rest is the classic interpreter/packed-blob shape.
+    Never raises: a malformed code section sets resolved false and returns what
+    parsed.
+    """
+    result: JsonObject = {
+        "functions": [],
+        "count": 0,
+        "total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "imported_count": 0,
+        "resolved": True,
+        "scan_capped": False,
+    }
+    sections, name_payload = _collect_sections(data)
+
+    imported_count = 0
+    if 2 in sections:
+        try:
+            imported_count = len(_parse_func_imports(sections[2]))
+        except (_WasmTruncated, _WasmMalformed):
+            imported_count = 0
+
+    func_names: dict[int, str] = {}
+    if name_payload is not None:
+        try:
+            func_names = _parse_function_names(name_payload)
+        except (_WasmTruncated, _WasmMalformed):
+            func_names = {}
+
+    bodies: list[JsonObject] = []
+    capped = False
+    if 10 in sections:
+        try:
+            bodies, capped = _parse_code_section(sections[10])
+        except (_WasmTruncated, _WasmMalformed):
+            result["resolved"] = False
+            bodies = []
+
+    for i, row in enumerate(bodies):
+        index = imported_count + i
+        row["index"] = index
+        if index in func_names:
+            row["name"] = func_names[index]
+
+    result["imported_count"] = imported_count
+    result["total"] = len(bodies)
+    result["scan_capped"] = capped
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_CODE_PAGE))
+    window = bodies[start : start + cap]
+    result["functions"] = window
+    result["count"] = len(window)
+    result["offset"] = start
+    result["has_more"] = start + len(window) < len(bodies)
+    return result

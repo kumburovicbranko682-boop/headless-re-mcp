@@ -375,4 +375,32 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_tables(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.code")
+    def wasm_code(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 100,
+    ) -> dict[str, Any]:
+        """List a .wasm module's per-function code bodies (section 10).
+
+        The one big section no other tool exposes: functions lists signatures,
+        this lists what each defined function actually weighs. Rows are keyed to
+        the function index (imported functions have no body, so indices start
+        after them), carry the body_size in bytes and the local declaration
+        groups, and pick up the debug name from the name section when present.
+        body_size is the fastest obfuscation tell in a module -- one function
+        dwarfing the rest is the classic interpreter / packed-blob shape. Pure
+        Python, no wabt.
+
+        Answers with functions (paged), count, total, offset, has_more,
+        imported_count, resolved (false when the code section will not parse)
+        and scan_capped. Each function carries index, body_size, local_count,
+        local_groups (each {count, type}), local_groups_truncated and, when the
+        name section names it, name.
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_code(path, offset=offset, limit=limit))
+
     return tools.bindings

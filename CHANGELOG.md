@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **303（185 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **304（186 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -450,6 +450,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   每张表带 `index`(在表索引空间的位置)、`origin`(imported/defined)、`element_type`(funcref/externref)、
   `limits`({initial,maximum,shared})以及导入表的 `module`/`name`(定义表为 null)。非模块报
   `invalid_params`,超 16 MiB 报 `too_large`。
+- 新增 `wasm.code`:列出每个函数的代码体(节 10)——body 大小与局部变量布局。代码节是别的工具都没单独
+  暴露的那一大块:functions 列签名,这个列每个定义函数到底有多重。行按函数索引编号(导入函数没有代码体,
+  索引从它们之后起),带 `body_size`(字节)与局部声明组,并在 name 节命名时补上 `name`。`body_size` 是
+  模块里最快的混淆信号——某个函数把其余函数都比下去,正是解释器/加壳块的典型形状。纯 Python 无需 wabt。
+  回 `functions`(分页)、`count`/`total`/`offset`/`has_more`、`imported_count`、`resolved`(代码节解析
+  不了时为 false)与 `scan_capped`。每个函数带 `index`、`body_size`、`local_count`、`local_groups`
+  (各 {count,type})、`local_groups_truncated` 与 `name`。非模块报 `invalid_params`,超 16 MiB 报
+  `too_large`。
 - 新增 `wasm.globals`:纯 Python 列出模块定义的全局变量(节 6)。summary 只给计数,这里逐个命名:
   每行带 `index`(全局索引空间里的位置,导入全局在前故作为偏移加上)、`value_type`、`mutable`
   (可变全局常是加壳器藏栈指针/解密 key 的地方),与 `init`——初始化表达式首指令的解码:`{op}` 加
