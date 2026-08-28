@@ -214,7 +214,7 @@ def test_upx_unpack_records_die_rescan_failure(tmp_path: Path) -> None:
             raise DieScanError("die_failed", "diec exploded")
 
         service._upx_unpacker = _unpacker  # type: ignore[assignment]
-        service._die_scanner = _die  # type: ignore[assignment]
+        service._die_scanner = _die
         assert input_path.is_file()
         result = service.unpack_upx_unpack(session_id, open_ida=False)
         assert result.ok and result.data is not None
@@ -233,7 +233,7 @@ def test_upx_unpack_reanalyze_success(tmp_path: Path) -> None:
             return _FakeUpxResult(Path(out), file_sha256(Path(out)))
 
         service._upx_unpacker = _unpacker  # type: ignore[assignment]
-        service.create_session = lambda _b: Result[JsonObject](  # type: ignore[assignment]
+        service.create_session = lambda _b: Result[JsonObject](  # type: ignore[misc, assignment]
             ok=True, data={"session": {"id": "child-id"}}, error=None
         )
         service.open_static = lambda _s: Result[JsonObject](  # type: ignore[assignment]
@@ -256,7 +256,7 @@ def test_upx_unpack_reanalyze_child_failure(tmp_path: Path) -> None:
             return _FakeUpxResult(Path(out), file_sha256(Path(out)))
 
         service._upx_unpacker = _unpacker  # type: ignore[assignment]
-        service.create_session = lambda _b: Result[JsonObject](  # type: ignore[assignment]
+        service.create_session = lambda _b: Result[JsonObject](  # type: ignore[misc, assignment]
             ok=False,
             data=None,
             error=RpcError(code="invalid_request", message="bad child"),
@@ -328,8 +328,7 @@ def test_xvlkc_reports_input_changed(tmp_path: Path) -> None:
     service = _make_service(tmp_path, xvlkc=_touch(tmp_path / "xvlkc.exe"))
     try:
         binary = tmp_path / "sample.exe"
-        _write_minimal_pe(binary)
-        session_id = str(service.create_session(str(binary)).data["session"]["id"])
+        session_id = _session(service, tmp_path)
         binary.write_bytes(b"tampered")
         result = service.unpack_xvlkc_unpack(session_id)
         assert _code(result) == "input_changed"
@@ -341,7 +340,7 @@ def test_xvlkc_cancel_surfaces_as_unpack_cancelled(tmp_path: Path) -> None:
     service = _make_service(tmp_path, xvlkc=_touch(tmp_path / "xvlkc.exe"))
     try:
         session_id = _session(service, tmp_path)
-        service._xvlkc_runner = _raise_cancel  # type: ignore[assignment]
+        service._xvlkc_runner = _raise_cancel
         result = service.unpack_xvlkc_unpack(session_id)
         assert _code(result) == "unpack_cancelled"
     finally:
@@ -356,7 +355,7 @@ def test_xvlkc_structured_error_is_preserved(tmp_path: Path) -> None:
         def _runner(*_a: Any, **_k: Any) -> Any:
             raise XvlkcError("xvlkc_failed", "boom", details={"hint": "x"})
 
-        service._xvlkc_runner = _runner  # type: ignore[assignment]
+        service._xvlkc_runner = _runner
         result = service.unpack_xvlkc_unpack(session_id)
         assert _code(result) == "xvlkc_failed"
         assert result.error is not None
@@ -372,8 +371,7 @@ def test_vmp_reports_input_changed(tmp_path: Path) -> None:
     service = _make_service(tmp_path, vmp_dumper=_touch(tmp_path / "vmp.exe"))
     try:
         binary = tmp_path / "sample.exe"
-        _write_minimal_pe(binary)
-        session_id = str(service.create_session(str(binary)).data["session"]["id"])
+        session_id = _session(service, tmp_path)
         binary.write_bytes(b"tampered")
         result = service.unpack_vmp_dump(session_id, pid=4321)
         assert _code(result) == "input_changed"
@@ -393,7 +391,7 @@ def test_vmp_resolves_debuggee_from_dynamic_state(tmp_path: Path) -> None:
         def _runner(*_a: Any, **_k: Any) -> Any:
             raise VmpDumperError("vmp_failed", "dump blew up")
 
-        service._vmp_dumper_runner = _runner  # type: ignore[assignment]
+        service._vmp_dumper_runner = _runner
         result = service.unpack_vmp_dump(session_id)
         assert _code(result) == "vmp_failed"
     finally:
@@ -419,7 +417,7 @@ def test_vmp_cancel_surfaces_as_unpack_cancelled(tmp_path: Path) -> None:
     service = _make_service(tmp_path, vmp_dumper=_touch(tmp_path / "vmp.exe"))
     try:
         session_id = _session(service, tmp_path)
-        service._vmp_dumper_runner = _raise_cancel  # type: ignore[assignment]
+        service._vmp_dumper_runner = _raise_cancel
         result = service.unpack_vmp_dump(session_id, pid=4321)
         assert _code(result) == "unpack_cancelled"
     finally:
@@ -433,8 +431,7 @@ def test_scylla_reports_input_changed(tmp_path: Path) -> None:
     service = _make_service(tmp_path, scylla=_touch(tmp_path / "scylla.exe"))
     try:
         binary = tmp_path / "sample.exe"
-        _write_minimal_pe(binary)
-        session_id = str(service.create_session(str(binary)).data["session"]["id"])
+        session_id = _session(service, tmp_path)
         binary.write_bytes(b"tampered")
         result = service.unpack_scylla_rebuild(session_id)
         assert _code(result) == "input_changed"
@@ -446,7 +443,7 @@ def test_scylla_cancel_surfaces_as_unpack_cancelled(tmp_path: Path) -> None:
     service = _make_service(tmp_path, scylla=_touch(tmp_path / "scylla.exe"))
     try:
         session_id = _session(service, tmp_path)
-        service._scylla_runner = _raise_cancel  # type: ignore[assignment]
+        service._scylla_runner = _raise_cancel
         result = service.unpack_scylla_rebuild(session_id)
         assert _code(result) == "unpack_cancelled"
     finally:
@@ -461,7 +458,7 @@ def test_scylla_structured_error_is_preserved(tmp_path: Path) -> None:
         def _runner(*_a: Any, **_k: Any) -> Any:
             raise ScyllaError("scylla_failed", "iat rebuild failed")
 
-        service._scylla_runner = _runner  # type: ignore[assignment]
+        service._scylla_runner = _runner
         result = service.unpack_scylla_rebuild(session_id)
         assert _code(result) == "scylla_failed"
     finally:
@@ -475,7 +472,7 @@ def test_auto_reuses_active_session_status(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     try:
         session_id = _session(service, tmp_path)
-        service.unpack_start = lambda *a, **k: Result[JsonObject](  # type: ignore[assignment]
+        service.unpack_start = lambda *a, **k: Result[JsonObject](  # type: ignore[method-assign]
             ok=False,
             data=None,
             error=RpcError(code="unpack_already_active", message="busy"),
@@ -493,7 +490,7 @@ def test_auto_passes_through_non_dict_unpack(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     try:
         session_id = _session(service, tmp_path)
-        service.unpack_start = lambda *a, **k: Result[JsonObject](  # type: ignore[assignment]
+        service.unpack_start = lambda *a, **k: Result[JsonObject](  # type: ignore[method-assign]
             ok=True, data={"unpack": "not-a-dict"}, error=None
         )
         result = service.unpack_auto(session_id)
@@ -507,7 +504,7 @@ def test_auto_reports_dotnet_route_failure(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     try:
         session_id = _session(service, tmp_path)
-        service.unpack_start = lambda *a, **k: Result[JsonObject](  # type: ignore[assignment]
+        service.unpack_start = lambda *a, **k: Result[JsonObject](  # type: ignore[method-assign]
             ok=True,
             data={
                 "unpack": {
@@ -530,7 +527,7 @@ def test_auto_reports_generic_dynamic_awaiting_oep(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     try:
         session_id = _session(service, tmp_path)
-        service.unpack_start = lambda *a, **k: Result[JsonObject](  # type: ignore[assignment]
+        service.unpack_start = lambda *a, **k: Result[JsonObject](  # type: ignore[method-assign]
             ok=True,
             data={"unpack": {"route": "generic_dynamic", "phase": "observing"}},
             error=None,
@@ -551,7 +548,7 @@ def test_auto_wraps_unexpected_errors(tmp_path: Path) -> None:
         def _boom(*_a: Any, **_k: Any) -> Any:
             raise RuntimeError("planner exploded")
 
-        service.unpack_start = _boom  # type: ignore[assignment]
+        service.unpack_start = _boom  # type: ignore[method-assign]
         result = service.unpack_auto(session_id)
         assert result.ok is False
         assert result.error is not None
