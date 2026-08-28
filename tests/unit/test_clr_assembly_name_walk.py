@@ -25,9 +25,13 @@ _ASM_IDX = 9
 
 
 def _meta(
-    present: list[int], rows: dict[int, int], writes: list[tuple[int, int]]
+    present: list[int],
+    rows: dict[int, int],
+    writes: list[tuple[int, int]],
+    *,
+    pad: int = 512,
 ) -> tuple[bytes, dict[str, tuple[int, int]]]:
-    tables = bytearray(24 + 4 * len(present) + 512)
+    tables = bytearray(24 + 4 * len(present) + pad)
     tables[6] = 0  # HeapSizes = 0 -> every heap index is 2 bytes
     valid = 0
     for bit in present:
@@ -77,3 +81,36 @@ def test_multiple_intervening_typedef_rows_are_skipped() -> None:
     module_name, assembly_name, _stats = _parse_tables_and_names(meta, stream_map)
     assert module_name == "mod.dll"
     assert assembly_name == "MyAssembly"
+
+
+def test_unsized_intervening_table_degrades_without_losing_module_name() -> None:
+    # Bit 0x1E is a reserved table the enumerator's sizing does not model, and it
+    # sits before Assembly. Locating Assembly must fail softly: assembly_name
+    # comes back None, but the module name (read before the walk needs any sizing)
+    # and the row-count stats still survive. Data starts at 24 + 4*3 = 36.
+    meta, stream_map = _meta(
+        [0x00, 0x1E, 0x20],
+        {0x00: 1, 0x1E: 1, 0x20: 1},
+        [(38, _MODULE_IDX)],
+    )
+    module_name, assembly_name, stats = _parse_tables_and_names(meta, stream_map)
+    assert module_name == "mod.dll"
+    assert assembly_name is None
+    assert stats is not None
+
+
+def test_assembly_row_running_past_the_buffer_yields_no_name() -> None:
+    # Present: Module, Assembly. Data starts at 24 + 4*2 = 32; Module 32..42
+    # (Name@34); Assembly@42 with its Name field at 42+18 = 60. Truncate the
+    # tables buffer to 50 bytes so the Assembly name offset runs past the end:
+    # the bounds check must return None for the assembly name while the module
+    # name (fully inside the buffer) is still read.
+    meta, stream_map = _meta(
+        [0x00, 0x20],
+        {0x00: 1, 0x20: 1},
+        [(34, _MODULE_IDX)],
+        pad=50 - 32,
+    )
+    module_name, assembly_name, _stats = _parse_tables_and_names(meta, stream_map)
+    assert module_name == "mod.dll"
+    assert assembly_name is None
