@@ -49,6 +49,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 新增（设备 IPv6 侦察：地址与路由，共用一个网络序解码器）
+
+- 新增两个只读工具，补齐设备自身的 IPv6 视图：`device.ipv6_addrs` 解析 `/proc/net/if_inet6`
+  列出各接口的 IPv6 地址（接口名、解码地址、前缀长度、作用域 global/link/host/site），把可
+  路由的全局地址与 `fe80::` 链路本地地址区分开；`device.ipv6_routes` 解析
+  `/proc/net/ipv6_route` 列出 IPv6 路由表（目的网络与前缀、下一跳 `::` 表示直连、路由标志、
+  出接口），补上只读 `/proc/net/route`（仅 IPv4）看不到的默认路由与直连前缀。IPv4 没有对应的
+  `/proc/net/if_inet6`，故地址工具刻意只做 IPv6。
+- 两者的地址都是网络字节序连续 16 字节（不同于 `/proc/net/tcp6`、`udp6` 的小端 32 位字），因此
+  合用同一个 `_hex_ipv6_plain()` 解码器直接解、不做字反转——此前 `_if_inet6_addr` 与
+  `_ipv6_hex_addr` 是逐字节相同的两份实现，现合并为一份，去掉重复。
+- 诚实边界一致：设备离线（adb 主机错误回包）报 `backend_error`；内核关闭 IPv6 或文件被限制
+  （"No such file" / "Permission denied" 且无数据）如实报 `available: false`，既非失败也非空成功；
+  可读文件报 `available: true`（仅当内核确无条目时才是空列表）；无法识别的非错误输出报
+  `backend_error` 而不臆测为空。列表有界并在超限时置 `has_more`。新增
+  `tests/unit/test_device_ipv6_addrs_fields.py` 与 `test_device_ipv6_routes_fields.py` 覆盖直
+  解码（含 `::1`/`fe80::`）、离线报错、IPv6 关闭的 available=false、清洁空文件与无法识别输出。
+  工具面 265 → 267（只读 148 → 150）。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
