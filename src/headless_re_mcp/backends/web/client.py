@@ -1872,15 +1872,19 @@ class WebBackend:
         """
         if mapping_url.startswith("data:"):
             try:
-                return decode_data_uri(mapping_url, max_bytes=_MAX_WEB_SOURCEMAP_FETCH_BYTES), "inline", "data:"
+                decoded = decode_data_uri(
+                    mapping_url, max_bytes=_MAX_WEB_SOURCEMAP_FETCH_BYTES
+                )
             except SourceMapError as exc:
                 raise WebError(exc.code, exc.message) from exc
+            return decoded, "inline", "data:"
         abs_url = mapping_url
         if not is_remote_url(mapping_url):
             if not script_url:
                 raise WebError(
                     "invalid_state",
-                    "source map is a relative reference but the script has no URL to resolve against",
+                    "source map is a relative reference but the script has no "
+                    "URL to resolve against",
                     source_mapping_url=mapping_url,
                 )
             abs_url = urljoin(script_url, mapping_url)
