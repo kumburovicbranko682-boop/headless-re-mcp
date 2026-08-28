@@ -44,6 +44,15 @@ until 1.0 the tool surface may still change between minor versions.
   `flow_get` 的完整请求/响应（含 POST 的请求体原样落地）、以及 `export_har` 导出一条 HAR。全程明文 HTTP
   打本机，不需要 CA 信任也不需要外网；mitmproxy 已在 `linux-integration` 的 proxy extra 里，故 CI 直接真跑。
   以上三项把托管 Linux 上真跑的 Gate 从 19 个提到 21 个。
+- Web CDP 只有 3 个读工具（脚本列举/console/DOM）被 Gate 覆盖，真正做 RE 用的抓取面——取某个脚本的源码、
+  记录页面发出的网络请求并回读响应体、列举页面实例化的 WASM 模块——一个都没测。新增
+  `tests/integration/test_web_cdp_capture_gate.py`：用 `http.server` 现搭一个本机小站点（外链脚本、
+  一次 JSON fetch、一段现取现实例化的 WASM），经真浏览器打开后断言 CDP 回读的值：`web.network_list`
+  抓到 `/app.js`、`/data.json`、`/mod.wasm` 三条请求，`web.network_get` 回读出 `/data.json` 的响应体
+  （`"gate": "ok"`）；`web.scripts`+`web.script_source` 取回 `/app.js` 源码并含只在真文件里出现的标记；
+  `web.wasm_list` 列出页面实例化的 WebAssembly 模块；再加 `web.screenshot` 出图与 `web.har_export`
+  至少三条 HAR。全程明文 HTTP 打 127.0.0.1，不需外网；缺 Playwright/Chromium 如实跳过，
+  `linux-integration` 已装 Chromium 故真跑。托管 Linux 上真跑的 Gate 由此到 22 个。
 - 修 `tests/integration/test_agent_browser_smoke.py` 三处长期漂移（这条 Gate 从未在 Linux 跑过，也就
   没人发现它已经烂了）：
   - 顶层 `from playwright.sync_api import ...` 会让缺 browser extra 的机器在收集阶段直接 ImportError、
