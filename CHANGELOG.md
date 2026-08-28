@@ -5,6 +5,28 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（非-PE 覆盖用例与本分支重构 API 的语义合并冲突）
+
+- 从 main 合入的一批非-PE 覆盖用例（proxy/doctor/r2/jsre/web）导入或钉死了本分支
+  为更强合同而重构掉的符号：两侧各自的树都绿，只有合并树在收集/运行期红——与此前
+  proxy 实例、audit trim 等语义合并冲突同类。只改测试对齐当前 API，不改源码。
+- `proxy`：`_port_bindable`（返回 bool）已改为 `_bind_probe`（返回 `OSError | None`，
+  让 `start()` 把"端口被占"（`EADDRINUSE`→`invalid_state`）与"主机根本绑不上"分开）。
+  `test_proxy_client_paths.py` / `test_proxy_client_guard_paths.py` 改为：可绑映射为
+  `None`，不可绑映射为 `OSError(EADDRINUSE)`，用例名与文档随之更新。
+- `doctor`：`probe_python_module` 已改为 `probe_import_backend`（像各客户端那样真的
+  `import` 模块，并带 install/blocked 提示）。`test_doctor_probe_edges.py` 改用新名并
+  补上必需的提示参数。
+- `r2`：`xrefs` 由 `aa`+`axj` 改为 `aa`+`aac`+`axtj`（`aac` 建全调用图才能找齐调用者，
+  `axtj` 地址定域且跨 radare2 6.x 稳定）。`test_r2_client_guards.py` /
+  `test_r2_client_paths.py` / `test_r2_client_guard_paths.py` 的命令形状断言与守卫路径
+  文档（`_AXTJ_COMMAND`）同步。
+- `jsre`：`wat`/`info` 新增可选 `spill_path`（内联上限截断时把全量输出溢写到文件），
+  `test_service_jsre_paths.py` 的假 `WasmClient` 随之接受该参数。
+- `web`：抓包 handle 携带 `receive_anchors`（承载 HAR 收包相位计时），
+  `test_web_client_paths.py` 的假 handle 也带上它，逐出旧请求时才能一并清理。
+- 合并后全矩阵 CI 绿（Windows/Linux 单元 × 3.11/3.12、linux-integration、webui）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
