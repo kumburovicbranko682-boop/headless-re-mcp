@@ -190,6 +190,12 @@ class SessionRegistry:
                     mres_payloads, mres_count = _dotnet_resource_payloads(path)
                     metadata["dotnet"]["resource_payloads"] = mres_payloads
                     metadata["dotnet"]["resource_payload_count"] = mres_count
+                    # Near-random resources with no magic to explain them --
+                    # the ConfuserEx shape: an encrypted stage-two assembly
+                    # behind Assembly.Load. Empty is a real answer.
+                    mres_flags, mres_flag_count = _dotnet_high_entropy_resources(path)
+                    metadata["dotnet"]["high_entropy_resources"] = mres_flags
+                    metadata["dotnet"]["high_entropy_resource_count"] = mres_flag_count
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -509,6 +515,34 @@ _ENTROPY_THRESHOLD = 7.2
 _ENTROPY_MIN_SIZE = 256
 _ENTROPY_MAX_READ = 4 * 1024 * 1024
 _ENTROPY_MAX_FLAGGED = 32
+# Heads that already explain near-random bytes, so the entropy censuses skip
+# them: executables and containers belong to the payload censuses; compressed
+# media, fonts and archives are near-random by design and say so up front; a
+# .NET ResourceManager blob declares its own format. An encrypted payload is
+# exactly the bytes with no such self-declaration (MP4-family files declare
+# via "ftyp" at offset 4 and are handled in _self_declaring_magic).
+_ENTROPY_SELF_DECLARING = (
+    b"dex\n",  # DEX
+    b"\x7fELF",  # ELF
+    b"PK\x03\x04",  # ZIP / APK / JAR
+    b"MZ",  # PE
+    b"\x00asm",  # WASM
+    b"\xcf\xfa\xed\xfe",  # Mach-O (and the other magics below)
+    b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf",
+    b"\xfe\xed\xfa\xce",
+    b"\x89PNG",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF8",  # GIF
+    b"RIFF",  # WebP / WAV / AVI
+    b"OggS",  # Ogg audio
+    b"ID3",  # MP3 with ID3 tag
+    b"\x1f\x8b",  # gzip
+    b"wOFF",  # WOFF font
+    b"wOF2",  # WOFF2 font
+    b"\x28\xb5\x2f\xfd",  # zstd
+    b"\xce\xca\xef\xbe",  # .NET ResourceManager .resources blob
+)
 _NATIVE_MAX_MACHO_SECTIONS = 4096
 _SHT_NULL = 0
 _SHT_PROGBITS = 1
@@ -1602,23 +1636,6 @@ _APK_PAYLOAD_KINDS: tuple[tuple[bytes, str], ...] = (
 _APK_CANONICAL_DEX_RE = re.compile(r"classes\d*\.dex")
 _APK_MAX_PAYLOAD_MEMBERS = 4096
 _APK_MAX_PAYLOADS = 32
-# Members that legitimately measure near-random and say so up front: the
-# compressed media and font containers an app ships in bulk. Their magic is
-# their explanation, so the entropy census skips them -- an encrypted payload
-# carries no such self-declaration (MP4-family files declare via "ftyp" at
-# offset 4 and are handled separately).
-_APK_MEDIA_MAGICS = (
-    b"\x89PNG",  # PNG
-    b"\xff\xd8\xff",  # JPEG
-    b"GIF8",  # GIF
-    b"RIFF",  # WebP / WAV / AVI
-    b"OggS",  # Ogg audio
-    b"ID3",  # MP3 with ID3 tag
-    b"\x1f\x8b",  # gzip
-    b"wOFF",  # WOFF font
-    b"wOF2",  # WOFF2 font
-    b"\x28\xb5\x2f\xfd",  # zstd
-)
 # Total decompressed bytes the APK entropy census will measure: a member is
 # read to at most _ENTROPY_MAX_READ, and a hostile archive full of huge
 # members cannot make the census inflate more than this in aggregate.
@@ -1673,21 +1690,6 @@ def _apk_embedded_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
     return payloads, count
 
 
-def _apk_member_self_declares(head: bytes) -> bool:
-    """True when a member's magic already explains its near-random bytes.
-
-    Executable and container magic belongs to the embedded-payload census;
-    compressed media and font formats are near-random by design and say so in
-    their first bytes. Neither is the encrypted-payload shape the entropy
-    census exists to flag.
-    """
-    if any(head.startswith(magic) for magic, _ in _APK_PAYLOAD_KINDS):
-        return True
-    if any(head.startswith(magic) for magic in _APK_MEDIA_MAGICS):
-        return True
-    return head[4:8] == b"ftyp"
-
-
 def _apk_high_entropy_members(path: Path) -> tuple[list[dict[str, Any]], int]:
     """Members whose decompressed bytes measure near-random with no magic.
 
@@ -1725,7 +1727,7 @@ def _apk_high_entropy_members(path: Path) -> tuple[list[dict[str, Any]], int]:
                 try:
                     with archive.open(info) as member:
                         head = member.read(0x40)
-                        if _apk_member_self_declares(head):
+                        if _self_declaring_magic(head):
                             continue
                         data = head + member.read(min(_ENTROPY_MAX_READ, budget) - len(head))
                 except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile):
@@ -2352,6 +2354,8 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     defined_memories: list[dict[str, Any]] = []
     data_payloads: list[dict[str, Any]] = []
     data_payload_count = 0
+    entropy_flags: list[dict[str, Any]] = []
+    entropy_count = 0
     producers: dict[str, list[str]] | None = None
     target_features: list[dict[str, Any]] | None = None
     name_facts: dict[str, Any] = {}
@@ -2387,6 +2391,9 @@ def describe_wasm(path: Path) -> dict[str, Any]:
                 defined_memories = _wasm_memories(data, body_start, body_end)
             elif section_id == 11:
                 data_payloads, data_payload_count = _wasm_data_payloads(
+                    data, body_start, body_end
+                )
+                entropy_flags, entropy_count = _wasm_high_entropy_segments(
                     data, body_start, body_end
                 )
         elif section_id == 8:
@@ -2496,6 +2503,11 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             # memory is the dropper shape. Count is exact; the list is bounded.
             "data_payloads": data_payloads,
             "data_payload_count": data_payload_count,
+            # Segments that measure near-random with no magic to explain it --
+            # the encrypted-payload shape staged in linear memory that the
+            # magic census cannot see. Count exact; the list is bounded.
+            "high_entropy_segments": entropy_flags,
+            "high_entropy_segment_count": entropy_count,
             # Data past the last well-formed section: None for a clean module,
             # else {offset, size} of the residue (appended payload or a broken
             # tail -- well_formed says which module the engine would accept).
@@ -3384,26 +3396,19 @@ def _wasm_memories(data: bytes, body_start: int, body_end: int) -> list[dict[str
     return out
 
 
-def _wasm_data_payloads(
-    data: bytes, body_start: int, body_end: int
-) -> tuple[list[dict[str, Any]], int]:
-    """Data segments (section 11) whose bytes open with executable magic.
+def _wasm_data_segments(data: bytes, body_start: int, body_end: int) -> list[tuple[int, int, int]]:
+    """``(index, payload offset, payload length)`` per data segment (section 11).
 
     Each segment is a mode flag, an optional memory index and offset
     expression (for the active modes), then a vector of raw bytes -- the
-    initial contents of linear memory. A segment whose bytes begin with a
-    PE/ELF/DEX/ZIP (or nested WASM) magic is the dropper payload the module
-    would write out and run: this lists segment index, kind and byte length.
-
-    Bounded and fail-closed: the segment scan and the reported list are
-    capped, and a malformed segment stops the walk (returning what parsed
-    cleanly) rather than raising.
+    initial contents of linear memory. The shared walk under the payload and
+    entropy censuses: bounded, and a malformed segment stops the walk
+    (returning what parsed cleanly) rather than raising.
     """
     count, pos, ok = _read_leb_u32(data, body_start)
     if not ok:
-        return [], 0
-    payloads: list[dict[str, Any]] = []
-    found = 0
+        return []
+    segments: list[tuple[int, int, int]] = []
     for index in range(min(count, _WASM_MAX_DATA_SEGMENTS)):
         if pos >= body_end:
             break
@@ -3422,8 +3427,25 @@ def _wasm_data_payloads(
         seg_len, pos, ok = _read_leb_u32(data, pos)
         if not ok or pos + seg_len > body_end:
             break
-        head = data[pos : pos + min(seg_len, 0x40)]
+        segments.append((index, pos, seg_len))
         pos += seg_len
+    return segments
+
+
+def _wasm_data_payloads(
+    data: bytes, body_start: int, body_end: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Data segments (section 11) whose bytes open with executable magic.
+
+    A segment whose bytes begin with a PE/ELF/DEX/ZIP (or nested WASM) magic
+    is the dropper payload the module would write out and run: this lists
+    segment index, kind and byte length. The reported list is capped; the
+    count is exact over the walked segments.
+    """
+    payloads: list[dict[str, Any]] = []
+    found = 0
+    for index, offset, seg_len in _wasm_data_segments(data, body_start, body_end):
+        head = data[offset : offset + min(seg_len, 0x40)]
         kind = next((k for magic, k in _WASM_PAYLOAD_KINDS if head.startswith(magic)), None)
         if kind == "pe" and len(head) < 0x40:
             kind = None
@@ -3433,6 +3455,35 @@ def _wasm_data_payloads(
         if len(payloads) < _WASM_MAX_DATA_PAYLOADS:
             payloads.append({"segment": index, "kind": kind, "size": seg_len})
     return payloads, found
+
+
+def _wasm_high_entropy_segments(
+    data: bytes, body_start: int, body_end: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Data segments whose bytes measure near-random with no magic.
+
+    The WASM arm of the entropy census: an encrypted or compressed payload
+    staged in linear memory (for the module to inflate and hand to the host)
+    opens with no magic at all, so only the Shannon measure gives it away.
+    Segments whose head self-declares route to their own census instead --
+    executables to the payload census, media to nothing (an emscripten
+    ``--embed-file`` asset is near-random by design and says so). Bounds are
+    the shared census ones: a size floor, a per-segment read cap, an exact
+    count with a capped list.
+    """
+    flagged: list[dict[str, Any]] = []
+    count = 0
+    for index, offset, seg_len in _wasm_data_segments(data, body_start, body_end):
+        if seg_len < _ENTROPY_MIN_SIZE:
+            continue
+        if _self_declaring_magic(data[offset : offset + 0x40]):
+            continue
+        entropy = _shannon_entropy(data[offset : offset + min(seg_len, _ENTROPY_MAX_READ)])
+        if entropy >= _ENTROPY_THRESHOLD:
+            count += 1
+            if len(flagged) < _ENTROPY_MAX_FLAGGED:
+                flagged.append({"segment": index, "entropy": round(entropy, 2), "size": seg_len})
+    return flagged, count
 
 
 def _wasm_skip_const_expr(data: bytes, pos: int, body_end: int) -> tuple[int, bool]:
@@ -3940,40 +3991,37 @@ _DOTNET_MAX_RESOURCE_ROWS = 4096
 _DOTNET_MAX_RESOURCE_PAYLOADS = 64
 
 
-def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
-    """Embedded managed resources whose bytes open with executable magic.
+def _dotnet_embedded_resources(path: Path) -> tuple[bytes, list[tuple[str, int, int]]]:
+    """``(raw file bytes, [(name, byte offset, length)])`` per embedded resource.
 
-    The .NET analogue of the PE resource, APK ``assets/`` and WASM data-segment
-    censuses -- and the one .NET packers lean on hardest: a protector stores the
-    real, encrypted or compressed, stage-two assembly as an embedded
-    ManifestResource, then loads it with ``Assembly.Load`` at runtime. This
-    walks the ManifestResource table (0x28) for rows with a null Implementation
-    (embedded in this module, not forwarded to another file), reads each one's
-    length-prefixed blob from the CLI header's Resources directory, and sniffs
-    its head. Each flagged entry names the resource, the sniffed kind and the
-    byte size. A census, not a verdict: a legitimate embedded assembly or
-    zipped asset lists here too, for triage.
+    The shared walk under the .NET resource censuses -- and the place .NET
+    packers lean on hardest: a protector stores the real, encrypted or
+    compressed, stage-two assembly as an embedded ManifestResource, then loads
+    it with ``Assembly.Load`` at runtime. This walks the ManifestResource
+    table (0x28) for rows with a null Implementation (embedded in this module,
+    not forwarded to another file) and resolves each one's length-prefixed
+    blob in the CLI header's Resources directory to a file offset and length.
 
-    Bounded and fail-closed: the whole read is capped, the table walk and the
-    reported list are bounded, only the first 0x40 bytes of each resource are
-    sniffed, and any structural surprise yields what parsed cleanly rather than
-    raising.
+    Bounded and fail-closed: the whole read is capped, the table walk is
+    bounded, and any structural surprise yields what parsed cleanly rather
+    than raising.
     """
     from headless_re_mcp.dotnet.tables import coded_index_size, table_row_size
 
+    empty: tuple[bytes, list[tuple[str, int, int]]] = (b"", [])
     try:
         size = path.stat().st_size
         if size > _DOTNET_MAX_FILE:
-            return [], 0
+            return empty
         with path.open("rb") as stream:
             raw = stream.read(_DOTNET_MAX_FILE)
     except OSError:
-        return [], 0
+        return empty
     if len(raw) < 0x40 or raw[:2] != b"MZ":
-        return [], 0
+        return empty
     e_lfanew = int.from_bytes(raw[0x3C:0x40], "little")
     if e_lfanew + 24 > len(raw) or raw[e_lfanew : e_lfanew + 4] != b"PE\x00\x00":
-        return [], 0
+        return empty
     coff = raw[e_lfanew : e_lfanew + 24]
     num_sections = min(int.from_bytes(coff[6:8], "little"), _PE_MAX_SECTIONS)
     opt_size = int.from_bytes(coff[20:22], "little")
@@ -3985,44 +4033,44 @@ def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
     elif magic == 0x20B:
         dir_count_off = 108
     else:
-        return [], 0
+        return raw, []
     if dir_count_off + 4 > len(optional):
-        return [], 0
+        return raw, []
     dir_count = int.from_bytes(optional[dir_count_off : dir_count_off + 4], "little")
     if dir_count <= _PE_COM_DESCRIPTOR_DIR:
-        return [], 0
+        return raw, []
     com_entry = dir_count_off + 4 + _PE_COM_DESCRIPTOR_DIR * 8
     if com_entry + 8 > len(optional):
-        return [], 0
+        return raw, []
     clr_rva = int.from_bytes(optional[com_entry : com_entry + 4], "little")
     if clr_rva == 0:
-        return [], 0
+        return raw, []
     sect_start = opt_start + opt_size
     sections = _pe_sections(raw[sect_start : sect_start + num_sections * 40])
     clr_off = _pe_rva_to_offset(sections, clr_rva)
     if clr_off is None or clr_off + 32 > len(raw):
-        return [], 0
+        return raw, []
     cor20 = raw[clr_off : clr_off + 32]
     meta_rva = int.from_bytes(cor20[8:12], "little")
     res_rva = int.from_bytes(cor20[24:28], "little")
     res_size = int.from_bytes(cor20[28:32], "little")
     if res_rva == 0 or res_size == 0:
-        return [], 0  # no managed Resources directory: nothing embedded
+        return raw, []  # no managed Resources directory: nothing embedded
     meta_off = _pe_rva_to_offset(sections, meta_rva)
     res_base = _pe_rva_to_offset(sections, res_rva)
     if meta_off is None or res_base is None:
-        return [], 0
+        return raw, []
     stream_map = _clr_stream_map(raw, meta_off)
     tables_span = stream_map.get("#~") or stream_map.get("#-")
     strings_span = stream_map.get("#Strings")
     if tables_span is None:
-        return [], 0
+        return raw, []
     tables = raw[meta_off + tables_span[0] : meta_off + tables_span[0] + tables_span[1]]
     strings = b""
     if strings_span is not None:
         strings = raw[meta_off + strings_span[0] : meta_off + strings_span[0] + strings_span[1]]
     if len(tables) < 24:
-        return [], 0
+        return raw, []
     heap_sizes = tables[6]
     string_index_size = 4 if (heap_sizes & 0x01) else 2
     guid_index_size = 4 if (heap_sizes & 0x02) else 2
@@ -4033,7 +4081,7 @@ def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
     for bit in range(64):
         if valid & (1 << bit):
             if cursor + 4 > len(tables):
-                return [], 0
+                return raw, []
             row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
             cursor += 4
     # Clamp each count to what the stream could hold (same rule as the metadata
@@ -4042,7 +4090,7 @@ def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
     max_rows = max((len(tables) - cursor) // 2, 0)
     row_counts = {bit: min(count, max_rows) for bit, count in row_counts.items()}
     if _DOTNET_MANIFEST_RESOURCE not in row_counts:
-        return [], 0
+        return raw, []
     # Sum row sizes of every present table below ManifestResource to land on it.
     table_offset = cursor
     for bit in sorted(row_counts):
@@ -4050,7 +4098,7 @@ def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
             row_counts, string_index_size, blob_index_size, guid_index_size, bit
         )
         if row_size is None:
-            return [], 0
+            return raw, []
         if bit >= _DOTNET_MANIFEST_RESOURCE:
             break
         table_offset += row_size * row_counts[bit]
@@ -4058,7 +4106,7 @@ def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
         row_counts, string_index_size, blob_index_size, guid_index_size, _DOTNET_MANIFEST_RESOURCE
     )
     if row_size_28 is None:
-        return [], 0
+        return raw, []
     implementation_size = coded_index_size(row_counts, _DOTNET_IMPLEMENTATION_TABLES, 2)
 
     def string_at(index: int) -> str:
@@ -4069,8 +4117,7 @@ def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
             "utf-8", errors="replace"
         )
 
-    payloads: list[dict[str, Any]] = []
-    found = 0
+    resources: list[tuple[str, int, int]] = []
     rows = min(row_counts[_DOTNET_MANIFEST_RESOURCE], _DOTNET_MAX_RESOURCE_ROWS)
     for i in range(rows):
         row = table_offset + i * row_size_28
@@ -4086,7 +4133,24 @@ def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
         if entry + 4 > len(raw):
             continue
         blob_len = int.from_bytes(raw[entry : entry + 4], "little")
-        head = raw[entry + 4 : entry + 4 + min(blob_len, 0x40)]
+        resources.append((string_at(name_index), entry + 4, blob_len))
+    return raw, resources
+
+
+def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Embedded managed resources whose bytes open with executable magic.
+
+    The .NET analogue of the PE resource, APK ``assets/`` and WASM
+    data-segment censuses: each flagged entry names the resource, the sniffed
+    kind and the byte size. A census, not a verdict: a legitimate embedded
+    assembly or zipped asset lists here too, for triage. Only the first 0x40
+    bytes of each resource are sniffed and the reported list is capped.
+    """
+    raw, resources = _dotnet_embedded_resources(path)
+    payloads: list[dict[str, Any]] = []
+    found = 0
+    for name, offset, blob_len in resources:
+        head = raw[offset : offset + min(blob_len, 0x40)]
         kind = next((k for m, k in _PE_RESOURCE_KINDS if head.startswith(m)), None)
         if kind == "pe" and len(head) < 0x40:
             kind = None
@@ -4094,8 +4158,36 @@ def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
             continue
         found += 1
         if len(payloads) < _DOTNET_MAX_RESOURCE_PAYLOADS:
-            payloads.append({"name": string_at(name_index), "kind": kind, "size": blob_len})
+            payloads.append({"name": name, "kind": kind, "size": blob_len})
     return payloads, found
+
+
+def _dotnet_high_entropy_resources(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Embedded resources whose bytes measure near-random with no magic.
+
+    The .NET arm of the entropy census -- and the exact ConfuserEx /
+    .NET-Reactor shape: the protected stage-two assembly is stored encrypted
+    or compressed as a ManifestResource and inflated at runtime, so it opens
+    with no magic and only the Shannon measure gives it away. A resource whose
+    head self-declares routes to its own census instead (executables to the
+    payload census; a ResourceManager ``.resources`` blob or media file
+    explains itself). Bounds are the shared census ones: a size floor, a
+    per-resource read cap, an exact count with a capped list.
+    """
+    raw, resources = _dotnet_embedded_resources(path)
+    flagged: list[dict[str, Any]] = []
+    count = 0
+    for name, offset, blob_len in resources:
+        if blob_len < _ENTROPY_MIN_SIZE or offset + blob_len > len(raw):
+            continue
+        if _self_declaring_magic(raw[offset : offset + 0x40]):
+            continue
+        entropy = _shannon_entropy(raw[offset : offset + min(blob_len, _ENTROPY_MAX_READ)])
+        if entropy >= _ENTROPY_THRESHOLD:
+            count += 1
+            if len(flagged) < _ENTROPY_MAX_FLAGGED:
+                flagged.append({"name": name, "entropy": round(entropy, 2), "size": blob_len})
+    return flagged, count
 
 
 def _clr_stream_map(raw: bytes, meta_off: int) -> dict[str, tuple[int, int]]:
@@ -5873,6 +5965,19 @@ def _elf_named_sections(
         name_off, stype, sh_offset, sh_size = sh_fields(entry)
         sections.append((section_name(name_off, i), stype, sh_offset, sh_size))
     return sections
+
+
+def _self_declaring_magic(head: bytes) -> bool:
+    """True when ``head``'s magic already explains near-random bytes.
+
+    Executable and container magic belongs to the embedded-payload censuses;
+    compressed media, font and archive formats are near-random by design and
+    say so in their first bytes. Neither is the encrypted-payload shape the
+    entropy censuses exist to flag.
+    """
+    if any(head.startswith(magic) for magic in _ENTROPY_SELF_DECLARING):
+        return True
+    return head[4:8] == b"ftyp"
 
 
 def _shannon_entropy(data: bytes) -> float:

@@ -20,6 +20,7 @@ import pytest
 from headless_re_mcp.core.models import Architecture, TargetKind
 from headless_re_mcp.core.session import (
     SessionRegistry,
+    _dotnet_high_entropy_resources,
     _dotnet_resource_payloads,
     _pe_authenticode,
     _pe_capability_surface,
@@ -1581,6 +1582,65 @@ class TestDotnetResourcePayloads:
         assert dotnet["resource_payload_count"] == 1
         assert dotnet["resource_payloads"] == [
             {"name": "stage2.dll", "kind": "pe", "size": len(nested)}
+        ]
+
+
+class TestDotnetHighEntropyResources:
+    """_dotnet_high_entropy_resources flags near-random magicless resources.
+
+    The exact ConfuserEx / .NET-Reactor shape: the protected stage-two
+    assembly is stored encrypted as a ManifestResource and inflated at
+    runtime behind Assembly.Load, so it opens with no magic and only the
+    Shannon measure gives it away. Self-declaring heads route to their own
+    census; an empty list is a real "nothing encrypted here" answer.
+    """
+
+    def test_a_planted_uniform_resource_flags_at_eight(self, tmp_path: Path) -> None:
+        path = tmp_path / "packed.exe"
+        path.write_bytes(
+            _dotnet_with_resources(
+                [("enc.bin", bytes(range(256)) * 4), ("config.json", b'{"mode": "real"}')]
+            )
+        )
+        assert _dotnet_high_entropy_resources(path) == (
+            [{"name": "enc.bin", "entropy": 8.0, "size": 1024}],
+            1,
+        )
+
+    def test_a_self_declaring_head_routes_to_its_own_census(self, tmp_path: Path) -> None:
+        blob = bytes(range(256)) * 4
+        path = tmp_path / "declared.exe"
+        path.write_bytes(
+            _dotnet_with_resources(
+                [
+                    ("stage2.dll", _nested_assembly_bytes()),  # payload census's beat
+                    ("strings.resources", b"\xce\xca\xef\xbe" + blob),  # ResourceManager
+                    ("icon.png", b"\x89PNG\r\n\x1a\n" + blob),  # media explains itself
+                ]
+            )
+        )
+        assert _dotnet_high_entropy_resources(path) == ([], 0)
+        payloads, _count = _dotnet_resource_payloads(path)
+        assert [p["name"] for p in payloads] == ["stage2.dll"]
+
+    def test_a_resource_below_the_size_floor_is_not_measured(self, tmp_path: Path) -> None:
+        path = tmp_path / "tiny.exe"
+        path.write_bytes(_dotnet_with_resources([("tiny.bin", bytes(range(128)))]))
+        assert _dotnet_high_entropy_resources(path) == ([], 0)
+
+    def test_the_committed_fixture_carries_no_opaque_resource(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        assert _dotnet_high_entropy_resources(_DOTNET_FIXTURE) == ([], 0)
+
+    def test_session_over_a_protected_shape_carries_the_flags(self, tmp_path: Path) -> None:
+        path = tmp_path / "packed.exe"
+        path.write_bytes(_dotnet_with_resources([("enc.bin", bytes(range(256)) * 4)]))
+        session = SessionRegistry().create(str(path))
+        dotnet = session.metadata["dotnet"]
+        assert dotnet["high_entropy_resource_count"] == 1
+        assert dotnet["high_entropy_resources"] == [
+            {"name": "enc.bin", "entropy": 8.0, "size": 1024}
         ]
 
 

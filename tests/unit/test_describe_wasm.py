@@ -621,6 +621,67 @@ class TestWasmDataPayloads:
         assert len(info["data_payloads"]) == 32
 
 
+class TestWasmHighEntropySegments:
+    """describe_wasm flags near-random data segments with no magic.
+
+    The encrypted-payload shape staged in linear memory: the module inflates
+    it at runtime and hands it to the host, and it opens with no magic at all,
+    so the data-payload census cannot see it. Self-declaring heads route to
+    their own census (executables) or explain themselves (media); an empty
+    list is a real "nothing encrypted here" answer.
+    """
+
+    def test_a_uniform_segment_measures_eight_and_flags(self, tmp_path: Path) -> None:
+        # Every byte value equally often: exactly 8.0 bits per byte, the
+        # deterministic stand-in for an encrypted payload.
+        section = _data_section(
+            [_active_data(b"plain configuration text"), _active_data(bytes(range(256)) * 4)]
+        )
+        path = tmp_path / "packed.wasm"
+        path.write_bytes(_module([section]))
+        info = describe_wasm(path)["wasm"]
+        assert info["high_entropy_segment_count"] == 1
+        assert info["high_entropy_segments"] == [{"segment": 1, "entropy": 8.0, "size": 1024}]
+
+    def test_a_self_declaring_head_routes_to_its_own_census(self, tmp_path: Path) -> None:
+        blob = bytes(range(256)) * 4
+        # An ELF head belongs to the data-payload census; a PNG head explains
+        # its own randomness. The same bytes with no head must flag.
+        section = _data_section(
+            [
+                _active_data(b"\x7fELF" + blob),
+                _active_data(b"\x89PNG\r\n\x1a\n" + blob),
+                _active_data(blob),
+            ]
+        )
+        path = tmp_path / "declared.wasm"
+        path.write_bytes(_module([section]))
+        info = describe_wasm(path)["wasm"]
+        assert [flag["segment"] for flag in info["high_entropy_segments"]] == [2]
+        assert info["data_payload_count"] == 1
+
+    def test_a_segment_below_the_size_floor_is_not_measured(self, tmp_path: Path) -> None:
+        section = _data_section([_active_data(bytes(range(128)))])
+        path = tmp_path / "tiny.wasm"
+        path.write_bytes(_module([section]))
+        assert describe_wasm(path)["wasm"]["high_entropy_segment_count"] == 0
+
+    def test_a_clean_module_flags_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "add.wasm"
+        path.write_bytes(_ADD_WASM)
+        info = describe_wasm(path)["wasm"]
+        assert info["high_entropy_segment_count"] == 0
+        assert info["high_entropy_segments"] == []
+
+    def test_the_list_is_bounded_but_the_count_exact(self, tmp_path: Path) -> None:
+        section = _data_section([_active_data(bytes(range(256)) * 4) for _ in range(40)])
+        path = tmp_path / "many.wasm"
+        path.write_bytes(_module([section]))
+        info = describe_wasm(path)["wasm"]
+        assert info["high_entropy_segment_count"] == 40
+        assert len(info["high_entropy_segments"]) == 32
+
+
 def test_describe_wasm_ignores_a_non_wasm_file(tmp_path: Path) -> None:
     path = tmp_path / "app.js"
     path.write_bytes(b"export const x = 1;\n")
