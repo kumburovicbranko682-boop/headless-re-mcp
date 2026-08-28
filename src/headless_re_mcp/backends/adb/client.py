@@ -73,6 +73,15 @@ class AdbError(RuntimeError):
 
 
 def _check_serial(serial: str) -> str:
+    # serial is typed str at every device.* tool boundary, but the agent and
+    # OpenAI-bridge transports bind it from model output with no pydantic
+    # coercion. ``serial or ""`` passed a *truthy* non-string (an int, list or
+    # dict) straight to .strip(), so the AttributeError was filed as a logged
+    # internal_error incident instead of the invalid_params caller fault it is.
+    # The type name travels instead of the raw value: a bytes payload in the
+    # details would not survive JSON serialization.
+    if serial is not None and not isinstance(serial, str):
+        raise AdbError("invalid_params", "invalid device serial", got=type(serial).__name__)
     value = (serial or "").strip()
     if not _SERIAL_RE.match(value):
         raise AdbError("invalid_params", "invalid device serial", serial=serial)
@@ -80,6 +89,10 @@ def _check_serial(serial: str) -> str:
 
 
 def _check_package(package: str) -> str:
+    # Same boundary as _check_serial: a truthy non-string package crashed
+    # .strip() instead of being refused as the caller fault it is.
+    if package is not None and not isinstance(package, str):
+        raise AdbError("invalid_params", "invalid package name", got=type(package).__name__)
     value = (package or "").strip()
     if not _PACKAGE_RE.match(value):
         raise AdbError("invalid_params", "invalid package name", package=package)
@@ -121,6 +134,14 @@ def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> No
     forward would leak an adb-server listener and pin one of the tracked slots
     until the cap locks the process out. A remote 0 is simply not connectable.
     """
+    # Both specs are typed str at the device.forward tool boundary, but the
+    # agent and OpenAI-bridge transports bind them from model output with no
+    # pydantic coercion, and a bare port number is an easy mistake for a spec
+    # like "tcp:5555". ``spec or ""`` handed a *truthy* non-string (5555, a
+    # list, a dict) to re.match, whose TypeError was filed as a logged
+    # internal_error incident instead of the invalid_params caller fault it is.
+    if spec is not None and not isinstance(spec, str):
+        raise AdbError("invalid_params", f"invalid {side} forward spec", got=type(spec).__name__)
     tcp = re.match(r"^tcp:(\d{1,5})$", spec or "")
     if tcp is not None:
         if not 1 <= int(tcp.group(1)) <= 65535:

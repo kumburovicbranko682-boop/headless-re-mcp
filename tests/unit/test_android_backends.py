@@ -59,6 +59,34 @@ class TestAdbArgumentValidation:
         assert _check_serial(serial) == serial
 
     @pytest.mark.parametrize(
+        "serial",
+        [12345, 1.5, ["emulator-5554"], {"serial": "x"}, b"emulator-5554", True, False],
+    )
+    def test_non_string_serials_are_refused_not_crashed(self, serial: object) -> None:
+        """A truthy non-string used to hit .strip() with an AttributeError.
+
+        serial is typed str at every device.* tool boundary, but the agent and
+        OpenAI-bridge transports bind it from model output with no pydantic
+        coercion, and ``serial or ""`` only caught the falsy shapes. The crash
+        was filed as an internal_error incident instead of the invalid_params
+        caller fault it is.
+        """
+        with pytest.raises(AdbError) as info:
+            _check_serial(serial)  # type: ignore[arg-type]
+        assert info.value.code == "invalid_params"
+        assert info.value.details.get("got") == type(serial).__name__
+
+    @pytest.mark.parametrize(
+        "package",
+        [123, 0.5, ["com.example.app"], {"package": "x"}, b"com.example.app", True, False],
+    )
+    def test_non_string_packages_are_refused_not_crashed(self, package: object) -> None:
+        with pytest.raises(AdbError) as info:
+            _check_package(package)  # type: ignore[arg-type]
+        assert info.value.code == "invalid_params"
+        assert info.value.details.get("got") == type(package).__name__
+
+    @pytest.mark.parametrize(
         "package",
         ["", "notapackage", "com.x; id", "com.x/../y", "com .x", "-rf"],
     )

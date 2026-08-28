@@ -105,6 +105,36 @@ def test_malformed_specs_are_refused(spec: str) -> None:
     assert caught.value.code == "invalid_params"
 
 
+@pytest.mark.parametrize("side", ["local", "remote"])
+@pytest.mark.parametrize(
+    "spec",
+    [5555, 1.5, ["tcp:5555"], {"local": "tcp:5555"}, b"tcp:5555", True],
+)
+def test_non_string_specs_are_refused_not_crashed(side: str, spec: object) -> None:
+    """A bare port number instead of "tcp:5555" used to crash re.match.
+
+    Both specs are typed str at the device.forward tool boundary, but the agent
+    and OpenAI-bridge transports bind them from model output with no pydantic
+    coercion, and ``spec or ""`` only caught the falsy shapes. The TypeError
+    from re.match was filed as an internal_error incident instead of the
+    invalid_params caller fault it is. No device is resolved and no forward
+    slot is reserved for a refused spec.
+    """
+    backend = AdbBackend()
+
+    def _boom(serial: str) -> Any:
+        raise AssertionError("device must not be resolved for a non-string spec")
+
+    backend._device = _boom  # type: ignore[method-assign]
+    local, remote = (spec, "tcp:27042") if side == "local" else ("tcp:27042", spec)
+    with pytest.raises(AdbError) as caught:
+        backend.forward("emulator-5554", local, remote)  # type: ignore[arg-type]
+    assert caught.value.code == "invalid_params"
+    assert side in caught.value.message
+    assert caught.value.details.get("got") == type(spec).__name__
+    assert backend._forwards == []
+
+
 def test_an_out_of_range_port_is_refused_before_a_device_is_touched() -> None:
     """Validation runs ahead of the device lookup, so a bad spec costs nothing."""
     backend = AdbBackend()
@@ -117,3 +147,30 @@ def test_an_out_of_range_port_is_refused_before_a_device_is_touched() -> None:
         backend.forward("emulator-5554", "tcp:70000", "tcp:27042")
     assert caught.value.code == "invalid_params"
     assert backend._forwards == []
+
+
+def test_device_forward_envelopes_a_non_string_spec_as_invalid_params() -> None:
+    """End to end through the service: caller fault, not an internal_error.
+
+    _adb_wrap maps AdbError to a structured failure and everything else to the
+    internal_error envelope, so before the type guard a numeric local spec
+    surfaced as an internal_error incident.
+    """
+    from headless_re_mcp.core.service_device import DeviceAnalysisMixin
+
+    backend = AdbBackend()
+
+    def _boom(serial: str) -> Any:
+        raise AssertionError("device must not be resolved for a non-string spec")
+
+    backend._device = _boom  # type: ignore[method-assign]
+
+    class _Service(DeviceAnalysisMixin):
+        def __init__(self) -> None:
+            self._adb_backend = backend
+
+    result = _Service().device_forward("emulator-5554", 5555, "tcp:27042")  # type: ignore[arg-type]
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_params"
+    assert result.error.details.get("got") == "int"
