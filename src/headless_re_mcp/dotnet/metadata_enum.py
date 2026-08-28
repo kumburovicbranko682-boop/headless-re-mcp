@@ -130,6 +130,15 @@ def enumerate_metadata(
 ) -> Page:
     """Paginated enumeration: types|methods|fields|resources|strings."""
     offset, limit = _clamp_page(offset, limit)
+    # kind is a handler kwarg the enumerate tool schema types as a string, but the
+    # agent and OpenAI-bridge transports call the handler straight from model
+    # arguments with no pydantic coercion, so a list/int/null reaches here.
+    # ``kind.strip()`` then raised AttributeError -- not the DotnetInspectError the
+    # service maps to a clean code -- so a bad kind became an internal_error
+    # incident instead of the invalid_argument an unknown kind string already
+    # earns just below.
+    if not isinstance(kind, str):
+        raise DotnetInspectError("invalid_argument", "kind must be a string")
     kind_norm = kind.strip().casefold()
     allowed = {"types", "methods", "fields", "resources", "strings"}
     if kind_norm not in allowed:
@@ -176,6 +185,16 @@ def disassemble_method_il(
     max_bytes: int = MAX_IL_BYTES,
 ) -> JsonObject:
     """Bounded IL disassembly for MethodDef token 0x06000xxx."""
+    # method_token is a handler kwarg the il tool schema types as an integer, but
+    # the agent and OpenAI-bridge transports call the handler straight from model
+    # arguments with no pydantic coercion, so a string/float/null reaches the
+    # ``& 0xFF000000`` masks below and raises TypeError -- not the
+    # DotnetInspectError the service maps to a clean code -- turning a bad token
+    # into an internal_error incident. A bool is an int subclass but never a valid
+    # token; the masks need a real int, so reject anything else up front, before
+    # the file inspection, the way enumerate_metadata validates its page and kind.
+    if isinstance(method_token, bool) or not isinstance(method_token, int):
+        raise DotnetInspectError("invalid_argument", "method_token must be an integer")
     inspect_dotnet(path, require_verified=require_verified)
     if (method_token & 0xFF000000) != 0x06000000:
         raise DotnetInspectError(

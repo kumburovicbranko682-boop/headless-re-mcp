@@ -9,11 +9,13 @@ import pytest
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.dotnet.clr_inspect import DotnetInspectError
 from headless_re_mcp.dotnet.metadata_enum import (
     CAPABILITY,
     _coded_index_size,
     _disassemble_il,
     _simple_index_size,
+    disassemble_method_il,
     enumerate_metadata,
 )
 
@@ -146,6 +148,90 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
         ("call", 0x0A000001),
     ]
     assert partial is False
+
+
+@pytest.mark.parametrize("bad_kind", [["types"], 5, None, {"kind": "types"}])
+def test_enumerate_rejects_a_non_string_kind(tmp_path: Path, bad_kind: object) -> None:
+    """A non-string kind is a clean invalid_argument, not an AttributeError.
+
+    The enumerate tool schema types kind as a string, but the agent and
+    OpenAI-bridge transports invoke the handler with no pydantic coercion, so a
+    list/int/null reaches ``kind.strip()``. That raised AttributeError -- which
+    the service files as an internal_error incident -- rather than the
+    invalid_argument an unknown kind already earns. The guard runs before the file
+    is even opened.
+    """
+    binary = tmp_path / "unused.exe"
+    with pytest.raises(DotnetInspectError) as caught:
+        enumerate_metadata(binary, bad_kind)  # type: ignore[arg-type]
+    assert caught.value.code == "invalid_argument"
+
+
+@pytest.mark.parametrize("bad_token", ["0x06000001", 6.0, None, [0x06000001]])
+def test_disassemble_method_il_rejects_a_non_integer_token(
+    tmp_path: Path, bad_token: object
+) -> None:
+    """A non-int method_token is a clean invalid_argument, not a TypeError.
+
+    ``method_token & 0xFF000000`` needs a real int; a string/float/null slipping
+    past the schema on the agent path raised TypeError -- an internal_error
+    incident -- before this refused the bad token. The guard runs before the file
+    inspection so a bad token never triggers file I/O.
+    """
+    binary = tmp_path / "unused.exe"
+    with pytest.raises(DotnetInspectError) as caught:
+        disassemble_method_il(binary, bad_token)  # type: ignore[arg-type]
+    assert caught.value.code == "invalid_argument"
+
+
+def test_service_dotnet_enumerate_refuses_a_non_string_kind(tmp_path: Path) -> None:
+    """The service answers invalid_argument, not an internal_error incident.
+
+    A list kind the schema would have rejected reaches ``kind.strip()`` on the
+    agent path; without the guard the service's ``except BaseException`` filed an
+    internal_error incident for what is only a bad kind.
+    """
+    binary = tmp_path / "empty_tables.exe"
+    _write_minimal_clr(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+    result = service.dotnet_enumerate(session_id, ["types"])  # type: ignore[arg-type]
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_argument"
+
+
+def test_service_dotnet_il_refuses_a_non_integer_token(tmp_path: Path) -> None:
+    """The service answers invalid_argument for a non-int method_token.
+
+    A string token slipping past the schema on the agent path reached the bitmask
+    and raised TypeError -- an internal_error incident -- before the guard folded
+    it into a clean invalid_argument.
+    """
+    binary = tmp_path / "empty_tables.exe"
+    _write_minimal_clr(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+    result = service.dotnet_il(session_id, "0x06000001")  # type: ignore[arg-type]
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_argument"
 
 
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
