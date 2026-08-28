@@ -268,6 +268,48 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_class_info(session_id, class_name))
 
+    @tools.tool(name="apk.disassemble")
+    def apk_disassemble(
+        session_id: str,
+        class_name: str,
+        method_name: str,
+        descriptor: str | None = None,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Decode one method's Dalvik (smali) bytecode.
+
+        apk.method_info gives a method's signature and flags; this gives its
+        body -- the actual instruction stream, read straight from androguard
+        with no decompiler, so it answers even on a host with no jadx behind
+        apk.decompile. Resolve the class (dotted ``com.x.Foo`` or ``Lcom/x/Foo;``
+        form) and the method by name; when the name is overloaded, pass
+        descriptor (the proto, e.g. ``(I)V``) to pick one, otherwise the first
+        overload that has a body is used and ambiguous is set. A native or
+        abstract method has no bytecode, reported has_code false.
+
+        Answers with class_name, method_name, descriptor (the chosen overload),
+        params, return_type, access, ambiguous, overloads (how many share the
+        name), has_code, then instructions (paged), count, total, offset,
+        has_more and scan_capped (the instruction cap was hit). Each instruction
+        carries offset (byte offset within the code item), mnemonic (the Dalvik
+        opcode, e.g. invoke-virtual), operands (the rendered args, with branch
+        targets resolved against the offset), size (in bytes) and, when
+        available, opcode (numeric) and hex (the raw encoding). A missing class
+        or method is reported not_found; a session that is not an APK is refused
+        target_mismatch.
+        """
+        return _dump(
+            analysis.apk_disassemble(
+                session_id,
+                class_name,
+                method_name,
+                descriptor=descriptor,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="apk.exported_components")
     def apk_exported_components(session_id: str) -> dict[str, Any]:
         """Fold the four component types into the externally-reachable surface.

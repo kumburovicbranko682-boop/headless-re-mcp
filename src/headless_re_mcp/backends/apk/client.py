@@ -100,6 +100,13 @@ _MAX_GRANT_URIS = 200
 # the returned page.
 _MAX_NATIVE_METHODS_COLLECT = 5000
 _MAX_NATIVE_METHODS_PAGE = 2000
+# apk.disassemble caps: a single Dalvik method is small, but a crafted/obfuscated
+# one could carry a very long instruction stream; bound the decode and the page,
+# and clip each rendered operand string and raw-hex snippet.
+_MAX_DALVIK_INSNS_COLLECT = 20_000
+_MAX_DALVIK_INSNS_PAGE = 2000
+_MAX_OPERAND_LEN = 512
+_MAX_INSN_HEX_LEN = 64
 # apk.dex_headers cap: even a heavily multidex app rarely ships more than a few
 # dozen classesN.dex; bound the listing so a crafted archive cannot make it grow.
 _MAX_DEX_FILES = 200
@@ -1485,6 +1492,136 @@ class ApkClient:
         result.update(_decode_class_access(access))
         return result
 
+    def disassemble(
+        self,
+        path: Path,
+        class_name: str,
+        method_name: str,
+        *,
+        descriptor: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> JsonObject:
+        """Decode one method's Dalvik (smali) instruction stream.
+
+        apk.method_info gives the signature and flags; this gives the body --
+        the actual bytecode the method runs, straight from androguard with no
+        decompiler in the loop, so it answers even where apk.decompile has no
+        jadx. Resolves the class (dotted or Lsmali/form) and the method by name,
+        optionally narrowed by descriptor when the name is overloaded, then walks
+        the code item's instructions.
+        """
+        parsed = self._parsed(path)
+        klass_target = class_name.strip()
+        method_target = method_name.strip()
+        if not klass_target:
+            raise ApkError("invalid_params", "class_name is required")
+        if not method_target:
+            raise ApkError("invalid_params", "method_name is required")
+        desc_target = (descriptor or "").strip() or None
+
+        smali = _dotted_to_smali(klass_target)
+        found = [
+            klass
+            for klass in parsed.analysis.get_classes()
+            if klass.name == klass_target or klass.name == smali
+        ]
+        if not found:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+
+        matches: list[tuple[Any, str]] = []
+        available: list[str] = []
+        for klass in found:
+            for method in klass.get_methods():
+                if str(method.name) != method_target:
+                    continue
+                descriptor_str = str(getattr(method, "descriptor", ""))
+                available.append(descriptor_str)
+                if desc_target is None or _descriptor_matches(descriptor_str, desc_target):
+                    matches.append((method, descriptor_str))
+
+        if not matches:
+            raise ApkError(
+                "not_found",
+                "method not found",
+                class_name=class_name,
+                method_name=method_name,
+            )
+
+        ambiguous = desc_target is None and len(matches) > 1
+        # Prefer an overload that actually has a code item so a name that also
+        # has a native/abstract declaration still disassembles the real body.
+        chosen, chosen_desc = matches[0]
+        for method, descriptor_str in matches:
+            if _encoded_code(method.get_method()) is not None:
+                chosen, chosen_desc = method, descriptor_str
+                break
+
+        encoded = chosen.get_method()
+        is_external = bool(chosen.is_external()) if hasattr(chosen, "is_external") else False
+        access = str(getattr(chosen, "access", ""))
+        proto = _parse_dalvik_proto(chosen_desc)
+        header: JsonObject = {
+            "class_name": found[0].name,
+            "method_name": method_target,
+            "descriptor": chosen_desc,
+            "params": proto["params"],
+            "return_type": proto["return_type"],
+            "access": access,
+            "ambiguous": ambiguous,
+            "overloads": len(available),
+        }
+
+        if encoded is None or is_external or _encoded_code(encoded) is None:
+            # Native, abstract or referenced-only: no bytecode to walk.
+            return {
+                **header,
+                "has_code": False,
+                "instructions": [],
+                "count": 0,
+                "total": 0,
+                "offset": 0,
+                "has_more": False,
+                "scan_capped": False,
+            }
+
+        rows: list[JsonObject] = []
+        scan_capped = False
+        code_offset = 0
+        for ins in encoded.get_instructions():
+            if len(rows) >= _MAX_DALVIK_INSNS_COLLECT:
+                scan_capped = True
+                break
+            size = _insn_length(ins)
+            row: JsonObject = {
+                "offset": code_offset,
+                "mnemonic": _insn_name(ins),
+                "operands": _insn_operands(ins, code_offset),
+                "size": size,
+            }
+            opcode = _insn_opcode(ins)
+            if opcode is not None:
+                row["opcode"] = opcode
+            hex_bytes = _insn_hex(ins)
+            if hex_bytes:
+                row["hex"] = hex_bytes
+            rows.append(row)
+            code_offset += size
+
+        total = len(rows)
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_DALVIK_INSNS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            **header,
+            "has_code": True,
+            "instructions": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            "scan_capped": scan_capped,
+        }
+
     def native_methods(
         self, path: Path, *, offset: int = 0, limit: int = 100
     ) -> JsonObject:
@@ -1793,6 +1930,82 @@ def _dotted_to_smali(name: str) -> str:
     if name.startswith("L") and name.endswith(";"):
         return name
     return "L" + name.replace(".", "/") + ";"
+
+
+def _descriptor_matches(descriptor: str, target: str) -> bool:
+    """Whether a method descriptor matches the caller's, ignoring stray spaces.
+
+    androguard renders a proto with incidental spaces (``(Ljava/lang/String; I)V``),
+    so an exact string compare is too strict; compare with whitespace removed.
+    """
+    return descriptor == target or descriptor.replace(" ", "") == target.replace(" ", "")
+
+
+def _encoded_code(encoded: object) -> Any:
+    """The method's DalvikCode item, or None for native/abstract/unavailable."""
+    getter = getattr(encoded, "get_code", None)
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except Exception:  # noqa: BLE001 - external/synthetic methods have no code
+        return None
+
+
+def _insn_length(ins: object) -> int:
+    getter = getattr(ins, "get_length", None)
+    if getter is None:
+        return 0
+    try:
+        return int(getter() or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _insn_name(ins: object) -> str:
+    getter = getattr(ins, "get_name", None)
+    if getter is None:
+        return ""
+    try:
+        return str(getter())
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _insn_operands(ins: object, code_offset: int) -> str:
+    """The rendered operand string, passing the offset so branch targets resolve."""
+    getter = getattr(ins, "get_output", None)
+    if getter is None:
+        return ""
+    try:
+        try:
+            out = getter(code_offset)
+        except TypeError:
+            out = getter()
+    except Exception:  # noqa: BLE001 - some instructions fault rendering operands
+        return ""
+    return str(out)[:_MAX_OPERAND_LEN]
+
+
+def _insn_opcode(ins: object) -> int | None:
+    getter = getattr(ins, "get_op_value", None)
+    if getter is None:
+        return None
+    try:
+        value = getter()
+    except Exception:  # noqa: BLE001
+        return None
+    return int(value) if isinstance(value, int) else None
+
+
+def _insn_hex(ins: object) -> str:
+    getter = getattr(ins, "get_hex", None)
+    if getter is None:
+        return ""
+    try:
+        return str(getter())[:_MAX_INSN_HEX_LEN]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 _DALVIK_PRIMS = {

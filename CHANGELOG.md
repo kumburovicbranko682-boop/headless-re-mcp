@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **340（222 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **341（223 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -411,6 +411,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   method(WebSocket/EventSource 为 null)、kind、dynamic(URL 是带 `${...}` 的模板,插值折叠成该标记)、absolute、host、
   count、lines(至多 5 条采样行)与 url_truncated。词法扫描:拼接出的或存在变量里的 URL 不解析,方法用变量传时按
   调用默认。纯 Python,无需 Node;文件超 16 MiB 回 too_large,缺失回 not_found。
+
+### 新增（Android：Dalvik 字节码反汇编）
+
+- 新增 `apk.disassemble`:把 Android 静态线补上"看方法体"这一层——`apk.method_info` 只给签名与访问标志、
+  `apk.decompile` 要外部 jadx,唯独没有一条不依赖反编译器就能读某个方法真实字节码的路。这个直接从
+  androguard 拿 EncodedMethod 的 code item,逐条走 Dalvik(smali)指令。按类(点分 `com.x.Foo` 或 `Lcom/x/Foo;` 形式)
+  与方法名解析;名字有重载时用 descriptor(如 `(I)V`)挑一个,否则取第一个带方法体的重载并置 ambiguous。native/
+  abstract 方法没有字节码,回 has_code=false。回 class_name、method_name、descriptor(选中的重载)、params、return_type、
+  access、ambiguous、overloads(同名个数)、has_code,再加 instructions(分页)、count/total/offset/has_more 与
+  scan_capped(指令上限)。每条指令带 offset(方法 code item 内的字节偏移)、mnemonic(Dalvik 助记符,如 invoke-virtual)、
+  operands(渲染后的操作数,分支目标按 offset 解析)、size(字节),另在可得时带 opcode(数值)与 hex(原始编码)。
+  类或方法找不到回 not_found;会话不是 APK 回 target_mismatch。
 
 ### 新增（JavaScript 定义地图）
 
