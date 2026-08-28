@@ -53,6 +53,12 @@ Two triage themes the other native gates cannot cover from system binaries:
   from readelf's header/section decode (ELF) and llvm-objdump's segment and
   symtab decode (Mach-O), a pristine binary must report none, and a copy with
   bytes appended must report exactly those bytes at exactly that offset.
+- The weak imports (ELF .dynsym STB_WEAK + SHN_UNDEF) -- optional capability
+  the loader leaves null when unresolved rather than failing to start, the
+  ELF pair to a Mach-O weak dylib and a PE delay import. A library with a
+  real weak extern carries the weak undefined entry readelf --dyn-syms marks
+  "WEAK ... UND", which the reader's weak_imports subset must match name for
+  name while keeping the whole set in imported_symbols.
 - The dylib dependency classes (Mach-O LC_LOAD_WEAK_DYLIB / LC_REEXPORT_DYLIB)
   -- the optional-capability channel (dyld leaves a missing weak dylib's
   symbols null, so the image probes at runtime: the Mach-O pair to PE delay
@@ -140,6 +146,19 @@ _EXPORTS_C = (
 )
 _KNOWN_EXPORTS = {"exp_counter", "exp_add", "exp_mul", "exp_use", "exp_report"}
 _KNOWN_IMPORTS = {"puts"}
+
+# A library that probes for an optional symbol before calling it: the weak
+# extern becomes an STB_WEAK + SHN_UNDEF .dynsym entry (the loader leaves it
+# null when unresolved), while the plain libc call stays a hard import. This
+# is the optional-capability pattern the weak_imports fact exists to surface.
+_WEAK_C = (
+    "extern int optional_probe(int) __attribute__((weak));\n"
+    "extern int puts(const char *);\n"
+    "int weak_run(void){\n"
+    "    if (optional_probe) return optional_probe(1);\n"
+    '    return puts("fallback");\n'
+    "}\n"
+)
 # readelf -W --dyn-syms rows: "Num: Value Size Type Bind Vis Ndx Name".
 _READELF_DYNSYM_RE = re.compile(
     r"^\s*\d+:\s+\S+\s+\S+\s+\S+\s+(\S+)\s+\S+\s+(\S+)\s+(\S+)"
@@ -322,6 +341,31 @@ def _readelf_dyn_symbols(readelf: str, binary: Path) -> tuple[set[str], set[str]
         elif ndx == "UND":
             imports.add(name.split("@")[0])
     return exports, imports
+
+
+def _readelf_weak_imports(readelf: str, binary: Path) -> set[str]:
+    """The weakly bound undefined names readelf --dyn-syms marks WEAK ... UND.
+
+    The same STB_WEAK + SHN_UNDEF intersection the reader's weak_imports fact
+    is: a hard GLOBAL import is excluded, a weak *definition* (a real Ndx) is
+    excluded, only the optional-and-unresolved subset remains.
+    """
+    result = subprocess.run(
+        [readelf, "-W", "--dyn-syms", str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    weak: set[str] = set()
+    for line in result.stdout.splitlines():
+        match = _READELF_DYNSYM_RE.match(line)
+        if not match:
+            continue
+        bind, ndx, name = match.group(1), match.group(2), match.group(3)
+        if bind == "WEAK" and ndx == "UND" and name:
+            weak.add(name.split("@")[0])
+    return weak
 
 
 def _session_native(service: AnalysisService, binary: Path) -> tuple[str, dict[str, Any]]:
@@ -618,6 +662,61 @@ def test_elf_exported_symbols_agree_with_readelf(tmp_path: Path) -> None:
         assert reader_exports >= _KNOWN_EXPORTS
         assert "helper" not in reader_exports
         assert reader_imports >= _KNOWN_IMPORTS
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_elf_weak_imports_agree_with_readelf(tmp_path: Path) -> None:
+    """The weak-import subset against readelf --dyn-syms.
+
+    A library that probes for an optional symbol before calling it carries the
+    weak undefined .dynsym entry readelf marks "WEAK ... UND" -- optional
+    capability, the ELF pair to a Mach-O weak dylib. The reader's weak_imports
+    must match readelf's WEAK+UND set name for name, stay a subset of
+    imported_symbols, and leave the hard libc import out of the weak list.
+    """
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — weak-import gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — weak-import gate not run (skip != pass)")
+
+    source = tmp_path / "weak.c"
+    source.write_text(_WEAK_C)
+    lib = tmp_path / "libweak.so"
+    result = subprocess.run(
+        [gcc, "-shared", "-fPIC", "-O2", "-o", str(lib), str(source)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+
+    truth_weak = _readelf_weak_imports(readelf, lib)
+    _truth_exports, truth_imports = _readelf_dyn_symbols(readelf, lib)
+    # readelf really sees the planted weak extern and a hard libc import, so
+    # it is a genuine second opinion.
+    assert "optional_probe" in truth_weak
+    assert "puts" in truth_imports and "puts" not in truth_weak
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, lib)
+        reader_weak = set(native["weak_imports"])
+        reader_imports = set(native["imported_symbols"])
+        # The tool-free .dynsym walk and readelf select the same weak subset,
+        # whatever CRT weak stubs (__gmon_start__ and friends) the toolchain
+        # injected, since both apply the one WEAK+UND rule to the one table.
+        assert reader_weak == truth_weak
+        # The subset really is a subset, and the hard import stays out of it.
+        assert reader_weak <= reader_imports
+        assert "optional_probe" in reader_weak
+        assert "puts" in reader_imports
+        assert "puts" not in reader_weak
     finally:
         if session_id is not None:
             service.close_session(session_id)
