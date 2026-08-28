@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（能力目录漏报 Frida/设备工具面，且把 frida.server.ensure 挂错探针）
+
+- 上一轮补的是 README 手写枚举，这轮补的是机器可读的 `capabilities.describe/search`——两者本是
+  分析者发现「较新线能做什么、当前主机能不能跑」的入口，却同样漏报。`_CORE_CAPABILITIES` 里
+  `device.adb` 十五个 `device.*` 只列了 list/connect/install/launch/logcat/screenshot 六个，把查询类
+  （info/properties/packages/current_activity）、生命周期类（uninstall/force_stop）与文件/端口类
+  （pull/push/forward）九个漏在外面；`frida.device` 也漏了 `frida.applications`（与 devices/spawn/
+  java.\* 同经 `FridaClient._need()`、同受 frida 模块门控的枚举工具）。这些工具都已注册、进目录、有
+  测试、可调用，却在能力枚举里隐身：agent 既发现不了，也读不到就绪状态。现把两条线各自 probe 门控
+  的整面补全。
+- 同时纠正一处探针错配：`frida.server.ensure` 虽叫 `frida.*`，其唯一硬依赖却是 adbutils——它经
+  `AdbBackend.ensure_frida_server` 纯用 adb 推送并 su 拉起 frida-server，全程不 import frida 模块
+  （该模块要到 attach/spawn 才用得上）。若把它挂在 frida 探针下，`capabilities.search` 会在「有 frida
+  但无 adbutils」的主机上误报它就绪，实际一调即 `capability_unavailable`。故照 apk.sign 独立成
+  `apk.apksigner` 的先例，给它单列一个 adbutils 探针的 `frida.server` 能力（backend 仍归 frida）。
+- 新增守护测试：枚举所有 Android/Web 已绑定工具，要求每个 probe 门控的工具都被某能力广告，唯三例外
+  是优雅降级、不挂探针的生命周期/状态工具（`web.close` / `proxy.stop` / `proxy.status`，均不调
+  `_check_available`），并钉住这三者确为在册工具以防豁免集腐烂；另加断言钉住 `frida.applications` 走
+  frida 探针、`frida.server.ensure` 走 adbutils 探针、`device.adb` 覆盖全部 `device.*`。今后这几条线加
+  probe 门控工具却漏进目录即失败。纯属可发现性/准确性修复与守护，不改任何工具行为。
+
 ### 文档（README 补齐漏掉的 Frida 原生工具，并加守护测试防再漂移）
 
 - README 能力总览手写枚举 Android/Web 工具面，缺乏机器校验，于是 `frida.attach`（探针式附加

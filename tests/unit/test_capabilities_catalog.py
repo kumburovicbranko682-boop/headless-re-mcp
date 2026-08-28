@@ -22,6 +22,20 @@ from headless_re_mcp.core.capabilities_catalog import (
 from headless_re_mcp.doctor import DoctorReport, Probe, ProbeStatus, run_doctor
 from headless_re_mcp.tools.catalog import COMMAND_CATALOG, CommandTransport
 
+# The Android/Web tool namespaces. capabilities.describe must advertise every
+# probe-gated tool on these lines; the PE/Windows surface is out of scope here.
+_ANDROID_WEB_PREFIXES = ("apk.", "device.", "frida.", "web.", "js.", "wasm.", "proxy.")
+
+# The only Android/Web tools that legitimately belong to no capability. Each is a
+# lifecycle/status op that degrades gracefully instead of gating on a probe: its
+# backend method never calls _check_available (verified in the proxy/web clients),
+# so it works with the optional dependency absent and there is nothing for a
+# capability's status_probe to report. web.close/proxy.stop tear a session down;
+# proxy.status answers running:false when no proxy exists. Everything else on
+# these lines raises capability_unavailable without its dependency and so must be
+# advertised under the probe that gates it.
+_UNGATED_LIFECYCLE_TOOLS = frozenset({"web.close", "proxy.stop", "proxy.status"})
+
 
 def _real_tool_names() -> set[str]:
     return {spec.name for spec in COMMAND_CATALOG.for_transport(CommandTransport.MCP)}
@@ -104,6 +118,94 @@ def test_web_cdp_capability_advertises_the_cdp_observation_surface() -> None:
     assert "web.close" not in tools
     # web.wasm.list is the CDP capability's, not the wabt static line's.
     assert "web.wasm.list" not in set(by_id["wasm.wabt"]["tools"])
+
+
+def test_every_probe_gated_android_web_tool_is_advertised_by_a_capability() -> None:
+    """No probe-gated Android/Web tool may be absent from the catalog.
+
+    capabilities.describe/search is how an agent discovers what the less-mature
+    Android/Web lines offer and whether the host can run it. A registered tool
+    that gates on an optional dependency (raises capability_unavailable when it
+    is missing) but appears in no capability is invisible to that discovery: the
+    agent never learns it exists, and its readiness is never reported. That is
+    exactly how frida.applications and the info/properties/packages/uninstall/
+    force_stop/current_activity/pull/push/forward device tools sat registered,
+    tested and callable yet unadvertised. This pins the whole probe-gated
+    Android/Web surface into the catalog, so a new tool on these lines fails here
+    until it is cataloged. The only exemptions are lifecycle/status ops that
+    degrade gracefully rather than gate on a probe (see _UNGATED_LIFECYCLE_TOOLS);
+    listing them keeps that boundary deliberate instead of forgotten.
+    """
+    advertised = {tool for cap in _CORE_CAPABILITIES for tool in cap["tools"]}
+    android_web = {
+        name for name in _real_tool_names() if name.startswith(_ANDROID_WEB_PREFIXES)
+    }
+    unadvertised = android_web - advertised - _UNGATED_LIFECYCLE_TOOLS
+    assert not unadvertised, (
+        "these Android/Web tools gate on a probe but no capability advertises them: "
+        f"{sorted(unadvertised)}"
+    )
+    # The exemptions must be real, currently-registered tools -- otherwise a
+    # renamed or removed tool could linger in the exempt set and silently excuse a
+    # future gap.
+    assert android_web >= _UNGATED_LIFECYCLE_TOOLS
+
+
+def test_frida_device_capability_advertises_the_frida_gated_enumeration_surface() -> None:
+    """frida.device must list frida.applications and stay off frida.server.ensure.
+
+    frida.applications resolves a device through FridaClient._need() just like
+    frida.devices/spawn/java.*, so it is frida-module-gated and belongs on the
+    frida probe -- it was the one enumeration tool left off while its siblings
+    were advertised. frida.server.ensure must NOT be here: it is adbutils-gated,
+    not frida-gated (see the next test), so advertising it under the frida probe
+    would misreport its readiness.
+    """
+    by_id = {cap["id"]: cap for cap in _CORE_CAPABILITIES}
+    tools = set(by_id["frida.device"]["tools"])
+    assert "frida.applications" in tools
+    assert "frida.server.ensure" not in tools
+
+
+def test_frida_server_ensure_is_probed_by_adbutils_not_frida() -> None:
+    """frida.server.ensure's status must follow adbutils, the binary that gates it.
+
+    Despite the frida.* name, ensure pushes and su-starts frida-server purely
+    over adb (AdbBackend.ensure_frida_server) and never imports the frida Python
+    module; that module is only needed later for attach/spawn. Its sole hard
+    dependency is adbutils, so keying it on the frida probe would advertise it
+    ready on a host with frida but no adbutils -- a call that then fails
+    capability_unavailable. This is the same probe-vs-gating split as
+    apk.sign/apksigner, so ensure gets its own adbutils-probed capability.
+    """
+    by_tool = {
+        tool: cap["status_probe"]
+        for cap in _CORE_CAPABILITIES
+        for tool in cap["tools"]
+        if cap["backend"] == "frida"
+    }
+    assert by_tool["frida.server.ensure"] == "adbutils"
+    # The frida-module-gated tools stay on the frida probe.
+    assert by_tool["frida.applications"] == "frida"
+    assert by_tool["frida.spawn"] == "frida"
+
+
+def test_device_adb_capability_advertises_the_whole_adbutils_gated_surface() -> None:
+    """device.adb must list every device.* tool, since all gate on adbutils.
+
+    Every device.* tool routes through AdbBackend._client(), which raises
+    capability_unavailable without adbutils, so the whole surface rides the one
+    probe. The capability once named only list/connect/install/launch/logcat/
+    screenshot, omitting the query, lifecycle and file/port tools -- so
+    capabilities.describe("device.adb") under-reported the device line. Pin the
+    full registered device surface so a later device.* addition that forgets the
+    catalog fails here.
+    """
+    by_id = {cap["id"]: cap for cap in _CORE_CAPABILITIES}
+    advertised = set(by_id["device.adb"]["tools"])
+    registered = {name for name in _real_tool_names() if name.startswith("device.")}
+    missing = registered - advertised
+    assert not missing, f"device.adb omits adbutils-gated device tools: {sorted(missing)}"
 
 
 def test_wasm_tools_are_probed_by_the_binary_that_actually_runs_them() -> None:

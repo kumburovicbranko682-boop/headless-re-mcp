@@ -153,7 +153,30 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "device.adb",
         "backend": "adb",
         "status_probe": "adbutils",
-        "tools": ["device.list", "device.connect", "device.install", "device.launch", "device.logcat", "device.screenshot"],
+        # Every device.* tool routes through AdbBackend, whose _client() raises
+        # capability_unavailable without adbutils, so the whole surface rides the
+        # adbutils probe. The list once named only six of the fifteen; the query
+        # (info/properties/packages/current_activity), lifecycle (uninstall/
+        # force_stop) and file/port (pull/push/forward) tools were omitted while
+        # their siblings were advertised, leaving capabilities.describe under-
+        # reporting the device line. Keep the whole adbutils-gated surface listed.
+        "tools": [
+            "device.list",
+            "device.connect",
+            "device.info",
+            "device.properties",
+            "device.packages",
+            "device.install",
+            "device.uninstall",
+            "device.launch",
+            "device.force_stop",
+            "device.current_activity",
+            "device.logcat",
+            "device.screenshot",
+            "device.pull",
+            "device.push",
+            "device.forward",
+        ],
         "summary": "Bounded ADB device/emulator control (no raw shell)",
         "optional": True,
     },
@@ -161,8 +184,37 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "frida.device",
         "backend": "frida",
         "status_probe": "frida",
-        "tools": ["frida.devices", "frida.device.connect", "frida.spawn", "frida.java.classes", "frida.java.methods"],
+        # frida.applications resolves a device through FridaClient._need() like
+        # frida.devices/spawn/java.*, so it is frida-module-gated and belongs on
+        # this probe; it was the one enumeration tool left off the list.
+        # frida.server.ensure is deliberately NOT here: it pushes and starts
+        # frida-server purely over adb and never imports the frida module, so it
+        # is gated by adbutils, not frida -- see the frida.server capability.
+        "tools": [
+            "frida.devices",
+            "frida.device.connect",
+            "frida.applications",
+            "frida.spawn",
+            "frida.java.classes",
+            "frida.java.methods",
+        ],
         "summary": "USB/emulator/remote Frida with per-session target authorization",
+        "optional": True,
+    },
+    {
+        # frida.server.ensure sets up frida-server, but its only hard dependency
+        # is adbutils: it pushes the binary and su-starts it over adb (see
+        # AdbBackend.ensure_frida_server) and never touches the frida Python
+        # module -- that module is needed later for attach/spawn, not to ensure.
+        # Keying this on the adbutils probe, not frida, is the same probe-vs-gating
+        # split that gave apk.sign its own apk.apksigner entry: otherwise
+        # capabilities.search would advertise it ready on a host with frida but no
+        # adbutils, a call that then fails capability_unavailable.
+        "id": "frida.server",
+        "backend": "frida",
+        "status_probe": "adbutils",
+        "tools": ["frida.server.ensure"],
+        "summary": "Push and start frida-server on a rooted device/emulator over adb",
         "optional": True,
     },
     {
