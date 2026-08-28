@@ -135,4 +135,34 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_summary(path, timeout=timeout))
 
+    @tools.tool(name="wasm.names")
+    def wasm_names(
+        path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Recover internal symbol names from a .wasm module's name section.
+
+        wasm.summary names only what a module exposes to its host (imports and
+        exports); this reads the ``name`` custom section for the original
+        *internal* names a compiler emitted -- functions, locals, globals, types,
+        data segments -- turning anonymous indices like func[142] into readable
+        identifiers. On a debug-info-bearing module (Emscripten, Rust/wasm-bindgen,
+        AssemblyScript) it is usually the single most useful artifact.
+
+        Answers with module_name (the name section's module name, or ""),
+        functions (a list of {index, name} sorted by index) and function_count,
+        locals (a flattened list of {function, index, name}), other_spaces (a map
+        keyed by space -- type, table, memory, global, elem, data, tag -- each a
+        {index, name} list), subsections (every name subsection seen, as {id,
+        kind, size} with a declared count for the mapped ones) and
+        has_name_section. A stripped module answers has_name_section false with
+        empty lists -- that is "no names present", not an error. The list fields
+        are functions / locals / other_spaces (there is no symbols field); a
+        function's readable name is functions[i].name. Reads the bytes directly,
+        so it needs no wabt; a malformed module is a clean backend_error.
+        functions_truncated (with functions_total the real count), locals_truncated
+        and spaces_truncated mark lists longer than the 50000 cap. An input over
+        16 MiB is refused as too_large.
+        """
+        return _dump(analysis.wasm_names(path, timeout=timeout))
+
     return tools.bindings

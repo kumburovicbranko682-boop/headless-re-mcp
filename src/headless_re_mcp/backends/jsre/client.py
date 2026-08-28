@@ -486,6 +486,201 @@ def _parse_wasm_summary(data: bytes, *, module: str) -> JsonObject:
     return result
 
 
+# The "name" custom section (WebAssembly binary Appendix, plus the extended
+# name section proposal): subsection ids to a human space name. 0/1/2 are the
+# standard ones; 3..11 come from the extended proposal that LLVM/wasm-tools emit.
+_WASM_NAME_SUBSECTIONS = {
+    0: "module",
+    1: "function",
+    2: "local",
+    3: "label",
+    4: "type",
+    5: "table",
+    6: "memory",
+    7: "global",
+    8: "elem",
+    9: "data",
+    10: "field",
+    11: "tag",
+}
+# Subsections encoded as a plain namemap (index -> name). module(0) is a bare
+# name; local(2)/label(3)/field(10) are indirect namemaps handled separately.
+_WASM_NAMEMAP_SPACES = frozenset({4, 5, 6, 7, 8, 9, 11})
+# Cap materialised name entries per space and flattened local entries, so a
+# crafted or genuinely huge name section cannot build an unbounded envelope; the
+# declared vec count is still reported so the truncation stays honest.
+_MAX_WASM_NAME_ENTRIES = 50_000
+_MAX_WASM_LOCAL_ENTRIES = 50_000
+
+
+def _read_wasm_namemap(
+    data: bytes, pos: int, end: int, cap: int
+) -> tuple[list[JsonObject], int, bool]:
+    """Read a WebAssembly namemap (vec of (index, name)) bounded to ``cap``.
+
+    Returns the entries (sorted by index), the declared vec count (the real
+    total, even when the list was capped) and whether the cap clipped it.
+    """
+    count, pos = _read_uleb128(data, pos)
+    items: list[JsonObject] = []
+    truncated = False
+    for _ in range(count):
+        if len(items) >= cap:
+            truncated = True
+            break
+        if pos >= end:
+            raise _WasmParseError("name map overruns subsection")
+        index, pos = _read_uleb128(data, pos)
+        text, pos = _read_wasm_name(data, pos, end)
+        items.append({"index": index, "name": text})
+    items.sort(key=lambda item: item["index"])
+    return items, count, truncated
+
+
+def _read_wasm_local_names(
+    data: bytes, pos: int, end: int, cap: int
+) -> tuple[list[JsonObject], bool]:
+    """Read the local-name indirect namemap (vec of (funcidx, namemap)).
+
+    Flattened to (function, index, name) rows, sorted by (function, index) and
+    bounded to ``cap`` total rows so one function with thousands of locals cannot
+    make the reply unbounded.
+    """
+    outer, pos = _read_uleb128(data, pos)
+    out: list[JsonObject] = []
+    truncated = False
+    for _ in range(outer):
+        if pos >= end:
+            raise _WasmParseError("local name map overruns subsection")
+        func_index, pos = _read_uleb128(data, pos)
+        inner, pos = _read_uleb128(data, pos)
+        for _ in range(inner):
+            if len(out) >= cap:
+                truncated = True
+                break
+            if pos >= end:
+                raise _WasmParseError("local name entry overruns subsection")
+            local_index, pos = _read_uleb128(data, pos)
+            text, pos = _read_wasm_name(data, pos, end)
+            out.append({"function": func_index, "index": local_index, "name": text})
+        if truncated:
+            break
+    out.sort(key=lambda item: (item["function"], item["index"]))
+    return out, truncated
+
+
+def _parse_wasm_names(data: bytes, *, module: str) -> JsonObject:
+    """Recover symbol names from the module's ``name`` custom section.
+
+    wasm.summary reads the type/import/export tables, which name only what a
+    module exposes to its host; the ``name`` custom section (WebAssembly binary
+    Appendix, extended by the LLVM/wasm-tools proposal) is what carries the
+    original *internal* names -- the functions, locals, globals, types and data
+    segments a compiler emitted, which are otherwise anonymous indices. Recovering
+    them turns a wall of ``func[142]`` into readable code, so this is the single
+    most useful artifact a debug-info-bearing module ships.
+
+    The walk finds the custom section named ``name`` and parses its subsections:
+    the module name (0), the function namemap (1), the local indirect namemap (2)
+    and the extended single-level namemaps (type/table/memory/global/elem/data/
+    tag). A fault inside one subsection is local -- it is recorded and the walk
+    resyncs to the declared subsection boundary, so a malformed local map never
+    costs the function names before it. A structurally broken module faults
+    cleanly as ``backend_error``, matching the summary reader's contract.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("backend_error", "not a WebAssembly module (bad magic)")
+    version = int.from_bytes(data[4:8], "little")
+    pos = 8
+    n = len(data)
+    module_name = ""
+    functions: list[JsonObject] = []
+    functions_total = 0
+    functions_truncated = False
+    locals_list: list[JsonObject] = []
+    locals_truncated = False
+    other_spaces: dict[str, list[JsonObject]] = {}
+    spaces_truncated: set[str] = set()
+    subsections: list[JsonObject] = []
+    has_name_section = False
+    try:
+        while pos < n:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb128(data, pos)
+            sec_end = pos + sec_size
+            if sec_size < 0 or sec_end > n:
+                raise _WasmParseError("section overruns module")
+            if sec_id != 0:
+                # Only a custom section can carry names; resync past any other.
+                pos = sec_end
+                continue
+            cust_name, cpos = _read_wasm_name(data, pos, sec_end)
+            if cust_name != "name":
+                pos = sec_end
+                continue
+            has_name_section = True
+            sp = cpos
+            while sp < sec_end:
+                sub_id = data[sp]
+                sp += 1
+                sub_size, sp = _read_uleb128(data, sp)
+                sub_end = sp + sub_size
+                if sub_size < 0 or sub_end > sec_end:
+                    raise _WasmParseError("name subsection overruns section")
+                kind = _WASM_NAME_SUBSECTIONS.get(sub_id, f"subsection_{sub_id}")
+                record: JsonObject = {"id": sub_id, "kind": kind, "size": sub_size}
+                with suppress(_WasmParseError):
+                    if sub_id == 0:
+                        module_name, _ = _read_wasm_name(data, sp, sub_end)
+                    elif sub_id == 1:
+                        functions, functions_total, functions_truncated = _read_wasm_namemap(
+                            data, sp, sub_end, _MAX_WASM_NAME_ENTRIES
+                        )
+                        record["count"] = functions_total
+                    elif sub_id == 2:
+                        locals_list, locals_truncated = _read_wasm_local_names(
+                            data, sp, sub_end, _MAX_WASM_LOCAL_ENTRIES
+                        )
+                        record["count"] = len(locals_list)
+                    elif sub_id in _WASM_NAMEMAP_SPACES:
+                        items, declared, trunc = _read_wasm_namemap(
+                            data, sp, sub_end, _MAX_WASM_NAME_ENTRIES
+                        )
+                        other_spaces[kind] = items
+                        record["count"] = declared
+                        if trunc:
+                            spaces_truncated.add(kind)
+                subsections.append(record)
+                sp = sub_end
+            pos = sec_end
+    except _WasmParseError as exc:
+        raise JsReError("backend_error", f"malformed WebAssembly module: {exc}") from exc
+    except IndexError as exc:  # a read ran off the end despite the guards
+        raise JsReError(
+            "backend_error", "malformed WebAssembly module: unexpected end of data"
+        ) from exc
+    result: JsonObject = {
+        "module": module,
+        "version": version,
+        "has_name_section": has_name_section,
+        "module_name": module_name,
+        "functions": functions,
+        "function_count": len(functions),
+        "locals": locals_list,
+        "other_spaces": other_spaces,
+        "subsections": subsections,
+    }
+    if functions_truncated:
+        result["functions_truncated"] = True
+        result["functions_total"] = functions_total
+    if locals_truncated:
+        result["locals_truncated"] = True
+    if spaces_truncated:
+        result["spaces_truncated"] = sorted(spaces_truncated)
+    return result
+
+
 class WasmClient:
     """wabt-backed WebAssembly inspection (wasm2wat, wasm-objdump)."""
 
@@ -522,6 +717,20 @@ class WasmClient:
         _ = timeout
         resolved = _require_existing_file(path, missing="wasm file not found")
         return _parse_wasm_summary(resolved.read_bytes(), module=resolved.name)
+
+    def names(self, path: Path, *, timeout: float = 30.0) -> JsonObject:
+        """Recover internal symbol names from the module's ``name`` section.
+
+        Where wasm.summary names only imports/exports, this reads the ``name``
+        custom section for the original function/local/global/type/data names a
+        compiler emitted, mapping anonymous indices back to readable identifiers.
+        Reads the bytes directly (no wabt), and a malformed module faults cleanly.
+        ``timeout`` is accepted for signature symmetry but the parse is a bounded
+        in-process walk.
+        """
+        _ = timeout
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        return _parse_wasm_names(resolved.read_bytes(), module=resolved.name)
 
     def wat(
         self, path: Path, *, timeout: float = 120.0, spill_dir: Path | None = None
