@@ -5,6 +5,30 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`web.script.source` 对 WebAssembly 模块返回空——改为回退到 WAT 反汇编）
+
+`web.wasm.list` 能列出页面实例化的 WebAssembly 模块，但对这些模块调用 `web.script.source` 却拿到
+**空** source。原因：新版 Chrome 的 CDP `Debugger.getScriptSource` 对 Wasm 模块把 `scriptSource`
+留空、把模块塞进 `bytecode` 字段，而后端只读了 `scriptSource`。也就是说恰好是 `web.wasm.list` 暴露
+出来的那些模块，`web.script.source` 什么都给不出。
+
+改为：当 `scriptSource` 为空且带 `bytecode`（即 Wasm）时，回退到 `Debugger.disassembleWasmModule`
+取 WAT 文本（按 streamId 分块续读，受行数与字节上限约束，避免病态模块吃爆内存），并在结果里新增
+`language`（`javascript` / `webassembly`）字段、WAT 落盘用 `.wat` 后缀。已实测：对一个导出
+`add(i32,i32)` 的最小 Wasm 模块，`web.script.source` 现在返回含 `i32.add`、`local.get` 和导出名
+`"add"` 的 WAT；JS 脚本仍返回其源码。附带发现：enum 脚本此前已针对 frida 17 修过 `Memory.read*`，
+但这条 Wasm 源码路径的 CDP 行为变化没人碰过——mock 掉 CDP 的单测够不到。
+
+### 测试（Web 动态线：CDP 取 JS 脚本源码、并把 Wasm 模块反汇编成 WAT）
+
+既有 CDP 门只断言 `web.scripts` 返回一个列表，从没验证过 `web.script.source`（取脚本真实文本）或
+`web.wasm.list`。新增 `tests/integration/test_web_wasm_gate.py`：起一个本地源站，页面加载一个带已知
+marker 的 JS，并实例化一个真实的（内嵌字节、无需 wabt 构建的）Wasm 模块；用无头 Chromium 打开后断言
+`web.script.source` 对 JS 返回含 marker 的源码、`web.wasm.list` 列出该模块、且对它的
+`web.script.source` 返回含 `i32.add`/`local.get`/导出 `"add"` 的 WAT。这条门正是上面那个修复的回归
+哨兵。skip ≠ pass：playwright/Chromium 不可用时干净 skip。另加了三个单测（JS 的 language 字段、单块
+Wasm 反汇编、多块 streamId 续读）作为总能跑的快哨兵。
+
 ### 测试（Frida-on-Android 活体门：自建 APK → spawn → 枚举出自己那个类和方法）
 
 移动动态分析这条线过去只有主机侧（本地 pid）的 frida 门，从没对真 Android 设备验证过。新增
