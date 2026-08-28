@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（健康监控 stop/start 竞态：双 sweeper 永驻与新后端静默失监）
+
+- `BackendHealthMonitor.stop()` 在 join（最长等满超时，sweep 可能正卡在 30 秒
+  reconnect 里）**之后**才把线程记入 `_previous`。落在 join 窗口内的并发
+  `start()` 看到 `_thread` 与 `_previous` 皆空，走 `_launch_unlocked` 清掉停止
+  标志——把尚未观察到该标志的旧线程"解除取消"，从此两个 sweeper 永久并行。这正是
+  `_previous` 机制注释里声明要防的故障，只是守卫赋值太晚。修复：在 stop() 的第一
+  个临界区内（释放锁之前）就记入 `_previous`，join 之后仅在线程确实退出时清除；
+  窗口内到来的 start() 于是走 `_restart_pending`，由旧线程的 finally 完成重启。
+- `close_session` 的"无运行时残留则停监控"检查在服务锁外执行，而 open 的
+  put+`start()` 在锁内：后端可在空判定与 stop 之间完成打开，随后监控被停——该
+  后端静默失监，直到下一次 open 才恢复；单一长会话的机器上即为会话整个生命周期，
+  恰是无人值守部署看不见的那类故障。修复：stop 后复查运行时快照，非空则重启
+  （start() 幂等；并发的再次清空会经同一路径再停）。回归测试钉住两侧：join 窗口
+  内的 start() 最终只留一个新 sweeper（旧线程必须退出）、close 期间完成打开的
+  后端在 close 返回后监控仍在运行。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

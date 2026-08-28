@@ -113,13 +113,23 @@ class BackendHealthMonitor:
             self._stop.set()
             thread = self._thread
             self._thread = None
+            if thread is not None:
+                # Remembered *before* the lock is released, not after the join:
+                # the join below can wait out its whole timeout while a sweep
+                # sits inside a reconnect, and a start() arriving in that window
+                # used to find _thread and _previous both empty, launch a second
+                # sweeper and clear the stop flag -- un-cancelling this thread,
+                # which had not yet observed it, and leaving two sweepers running
+                # forever. That is the exact failure _previous exists to prevent;
+                # it just was not set yet. With it set here, that start() defers
+                # to _restart_pending and _run's finally does the relaunch.
+                self._previous = thread
         if thread is None:
             return
         thread.join(timeout=timeout)
-        # Remembered rather than discarded: it is still winding down and must be
-        # allowed to see the stop flag before a restart clears it.
         with self._lock:
-            self._previous = thread if thread.is_alive() else None
+            if self._previous is thread and not thread.is_alive():
+                self._previous = None
 
     def _launch_unlocked(self) -> None:
         self._previous = None

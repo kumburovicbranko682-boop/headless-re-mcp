@@ -1112,6 +1112,17 @@ class AnalysisService(
         # without this the sweep thread outlives every backend it existed for.
         if not self._runtime_owner.snapshot():
             self._health.stop()
+            # This runs outside the service lock while opens register under it,
+            # so a backend can finish opening -- put runtime, health.start() --
+            # between the emptiness check above and the stop. Left alone, that
+            # backend runs with the monitor silently off until some later open
+            # calls start() again: on a box with one long-lived session, for the
+            # session's whole life, which is the exact failure an unattended
+            # deployment cannot see. Re-check and restart; start() is idempotent
+            # and a concurrent close that empties the owner again will stop it
+            # through this same path.
+            if self._health.interval_s > 0 and self._runtime_owner.snapshot():
+                self._health.start()
         self._release_adb_forwards_if_idle()
 
         assert session is not None
