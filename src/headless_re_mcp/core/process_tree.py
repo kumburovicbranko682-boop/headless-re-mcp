@@ -420,7 +420,7 @@ def terminate_pid_tree(pid: int) -> list[int]:
     if not isinstance(pid, int) or pid <= 0:
         return []
     descendants: list[int] = []
-    if isinstance(pid, int) and pid > 0:
+    if isinstance(pid, int) and pid > 0:  # pragma: no branch - guarded above, kept defensive
         with suppress(Exception):
             descendants = collect_descendants(pid)
     killed: list[int] = []
