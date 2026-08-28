@@ -87,6 +87,15 @@ exclude = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Dozens of test modules share fixtures via `from tests.unit.<sibling> import`,
+# which resolves `tests` as a namespace package and therefore needs the repo
+# root on sys.path. `python -m pytest` (CI, README, CONTRIBUTING) puts the CWD
+# there as a side effect of -m; a bare `pytest` -- or `python -m pytest` from a
+# subdirectory, or an IDE runner -- does not, and dies at collection with 27
+# ModuleNotFoundError files that look like a broken checkout. Pinning the
+# rootdir-relative path here makes every invocation resolve imports the way CI
+# already does; it adds nothing CI did not already have on sys.path.
+pythonpath = ["."]
 addopts = "-ra"
 asyncio_default_fixture_loop_scope = "function"
 # Backstop for hangs pytest-timeout cannot interrupt: its thread method needs

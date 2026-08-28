@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（测试套件只在 `python -m pytest` 这一种调用方式下可收集）
+
+- 全库有 27 个测试文件通过 `from tests.unit.<sibling> import ...` 共享夹具，而
+  `tests/` 没有 `__init__.py`——这种导入把 `tests` 当命名空间包解析，前提是仓库根目录
+  在 `sys.path` 上。CI、README 与 CONTRIBUTING 一致使用 `python -m pytest`，靠 `-m`
+  "顺带把 CWD 塞进 sys.path" 的副作用碰巧满足了这一前提；任何人换用裸 `pytest`
+  命令、IDE 测试运行器、或在子目录里跑 `python -m pytest`，收集期就地炸出 27 个
+  `ModuleNotFoundError: No module named 'tests'`，看起来像 checkout 坏了（本轮装齐
+  extras 做随机序狩猎时踩中）。这是"测的什么取决于怎么调用"的隐性前提，与本套件
+  反复清剿的环境漂移同类，只是藏在调用方式而非安装状态里。修法一行：
+  `[tool.pytest.ini_options]` 里钉 `pythonpath = ["."]`（pytest ≥7 内建，路径相对
+  rootdir 解析），把 CI 一直隐式依赖的 sys.path 形态显式固化——它不添加任何 CI
+  此前没有的解析路径，故不可能引入新的遮蔽（根目录的 `packaging/` 等无
+  `__init__.py`，命名空间包不遮蔽 site-packages 里的常规包，且 CI 本就带根跑）。
+  验证：修前裸 `pytest` 对 `test_dotnet_deobfuscate_registers.py` 收集即炸，修后
+  裸 `pytest` 全量随机序 5543 passed（仅剩的 6 个失败系此前已在
+  `cursor/*-force-dep-absence-4586` 等分支修好、待并入的可选依赖漂移用例，非本轮
+  引入）；从 `/tmp` 以 `--rootdir` 指回仓库的调用也通过；`python -m pytest` 原路径
+  行为不变。只动 `pyproject.toml` 一处配置。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
