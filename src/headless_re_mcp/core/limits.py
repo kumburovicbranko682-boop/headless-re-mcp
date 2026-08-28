@@ -42,6 +42,12 @@ MAX_STATIC_BATCH_COMMANDS = 32
 # as the service lives.
 UNREGISTERED_CAPTURE_MAX_ENTRIES = 32
 UNREGISTERED_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
+
+# web.har.inspect reads a whole .har into memory and json.loads doubles it
+# briefly, so the file is refused above this before either cost is paid. A real
+# capture -- even an overnight one, which the exporters cap at their own ceiling
+# -- sits well under 64 MiB of JSON.
+HAR_INSPECT_MAX_BYTES = 64 * 1024 * 1024
 JSRE_UNPACK_MAX_ENTRIES = 8
 JSRE_UNPACK_MAX_BYTES = 256 * 1024 * 1024
 _DIR_SIZE_FILE_CAP = 4096

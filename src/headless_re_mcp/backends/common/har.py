@@ -24,6 +24,7 @@ through :func:`serialize_har`.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
@@ -148,6 +149,193 @@ def build_har(entries: list[JsonObject]) -> JsonObject:
             "creator": {"name": HAR_CREATOR_NAME, "version": str(__version__)},
             "entries": entries,
         }
+    }
+
+
+# --- reading side -----------------------------------------------------------
+#
+# The two exporters above write HAR files; nothing could read one back. An
+# analyst who captured traffic (here, in Chrome DevTools, or in mitmproxy) and
+# holds a .har had no offline way to ask "which hosts did this talk to, what
+# failed, where did that URL come from" without standing a live browser or
+# proxy back up. summarize_har closes that round trip with the stdlib alone --
+# no CDP, no wabt, no CLI -- so a .har is a first-class thing to open and query.
+
+# Each stringy field a summarised entry carries is bounded so one pathological
+# URL or mime type cannot inflate a page. Real values sit far below this.
+_MAX_HAR_FIELD = 8000
+# The host histogram describes the whole (filtered) log, but only the busiest
+# hosts are named; the rest are folded into the reported total via a flag.
+_HOST_FACET_CAP = 64
+
+
+class HarParseError(ValueError):
+    """A document that does not decode as a HAR 1.2 log.
+
+    A ValueError subclass so a caller that already funnels ValueError into an
+    ``invalid_request`` envelope keeps working, while a caller that wants the
+    more precise ``invalid_params`` can catch this type by name.
+    """
+
+
+def _clip(value: object) -> str:
+    text = str(value or "")
+    if len(text) > _MAX_HAR_FIELD:
+        return text[:_MAX_HAR_FIELD]
+    return text
+
+
+def _entry_host(url: str) -> str:
+    """Lowercased host[:port] from a request URL, or '' when it has none."""
+    try:
+        netloc = urlsplit(url).netloc
+    except (ValueError, TypeError):
+        return ""
+    return netloc.casefold()
+
+
+def _coerce_status(value: object) -> int | None:
+    """A HAR response status as an int, or None when it is absent/0/garbage."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    return None
+
+
+def _coerce_size(value: object) -> int | None:
+    """A non-negative body/content size, or None for the spec's -1 sentinel."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
+
+
+def _summarize_entry(entry: JsonObject) -> tuple[str, JsonObject]:
+    """One HAR entry reduced to the fields an analyst scans, plus its host.
+
+    Every member is optional in the wild -- captures from other tools omit
+    what they did not record -- so each is pulled defensively and a missing or
+    wrong-typed member becomes an empty/None field rather than an exception.
+    """
+    request = entry.get("request")
+    request = request if isinstance(request, dict) else {}
+    response = entry.get("response")
+    response = response if isinstance(response, dict) else {}
+    content = response.get("content")
+    content = content if isinstance(content, dict) else {}
+    url = _clip(request.get("url"))
+    host = _entry_host(url)
+    summary: JsonObject = {
+        "method": _clip(request.get("method")),
+        "url": url,
+        "host": host,
+        "status": _coerce_status(response.get("status")),
+        "mime_type": _clip(content.get("mimeType")),
+        "response_size": _coerce_size(content.get("size")),
+        "started": _clip(entry.get("startedDateTime")),
+    }
+    resource_type = entry.get("_resourceType")
+    if resource_type:
+        summary["resource_type"] = _clip(resource_type)
+    return host, summary
+
+
+def _har_entries(document: Any) -> list[Any]:
+    """The ``log.entries`` list, or a HarParseError naming what was wrong.
+
+    Accepts both the whole ``{"log": {...}}`` document and a bare ``log``
+    object, because a caller that already unwrapped one level should not have
+    its file rejected as malformed.
+    """
+    if not isinstance(document, dict):
+        raise HarParseError("not a HAR document: top level is not an object")
+    log = document.get("log")
+    if not isinstance(log, dict):
+        # A bare log object (already unwrapped) is tolerated.
+        log = document if "entries" in document else None
+    if not isinstance(log, dict):
+        raise HarParseError("not a HAR 1.2 file: missing the log object")
+    entries = log.get("entries")
+    if not isinstance(entries, list):
+        raise HarParseError("not a HAR 1.2 file: log.entries is missing or not a list")
+    return entries
+
+
+def summarize_har(
+    document: Any,
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    host: str | None = None,
+    method: str | None = None,
+    status: int | None = None,
+) -> JsonObject:
+    """Bounded, paginated summary of a parsed HAR 1.2 document.
+
+    One pass over ``log.entries``: entries that pass the (optional) host,
+    method and status filters are counted, folded into a host histogram, and --
+    only for the requested page window -- materialised into the summarised
+    shape ``_summarize_entry`` returns. Counting the whole filtered set rather
+    than the page keeps ``total`` and ``hosts`` describing the file, not the
+    slice, the same honesty the paginated capture listings already keep.
+
+    Raises HarParseError when the document is not a HAR 1.2 log; the caller
+    turns that into the transport's invalid-input envelope.
+    """
+    entries = _har_entries(document)
+    log = document.get("log") if isinstance(document.get("log"), dict) else document
+    creator = log.get("creator") if isinstance(log.get("creator"), dict) else {}
+
+    start = max(0, int(offset))
+    window = max(1, min(int(limit), _HOST_FACET_CAP * 16))
+    want_host = host.casefold() if isinstance(host, str) and host.strip() else None
+    want_method = method.casefold() if isinstance(method, str) and method.strip() else None
+    want_status = _coerce_status(status) if status is not None else None
+
+    hosts: Counter[str] = Counter()
+    page: list[JsonObject] = []
+    entries_total = 0
+    matched = 0
+    for raw in entries:
+        entries_total += 1
+        if not isinstance(raw, dict):
+            continue
+        entry_host, summary = _summarize_entry(raw)
+        if want_host is not None and entry_host != want_host:
+            continue
+        if want_method is not None and summary["method"].casefold() != want_method:
+            continue
+        if want_status is not None and summary["status"] != want_status:
+            continue
+        hosts[entry_host] += 1
+        if start <= matched < start + window:
+            page.append(summary)
+        matched += 1
+
+    top = hosts.most_common(_HOST_FACET_CAP)
+    return {
+        "version": _clip(log.get("version")) if isinstance(log, dict) else "",
+        "creator": {
+            "name": _clip(creator.get("name")),
+            "version": _clip(creator.get("version")),
+        },
+        "entries": page,
+        "count": len(page),
+        "total": matched,
+        "entries_total": entries_total,
+        "offset": start,
+        "limit": window,
+        "has_more": start + len(page) < matched,
+        "hosts": {name: count for name, count in top},
+        "hosts_truncated": len(hosts) > len(top),
+        "distinct_hosts": len(hosts),
+        "filters": {
+            "host": want_host,
+            "method": want_method,
+            "status": want_status,
+        },
     }
 
 

@@ -190,4 +190,41 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_har_export(session_id))
 
+    @tools.tool(name="web.har.inspect")
+    def web_har_inspect(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        host: str | None = None,
+        method: str | None = None,
+        status: int | None = None,
+    ) -> dict[str, Any]:
+        """Read the session's .har file offline and summarise its network log.
+
+        The counterpart to web.har.export: it opens a .har the session is
+        bound to (session.create on a .har file makes a web target), with no
+        browser, proxy or CLI. Optional host (exact host[:port]), method
+        (case-insensitive) and status (exact) filters narrow the log.
+
+        Answers with entries (each: method, url, host, status, mime_type,
+        response_size, started, and resource_type when the capture recorded
+        it), count, total, offset, limit and has_more so a filled page is not
+        read as the whole log, plus entries_total (before filtering), a hosts
+        histogram over the whole filtered log with hosts_truncated and
+        distinct_hosts, version, creator and the echoed filters. Long URL and
+        mime fields are bounded. A file that is not a HAR 1.2 log is
+        invalid_params, one over 64 MiB too_large, and a live web session on a
+        remote URL (no local file) target_mismatch.
+        """
+        return _dump(
+            analysis.web_har_inspect(
+                session_id,
+                offset=offset,
+                limit=limit,
+                host=host,
+                method=method,
+                status=status,
+            )
+        )
+
     return tools.bindings

@@ -7,14 +7,17 @@ HAR) spill to the session artifact area rather than inflating a tool result.
 
 from __future__ import annotations
 
+import json
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from headless_re_mcp.backends.common.har import HarParseError, summarize_har
 from headless_re_mcp.backends.web import WebBackend, WebError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.limits import HAR_INSPECT_MAX_BYTES
 from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success
 from headless_re_mcp.core.service_ext import _record_backend, _register_capture, _timeline_append
@@ -230,6 +233,67 @@ class WebAnalysisMixin:
             return _success(data, session_id=session_id, backend="web")
         except WebError as exc:
             return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
+    def web_har_inspect(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        host: str | None = None,
+        method: str | None = None,
+        status: int | None = None,
+    ) -> Result[JsonObject]:
+        """Read a session's .har file offline and summarise its network log.
+
+        The counterpart to web.har.export/proxy.export_har: no browser, no
+        proxy, no CLI -- just the .har the session is bound to. It makes a
+        .har a first-class target to open and query, closing the round trip
+        those exporters opened. Bad input is a precise envelope, never an
+        internal fault: a file that is not JSON or not a HAR 1.2 log is
+        invalid_params, one over the size cap is too_large, and a session
+        with no local file (a live web session on a remote URL) is
+        target_mismatch from require_binary.
+        """
+        try:
+            session = self.registry.get(session_id)
+            path = session.require_binary()
+            try:
+                size = path.stat().st_size
+            except OSError as exc:
+                raise XdbgRpcError(
+                    "backend_error", f"HAR file unreadable: {exc}", details={"path": str(path)}
+                ) from exc
+            if size > HAR_INSPECT_MAX_BYTES:
+                raise XdbgRpcError(
+                    "too_large",
+                    f"HAR file is {size} bytes, over the {HAR_INSPECT_MAX_BYTES}-byte limit",
+                    details={"path": str(path), "size": size, "max_bytes": HAR_INSPECT_MAX_BYTES},
+                )
+            try:
+                document = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+                raise XdbgRpcError(
+                    "invalid_params", f"not a readable HAR file: {exc}", details={"path": str(path)}
+                ) from exc
+            try:
+                data = summarize_har(
+                    document,
+                    offset=offset,
+                    limit=limit,
+                    host=host,
+                    method=method,
+                    status=status,
+                )
+            except HarParseError as exc:
+                raise XdbgRpcError(
+                    "invalid_params", str(exc), details={"path": str(path)}
+                ) from exc
+            return _success(data, session_id=session_id, backend="har")
+        except XdbgRpcError as exc:
+            return _failure(exc, session_id=session_id)
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 

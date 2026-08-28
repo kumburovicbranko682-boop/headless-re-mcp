@@ -311,6 +311,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "web.dom.snapshot",
         "web.screenshot",
         "web.har.export",
+        "web.har.inspect",
         # Interception (proxy.*)
         "proxy.start",
         "proxy.stop",
