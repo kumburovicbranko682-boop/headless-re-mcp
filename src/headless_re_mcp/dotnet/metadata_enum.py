@@ -536,8 +536,13 @@ def table_row_size(
         # stays 2, oversizing this row and shifting GenericParam/MethodSpec after it.
         0x29: _simple_index_size(rc, 0x02) + _simple_index_size(rc, 0x02),  # NestedClass
         0x2A: 0,  # GenericParam; fixed below
-        0x2B: _simple_index_size(rc, 0x2A) + type_def_or_ref,
-        0x2C: method_def_or_ref + b,  # MethodSpec
+        # MethodSpec (II.22.29): Method(MethodDefOrRef) + Instantiation(Blob).
+        0x2B: method_def_or_ref + b,  # MethodSpec
+        # GenericParamConstraint (II.22.21): Owner(GenericParam) + Constraint(TypeDefOrRef).
+        # These two were swapped: 0x2B held GenericParamConstraint's shape and
+        # 0x2C MethodSpec's. Both are the trailing tables, so nothing enumerated
+        # today walks past them, but the shapes were still wrong per ECMA-335.
+        0x2C: _simple_index_size(rc, 0x2A) + type_def_or_ref,  # GenericParamConstraint
     }
     # Fix ClassLayout: PackingSize(2)+ClassSize(4)+Parent TypeDef
     sizes[0x0F] = 2 + 4 + _simple_index_size(rc, 0x02)

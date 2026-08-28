@@ -46,8 +46,25 @@ def test_nestedclass_enclosing_is_a_typedef_index_not_implementation() -> None:
     assert size == 2 + 2  # not 2 + 4, which the Implementation-index bug produced
 
 
+def test_methodspec_is_methoddeforref_plus_blob_not_the_constraint_shape() -> None:
+    # MethodDef at 40000 widens MethodDefOrRef (1-bit tag, 2^15 threshold) to 4,
+    # while GenericParam stays a 2-byte simple index. MethodSpec (0x2B) is
+    # MethodDefOrRef + Blob = 4 + 2; the swapped shape would have read 2 + 2.
+    assert _size(0x2B, {0x06: 40000}) == 4 + 2
+
+
+def test_genericparamconstraint_is_genericparam_plus_typedeforref() -> None:
+    # TypeDef at _WIDE widens TypeDefOrRef to 4 while GenericParam stays 2.
+    # GenericParamConstraint (0x2C) is GenericParam + TypeDefOrRef = 2 + 4; the
+    # swapped shape (MethodDefOrRef + Blob) would have read 2 + 2.
+    assert _size(0x2C, {0x02: _WIDE}) == 2 + 4
+
+
 def test_both_columns_stay_two_bytes_on_a_small_assembly() -> None:
     # The common case every existing fixture exercises: nothing has widened, so
-    # both corrected rows are 4 bytes total -- the fix changes only large inputs.
+    # each corrected row is 4 bytes total -- the fixes change only large inputs,
+    # which is why a small crafted PE cannot tell the right shape from the wrong.
     assert _size(0x09, {0x02: 10, 0x06: 10}) == 4
     assert _size(0x29, {0x23: 10, 0x02: 10}) == 4
+    assert _size(0x2B, {0x06: 10}) == 4
+    assert _size(0x2C, {0x02: 10}) == 4
