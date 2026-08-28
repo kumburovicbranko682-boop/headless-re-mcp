@@ -185,3 +185,51 @@ def test_navigate_to_a_disabled_breakpoint_intent_fails(
     assert svc.workflow_breakpoint_disable(session_id, "oep").ok
     result = svc.workflow_navigate_to_breakpoint(session_id, "oep", event_budget=8)
     assert not result.ok and result.error is not None
+
+
+def test_navigate_to_a_deferred_breakpoint_intent_fails(
+    tracked: tuple[AnalysisService, str],
+) -> None:
+    """An intent on an untracked module never gets a binding: it stays deferred.
+
+    put accepts any module key (the planner just parks the intent), so the
+    navigate wrapper is the first place the missing binding surfaces.
+    """
+    svc, session_id = tracked
+    assert svc.workflow_breakpoint_put(session_id, "later", "phantom", 0x10).ok
+    result = svc.workflow_navigate_to_breakpoint(session_id, "later", event_budget=8)
+    assert not result.ok and result.error is not None
+    assert "deferred" in result.error.message
+
+
+def test_reset_records_the_workflow_failure_and_surfaces_the_cause(
+    tracked: tuple[AnalysisService, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing reset transition must mark the workflow FAILED, then re-raise."""
+    from headless_re_mcp.core import service_workflow
+    from headless_re_mcp.workflows.executor import (
+        WorkflowExecution,
+        WorkflowExecutionError,
+    )
+
+    svc, session_id = tracked
+
+    def explode(transition: object, port: object, *, timeout: float) -> object:
+        execution = WorkflowExecution(
+            state=transition.state,  # type: ignore[attr-defined]
+            effect_count=0,
+            breakpoint_operation_count=0,
+            refreshed_module_keys=frozenset(),
+        )
+        raise WorkflowExecutionError(RuntimeError("reset backend failed"), execution)
+
+    monkeypatch.setattr(service_workflow, "execute_workflow_transition", explode)
+    result = svc.workflow_reset(session_id)
+    assert not result.ok and result.error is not None
+    assert "reset backend failed" in result.error.message
+    status = svc.workflow_status(session_id)
+    assert status.ok and status.data is not None
+    workflow = status.data["workflow"]
+    assert isinstance(workflow, dict)
+    assert workflow["status"] == "failed"
