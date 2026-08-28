@@ -12,7 +12,7 @@ rather than as the outcome. All three are pure given their inputs.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -101,7 +101,7 @@ class _RecordingService:
         self.calls.append(fields)
         if self._raises is not None:
             raise self._raises
-        return self._outcome
+        return cast(dict[str, Any], self._outcome)
 
 
 def test_a_capture_with_no_file_returns_the_payload_untouched() -> None:
