@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（进程组 Job Object 的 WinDLL 句柄在 64 位 Windows 上被截断）
+
+- `process_group.py` 的 `_kernel32()` 直接拿 `ctypes.WinDLL("kernel32")` 上的函数
+  调用，从不声明 `argtypes`/`restype`。WinDLL 函数默认返回 32 位 `c_int`、按同宽度
+  编组整型入参；而 64 位 Windows 上 HANDLE 是指针宽（8 字节）。于是
+  `CreateJobObjectW`/`OpenProcess` 交回的句柄会被截断到低 32 位，再作为 32 位整型塞回
+  `SetInformationJobObject`/`AssignProcessToJobObject`/`CloseHandle` 时高 32 位是寄存器
+  里的残值——内核拿到的是错的句柄。结果是 `KILL_ON_JOB_CLOSE` 这张“父进程被强杀时带走
+  子进程”的安全网悄悄绑到错误句柄或干脆没绑上，正是本模块开头注释所说“安静缺席的网比
+  大声缺席更糟”的那种失败。修法：新增 `_configure_prototypes()`，在每次取 kernel32 时
+  声明全部原型——回传句柄的函数 `restype=wintypes.HANDLE`（即 `c_void_p`），承载句柄的
+  入参用 `wintypes.HANDLE`，信息结构指针用 `POINTER(_ExtendedLimits)`（`byref` 直接匹配），
+  让句柄全程保持指针宽。Linux 上 `ctypes.WinDLL` 本就不存在、调用点先抛 `AttributeError`
+  被捕获返回 `None`，行为不变。新增 `test_process_group_handle_prototypes.py` 钉住原型宽度，
+  并用真实 ctypes 编组演示 `c_int` 会截断 64 位句柄而 `c_void_p` 不会。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
