@@ -218,6 +218,9 @@ def test_attach_without_the_module_is_capability_unavailable() -> None:
         _unavailable_client().attach(1, allowed_pid=1)
 
     assert caught.value.code == "capability_unavailable"
+    # The refusal names the extra that installs frida so the fix travels with the
+    # error, not only in the README.
+    assert "pip install '.[android]'" in caught.value.message
 
 
 def test_attach_rejects_a_non_positive_pid() -> None:

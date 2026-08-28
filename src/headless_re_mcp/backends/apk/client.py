@@ -137,7 +137,11 @@ class ApkClient:
 
     def _require(self, path: Path) -> Path:
         if not self._available:
-            raise ApkError("capability_unavailable", "androguard is not installed")
+            raise ApkError(
+                "capability_unavailable",
+                "androguard is not installed; install the android extra with: "
+                "pip install '.[android]'",
+            )
         resolved = path.expanduser().resolve()
         if not resolved.is_file():
             raise ApkError("not_found", "apk not found", path=str(resolved))

@@ -501,6 +501,9 @@ def test_check_available_refuses_without_mitmproxy(monkeypatch: pytest.MonkeyPat
         backend._check_available()
     assert excinfo.value.code == "capability_unavailable"
     assert backend._available is False
+    # The refusal names the extra that installs mitmproxy so the fix travels with
+    # the error, not only in the README.
+    assert "pip install '.[proxy]'" in excinfo.value.message
 
 
 def test_start_rejects_a_port_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:

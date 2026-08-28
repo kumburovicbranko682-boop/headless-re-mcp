@@ -305,7 +305,11 @@ class FridaClient:
     def attach(self, pid: int, *, allowed_pid: int,
                timeout: float = _PROBE_TIMEOUT_S) -> JsonObject:
         if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+            raise FridaError(
+                "capability_unavailable",
+                "frida Python module is not installed; install the android extra with: "
+                "pip install '.[android]'",
+            )
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
         if pid != allowed_pid:
@@ -491,7 +495,11 @@ class FridaClient:
         if pid != allowed_pid:
             raise FridaError("permission_denied", "pid not allowed", pid=pid)
         if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+            raise FridaError(
+                "capability_unavailable",
+                "frida Python module is not installed; install the android extra with: "
+                "pip install '.[android]'",
+            )
 
     # ------------------------------------------------------------------
     # Device-aware operations (USB / emulator / remote). The single-pid
@@ -500,7 +508,11 @@ class FridaClient:
     # ------------------------------------------------------------------
     def _need(self) -> Any:
         if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+            raise FridaError(
+                "capability_unavailable",
+                "frida Python module is not installed; install the android extra with: "
+                "pip install '.[android]'",
+            )
         return self._frida
 
     def _resolve_device(self, device_id: str | None) -> Any:
@@ -811,7 +823,11 @@ class FridaClient:
 
     def _authorize(self, pid: int, allowed_pids: Iterable[int]) -> None:
         if not self._available or self._frida is None:
-            raise FridaError("capability_unavailable", "frida Python module is not installed")
+            raise FridaError(
+                "capability_unavailable",
+                "frida Python module is not installed; install the android extra with: "
+                "pip install '.[android]'",
+            )
         if type(pid) is not int or pid <= 0:
             raise FridaError("invalid_params", "pid must be a positive integer")
         allowed = set(int(value) for value in allowed_pids)

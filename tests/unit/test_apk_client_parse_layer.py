@@ -111,6 +111,9 @@ def test_require_reports_capability_unavailable_without_androguard(
     with pytest.raises(ApkError) as caught:
         client.open(_apk_file(tmp_path))
     assert caught.value.code == "capability_unavailable"
+    # The refusal must be actionable: name the extra that installs androguard so
+    # the caller learns the fix from the error, not only from the README.
+    assert "pip install '.[android]'" in caught.value.message
 
 
 def test_require_reports_a_missing_apk_as_not_found(

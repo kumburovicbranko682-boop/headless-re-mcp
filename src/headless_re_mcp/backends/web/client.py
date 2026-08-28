@@ -333,7 +333,11 @@ class WebBackend:
             except Exception:
                 self._available = False
         if not self._available:
-            raise WebError("capability_unavailable", "playwright is not installed")
+            raise WebError(
+                "capability_unavailable",
+                "playwright is not installed; install the browser extra with: "
+                "pip install '.[browser]' && python -m playwright install chromium",
+            )
 
     def status(self, session_id: str) -> JsonObject:
         """Cheap page identity; never launches a browser."""

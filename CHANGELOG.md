@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 诊断（Android/Web 后端的 capability_unavailable 报错补上安装提示）
+
+- 各可选后端在依赖缺失时抛 `capability_unavailable`，但报错文案不一致：apktool/apksigner
+  说“needs a JRE”、webcrack 说“needs Node 22/24”，而核心的 Android/Web 依赖只干巴巴地说
+  “X is not installed”，不告诉用户该装哪个 extra——修复得回 README 查安装矩阵。现把这几条
+  统一成可直接照做的文案，点名对应 extra：`androguard` / `adbutils` / `frida` →
+  `pip install '.[android]'`，`playwright` → `pip install '.[browser]'`（并附 chromium 下载
+  步骤 `python -m playwright install chromium`），`mitmproxy` → `pip install '.[proxy]'`。
+  extra 名称与 `pyproject.toml` 的 optional-dependencies 一致；五个后端各加一条回归断言，钉住
+  报错里带安装提示，避免日后回退。
+
 ### 新增（frida.applications 补齐 offset 分页，与 apk.* 读取面一致）
 
 - `frida.applications` 一直回 `count` / `total` / `has_more`，却不收 `offset`——于是设备上应用

@@ -372,7 +372,11 @@ class AdbBackend:
 
     def _client(self, *, socket_timeout: float = _ADB_SHELL_TIMEOUT_S) -> Any:
         if not self._available or self._adbutils is None:
-            raise AdbError("capability_unavailable", "adbutils is not installed")
+            raise AdbError(
+                "capability_unavailable",
+                "adbutils is not installed; install the android extra with: "
+                "pip install '.[android]'",
+            )
         if self._adb_path is not None:
             # adbutils honours this env var to find the adb executable and to
             # auto-spawn a server if one is not already running.

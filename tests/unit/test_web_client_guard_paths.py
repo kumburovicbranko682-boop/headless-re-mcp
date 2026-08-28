@@ -350,6 +350,9 @@ def test_check_available_degrades_without_playwright(
         backend._check_available()
 
     assert caught.value.code == "capability_unavailable"
+    # The refusal names the browser extra (and the chromium download step) so the
+    # fix travels with the error, not only in the README.
+    assert "pip install '.[browser]'" in caught.value.message
 
 
 def test_runner_skips_a_cancelled_future_and_keeps_serving() -> None:

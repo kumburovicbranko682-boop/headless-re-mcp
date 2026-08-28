@@ -90,6 +90,9 @@ class TestAdbArgumentValidation:
         with pytest.raises(AdbError) as info:
             backend.list_devices()
         assert info.value.code == "capability_unavailable"
+        # The refusal names the extra that installs adbutils so the fix travels
+        # with the error, not only in the README.
+        assert "pip install '.[android]'" in info.value.message
 
 
 class TestDevicePullSaysWhenNothingLanded:

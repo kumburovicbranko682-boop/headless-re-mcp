@@ -553,7 +553,11 @@ class ProxyBackend:
             except Exception:
                 self._available = False
         if not self._available:
-            raise ProxyError("capability_unavailable", "mitmproxy is not installed")
+            raise ProxyError(
+                "capability_unavailable",
+                "mitmproxy is not installed; install the proxy extra with: "
+                "pip install '.[proxy]'",
+            )
 
     def _get(self, session_id: str) -> _ProxyInstance:
         with self._lock:
