@@ -18,6 +18,7 @@ def _dump(result: Result[JsonObject]) -> dict[str, Any]:
 
 def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     tools = ToolSetBuilder()
+
     @tools.tool(name="r2.info")
     def r2_info(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
@@ -130,4 +131,26 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         xrefs, truncated or has_more field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
+
+    @tools.tool(name="r2.basic_blocks")
+    def r2_basic_blocks(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """The basic blocks (control-flow graph) of the function at address.
+
+        Runs analysis, then afbj @ address. Answers with items, each block
+        carrying addr, size, ninstr (instruction count) and the branch targets
+        jump (taken edge) and fail (fall-through edge) as raw VAs -- follow
+        those to walk the graph and spot loops and branches that r2.disasm's
+        linear listing flattens. Each block's own addr is also given as
+        address (va/rva/module), plus address_va (the integer that was asked)
+        and count. Empty items means no function is defined at address; run
+        r2.functions first. Read items_truncated, items_total and items_limit
+        when the list filled the cap (4096). There is no integer address field
+        on the block, and no blocks, truncated or has_more field.
+        """
+        return _dump(analysis.r2_basic_blocks(session_id, address, timeout=timeout))
+
     return tools.bindings

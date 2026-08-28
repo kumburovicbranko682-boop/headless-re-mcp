@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（r2.basic_blocks：函数的基本块 / 控制流图）
+
+- 新增只读工具 `r2.basic_blocks`：对给定地址的函数跑 `aa; afbj @ addr`，返回每个基本块的
+  `addr`、`size`、`ninstr`（指令数），以及分支目标 `jump`（跳转边）与 `fail`（顺序 fall-
+  through 边，均为原始 VA，便于沿图游走定位循环与分支）。这是 `r2.disasm` 的线性反汇编
+  抹平、而 `r2.functions` 只给出 `nbbs` 计数、此前无从取得的控制流结构。每个块自身的 `addr`
+  也映射成 `address`（va/rva/module），并回填 `address_va`；`items` 为空表示该地址上没有已
+  识别的函数（先跑 `r2.functions`）。填满 4096 上限读 `items_truncated`/`items_total`/
+  `items_limit`。`afbj @ <十六进制或十进制>` 已加入 r2 命令白名单。已用真实 ELF 与原始
+  `afbj` 逐块核对（6 个块一致）。工具总数 265 → 266（只读 149）。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
