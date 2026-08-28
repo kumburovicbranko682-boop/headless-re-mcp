@@ -5,6 +5,28 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（非-PE 后端退化/合同分支覆盖，只加测试、不改源码）
+
+- 系统排查四个非-PE 后端客户端仅剩的语句/分支缺口——都是"退化必须温和、分类必须
+  诚实"这类合同，用变异测试逐一确认新用例可承重（改坏源码即红、还原即绿）：
+- `apk`：`_scheme_flag` 在 `is_signed_v2`/`is_signed_v3` 探测**抛异常**（敌意 APK
+  Signing Block 让 androguard 重解析时炸）而非缺失方法时，必须把该方案降为 False 且
+  不沉没整个 `certificates` 读取。此前只覆盖"缺方法"与"都返回 True"两态；
+  `test_apk_certificates_fields.py` 新增参数化用例覆盖 v2/v3 任一探测抛异常，断言抛的
+  那个方案为 False、另一个仍诚实、v1 证据与聚合 `signed` 不受影响。
+- `jsre`：`_bounded_output` 的 spill 写为尽力而为——写失败（满盘/只读 artifact 根）
+  必须保留截断头并省略 `output_path`，而不是把一个大模块变成后端错误。此前只覆盖
+  写成功；新增 `test_jsre_bounded_output.py` 覆盖写失败退化与写成功命名两面。
+- `proxy`：`start()` 的 bind 失败分两支——`EADDRINUSE`→`invalid_state`（端口被占，
+  去停别的监听），其余（`EADDRNOTAVAIL`/主机不可解析/特权绑定）→`invalid_params`
+  并点名 host。此前只覆盖前者，坏 host 支未测；`test_proxy_client_paths.py` 补齐
+  非-`EADDRINUSE` → `invalid_params` 的镜像用例。
+- `web`：CDP `requestWillBeSent` 的正 `wallTime` 落为 `started_at`（HAR 起始时刻），
+  零/缺失则不落；`loadingFinished` 在响应只给出收包锚点（`requestTime`+
+  `receiveHeadersEnd`、无 `sendStart`/`sendEnd`，如命中缓存/early-hints）时，必须**新建**
+  timings map 再写入 receive，而不是因 map 缺失而漏掉该相位。`test_web_telemetry_bounds.py`
+  两条新用例覆盖两分支。
+
 ### 修复（非-PE 覆盖用例与本分支重构 API 的语义合并冲突）
 
 - 从 main 合入的一批非-PE 覆盖用例（proxy/doctor/r2/jsre/web）导入或钉死了本分支
