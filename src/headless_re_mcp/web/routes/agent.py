@@ -434,7 +434,12 @@ def register_agent_routes(
                 model=model,
                 max_runs=int(body.get("max_runs", 8)),
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
+            # int() of an out-of-range float raises OverflowError, not
+            # ValueError: json.loads accepts 1e400 (and the non-standard
+            # Infinity), both of which parse to inf, so a request body of
+            # {"max_runs": 1e400} reached int(inf) and 500'd instead of the 400
+            # a bad max_runs already gives.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if thread_id is None:
             thread_id = store.create_thread(title=text[:80]).id
@@ -580,7 +585,12 @@ def register_agent_routes(
                 context_compression_threshold_percent=int(body.get("context_compression_threshold_percent", 75)),
             )
             public = configs.save(profile, make_current=body.get("make_current", True) is not False)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
+            # int() of an out-of-range float raises OverflowError, not
+            # ValueError: json.loads accepts 1e400 (and the non-standard
+            # Infinity), both parsing to inf, so a body of
+            # {"context_compression_threshold_percent": 1e400} reached int(inf)
+            # and 500'd instead of the 400 a bad value already gives.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse({"ok": True, "profile": public})
 

@@ -344,6 +344,18 @@ def test_create_mission_for_a_missing_thread_is_a_404(app_client: Any) -> None:
     assert reply.json()["detail"] == "thread_not_found"
 
 
+def test_create_mission_rejects_an_out_of_range_max_runs(app_client: Any) -> None:
+    """1e400 is a valid JSON number that json.loads parses to inf; int(inf)
+    raises OverflowError, not ValueError, so before the guard this 500'd."""
+    client, _ = app_client
+    reply = client.post(
+        "/api/agent/missions",
+        content=b'{"objective": "recover key", "max_runs": 1e400}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert reply.status_code == 400
+
+
 def test_list_missions_rejects_an_unknown_status_filter(app_client: Any) -> None:
     client, _ = app_client
     reply = client.get("/api/agent/missions", params={"status": "napping"})
@@ -416,6 +428,21 @@ def test_save_provider_rejects_a_non_numeric_threshold(app_client: Any) -> None:
             "model": "m",
             "context_compression_threshold_percent": "lots",
         },
+    )
+    assert reply.status_code == 400
+
+
+def test_save_provider_rejects_an_out_of_range_threshold(app_client: Any) -> None:
+    """1e400 parses to inf, and int(inf) raises OverflowError -- not the
+    ValueError a string threshold gives -- so before the guard this 500'd."""
+    client, _ = app_client
+    reply = client.put(
+        "/api/providers/big",
+        content=(
+            b'{"base_url": "https://example.invalid/v1", "model": "m", '
+            b'"context_compression_threshold_percent": 1e400}'
+        ),
+        headers={"Content-Type": "application/json"},
     )
     assert reply.status_code == 400
 
