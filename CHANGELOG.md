@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 加固（工具效果分类：三张效果集必须两两互斥，否则写工具会被静默降级）
+
+- `tools/catalog.py`：工具的读写效果由三张名字集划分——`_READ_ONLY_NAMES`、
+  `_STATE_CHANGE_NAMES`、`_FILE_WRITE_NAMES`，而 `_declared_spec` 按“读优先”的顺序
+  匹配。于是若某个写工具将来被误加进 `_READ_ONLY_NAMES`（比如从一处挪到另一处却忘了
+  删原处），它会被静默判定为只读：`agent_auto_execute` 变真（agent 无需确认直接执行），
+  且 `bind_mcp` 跳过 `guard_write`（只包裹 write 规格），使其在只读部署里也照样可调用。
+  原来的 `len(_ALL_TOOL_NAMES) != 265` 守卫看不出这种错——跨集重复会被并集折成一个成员，
+  计数仍是 265。
+- 新增 `_partition_or_raise(read_only, state_change, file_write)`：并集大小若不等于三者
+  长度之和即判定存在跨集重复，抛 `ValueError` 并点名冲突工具；在模块导入期对真实三张集
+  调用它（每个 catalog 使用方都会执行到），把这种误分类变成导入即失败而非静默错判。
+- 新增 `test_effect_sets_partition_the_surface`：断言真实三张集互斥且并集等于
+  `_ALL_TOOL_NAMES`，并用一个既在只读集又在状态变更集的名字触发 `ValueError`（非空验证：
+  普通 `a | b | c` 并集不会在此抛错），同时断言错误消息点名了冲突工具。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

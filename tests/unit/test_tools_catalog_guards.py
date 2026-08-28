@@ -46,6 +46,40 @@ def test_declared_spec_rejects_an_unclassified_name() -> None:
         catalog_module._declared_spec("totally.unknown.tool")
 
 
+def test_effect_sets_partition_the_surface() -> None:
+    """The three effect sets are disjoint, and a cross-set duplicate is rejected.
+
+    ``_declared_spec`` matches read-only first, so a write tool that also
+    appeared in ``_READ_ONLY_NAMES`` would be classified read-only -- it would
+    auto-execute for the agent and skip the read-only write gate. A plain union
+    hides that (the duplicate folds into one member), so ``_partition_or_raise``
+    checks the summed sizes and is what guards the real catalog at import.
+    """
+    assert (
+        catalog_module._partition_or_raise(
+            catalog_module._READ_ONLY_NAMES,
+            catalog_module._STATE_CHANGE_NAMES,
+            catalog_module._FILE_WRITE_NAMES,
+        )
+        == catalog_module._ALL_TOOL_NAMES
+    )
+    # A state-changing tool that also sits in the read-only set is rejected;
+    # a plain ``a | b | c`` union would not have raised here.
+    with pytest.raises(ValueError, match="disjoint"):
+        catalog_module._partition_or_raise(
+            frozenset({"apk.open", "device.install"}),
+            frozenset({"device.install"}),
+            frozenset(),
+        )
+    # And the offending name is named, so a future editor sees which it is.
+    with pytest.raises(ValueError, match="device.install"):
+        catalog_module._partition_or_raise(
+            frozenset({"apk.open", "device.install"}),
+            frozenset({"device.install"}),
+            frozenset(),
+        )
+
+
 def test_catalog_rejects_duplicate_specs() -> None:
     spec = _spec("dup.tool")
     with pytest.raises(ValueError, match="unique"):

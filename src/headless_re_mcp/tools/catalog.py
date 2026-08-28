@@ -341,7 +341,40 @@ _FILE_WRITE_NAMES = frozenset((
     'web.har.export',
     'web.screenshot',
 ))
-_ALL_TOOL_NAMES = _READ_ONLY_NAMES | _STATE_CHANGE_NAMES | _FILE_WRITE_NAMES
+def _partition_or_raise(
+    read_only: frozenset[str],
+    state_change: frozenset[str],
+    file_write: frozenset[str],
+) -> frozenset[str]:
+    """Union of the three effect sets, requiring them to be pairwise disjoint.
+
+    ``_declared_spec`` matches these in order -- read-only first -- so a name
+    listed in two sets is silently classified by whichever is checked first. A
+    write tool that slipped into ``_READ_ONLY_NAMES`` would then read as
+    read-only: ``agent_auto_execute`` turns true, so the agent runs it without
+    confirmation, and ``bind_mcp`` skips ``guard_write`` (it only wraps specs
+    whose effects are write), so it stays callable even in a read-only
+    deployment. A plain union hides the mistake -- the duplicate folds into one
+    member and the count check below still sees 265 -- so assert disjointness
+    here, at import, where every catalog consumer runs it.
+    """
+    union = read_only | state_change | file_write
+    if len(union) != len(read_only) + len(state_change) + len(file_write):
+        overlap = (
+            (read_only & state_change)
+            | (read_only & file_write)
+            | (state_change & file_write)
+        )
+        raise ValueError(
+            "tool effect sets must be disjoint; these names carry more than one "
+            f"effect and would be silently mis-gated: {sorted(overlap)}"
+        )
+    return union
+
+
+_ALL_TOOL_NAMES = _partition_or_raise(
+    _READ_ONLY_NAMES, _STATE_CHANGE_NAMES, _FILE_WRITE_NAMES
+)
 if len(_ALL_TOOL_NAMES) != 265:
     raise RuntimeError("tool effect policy contains duplicates or omissions")
 
