@@ -3,7 +3,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, cursor/ci-checkpoint-joinkeys-bb4275a0-82ce]
   pull_request:
 
 concurrency:
