@@ -24,6 +24,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（三个非 PE 单测靠『宿主恰好没装可选依赖』断言缺席，装了 extra 跑全量即变红）
+
+- `test_apk_client_parse_layer.py` 的 `test_available_is_false_when_androguard_is_absent` /
+  `test_require_reports_capability_unavailable_without_androguard`，以及
+  `test_proxy_client_guard_paths.py` 的 `test_instance_run_records_an_import_failure`，都想验证
+  「可选后端不可用时的降级行为」，但三者都不是自造缺席，而是直接依赖运行环境本身没装 androguard /
+  mitmproxy（后者甚至先 `assert "mitmproxy" not in sys.modules`）。CI 只装 `.[test,dev]` 时恰好成立，
+  可一旦有人为跑 Android/proxy 后端而装上 `.[android]` / `.[proxy]` 再跑全量单测，这三条就翻红——
+  proxy 那条更糟：`mitmproxy` 真在场时 `_run` 会去起一个真代理 master，`_run_in_thread` 的 5s join
+  等不到返回，报「_run did not return within 5s」。这不是产品缺陷，是测试不自洽：断言「缺席行为」的
+  测试必须自己把模块逼成缺席，而非指望宿主碰巧没装。现三处都用
+  `monkeypatch.setitem(sys.modules, "androguard"/"mitmproxy", None)` 强制该 import 抛 `ImportError`
+  （sys.modules 里置 None 即让 `import X` / `from X import ...` 报错），无论 extra 是否安装都成立；
+  proxy 那条顺带删掉不再需要的 `assert "mitmproxy" not in sys.modules`。实测：装了 androguard+mitmproxy
+  的环境下，这两个文件从「3 红」变「66 全绿」，整条非 PE 后端单测从 554 通过/3 失败变为 557 通过/0 失败
+  （10 skip 不变）。仅动测试、不碰产品代码。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

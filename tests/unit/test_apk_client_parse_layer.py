@@ -82,15 +82,22 @@ def test_available_is_true_when_androguard_imports(monkeypatch: pytest.MonkeyPat
     assert ApkClient().available is True
 
 
-def test_available_is_false_when_androguard_is_absent() -> None:
-    # androguard is not installed in this environment; no fake is set up here.
+def test_available_is_false_when_androguard_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Force the lazy ``import androguard`` to fail rather than leaning on the
+    # ambient environment happening to lack the optional extra: ``None`` in
+    # sys.modules makes the import raise ImportError. Without this the test
+    # turned red the moment someone installed ``.[android]`` and ran the suite.
+    monkeypatch.setitem(sys.modules, "androguard", None)
     assert ApkClient().available is False
 
 
 # --- _require ----------------------------------------------------------------
 
 
-def test_require_reports_capability_unavailable_without_androguard(tmp_path: Path) -> None:
+def test_require_reports_capability_unavailable_without_androguard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(sys.modules, "androguard", None)
     client = ApkClient()  # available False
     with pytest.raises(ApkError) as caught:
         client.open(_apk_file(tmp_path))

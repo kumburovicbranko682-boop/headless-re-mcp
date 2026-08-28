@@ -454,9 +454,14 @@ def test_instance_run_falls_back_when_the_constructor_signature_differs(
     assert calls["dumpmaster"] == 2
 
 
-def test_instance_run_records_an_import_failure() -> None:
+def test_instance_run_records_an_import_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """With mitmproxy absent, the run thread records the import error."""
-    assert "mitmproxy" not in sys.modules
+    # Force ``from mitmproxy import options`` in _run to fail regardless of
+    # whether the optional proxy extra is installed: ``None`` in sys.modules
+    # makes the import raise ImportError. The old ``assert "mitmproxy" not in
+    # sys.modules`` guard turned this test red (and, worse, hung _run against a
+    # real proxy) once ``.[proxy]`` was installed and the suite run together.
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
     inst = _free_instance()
     _run_in_thread(inst)
     assert inst._error is not None
