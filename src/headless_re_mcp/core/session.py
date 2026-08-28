@@ -446,6 +446,29 @@ _STB_WEAK = 2
 _SHN_UNDEF = 0
 _SHN_LORESERVE = 0xFF00
 _ELF_MAX_DYNSYM_SCAN = 200_000
+# Executable/container magic a native section (ELF SHT_PROGBITS, or a Mach-O
+# segment's section) can open with -- the native analogue of the PE resource,
+# APK member, WASM data-segment and .NET ManifestResource payload censuses.
+# A dropper linked as an ELF/Mach-O parks its stage two in a custom section
+# (e.g. a `.payload`/`__data,__payload`) it writes out and runs; this censuses
+# any section whose first bytes are one of these. Same set the PE resource
+# census uses. MZ carries a 0x40-byte floor (a DOS stub is at least that long)
+# so a stray "MZ" string is not read as a PE.
+_NATIVE_SECTION_KINDS: tuple[tuple[bytes, str], ...] = (
+    (b"\x7fELF", "elf"),
+    (b"dex\n", "dex"),
+    (b"PK\x03\x04", "zip"),
+    (b"\xcf\xfa\xed\xfe", "macho"),
+    (b"\xce\xfa\xed\xfe", "macho"),
+    (b"\xfe\xed\xfa\xcf", "macho"),
+    (b"\xfe\xed\xfa\xce", "macho"),
+    (b"MZ", "pe"),
+)
+_NATIVE_SECTION_SNIFF = 0x40
+_NATIVE_MAX_SECTION_PAYLOADS = 64
+_NATIVE_MAX_MACHO_SECTIONS = 4096
+_SHT_NULL = 0
+_ELF_MAX_SHSTRTAB = 1024 * 1024
 _ELF_MAX_EXPORTS = 8192
 _DT_NULL = 0
 _DT_NEEDED = 1
@@ -4063,6 +4086,7 @@ def _elf_layout_facts(
         shoff = int.from_bytes(head[0x28:0x30], order)  # type: ignore[arg-type]
         shentsize = int.from_bytes(head[0x3A:0x3C], order)  # type: ignore[arg-type]
         shnum = int.from_bytes(head[0x3C:0x3E], order)  # type: ignore[arg-type]
+        shstrndx = int.from_bytes(head[0x3E:0x40], order)  # type: ignore[arg-type]
     else:
         phoff = int.from_bytes(head[0x1C:0x20], order)  # type: ignore[arg-type]
         phentsize = int.from_bytes(head[0x2A:0x2C], order)  # type: ignore[arg-type]
@@ -4070,6 +4094,7 @@ def _elf_layout_facts(
         shoff = int.from_bytes(head[0x20:0x24], order)  # type: ignore[arg-type]
         shentsize = int.from_bytes(head[0x2E:0x30], order)  # type: ignore[arg-type]
         shnum = int.from_bytes(head[0x30:0x32], order)  # type: ignore[arg-type]
+        shstrndx = int.from_bytes(head[0x32:0x34], order)  # type: ignore[arg-type]
     program = _elf_program_headers(stream, order, bits, phoff, phentsize, phnum)
     if program is not None:
         facts["linking"] = "dynamic" if program["has_dynamic"] else "static"
@@ -4149,6 +4174,18 @@ def _elf_layout_facts(
     overlay = _elf_overlay(stream, order, bits, phoff, phentsize, phnum, shoff, shentsize, shnum)
     if overlay is not None:
         facts["overlay"] = overlay
+    # Sections whose bytes open with executable magic -- the section-level
+    # payload census (a nested PE/ELF/ZIP in a custom section a dropper writes
+    # out), the native pair to the PE resource and WASM data-segment censuses.
+    # Reported whenever there is a section table to walk (like `stripped`); an
+    # empty census is then a real "nothing hidden in a section" answer, while a
+    # header-only object with no section table omits the fact entirely.
+    if shoff > 0 and 0 < shnum <= _ELF_MAX_SHNUM:
+        section_payloads, section_count = _elf_section_payloads(
+            stream, order, bits, shoff, shentsize, shnum, shstrndx
+        )
+        facts["section_payloads"] = section_payloads
+        facts["section_payload_count"] = section_count
 
 
 def _elf_program_headers(
@@ -4744,6 +4781,116 @@ def _elf_dynamic_symbols(
     return sorted(exports), sorted(imports)
 
 
+def _native_sniff_kind(head: bytes) -> str | None:
+    """The executable/container kind ``head`` opens with, or None.
+
+    Shared by the ELF and Mach-O section censuses. MZ needs the 0x40-byte floor
+    a real DOS stub carries so a section that merely starts "MZ" is not a PE.
+    """
+    for magic, kind in _NATIVE_SECTION_KINDS:
+        if head.startswith(magic):
+            if kind == "pe" and len(head) < _NATIVE_SECTION_SNIFF:
+                return None
+            return kind
+    return None
+
+
+def _elf_section_payloads(
+    stream: BinaryIO,
+    order: str,
+    bits: int,
+    shoff: int,
+    shentsize: int,
+    shnum: int,
+    shstrndx: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Sections whose bytes open with executable magic, and how many there are.
+
+    The ELF arm of the payload census: a dropper linked as an ELF hides its
+    stage two in a section it later writes out and runs (a nested ELF loader,
+    a PE for a Windows drop, a zipped bundle). This walks the section header
+    table, sniffs the first bytes of every section that occupies file bytes
+    (SHT_NOBITS and SHT_NULL hold none), and names each hit by its section
+    name -- the objcopy ``--dump-section`` view an analyst would reach for.
+    A census, not a verdict: a legitimate embedded blob lists here too.
+
+    Bounded and fail-closed: the section count is already capped by the caller
+    bounds, only the first 0x40 bytes of each section are read, the reported
+    list is capped (the count stays exact), and any structural surprise yields
+    whatever parsed cleanly.
+    """
+    if shoff <= 0 or shnum <= 0 or shnum > _ELF_MAX_SHNUM:
+        return [], 0
+    want = 64 if bits == 64 else 40
+    entsize = max(shentsize, want)
+    try:
+        file_size = stream.seek(0, 2)
+        stream.seek(shoff)
+        table = stream.read(entsize * shnum)
+    except OSError:
+        return [], 0
+
+    def sh_fields(entry: bytes) -> tuple[int, int, int, int]:
+        name = int.from_bytes(entry[0:4], order)  # type: ignore[arg-type]
+        stype = int.from_bytes(entry[4:8], order)  # type: ignore[arg-type]
+        if bits == 64:
+            off = int.from_bytes(entry[24:32], order)  # type: ignore[arg-type]
+            size = int.from_bytes(entry[32:40], order)  # type: ignore[arg-type]
+        else:
+            off = int.from_bytes(entry[16:20], order)  # type: ignore[arg-type]
+            size = int.from_bytes(entry[20:24], order)  # type: ignore[arg-type]
+        return name, stype, off, size
+
+    # The section-name string table, resolved through e_shstrndx; without it
+    # names fall back to their index, so the census still lists the hits.
+    strtab = b""
+    if 0 < shstrndx < shnum:
+        entry = table[shstrndx * entsize : shstrndx * entsize + want]
+        if len(entry) >= want:
+            _n, _t, str_off, str_size = sh_fields(entry)
+            if 0 < str_off < file_size and 0 < str_size <= _ELF_MAX_SHSTRTAB:
+                try:
+                    stream.seek(str_off)
+                    strtab = stream.read(str_size)
+                except OSError:
+                    strtab = b""
+
+    def section_name(name_off: int, index: int) -> str:
+        if 0 < name_off < len(strtab):
+            end = strtab.find(b"\0", name_off)
+            if end > name_off:
+                return strtab[name_off:end].decode("utf-8", errors="replace")
+        return f"section_{index}"
+
+    payloads: list[dict[str, Any]] = []
+    found = 0
+    for i in range(shnum):
+        entry = table[i * entsize : i * entsize + want]
+        if len(entry) < want:
+            break
+        name_off, stype, sh_offset, sh_size = sh_fields(entry)
+        if stype in (_SHT_NULL, _SHT_NOBITS):
+            continue
+        if sh_size < 4 or sh_offset <= 0 or sh_offset >= file_size:
+            continue
+        try:
+            stream.seek(sh_offset)
+            # Clamp the sniff to the section's own bytes so a short section
+            # cannot be padded past the PE floor by whatever follows it.
+            head = stream.read(min(sh_size, _NATIVE_SECTION_SNIFF))
+        except OSError:
+            continue
+        kind = _native_sniff_kind(head)
+        if kind is None:
+            continue
+        found += 1
+        if len(payloads) < _NATIVE_MAX_SECTION_PAYLOADS:
+            payloads.append(
+                {"section": section_name(name_off, i), "kind": kind, "size": sh_size}
+            )
+    return payloads, found
+
+
 def _elf_overlay(
     stream: BinaryIO,
     order: str,
@@ -4899,6 +5046,12 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         overlay = _macho_overlay(stream, cmd_off + sizeofcmds, lc, bits)
         if overlay is not None:
             facts["overlay"] = overlay
+        # Sections whose bytes open with executable magic -- the section-level
+        # payload census, the Mach-O pair to the ELF section census. Always
+        # reported: an empty census is a real "nothing hidden here" answer.
+        section_payloads, section_count = _macho_section_payloads(stream, lc["sections"])
+        facts["section_payloads"] = section_payloads
+        facts["section_payload_count"] = section_count
     return facts
 
 
@@ -5189,15 +5342,20 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         # how many init/term entries dyld runs around the entry point.
         "mod_init": 0,
         "mod_term": 0,
+        # (name, file offset, size) per section that occupies file bytes, for
+        # the section-level payload census.
+        "sections": [],
     }
     if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
         return result
     names: list[str] = []
     segments: list[tuple[int, int, int]] = []
     rpaths: list[str] = []
+    sections: list[tuple[str, int, int]] = []
     result["dylibs"] = names
     result["segments"] = segments
     result["rpaths"] = rpaths
+    result["sections"] = sections
     pos = 0
     for _ in range(ncmds):
         if pos + 8 > len(cmds):
@@ -5292,8 +5450,13 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
                     if sect + 80 > pos + cmdsize:
                         break
                     size = int.from_bytes(cmds[sect + 40 : sect + 48], order)  # type: ignore[arg-type]
+                    sect_off = int.from_bytes(cmds[sect + 48 : sect + 52], order)  # type: ignore[arg-type]
                     flags = int.from_bytes(cmds[sect + 64 : sect + 68], order)  # type: ignore[arg-type]
                     _macho_tally_init_section(result, flags, size, 8)
+                    if len(sections) < _NATIVE_MAX_MACHO_SECTIONS:
+                        sections.append(
+                            (_macho_sectname(cmds[sect : sect + 16]), sect_off, size)
+                        )
         elif cmd == _LC_SEGMENT and cmdsize >= 40:
             # segname(16) then vmaddr/vmsize/fileoff/filesize as u32s.
             segments.append(
@@ -5312,8 +5475,13 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
                     if sect + 68 > pos + cmdsize:
                         break
                     size = int.from_bytes(cmds[sect + 36 : sect + 40], order)  # type: ignore[arg-type]
+                    sect_off = int.from_bytes(cmds[sect + 40 : sect + 44], order)  # type: ignore[arg-type]
                     flags = int.from_bytes(cmds[sect + 56 : sect + 60], order)  # type: ignore[arg-type]
                     _macho_tally_init_section(result, flags, size, 4)
+                    if len(sections) < _NATIVE_MAX_MACHO_SECTIONS:
+                        sections.append(
+                            (_macho_sectname(cmds[sect : sect + 16]), sect_off, size)
+                        )
         pos += cmdsize
     return result
 
@@ -5339,6 +5507,52 @@ def _macho_tally_init_section(
         return
     total = result[key] + max(size, 0) // width
     result[key] = min(total, _MACHO_MAX_INIT_FUNCS)
+
+
+def _macho_sectname(raw: bytes) -> str:
+    """Decode a Mach-O 16-byte sectname field (null-padded, "__data" style)."""
+    return raw.split(b"\0", 1)[0].decode("ascii", errors="replace")
+
+
+def _macho_section_payloads(
+    stream: BinaryIO, sections: list[tuple[str, int, int]]
+) -> tuple[list[dict[str, Any]], int]:
+    """Sections whose bytes open with executable magic, and how many there are.
+
+    The Mach-O arm of the payload census, symmetrical to the ELF one: a dropper
+    linked as a Mach-O hides its stage two in a section (a ``__data,__payload``
+    it writes out and runs). Each section carries a file offset and size in the
+    segment's section header; this sniffs the first bytes of every section that
+    occupies file bytes (a zero offset means S_ZEROFILL/__bss, no file content)
+    and names each hit by its section name -- the llvm-objdump ``-s`` view.
+
+    Bounded and fail-closed: the section list is already capped by the caller,
+    only the first 0x40 bytes of each are read, the reported list is capped (the
+    count stays exact), and any read hiccup skips that section.
+    """
+    try:
+        file_size = stream.seek(0, 2)
+    except OSError:
+        return [], 0
+    payloads: list[dict[str, Any]] = []
+    found = 0
+    for name, offset, size in sections:
+        if size < 4 or offset <= 0 or offset >= file_size:
+            continue
+        try:
+            stream.seek(offset)
+            # Clamp the sniff to the section's own bytes so a short section
+            # cannot be padded past the PE floor by whatever follows it.
+            head = stream.read(min(size, _NATIVE_SECTION_SNIFF))
+        except OSError:
+            continue
+        kind = _native_sniff_kind(head)
+        if kind is None:
+            continue
+        found += 1
+        if len(payloads) < _NATIVE_MAX_SECTION_PAYLOADS:
+            payloads.append({"section": name, "kind": kind, "size": size})
+    return payloads, found
 
 
 def _macho_entry(entryoff: int | None, segments: list[tuple[int, int, int]]) -> int | None:

@@ -2033,6 +2033,222 @@ class TestNativeOverlay:
         assert "overlay" not in facts
 
 
+# ---- section-level payload census (ELF and Mach-O) ------------------------
+
+_NESTED_PE = b"MZ" + b"\x00" * 0x60  # >= 0x40 bytes: a real DOS-stub-sized PE
+_NESTED_ELF = b"\x7fELF" + b"\x00" * 0x30
+_NESTED_ZIP = b"PK\x03\x04" + b"\x00" * 0x30
+
+
+def _elf64_with_sections(
+    sections: list[tuple[str, int, bytes]],
+    *,
+    nobits_names: frozenset[str] = frozenset(),
+    oob_names: frozenset[str] = frozenset(),
+) -> bytes:
+    """A 64-bit LE ELF whose section table carries the given sections.
+
+    Each section is ``(name, sh_type, payload)``. Layout is
+    ehdr | .shstrtab | payloads | section headers, with e_shstrndx pointing at
+    the trailing .shstrtab so names resolve. A name in ``nobits_names`` is
+    marked SHT_NOBITS (its bytes are laid down, but the reader must treat the
+    section as file-less); a name in ``oob_names`` gets a sh_offset far past
+    EOF so the read is refused.
+    """
+    shstr = bytearray(b"\x00")
+    name_off: dict[str, int] = {}
+    for name, _type, _payload in sections:
+        name_off[name] = len(shstr)
+        shstr += name.encode() + b"\x00"
+    shstrtab_name = len(shstr)
+    shstr += b".shstrtab\x00"
+
+    shstr_off = 64
+    payload_off: dict[str, int] = {}
+    blobs = bytearray()
+    cursor = shstr_off + len(shstr)
+    for name, _type, payload in sections:
+        payload_off[name] = cursor
+        blobs += payload
+        cursor += len(payload)
+    sh_off = cursor
+
+    shdrs = bytearray(_shdr64_full(0))  # index 0: SHT_NULL
+    for name, sh_type, payload in sections:
+        off = 0x7000_0000 if name in oob_names else payload_off[name]
+        stype = 8 if name in nobits_names else sh_type  # SHT_NOBITS override
+        shdr = bytearray(_shdr64_full(stype, sh_offset=off, sh_size=len(payload)))
+        shdr[0:4] = name_off[name].to_bytes(4, "little")  # sh_name
+        shdrs += shdr
+    shstr_shdr = bytearray(_shdr64_full(3, sh_offset=shstr_off, sh_size=len(shstr)))
+    shstr_shdr[0:4] = shstrtab_name.to_bytes(4, "little")
+    shdrs += shstr_shdr
+
+    shnum = len(sections) + 2
+    shstrndx = len(sections) + 1
+    ehdr = bytearray(_ehdr64(2, phoff=0, phnum=0, shoff=sh_off, shnum=shnum))
+    ehdr[62:64] = shstrndx.to_bytes(2, "little")  # e_shstrndx
+    return bytes(ehdr) + bytes(shstr) + bytes(blobs) + bytes(shdrs)
+
+
+def _macho64_with_section_payloads(sections: list[tuple[str, bytes]]) -> bytes:
+    """A 64-bit Mach-O with one __DATA segment whose sections carry payloads.
+
+    Each section is ``(sectname, payload)``; the content is appended after the
+    load commands and every section header's file offset points at it, so the
+    reader sniffs real file bytes. An empty ``payload`` makes a zero-length
+    (S_ZEROFILL-shaped) section with no file bytes.
+    """
+    nsects = len(sections)
+    seg_total = 72 + 80 * nsects
+    data_start = 32 + seg_total
+    offsets: list[int] = []
+    blobs = bytearray()
+    cursor = data_start
+    for _name, payload in sections:
+        offsets.append(cursor if payload else 0)
+        blobs += payload
+        cursor += len(payload)
+
+    cmd = bytearray(72)
+    cmd[0:4] = (0x19).to_bytes(4, "little")  # LC_SEGMENT_64
+    cmd[4:8] = seg_total.to_bytes(4, "little")
+    cmd[8:24] = b"__DATA".ljust(16, b"\x00")
+    cmd[64:68] = nsects.to_bytes(4, "little")
+    body = bytearray()
+    for (name, payload), off in zip(sections, offsets, strict=True):
+        sect = bytearray(80)
+        sect[0:16] = name.encode().ljust(16, b"\x00")[:16]
+        sect[16:32] = b"__DATA".ljust(16, b"\x00")
+        sect[40:48] = len(payload).to_bytes(8, "little")  # size
+        sect[48:52] = off.to_bytes(4, "little")  # offset
+        body += sect
+    header = _macho64_full(filetype=2, flags=0, load_cmds=bytes(cmd) + bytes(body), ncmds=1)
+    assert len(header) == data_start
+    return header + bytes(blobs)
+
+
+class TestElfSectionPayloads:
+    """describe_native lists ELF sections whose bytes open with executable magic.
+
+    The native dropper's stash: a nested PE it writes out for a Windows drop, an
+    ELF loader, a zipped bundle -- each parked in a custom section. Every flag
+    names the section it hid under, the sniffed kind and the byte size; ordinary
+    code/data sections and a file-less .bss are never listed.
+    """
+
+    def test_a_clean_object_lists_nothing(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections([(".text", 1, b"\x90" * 32), (".comment", 1, b"GCC: 13")])
+        facts = describe_native(_write(tmp_path, "clean.elf", data))["native"]
+        assert facts["section_payload_count"] == 0
+        assert facts["section_payloads"] == []
+
+    def test_each_planted_kind_reads_under_its_section_name(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections(
+            [
+                (".payload", 1, _NESTED_PE),
+                (".loader", 1, _NESTED_ELF),
+                (".bundle", 1, _NESTED_ZIP),
+                (".rodata", 1, b"a benign read-only string"),
+            ]
+        )
+        facts = describe_native(_write(tmp_path, "dropper.elf", data))["native"]
+        assert facts["section_payload_count"] == 3
+        listed = {e["section"]: e["kind"] for e in facts["section_payloads"]}
+        assert listed == {".payload": "pe", ".loader": "elf", ".bundle": "zip"}
+        pe = next(e for e in facts["section_payloads"] if e["kind"] == "pe")
+        assert pe["size"] == len(_NESTED_PE)
+
+    def test_a_nobits_section_is_not_file_backed(self, tmp_path: Path) -> None:
+        # .bss occupies no file bytes; even if the on-disk bytes at its declared
+        # offset are ELF magic, the reader must not read them as a payload.
+        data = _elf64_with_sections(
+            [(".bss", 1, _NESTED_ELF)], nobits_names=frozenset({".bss"})
+        )
+        facts = describe_native(_write(tmp_path, "bss.elf", data))["native"]
+        assert facts["section_payload_count"] == 0
+
+    def test_a_section_offset_past_eof_is_skipped(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections(
+            [(".payload", 1, _NESTED_PE)], oob_names=frozenset({".payload"})
+        )
+        facts = describe_native(_write(tmp_path, "oob.elf", data))["native"]
+        assert facts["section_payload_count"] == 0
+
+    def test_prose_opening_with_mz_is_not_an_executable(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections([(".data", 1, b"MZ are my initials")])
+        facts = describe_native(_write(tmp_path, "prose.elf", data))["native"]
+        assert facts["section_payload_count"] == 0
+
+    def test_the_list_is_bounded_but_the_count_exact(self, tmp_path: Path) -> None:
+        sections = [(f".s{i:03d}", 1, _NESTED_ELF) for i in range(80)]
+        facts = describe_native(_write(tmp_path, "many.elf", _elf64_with_sections(sections)))[
+            "native"
+        ]
+        assert facts["section_payload_count"] == 80
+        assert len(facts["section_payloads"]) == 64
+
+    def test_a_header_only_elf_omits_the_census(self, tmp_path: Path) -> None:
+        # No section table to walk (like the `stripped` fact): the census is
+        # omitted rather than reported as an empty, misleading zero.
+        facts = describe_native(_write(tmp_path, "hdr.elf", _elf64_le()))["native"]
+        assert "section_payloads" not in facts
+        assert "section_payload_count" not in facts
+
+
+class TestMachoSectionPayloads:
+    """describe_native lists Mach-O sections whose bytes open with executable magic.
+
+    The Mach-O twin of the ELF section census: a dropper hides its stage two in
+    a ``__DATA,__payload`` it writes out and runs. Each flag names the section,
+    the sniffed kind and the byte size; a benign section and a file-less
+    (zero-offset) section are never listed.
+    """
+
+    def test_each_planted_kind_reads_under_its_section_name(self, tmp_path: Path) -> None:
+        data = _macho64_with_section_payloads(
+            [
+                ("__payload", _NESTED_PE),
+                ("__loader", _NESTED_ELF),
+                ("__bundle", _NESTED_ZIP),
+                ("__cstring", b"a benign C string table"),
+            ]
+        )
+        facts = describe_native(_write(tmp_path, "dropper.macho", data))["native"]
+        assert facts["section_payload_count"] == 3
+        listed = {e["section"]: e["kind"] for e in facts["section_payloads"]}
+        assert listed == {"__payload": "pe", "__loader": "elf", "__bundle": "zip"}
+        pe = next(e for e in facts["section_payloads"] if e["kind"] == "pe")
+        assert pe["size"] == len(_NESTED_PE)
+
+    def test_a_clean_macho_lists_nothing(self, tmp_path: Path) -> None:
+        data = _macho64_with_section_payloads([("__text", b"\x90" * 32)])
+        facts = describe_native(_write(tmp_path, "clean.macho", data))["native"]
+        assert facts["section_payload_count"] == 0
+        assert facts["section_payloads"] == []
+
+    def test_a_zerofill_section_with_no_file_bytes_is_skipped(self, tmp_path: Path) -> None:
+        # A zero-length section header (offset 0) has no file content; it must
+        # not be read as opening with whatever byte happens to sit at offset 0.
+        data = _macho64_with_section_payloads([("__bss", b""), ("__payload", _NESTED_ELF)])
+        facts = describe_native(_write(tmp_path, "zf.macho", data))["native"]
+        assert facts["section_payload_count"] == 1
+        assert facts["section_payloads"][0]["section"] == "__payload"
+
+    def test_prose_opening_with_mz_is_not_an_executable(self, tmp_path: Path) -> None:
+        data = _macho64_with_section_payloads([("__data", b"MZ, a monogram")])
+        facts = describe_native(_write(tmp_path, "prose.macho", data))["native"]
+        assert facts["section_payload_count"] == 0
+
+    def test_the_list_is_bounded_but_the_count_exact(self, tmp_path: Path) -> None:
+        sections = [(f"__s{i:03d}", _NESTED_ELF) for i in range(80)]
+        facts = describe_native(
+            _write(tmp_path, "many.macho", _macho64_with_section_payloads(sections))
+        )["native"]
+        assert facts["section_payload_count"] == 80
+        assert len(facts["section_payloads"]) == 64
+
+
 def test_session_opens_over_a_native_binary(tmp_path: Path) -> None:
     path = _write(tmp_path, "a.bin", _elf64_le())
     session = SessionRegistry().create(str(path))
