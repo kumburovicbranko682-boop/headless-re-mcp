@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（web capture gate 补齐 WASM script.source 的 is_wasm；真实 Chromium 151 实跑验证）
+
+- 上一轮给 `web.script.source` 加的 `is_wasm` 旗标（scriptSource 空但 bytecode 在场时置
+  true 并给出指向 web.network.get + wasm.wat/info 的 note）此前只有 mock CDP 的单测，没有
+  live gate 断言——正是上一轮 r2 xrefs 那类"新功能有单测、无实跑 gate"的缺口。本轮装真实
+  playwright Chromium 151.0.7922.34 实跑，先用探针确认：对一个真实实例化的 WASM 模块调用
+  `Debugger.getScriptSource`，Chromium 确实返回空 scriptSource（source==''、bytes==0）并把
+  模块放在单独的 bytecode 字段——即 `is_wasm` 分支的前提在 Chromium 151 上成立，而非把 WAT
+  文本塞进 scriptSource（那样该功能根本不会触发）。JS 脚本对照组 is_wasm 未置、marker 在源码
+  里，两侧都对。
+- `test_web_capture_gate.py` 此前跑了 wasm.list 和 JS 的 script.source，唯独没对 WASM 脚本的
+  scriptId 取过 script.source。新增断言：对 wasm_row 的 scriptId 取源必得 `is_wasm is True`、
+  `source == ''`、note 含 `web.network.get`。这是"空源是天生而非失败"的唯一信号，agent 全靠它
+  才不会把 WASM 脚本的空源当成"无代码"而走死路。
+- 变异验证承重：把源码里 `if not source and ... bytecode` 的条件短路成 `if False and ...`
+  后 gate 立即失败（is_wasm 变 None）——且失败输出显示此时 source 仍是 ''、bytes 仍是 0，正说明
+  `is_wasm` 是区分"WASM 脚本"与"恰好为空的 JS 脚本"的唯一凭据。改回后 gate 复绿。
+
 ### 测试（修非-PE 单测的环境泄漏：装了 radare2 的机器上不再假失败）
 
 - 单测 `test_run_reports_capability_unavailable_without_executable` 名义上验证"没有

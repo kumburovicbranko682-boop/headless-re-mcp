@@ -287,6 +287,23 @@ def test_web_capture_chain_records_real_traffic(site: str) -> None:
                 find_wasm_row, message="the instantiated wasm module never appeared"
             )
             assert wasm_row["language"] == "WebAssembly"
+
+            # script.source on that WASM script must flag it, not answer a silent
+            # empty string. Debugger.getScriptSource returns a WebAssembly module
+            # with an empty scriptSource and the bytes in a separate `bytecode`
+            # field, so an agent that treated the empty source as "no code" would
+            # dead-end; is_wasm plus a note pointing at web.network.get ->
+            # wasm.wat/info is the only signal the emptiness is by nature. The JS
+            # script.source below proves the populated side; this proves the WASM
+            # side, and it exists only because a real browser fills `bytecode`
+            # where the unit guard has to mock it -- a Chromium that returned WAT
+            # text here instead (so is_wasm never tripped) would fail this.
+            wasm_source = service.web_script_source(session_id, wasm_row["scriptId"])
+            assert wasm_source.ok, wasm_source.error
+            assert wasm_source.data.get("is_wasm") is True, wasm_source.data
+            assert wasm_source.data["source"] == "", wasm_source.data
+            assert "web.network.get" in wasm_source.data.get("note", ""), wasm_source.data
+
             # ...and the console proves that module really executed: 42 is
             # computed inside the wasm export, not in JS.
             console = service.web_console(session_id)
