@@ -14,7 +14,10 @@ with e.g. ``emulator -avd <name> -no-window -no-audio -gpu swiftshader_indirect`
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -24,6 +27,7 @@ from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService
 
 _NO_DEVICE = "no adb device attached (bring up an emulator) — skip != pass"
+_PROBE_PACKAGE = "com.example.gateprobe"
 
 
 def _service_with_device() -> tuple[AnalysisService, str] | None:
@@ -55,6 +59,137 @@ def _require_device() -> tuple[AnalysisService, str]:
     if got is None:
         pytest.skip(_NO_DEVICE)
     return got
+
+
+def _find_build_tool(name: str) -> Path | None:
+    """Locate an Android build tool on PATH or under the SDK's build-tools."""
+    on_path = shutil.which(name)
+    if on_path:
+        return Path(on_path)
+    sdk = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
+    if not sdk:
+        return None
+    build_tools = Path(sdk) / "build-tools"
+    if not build_tools.is_dir():
+        return None
+    for version in sorted((p for p in build_tools.iterdir() if p.is_dir()), reverse=True):
+        candidate = version / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _find_android_jar() -> Path | None:
+    sdk = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
+    if not sdk:
+        return None
+    platforms = Path(sdk) / "platforms"
+    if not platforms.is_dir():
+        return None
+    for platform in sorted((p for p in platforms.iterdir() if p.is_dir()), reverse=True):
+        jar = platform / "android.jar"
+        if jar.is_file():
+            return jar
+    return None
+
+
+def _build_signed_apk(tmp_path: Path, package: str) -> Path | None:
+    """Build a minimal, signed, installable APK, or None if tooling is missing.
+
+    A code-less APK still needs android:hasCode="false" or SDK 31 rejects it as
+    "code is missing", so declare it. Returns None (never raises) whenever a
+    required tool -- aapt2, apksigner, android.jar, keytool -- is unavailable, so
+    the caller can skip honestly rather than fail on a bare machine.
+    """
+    aapt2 = _find_build_tool("aapt2")
+    apksigner = _find_build_tool("apksigner")
+    android_jar = _find_android_jar()
+    keytool = shutil.which("keytool")
+    if not (aapt2 and apksigner and android_jar and keytool):
+        return None
+
+    manifest = tmp_path / "AndroidManifest.xml"
+    manifest.write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android"\n'
+        f'    package="{package}">\n'
+        '    <application android:label="GateProbe" android:hasCode="false"/>\n'
+        "</manifest>\n",
+        encoding="utf-8",
+    )
+    unsigned = tmp_path / "unsigned.apk"
+    link = subprocess.run(
+        [
+            str(aapt2),
+            "link",
+            "-I",
+            str(android_jar),
+            "--manifest",
+            str(manifest),
+            "--min-sdk-version",
+            "21",
+            "--target-sdk-version",
+            "31",
+            "-o",
+            str(unsigned),
+        ],
+        capture_output=True,
+        timeout=120,
+    )
+    if link.returncode != 0 or not unsigned.is_file():
+        return None
+
+    keystore = tmp_path / "debug.keystore"
+    minted = subprocess.run(
+        [
+            keytool,
+            "-genkeypair",
+            "-keystore",
+            str(keystore),
+            "-storepass",
+            "android",
+            "-keypass",
+            "android",
+            "-alias",
+            "androiddebugkey",
+            "-keyalg",
+            "RSA",
+            "-keysize",
+            "2048",
+            "-validity",
+            "30",
+            "-dname",
+            "CN=Gate",
+        ],
+        capture_output=True,
+        timeout=120,
+    )
+    if minted.returncode != 0 or not keystore.is_file():
+        return None
+
+    signed = tmp_path / "signed.apk"
+    sign = subprocess.run(
+        [
+            str(apksigner),
+            "sign",
+            "--ks",
+            str(keystore),
+            "--ks-pass",
+            "pass:android",
+            "--ks-key-alias",
+            "androiddebugkey",
+            "--key-pass",
+            "pass:android",
+            "--out",
+            str(signed),
+            str(unsigned),
+        ],
+        capture_output=True,
+        timeout=120,
+    )
+    if sign.returncode != 0 or not signed.is_file():
+        return None
+    return signed
 
 
 @pytest.mark.integration
@@ -154,4 +289,41 @@ def test_device_forward_and_the_tcp0_refusal() -> None:
         assert good.data["local"] == "tcp:18080"
         assert good.data["remote"] == "tcp:5555"
     finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_device_install_and_uninstall_round_trip(tmp_path: Path) -> None:
+    service, serial = _require_device()
+    try:
+        apk = _build_signed_apk(tmp_path, _PROBE_PACKAGE)
+        if apk is None:
+            pytest.skip(
+                "android build-tools (aapt2/apksigner/android.jar) or keytool "
+                "unavailable to build a test APK — skip != pass"
+            )
+        # Start from a clean slate in case a previous run left the probe behind.
+        service.device_uninstall(serial, _PROBE_PACKAGE)
+
+        installed = service.device_install(serial, str(apk), reinstall=True)
+        assert installed.ok, installed.error
+        assert installed.data["installed"] is True
+        # The install path reads the package from the *binary* manifest and then
+        # verifies with `pm path`; both must land on the package we built.
+        assert installed.data["package"] == _PROBE_PACKAGE
+
+        after_install = service.device_packages(serial, limit=2000)
+        assert after_install.ok, after_install.error
+        assert _PROBE_PACKAGE in after_install.data["packages"]
+
+        removed = service.device_uninstall(serial, _PROBE_PACKAGE)
+        assert removed.ok, removed.error
+        assert removed.data["uninstalled"] is True
+
+        after_uninstall = service.device_packages(serial, limit=2000)
+        assert after_uninstall.ok, after_uninstall.error
+        assert _PROBE_PACKAGE not in after_uninstall.data["packages"]
+    finally:
+        with contextlib.suppress(Exception):
+            service.device_uninstall(serial, _PROBE_PACKAGE)
         service.close_all()
