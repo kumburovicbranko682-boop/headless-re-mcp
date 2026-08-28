@@ -151,6 +151,48 @@ def test_list_audit_tolerates_a_row_with_non_string_summaries(tmp_path: Path) ->
     assert entry["result_summary"] == b"\x08"
 
 
+def test_list_audit_breaks_at_ties_by_id_so_paging_is_stable(tmp_path: Path) -> None:
+    """Audit rows sharing a timestamp read in a total, trim-consistent order.
+
+    ``append_audit`` trims to the newest ``audit_retained_rows`` by
+    ``(at DESC, id DESC)`` and documents that ``list_audit`` reads "the same
+    way", so the two must agree about which tied rows sit inside the retained
+    window. They also must, on their own: ``ORDER BY at`` alone leaves the order
+    among equal timestamps unspecified, so ``LIMIT/OFFSET`` paging over a tie
+    group can hand the same row back twice or skip one between pages.     All rows
+    here carry one timestamp, and are inserted in a shuffled order -- neither
+    ascending nor descending id -- so the guaranteed id-descending read differs
+    from whatever tie order the engine falls back to without the id key (it sorts
+    ties by neither insertion nor id). Pinning the exact id-descending order is
+    what makes this non-vacuous: dropping the id tie-break returns a different
+    order here, not merely an unspecified one that happens to match.
+    """
+    store = _store(tmp_path)
+    at = "2026-01-01T00:00:00+00:00"
+    ids = [f"{index:02d}" + "a" * 30 for index in range(6)]
+    insertion_order = [ids[3], ids[0], ids[5], ids[2], ids[4], ids[1]]
+    with sqlite3.connect(store.db_path) as conn:
+        for audit_id in insertion_order:  # shuffled, so tie order != id order
+            conn.execute(
+                "INSERT INTO audit(id,session_id,at,action,params_summary,ok,result_summary)"
+                " VALUES(?,?,?,?,?,1,?)",
+                (audit_id, None, at, "act", "{}", "{}"),
+            )
+        conn.commit()
+
+    expected = sorted(ids, reverse=True)
+    assert [entry["id"] for entry in store.list_audit()["entries"]] == expected
+
+    # Walking one row per page must visit every id exactly once, in that same
+    # total order -- no repeat, no gap.
+    paged: list[str] = []
+    for page_offset in range(len(ids)):
+        page = store.list_audit(offset=page_offset, limit=1)["entries"]
+        paged.extend(entry["id"] for entry in page)
+    assert paged == expected
+    assert len(set(paged)) == len(ids)
+
+
 def test_list_knowledge_tolerates_a_row_with_a_non_string_value(tmp_path: Path) -> None:
     store = _store(tmp_path)
     session_id = uuid.uuid4().hex

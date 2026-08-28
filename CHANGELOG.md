@@ -5,7 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
+### 修复（sqlite 列表分页按 id 稳定排序，audit 与其 trim 口径一致）
+
+- `core/store/sqlite_store.py`：`list_audit`、`list_artifacts`、`list_unclean_sessions`
+  此前分别只按 `at` / `created_at` / `updated_at` 单一时间戳 `ORDER BY ... LIMIT/OFFSET`。
+  时间戳会撞车（同一次 session 关闭注册多个 artifact、批量或硬杀时同一瞬间盖章多条 audit/
+  session），而按非唯一键排序时并列行的次序未定义，翻页时同一行可能重复出现或被跳过。
+  三处都补上主键 `id` 作为次级排序键（`... DESC, id DESC`），使次序全序、分页稳定。
+- 其中 `list_audit` 尤为重要：`append_audit` 的 trim 用 `at DESC, id DESC` 保留最新
+  `audit_retained_rows` 行，并在注释里声明“与 list_audit 读取顺序一致”。但 `list_audit`
+  之前只按 `at DESC`，于是并列时二者对“哪些行在保留窗口内”可能产生分歧——trim 会删掉
+  一条 list 本会展示的行，或保留一条 list 排到窗口外的行，注释所声明的不变量并不成立。
+  现让 list 与 trim 完全对齐。
+- 新增 `tests/unit/test_session_store_row_edges.py::test_list_audit_breaks_at_ties_by_id_so_paging_is_stable`：
+  六条同一时间戳、乱序插入的 audit 行，钉死整体次序为 id 降序，并逐行翻页断言每个 id 恰好
+  出现一次、无重复无遗漏。非空验证：去掉 id 次级键后，本机 sqlite 对并列行给出的次序不同
+  （首行变成 `01…` 而非 `05…`），断言即失败。
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
   `request_workflow_module_refresh` 对未跟踪的模块 key 必须拒绝（抛

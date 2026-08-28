@@ -373,9 +373,15 @@ class SessionStore:
             total = int(
                 conn.execute("SELECT COUNT(*) FROM sessions WHERE closed_cleanly=0").fetchone()[0]
             )
+            # id breaks ties on updated_at: many sessions can share a timestamp
+            # (a batch, or a hard kill that stamps every open session at once),
+            # and ORDER BY on a non-unique key leaves the order among ties
+            # unspecified, so LIMIT/OFFSET paging can repeat or skip a row as a
+            # caller walks the pages. id is the primary key, so the order is
+            # total and every page is stable.
             rows = conn.execute(
                 "SELECT * FROM sessions WHERE closed_cleanly=0"
-                " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 (window, start),
             ).fetchall()
             return [dict(row) for row in rows], total
@@ -450,19 +456,24 @@ class SessionStore:
     def list_artifacts(self, session_id: str | None = None, *, offset: int = 0, limit: int = 50) -> JsonObject:
         limit = max(1, min(int(limit), 256))
         offset = max(0, int(offset))
+        # id breaks ties on created_at: a single session close can register
+        # several artifacts in the same instant (web spills, an apk decode
+        # tree), and paging by a non-unique key over LIMIT/OFFSET can repeat or
+        # drop a row between pages. id is the primary key, so the page is stable.
         with self._lock, self._connect() as conn:
             if session_id:
                 total = conn.execute(
                     "SELECT COUNT(*) AS c FROM artifacts WHERE session_id=?", (session_id,)
                 ).fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM artifacts WHERE session_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM artifacts WHERE session_id=?"
+                    " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
             else:
                 total = conn.execute("SELECT COUNT(*) AS c FROM artifacts").fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM artifacts ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM artifacts ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         items = [dict(row) for row in rows]
@@ -527,19 +538,28 @@ class SessionStore:
     ) -> JsonObject:
         limit = max(1, min(int(limit), 256))
         offset = max(0, int(offset))
+        # id breaks ties on at, and must match the trim in append_audit exactly
+        # (at DESC, id DESC). The trim keeps the newest audit_retained_rows by
+        # that order; if this read tie-broke differently it could surface a row
+        # the trim treats as beyond the window (about to be deleted) while
+        # hiding one the trim keeps, so "what survives is what a caller could
+        # have seen" -- the invariant the trim documents -- would not hold.
+        # Non-unique at also makes plain LIMIT/OFFSET paging repeat or skip rows
+        # across pages; id is the primary key, so the order is total.
         with self._lock, self._connect() as conn:
             if session_id:
                 total = conn.execute(
                     "SELECT COUNT(*) AS c FROM audit WHERE session_id=?", (session_id,)
                 ).fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM audit WHERE session_id=? ORDER BY at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM audit WHERE session_id=?"
+                    " ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
                     (session_id, limit, offset),
                 ).fetchall()
             else:
                 total = conn.execute("SELECT COUNT(*) AS c FROM audit").fetchone()["c"]
                 rows = conn.execute(
-                    "SELECT * FROM audit ORDER BY at DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM audit ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         items = []
