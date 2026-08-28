@@ -390,7 +390,12 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 80 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+  可选原生后端(radare2/Ghidra)诚实性经真实 MCP 端到端(不需真装工具、跨主机确定性)：把后端指向
+  非文件路径即在任何 PATH 下强制「缺失」——所有 r2.*/ghidra.* 报 capability_unavailable(PE 会话与
+  APK 会话皆然,证可用性检查先于目标检查)；把 radare2 指向真实但非零退出的可执行即「在场但坏」——
+  r2.* 报 backend_error 而非 capability_unavailable、绝不抛异常；后端相互独立(配了 r2 也不会让
+  Ghidra 谎称在场)、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
