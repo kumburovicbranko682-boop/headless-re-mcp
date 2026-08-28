@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（PE 布局校验按磁盘大小误判虚拟内存导致误拒壳程序）
+
+- `detection/pe.py` 的 `_validate_layout` 用 `_Section.mapped_size`（即
+  `max(VirtualSize, SizeOfRawData)`）度量每个节的虚拟内存占用，来做"节越界
+  SizeOfImage"与"节虚拟范围重叠"两项检查。但 Windows 加载器只映射 `VirtualSize`
+  个字节（仅当 `VirtualSize` 为 0 时才回退到 `SizeOfRawData`）。当 `SizeOfRawData`
+  合法地大于 `VirtualSize` 时——按文件对齐补齐、或壳把压缩数据塞在映射尾部之后——
+  按磁盘大小度量会凭空造出加载器根本看不到的重叠与 SizeOfImage 越界，把加载器能
+  接受的镜像（尤其是加壳/混淆样本）直接拒掉。新增 `_Section.virtual_span`（有
+  `VirtualSize` 用它、否则回退 `SizeOfRawData`）专用于布局校验；`mapped_size` 仍
+  保留给 RVA 读取，以便解析到映射尾部之外仍留在磁盘上的目录或 thunk。
+
 ### 修复（de4dot 输出别名测试的 Windows-only 路径炸裂）
 
 - main 新落的 `test_dotnet_de4dot_run_paths.py::test_run_rejects_an_output_path_aliasing_the_input`

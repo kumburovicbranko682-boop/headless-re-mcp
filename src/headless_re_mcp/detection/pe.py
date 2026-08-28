@@ -88,7 +88,21 @@ class _Section:
 
     @property
     def mapped_size(self) -> int:
+        # The extent an RVA reader may reach into: VirtualSize when the loader
+        # zero-fills past a shorter raw copy, but SizeOfRawData when the section
+        # carries more bytes on disk than it maps, so a directory or thunk kept
+        # in that on-disk tail still resolves to a file offset.
         return max(self.virtual_size, self.raw_size)
+
+    @property
+    def virtual_span(self) -> int:
+        # The bytes the loader actually maps, for layout validation only:
+        # VirtualSize when set, and SizeOfRawData is used solely as the loader's
+        # own fallback when VirtualSize is 0. A section may legitimately hold
+        # more raw data than it maps -- packers routinely do -- so measuring the
+        # virtual footprint by the larger SizeOfRawData reports a false overlap
+        # or a false SizeOfImage overrun and rejects an image the loader accepts.
+        return self.virtual_size if self.virtual_size > 0 else self.raw_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,14 +368,14 @@ def _validate_layout(
     raw_ranges: list[tuple[int, int, str]] = []
     for section in sections:
         raw_end = section.raw_offset + section.raw_size
-        image_end = section.virtual_address + section.mapped_size
+        image_end = section.virtual_address + section.virtual_span
         if raw_end > len(data):
             raise PeFormatError(f"section raw data is truncated: {section.name}")
         if section.raw_size and section.raw_offset < size_of_headers:
             raise PeFormatError(f"section raw data overlaps PE headers: {section.name}")
         if image_end > image_size:
             raise PeFormatError(f"section exceeds SizeOfImage: {section.name}")
-        if section.mapped_size:
+        if section.virtual_span:
             virtual_ranges.append((section.virtual_address, image_end, section.name))
         if section.raw_size:
             raw_ranges.append((section.raw_offset, raw_end, section.name))
