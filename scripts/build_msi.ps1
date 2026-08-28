@@ -150,9 +150,13 @@ $filesObj = Join-Path $OutDir "ProductFiles.wixobj"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $msi = Join-Path $OutDir "headless-re-mcp.msi"
 # Harvested per-user subdirectories can remain as empty folders after uninstall;
-# suppress only that cleanup ICE and the per-user informational ICE. Component
-# key paths still use HKCU registry values and all other validation remains on.
-& $light $productObj $filesObj -ext WixUtilExtension -sice:ICE64 -sice:ICE91 -out $msi
+# suppress only that cleanup ICE and the per-user informational ICE. ICE61 is
+# expected and intentional: Product.wxs sets MajorUpgrade AllowSameVersionUpgrades
+# so a same-version rebuild replaces the install instead of coexisting with it,
+# which is exactly the "remove an equal version of itself" case ICE61 flags.
+# Component key paths still use HKCU registry values and all other validation
+# remains on.
+& $light $productObj $filesObj -ext WixUtilExtension -sice:ICE64 -sice:ICE91 -sice:ICE61 -out $msi
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $hash = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  headless-re-mcp.msi" | Set-Content -LiteralPath (Join-Path $OutDir "headless-re-mcp.msi.sha256") -Encoding ascii

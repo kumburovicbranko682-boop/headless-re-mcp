@@ -619,7 +619,9 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   MSI 会在「添加/删除程序」里留下两个条目,共用同一个固定安装目录与同一批 HKCU 键路径
   ——卸载其中任何一个,`RemoveFolderEx` 都会删光另一个赖以运行的文件。对固定目录的
   按用户安装,同版本必须替换而非并存。正式发布因 tag 守卫强制版本一致不受影响,受影响
-  的是 `workflow_dispatch` 空跑产物与本地迭代的重复安装。
+  的是 `workflow_dispatch` 空跑产物与本地迭代的重复安装。`build_msi.ps1` 的 `light` 调用同步
+  加上 `-sice:ICE61`:`AllowSameVersionUpgrades` 必然触发 ICE61（「本产品应只移除更旧的自己」）,
+  这里正是有意为之,与既有的 ICE64/ICE91 抑制同样带注释说明,其余校验保持开启。
 
 ### 新增（会话目标类型）
 
