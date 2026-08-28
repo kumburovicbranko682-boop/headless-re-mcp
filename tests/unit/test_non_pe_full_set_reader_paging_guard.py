@@ -26,8 +26,12 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any, cast
 
 import headless_re_mcp
+from headless_re_mcp.backends.web.client import _MAX_CONSOLE
+from headless_re_mcp.tools.binding import input_schema_for
+from headless_re_mcp.tools.web import build_web_tools
 
 _NON_PE_BACKENDS = frozenset(
     {"web", "proxy", "adb", "frida", "apk", "jsre", "jadx", "apktool"}
@@ -160,4 +164,42 @@ def test_every_has_more_reader_pages_or_is_a_documented_exception() -> None:
     assert stale == [], (
         "these _UNPAGED_HAS_MORE_OK entries no longer name an offset-less "
         f"has_more reader (they gained an offset or moved); drop them: {stale}"
+    )
+
+
+def test_web_console_limit_ceiling_covers_the_whole_ring() -> None:
+    """web.console's offset-less exemption holds only while its max limit == the ring.
+
+    ``_UNPAGED_HAS_MORE_OK`` excuses ``web.console`` from paging with a specific
+    reason: "the max limit spans the whole ring, so the newest-N page already
+    reaches every retained message." Unlike the other exemptions -- frida's
+    moving-target enumerations, jadx's on-disk tree, apk's multi-list overviews,
+    all structural facts that cannot silently change -- this one rests on a
+    numeric equality *split across two files*: the tool schema's ``limit`` ceiling
+    (``tools/web.py``, ``le=2000``) and the backend ring capacity
+    ``_MAX_CONSOLE`` (``backends/web/client.py``). Nothing else pins them
+    together. Lower the schema ceiling below the ring (or grow the ring past the
+    ceiling) and the tail-only ``console`` reader strands every message between
+    the two: still buffered, still counted by ``has_more`` -- but unreachable in
+    one call, and with no ``offset`` to fetch them. That is precisely the
+    honest-but-unreachable gap this whole guard exists to prevent, yet the
+    allowlist entry above would keep waving it through. Pin the equality so a
+    drift on either side fails here, forcing the ceiling back to the ring size or
+    the addition of an ``offset`` (and console's removal from the allowlist).
+    """
+    assert ("web", "console") in _UNPAGED_HAS_MORE_OK, (
+        "this guard defends web.console's offset-less exemption; if console now "
+        "pages, drop this test along with its _UNPAGED_HAS_MORE_OK entry"
+    )
+    schemas = {
+        bound.name: input_schema_for(bound.handler)
+        for bound in build_web_tools(cast(Any, object()))
+    }
+    limit = schemas["web.console"]["properties"]["limit"]
+    assert limit.get("maximum") == _MAX_CONSOLE, (
+        "web.console's schema limit ceiling must equal the ring capacity "
+        f"_MAX_CONSOLE={_MAX_CONSOLE}, so one call reaches every retained message "
+        f"and the offset-less exemption stays honest; got {limit.get('maximum')}. "
+        "Realign them, or give console an offset and move it out of "
+        "_UNPAGED_HAS_MORE_OK."
     )
