@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **293（176 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **294（177 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -660,6 +660,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   （`window["eval"]`）不可见。返回按 count 再按名排序的 `capabilities`（api/category/count）、去重排序的
   `categories` 与 `input_bytes`；token 上限截断扫描置 `scan_capped`，文本于未闭合字面量或块注释中戛然而止
   置 `truncated`。缺文件报 not_found、超 16 MiB 报 too_large。
+- `js.summary`：`wasm.summary` 的 JS 对应物，也是 web triage 首跑的四件套+能力扫描的汇总，纯 Python、
+  **不需要 webcrack 或 Node**。单次调用把 `js.strings`/`js.endpoints`/`js.imports`/`js.comments`/
+  `js.capabilities` 跑一遍并汇成一个答案:一眼看清 bundle 多大、连谁、拉了什么、能干什么。返回 `strings`
+  (去重字面量数);`endpoints`(去重 URL 数与前若干个联系的 host,首要 IOC);`imports`(依赖数与
+  bare/relative/absolute/url 分类拆分);`comments`(注释数与 `has_source_map`——存在 `//# sourceMappingURL`
+  指向可取的未压缩原文时为真);`capabilities`(引用到的安全敏感 API 去重数与其所属类别——code_execution/
+  network/storage/dom_injection/encoding/messaging/wasm)。另有 `input_bytes`、任一子扫描触顶致 host 列表、
+  分类拆分或类别集为下限时置 `scan_capped`,源码于未闭合字面量或块注释中戛然而止时置 `truncated`。缺文件报
+  not_found、超 16 MiB 报 too_large。
 - `wasm.imports`：纯 Python 解析 .wasm 的 import 段，列出模块的导入，**不需要 wabt**（`wasm.info/
   wat` 依赖 wabt CLI）。导入就是模块从宿主拿的东西——它离不开的 JS 函数、内存、表与全局量——读它是
   看清一个模块到底干什么的最快路径（带 `env.emscripten_*` 的内存导入是一回事，孤零零一个 crypto

@@ -209,6 +209,29 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_capabilities(path))
 
+    @tools.tool(name="js.summary")
+    def js_summary(path: str) -> dict[str, Any]:
+        """Profile a JavaScript file in one call -- its triage snapshot, node-free.
+
+        The JS counterpart to wasm.summary: where js.strings, js.endpoints,
+        js.imports, js.comments and js.capabilities each answer one question,
+        this drives all five over the source in pure Python -- no webcrack or
+        Node -- and folds their headline results into a single answer, enough
+        to size a bundle and read its behavior before deciding which scanner to
+        run in full. Returns strings (distinct literal count); endpoints (the
+        distinct URL count and the first hosts contacted, the top IOCs);
+        imports (the dependency count and a bare/relative/absolute/url kind
+        split); comments (the count and has_source_map, true when a
+        //# sourceMappingURL points at an unminified original to fetch); and
+        capabilities (the count of distinct security-relevant APIs and the
+        categories they fall into -- code_execution, network, storage,
+        dom_injection, encoding, messaging, wasm). Also input_bytes, scan_capped
+        when any scan hit a cap so the hosts, kind split or category set is a
+        floor, and truncated when the source ends inside an open literal or
+        block comment. A missing file is not_found, one over 16 MiB too_large.
+        """
+        return _dump(analysis.js_summary(path))
+
     @tools.tool(name="wasm.callers")
     def wasm_callers(
         path: str,

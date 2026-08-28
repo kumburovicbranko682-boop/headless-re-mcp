@@ -29,6 +29,7 @@ from headless_re_mcp.backends.jsre.client import (
     scan_js_endpoints,
     scan_js_imports,
     scan_js_strings,
+    scan_js_summary,
 )
 
 __all__ = [
@@ -60,4 +61,5 @@ __all__ = [
     "scan_js_imports",
     "scan_js_comments",
     "scan_js_capabilities",
+    "scan_js_summary",
 ]

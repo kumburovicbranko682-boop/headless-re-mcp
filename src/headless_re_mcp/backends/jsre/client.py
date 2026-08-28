@@ -3542,6 +3542,90 @@ def scan_js_capabilities(path: Path) -> JsonObject:
     }
 
 
+_MAX_JS_SUMMARY_HOSTS = 50
+
+
+def scan_js_summary(path: Path) -> JsonObject:
+    """Profile a JavaScript file in one call (its triage snapshot), node-free.
+
+    The JS counterpart to wasm.summary and the roll-up of the four scanners a
+    web triage runs first: it drives js.strings, js.endpoints, js.imports,
+    js.comments and js.capabilities over the source in pure Python -- no
+    webcrack or Node -- and folds their headline results into a single answer,
+    so one call says how big a bundle is, who it talks to, what it pulls in and
+    what it can do. Reports strings (distinct literal count); endpoints (the
+    distinct URL count and the first hosts contacted, the top IOCs); imports
+    (the dependency count and a bare/relative/absolute/url kind split);
+    comments (the count and has_source_map, true when a //# sourceMappingURL
+    points at an unminified original to fetch); and capabilities (the count of
+    distinct security-relevant APIs referenced and the categories they fall
+    into -- code_execution, network, storage, dom_injection, encoding,
+    messaging, wasm). Also input_bytes, scan_capped when any scan hit a cap so
+    the hosts, kind split or category set is a floor, and truncated when the
+    source ends inside an open literal or block comment. A missing file is
+    not_found, one over 16 MiB too_large.
+    """
+    strings = scan_js_strings(path, offset=0, limit=1)
+    endpoints = scan_js_endpoints(path, offset=0, limit=_MAX_JS_ENDPOINTS_PAGE)
+    imports = scan_js_imports(path, offset=0, limit=_MAX_JS_IMPORTS_PAGE)
+    comments = scan_js_comments(path, offset=0, limit=_MAX_JS_COMMENTS_PAGE)
+    capabilities = scan_js_capabilities(path)
+
+    hosts: list[str] = []
+    seen_hosts: set[str] = set()
+    for row in endpoints["endpoints"]:
+        host = row["host"]
+        if host and host not in seen_hosts:
+            seen_hosts.add(host)
+            if len(hosts) < _MAX_JS_SUMMARY_HOSTS:
+                hosts.append(host)
+
+    kinds = {"bare": 0, "relative": 0, "absolute": 0, "url": 0}
+    for row in imports["imports"]:
+        kind = row["kind"]
+        if kind in kinds:
+            kinds[kind] += 1
+
+    has_source_map = any("sourceMappingURL" in row["text"] for row in comments["comments"])
+
+    # A detail roll-up is a floor when the scan collected more rows than the
+    # page it aggregated, so fold that into scan_capped alongside each scanner's.
+    details_floor = (
+        endpoints["total"] > len(endpoints["endpoints"])
+        or imports["total"] > len(imports["imports"])
+        or comments["total"] > len(comments["comments"])
+    )
+    scan_capped = (
+        strings["scan_capped"]
+        or endpoints["scan_capped"]
+        or imports["scan_capped"]
+        or comments["scan_capped"]
+        or capabilities["scan_capped"]
+        or details_floor
+    )
+    truncated = (
+        strings["truncated"]
+        or endpoints["truncated"]
+        or imports["truncated"]
+        or comments["truncated"]
+        or capabilities["truncated"]
+    )
+
+    return {
+        "input_bytes": strings["input_bytes"],
+        "strings": {"total": strings["total"]},
+        "endpoints": {"total": endpoints["total"], "hosts": hosts},
+        "imports": {"total": imports["total"], **kinds},
+        "comments": {"total": comments["total"], "has_source_map": has_source_map},
+        "capabilities": {
+            "total": len(capabilities["capabilities"]),
+            "categories": capabilities["categories"],
+        },
+        "scan_capped": scan_capped,
+        "truncated": truncated,
+    }
+
+
 def _run(
     cmd: list[str], *, timeout: float, maximum: float = _MAX_TIMEOUT_S
 ) -> tuple[str, str, int]:

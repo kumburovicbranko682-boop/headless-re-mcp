@@ -45,6 +45,7 @@ _SERVICE_CASES: tuple[tuple[str, str, dict[str, int]], ...] = (
     ("js_imports", "imports", {}),
     ("js_comments", "comments", {}),
     ("js_capabilities", "capabilities", {}),
+    ("js_summary", "capabilities", {}),
 )
 
 # The payload key each dotted tool name must return. Keyed by the public tool
@@ -55,6 +56,7 @@ _TOOL_KEYS: dict[str, str] = {
     "js.imports": "imports",
     "js.comments": "comments",
     "js.capabilities": "capabilities",
+    "js.summary": "capabilities",
 }
 
 # Shell out to Node, so out of scope for a wiring smoke that assumes no Node.

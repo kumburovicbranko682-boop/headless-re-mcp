@@ -43,6 +43,7 @@ from headless_re_mcp.backends.jsre import (
     scan_js_endpoints,
     scan_js_imports,
     scan_js_strings,
+    scan_js_summary,
 )
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
@@ -199,6 +200,15 @@ class JsReAnalysisMixin:
     def js_capabilities(self, path: str) -> Result[JsonObject]:
         try:
             data = scan_js_capabilities(Path(path))
+            return _success(data, backend="jsre")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def js_summary(self, path: str) -> Result[JsonObject]:
+        try:
+            data = scan_js_summary(Path(path))
             return _success(data, backend="jsre")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
