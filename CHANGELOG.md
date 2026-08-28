@@ -265,6 +265,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   把脚本注入一个已消失会话的设备进程。现在设备分支也拒绝 CLOSING/CLOSED/FAILED 状态（本地 PE
   分支本就被 `_require_debuggee_pid` 挡住）。
 
+### 修复（`android_root_bypass` 把「含 su 两个字母」的正常路径也一并隐藏）
+
+- 该 canned hook 改写 `java.io.File.exists()` 来遮蔽 root 痕迹，判定用的是
+  `p.indexOf('su') !== -1`——凡是绝对路径里**碰巧出现** "su" 两个字母就命中：
+  `/data/app/com.example.measure/base.apk`、`.../resume/...`、`issue.txt`、
+  `com.sudoku.game`、以及所有 `/usr` 路径。把这些正常文件报成「不存在」，恰恰把
+  正在被绕过 root 检测的那个 app 自己弄坏了，与透明绕过的目的相反。现改为把 `su`
+  当**路径分量**匹配（`/system/bin/su`、`/sbin/su`、`/su/bin/su` 等真正的 su 二进制），
+  `magisk` 仍按子串匹配（它本身就足够特异，出现即是要遮蔽的 root 指示）。判定逻辑抽成模板里
+  的 `headlessReIsRootPath` 函数。新增 `tests/unit/test_frida_root_bypass_predicate.py`：把该
+  函数从模板串里原样抽出、用 Node.js 对代表性路径实跑（无 Node 时跳过，skip≠pass），钉住 su
+  二进制与 magisk 被隐藏、而形近的正常路径不被隐藏；另有一条不依赖 Node 的守卫钉住朴素子串判定已消失。
+
 ### 修复（jadx 部分反编译失败不再伪装成完整源码树）
 
 - `apk.export_sources` / `apk.decompile` 走 jadx，而 jadx 常在某几个类反编译失败时以非零退出收场，
