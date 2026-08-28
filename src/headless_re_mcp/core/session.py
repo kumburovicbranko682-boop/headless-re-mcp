@@ -199,6 +199,13 @@ class SessionRegistry:
                 checksum = _pe_checksum(path)
                 if checksum is not None:
                     metadata["pe"]["checksum"] = checksum
+                # The COFF symbol-table count -- the PE stripped-status fact,
+                # inverted: 0 is the MSVC norm (symbols live in the PDB), a
+                # non-zero count the MinGW/Cygwin tell and an analysis
+                # windfall until someone runs strip.
+                coff_symbols = _pe_coff_symbols(path)
+                if coff_symbols is not None:
+                    metadata["pe"]["coff_symbol_count"] = coff_symbols
                 # VS_VERSIONINFO -- the self-declared identity (versions,
                 # CompanyName/ProductName strings); a claim, not a verdict.
                 metadata["pe"].update(_pe_version_info(path))
@@ -6377,6 +6384,41 @@ def _pe_debug_fingerprint(path: Path) -> dict[str, Any]:
 
 _PE_CHECKSUM_MAX_FILE = 128 * 1024 * 1024
 _PE_CHECKSUM_OPT_OFF = 64  # CheckSum sits at +64 in both PE32 and PE32+ layouts
+_PE_COFF_SYMBOL_SIZE = 18  # each COFF symbol record, aux records included
+
+
+def _pe_coff_symbols(path: Path) -> int | None:
+    """The COFF symbol-table record count, or ``None`` off a non-PE.
+
+    The PE member of the stripped-status family -- the pair to the ELF and
+    Mach-O ``stripped`` facts, inverted into a count because the defaults
+    differ: MSVC-linked images never carry COFF symbols (they live in the
+    PDB), so 0 is the unremarkable answer, while a non-zero count is the GNU
+    toolchain tell (MinGW/Cygwin builds ship full symbol tables until someone
+    runs ``strip``) and an analysis windfall. The count is the COFF header's
+    NumberOfSymbols -- what llvm-readobj prints as SymbolCount -- and a table
+    that does not actually fit in the file reads 0: a lying header cannot
+    invent symbols.
+    """
+    try:
+        file_size = path.stat().st_size
+        with path.open("rb") as stream:
+            dos = stream.read(0x40)
+            if len(dos) < 0x40 or dos[:2] != b"MZ":
+                return None
+            stream.seek(int.from_bytes(dos[0x3C:0x40], "little"))
+            coff = stream.read(24)
+    except OSError:
+        return None
+    if len(coff) < 24 or coff[:4] != b"PE\x00\x00":
+        return None
+    pointer = int.from_bytes(coff[12:16], "little")
+    count = int.from_bytes(coff[16:20], "little")
+    if pointer == 0 or count == 0:
+        return 0
+    if pointer + count * _PE_COFF_SYMBOL_SIZE > file_size:
+        return 0
+    return count
 
 
 def _pe_checksum(path: Path) -> dict[str, Any] | None:

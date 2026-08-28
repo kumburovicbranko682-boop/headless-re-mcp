@@ -256,7 +256,11 @@ jobs:
         # on Linux (the Windows analogue of rcodesign below): the PE signer
         # gate signs the fixture with it and cross-checks the signer
         # certificate digests the tool-free PKCS#7 walk recovers.
-        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils mono-mcs llvm unzip osslsigncode
+        # gcc-mingw-w64-x86-64 cross-compiles real Windows PEs whose COFF
+        # symbol tables (the GNU-toolchain tell MSVC images never carry) the
+        # COFF-symbol gate reads against llvm-readobj, before and after the
+        # bundled mingw strip removes them.
+        run: sudo apt-get update && sudo apt-get install -y apksigner mono-utils mono-mcs llvm unzip osslsigncode gcc-mingw-w64-x86-64
 
       - name: Install rcodesign for the Mach-O code-signature gate
         # apple-codesign is an independent, production Apple code-signing

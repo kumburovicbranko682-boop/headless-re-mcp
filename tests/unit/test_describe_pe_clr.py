@@ -33,6 +33,7 @@ from headless_re_mcp.core.session import (
     _pe_build_time,
     _pe_capability_surface,
     _pe_checksum,
+    _pe_coff_symbols,
     _pe_compute_checksum,
     _pe_debug_fingerprint,
     _pe_hardening_facts,
@@ -1288,6 +1289,75 @@ class TestPeHardeningFacts:
         assert pe["nx"] is True
         assert pe["cfg"] is False
         assert pe["entry"] == 0x1_4000_2000
+
+
+class TestPeCoffSymbols:
+    """The COFF symbol-table count: PE's member of the stripped-status family.
+
+    ELF and Mach-O answer "stripped?"; PE answers with a count because the
+    defaults invert -- MSVC images never carry COFF symbols (0 is the norm),
+    while MinGW/Cygwin builds ship full tables until someone runs strip, and a
+    non-zero count is both the GNU-toolchain tell and an analysis windfall.
+    The gate proves the count against llvm-readobj over a real MinGW build,
+    before and after strip.
+    """
+
+    def _with_coff_symbols(self, data: bytes, pointer: int, count: int) -> bytes:
+        e_lfanew = int.from_bytes(data[0x3C:0x40], "little")
+        out = bytearray(data)
+        struct.pack_into("<II", out, e_lfanew + 12, pointer, count)
+        return bytes(out)
+
+    def test_a_symbolless_image_reads_zero(self, tmp_path: Path) -> None:
+        # The builder leaves PointerToSymbolTable/NumberOfSymbols zero -- the
+        # MSVC norm, where symbols live in the PDB, not the image.
+        path = tmp_path / "msvc.exe"
+        path.write_bytes(_pe_with_posture(entry_rva=0x1000))
+        assert _pe_coff_symbols(path) == 0
+
+    def test_a_table_inside_the_file_reads_its_count(self, tmp_path: Path) -> None:
+        # Three 18-byte records appended past the image: the MinGW shape.
+        base = _pe_with_posture(entry_rva=0x1000)
+        data = self._with_coff_symbols(base, len(base), 3) + bytes(3 * 18)
+        path = tmp_path / "mingw.exe"
+        path.write_bytes(data)
+        assert _pe_coff_symbols(path) == 3
+
+    def test_a_table_past_the_end_of_the_file_reads_zero(self, tmp_path: Path) -> None:
+        # A header claiming a million symbols it does not carry: the lie
+        # cannot invent symbols, so the honest answer is zero.
+        base = _pe_with_posture(entry_rva=0x1000)
+        path = tmp_path / "liar.exe"
+        path.write_bytes(self._with_coff_symbols(base, len(base), 1_000_000))
+        assert _pe_coff_symbols(path) == 0
+
+    def test_a_pointer_with_a_zero_count_reads_zero(self, tmp_path: Path) -> None:
+        base = _pe_with_posture(entry_rva=0x1000)
+        path = tmp_path / "empty.exe"
+        path.write_bytes(self._with_coff_symbols(base, len(base), 0))
+        assert _pe_coff_symbols(path) == 0
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_coff_symbols(path) is None
+
+    def test_the_committed_fixtures_all_read_zero(self) -> None:
+        # MSVC (upx pair) and mcs (.NET) both leave the COFF table out; a
+        # non-zero reading over any of them would be a parser bug.
+        root = Path(__file__).resolve().parents[2] / "fixtures"
+        fixtures = sorted(root.rglob("*.exe"))
+        if not fixtures:
+            pytest.skip(f"no PE fixtures under {root}")
+        for fixture in fixtures:
+            assert _pe_coff_symbols(fixture) == 0, fixture.name
+
+    def test_session_over_a_symboled_pe_carries_the_count(self, tmp_path: Path) -> None:
+        base = _pe_with_posture(entry_rva=0x1000)
+        path = tmp_path / "app.exe"
+        path.write_bytes(self._with_coff_symbols(base, len(base), 5) + bytes(5 * 18))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["coff_symbol_count"] == 5
 
 
 def _pe_with_tls(
@@ -2840,6 +2910,7 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "link_time": 0,
             "reproducible": False,
             "checksum": {"declared": 0, "valid": None},
+            "coff_symbol_count": 0,
             "manifest": {"present": False},
             "wx_sections": [],
             "high_entropy_sections": [],
