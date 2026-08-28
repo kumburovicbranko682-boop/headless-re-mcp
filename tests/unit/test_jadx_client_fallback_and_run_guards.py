@@ -84,6 +84,32 @@ def test_listing_stops_counting_at_the_file_ceiling(
     assert has_more is True
 
 
+def test_listing_returns_the_alphabetical_head_not_the_walk_order_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tree past the cap returns the alphabetically-first files, not walk order.
+
+    rglob yields in undefined, platform-dependent filesystem order. The old code
+    appended the first `cap` files in that order and sorted only those, so the
+    preview looked sorted but was a walk-order-arbitrary subset -- alphabetically-
+    early files walked after the cap were silently dropped, and the page could
+    differ between two decompiles of the same APK. Here the walk hands files back
+    reverse-sorted, so a cap of three must still be a.java/b.java/c.java (the real
+    head), not c/m/z (the reverse-order prefix alphabetized). This is the same
+    sort-before-window contract adb.packages and apk.classes keep.
+    """
+    for name in ("a", "b", "c", "m", "z"):
+        (tmp_path / f"{name}.java").write_text("class C {}", encoding="utf-8")
+    walk_order = sorted(tmp_path.glob("*.java"), key=lambda p: p.name, reverse=True)
+    monkeypatch.setattr(jadx_mod.Path, "rglob", lambda self, *a, **k: iter(walk_order))
+
+    names, total, has_more = _capped_java_listing(tmp_path, cap=3)
+
+    assert names == ["a.java", "b.java", "c.java"]
+    assert total == 5
+    assert has_more is True
+
+
 def test_decompile_rejects_a_blank_class_name(tmp_path: Path) -> None:
     client, apk, out = _jadx(tmp_path)
 

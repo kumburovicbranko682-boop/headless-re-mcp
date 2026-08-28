@@ -30,23 +30,29 @@ _MAX_COUNTED_FILES = 50_000
 
 
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
-    names: list[str] = []
-    total = 0
-    has_more = False
     if not root.is_dir():
         return [], 0, False
+    collected: list[str] = []
+    total = 0
+    count_capped = False
     for path in root.rglob("*.java"):
         if not path.is_file():
             continue
         total += 1
-        if len(names) < cap:
-            names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
+        collected.append(str(path.relative_to(root)))
         if total >= _MAX_COUNTED_FILES:
-            has_more = True
+            count_capped = True
             break
-    names.sort()
+    # Sort the whole listing before windowing, not the page after. rglob yields
+    # in filesystem-walk order (undefined and platform-dependent), so appending
+    # the first `cap` and sorting only those returned a walk-order-arbitrary
+    # subset alphabetized -- a preview that looked like the alphabetical head yet
+    # silently dropped alphabetically-early files walked after the cap, and could
+    # differ between two decompiles of the same APK. Sorting first makes the page
+    # the true alphabetical head, matching the adb.packages/apk.classes fix.
+    collected.sort()
+    names = collected[:cap]
+    has_more = count_capped or len(collected) > cap
     return names, total, has_more
 
 

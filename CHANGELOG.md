@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（jadx export_sources 的 java_files 预览先截断后排序，超过 2000 文件时不是真正的字母序头部）
+
+- 与刚修的 device.packages 同一类缺陷：`_capped_java_listing`（`apk.export_sources` 用来列反编译出的
+  `.java` 树）按 `root.rglob("*.java")` 的遍历顺序取前 `cap`（默认 `_MAX_LISTED_FILES=2000`）个再对这
+  几个 `names.sort()`，于是当树里 `.java` 文件超过 2000（大应用动辄上万类）时，返回的 `java_files` 看着
+  是字母序的，实则是"遍历顺序前 2000 个再排序"——遍历顺序（文件系统 walk 顺序）本身未定义且跨平台/
+  跨次不稳定，字母序靠前却恰好排在 cap 之后被 walk 到的文件被悄悄丢掉，同一个 APK 两次反编译给出的
+  预览还可能不同。`total`（真实计数，上限 `_MAX_COUNTED_FILES`）和 `has_more` 已在，缺的只是排序时机。
+  现改为先收集全部（到 `_MAX_COUNTED_FILES` 上限）、`sort()`、再窗口化到 `cap`，页即真正的字母序头部，
+  `has_more = 计数被截断 或 收集数 > cap`（与 adb.packages / apk.classes 的先排序后开窗一致）。新增回归
+  测试：monkeypatch `rglob` 使 walk 顺序倒序、cap=3，断言页为真正的字母序头部 `a/b/c.java` 而非倒序前缀
+  排序后的 `c/m/z.java`；旧实现即失败。
+
 ### 修复（device.packages 先截断后排序，默认 limit 下会静默丢掉字母序靠前的包）
 
 - `pm list packages` 的输出不是有序的，但 `AdbBackend.packages` 先按设备顺序取前 `capped` 个、`break`，
