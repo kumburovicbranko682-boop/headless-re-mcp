@@ -277,6 +277,44 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_blobs(path, offset=offset, limit=limit))
 
+    @tools.tool(name="js.endpoints")
+    def js_endpoints(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Map the HTTP/WS request targets a JavaScript file calls (pure Python).
+
+        js.urls lifts absolute URLs out of any literal; this reads the network
+        call sites themselves and pulls the target each one requests -- usually
+        the relative API path (``/api/v1/users``) that a bare-URL scan cannot
+        see, which is what you want to reconstruct a frontend's backend API
+        surface. Recognises fetch(url), axios.get/post/put/delete/patch/head/
+        options(url), axios(url) and axios/$.ajax({url, method|type}), an
+        XMLHttpRequest .open(method, url), jQuery $.get/$.post/$.getJSON(url),
+        navigator.sendBeacon(url) and new WebSocket()/EventSource(url). It reads
+        a comment/regex-aware call skeleton, so a "fetch(" sitting inside a
+        string or comment is not mistaken for a call. Deobfuscate a packed
+        bundle first when the URLs are assembled from fragments.
+
+        Answers with items (paged, most-hit first), count, total, offset,
+        has_more, then a kinds tally (fetch/axios/xhr/jquery/beacon/websocket/
+        eventsource), a methods tally, a hosts roll-up (absolute URLs only) with
+        host_count, scan_capped (the literal cap was hit) and endpoints_capped
+        (the distinct-endpoint cap was hit). Each endpoint carries url, method
+        (the HTTP verb, or null for a WebSocket/EventSource), kind, dynamic (the
+        url is a template with a ${...} interpolation, collapsed to that marker),
+        absolute, host (when absolute), count (occurrences), lines (up to 5
+        sample 1-based lines) and url_truncated when the URL was clipped. This is
+        a lexical scan: a URL built by string concatenation or held in a
+        variable is not resolved, and a method passed as a variable reads as the
+        call's default.
+
+        A file over 16 MiB is refused as too_large and a missing one as
+        not_found.
+        """
+        return _dump(analysis.js_endpoints(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

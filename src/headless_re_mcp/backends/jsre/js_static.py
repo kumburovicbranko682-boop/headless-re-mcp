@@ -2,7 +2,7 @@
 
 Where js.deobfuscate / js.beautify shell out to webcrack (and go
 capability_unavailable when Node is absent), these read the file text
-themselves, so they answer on any host. Six reads:
+themselves, so they answer on any host. Seven reads:
 
 - ``extract_js_strings`` walks the source with a small state machine that
   understands line/block comments, single/double/template string literals and
@@ -25,6 +25,10 @@ themselves, so they answer on any host. Six reads:
   decodes them, and classifies what came out (script/json/url/text or a binary
   by magic), with the URLs/IPs inside and one gzip/zlib inflate -- the "what is
   hidden in that long string" view for packed/obfuscated code.
+- ``extract_js_endpoints`` reads the network *call sites* (fetch, axios,
+  XMLHttpRequest.open, jQuery $.get/$.ajax, sendBeacon, new WebSocket) and pulls
+  each request's target and method, catching the relative API paths a bare-URL
+  scan misses -- the "what does this script talk to" view.
 
 extract_js_api_usage and extract_js_imports share ``_noise_spans``, which marks
 the byte ranges that are comments, string literals or regex literals so a match
@@ -134,6 +138,42 @@ _BLOB_KIND_RANK = {
     "text": 6,
     "binary": 7,
 }
+
+# js.endpoints caps: bound the string literals recorded into the call skeleton,
+# the distinct endpoints collected, each URL's length, the sample lines per
+# endpoint, the host roll-up and the page.
+_MAX_ENDPOINT_LITERALS = 100_000
+_MAX_ENDPOINTS_COLLECT = 5000
+_MAX_ENDPOINT_URL_LEN = 2000
+_MAX_ENDPOINT_SAMPLE_LINES = 5
+_MAX_ENDPOINTS_PAGE = 2000
+_MAX_ENDPOINT_HOST_ROLLUP = 500
+# How far past a fetch()/config call's URL to look for a method: option.
+_ENDPOINT_OPTS_WINDOW = 500
+_MAX_METHOD_TOKEN_LEN = 12
+_HTTP_METHODS = frozenset(
+    {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
+)
+# A string literal in the call skeleton is stored out-of-band and referenced by
+# a NUL-bracketed index, so a URL that itself contains "fetch(" cannot be read
+# as a call site. This matches one such placeholder.
+_PH = r"\x00(\d+)\x00"
+_M_FETCH = re.compile(r"\bfetch\s*\(\s*" + _PH)
+_M_AXIOS_METHOD = re.compile(
+    r"\baxios\s*\.\s*(get|post|put|delete|patch|head|options)\s*\(\s*" + _PH
+)
+_M_AXIOS_URL = re.compile(r"\baxios\s*\(\s*" + _PH)
+_M_XHR_OPEN = re.compile(r"\.\s*open\s*\(\s*" + _PH + r"\s*,\s*" + _PH)
+_M_JQUERY = re.compile(r"(?:\$|jQuery)\s*\.\s*(get|post|getJSON)\s*\(\s*" + _PH)
+_M_BEACON = re.compile(r"\.\s*sendBeacon\s*\(\s*" + _PH)
+_M_WS_CTOR = re.compile(r"\bnew\s+(WebSocket|EventSource)\s*\(\s*" + _PH)
+_M_CONFIG_URL = re.compile(
+    r"(?<![\w$])(?:axios(?:\s*\.\s*request)?|(?:\$|jQuery)\s*\.\s*ajax)\s*\(\s*\{"
+    r"[^{}]{0,400}?\burl\s*:\s*" + _PH
+)
+_M_CONFIG_METHOD = re.compile(r"\b(?:method|type)\s*:\s*" + _PH)
+_M_FETCH_METHOD = re.compile(r"\bmethod\s*:\s*" + _PH)
+_ENDPOINT_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
 
 _URL_TRAILING = ".,;:!?'\")]}>"
 _URL_RE = re.compile(r"(?:https?|wss?|ftp)://[^\s\"'<>\\)\]}(]+", re.IGNORECASE)
@@ -980,4 +1020,274 @@ def extract_js_blobs(
         "kinds": dict(kinds),
         "opaque_skipped": opaque_skipped,
         "scan_capped": scan_capped,
+    }
+
+
+def _normalize_template(value: str) -> tuple[str, bool]:
+    """Collapse a template literal's ``${...}`` interpolations to a marker.
+
+    Returns (normalized, has_expression). ``/api/${id}/x`` becomes
+    ``/api/${...}/x`` with has_expression True, so a caller sees the fixed
+    shape of a computed URL without the interpolation body.
+    """
+    out: list[str] = []
+    has_expr = False
+    i = 0
+    n = len(value)
+    while i < n:
+        if value[i] == "$" and i + 1 < n and value[i + 1] == "{":
+            has_expr = True
+            depth = 1
+            i += 2
+            while i < n and depth > 0:
+                if value[i] == "{":
+                    depth += 1
+                elif value[i] == "}":
+                    depth -= 1
+                i += 1
+            out.append("${...}")
+            continue
+        out.append(value[i])
+        i += 1
+    return "".join(out), has_expr
+
+
+def _endpoint_literal_value(raw: str, quote: str) -> tuple[str, bool, bool]:
+    """Decode one call-argument literal. Returns (value, is_template, has_expr)."""
+    if quote == "`":
+        normalized, has_expr = _normalize_template(raw)
+        return _decode_js_escapes(normalized), True, has_expr
+    return _decode_js_escapes(raw), False, False
+
+
+def _endpoint_skeleton(text: str) -> tuple[str, list[JsonObject], bool]:
+    """Rewrite source into a call skeleton with literals held out of band.
+
+    Comments and regex literals become a space; every string/template literal
+    becomes a NUL-bracketed index into the returned literals table (each row
+    holding the decoded value, whether it was a template, whether it carried a
+    ``${...}`` and its line). Code is copied verbatim so a regex can find a
+    call site and read the placeholder that follows. Bounded: past the literal
+    cap, further literals become a bare space and capped is set.
+    """
+    out: list[str] = []
+    literals: list[JsonObject] = []
+    n = len(text)
+    i = 0
+    line = 1
+    prev_char: str | None = None
+    prev_index = -1
+    capped = False
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            out.append("\n")
+            line += 1
+            i += 1
+            continue
+        if c in " \t\r\f\v":
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "/":
+                i += 2
+                while i < n and text[i] != "\n":
+                    i += 1
+                out.append(" ")
+                continue
+            if nxt == "*":
+                i += 2
+                while i < n and not (text[i] == "*" and i + 1 < n and text[i + 1] == "/"):
+                    if text[i] == "\n":
+                        line += 1
+                    i += 1
+                i += 2
+                out.append(" ")
+                continue
+            word = _prev_word(text, prev_index + 1) if prev_index >= 0 else ""
+            if _slash_starts_regex(prev_char, word):
+                end = _scan_regex(text, i)
+                if end is not None:
+                    prev_char = "0"
+                    prev_index = end - 1
+                    out.append(" ")
+                    i = end
+                    continue
+        if c in "'\"`":
+            start_line = line
+            value, line, i, _terminated = _consume_string(text, i, c, line)
+            prev_char = "0"
+            prev_index = i - 1
+            if len(literals) < _MAX_ENDPOINT_LITERALS:
+                decoded, is_template, has_expr = _endpoint_literal_value(value, c)
+                out.append("\x00" + str(len(literals)) + "\x00")
+                literals.append(
+                    {
+                        "value": decoded,
+                        "is_template": is_template,
+                        "has_expression": has_expr,
+                        "line": start_line,
+                    }
+                )
+            else:
+                capped = True
+                out.append(" ")
+            continue
+        prev_char = c
+        prev_index = i
+        # A raw NUL in source would collide with the placeholder sentinel.
+        out.append(" " if c == "\x00" else c)
+        i += 1
+    return "".join(out), literals, capped
+
+
+def _norm_method(literals: list[JsonObject], group: str | None) -> str | None:
+    """Resolve a captured method literal index to an uppercase HTTP verb."""
+    if group is None:
+        return None
+    lit = literals[int(group)]
+    value = str(lit["value"]).strip()
+    if not value or len(value) > _MAX_METHOD_TOKEN_LEN or not value.isalpha():
+        return None
+    upper = value.upper()
+    return upper if upper in _HTTP_METHODS else None
+
+
+def _endpoint_from(
+    literals: list[JsonObject], url_group: str, *, kind: str, method: str | None
+) -> JsonObject:
+    lit = literals[int(url_group)]
+    value = str(lit["value"])
+    truncated = len(value) > _MAX_ENDPOINT_URL_LEN
+    if truncated:
+        value = value[:_MAX_ENDPOINT_URL_LEN]
+    absolute = bool(_ENDPOINT_SCHEME_RE.match(value))
+    host: str | None = None
+    if absolute:
+        try:
+            host = urlsplit(value).hostname
+        except ValueError:
+            host = None
+    row: JsonObject = {
+        "url": value,
+        "method": method,
+        "kind": kind,
+        "dynamic": bool(lit["has_expression"]),
+        "absolute": absolute,
+        "host": host,
+        "line": int(lit["line"]),
+    }
+    if truncated:
+        row["url_truncated"] = True
+    return row
+
+
+def _fetch_option_method(skeleton: str, literals: list[JsonObject], at: int) -> str | None:
+    """Look just past a fetch()/config URL for a ``method:`` string option."""
+    window = skeleton[at : at + _ENDPOINT_OPTS_WINDOW]
+    found = _M_FETCH_METHOD.search(window)
+    if found is None:
+        return None
+    return _norm_method(literals, found.group(1))
+
+
+def _config_method(skeleton: str, literals: list[JsonObject], start: int) -> str | None:
+    """Find a method:/type: option inside an axios/ajax config object."""
+    window = skeleton[start : start + _ENDPOINT_OPTS_WINDOW]
+    found = _M_CONFIG_METHOD.search(window)
+    if found is None:
+        return None
+    return _norm_method(literals, found.group(1))
+
+
+def extract_js_endpoints(
+    text: str, *, offset: int = 0, limit: int = 200
+) -> JsonObject:
+    """Map the HTTP/WS request targets a script calls, by call site.
+
+    Where extract_js_indicators lifts absolute URLs out of any literal, this
+    reads the network *call sites* -- fetch(), axios.get/post/..., an
+    XMLHttpRequest .open(method, url), jQuery $.get/$.post/$.ajax({url}),
+    navigator.sendBeacon() and new WebSocket()/EventSource() -- and pulls the
+    request target from each, which is usually the relative API path
+    (``/api/v1/...``) that a bare-URL scan misses. The method comes from the
+    call (axios.post, $.post), the XHR verb argument, or a method:/type: option.
+    """
+    skeleton, literals, scan_capped = _endpoint_skeleton(text)
+    found: OrderedDict[tuple[str | None, str, str], JsonObject] = OrderedDict()
+    endpoints_capped = False
+
+    def _record(row: JsonObject) -> None:
+        nonlocal endpoints_capped
+        key = (row["method"], row["url"], row["kind"])
+        existing = found.get(key)
+        if existing is not None:
+            existing["count"] = int(existing["count"]) + 1
+            lines: list[int] = existing["lines"]
+            if row["line"] not in lines and len(lines) < _MAX_ENDPOINT_SAMPLE_LINES:
+                lines.append(row["line"])
+            return
+        if len(found) >= _MAX_ENDPOINTS_COLLECT:
+            endpoints_capped = True
+            return
+        line = row.pop("line")
+        row["lines"] = [line]
+        row["count"] = 1
+        found[key] = row
+
+    for match in _M_FETCH.finditer(skeleton):
+        method = _fetch_option_method(skeleton, literals, match.end()) or "GET"
+        _record(_endpoint_from(literals, match.group(1), kind="fetch", method=method))
+    for match in _M_AXIOS_METHOD.finditer(skeleton):
+        method = match.group(1).upper()
+        _record(_endpoint_from(literals, match.group(2), kind="axios", method=method))
+    for match in _M_AXIOS_URL.finditer(skeleton):
+        _record(_endpoint_from(literals, match.group(1), kind="axios", method="GET"))
+    for match in _M_XHR_OPEN.finditer(skeleton):
+        verb = _norm_method(literals, match.group(1))
+        if verb is None:
+            # A .open(str, str) whose first arg is not an HTTP verb is some
+            # other open() (IndexedDB, a dialog), not an XHR.
+            continue
+        _record(_endpoint_from(literals, match.group(2), kind="xhr", method=verb))
+    for match in _M_JQUERY.finditer(skeleton):
+        method = "POST" if match.group(1) == "post" else "GET"
+        _record(_endpoint_from(literals, match.group(2), kind="jquery", method=method))
+    for match in _M_BEACON.finditer(skeleton):
+        _record(_endpoint_from(literals, match.group(1), kind="beacon", method="POST"))
+    for match in _M_WS_CTOR.finditer(skeleton):
+        kind = "websocket" if match.group(1) == "WebSocket" else "eventsource"
+        _record(_endpoint_from(literals, match.group(2), kind=kind, method=None))
+    for match in _M_CONFIG_URL.finditer(skeleton):
+        method = _config_method(skeleton, literals, match.start()) or "GET"
+        _record(_endpoint_from(literals, match.group(1), kind="axios", method=method))
+
+    rows = sorted(found.values(), key=lambda r: (-int(r["count"]), str(r["url"])))
+    kinds: Counter[str] = Counter(str(r["kind"]) for r in rows)
+    methods: Counter[str] = Counter(
+        str(r["method"]) for r in rows if r["method"] is not None
+    )
+    host_counts: Counter[str] = Counter(
+        str(r["host"]) for r in rows if r.get("host")
+    )
+    hosts = [
+        {"host": host, "count": count}
+        for host, count in host_counts.most_common(_MAX_ENDPOINT_HOST_ROLLUP)
+    ]
+    start, cap = _clamp_page(offset, limit, max_limit=_MAX_ENDPOINTS_PAGE)
+    window = rows[start : start + cap]
+    return {
+        "items": window,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "kinds": dict(kinds),
+        "methods": dict(methods),
+        "hosts": hosts,
+        "host_count": len(host_counts),
+        "scan_capped": scan_capped,
+        "endpoints_capped": endpoints_capped,
     }

@@ -197,6 +197,19 @@ class JsReAnalysisMixin:
         except BaseException as exc:
             return _failure(exc)
 
+    def js_endpoints(
+        self, path: str, offset: int = 0, limit: int = 200
+    ) -> Result[JsonObject]:
+        try:
+            data = JsClient(getattr(self.settings, "webcrack", None)).endpoints(
+                Path(path), offset=offset, limit=limit
+            )
+            return _success(data, backend="js-parser")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
             data = WasmClient(getattr(self.settings, "wabt", None)).wat(
