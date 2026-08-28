@@ -205,8 +205,10 @@ def test_device_info_agrees_with_getprop() -> None:
         assert info.data["model"], info.data
 
         # The raw getprop dump must agree with the summarised info on the SDK
-        # level -- two different code paths reading the same device.
-        props = service.device_properties(serial, limit=500)
+        # level -- two different code paths reading the same device. getprop is
+        # sorted, so ask for the full set (backend caps at 2000; a device has a
+        # few hundred): a small limit would truncate before ro.build.version.sdk.
+        props = service.device_properties(serial, limit=2000)
         assert props.ok, props.error
         assert props.data["count"] >= 1
         assert props.data["properties"].get("ro.build.version.sdk") == sdk
