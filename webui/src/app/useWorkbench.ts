@@ -85,6 +85,11 @@ export function useWorkbench() {
     abortRef.current = controller;
     cursorRef.current = initialAfter;
     dispatch({ type: "connected", value: true });
+    // A clean return from streamEvents means the server closed the stream,
+    // which it does only when the run is terminal. Remember that so a
+    // terminal frame lost to the SSE race does not get reported as a broken
+    // stream on a run that actually finished.
+    let graceful = false;
     for (let retries = 0; retries < 4 && !controller.signal.aborted; retries += 1) {
       try {
         await streamEvents(runId, cursorRef.current, ({ type, data }) => {
@@ -94,6 +99,7 @@ export function useWorkbench() {
           window.history.replaceState({ ...(window.history.state ?? {}), activeRun: runId, runSeq: cursorRef.current }, "");
           dispatch({ type: "event", event: parsed });
         }, controller.signal);
+        graceful = true;
         break;
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -103,7 +109,7 @@ export function useWorkbench() {
     }
     dispatch({ type: "connected", value: false });
     window.history.replaceState({ ...(window.history.state ?? {}), activeRun: null, runSeq: cursorRef.current }, "");
-    dispatch({ type: "stream_ended", runId });
+    dispatch({ type: "stream_ended", runId, graceful });
     const threadId = selectedThreadRef.current;
     if (threadId) {
       const result = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(threadId)}`).catch(() => null);

@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（成功跑完却误报「事件推送断了」）
+
+- SSE 事件生成器先把 run 状态翻成 terminal，再 `append_event` 写 `run.completed`/
+  `run.failed`/`run.cancelled` 帧（`_finish_failure`/`_finish_cancel` 均为 transition→
+  append 两步、非原子）。生成器循环是"先读一批事件、再读状态、terminal 且这批为空就
+  break"，于是存在一个窗口：某轮读到空批次后、执行器刚把状态翻 terminal 但终止帧还没写、
+  生成器读到 terminal 就 break，终止帧没进直播流（但已持久化）。前端 `consume` 靠"服务端
+  优雅关流"判断跑完，而 `stream_ended` reducer 只要 `activeRun` 还在就贴「事件推送断了，
+  再发一句」——于是一次**成功**的运行若终止帧被这个竞态吞掉,就会误报流断了。修法(前端、
+  不动直播热路径)：服务端只在 run 到 terminal 时才优雅关流,所以 `streamEvents` 正常返回
+  即代表跑完；给 `stream_ended` 加 `graceful` 标志,优雅关流即使 `activeRun` 仍在也安静收尾、
+  不贴错误,只有真正断流(重试耗尽)才保留提示。终止帧本就持久化、消息也会重载,故成绩单不丢。
+  新增两个 reducer 回归测试：优雅关流+终止帧丢失→无错误安静收尾(旧代码会贴「事件推送断了」)，
+  非优雅断流→照常提示。SPA 产物同步重建。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

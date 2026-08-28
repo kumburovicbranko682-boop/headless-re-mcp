@@ -23,7 +23,7 @@ export type AgentAction =
   | { type: "approval_done"; toolCallId: string }
   | { type: "connected"; value: boolean }
   | { type: "error"; message: string | null }
-  | { type: "stream_ended"; runId: string };
+  | { type: "stream_ended"; runId: string; graceful?: boolean };
 
 export function runFailureHint(type: string, data: Record<string, unknown>): string | null {
   if (type === "run.completed") return null;
@@ -111,13 +111,23 @@ export function reducer(state: AgentState, action: AgentAction): AgentState {
     }
     case "stream_ended": {
       if (state.activeRun && state.activeRun !== action.runId) return state;
+      // The server closes the event stream cleanly only when the run is
+      // terminal. Normally the run.* terminal event arrives first and clears
+      // activeRun, so this branch is a no-op. But that terminal frame can be
+      // lost to a race in the SSE generator (it flips run status to terminal
+      // before appending the frame, and the stream can break between an empty
+      // read and that status), leaving activeRun set on a run that actually
+      // finished. Only treat activeRun-still-set as a dropped stream when the
+      // close was NOT graceful; a graceful close means the run is done, so end
+      // it quietly instead of crying "stream broke" on a successful run.
+      const dropped = !action.graceful && state.activeRun === action.runId;
       return {
         ...state,
         activeRun: null,
         connected: false,
         streamingText: "",
         streamingReasoning: "",
-        error: state.activeRun === action.runId
+        error: dropped
           ? (state.error ?? "\u4e8b\u4ef6\u63a8\u9001\u65ad\u4e86\uff0c\u82e5\u52a9\u624b\u8fd8\u505c\u5728\u534a\u53e5\uff0c\u518d\u53d1\u4e00\u53e5\u5373\u53ef\u3002")
           : state.error,
       };

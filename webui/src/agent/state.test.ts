@@ -67,4 +67,21 @@ describe("agent reducer", () => {
     expect(state.error).not.toContain("incident");
     expect(state.error).not.toContain("RuntimeError");
   });
+
+  it("ends quietly when the server closes the stream cleanly after a lost terminal event", () => {
+    let state = reducer(initialState, { type: "run", runId: "r", userMessage: "go" });
+    expect(state.activeRun).toBe("r");
+    // The run.completed frame never arrived (raced away in the SSE generator),
+    // but the server closed the stream gracefully -- the run really finished.
+    state = reducer(state, { type: "stream_ended", runId: "r", graceful: true });
+    expect(state.activeRun).toBeNull();
+    expect(state.error).toBeNull();
+  });
+
+  it("still warns when the stream genuinely breaks mid-run", () => {
+    let state = reducer(initialState, { type: "run", runId: "r", userMessage: "go" });
+    state = reducer(state, { type: "stream_ended", runId: "r", graceful: false });
+    expect(state.activeRun).toBeNull();
+    expect(state.error).toContain("\u4e8b\u4ef6\u63a8\u9001\u65ad\u4e86");
+  });
 });
