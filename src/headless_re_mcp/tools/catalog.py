@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -527,8 +528,53 @@ class CommandCatalog:
 
         try:
             return spec.handler(**arguments)
+        except TypeError as exc:
+            # The agent and OpenAI-bridge transports call the handler with the
+            # model's JSON arguments and no schema coercion, so a misspelled,
+            # missing, or extra argument name makes ``**arguments`` fail to bind
+            # with TypeError. Reported as an internal_error incident (the
+            # exception_envelope below), that reads as a server defect and gives
+            # the model nothing to correct. Re-bind against the handler
+            # signature to tell a binding mismatch from a TypeError raised
+            # inside the handler body: only the mismatch is the caller's bad
+            # arguments, and it earns a recoverable invalid_params.
+            if self._is_argument_mismatch(spec.handler, arguments):
+                return {
+                    "ok": False,
+                    "data": None,
+                    "error": {
+                        "code": "invalid_params",
+                        "message": f"invalid arguments for {name}: {exc}",
+                        "details": {"tool": name},
+                        "retryable": False,
+                    },
+                    "meta": {},
+                }
+            return exception_envelope(exc, context=f"agent-tool:{name}")
         except BaseException as exc:  # noqa: BLE001 - Agent transport must stay alive
             return exception_envelope(exc, context=f"agent-tool:{name}")
+
+    @staticmethod
+    def _is_argument_mismatch(
+        handler: Callable[..., dict[str, Any]], arguments: dict[str, Any]
+    ) -> bool:
+        """True when ``arguments`` cannot bind to ``handler``'s parameters.
+
+        ``guard_write`` wraps a write handler with ``@wraps``, so
+        ``inspect.signature`` follows ``__wrapped__`` to the real signature and
+        this check sees the declared parameters, not the wrapper's ``**kwargs``.
+        A handler that itself declares ``**kwargs`` binds anything, so a
+        TypeError from such a handler is never mistaken for a bad-arguments one.
+        """
+        try:
+            signature = inspect.signature(handler)
+        except (TypeError, ValueError):
+            return False
+        try:
+            signature.bind(**arguments)
+        except TypeError:
+            return True
+        return False
 
 
 COMMAND_CATALOG = CommandCatalog()

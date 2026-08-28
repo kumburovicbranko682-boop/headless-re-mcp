@@ -151,3 +151,50 @@ def test_invoke_wraps_handler_exceptions_in_an_envelope() -> None:
     envelope = cat.invoke("e.tool", {})
     assert envelope["ok"] is False
     assert envelope["error"] is not None
+
+
+def test_invoke_reports_an_unexpected_argument_as_invalid_params() -> None:
+    # The agent transport binds the model's JSON arguments straight onto the
+    # handler with no schema coercion. A misspelled name makes ``**arguments``
+    # fail to bind; that must read as the caller's fixable mistake, not a
+    # server-defect internal_error incident.
+    cat = CommandCatalog([_spec("r.tool")])
+
+    def handler(session_id: str) -> dict[str, Any]:
+        return {"ok": True, "data": None, "error": None, "meta": {}}
+
+    cat.bind_handler("r.tool", handler, input_schema={}, description=None)
+    envelope = cat.invoke("r.tool", {"session_id": "s", "sesion_id": "typo"})
+
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "invalid_params"
+    assert envelope["error"]["details"]["tool"] == "r.tool"
+
+
+def test_invoke_reports_a_missing_required_argument_as_invalid_params() -> None:
+    cat = CommandCatalog([_spec("m.tool")])
+
+    def handler(session_id: str, address: int) -> dict[str, Any]:
+        return {"ok": True, "data": None, "error": None, "meta": {}}
+
+    cat.bind_handler("m.tool", handler, input_schema={}, description=None)
+    envelope = cat.invoke("m.tool", {"session_id": "s"})
+
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "invalid_params"
+
+
+def test_invoke_keeps_an_in_body_type_error_as_internal_error() -> None:
+    # A TypeError raised inside a handler whose arguments bound fine is a real
+    # fault, not a bad-arguments one, so it must still surface as the logged
+    # internal_error incident rather than be relabelled invalid_params.
+    cat = CommandCatalog([_spec("b.tool")])
+
+    def handler(session_id: str) -> dict[str, Any]:
+        raise TypeError("unsupported operand deep inside the handler")
+
+    cat.bind_handler("b.tool", handler, input_schema={}, description=None)
+    envelope = cat.invoke("b.tool", {"session_id": "s"})
+
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "internal_error"
