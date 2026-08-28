@@ -120,7 +120,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   仍用严格的 `[:=]` 边界(不加尾随 `\w*`),避免把 `tokenized=false` 这类诊断文本误抹。回归矩阵
   相应增加 `private_key`/`private-key`/`access_key`/`passwd`/`credential` 五种形态。
 
-### 修复（CLI 适配器超时在后端边界夹取越界输入）
+### 新增（apk.permissions 补上应用自定义（declared）权限）
+
+- `apk.permissions` 现在返回 `declared_permissions` 与 `declared_count`：即应用自身用
+  `<permission>` **定义**的权限（例如一个 `signature` 级、用来保护导出组件的自定义权限），
+  取自 androguard 的 `get_declared_permissions()`。此前该工具只暴露 `<uses-permission>`
+  （应用**请求**的权限），docstring 却声称「列出 declared 与 requested」——declared 一直缺席。
+  同时厘清语义：`permissions` 就是请求（uses）列表；`requested_permissions` 保留为其别名
+  （androguard ≥ 4 已移除 `get_requested_permissions()`，旧代码那段 `try` 在新版恒抛异常、
+  回退成与 `permissions` 完全相同的冗余字段——现显式说明它是别名，并按能力有无优雅降级）。
+  已用假 APK 对象核验：暴露定义权限、按上限截断、以及 androguard ≥ 4 无 requested getter 时
+  别名回退到 uses 列表且 declared 仍照常给出。
 
 - **apk（jadx/apktool）、web（webcrack/wabt）与 r2（radare2）几条 CLI 适配器把调用方的 `timeout`
   直接塞进 `run_bounded`**，而 frida 早已用 `_bound_timeout` 在后端边界拒非正、封上限。MCP schema

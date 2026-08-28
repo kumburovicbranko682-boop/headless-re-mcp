@@ -43,11 +43,15 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     @tools.tool(name="apk.permissions")
     def apk_permissions(session_id: str) -> dict[str, Any]:
-        """List declared and requested permissions.
+        """List the permissions the app requests and the ones it defines.
 
-        Answers with permissions, requested_permissions, count, and has_more
-        so a list that filled the cap is not read as every permission. There
-        is no declared or requested field.
+        Answers with permissions (the <uses-permission> list the app requests),
+        requested_permissions (the same list; kept as an alias since androguard
+        >= 4 folded the two), declared_permissions (the app's own <permission>
+        definitions -- the custom permissions it introduces, e.g. a signature
+        one guarding an exported component), plus count, declared_count and
+        has_more so a list that filled the cap is not read as every permission.
+        There is no declared or requested field.
         """
         return _dump(analysis.apk_permissions(session_id))
 

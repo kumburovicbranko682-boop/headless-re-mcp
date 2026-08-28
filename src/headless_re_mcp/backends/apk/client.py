@@ -234,18 +234,33 @@ class ApkClient:
 
     def permissions(self, path: Path) -> JsonObject:
         apk = self._apk(path)
-        declared, declared_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
+        # get_permissions() is the <uses-permission> list: what the app
+        # *requests*. (It was bound to a "declared" name here, but it never
+        # held the app's own <permission> definitions -- see declared below.)
+        requested, requested_more = _cap_names(apk.get_permissions(), _MAX_PERMISSIONS)
         try:
-            requested, requested_more = _cap_names(
+            alias, alias_more = _cap_names(
                 apk.get_requested_permissions(), _MAX_PERMISSIONS
             )
-        except Exception:  # noqa: BLE001 - older androguard lacks this
-            requested, requested_more = declared, declared_more
+        except Exception:  # noqa: BLE001 - androguard >= 4 dropped this alias
+            alias, alias_more = requested, requested_more
+        # get_declared_permissions() is the app's own <permission> definitions
+        # -- the custom permissions it introduces (e.g. a signature-level one
+        # guarding an exported component). Distinct from what it uses, and not
+        # surfaced before, so the "declared" the docstring promised was absent.
+        try:
+            declared, declared_more = _cap_names(
+                apk.get_declared_permissions(), _MAX_PERMISSIONS
+            )
+        except Exception:  # noqa: BLE001 - not every androguard exposes this
+            declared, declared_more = [], False
         return {
-            "permissions": declared,
-            "requested_permissions": requested,
-            "count": len(declared),
-            "has_more": declared_more or requested_more,
+            "permissions": requested,
+            "requested_permissions": alias,
+            "declared_permissions": declared,
+            "count": len(requested),
+            "declared_count": len(declared),
+            "has_more": requested_more or alias_more or declared_more,
         }
 
     def certificates(self, path: Path) -> JsonObject:

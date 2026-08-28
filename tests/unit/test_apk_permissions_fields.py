@@ -35,6 +35,19 @@ class _FakeApk:
     def get_requested_permissions(self) -> list[str]:
         return ["R"]
 
+    def get_declared_permissions(self) -> list[str]:
+        return ["com.example.permission.CUSTOM", "com.example.permission.OTHER"]
+
+
+class _ModernApk:
+    """androguard >= 4: no get_requested_permissions, has declared."""
+
+    def get_permissions(self) -> list[str]:
+        return ["android.permission.INTERNET", "android.permission.CAMERA"]
+
+    def get_declared_permissions(self) -> list[str]:
+        return ["com.example.permission.CUSTOM"]
+
 
 def test_apk_permissions_names_permissions_not_declared() -> None:
     """The catalog said declared and requested; the parser has no such fields.
@@ -58,3 +71,36 @@ def test_apk_permissions_names_permissions_not_declared() -> None:
     assert "Answers with permissions" in doc
     assert "requested_permissions" in doc
     assert "has_more" in doc
+
+
+def test_apk_permissions_surfaces_app_defined_declared_permissions() -> None:
+    """apk.permissions must surface get_declared_permissions (the app's own
+    <permission> definitions), a list distinct from what the app requests."""
+    client = ApkClient()
+    client._apk = lambda _path: _FakeApk()  # type: ignore[method-assign]
+    payload = client.permissions(Path("dummy.apk"))
+    assert payload["declared_permissions"] == [
+        "com.example.permission.CUSTOM",
+        "com.example.permission.OTHER",
+    ]
+    assert payload["declared_count"] == 2
+    doc = _tool_docstring("apk.permissions")
+    assert "declared_permissions" in doc
+
+
+def test_apk_permissions_on_modern_androguard_without_requested_getter() -> None:
+    """When get_requested_permissions is absent (androguard >= 4), the alias
+    falls back to get_permissions, and declared is still surfaced."""
+    client = ApkClient()
+    client._apk = lambda _path: _ModernApk()  # type: ignore[method-assign]
+    payload = client.permissions(Path("dummy.apk"))
+    # _cap_names returns the names sorted.
+    assert payload["permissions"] == [
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+    ]
+    assert payload["requested_permissions"] == payload["permissions"]
+    assert payload["declared_permissions"] == ["com.example.permission.CUSTOM"]
+    assert payload["count"] == 2
+    assert payload["declared_count"] == 1
+    assert payload["has_more"] is False
