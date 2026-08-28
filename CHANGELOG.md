@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（de4dot 输出别名测试的 Windows-only 路径炸裂）
+
+- main 新落的 `test_dotnet_de4dot_run_paths.py::test_run_rejects_an_output_path_aliasing_the_input`
+  用 `tmp_path/missing/../input.exe` 这种 dot-dot 拼法验证输出别名到输入会被拒。前置断言
+  `assert not aliased.exists()` 与末尾钉死 `"differ from input_path"` 都编码了 POSIX-only 假设：
+  POSIX 下 `missing/` 无法遍历故 stat 为不存在、`resolve()` 才把它折叠回存在的 input，别名滑过
+  exists() 守卫、被 resolve 相等守卫（"differ from input_path"）捕获；Windows 在 stat 前就把
+  `..` 词法折叠，同一拼法 stat 为**存在**，于是前置断言直接失败、且会被更早的 exists() 守卫
+  以 "must not already exist" 拒绝。这与此前 Scylla 的 Windows 路径别名缺陷同源。改法照 Scylla
+  先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
