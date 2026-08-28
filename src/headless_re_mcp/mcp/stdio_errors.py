@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -20,6 +21,15 @@ from mcp.types import (
 # a tools/call nested 200 deep produced no JSON-RPC response at all.
 _RECURSION_MARKERS = ("recursion limit exceeded", "recursion")
 _MAX_STDIO_MESSAGE_BYTES = 8 * 1024 * 1024
+
+# An oversized record is truncated at the cap, so json.loads can never parse
+# the fragment and _request_id always came back None: a caller that sent an
+# 8 MiB tools/call got silence and hung, the exact failure this module exists
+# to prevent. Serializers put the id near the front, so a bounded scan of the
+# head recovers it. The alternation is disjoint (no backtracking blowup) and
+# the digit run is capped so int() stays cheap.
+_MAX_ID_SCAN_CHARS = 4096
+_ID_FRAGMENT_RE = re.compile(r'"id"\s*:\s*(?:"((?:[^"\\]|\\.)*)"|(-?\d{1,19}))')
 
 
 async def _read_bounded_line(
@@ -68,6 +78,27 @@ def _request_id(line: str) -> str | int | None:
     return value
 
 
+def _request_id_from_fragment(line: str) -> str | int | None:
+    """Best-effort id recovery from a truncated record's head.
+
+    Only used for oversized records, where the full document is gone by
+    construction. A first-match scan can in principle pick up an "id" key
+    nested inside params, but answering with that id is strictly better than
+    the silence a hung unattended caller gets otherwise.
+    """
+    match = _ID_FRAGMENT_RE.search(line[:_MAX_ID_SCAN_CHARS])
+    if match is None:
+        return None
+    digits = match.group(2)
+    if digits is not None:
+        return int(digits)
+    try:
+        decoded: Any = json.loads(f'"{match.group(1)}"')
+    except ValueError:
+        return None
+    return decoded if isinstance(decoded, str) else None
+
+
 @asynccontextmanager
 async def stdio_server_with_parse_replies() -> Any:
     """SDK stdio, except an unreadable request with an id gets an error reply.
@@ -103,10 +134,8 @@ async def stdio_server_with_parse_replies() -> Any:
                         break
                     line = encoded.decode("utf-8", errors="replace")
                     if oversized:
-                        exc = ValueError(
-                            f"request exceeds {_MAX_STDIO_MESSAGE_BYTES} bytes"
-                        )
-                        reply = _error_for_parse_failure(line, exc)
+                        exc = ValueError(f"request exceeds {_MAX_STDIO_MESSAGE_BYTES} bytes")
+                        reply = _error_for_parse_failure(line, exc, allow_fragment_id=True)
                         if reply is not None:
                             await error_writer.send(SessionMessage(reply))
                         continue
@@ -139,8 +168,12 @@ async def stdio_server_with_parse_replies() -> Any:
         yield read_stream, write_stream
 
 
-def _error_for_parse_failure(line: str, exc: BaseException) -> JSONRPCMessage | None:
+def _error_for_parse_failure(
+    line: str, exc: BaseException, *, allow_fragment_id: bool = False
+) -> JSONRPCMessage | None:
     request_id = _request_id(line)
+    if request_id is None and allow_fragment_id:
+        request_id = _request_id_from_fragment(line)
     if request_id is None:
         return None
     text = str(exc)
