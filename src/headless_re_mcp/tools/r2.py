@@ -72,6 +72,30 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_strings(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.strings_all")
+    def r2_strings_all(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """Strings anywhere in the image, not only the ones r2 classified as data.
+
+        r2.strings runs ``izj``, which lists strings only in the sections radare2
+        flags as data -- so a URL baked into a code section, a marker in an
+        appended overlay, a key in a packer stub, or a literal in a section r2 did
+        not map as data is simply absent. This runs ``izzj``, r2's whole-binary
+        scan, and is the native/cross-format twin of wasm.strings and js.strings:
+        the broad "find every printable run in the file" pass you reach for when
+        r2.strings comes back suspiciously thin or a string you can see in a hex
+        view is missing. The trade is noise -- code decoded as text, padding runs
+        -- so triage with r2.strings first and fall back here. Same row shape:
+        items, each carrying string, section (often empty for a hit outside a
+        named section), type, vaddr and address (va/rva/module), plus count. There
+        is no integer address field. Read items_truncated, items_total and
+        items_limit when the list filled the cap (4096); a whole-image scan hits
+        that ceiling far sooner than r2.strings, so check it before reading the
+        list as complete. There is no strings, truncated or has_more field.
+        """
+        return _dump(analysis.r2_strings_all(session_id, timeout=timeout))
+
     @tools.tool(name="r2.imports")
     def r2_imports(
         session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0

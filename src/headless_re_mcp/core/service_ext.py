@@ -338,6 +338,9 @@ class ExtAnalysisMixin(UiDriveMixin):
     def r2_strings(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["izj"], timeout=timeout)
 
+    def r2_strings_all(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
+        return _r2_request(self, session_id, ["izzj"], timeout=timeout)
+
     def r2_imports(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["iij"], timeout=timeout)
 

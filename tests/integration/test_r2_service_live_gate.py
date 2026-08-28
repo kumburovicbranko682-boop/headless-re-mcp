@@ -368,6 +368,24 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         _assert_mapped(marker.get("address"))
         assert marker["address"].get("architecture") == expect_arch, marker
 
+        # r2.strings_all runs izzj (whole image), where r2.strings runs izj (data
+        # sections only). A whole-image scan is a superset of the data-section
+        # scan, so it must also recover the marker and report at least as many
+        # rows, with every row still architecture-mapped -- the broad fallback an
+        # agent reaches for when a visible string is missing from r2.strings.
+        strings_all = service.r2_strings_all(session_id, timeout=60.0)
+        assert strings_all.ok and strings_all.data is not None, strings_all.error
+        assert strings_all.data.get("parsed") is True
+        assert strings_all.data.get("architecture") == expect_arch
+        all_literals = strings_all.data.get("items") or []
+        assert len(all_literals) >= len(literals), (len(all_literals), len(literals))
+        all_marker = next(
+            (s for s in all_literals if _ELF_MARKER in (s.get("string") or "")), None
+        )
+        assert all_marker is not None, [s.get("string") for s in all_literals]
+        _assert_mapped(all_marker.get("address"))
+        assert all_marker["address"].get("architecture") == expect_arch, all_marker
+
         # r2.read is the data-side reader. Point it at the marker string's own
         # address -- a .rodata data address r2.disasm would only decode as a run
         # of invalid bytes -- and the exact bytes must come back, byte for byte.

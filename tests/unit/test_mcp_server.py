@@ -139,6 +139,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "r2.open",
         "r2.functions",
         "r2.strings",
+        "r2.strings_all",
         "r2.imports",
         "r2.exports",
         "r2.sections",
