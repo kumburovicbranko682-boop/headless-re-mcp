@@ -17,12 +17,16 @@ from typing import Any
 
 import pytest
 
+from headless_re_mcp.backends.common.secrets import (
+    decode_jwt as _decode_jwt,
+)
+from headless_re_mcp.backends.common.secrets import (
+    redact_value as _redact_value,
+)
 from headless_re_mcp.backends.proxy.client import (
     _OMITTED_BODY,
     ProxyBackend,
     ProxyError,
-    _decode_jwt,
-    _redact_value,
 )
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
@@ -356,7 +360,7 @@ def test_pagination_windows_the_secret_list(monkeypatch: Any) -> None:
 
 def test_collect_cap_discloses(monkeypatch: Any) -> None:
     monkeypatch.setattr(
-        "headless_re_mcp.backends.proxy.client._MAX_SECRETS_COLLECT", 2
+        "headless_re_mcp.backends.common.secrets.MAX_SECRETS_COLLECT", 2
     )
     summaries = []
     raws = {}

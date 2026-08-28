@@ -157,6 +157,36 @@ class WebAnalysisMixin:
             limit=limit,
         )
 
+    def web_network_secrets(
+        self,
+        session_id: str,
+        kind: str = "",
+        reveal: bool = False,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        resource_type: str = "",
+        status: int = 0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Result[JsonObject]:
+        return self._web_wrap(
+            session_id,
+            "network_secrets",
+            session_id,
+            kind=kind,
+            reveal=reveal,
+            method=method,
+            host=host,
+            url_contains=url_contains,
+            content_type=content_type,
+            resource_type=resource_type,
+            status=status,
+            offset=offset,
+            limit=limit,
+        )
+
     def web_network_get(self, session_id: str, request_id: str) -> Result[JsonObject]:
         try:
             data = self._web.network_get(session_id, request_id, self._web_artifact_dir(session_id))

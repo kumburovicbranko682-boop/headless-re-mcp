@@ -12,21 +12,35 @@ import asyncio
 import base64
 import concurrent.futures
 import contextlib
-import hashlib
-import json
 import logging
 import os
-import re
 import socket
 import threading
 import time
 from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from headless_re_mcp.backends import har
+from headless_re_mcp.backends.common.secrets import (
+    SECRET_KINDS as _SECRET_KINDS,
+)
+from headless_re_mcp.backends.common.secrets import (
+    finalize_secrets as _finalize_secrets,
+)
+from headless_re_mcp.backends.common.secrets import (
+    record_secret as _record_secret,
+)
+from headless_re_mcp.backends.common.secrets import (
+    scan_request_headers as _scan_request_headers,
+)
+from headless_re_mcp.backends.common.secrets import (
+    scan_response_headers as _scan_response_headers,
+)
+from headless_re_mcp.backends.common.secrets import (
+    scan_url_query as _scan_url_query,
+)
 from headless_re_mcp.backends.common.urlpath import (
     endpoint_parts as _endpoint_parts,
 )
@@ -999,50 +1013,6 @@ def _count_occurrences(haystack: str, needle: str, cap: int) -> int:
         start = index + len(needle)
 
 
-# proxy.secrets bounds. Distinct findings, the page returned, distinct hosts
-# kept per finding, and the per-flow scan ceilings, so a capture full of unique
-# tokens or one flow with thousands of headers/cookies cannot build an unbounded
-# reply. Values are clipped before storage so a huge header cannot bloat memory.
-_MAX_SECRETS_COLLECT = 5000
-_MAX_SECRETS_PAGE = 500
-_MAX_SECRET_HOSTS = 20
-_MAX_HEADERS_PER_FLOW = 200
-_MAX_COOKIES_PER_FLOW = 100
-_MAX_QUERY_PARAMS_PER_FLOW = 100
-_MAX_SECRET_VALUE = 4096
-_SECRET_VALUE_KEEP = 4
-_SECRET_KINDS = frozenset(
-    {"authorization", "api_key_header", "query_param", "cookie", "set_cookie"}
-)
-# Request headers that carry credentials directly (scheme + token).
-_AUTH_HEADER_NAMES = frozenset({"authorization", "proxy-authorization"})
-# Request headers commonly used to carry an API key / bearer token / CSRF token.
-_APIKEY_HEADER_NAMES = frozenset(
-    {
-        "x-api-key", "api-key", "apikey", "x-apikey",
-        "x-auth-token", "x-access-token", "x-session-token", "x-app-token",
-        "x-csrf-token", "x-xsrf-token", "x-amz-security-token",
-        "x-goog-api-key", "x-functions-key", "private-token", "access-token",
-        "auth-token", "authentication", "x-secret", "x-auth", "token",
-    }
-)
-# Query-string parameter names that typically hold a secret.
-_SECRET_QUERY_NAMES = frozenset(
-    {
-        "token", "access_token", "refresh_token", "id_token",
-        "api_key", "apikey", "key", "auth", "authorization",
-        "sig", "signature", "password", "passwd", "pwd",
-        "secret", "client_secret", "session", "sessionid", "sid", "code",
-    }
-)
-# Cookie-name fragments that mark a session/auth cookie (vs. an analytics one).
-_SESSION_COOKIE_SUBSTR = (
-    "session", "sess", "sid", "token", "auth", "jwt", "csrf", "xsrf",
-    "access", "refresh", "login", "identity",
-)
-_JWT_RE = re.compile(r"^[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*$")
-
-
 def _header_pairs(part: Any) -> list[tuple[str, str]]:
     """Every (name, value) header of a flow part, multi so duplicates survive."""
     headers = getattr(part, "headers", None)
@@ -1056,181 +1026,6 @@ def _header_pairs(part: Any) -> list[tuple[str, str]]:
         return [(str(key), str(value)) for key, value in items]
     except Exception:  # noqa: BLE001 - header containers vary by version
         return []
-
-
-def _is_apikey_header(lname: str) -> bool:
-    """True when a request header name looks like an API-key/token carrier."""
-    if lname in _APIKEY_HEADER_NAMES:
-        return True
-    if any(frag in lname for frag in ("api-key", "apikey", "api_key")):
-        return True
-    return lname.startswith("x-") and (
-        lname.endswith("-token") or lname.endswith("-key") or "auth" in lname
-    )
-
-
-def _is_secret_query(lname: str) -> bool:
-    if lname in _SECRET_QUERY_NAMES:
-        return True
-    return any(
-        frag in lname
-        for frag in ("token", "secret", "password", "apikey", "api_key", "signature")
-    )
-
-
-def _is_session_cookie(lname: str) -> bool:
-    return any(frag in lname for frag in _SESSION_COOKIE_SUBSTR)
-
-
-def _clip_secret(value: str) -> tuple[str, bool]:
-    """Clip an over-long value before storage; returns (clipped, was_clipped)."""
-    if len(value) > _MAX_SECRET_VALUE:
-        return value[:_MAX_SECRET_VALUE], True
-    return value, False
-
-
-def _redact_value(value: str) -> str:
-    """A safe-to-display preview: first/last few chars with the middle masked."""
-    n = len(value)
-    if n <= 4:
-        return "\u2026"
-    if n <= 2 * _SECRET_VALUE_KEEP + 3:
-        return value[:2] + "\u2026" + value[-1:]
-    return f"{value[:_SECRET_VALUE_KEEP]}\u2026{value[-_SECRET_VALUE_KEEP:]}"
-
-
-def _b64url_decode(segment: str) -> bytes:
-    pad = "=" * (-len(segment) % 4)
-    return base64.urlsafe_b64decode(segment + pad)
-
-
-def _decode_jwt(token: str) -> JsonObject | None:
-    """Decode a JWT's header and registered claims (never its signature).
-
-    Returns the algorithm/type from the header and the standard registered
-    claims (issuer, subject, audience, expiry, ...) plus the names of every
-    payload claim, so a caller can see who issued a token and when it expires
-    without the tool interpreting arbitrary custom claim values. Any structural
-    fault yields None -- the value is simply reported as an opaque token.
-    """
-    if not _JWT_RE.match(token):
-        return None
-    parts = token.split(".")
-    if len(parts) != 3:
-        return None
-    try:
-        header = json.loads(_b64url_decode(parts[0]))
-        payload = json.loads(_b64url_decode(parts[1]))
-    except Exception:  # noqa: BLE001 - malformed base64/JSON is just "not a JWT"
-        return None
-    if not isinstance(header, dict) or not isinstance(payload, dict):
-        return None
-    hdr = {k: header[k] for k in ("alg", "typ", "kid") if k in header}
-    claims = {
-        k: payload[k]
-        for k in ("iss", "sub", "aud", "exp", "nbf", "iat", "jti", "azp", "scope")
-        if k in payload
-    }
-    return {
-        "header": hdr,
-        "claims": claims,
-        "claim_names": sorted(str(k) for k in payload)[:64],
-    }
-
-
-def _split_cookie_header(value: str) -> list[tuple[str, str]]:
-    """Parse a request Cookie header into (name, value) pairs."""
-    pairs: list[tuple[str, str]] = []
-    for chunk in value.split(";"):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        name, sep, val = chunk.partition("=")
-        name = name.strip()
-        if sep and name:
-            pairs.append((name, val.strip()))
-    return pairs
-
-
-def _parse_set_cookie(value: str) -> tuple[str, str, JsonObject]:
-    """Parse a Set-Cookie value into (name, value, attribute-flags)."""
-    first, _, rest = value.partition(";")
-    name, sep, val = first.partition("=")
-    name = name.strip()
-    val = val.strip() if sep else ""
-    attrs: JsonObject = {}
-    for chunk in rest.split(";"):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        akey, asep, aval = chunk.partition("=")
-        akey = akey.strip().lower()
-        if not akey:
-            continue
-        if asep:
-            attrs[akey] = aval.strip()
-        else:
-            attrs[akey] = True
-    return name, val, attrs
-
-
-def _record_secret(
-    aggregated: OrderedDict[tuple[str, str, str, str], JsonObject],
-    seen: set[tuple[str, str, str, str]],
-    finding: JsonObject,
-) -> bool:
-    """Fold one finding into the aggregate; return True if the collect cap blocked it.
-
-    ``seen`` is reset per flow so a secret repeated within one exchange is counted
-    once, making ``count`` the number of distinct flows a secret appeared in.
-    Identical (kind, name, location, value) findings across flows collapse into
-    one row whose count and host set grow. A JWT value is decoded once, on first
-    sight, into its header/claims (never its signature).
-    """
-    value = str(finding["value"])
-    clipped, was_clipped = _clip_secret(value)
-    key = (
-        str(finding["kind"]),
-        str(finding["name"]),
-        str(finding["location"]),
-        clipped,
-    )
-    if key in seen:
-        return False
-    seen.add(key)
-    agg = aggregated.get(key)
-    if agg is None:
-        if len(aggregated) >= _MAX_SECRETS_COLLECT:
-            return True
-        agg = {
-            "kind": finding["kind"],
-            "name": finding["name"],
-            "location": finding["location"],
-            "_value": clipped,
-            "value_length": len(value),
-            "value_sha256": hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:16],
-            "count": 0,
-            "_hosts": set(),
-            "example_id": finding.get("flow_id", ""),
-        }
-        if was_clipped:
-            agg["value_clipped"] = True
-        if finding.get("scheme"):
-            agg["scheme"] = finding["scheme"]
-        if "session" in finding:
-            agg["session"] = bool(finding["session"])
-        if finding.get("cookie_attributes"):
-            agg["cookie_attributes"] = finding["cookie_attributes"]
-        jwt = _decode_jwt(value)
-        if jwt is not None:
-            agg["jwt"] = jwt
-        aggregated[key] = agg
-    agg["count"] = int(agg["count"]) + 1
-    hostname = str(finding.get("host") or "")
-    hosts: set[str] = agg["_hosts"]
-    if hostname and len(hosts) < _MAX_SECRET_HOSTS:
-        hosts.add(hostname)
-    return False
 
 
 class ProxyBackend:
@@ -1635,24 +1430,7 @@ class ProxyBackend:
             flow_id = str(summary.get("id"))
             hostname = str(summary.get("host") or "")
             url = str(summary.get("url") or "")
-            findings: list[JsonObject] = []
-            try:
-                query = urlsplit(url).query
-            except ValueError:
-                query = ""
-            if query and (not kind or kind == "query_param"):
-                for i, (qname, qval) in enumerate(parse_qsl(query, keep_blank_values=False)):
-                    if i >= _MAX_QUERY_PARAMS_PER_FLOW:
-                        break
-                    if qval and _is_secret_query(qname.lower()):
-                        findings.append(
-                            {
-                                "kind": "query_param",
-                                "name": qname,
-                                "location": "request",
-                                "value": qval,
-                            }
-                        )
+            findings: list[JsonObject] = list(_scan_url_query(url, kind=kind))
             raw = inst.recorder.raw(flow_id)
             flow = raw if (raw is not None and raw is not _OMITTED_BODY) else None
             if flow is None:
@@ -1661,109 +1439,21 @@ class ProxyBackend:
                 scanned += 1
                 req = getattr(flow, "request", None)
                 resp = getattr(flow, "response", None)
-                for hi, (hname, hval) in enumerate(_header_pairs(req)):
-                    if hi >= _MAX_HEADERS_PER_FLOW:
-                        break
-                    lname = hname.lower()
-                    if not hval:
-                        continue
-                    if lname in _AUTH_HEADER_NAMES:
-                        if kind and kind != "authorization":
-                            continue
-                        scheme, sep, cred = hval.partition(" ")
-                        token = cred.strip() if sep else hval
-                        findings.append(
-                            {
-                                "kind": "authorization",
-                                "name": hname,
-                                "location": "request",
-                                "value": token,
-                                "scheme": scheme if sep else "",
-                            }
-                        )
-                    elif lname == "cookie":
-                        if kind and kind != "cookie":
-                            continue
-                        for ci, (cname, cval) in enumerate(_split_cookie_header(hval)):
-                            if ci >= _MAX_COOKIES_PER_FLOW:
-                                break
-                            if not cval:
-                                continue
-                            findings.append(
-                                {
-                                    "kind": "cookie",
-                                    "name": cname,
-                                    "location": "request",
-                                    "value": cval,
-                                    "session": _is_session_cookie(cname.lower()),
-                                }
-                            )
-                    elif _is_apikey_header(lname):
-                        if kind and kind != "api_key_header":
-                            continue
-                        findings.append(
-                            {
-                                "kind": "api_key_header",
-                                "name": hname,
-                                "location": "request",
-                                "value": hval,
-                            }
-                        )
-                if not kind or kind == "set_cookie":
-                    for hi, (hname, hval) in enumerate(_header_pairs(resp)):
-                        if hi >= _MAX_HEADERS_PER_FLOW:
-                            break
-                        if hname.lower() != "set-cookie" or not hval:
-                            continue
-                        cname, cval, cattrs = _parse_set_cookie(hval)
-                        if not cname or not cval:
-                            continue
-                        session = _is_session_cookie(cname.lower()) or ("httponly" in cattrs)
-                        findings.append(
-                            {
-                                "kind": "set_cookie",
-                                "name": cname,
-                                "location": "response",
-                                "value": cval,
-                                "session": session,
-                                "cookie_attributes": cattrs,
-                            }
-                        )
+                findings.extend(_scan_request_headers(_header_pairs(req), kind=kind))
+                findings.extend(_scan_response_headers(_header_pairs(resp), kind=kind))
             seen_this_flow: set[tuple[str, str, str, str]] = set()
             for finding in findings:
                 finding["flow_id"] = flow_id
                 finding["host"] = hostname
                 if _record_secret(aggregated, seen_this_flow, finding):
                     collect_capped = True
-        collected = list(aggregated.values())
-        collected.sort(
-            key=lambda s: (-int(s["count"]), s["kind"], s["name"], s["value_sha256"])
-        )
-        kind_counts: dict[str, int] = {}
-        for entry in collected:
-            kind_counts[entry["kind"]] = kind_counts.get(entry["kind"], 0) + 1
-        total = len(collected)
-        start = max(0, int(offset))
-        cap = max(1, min(int(limit), _MAX_SECRETS_PAGE))
-        window = collected[start : start + cap]
-        secrets: list[JsonObject] = []
-        for entry in window:
-            item = {k: v for k, v in entry.items() if not k.startswith("_")}
-            item["hosts"] = sorted(entry["_hosts"])
-            item["value"] = entry["_value"] if reveal else _redact_value(entry["_value"])
-            secrets.append(item)
         result: JsonObject = {
-            "secrets": secrets,
-            "count": len(window),
-            "total": total,
-            "offset": start,
-            "has_more": start + len(window) < total,
+            **_finalize_secrets(aggregated, reveal=reveal, offset=offset, limit=limit),
             "captured": captured,
             "dropped": dropped,
             "scanned": scanned,
             "headers_unavailable": headers_unavailable,
             "reveal": bool(reveal),
-            "kind_counts": kind_counts,
         }
         if collect_capped:
             result["collect_capped"] = True

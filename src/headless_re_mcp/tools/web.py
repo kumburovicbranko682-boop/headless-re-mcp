@@ -129,6 +129,67 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="web.network.secrets")
+    def web_network_secrets(
+        session_id: str,
+        kind: Literal[
+            "", "authorization", "api_key_header", "query_param", "cookie", "set_cookie"
+        ] = "",
+        reveal: bool = False,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        resource_type: str = "",
+        status: Annotated[int, Field(ge=0, le=599)] = 0,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    ) -> dict[str, Any]:
+        """Enumerate auth/secret material from the captured browser requests.
+
+        web.network.endpoints maps the routes a page calls; this is the inverse
+        view of the same capture -- the credentials those calls carry. It is the
+        browser-side twin of proxy.secrets, reading the request/response headers
+        CDP recorded per request (no proxy needed): the Authorization request
+        headers (with their scheme and, for a JWT bearer, the decoded
+        header/claims), the common API-key and token request headers, the
+        secret-ish URL query parameters, the request Cookie names and the cookies
+        a response set via Set-Cookie. Identical secrets across requests collapse
+        into one row whose count and hosts grow, so the reply is the set of
+        distinct credentials ranked by how widely each is used.
+
+        Values are redacted to a first/last-few-chars preview by default (with
+        value_length and value_sha256 so the same secret can be correlated across
+        rows without exposure); pass reveal true for the full value. Accepts the
+        same filters as web.network.endpoints
+        (method/host/url_contains/content_type/resource_type/status), plus kind to
+        keep only one category (authorization, api_key_header, query_param,
+        cookie, set_cookie). Answers with secrets (each {kind, name, location,
+        value, value_length, value_sha256, count, hosts, example_id}, plus scheme
+        for an authorization, session and cookie_attributes for a cookie, jwt for
+        a decoded token) paged by count/total/offset/has_more; captured is every
+        request still retained, dropped how many the ring evicted, scanned how
+        many still had their headers and headers_unavailable how many had only a
+        URL to read. kind_counts tallies the categories and collect_capped marks
+        the 5000-distinct ceiling. example_id opens with web.network.get. The list
+        field is secrets.
+        """
+        return _dump(
+            analysis.web_network_secrets(
+                session_id,
+                kind=kind,
+                reveal=reveal,
+                method=method,
+                host=host,
+                url_contains=url_contains,
+                content_type=content_type,
+                resource_type=resource_type,
+                status=status,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
         """Fetch one request's response body (large bodies spill to an artifact).

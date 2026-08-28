@@ -28,6 +28,14 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from headless_re_mcp.backends import har as har_builder
+from headless_re_mcp.backends.common.secrets import (
+    SECRET_KINDS,
+    finalize_secrets,
+    record_secret,
+    scan_request_headers,
+    scan_response_headers,
+    scan_url_query,
+)
 from headless_re_mcp.backends.common.urlpath import endpoint_parts, normalize_endpoint_path
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, capped_file_size
 from headless_re_mcp.core.process_tree import process_image_path, terminate_pid_tree
@@ -111,6 +119,22 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
 def _without_har(entry: JsonObject) -> JsonObject:
     """A shallow copy of a request entry with the internal ``_har`` key removed."""
     return {key: value for key, value in entry.items() if key != "_har"}
+
+
+def _har_header_pairs(headers: Any) -> list[tuple[str, str]]:
+    """Flatten a CDP ``{name: value}`` header map to (name, value) pairs.
+
+    CDP joins repeated headers -- most importantly multiple ``Set-Cookie`` --
+    into one value separated by newlines, so split on them to recover each
+    header line as its own pair for the secret scanners.
+    """
+    if not isinstance(headers, dict):
+        return []
+    pairs: list[tuple[str, str]] = []
+    for name, value in headers.items():
+        for line in str(value).split("\n"):
+            pairs.append((str(name), line))
+    return pairs
 
 
 # RFC 6455 opcodes, surfaced as a readable name next to the raw number so a
@@ -1255,6 +1279,122 @@ class WebBackend:
         }
         if active:
             result["filter"] = active
+        return result
+
+    def network_secrets(
+        self,
+        session_id: str,
+        *,
+        kind: str = "",
+        reveal: bool = False,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        resource_type: str = "",
+        status: int = 0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """Extract authentication and secret material from the captured requests.
+
+        The browser-side twin of proxy.secrets: where web.network.endpoints maps
+        the routes a page calls, this enumerates the credentials those calls
+        carry -- Authorization request headers (with scheme and, for a JWT
+        bearer, the decoded header/claims), the common API-key/token request
+        headers, secret-ish URL query parameters, request Cookie names and the
+        cookies a response set via Set-Cookie -- reading the headers CDP captured
+        per request. Identical secrets across requests collapse into one row
+        whose count and hosts grow, so the reply is the set of distinct
+        credentials ranked by how widely each is used.
+        """
+        if kind and kind not in SECRET_KINDS:
+            raise WebError(
+                "invalid_params",
+                f"unknown kind {kind!r}; expected one of {sorted(SECRET_KINDS)}",
+                kind=kind,
+            )
+        handle = self._get(session_id)
+        with handle.lock:
+            items = list(handle.requests.values())
+            dropped = handle.requests_dropped
+        captured = len(items)
+        active: JsonObject = {}
+        verb = method.strip().upper()
+        if verb:
+            active["method"] = verb
+        host_f = host.strip().lower()
+        if host_f:
+            active["host"] = host_f
+        url_f = url_contains.strip().lower()
+        if url_f:
+            active["url_contains"] = url_f
+        ctype_f = content_type.strip().lower()
+        if ctype_f:
+            active["content_type"] = ctype_f
+        rtype_f = resource_type.strip().lower()
+        if rtype_f:
+            active["resource_type"] = rtype_f
+        if status:
+            active["status"] = int(status)
+        aggregated: OrderedDict[tuple[str, str, str, str], JsonObject] = OrderedDict()
+        scanned = 0
+        headers_unavailable = 0
+        collect_capped = False
+        for row in items:
+            url = str(row.get("url") or "")
+            hostname, _path, _has_query = endpoint_parts(url)
+            row_method = str(row.get("method") or "").upper()
+            row_ctype = str(row.get("mimeType") or "").split(";", 1)[0].strip().lower()
+            row_rtype = str(row.get("resourceType") or "")
+            code = row.get("status")
+            if "method" in active and row_method != active["method"]:
+                continue
+            if "host" in active and active["host"] not in hostname.lower():
+                continue
+            if "url_contains" in active and active["url_contains"] not in url.lower():
+                continue
+            if "content_type" in active and active["content_type"] not in row_ctype:
+                continue
+            if "resource_type" in active and active["resource_type"] != row_rtype.lower():
+                continue
+            if "status" in active and code != active["status"]:
+                continue
+            request_id = str(row.get("requestId") or "")
+            har_meta = row.get("_har") or {}
+            req_headers = har_meta.get("request_headers")
+            resp_headers = har_meta.get("response_headers")
+            if isinstance(req_headers, dict) or isinstance(resp_headers, dict):
+                scanned += 1
+            else:
+                headers_unavailable += 1
+            findings: list[JsonObject] = list(scan_url_query(url, kind=kind))
+            findings.extend(
+                scan_request_headers(_har_header_pairs(req_headers), kind=kind)
+            )
+            findings.extend(
+                scan_response_headers(_har_header_pairs(resp_headers), kind=kind)
+            )
+            seen_this_request: set[tuple[str, str, str, str]] = set()
+            for finding in findings:
+                finding["flow_id"] = request_id
+                finding["host"] = hostname
+                if record_secret(aggregated, seen_this_request, finding):
+                    collect_capped = True
+        result: JsonObject = {
+            **finalize_secrets(aggregated, reveal=reveal, offset=offset, limit=limit),
+            "captured": captured,
+            "dropped": dropped,
+            "scanned": scanned,
+            "headers_unavailable": headers_unavailable,
+            "reveal": bool(reveal),
+        }
+        if collect_capped:
+            result["collect_capped"] = True
+        if active:
+            result["filter"] = active
+        if kind:
+            result["kind"] = kind
         return result
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:
