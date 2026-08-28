@@ -313,6 +313,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "js.unpack_bundle",
         "js.strings",
         "js.endpoints",
+        "js.secrets",
         "js.imports",
         "js.comments",
         "js.capabilities",

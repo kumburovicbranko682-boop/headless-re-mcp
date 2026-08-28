@@ -121,6 +121,35 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_endpoints(path, offset=offset, limit=limit))
 
+    @tools.tool(name="js.secrets")
+    def js_secrets(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """Scan a JavaScript file's string literals for hard-coded credentials.
+
+        The JS twin of apk.secrets and the security capstone over js.strings and
+        js.endpoints: it matches the same comment-aware, escape-decoding literal
+        scan against a fixed, high-precision catalog of vendor-prefixed secret
+        shapes -- AWS access-key ids (AKIA...), Google API keys (AIza...), Google
+        OAuth (ya29....), GitHub tokens (ghp_...), Slack tokens and webhooks,
+        Stripe live keys (sk_live_...), a three-part JWT, PEM private-key headers,
+        Twilio SK/AC ids and Firebase DB URLs -- so a key obfuscated as
+        \\x41\\x4b\\x49\\x41 is caught once decoded, with no webcrack or Node. It
+        trades recall for precision: a match is meaningful, but a custom or
+        obfuscated-beyond-decoding secret is missed rather than guessed, and one
+        built at runtime or split across concatenated strings is invisible. Each
+        row is kind (which pattern) and match (the matched token, capped at 256
+        chars), de-duplicated by (kind, match) and sorted. Answers with
+        input_bytes, secrets rows, kinds (the sorted distinct kinds hit), count,
+        total, offset and has_more so a filled page is not read as every finding;
+        scan_capped folds in the literal scan's or the secret dedup's ceiling, and
+        truncated is true when the text ended inside an open literal or block
+        comment. A missing file is not_found, one over 16 MiB too_large.
+        """
+        return _dump(analysis.js_secrets(path, offset=offset, limit=limit))
+
     @tools.tool(name="js.imports")
     def js_imports(
         path: str,

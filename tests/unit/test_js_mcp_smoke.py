@@ -42,6 +42,7 @@ fetch(endpoint);
 _SERVICE_CASES: tuple[tuple[str, str, dict[str, int]], ...] = (
     ("js_strings", "strings", {}),
     ("js_endpoints", "endpoints", {}),
+    ("js_secrets", "secrets", {}),
     ("js_imports", "imports", {}),
     ("js_comments", "comments", {}),
     ("js_capabilities", "capabilities", {}),
@@ -53,6 +54,7 @@ _SERVICE_CASES: tuple[tuple[str, str, dict[str, int]], ...] = (
 _TOOL_KEYS: dict[str, str] = {
     "js.strings": "strings",
     "js.endpoints": "endpoints",
+    "js.secrets": "secrets",
     "js.imports": "imports",
     "js.comments": "comments",
     "js.capabilities": "capabilities",

@@ -42,6 +42,7 @@ from headless_re_mcp.backends.jsre import (
     scan_js_comments,
     scan_js_endpoints,
     scan_js_imports,
+    scan_js_secrets,
     scan_js_strings,
     scan_js_summary,
 )
@@ -167,6 +168,15 @@ class JsReAnalysisMixin:
     def js_endpoints(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             data = scan_js_endpoints(Path(path), offset=offset, limit=limit)
+            return _success(data, backend="jsre")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def js_secrets(self, path: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
+        try:
+            data = scan_js_secrets(Path(path), offset=offset, limit=limit)
             return _success(data, backend="jsre")
         except JsReError as exc:
             return _failure(_as_rpc(exc))

@@ -51,6 +51,12 @@ _MAX_JS_STRING_LEN = 2048
 # decoded. Its own dedup and caps sit on top of the literal scan's.
 _MAX_JS_ENDPOINTS_COLLECT = 10000
 _MAX_JS_ENDPOINTS_PAGE = 1000
+# js.secrets matches the same decoded literals against a fixed credential catalog
+# (the JS twin of apk.secrets), so a key obfuscated as \x41\x4b\x49\x41... is
+# caught once decoded. Its dedup/caps sit on top of the literal scan's.
+_MAX_JS_SECRETS_COLLECT = 10000
+_MAX_JS_SECRETS_PAGE = 1000
+_MAX_JS_SECRET_MATCH_LEN = 256
 # js.imports tokenizes the source (comment/string-aware) and reads the module
 # specifier out of import/export-from, dynamic import() and require() forms.
 # The token cap bounds memory on a pathological minified blob; hitting it, like
@@ -2995,6 +3001,66 @@ def scan_js_strings(
 _JS_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]{0,31}://[^\s\"'`<>\\)\]}]{1,2048}")
 # Punctuation that commonly trails a URL in prose rather than belonging to it.
 _JS_URL_TRAILING = ".,;:!?)]}'\""
+# High-precision credential patterns for js.secrets, mirroring apk.secrets so the
+# two backends flag the same vendor-prefixed shapes: (kind, compiled regex). Kept
+# to prefixed forms (AKIA..., AIza..., ghp_..., sk_live_..., a PEM header, a
+# three-part JWT) so a hit is meaningful rather than an entropy guess; recall is
+# traded for precision, so a custom or obfuscated secret is missed, never guessed.
+_JS_SECRET_CATALOG: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "aws_access_key_id",
+        re.compile(r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[0-9A-Z]{16}\b"),
+    ),
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("google_oauth_token", re.compile(r"\bya29\.[0-9A-Za-z_\-]{20,}")),
+    ("github_token", re.compile(r"\bgh[pousr]_[0-9A-Za-z]{36,}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b")),
+    ("slack_webhook", re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_\-]+")),
+    ("stripe_secret_key", re.compile(r"\b[sr]k_live_[0-9A-Za-z]{20,}\b")),
+    (
+        "jwt",
+        re.compile(r"\beyJ[0-9A-Za-z_\-]{8,}\.eyJ[0-9A-Za-z_\-]{8,}\.[0-9A-Za-z_\-]{8,}"),
+    ),
+    (
+        "private_key",
+        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"),
+    ),
+    ("twilio_api_key", re.compile(r"\bSK[0-9a-fA-F]{32}\b")),
+    ("twilio_account_sid", re.compile(r"\bAC[0-9a-fA-F]{32}\b")),
+    ("firebase_db", re.compile(r"https://[a-z0-9\-]+\.firebaseio\.com")),
+)
+
+
+def _extract_js_secrets(
+    literals: list[str], *, collect_cap: int, match_cap: int
+) -> tuple[list[JsonObject], bool]:
+    """Match decoded string literals against the credential catalog.
+
+    Returns (rows, scan_more). Each row is kind and match (the matched token,
+    clipped to match_cap). Rows are de-duplicated by (kind, match); scan_more is
+    True once collect_cap distinct findings are held and another is seen.
+    """
+    seen: set[tuple[str, str]] = set()
+    rows: list[JsonObject] = []
+    scan_more = False
+    for literal in literals:
+        if scan_more:
+            break
+        for kind, pattern in _JS_SECRET_CATALOG:
+            if scan_more:
+                break
+            for match in pattern.finditer(literal):
+                token = match.group()[:match_cap]
+                key = (kind, token)
+                if key in seen:
+                    continue
+                if len(rows) >= collect_cap:
+                    scan_more = True
+                    break
+                seen.add(key)
+                rows.append({"kind": kind, "match": token})
+    rows.sort(key=lambda row: (str(row["kind"]), str(row["match"])))
+    return rows, scan_more
 
 
 def _extract_js_endpoints(
@@ -3067,6 +3133,61 @@ def scan_js_endpoints(path: Path, *, offset: int = 0, limit: int = 100) -> JsonO
     window = found[start : start + cap]
     return {
         "endpoints": window,
+        "input_bytes": len(raw),
+        "count": len(window),
+        "total": len(found),
+        "offset": start,
+        "has_more": start + len(window) < len(found),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def scan_js_secrets(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """Scan a JavaScript file's string literals for hard-coded credentials.
+
+    The JS twin of apk.secrets and the security capstone over js.strings/
+    js.endpoints: it matches the same comment-aware, escape-decoding literal scan
+    against a fixed, high-precision catalog of vendor-prefixed secret shapes --
+    AWS access-key ids (AKIA...), Google API keys (AIza...), Google OAuth
+    (ya29....), GitHub tokens (ghp_...), Slack tokens and webhooks, Stripe live
+    keys (sk_live_...), a three-part JWT, PEM private-key headers, Twilio SK/AC
+    ids and Firebase DB URLs -- so a key obfuscated as ``\\x41\\x4b\\x49\\x41...``
+    is caught once decoded, with no webcrack or Node. It trades recall for
+    precision: a match is meaningful, but a custom or obfuscated-beyond-decoding
+    secret is missed rather than guessed, and one built at runtime or split across
+    concatenated strings is invisible. Each row is kind (which pattern) and match
+    (the matched token, capped at 256 chars), de-duplicated by (kind, match) and
+    sorted. Answers with input_bytes, secrets rows, kinds (the sorted distinct
+    kinds hit), count, total, offset and has_more so a filled page is not read as
+    every finding; scan_capped folds in either the literal scan's or the secret
+    dedup's ceiling, and truncated is true when the text ended inside an open
+    literal or block comment. A missing file is not_found, one over 16 MiB
+    too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
+    text = raw.decode("utf-8", errors="replace")
+    literals, literal_more, truncated = _scan_js_string_literals(
+        text,
+        min_len=1,
+        collect_cap=_MAX_JS_STRINGS_COLLECT,
+        str_cap=_MAX_JS_STRING_LEN,
+    )
+    found, secret_more = _extract_js_secrets(
+        literals, collect_cap=_MAX_JS_SECRETS_COLLECT, match_cap=_MAX_JS_SECRET_MATCH_LEN
+    )
+    scan_more = secret_more or literal_more
+    kinds = sorted({str(row["kind"]) for row in found})
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_JS_SECRETS_PAGE))
+    window = found[start : start + cap]
+    return {
+        "secrets": window,
+        "kinds": kinds,
         "input_bytes": len(raw),
         "count": len(window),
         "total": len(found),

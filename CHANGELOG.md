@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **306（189 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **307（190 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -738,6 +738,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `input_bytes` 与含 `count/total/offset/has_more` 的 `endpoints`；`total` 上限 10000、越限(含字面量扫描
   自身触顶)置 `scan_capped`;`truncated` 在文本于未闭合字面量或块注释中戛然而止时为真。缺文件报
   not_found、超 16 MiB 报 too_large。
+- `js.secrets`：`apk.secrets` 的 JS 孪生、`js.strings`/`js.endpoints` 之上的安全收尾——把同一套带注释感知、
+  解码转义的字面量扫描对一张固定的高精度凭据形状表做匹配:AWS access-key id(AKIA...)、Google API key
+  (AIza...)、Google OAuth(ya29....)、GitHub token(ghp_...)、Slack token 与 webhook、Stripe live key
+  (sk_live_...)、三段式 JWT、PEM 私钥头、Twilio SK/AC id、Firebase 数据库 URL,故被混淆成
+  `\x41\x4b\x49\x41...` 的密钥解码后也能命中,纯 Python、**不需要 webcrack 或 Node**。以召回换精度:命中即有
+  意义,但自定义或解码后仍混淆的密钥直接漏掉、不猜,运行时拼出或跨拼接字符串的也看不到。每行含 `kind`(命中哪条)
+  与 `match`(匹配到的 token、上限 256 字符),按 `(kind, match)` 去重并排序。返回 `input_bytes`、`secrets`、
+  `kinds`(命中的去重种类)与 `count/total/offset/has_more`;`scan_capped` 折入字面量扫描或密钥去重任一触顶,
+  `truncated` 在文本于未闭合字面量或块注释中戛然而止时为真。缺文件报 not_found、超 16 MiB 报 too_large。
 - `js.imports`：提取 JS 的模块依赖面——ESM `import`/`export ... from`、动态 `import()` 与 CommonJS
   `require()`,纯 Python、**不需要 webcrack 或 Node**。以带注释/字符串感知的方式词法化源码,故注释或字符串
   里的 `import` 一词不会被误计。每条依赖返回 `spec`、`kind`(裸包如 `react`/`@scope/pkg`、相对 `./x`、
