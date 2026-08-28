@@ -206,6 +206,15 @@ class ProxyAnalysisMixin:
         self, session_id: str, op: str, /, *args: Any, **kwargs: Any
     ) -> Result[JsonObject]:
         try:
+            # Resolve the session before touching the backend, so an id that was
+            # never started (or was lost) answers session_not_found -- "recreate
+            # it" -- rather than the backend's invalid_state ("proxy not
+            # running"), which reads as "it exists but is idle" and invites a
+            # pointless wait. proxy.flow.get and proxy.export_har already resolve
+            # the session first via _proxy_artifact_dir; this brings flows,
+            # replay and status onto the same contract. A retained CLOSED/FAILED
+            # session still resolves here and still gets invalid_state.
+            self.registry.get(session_id)
             method = getattr(self._proxy, op)
             data = method(*args, **kwargs)
             return _success(data, session_id=session_id, backend="proxy")

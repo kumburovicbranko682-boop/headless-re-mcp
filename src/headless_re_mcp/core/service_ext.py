@@ -1080,6 +1080,17 @@ class ExtAnalysisMixin(UiDriveMixin):
 
 
 def _require_debuggee_pid(service: Any, session_id: str) -> int:
+    # Resolve the session first so an unknown id answers session_not_found, not
+    # the invalid_state below. dynamic_state returns ok=False both for a session
+    # that never existed and for a live one with no debuggee; collapsing the two
+    # here told a caller that mistyped or lost its session to wait for an
+    # active-debuggee state that can never arrive, when the right move is to
+    # recreate the session. registry.get raises SessionNotFound for the unknown
+    # id, mapped to session_not_found, and is a no-op for a real session -- the
+    # dynamic-state checks below then supply invalid_state when the session
+    # exists but has no debuggee. Mirrors r2 and ghidra, which resolve the
+    # session before their own state checks.
+    service.registry.get(session_id)
     state = service.dynamic_state(session_id)
     if not state.ok or state.data is None:
         raise XdbgRpcError("invalid_state", "cannot read dynamic state for optional backend")

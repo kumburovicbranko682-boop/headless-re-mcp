@@ -283,6 +283,16 @@ class WebAnalysisMixin:
         self, session_id: str, op: str, /, *args: Any, **kwargs: Any
     ) -> Result[JsonObject]:
         try:
+            # Resolve the session before touching the backend. An id that was
+            # never opened -- a typo, or a session the caller lost track of --
+            # has no browser, so the backend answers invalid_state ("no active
+            # page"), which reads as "it exists but is busy" and sends an
+            # unattended caller into a wait/retry loop for a state that will
+            # never arrive. registry.get answers session_not_found instead, the
+            # signal that says "recreate it". A retained CLOSED/FAILED session
+            # still resolves here and still gets the backend's invalid_state,
+            # matching how r2 and ghidra order their own checks.
+            self.registry.get(session_id)
             method = getattr(self._web, op)
             data = method(*args, **kwargs)
             return _success(data, session_id=session_id, backend="web")
