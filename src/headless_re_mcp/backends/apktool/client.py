@@ -35,6 +35,18 @@ _DEBUG_PASSWORD = "android"
 # Deliberately not HEADLESS_RE_*: that prefix is the operator config namespace,
 # and this is not a knob -- it exists only in the signer's copied environment.
 _PASSWORD_ENV = "APKSIGNER_KS_PASS"
+# capability_unavailable must say how to fix it, not just that the tool is
+# absent: name the PATH expectation and the operator knob (config.py resolves
+# HEADLESS_RE_APKTOOL / HEADLESS_RE_APKSIGNER before falling back to PATH).
+_MISSING_APKTOOL_MSG = (
+    "apktool is not configured (needs a JRE); install apktool and ensure it "
+    "is on PATH, or set HEADLESS_RE_APKTOOL to the apktool launcher"
+)
+_MISSING_APKSIGNER_MSG = (
+    "apksigner is not configured (needs a JRE); install Android build-tools "
+    "and ensure apksigner is on PATH, or set HEADLESS_RE_APKSIGNER to the "
+    "apksigner launcher"
+)
 
 
 class ApktoolError(RuntimeError):
@@ -118,7 +130,7 @@ class ApktoolClient:
     ) -> JsonObject:
         """Decode an APK into smali + resources for editing."""
         if not self.available or self.apktool is None:
-            raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
+            raise ApktoolError("capability_unavailable", _MISSING_APKTOOL_MSG)
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
         _require_apk_zip(apk)
@@ -146,7 +158,7 @@ class ApktoolClient:
     def build(self, decoded_dir: Path, out_apk: Path, *, timeout: float = 600.0) -> JsonObject:
         """Rebuild an APK from a previously decoded (and possibly edited) tree."""
         if not self.available or self.apktool is None:
-            raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
+            raise ApktoolError("capability_unavailable", _MISSING_APKTOOL_MSG)
         if not decoded_dir.is_dir():
             raise ApktoolError("not_found", "decoded directory not found", path=str(decoded_dir))
         if not (decoded_dir / "AndroidManifest.xml").is_file():
@@ -200,7 +212,7 @@ class ApktoolClient:
         """Sign an APK, defaulting to the standard Android debug keystore."""
         if not self.signer_available or self.apksigner is None:
             raise ApktoolError(
-                "capability_unavailable", "apksigner is not configured (needs a JRE)"
+                "capability_unavailable", _MISSING_APKSIGNER_MSG
             )
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))

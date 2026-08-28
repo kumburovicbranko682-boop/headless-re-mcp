@@ -16,6 +16,12 @@ _EXPORT_SCRIPT = "ExportJson.py"
 _MAX_STDOUT = 200_000
 _MAX_EXPORT_BYTES = 2_000_000
 _PROJECT_LOCKS = tuple(RLock() for _ in range(64))
+# capability_unavailable must say how to fix it: analyzeHeadless is only
+# discovered under ghidra_home (no PATH fallback), and running it needs java.
+_MISSING_GHIDRA_MSG = (
+    "Ghidra analyzeHeadless is not configured; set HEADLESS_RE_GHIDRA_HOME to "
+    "the Ghidra install directory and ensure java is on PATH"
+)
 
 
 def _project_lock(project_dir: Path) -> Any:
@@ -51,7 +57,7 @@ class GhidraClient:
         delete_project: bool = True,
     ) -> JsonObject:
         if not self.available or self.analyze is None:
-            raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
+            raise GhidraError("capability_unavailable", _MISSING_GHIDRA_MSG)
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         project_dir.mkdir(parents=True, exist_ok=True)
@@ -188,7 +194,7 @@ class GhidraClient:
         max_heap: str,
     ) -> JsonObject:
         if not self.available or self.analyze is None:
-            raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
+            raise GhidraError("capability_unavailable", _MISSING_GHIDRA_MSG)
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         if not (_SCRIPT_DIR / _EXPORT_SCRIPT).is_file():

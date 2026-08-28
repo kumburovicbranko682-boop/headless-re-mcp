@@ -192,7 +192,11 @@ class JadxClient:
         except InvalidTimeout as exc:
             raise JadxError("invalid_params", str(exc)) from exc
         if not self.available or self.executable is None:
-            raise JadxError("capability_unavailable", "jadx is not configured")
+            raise JadxError(
+                "capability_unavailable",
+                "jadx is not configured; install jadx and ensure it is on PATH, "
+                "or set HEADLESS_RE_JADX to the jadx launcher",
+            )
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
         out_dir.mkdir(parents=True, exist_ok=True)

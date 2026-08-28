@@ -93,7 +93,7 @@ def test_missing_python_module_error_names_the_pip_extra(
 
 
 def test_missing_radare2_error_says_to_put_it_on_path() -> None:
-    """r2 is a system binary, not a pip package — the fix is PATH, not pip."""
+    """r2 is a system binary, not a pip package — the fix is PATH or the knob."""
     client = R2Client()
     client.executable = None
     with pytest.raises(R2Error) as caught:
@@ -101,6 +101,73 @@ def test_missing_radare2_error_says_to_put_it_on_path() -> None:
     assert caught.value.code == "capability_unavailable"
     message = str(caught.value)
     assert "PATH" in message, message
+    assert "HEADLESS_RE_R2" in message, message
     assert "pip install" not in message, (
         "radare2 cannot be pip-installed; suggesting pip would send the user down a dead end"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The "not configured" family: system tools resolved by config.py from a
+# HEADLESS_RE_* knob (or PATH). Their messages must name the knob — "apktool
+# is not configured" alone tells the caller nothing about *where* to
+# configure it.
+# ---------------------------------------------------------------------------
+
+
+def _raise_jadx() -> None:
+    from headless_re_mcp.backends.jadx.client import JadxClient
+
+    JadxClient(None)._run(Path("ignored.apk"), [], Path("out"), timeout=10.0)
+
+
+def _raise_apktool() -> None:
+    from headless_re_mcp.backends.apktool.client import ApktoolClient
+
+    ApktoolClient(None, None).decode(Path("ignored.apk"), Path("out"))
+
+
+def _raise_apksigner() -> None:
+    from headless_re_mcp.backends.apktool.client import ApktoolClient
+
+    ApktoolClient(None, None).sign(Path("ignored.apk"), Path("out.apk"))
+
+
+def _raise_ghidra() -> None:
+    from headless_re_mcp.backends.ghidra.client import GhidraClient
+
+    GhidraClient(home=None).analyze_binary(Path("ignored.bin"), Path("proj"))
+
+
+def _raise_webcrack() -> None:
+    from headless_re_mcp.backends.jsre.client import JsClient
+
+    JsClient(None)._require_input(Path("ignored.js"))
+
+
+def _raise_wabt() -> None:
+    from headless_re_mcp.backends.jsre.client import WasmClient
+
+    WasmClient(None)._require_input(Path("ignored.wasm"), None, "wasm2wat")
+
+
+_KNOB_CASES = [
+    pytest.param(_raise_jadx, "HEADLESS_RE_JADX", id="jadx"),
+    pytest.param(_raise_apktool, "HEADLESS_RE_APKTOOL", id="apktool"),
+    pytest.param(_raise_apksigner, "HEADLESS_RE_APKSIGNER", id="apksigner"),
+    pytest.param(_raise_ghidra, "HEADLESS_RE_GHIDRA_HOME", id="ghidra"),
+    pytest.param(_raise_webcrack, "HEADLESS_RE_WEBCRACK", id="webcrack"),
+    pytest.param(_raise_wabt, "HEADLESS_RE_WABT", id="wabt"),
+]
+
+
+@pytest.mark.parametrize(("trigger", "knob"), _KNOB_CASES)
+def test_not_configured_error_names_the_operator_knob(trigger: object, knob: str) -> None:
+    with pytest.raises(RuntimeError) as caught:
+        trigger()  # type: ignore[operator]
+    assert getattr(caught.value, "code", None) == "capability_unavailable"
+    message = str(caught.value)
+    assert knob in message, (
+        f"the not-configured message must name the {knob} knob so the caller "
+        f"knows where to point the tool; got: {message}"
     )

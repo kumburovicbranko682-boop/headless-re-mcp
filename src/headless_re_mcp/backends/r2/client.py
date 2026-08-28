@@ -122,7 +122,8 @@ class R2Client:
             raise R2Error(
                 "capability_unavailable",
                 "radare2/rizin is not installed; install radare2 or rizin and "
-                "ensure r2/rizin/radare2 is on PATH",
+                "ensure r2/rizin/radare2 is on PATH, or set HEADLESS_RE_R2 to "
+                "the executable",
             )
         if not binary.is_file():
             raise R2Error("not_found", "binary not found", path=str(binary))

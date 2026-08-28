@@ -168,7 +168,10 @@ class JsClient:
     def _require_input(self, path: Path) -> Path:
         if self.executable is None:
             raise JsReError(
-                "capability_unavailable", "webcrack is not configured (needs Node 22/24)"
+                "capability_unavailable",
+                "webcrack is not configured (needs Node 22/24); install webcrack "
+                "and ensure it is on PATH, or set HEADLESS_RE_WEBCRACK to the "
+                "executable",
             )
         return _require_existing_file(path, missing="input file not found")
 
@@ -242,7 +245,12 @@ class WasmClient:
 
     def _require_input(self, path: Path, tool: Path | None, name: str) -> Path:
         if tool is None:
-            raise JsReError("capability_unavailable", f"{name} (wabt) is not configured")
+            raise JsReError(
+                "capability_unavailable",
+                f"{name} (wabt) is not configured; install wabt and ensure "
+                f"{name} is on PATH, or set HEADLESS_RE_WABT to the wabt "
+                "install or bin directory",
+            )
         resolved = _require_existing_file(path, missing="wasm file not found")
         # The size cap runs first (above): an oversized non-module is still
         # refused as too_large, not misreported as a bad-magic file.

@@ -21,6 +21,16 @@ until 1.0 the tool surface may still change between minor versions.
   `_available=False`，装没装 extra 都能跑）钉死每条消息含可复制粘贴的修复命令；
   已在真缺 mitmproxy/playwright/androguard 的裸机上走 import 自然失败路径核对
   信封文本。全量单测 5079 通过。
+- 第二批：同主题的 "not configured" 家族。jadx/apktool/apksigner/ghidra/webcrack/wabt
+  这六个系统工具的 capability_unavailable 只说"没配置"、不说配置**哪里**——而 config.py
+  为每个都定义了 `HEADLESS_RE_*` 旋钮（仓内 UPX 报错早有 "set HEADLESS_RE_UPX" 先例）。
+  逐条补上旋钮名与 PATH 期望：jadx→`HEADLESS_RE_JADX`、apktool→`HEADLESS_RE_APKTOOL`、
+  apksigner→`HEADLESS_RE_APKSIGNER`、ghidra→`HEADLESS_RE_GHIDRA_HOME`（analyzeHeadless
+  只在 ghidra_home 下发现、无 PATH 回退，消息同时点明需要 java 在 PATH）、
+  webcrack→`HEADLESS_RE_WEBCRACK`、wabt→`HEADLESS_RE_WABT`；apktool/ghidra 各 2 处同串
+  提取为模块常量。r2 消息补上第一批漏掉的 `HEADLESS_RE_R2`（settings.r2 确实喂给
+  R2Client，PATH 不是唯一旋钮）。这些消息在 src/tests 中零钉死，无测试翻修；
+  测试文件新增 6 例参数化用例钉死每条消息含对应旋钮名。全量单测 5085 通过。
 
 ### 修复（audit trim 测试假设时钟每次调用严格递增）
 
