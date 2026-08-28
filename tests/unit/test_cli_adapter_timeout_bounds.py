@@ -49,6 +49,15 @@ class TestClampCliTimeout:
             with pytest.raises(InvalidTimeout):
                 clamp_cli_timeout(bad, maximum=600.0)
 
+    def test_non_numeric_is_rejected(self) -> None:
+        # float() raises TypeError (null/object) or ValueError (a non-numeric
+        # string), neither an InvalidTimeout the adapters catch -- and the
+        # TypeError is unmapped, so it filed an internal_error incident.
+        bad_values: list[Any] = [None, "abc", {}, [], object()]
+        for bad in bad_values:
+            with pytest.raises(InvalidTimeout):
+                clamp_cli_timeout(bad, maximum=600.0)
+
 
 class TestApktoolRunBoundsTheTimeout:
     def test_a_non_positive_timeout_is_refused_before_spawning(
@@ -123,6 +132,19 @@ class TestR2RunBoundsTheTimeout:
         binary.write_bytes(b"\x7fELF")
         with pytest.raises(r2_mod.R2Error) as info:
             client.run(binary, ["i"], timeout=-1.0)
+        assert info.value.code == "invalid_params"
+
+    def test_a_non_numeric_timeout_is_a_parameter_error_not_an_incident(
+        self, tmp_path: Path
+    ) -> None:
+        # timeout=None makes float() raise TypeError inside clamp_cli_timeout;
+        # before the guard that escaped the adapter's ``except InvalidTimeout``
+        # and filed an internal_error incident instead of this invalid_params.
+        client = r2_mod.R2Client(executable=None)
+        binary = tmp_path / "sample.bin"
+        binary.write_bytes(b"\x7fELF")
+        with pytest.raises(r2_mod.R2Error) as info:
+            client.run(binary, ["i"], timeout=None)  # type: ignore[arg-type]
         assert info.value.code == "invalid_params"
 
     def test_a_huge_timeout_is_capped_to_the_schema_ceiling(

@@ -50,7 +50,16 @@ def clamp_cli_timeout(timeout: float, *, maximum: float) -> float:
     the first (and NaN) and cap the second, so every CLI adapter agrees on the
     bound regardless of transport.
     """
-    value = float(timeout)
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError) as exc:
+        # timeout flows straight from model arguments on the agent transport with
+        # no schema coercion, so a non-numeric string, null, or object reaches
+        # float() and raises ValueError/TypeError. InvalidTimeout is a ValueError,
+        # so the adapters' ``except InvalidTimeout`` does not catch a plain one --
+        # and the TypeError is not mapped at all, so a bad timeout filed an
+        # internal_error incident instead of the invalid_params the adapters give.
+        raise InvalidTimeout("timeout must be a number") from exc
     if value != value or value <= 0:
         raise InvalidTimeout("timeout must be positive")
     return min(value, float(maximum))
