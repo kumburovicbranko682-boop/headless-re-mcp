@@ -103,9 +103,28 @@ AUDIT_TRIM_INTERVAL = 256
 AUDIT_JSON_MAX_CHARS = 4000
 
 
+def utf8_text(text: str) -> str:
+    """The same text, guaranteed UTF-8 encodable and thus SQLite-bindable.
+
+    json.loads accepts a lone \\ud800 escape and NTFS filenames are arbitrary
+    UTF-16, so a hostile sample's path, an audit summary of tool params or
+    results, and a finding quoting the binary's strings can all carry an
+    unpaired surrogate. SQLite's TEXT bind raises UnicodeEncodeError on one,
+    turning a session create, an audit append or a knowledge write into a codec
+    incident for input the analysis itself handled fine. Same replace policy as
+    the transport's byte decode: lossy but alive. Inside a JSON-encoded cell the
+    replacement lands within a string literal, so the cell stays valid JSON.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "replace").decode("utf-8")
+    return text
+
+
 def encode_audit_json(value: JsonObject, *, limit: int = AUDIT_JSON_MAX_CHARS) -> str:
     """Keep audit cells valid JSON even when the row is size-capped."""
-    encoded = json.dumps(value, ensure_ascii=False)
+    encoded = utf8_text(json.dumps(value, ensure_ascii=False))
     cap = max(1, int(limit))
     if len(encoded) <= cap:
         return encoded
@@ -133,7 +152,7 @@ def encode_audit_json(value: JsonObject, *, limit: int = AUDIT_JSON_MAX_CHARS) -
 
 def encode_knowledge_value(value: JsonObject) -> str:
     """Serialize a finding, or refuse rather than cut it into non-JSON."""
-    payload = json.dumps(value, ensure_ascii=False)
+    payload = utf8_text(json.dumps(value, ensure_ascii=False))
     if len(payload) > KNOWLEDGE_VALUE_MAX_CHARS:
         raise ValueError(
             f"value serialises to {len(payload)} chars, over the "
@@ -244,6 +263,7 @@ class SessionStore:
         closed_cleanly: bool | None = None,
     ) -> None:
         now = datetime.now(UTC).isoformat()
+        binary = utf8_text(binary)
         with self._lock, self._connect() as conn:
             row = conn.execute("SELECT id FROM sessions WHERE id=?", (session_id,)).fetchone()
             if row is None:
@@ -570,6 +590,8 @@ class SessionStore:
     ) -> JsonObject:
         """Insert or update one analysis fact, keeping the original created_at."""
         now = datetime.now(UTC).isoformat()
+        kind = utf8_text(kind)
+        key = utf8_text(key)
         payload = encode_knowledge_value(value)
         with self._lock, self._connect() as conn:
             row = conn.execute(

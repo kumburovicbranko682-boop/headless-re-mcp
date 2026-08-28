@@ -50,6 +50,53 @@ def test_updating_a_session_without_a_close_flag_preserves_it(tmp_path: Path) ->
     assert row["closed_cleanly"] == 1
 
 
+def test_hostile_influenced_text_with_a_lone_surrogate_still_makes_rows(
+    tmp_path: Path,
+) -> None:
+    """json.loads accepts a lone \\ud800 escape and NTFS filenames are arbitrary
+    UTF-16, so a hostile sample's path, an audit summary of tool params or
+    results, and a finding quoting the binary's strings can all carry an
+    unpaired surrogate. SQLite's TEXT bind raises UnicodeEncodeError on one:
+    opening a session for such a file -- which Python opens and hashes fine --
+    died as an incident-labelled codec error, and an audit or knowledge write
+    did the same after the operation it was recording had already succeeded.
+    Same replace policy as the transport's byte decode: lossy but alive.
+    """
+    store = _store(tmp_path)
+    session_id = uuid.uuid4().hex
+
+    _upsert(store, session_id, binary="C:/mal\ud800ware.exe")
+    row = store.get_session(session_id)
+    assert row is not None
+    assert "\ud800" not in row["binary"]
+    assert "ware.exe" in row["binary"]
+
+    # The update branch binds the same column.
+    _upsert(store, session_id, binary="C:/re\ud800named.exe", state="ready")
+    row = store.get_session(session_id)
+    assert row is not None and "\ud800" not in row["binary"]
+
+    store.append_audit(
+        session_id=session_id,
+        action="strings.read",
+        params_summary={"needle": "mal\ud800"},
+        ok=True,
+        result_summary={"matched": "yes\ud800"},
+    )
+    entry = store.list_audit(session_id)["entries"][0]
+    assert "\ud800" not in str(entry["params_summary"])
+    assert "\ud800" not in str(entry["result_summary"])
+
+    store.record_knowledge(
+        session_id=session_id,
+        kind="stri\ud800ng",
+        key="quote\ud800",
+        value={"text": "from the binary \ud800"},
+    )
+    fact = store.list_knowledge(session_id)["entries"][0]
+    assert "\ud800" not in str(fact)
+
+
 def test_forget_files_is_inert_outside_a_meta_root(tmp_path: Path) -> None:
     # The database was placed somewhere that is not an artifact root's meta/
     # directory, so the store cannot know what its siblings are; cleanup must
