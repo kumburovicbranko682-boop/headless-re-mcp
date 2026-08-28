@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（`meta.*` 分页读取器 schema 上界漂移守卫：非 PE 分页守卫扫的是 web/proxy/device/frida/apk/js/workspace 七个 builder，但共享的 meta 线——`artifacts.list`/`artifacts.read`/`timeline.list`/`sessions.unclean`/`audit.list`/`knowledge.query`——在 `build_meta_tools` 里，那个守卫从不扫它；这些读取器翻的是只增不减的存储，agent/OpenAI 桥直连跳过 pydantic schema 时一个无上界的 `limit` 正是姊妹守卫要防的“取全部”）
+
+- 这些 meta 读取器当下都已正确设界(`artifacts.list`/`timeline.list`/`audit.list` `le=256`、`sessions.unclean` `le=1000`、`knowledge.query` `le=500`、`artifacts.read` `le=262144`),存储层也 `max(1,min(int(limit),MAX))` 兜底,但 schema 这一半(fail-fast、对外声明的契约)此前无守卫,新读取器可无声漏掉上界。
+- 不能把 `build_meta_tools` 直接塞进姊妹守卫的 `_NON_PE_BUILDERS`:它同时打包了 PE 线的地址翻译工具(`sync.*`),其 `address` 参数按设计无上界,会把 PE 关切拉进“非 PE”守卫。新增 `test_meta_pagination_schema_bounds.py` 改用**结构判定**——凡同时带 `offset` 与 `limit` 的 meta 工具即为分页读取器——从而选中真正的翻页读取器、无需具名即可拦下新读取器,并按同一形态排除 `sync.*`(只有 address)与 `artifacts.gc`(只有预算 `max_total_bytes`)。断言:每个 meta 分页读取器的 `limit` 是整数、下界 1、且声明正上界;`offset` 是整数、下界 0。含非空性(已知的增长型存储读取器须在扫描内)。带外验证:去掉上界/下界的合成读取器分别被 `limit`/`offset` 检查拦下。
+
 ### 测试（`meta.tool_metrics` 聚合契约：把 agent 与 `/metrics` 抓取据以判断“某工具是否变慢/在失败”的那几个数——百分位本身、窗口滚出后仍在的终生计数、以及 `limit` 的 fail-closed 校验——钉住；此前只测了“终生计数熬过环形淘汰”，没测仪表盘真正读的数值，`_percentile` 里一个静默的差一或“淘汰即消失”的工具会恰在运维最用力看时误导）
 
 - 新增 `test_telemetry_metrics.py`:①`_percentile` 用 101 个样本让 `fraction*(n-1)` 落在整数下标上,断言 p50/p95/max 就是排序样本的第 51/96/末位(与 `round` 如何处理 .5 无关),单样本时三者都等于该样本、不臆造分布;②某工具的样本滚出窗口后仍须出现在 `tools` 里——`calls==0`、p50/p95/max 归零但 `calls_total`/`failures_total` 存活(经 `set(buckets)|set(totals)` 复现),因为延迟取自淘汰窗口而调用数取自终生计数,把它整条从列表里抹掉会瞒下一个运维明知跑过的工具;③`recent(0)`/`recent(-5)` 夹到空;④服务层 `tool_metrics` 对 `limit` 越界/非 int fail-closed 返回 `invalid_request`,其中特意覆盖 `limit=True`(bool 是 int 子类,朴素校验会把它当 1 放过)。telemetry.py 覆盖率随之升到 93%。
