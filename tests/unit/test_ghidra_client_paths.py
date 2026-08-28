@@ -9,7 +9,7 @@ unreadable, non-object JSON) and the analyzeHeadless discovery fallbacks.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -68,7 +68,7 @@ def test_analyze_binary_requires_an_existing_binary(tmp_path: Path) -> None:
         _client(tmp_path).analyze_binary(tmp_path / "gone.exe", tmp_path / "project")
 
     assert caught.value.code == "not_found"
-    assert caught.value.details["path"].endswith("gone.exe")
+    assert cast(str, caught.value.details["path"]).endswith("gone.exe")
 
 
 def test_analyze_binary_surfaces_a_nonzero_exit(
