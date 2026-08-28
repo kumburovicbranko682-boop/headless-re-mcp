@@ -150,6 +150,68 @@ def test_close_all_releases_every_running_capture() -> None:
 
 
 @pytest.mark.integration
+def test_repeated_start_stop_cycles_do_not_leak_threads_or_ports() -> None:
+    """Ten start/stop cycles must strand neither a serving thread nor a port.
+
+    The single-cycle gate proves one stop frees its port, but a capture that is
+    reclaimed everywhere except its own mitmproxy thread -- stop() reports
+    stopped, the port even comes back, yet the DumpMaster thread lives on -- is
+    the leak that only shows after a long unattended run turns into a hundred
+    stranded event loops. mitmproxy serves each capture on its own thread and
+    stop() joins it, so threading.active_count() is a deterministic, dependency
+    -free signal here: a running capture is worth exactly one thread and a clean
+    stop hands it back. That is what makes this soak load-bearing rather than a
+    check that always reads zero.
+
+    The bound is self-calibrating: one running capture is priced first, and the
+    whole soak is allowed to drift by less than that. A stop that failed to join
+    would grow by a thread per cycle -- ten over the soak -- tripping this long
+    before the budget, and every cycle's port is proven free besides.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy lifecycle Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    try:
+        baseline = threading.active_count()
+        probe_port = _free_port()
+        backend.start("proxy-leak-probe", host="127.0.0.1", port=probe_port)
+        running = threading.active_count()
+        assert backend.stop("proxy-leak-probe")["stopped"] is True
+        per_session = running - baseline
+        if per_session < 1:
+            pytest.skip("a running capture adds no countable thread here (skip != pass)")
+
+        # stop() above joined the probe's thread, so this settles deterministically.
+        settled = threading.active_count()
+        ports: list[int] = []
+        for index in range(10):
+            port = _free_port()
+            ports.append(port)
+            backend.start(f"proxy-leak-{index}", host="127.0.0.1", port=port)
+            assert backend.stop(f"proxy-leak-{index}")["stopped"] is True
+        after = threading.active_count()
+
+        # A stop that stranded the listener would fail here even if the thread
+        # count happened to look right, so the two signals cover each other.
+        for port in ports:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                if not _port_accepts("127.0.0.1", port, timeout=0.25):
+                    break
+                time.sleep(0.1)
+            else:
+                pytest.fail(f"port {port} still accepting after its stop")
+
+        drift = after - settled
+        assert drift <= per_session, (
+            f"start/stop leaked ~{drift} threads over 10 cycles; a running capture "
+            f"is ~{per_session} thread(s), so a thread-per-cycle is a leak"
+        )
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
 def test_proxy_records_a_real_request_and_exports_it_to_har(tmp_path: Path) -> None:
     """Route a real request through the proxy; it must be captured and exported.
 
