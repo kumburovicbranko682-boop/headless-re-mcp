@@ -592,6 +592,33 @@ def _workflow_state(workflow: JsonObject) -> JsonObject:
     return state
 
 
+@pytest.mark.parametrize("bad", [None, "soon", {}, float("nan"), -1.0, 0])
+def test_dynamic_request_rejects_a_bad_timeout_on_a_live_worker(
+    tmp_path: Path, bad: object
+) -> None:
+    """A caller timeout is validated at the _dynamic_request chokepoint.
+
+    memory_regions (like most dynamic wrappers) forwards its timeout straight to
+    _dynamic_request without checking it. With a live worker present the value
+    reached ``min(timeout, 30.0)``: a non-numeric one raised TypeError there,
+    which _failure records as an internal_error incident (only ValueError is
+    mapped to invalid_request), while a negative or NaN one flowed on to
+    worker.request as a bogus deadline. The chokepoint now rejects all of them
+    up front, before the worker is ever asked, as the invalid_params they are.
+    """
+    binary = tmp_path / "fixture.exe"
+    _write_minimal_pe(binary)
+    worker = FakeDynamicWorker()
+    service = _service(tmp_path, worker)
+    session_id = _create(service, binary)
+    assert service.open_dynamic(session_id).ok
+
+    result = service.memory_regions(session_id, timeout=bad)  # type: ignore[arg-type]
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_params"
+    assert all(command != "memory.regions" for command, _ in worker.requests)
+
+
 def test_dynamic_session_state_machine(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary)

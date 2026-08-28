@@ -97,6 +97,20 @@ def test_memory_protection_rejects_empty_rights(service: Any, session_id: str) -
     assert _code(service.memory_protection(session_id, 0x1000, rights="")) == "invalid_params"
 
 
+@pytest.mark.parametrize("bad", [0, -1.0, None, "soon", float("nan")])
+def test_dynamic_request_rejects_a_bad_timeout_before_the_runtime_lookup(
+    service: Any, session_id: str, bad: Any
+) -> None:
+    """The shared _dynamic_request timeout guard fires ahead of the backend check.
+
+    memory_regions forwards its timeout unvalidated; the guard sits at the top of
+    _dynamic_request, before _runtime, so a bad timeout on a session with no
+    x64dbg open still reads as invalid_params rather than the backend_unavailable
+    a missing runtime would otherwise report.
+    """
+    assert _code(service.memory_regions(session_id, timeout=bad)) == "invalid_params"
+
+
 def test_threads_list_rejects_a_negative_offset(service: Any, session_id: str) -> None:
     assert _code(service.threads_list(session_id, offset=-1)) == "invalid_params"
 

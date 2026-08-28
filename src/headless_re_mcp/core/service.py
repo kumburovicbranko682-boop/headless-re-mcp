@@ -2846,6 +2846,24 @@ class AnalysisService(
         timeout: float = 30.0,
     ) -> Result[JsonObject]:
         try:
+            if (
+                isinstance(timeout, bool)
+                or not isinstance(timeout, (int, float))
+                or not isfinite(timeout)
+                or timeout <= 0
+            ):
+                # Every dynamic-inspect and run-control call funnels its caller
+                # timeout through here, and most of them (dynamic_wait,
+                # dynamic_attach, memory_regions, threads_list, ...) never check
+                # it -- the tool schema declares a positive bound the agent
+                # transport does not enforce. ``min(timeout, 30.0)`` below then
+                # took a non-numeric value to a TypeError, which _failure maps to
+                # an internal_error incident (only ValueError becomes
+                # invalid_request); passed a negative one to worker.request as a
+                # deadline that returns at once and reads as a timeout; and let a
+                # NaN through to Future.result(timeout=nan). Reject them here,
+                # once, as the invalid_params they are.
+                raise XdbgRpcError("invalid_params", "timeout must be a positive number")
             runtime = self._runtime(session_id, BackendKind.X64DBG)
             with runtime.lock:
                 self._require_current_runtime(session_id, BackendKind.X64DBG, runtime)
