@@ -120,7 +120,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   仍用严格的 `[:=]` 边界(不加尾随 `\w*`),避免把 `tokenized=false` 这类诊断文本误抹。回归矩阵
   相应增加 `private_key`/`private-key`/`access_key`/`passwd`/`credential` 五种形态。
 
-### 修复（CLI 适配器超时在后端边界夹取越界输入）
+### 修复（r2.xrefs 对无引用地址返回空列表而非 parsed:false）
+
+- `r2.xrefs` 查一个没有任何引用的地址时会回 `parsed: false`、既无 `items` 也无
+  `count`——与「解析失败/命令出错」无从区分，也丢了文档承诺的 items/count 形状。根因是
+  radare2 的 `axj` 对零引用地址**什么都不打印**（不是 `[]`，其余 `aflj`/`izj`/`iij`/`iEj`
+  空时都打 `[]`），于是 `enrich_r2_payload` 拿到空输出解析失败。现让 `enrich_r2_payload`
+  在 JSON 数组类命令（`aflj`/`izj`/`iij`/`iEj`/`axj`/`pdj`）产出为空时按空列表处理，
+  于是零引用回 `parsed: true`、`items: []`、`count: 0`，调用方能区分「此处无引用」与
+  「命令失败」；文本类 `i` 空输出仍保持 `parsed: false`（它本就不是数组）。已在真
+  radare2 5.9.8 上对本地 ELF 核验：对无入边的 `main` 回 `parsed:true/count:0/items:[]`，
+  非空 xref 一如既往。新增单测钉住空 `axj`/`aflj` 转空列表、空 `i` 不受影响、非空 `axj` 不变。
 
 - **apk（jadx/apktool）、web（webcrack/wabt）与 r2（radare2）几条 CLI 适配器把调用方的 `timeout`
   直接塞进 `run_bounded`**，而 frida 早已用 `_bound_timeout` 在后端边界拒非正、封上限。MCP schema

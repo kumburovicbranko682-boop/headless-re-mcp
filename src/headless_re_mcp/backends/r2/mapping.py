@@ -8,6 +8,14 @@ from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# The whitelisted r2 commands whose output is a JSON array. When one of these
+# produces *nothing*, that is an empty list, not a parse failure: r2's ``axj``
+# prints nothing at all (not ``[]``) for an address with no references, so a
+# zero-xref query used to come back ``parsed: False`` with no ``items`` or
+# ``count`` -- indistinguishable from a broken decode, and missing the shape
+# r2.xrefs documents. The other array commands emit ``[]`` when empty, so this
+# only ever fires for that ``axj`` case, but naming them all keeps it honest.
+_JSON_ARRAY_COMMANDS = ("aflj", "izj", "iij", "iEj", "axj", "pdj")
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -143,6 +151,15 @@ def enrich_r2_payload(
     raw = str(data.get("raw") or "")
     commands = list(data.get("commands") or [])
     parsed = parse_r2_json(raw)
+    if (
+        parsed is None
+        and not raw.strip()
+        and any(command.startswith(_JSON_ARRAY_COMMANDS) for command in commands)
+    ):
+        # Empty output from a JSON-array command (in practice axj with no
+        # references) is an empty list, so items/count stay present and a
+        # caller can tell "no references" from "the command failed".
+        parsed = []
     out = dict(data)
     out["module"] = module
     if image_base is not None:

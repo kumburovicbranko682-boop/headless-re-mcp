@@ -125,9 +125,11 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with items, each carrying from, to, type, from_address and
         to_address, plus address (va/rva/module) and address_va (the integer
-        that was asked). Read items_truncated, items_total and items_limit
-        when the list filled the cap (4096). There is no integer address,
-        xrefs, truncated or has_more field.
+        that was asked). An address with no references answers with an empty
+        items list and count 0, not an error or parsed:false. Read
+        items_truncated, items_total and items_limit when the list filled the
+        cap (4096). There is no integer address, xrefs, truncated or has_more
+        field.
         """
         return _dump(analysis.r2_xrefs(session_id, address, timeout=timeout))
     return tools.bindings
