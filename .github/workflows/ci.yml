@@ -3,7 +3,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, cursor/ci-checkpoint-webproxy-1367fd60-82ce]
   pull_request:
 
 concurrency:
