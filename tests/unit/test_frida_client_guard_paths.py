@@ -49,6 +49,16 @@ class _Api:
             setattr(self, name, fn)
 
 
+def _raiser(exc: BaseException) -> Any:
+    """An RPC export stand-in that raises when the client calls it."""
+
+    def _fn(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise exc
+
+    return _fn
+
+
 class _Script:
     def __init__(self, api: Any, load_exc: BaseException | None) -> None:
         self.exports_sync = api
@@ -287,6 +297,75 @@ def test_modules_reads_the_dict_shaped_enumeration() -> None:
     assert payload["count"] == 1
     assert payload["total"] == 30
     assert payload["has_more"] is True
+
+
+def test_modules_maps_a_dead_target_rpc_failure_to_backend_error() -> None:
+    # Process.enumerateModules over RPC raises when the target has exited; the
+    # client must report that as a backend condition, not let it reach the
+    # service envelope as an internal_error with a logged incident.
+    session = _Session(api=_Api(modules=_raiser(RuntimeError("process exited"))))
+    client = _local_client(_LocalFrida(session=session))
+
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1, limit=5)
+
+    assert caught.value.code == "backend_error"
+    assert "module enumeration failed" in caught.value.message
+    assert session.detached is True
+
+
+def test_modules_maps_a_timeout_flavored_rpc_failure_to_timeout() -> None:
+    session = _Session(api=_Api(modules=_raiser(_FakeTimeout("rpc timed out"))))
+    client = _local_client(_LocalFrida(session=session))
+
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1)
+
+    assert caught.value.code == "timeout"
+    assert session.detached is True
+
+
+def test_modules_maps_a_generic_load_failure_to_backend_error() -> None:
+    session = _Session(api=_Api(), load_exc=RuntimeError("script would not load"))
+    client = _local_client(_LocalFrida(session=session))
+
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1)
+
+    assert caught.value.code == "backend_error"
+
+
+def test_modules_passes_through_a_fridaerror_from_load() -> None:
+    session = _Session(api=_Api(), load_exc=FridaError("permission_denied", "denied"))
+    client = _local_client(_LocalFrida(session=session))
+
+    with pytest.raises(FridaError) as caught:
+        client.modules(1, allowed_pid=1)
+
+    assert caught.value.code == "permission_denied"
+
+
+def test_exports_maps_a_dead_target_rpc_failure_to_backend_error() -> None:
+    session = _Session(api=_Api(exports=_raiser(RuntimeError("process exited"))))
+    client = _local_client(_LocalFrida(session=session))
+
+    with pytest.raises(FridaError) as caught:
+        client.exports(1, "ntdll.dll", allowed_pid=1)
+
+    assert caught.value.code == "backend_error"
+    assert "export enumeration failed" in caught.value.message
+    assert session.detached is True
+
+
+def test_exports_maps_a_timeout_flavored_rpc_failure_to_timeout() -> None:
+    session = _Session(api=_Api(exports=_raiser(_FakeTimeout("rpc timed out"))))
+    client = _local_client(_LocalFrida(session=session))
+
+    with pytest.raises(FridaError) as caught:
+        client.exports(1, "ntdll.dll", allowed_pid=1)
+
+    assert caught.value.code == "timeout"
+    assert session.detached is True
 
 
 def test_exports_rejects_a_blank_module_name() -> None:

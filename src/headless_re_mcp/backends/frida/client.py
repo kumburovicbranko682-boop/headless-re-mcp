@@ -357,6 +357,22 @@ class FridaClient:
                 "total": total,
                 "has_more": total > len(items),
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Enumerating modules runs a script in the target and calls back over
+            # RPC: a process that exited mid-probe, a script that would not load,
+            # or an RPC fault is the target refusing, not a server defect. Left
+            # raw it reached the service envelope as internal_error with a logged
+            # incident, so routine enumeration against a dead or hostile process
+            # minted incidents for a backend condition. Map it to backend_error
+            # like memory_read and the device-aware ops, keeping a
+            # timeout-flavored failure as timeout.
+            if _is_timeout(exc):
+                raise _timeout_error(_PROBE_TIMEOUT_S) from exc
+            raise FridaError(
+                "backend_error", f"module enumeration failed: {exc}", pid=pid
+            ) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
@@ -400,6 +416,22 @@ class FridaClient:
                 "count": len(items),
                 "has_more": has_more,
             }
+        except FridaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Same reasoning as ``modules``: findModuleByName + enumerateExports
+            # run in the target over RPC, so a dead process or an RPC fault is a
+            # backend condition, not an internal_error worth an incident. The
+            # unexpected-payload guard above is already a FridaError and passes
+            # through the re-raise unchanged.
+            if _is_timeout(exc):
+                raise _timeout_error(_PROBE_TIMEOUT_S) from exc
+            raise FridaError(
+                "backend_error",
+                f"export enumeration failed: {exc}",
+                pid=pid,
+                module=module_name.strip(),
+            ) from exc
         finally:
             with contextlib.suppress(Exception):
                 session.detach()
