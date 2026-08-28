@@ -10,6 +10,8 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
+.NET 托管代码检查（纯 Python）新增经真实 MCP stdio 服务的端到端 Gate（`tests/integration/test_dotnet_managed_inspection_gate.py`）。纯 Python 的 CLR 读取器(`dotnet.inspect`/`enumerate`/`il`/`xrefs`)是 .NET 面里无需 de4dot、无需真实样本的部分——它直接从映像里解析 ECMA-335 元数据。但既有 M6 gate(`test_dotnet_m6_gate.py`)在未配 `HEADLESS_RE_DE4DOT` 与 .NET 样本时整条跳过,元数据枚举单测又直连 `AnalysisService`;于是普通 Linux CI 机上这条托管面**毫无**端到端覆盖,更没有在 Agent 驱动的传输上覆盖。本 gate 补上:合成一枚最小但真实的托管 PE(真实 COR20 头指向 `BSJB` 元数据根,ECMA-335 II.24,ILONLY)与一枚无 CLR 目录的合法原生 PE,对二者跑真实 MCP stdio 服务,证两半。托管映像被认出且可读:`dotnet.inspect` 报 `is_dotnet` 与 `verified_clr` 为真、`kind="pure_managed"`;`dotnet.enumerate` 在每个类别都由 `dotnet_metadata` 后端(非 IDA)作答;`dotnet.xrefs` 作答;而请求一个不在表里的 token 的 IL 是诚实的 `not_found` 而非崩溃;每条回复都带 `claims_universal_unpack=False`——该面从不吹嘘万能脱壳。原生 PE 被诚实回绝而非误读:`dotnet.inspect` 回 `is_dotnet=False`、`kind="not_dotnet"`(是干净答案而非报错),每个元数据工具都以 `not_dotnet` 回绝、而非假装解析并不存在的托管结构。映像布局改编自 `tests/unit/test_dotnet_metadata_enum.py`。纯 stdlib、stdio 回环、无 de4dot、无样本、任意平台。
+
 新增 Linux x86_64 核心支持：wheel/sdist 与 `scripts/install-linux.sh` 可安装，`doctor --strict` 以平台动态必需项判断就绪，`serve` / `serve-web`、会话、制品和可移植后端可在 Linux 加载。doctor 与 `/readyz` 现在报告 `full`（Windows）或 `core`（Linux）支持级别。
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
