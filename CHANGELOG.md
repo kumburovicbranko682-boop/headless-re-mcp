@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **289（172 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **290（173 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -806,6 +806,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `has_code_section`(无 code 段时为 false——此时 `categories` 空、计数为 0,非错误);函数数超过走查上限时
   `scan_capped` 为真,段本身畸形时 `truncated` 为真。非 WebAssembly 文件按 `invalid_params` 拒绝,超过
   16 MiB 按 `too_large` 拒绝。
+- `wasm.locals`：逐函数列出体内声明的局部变量及类型,纯 Python、**不需要 wabt**。每个函数体开头都有一个
+  声明局部变量的向量——编译器在参数之外分配的临时变量(参数在 type 段,`wasm.functions` 已给出),这里解码
+  该向量,一眼看出局部压力,更能看出哪些函数声明了 v128 局部(向量化数学)或 funcref/externref 局部(间接
+  分发或宿主对象操作);与 `wasm.opcodes` 的指令构成互补。每行含 `index`(模块级函数索引,导入占
+  [0, imported_count) 且无函数体)、`locals`(声明总数)、`by_type`(值类型名→数量:i32/i64/f32/f64/v128/
+  funcref/externref,单字节读不出的 valtype(如 GC 类型)归入 `0x..` 桶)与 `decoded`(声明越过体尾时为
+  false,已读的组保留)。返回 `has_code_section`(无 code 段为 false——此时 functions 空、total 0,非错误)、
+  `imported_count`,及含 `count/total/offset/has_more` 的 `functions`;`total` 上限 50000、越限置
+  `scan_capped`,段畸形时 `truncated` 为真(已读行仍返回)。非 WebAssembly 文件按 `invalid_params` 拒绝,
+  超过 16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

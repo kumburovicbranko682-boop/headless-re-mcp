@@ -209,6 +209,11 @@ _MAX_WASM_CALLEES = 100
 # the wasm.calls walker's immediate layout, so it stops walking after this many
 # bodies (scan_capped) just as wasm.calls stops collecting.
 _MAX_WASM_OPCODES_FUNCS = 50000
+# wasm.locals decodes only the local-declaration vector each body opens with (the
+# body-declared locals, distinct from the parameters, which live in the type
+# section). It pages like wasm.calls.
+_MAX_WASM_LOCALS_COLLECT = 50000
+_MAX_WASM_LOCALS_PAGE = 1000
 # wasm.callers is the reverse of wasm.calls: given a target function index it
 # walks every body (via _walk_body) and reports the functions that directly
 # call it -- the "xrefs to this function" view. A body the walker cannot fully
@@ -1971,6 +1976,33 @@ def _histogram_body(code: bytes) -> tuple[dict[str, int], int, bool]:
     return counts, total, True
 
 
+def _decode_body_locals(code: bytes) -> tuple[dict[str, int], int, bool]:
+    """Decode the local-declaration vector one function body opens with.
+
+    Returns (by_type, total, decoded). The vector is a list of (count, valtype)
+    groups declaring the body's locals -- distinct from the parameters, which
+    live in the type section. Valtypes are read one byte each, the same
+    assumption _walk_body makes, so a multi-byte GC valtype would misalign and
+    is reported as an ``0x..`` bucket; on a declaration that runs past the body
+    the decode is abandoned (decoded False) with the groups read so far kept.
+    """
+    by_type: dict[str, int] = {}
+    total = 0
+    try:
+        declcount, pos = _read_uleb(code, 0)
+        for _ in range(declcount):
+            count, pos = _read_uleb(code, pos)
+            if pos >= len(code):
+                raise _WasmParseError("locals declaration runs past the body")
+            name = _valtype_name(code[pos])
+            pos += 1
+            by_type[name] = by_type.get(name, 0) + count
+            total += count
+    except _WasmParseError:
+        return by_type, total, False
+    return by_type, total, True
+
+
 def parse_wasm_calls(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
     """Extract each function's direct call targets (the call graph), wabt-free.
 
@@ -2215,6 +2247,86 @@ def parse_wasm_opcodes(path: Path) -> JsonObject:
         "total_functions": total_functions,
         "decoded_functions": decoded_functions,
         "instruction_count": instruction_count,
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def parse_wasm_locals(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List each function's declared local variables by type, wabt-free.
+
+    Every function body opens with a vector declaring its locals -- the scratch
+    variables the compiler allocated beyond the parameters (which live in the
+    type section, so wasm.functions shows those). This decodes that vector in
+    pure Python -- no wabt needed -- so a glance shows local pressure and, more
+    tellingly, which functions declare v128 locals (vectorized math) or
+    funcref/externref locals (indirect dispatch or host-object juggling). Each
+    row is index (the function's module-wide index, where imports occupy
+    [0, imported_count) and have no bodies), locals (the total count declared),
+    by_type (a map from value-type name -- i32, i64, f32, f64, v128, funcref,
+    externref, or an 0x.. bucket for a valtype the single-byte read cannot name,
+    e.g. a GC type -- to how many locals of it), and decoded, false when a
+    declaration runs past the body (the groups read so far are kept). Answers
+    with has_code_section (false for a module with no code section -- then
+    functions is empty and total 0, not an error), imported_count, and functions
+    with count, total, offset and has_more so a filled page is not read as every
+    function; total is capped at 50000 with scan_capped when more may exist, and
+    truncated is true when the section itself is malformed (rows read so far are
+    still returned). A file that is not a WebAssembly module is refused as
+    invalid_params, one over 16 MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
+    bodies, truncated = _collect_section_bodies(
+        raw, frozenset({_WASM_IMPORT_SECTION_ID, _WASM_CODE_SECTION_ID})
+    )
+    imported_count = 0
+    if _WASM_IMPORT_SECTION_ID in bodies:
+        func_imports, imp_trunc = _parse_func_imports(bodies[_WASM_IMPORT_SECTION_ID])
+        imported_count = len(func_imports)
+        truncated = truncated or imp_trunc
+    has_code_section = _WASM_CODE_SECTION_ID in bodies
+    rows: list[JsonObject] = []
+    scan_more = False
+    if has_code_section:
+        body = bodies[_WASM_CODE_SECTION_ID]
+        try:
+            count, pos = _read_uleb(body, 0)
+            for i in range(count):
+                if len(rows) >= _MAX_WASM_LOCALS_COLLECT:
+                    scan_more = True
+                    break
+                size, pos = _read_uleb(body, pos)
+                if pos + size > len(body):
+                    raise _WasmParseError("function body runs past the section")
+                by_type, local_count, decoded = _decode_body_locals(body[pos : pos + size])
+                pos += size
+                rows.append(
+                    {
+                        "index": imported_count + i,
+                        "locals": local_count,
+                        "by_type": by_type,
+                        "decoded": decoded,
+                    }
+                )
+        except _WasmParseError:
+            truncated = True
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_WASM_LOCALS_PAGE))
+    window = rows[start : start + cap]
+    return {
+        "functions": window,
+        "has_code_section": has_code_section,
+        "imported_count": imported_count,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
         "scan_capped": scan_more,
         "truncated": truncated,
     }

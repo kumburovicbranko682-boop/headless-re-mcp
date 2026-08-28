@@ -647,6 +647,37 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_opcodes(path))
 
+    @tools.tool(name="wasm.locals")
+    def wasm_locals(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List each function's declared local variables by type, wabt-free.
+
+        Every function body opens with a vector declaring its locals -- the
+        scratch variables the compiler allocated beyond the parameters (which
+        live in the type section, so wasm.functions shows those). This decodes
+        that vector in pure Python -- no wabt needed -- so a glance shows local
+        pressure and, more tellingly, which functions declare v128 locals
+        (vectorized math) or funcref/externref locals (indirect dispatch or
+        host-object juggling); pair with wasm.opcodes for the instruction mix.
+        Each row is index (the function's module-wide index, where imports
+        occupy [0, imported_count) and have no bodies), locals (the total count
+        declared), by_type (a map from value-type name -- i32, i64, f32, f64,
+        v128, funcref, externref, or an 0x.. bucket for a valtype the
+        single-byte read cannot name, e.g. a GC type -- to how many locals of
+        it), and decoded, false when a declaration runs past the body (the
+        groups read so far are kept). Answers with has_code_section (false for a
+        module with no code section -- then functions is empty and total 0, not
+        an error), imported_count, and functions with count, total, offset and
+        has_more so a filled page is not read as every function; total is capped
+        at 50000 with scan_capped when more may exist, and truncated is true
+        when the section itself is malformed. A file that is not a WebAssembly
+        module is refused as invalid_params, one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_locals(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.strings")
     def wasm_strings(
         path: str,

@@ -44,6 +44,7 @@ _SERVICE_CASES: tuple[tuple[str, str, dict[str, int]], ...] = (
     ("wasm_features", "features", {}),
     ("wasm_start", "has_start_section", {}),
     ("wasm_opcodes", "categories", {}),
+    ("wasm_locals", "functions", {}),
 )
 
 # The payload key each dotted tool name must return, and the extra call kwargs
@@ -67,6 +68,7 @@ _TOOL_KEYS: dict[str, str] = {
     "wasm.features": "features",
     "wasm.start": "has_start_section",
     "wasm.opcodes": "categories",
+    "wasm.locals": "functions",
 }
 _TOOL_EXTRA: dict[str, dict[str, int]] = {"wasm.callers": {"function": 0}}
 _WABT_TOOLS = {"wasm.info", "wasm.wat"}
