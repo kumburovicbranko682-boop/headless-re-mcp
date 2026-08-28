@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import socket
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -36,6 +37,30 @@ def _this_process() -> Any:
         return None
     process = psutil.Process()
     return process if hasattr(process, "num_handles") else None
+
+
+def _resource_counter() -> Callable[[], int] | None:
+    """A per-platform live-count of the OS resources a browser session holds.
+
+    The console-handle gate below can only run on Windows, because the JSHandle
+    leak it guards shows up as kernel handles the Python driver holds and is
+    invisible to file-descriptor counts (Playwright multiplexes everything onto
+    one pipe to the Node driver -- measured: a leak of 1500 undisposed handles
+    moved num_fds by zero). A whole browser session is different: each live one
+    holds real descriptors (the driver pipe and its sockets), so num_fds on
+    POSIX and num_handles on Windows both track open/close, which is what lets
+    the soak gate run for real on Linux rather than skipping.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+    process = psutil.Process()
+    if hasattr(process, "num_fds"):  # POSIX
+        return process.num_fds
+    if hasattr(process, "num_handles"):  # Windows
+        return process.num_handles
+    return None
 
 
 def _free_port() -> int:
@@ -177,6 +202,60 @@ def test_a_talkative_page_does_not_grow_the_process_handle_by_handle() -> None:
         assert any("line " in str(item.get("text")) for item in captured["console"])
         # A few handles of ordinary churn are fine; per-navigation growth is not.
         assert after - settled < 100, f"handles grew by {after - settled} over 20 navigations"
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
+def test_repeated_open_close_cycles_do_not_leak_process_resources() -> None:
+    """Ten open/close cycles must return the process to where they started.
+
+    The one-cycle gates above prove a single close disconnects the browser, but
+    the failure this file exists to catch -- "closed" while the resources stay
+    live -- only compounds over many sessions, so a per-cycle leak of even a few
+    descriptors hides behind a green one-shot check. This soaks ten full cycles
+    and measures the process's own OS resource count (num_fds on Linux,
+    num_handles on Windows), which -- unlike the console-handle gate -- genuinely
+    tracks a browser session: each live one is worth several descriptors and a
+    clean close hands every one back.
+
+    The bound is self-calibrating: one live session is measured first, and the
+    whole soak is allowed to drift by less than that. Normal churn is a
+    descriptor or two; a close that leaked its driver connection would grow by a
+    whole session per cycle -- ten sessions' worth over the soak -- and trip this
+    long before the drift budget. skip != pass when psutil is absent or a live
+    browser adds nothing countable here.
+    """
+    if not _playwright_available():
+        pytest.skip("playwright not installed — browser lifecycle Gate not run (skip != pass)")
+    counter = _resource_counter()
+    if counter is None:
+        pytest.skip("no per-process resource counter available (skip != pass)")
+
+    backend = WebBackend()
+    try:
+        # Pay any one-time driver warmup before measuring, and price one live
+        # session so the leak bound is in real per-session units, not a guess.
+        before = counter()
+        _open_or_skip(backend, "leak-probe")
+        one_live = counter()
+        assert backend.close("leak-probe")["closed"] is True
+        per_session = one_live - before
+        if per_session < 1:
+            pytest.skip("a live browser adds no countable OS resource here (skip != pass)")
+
+        settled = counter()
+        for index in range(10):
+            session_id = f"leak-cycle-{index}"
+            _open_or_skip(backend, session_id)
+            assert backend.close(session_id)["closed"] is True
+        after = counter()
+
+        drift = after - settled
+        assert drift <= per_session, (
+            f"open/close leaked ~{drift} resources over 10 cycles; a single live "
+            f"session is ~{per_session}, so anything near a session-per-cycle is a leak"
+        )
     finally:
         backend.close_all()
 
