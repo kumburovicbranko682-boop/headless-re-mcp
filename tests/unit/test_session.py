@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -176,6 +177,58 @@ def test_a_missing_session_error_does_not_echo_an_unbounded_id() -> None:
     assert huge not in dumped
     assert len(dumped) < 8_000
     assert "200000" in dumped
+
+
+@pytest.mark.parametrize("session_id", [["x"], {"a": 1}, 5, 1.5, True, None, b"x"])
+def test_a_non_string_session_id_reads_as_not_found_not_a_crash(session_id: object) -> None:
+    """No non-string names a session, so the registry refuses it cleanly.
+
+    session_id is schema-typed as a string, but the agent transport binds it
+    straight from model output. An unhashable id (list, dict) raised TypeError
+    out of dict.get -- filed as internal_error by most service envelopes, and
+    escaped close_session with no envelope at all because the bookkeeping hook
+    repeated the lookup while handling the first failure. A hashable
+    non-string (int) got past dict.get only to crash for_id's len() *while the
+    not-found was being named*.     Both must read as the session_not_found every
+    caller already handles.
+    """
+    with pytest.raises(SessionNotFound) as caught:
+        SessionRegistry().get(cast(Any, session_id))
+    assert type(session_id).__name__ in str(caught.value)
+
+
+def test_for_id_names_a_non_string_id_without_echoing_it() -> None:
+    """The formatter itself must survive what it is asked to name."""
+    error = SessionNotFound.for_id(["deadbeef"])
+    assert "list" in str(error)
+    assert "deadbeef" not in str(error)
+
+
+@pytest.mark.parametrize("session_id", [["x"], {"a": 1}, 5, None])
+def test_timeline_list_answers_not_found_for_a_non_string_id(
+    tmp_path: Path, session_id: object
+) -> None:
+    """timeline.list skips the registry (a timeline outlives its session).
+
+    So it never met the registry's refusal: a non-string id raised TypeError
+    out of the timeline path builder and was filed as a logged internal_error
+    incident. It must answer the same session_not_found the registry-backed
+    methods give.
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+    try:
+        result = service.timeline_list(cast(Any, session_id))
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "session_not_found"
+    finally:
+        service.close_all()
 
 
 def test_adopt_keeps_the_original_id(tmp_path: Path) -> None:

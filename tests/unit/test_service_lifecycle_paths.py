@@ -11,6 +11,7 @@ Everything runs against the in-process FakeDynamicWorker.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -233,6 +234,27 @@ def test_close_session_discloses_a_failing_final_transition(
     assert not result.ok
     assert result.error is not None
     assert "registry refused the close" in result.error.message
+
+
+@pytest.mark.parametrize("session_id", [["x"], {"a": 1}, 5, None])
+def test_close_session_answers_not_found_for_a_non_string_id(
+    tmp_path: Path, session_id: object
+) -> None:
+    """A non-string session_id must come back as a Result, not a raw TypeError.
+
+    close_session caught the unhashable-id TypeError from registry.get, but the
+    bookkeeping hook repeated the lookup while building the failure Result and
+    the second TypeError escaped the service method with no envelope at all.
+    The registry now refuses any non-string id as session_not_found, which both
+    lookups already handle.
+    """
+    service = _service(tmp_path, FakeDynamicWorker())
+
+    result = service.close_session(cast(Any, session_id))
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "session_not_found"
 
 
 def test_close_releases_adb_forwards_when_no_backend_is_present(

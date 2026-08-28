@@ -68,13 +68,21 @@ class SessionNotFound(KeyError):
     """
 
     @staticmethod
-    def for_id(session_id: str) -> SessionNotFound:
+    def for_id(session_id: object) -> SessionNotFound:
         """Name the missing session without echoing an unbounded caller string.
 
         Real ids are 32 hex characters. Interpolating whatever arrived used to
         put it in the exception, the error message and the details, so a
         200,000 character id produced a 400,229 byte envelope.
         """
+        # The agent transport binds session_id straight from model output, so
+        # this formatter must survive a non-string: len() on an int raised
+        # TypeError *while naming the not-found*, turning a bad id into an
+        # internal_error incident. Name the wrong type instead of echoing it.
+        if not isinstance(session_id, str):
+            return SessionNotFound(
+                f"session not found: id must be a string, not {type(session_id).__name__}"
+            )
         shown = (
             session_id
             if len(session_id) <= 64
@@ -153,6 +161,16 @@ class SessionRegistry:
             return stored.model_copy(deep=True)
 
     def get(self, session_id: str) -> Session:
+        # session_id is schema-typed as a string, but the agent and
+        # OpenAI-bridge transports bind it straight from model output. An
+        # unhashable id (list, dict) raised TypeError out of dict.get: most
+        # service envelopes filed it as a logged internal_error incident, and
+        # close_session let it escape with no envelope at all, because the
+        # bookkeeping hook repeated the lookup while handling the first
+        # failure. No non-string names a session, so answer the
+        # session_not_found every caller already handles.
+        if not isinstance(session_id, str):
+            raise SessionNotFound.for_id(session_id)
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:

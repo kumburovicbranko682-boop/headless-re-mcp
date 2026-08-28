@@ -764,6 +764,14 @@ class ExtAnalysisMixin(UiDriveMixin):
         self, session_id: str, offset: int = 0, limit: int = 100
     ) -> Result[JsonObject]:
         try:
+            # Non-string ids elsewhere are refused by SessionRegistry.get, but
+            # timeline.list deliberately skips the registry (a timeline outlives
+            # its session), so a list/dict/int id raised TypeError out of the
+            # timeline path builder and was filed as a logged internal_error
+            # incident. Answer the same session_not_found the registry-backed
+            # methods give a non-string id.
+            if not isinstance(session_id, str):
+                raise SessionNotFound.for_id(session_id)
             return _success(
                 self.services.artifacts.list_timeline(
                     session_id,
