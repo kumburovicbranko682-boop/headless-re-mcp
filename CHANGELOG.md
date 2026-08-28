@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web 包 __init__ 顶层 eager 导入 web.app，害得纯工具子模块也硬依赖 fastapi——installer 配 IDA 在裸机崩）
+
+- `src/headless_re_mcp/web/__init__.py` 在包顶层 eager 执行
+  `from headless_re_mcp.web.app import create_app, run_web`，而 `web.app` 会拉 fastapi（可选
+  `web` extra）。后果是导入**任何** web 工具子模块——`web.setup`、`web.deps`、`web.monitor`、
+  `web.launch_util`、`web.commands`（这些自身一行 fastapi/starlette/uvicorn 都不碰）——都会经由包
+  `__init__` 把整套 fastapi server 拽进来。真实影响不止测试：`installer.py` 在 IDA 配置分支里
+  `from headless_re_mcp.web.setup import configure_ida`（延迟导入），基础安装（没装 `web` extra）
+  跑到这条路径时，导入 `web.setup` → 包 `__init__` → `web.app` → `web.routes.agent` →
+  `from fastapi import FastAPI` → `ModuleNotFoundError: No module named 'fastapi'`：一个跟 web
+  server 毫无关系的 IDA 配置动作，因此在裸机上崩成一句莫名其妙的缺 fastapi。改法：把
+  `create_app`/`run_web` 改为 PEP 562 惰性绑定（模块级 `__getattr__` + `TYPE_CHECKING`），`auth`
+  的两个纯 Python 名字保持 eager。公有面不变——`from headless_re_mcp.web import create_app` 仍可用，
+  且此刻才需要 fastapi（正确：你正要起服务）。已验证：裸机下 `web.setup` 及
+  `web.deps/monitor/launch_util/commands` 全部可导入，`headless_re_mcp.web.create_app` 惰性访问
+  仅在缺 fastapi 时报错；顺带让只依赖这些工具子模块的单测在裸机可跑（如
+  `test_web_deps_snapshot` 4 passed）。mypy（223 文件无问题）与 ruff 全绿，装了 `web` extra 时
+  happy path 不变（create_app 经包可解析、web 单测通过）。全仓 500+ 分支无一改过 `web/__init__.py`。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
