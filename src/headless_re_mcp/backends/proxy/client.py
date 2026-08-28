@@ -433,9 +433,8 @@ class _FlowRecorder:
                 # the scan runs only on the rare re-record, so the common path is
                 # untouched.
                 kept = [s for s in self.flows if s.get("id") != flow_id]
-                if len(kept) != len(self.flows):
-                    self.flows.clear()
-                    self.flows.extend(kept)
+                self.flows.clear()
+                self.flows.extend(kept)
             self.flows.append(entry)
 
     def snapshot(self) -> list[JsonObject]:
