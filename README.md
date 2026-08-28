@@ -1,6 +1,6 @@
 # Headless RE-MCP
 
-Windows 与 Linux x86_64 上的无分析器窗口逆向 MCP（v0.2.1）。跨平台核心包含 MCP/Web 服务、会话管理、纯 Python 检测与 Android/Web/Ghidra/radare2 等可移植后端；授权 IDA `idalib` 可按宿主平台选配，Windows 另提供 x64dbg `headless.exe` 动态调试和 Win32 UI 能力。270 个受限语义工具供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传。
+Windows 与 Linux x86_64 上的无分析器窗口逆向 MCP（v0.2.1）。跨平台核心包含 MCP/Web 服务、会话管理、纯 Python 检测与 Android/Web/Ghidra/radare2 等可移植后端；授权 IDA `idalib` 可按宿主平台选配，Windows 另提供 x64dbg `headless.exe` 动态调试和 Win32 UI 能力。271 个受限语义工具供 Cursor 等 MCP 客户端调用；不开放任意调试器命令、不开放任意 JS 求值、不开放 `adb shell` 透传。
 
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -123,6 +123,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - 会话：`session.create/get/list/close`
 - 静态：`static.open/functions/strings/decompile` 等
 - 原生 ELF 速览：`elf.summary` 纯 stdlib 离线读取单个 ELF（Linux 可执行文件或 `.so`）——头部（位宽/字节序/类型/机器/入口）、节表、依赖库（DT_NEEDED）/SONAME/运行时搜索路径、是否 stripped——无需 r2/Ghidra，等价于离线 `readelf -h -S -d`；`elf.symbols` 分页读取动态符号表 `.dynsym`（等价离线 `nm -D`），每条符号带绑定/类型/value/size 与 `imported`/`exported` 布尔，直接看出二进制导入哪些库函数、导出哪些接口，strip 后依然可用。适合从 APK 抽出的 `lib/**/*.so` 或 Linux 原生样本（核心工具，各工作方向均可见）
+- 原生 Mach-O 速览：`macho.summary` 纯 stdlib 离线读取 macOS/iOS 二进制（可执行文件、`.dylib`、bundle，thin 或 universal/fat）——CPU 架构、文件类型、段表（名字/地址/权限）、依赖 dylib 与 rpath、UUID、目标平台与最低系统版本，外加 pie/signed/encrypted（iOS 商店加密标志）/stripped 四个初判布尔；fat 二进制逐 slice 给出完整摘要——等价于离线 `otool -h -l`。与 Java class 共享 `0xcafebabe` 魔数的文件会被指名拒绝（核心工具，各工作方向均可见）
 - 动态：`dynamic.open/state/events/wait/launch/attach/stop/pause/resume`、单步、寄存器/内存、模块与断点
 - 地址：`sync.*`、`modules.list/resolve`；`sync.resolve_runtime_address` 把 static VA / 模块 RVA / runtime VA 一次解析成运行时地址，`dynamic.breakpoint.set` 可用 `address_space=static|rva` 直接下断（内部重定位，调用方不做地址运算）
 - 复合工作流：`dynamic.analyze_function`（反编译 + 重定位下断 + 运行 + 寄存器，一次调用）、`dynamic.trace_api_arguments`（按符号或地址断 API 并捕获整型参数：x64 取 RCX/RDX/R8/R9，x86 从返回地址之上的栈读取；结束必清断点）
@@ -208,7 +209,7 @@ worker 进程真正死亡时只上报不自动重启：重启后的调试器不�
 
 `local_full_access: false` 会让所有会改变状态或写文件的工具返回 `write_disabled` 错误，
 只读查询不受影响。工具仍然可见——调用方拿到的是能理解的拒绝，而不是工具凭空消失。
-270 个工具的读写归类（153 只读 / 117 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
+271 个工具的读写归类（154 只读 / 117 写）在 `tools/catalog.py` 里逐个显式声明，策略在调用时
 读取，改配置不必重启。工具面裁剪（`workspace_profile`）与读写策略是两条独立的边界：前者决定
 「看得见什么」，后者决定「能不能改」。
 
@@ -392,13 +393,13 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 79 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 80 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、
   纯 stdlib 离线读取单个 .dex 不依赖 androguard）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
-- 269 个工具（全部 270 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
+- 270 个工具（全部 271 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
   结构化错误信封，无一抛出；且这条性质由 `tests/unit/test_tool_fault_contract.py` 每次运行强制
   校验（断言恰好覆盖“绑定工具数 − 1”），不是一次性测量，也不会因新增工具漏测。
   敌意**环境**同样覆盖：产物库被删除、变成只读或被损坏时，工具照常返回信封（存储类故障有专门的

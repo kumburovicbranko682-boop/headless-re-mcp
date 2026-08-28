@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（原生 Mach-O 离线速览，无需任何外部后端）
+
+- 新增 `macho.summary`：纯 stdlib 直接解析 macOS/iOS 二进制（可执行文件、`.dylib`、bundle），thin 与
+  universal（fat）都支持——等价于离线 `otool -h -l`。PE 有整条工具线、ELF 已有 `elf.summary`/`elf.symbols`
+  之后，Mach-O 是三大原生格式里唯一完全打不开的一个；而它就是"一个头 + 一串 load command"的精确结构，
+  stdlib 足以读出。thin 镜像给出：头部的位宽/字节序/CPU（x86-64、AArch64、arm64_32、PowerPC…）/文件类型
+  （executable/dylib/bundle/…）/flags 与 `pie`；`LC_SEGMENT(_64)` 的段表（名字、vmaddr、大小、`r-x` 式
+  权限、节数）；依赖 dylib（load/weak/reexport/lazy/upward 五种命令都算）、安装名（`LC_ID_DYLIB`）与
+  rpath；`LC_UUID`、`LC_MAIN` 入口偏移；`LC_BUILD_VERSION`/`LC_VERSION_MIN_*` 的目标平台与最低系统/SDK
+  版本（macOS/iOS/tvOS/watchOS/visionOS/模拟器/Catalyst 都识别）；以及分析者最先要的四个初判布尔——
+  `signed`（`LC_CODE_SIGNATURE` 在场）、`encrypted`（`LC_ENCRYPTION_INFO(_64)` 的 cryptid ≠ 0，即 iOS
+  商店加密标志）、`stripped`（`LC_SYMTAB` 缺失或 nsyms=0）与 `pie`。fat 二进制逐 slice 列出 CPU/偏移/
+  大小并就地给出完整 thin 摘要（slice 数有上限，越界 slice 记 error 而非抛异常）。32/64 位与大小端四种
+  组合都按各自布局解析；load command 逐条防御式跟随——越界、撒谎的 cmdsize 记 warning 而非异常。与 Java
+  class 文件共享 `0xcafebabe` 魔数的输入按 arch 数合理性甄别并指名拒绝。已对真实 Mach-O 验证：PyPI 的
+  macOS arm64 wheel 里的 CPython 扩展（段表/依赖/平台/签名全部如实）与 universal2 wheel 的双架构 fat
+  （x86-64 min 10.13 + arm64 min 11.0，正是 universal2 的定义）。工具为**核心、按路径、只读**，各工作
+  方向均可见；非 Mach-O 报 `invalid_params`，超 128 MiB 报 `too_large`，缺文件报 `not_found`。新增可
+  移植的手工汇编夹具单测（dylib 全字段、PIE+LC_MAIN+加密、32 位大端、fat 与越界 slice、截断 load
+  command、Java class 拒绝、服务四类信封）与真实 MCP stdio Gate（始终执行）。
+
 ### 新增（原生 ELF 离线速览，无需 r2/Ghidra）
 
 - 新增 `elf.symbols`：纯 stdlib 分页读取动态符号表 `.dynsym`——即离线 `nm -D`。动态符号是二进制的链接面：
@@ -101,7 +122,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **270（153 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **271（154 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
