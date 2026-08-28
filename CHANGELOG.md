@@ -66,6 +66,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `startup_receive_remaining` / `IdaWorkerError.from_payload` 纯函数合同。该模块行
   覆盖 32% → 98%。
 
+### 测试（doctor 可选外部 CLI 探针）
+
+- `doctor.py` 里 de4dot、NETReactorSlayer、XVLKC、VMP dumper、Scylla 五个可选 CLI 探针
+  此前完全没有测试(x64dbg/IDA/upx 探针已有覆盖)。新增
+  `tests/unit/test_doctor_optional_tool_probes.py`,参数化验证它们统一的三态诚实契约:
+  未配置报 MISSING 且给出配置指引、配置了但文件缺失或底层 CLI 探针失败报 BLOCKED、只有
+  底层探针确认可运行才 READY(探针在源模块里以接缝形式打桩);并补上 `probe_upx` 里
+  `test_doctor` 未覆盖的两条分支(配置路径不存在、探针抛 OSError)。`doctor.py` 行覆盖
+  63% → 78%(余量为 IDA/x64dbg/native 工具链/ghidra 等平台相关探针)。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
@@ -127,6 +137,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 PE / 截断的 COFF 头 / 截断的可选头 / 可选头 magic 不符 / 镜像基址为 0 分别报
   `module_file_invalid`；并补 `RuntimeModuleCatalog` 与 `RebasedModuleMapping` 的 `to_dict`
   序列化。模块覆盖率 88% → 99%。
+
+### 测试（cdb/WinDbg 客户端补齐输入守卫与错误映射）
+
+- `backends/windbg/client.py` 把模型给的地址、长度和 PID 直接交给 cdb 执行；命令白名单和
+  截断标注已有测试，但拒绝分支、错误映射与 cdb 发现的跨平台分支此前未覆盖（80%）。新增
+  `tests/unit/test_windbg_input_guards.py`（stub 掉 `run_bounded`，跨平台可跑）钉住：
+  `disasm`/`live_disasm` 的长度必须是 1..256 的整数、整数地址不得为负、字符串地址不得含
+  `; | &` 分隔符，合法整数地址被渲染成十六进制并折进白名单的 `u <addr> L<n>` 形式、合法
+  符号地址原样透传；PID 非正数在任何启动前即被拒、attach 到非会话调试目标报
+  `permission_denied` 且都不触发启动；活体探针无法启动 / 非零退出且无输出报 `backend_error`、
+  非零退出但仍有输出则如实返回；缺 dump 文件报 `not_found`、内核 dump 需显式放行、无 cdb
+  报 `capability_unavailable`；dump 与活体探针超时都把被杀的 pid 随 `timeout` 回报（避免
+  调试器悬在活体目标上）。cdb 发现覆盖环境变量优先、`which` 的非 Store 路径、Windows Kits
+  glob 布局、以及跳过不可启动的命中与全无安装时返回 None。模块覆盖率 80% → 99%。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
