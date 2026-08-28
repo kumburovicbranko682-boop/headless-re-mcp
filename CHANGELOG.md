@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（unpack 终态会话不再被掉队 worker 复活）
+
+- `offload` 把每个工具跑在 `abandon_on_cancel=True` 的 worker 线程上：一个慢速 dump/rebuild
+  撞上目录超时（或客户端断开）后，框架已返回，但那个被放弃的 worker 仍在跑。它与随后的
+  `unpack.cancel` 都做非原子的 get/mutate/put——worker 读到的是终态前的快照，回写时便可能把一个
+  活跃 phase 盖在 cancel 之上，把已 cancelled/failed/reanalyzed 的会话复活成活跃态；更糟的是
+  `close` 清掉会话后，一个迟到的 cancel 还能凭旧快照把 unpack 状态重新建回去。现在 state owner
+  提供两个在锁内做 compare-and-set 的原语：`put_monotonic` 用当前存储的 phase（而非调用方的旧快照）
+  判定，终态会话只能被另一终态覆盖、绝不回退到活跃 phase；`update_if_present` 原子读-变换-写，会话
+  已被 `close` 清空时返回 None、不再凭空重建。`_store_unpack_session` 走 `put_monotonic` 并返回权威
+  状态，`unpack.cancel` 走 `update_if_present`，终态单一真源收敛到 `is_terminal_unpack_phase`。
+
 ### 修复（NETReactorSlayer 输出别名测试的同款 Windows-only 路径炸裂）
 
 - 与 de4dot 同批落地的 `test_net_reactor_slayer_paths.py::test_output_equal_to_input_is_refused`
