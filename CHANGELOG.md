@@ -66,6 +66,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `startup_receive_remaining` / `IdaWorkerError.from_payload` 纯函数合同。该模块行
   覆盖 32% → 98%。
 
+### 测试（doctor 可选外部 CLI 探针）
+
+- `doctor.py` 里 de4dot、NETReactorSlayer、XVLKC、VMP dumper、Scylla 五个可选 CLI 探针
+  此前完全没有测试(x64dbg/IDA/upx 探针已有覆盖)。新增
+  `tests/unit/test_doctor_optional_tool_probes.py`,参数化验证它们统一的三态诚实契约:
+  未配置报 MISSING 且给出配置指引、配置了但文件缺失或底层 CLI 探针失败报 BLOCKED、只有
+  底层探针确认可运行才 READY(探针在源模块里以接缝形式打桩);并补上 `probe_upx` 里
+  `test_doctor` 未覆盖的两条分支(配置路径不存在、探针抛 OSError)。`doctor.py` 行覆盖
+  63% → 78%(余量为 IDA/x64dbg/native 工具链/ghidra 等平台相关探针)。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
