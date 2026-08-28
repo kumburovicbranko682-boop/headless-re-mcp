@@ -1492,6 +1492,42 @@ def test_wasm_summary_reads_the_module_surface_without_wabt() -> None:
 
 
 @pytest.mark.integration
+def test_wasm_functions_lists_the_whole_table_without_wabt() -> None:
+    """The per-function inventory must come straight from the bytes too.
+
+    Like wasm.summary this parses the module binary itself, so it runs with or
+    without wabt. The fixture defines one function, exported as "add" and
+    imports nothing, so the table must show a single defined func at index 0 --
+    kind local, signature (i32, i32) -> i32, exported, and carrying a real code
+    size -- with the counts matching. Because the fixture has no name section,
+    the func's label falls back to its export name, which this checks end to end.
+    """
+    assert _WASM_FIXTURE.is_file(), f"fixture missing: {_WASM_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_functions(str(_WASM_FIXTURE))
+        assert result.ok and result.data is not None, result.error
+        data = result.data
+        assert data["import_function_count"] == 0
+        assert data["defined_function_count"] == 1
+        assert data["total"] == 1
+        assert data["has_more"] is False
+        assert data["has_name_section"] is False
+        (fn,) = data["functions"]
+        assert fn["index"] == 0
+        assert fn["kind"] == "local"
+        assert fn["name"] == "add"  # no name section -> export name
+        assert fn["signature"] == "(i32, i32) -> i32"
+        assert fn["type_index"] == 0
+        assert fn["exported"] is True
+        assert fn["export_names"] == ["add"]
+        assert isinstance(fn["size"], int) and fn["size"] > 0
+        assert fn["locals"] == 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_summary_faults_soft_on_a_bad_module(tmp_path: Path) -> None:
     """A non-wasm file must be a clean backend_error, never a crash."""
     bad = tmp_path / "bad.wasm"

@@ -177,6 +177,42 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_summary(path, timeout=timeout))
 
+    @tools.tool(name="wasm.functions")
+    def wasm_functions(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """The module's whole function table (r2.functions / apk.methods for wasm).
+
+        Where wasm.summary lists only what a module imports and exports, this is
+        the full inventory -- every function, imported and internal alike --
+        keyed by its index in the function index space, so an internal routine
+        reached only through a call op or a table (invisible to wasm.summary)
+        still shows up. It is the navigation entry point for the wasm line: find
+        function #142 here, then point wasm.wat / wasm.decompile at it, or read
+        its data with wasm.data.
+
+        Answers with functions (a page, sorted by index), each an {index, name
+        (from the name section, else the import field or an export name, else
+        null), kind ("import" or "local"), type_index, signature (e.g.
+        "(i32, i32) -> i32"), params, results, exported, export_names when
+        exported}. An import also carries import_module / import_field; a defined
+        function also carries size (its code body byte length) and locals (its
+        declared local count). Also answers with count, total, offset and
+        has_more for paging, import_function_count, defined_function_count,
+        has_name_section (whether readable names were recovered) and scan_capped
+        (set only if the module had more functions than the 50000 collection
+        cap). The list field is functions and each entry's readable label is
+        functions[i].name. Reads the bytes directly, so it needs no wabt; a
+        malformed module is a clean backend_error and a missing file is
+        not_found. An input over 16 MiB is refused as too_large.
+        """
+        return _dump(
+            analysis.wasm_functions(path, offset=offset, limit=limit, timeout=timeout)
+        )
+
     @tools.tool(name="wasm.names")
     def wasm_names(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0

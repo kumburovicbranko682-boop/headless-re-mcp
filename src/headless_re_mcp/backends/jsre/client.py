@@ -654,7 +654,20 @@ def _read_wasm_valtypes(data: bytes, pos: int, end: int) -> tuple[list[str], int
     return out, pos
 
 
-def _read_wasm_functype(data: bytes, pos: int, end: int) -> tuple[str, int]:
+def _render_wasm_sig(params: list[str], results: list[str]) -> str:
+    """Render a function type as ``(i32, i32) -> i32`` (``-> ()`` for void)."""
+    if not results:
+        rendered = "()"
+    elif len(results) == 1:
+        rendered = results[0]
+    else:
+        rendered = "(" + ", ".join(results) + ")"
+    return f"({', '.join(params)}) -> {rendered}"
+
+
+def _read_wasm_functype_parts(
+    data: bytes, pos: int, end: int
+) -> tuple[list[str], list[str], int]:
     if pos >= end:
         raise _WasmParseError("type entry truncated")
     form = data[pos]
@@ -666,13 +679,12 @@ def _read_wasm_functype(data: bytes, pos: int, end: int) -> tuple[str, int]:
         raise _WasmParseError(f"unsupported type form 0x{form:02x}")
     params, pos = _read_wasm_valtypes(data, pos, end)
     results, pos = _read_wasm_valtypes(data, pos, end)
-    if not results:
-        rendered = "()"
-    elif len(results) == 1:
-        rendered = results[0]
-    else:
-        rendered = "(" + ", ".join(results) + ")"
-    return f"({', '.join(params)}) -> {rendered}", pos
+    return params, results, pos
+
+
+def _read_wasm_functype(data: bytes, pos: int, end: int) -> tuple[str, int]:
+    params, results, pos = _read_wasm_functype_parts(data, pos, end)
+    return _render_wasm_sig(params, results), pos
 
 
 def _wasm_sig_for(type_index: int, types: list[str]) -> str | None:
@@ -887,6 +899,221 @@ def _parse_wasm_summary(data: bytes, *, module: str) -> JsonObject:
     if types_truncated:
         result["types_truncated"] = True
     return result
+
+
+# wasm.functions materialisation + page caps. The function table is the
+# module's navigation index (r2.functions / apk.methods for wasm), so it
+# paginates rather than hard-truncates; the collect cap only bounds a crafted
+# vec count from building an unbounded list.
+_MAX_WASM_FUNCTIONS_COLLECT = 50_000
+_MAX_WASM_FUNCTIONS_PAGE = 2000
+
+
+def _parse_wasm_functions(data: bytes, *, module: str) -> JsonObject:
+    """Build the module's whole function table straight from the bytes.
+
+    wasm.summary lists only what a module imports and exports; this is the full
+    inventory -- every function, imported and internal alike -- keyed by its
+    index in the function index space, so an internal routine that is neither
+    imported nor exported (reached only through a call op or a table) still
+    shows up with its signature and code size. It is the WebAssembly analogue of
+    r2.functions / apk.methods: the seam from "here is a module" to "here is
+    function #142, named encrypt, (i32, i32) -> i32, 340 code bytes", the entry
+    point for pointing wasm.wat / wasm.decompile at one routine.
+
+    Reuses the name section (via the same parser wasm.names uses) for readable
+    names and marks which functions the module exports. Type/Function/Code
+    faults are recovered locally (the table still builds from what parsed);
+    Import/Export faults are a clean backend_error, matching wasm.summary.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("backend_error", "not a WebAssembly module (bad magic)")
+    version = int.from_bytes(data[4:8], "little")
+    pos = 8
+    n = len(data)
+    type_sigs: list[tuple[list[str], list[str]]] = []
+    func_imports: list[JsonObject] = []
+    defined_types: list[int] = []
+    code_entries: list[JsonObject] = []
+    export_funcs: dict[int, list[str]] = {}
+    try:
+        while pos < n:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb128(data, pos)
+            sec_end = pos + sec_size
+            if sec_size < 0 or sec_end > n:
+                raise _WasmParseError("section overruns module")
+            if sec_id == 0:
+                pos = sec_end
+                continue
+            count, body = _read_uleb128(data, pos)
+            if sec_id == 1:  # Type: the module's signature table
+                p = body
+                with suppress(_WasmParseError):
+                    for _ in range(count):
+                        if len(type_sigs) >= _MAX_WASM_ITEMS:
+                            break
+                        params, results, p = _read_wasm_functype_parts(data, p, sec_end)
+                        type_sigs.append((params, results))
+            elif sec_id == 2:  # Import: func imports take the low func index space
+                p = body
+                for _ in range(count):
+                    mod_name, p = _read_wasm_name(data, p, sec_end)
+                    fld_name, p = _read_wasm_name(data, p, sec_end)
+                    if p >= sec_end:
+                        raise _WasmParseError("import entry truncated")
+                    kind = data[p]
+                    p += 1
+                    if kind == 0:  # func: type index
+                        type_index, p = _read_uleb128(data, p)
+                        if len(func_imports) < _MAX_WASM_FUNCS:
+                            func_imports.append(
+                                {
+                                    "import_module": mod_name,
+                                    "import_field": fld_name,
+                                    "type_index": type_index,
+                                }
+                            )
+                    elif kind == 1:  # table
+                        p = _skip_wasm_limits(data, p + 1)
+                    elif kind == 2:  # memory
+                        p = _skip_wasm_limits(data, p)
+                    elif kind == 3:  # global
+                        p += 2
+                    else:
+                        raise _WasmParseError(f"unknown import kind {kind}")
+            elif sec_id == 3:  # Function: one type index per defined function
+                p = body
+                with suppress(_WasmParseError):
+                    for _ in range(count):
+                        if len(defined_types) >= _MAX_WASM_FUNCS:
+                            break
+                        type_index, p = _read_uleb128(data, p)
+                        defined_types.append(type_index)
+            elif sec_id == 7:  # Export
+                p = body
+                for _ in range(count):
+                    exp_name, p = _read_wasm_name(data, p, sec_end)
+                    if p >= sec_end:
+                        raise _WasmParseError("export entry truncated")
+                    kind = data[p]
+                    p += 1
+                    idx, p = _read_uleb128(data, p)
+                    if kind == 0:  # func export
+                        export_funcs.setdefault(idx, []).append(exp_name)
+            elif sec_id == 10:  # Code: one body per defined function
+                p = body
+                with suppress(_WasmParseError):
+                    for _ in range(count):
+                        if len(code_entries) >= _MAX_WASM_FUNCS:
+                            break
+                        body_size, p = _read_uleb128(data, p)
+                        body_end = p + body_size
+                        if body_size < 0 or body_end > sec_end:
+                            raise _WasmParseError("code body overruns section")
+                        groups, q = _read_uleb128(data, p)
+                        nlocals = 0
+                        for _ in range(groups):
+                            if q >= body_end:
+                                raise _WasmParseError("local decl overruns body")
+                            gcount, q = _read_uleb128(data, q)
+                            q += 1  # the group's value-type byte
+                            nlocals += gcount
+                        code_entries.append({"size": body_size, "locals": nlocals})
+                        p = body_end
+            pos = sec_end
+    except _WasmParseError as exc:
+        raise JsReError("backend_error", f"malformed WebAssembly module: {exc}") from exc
+    except IndexError as exc:  # a read ran off the end despite the guards
+        raise JsReError(
+            "backend_error", "malformed WebAssembly module: unexpected end of data"
+        ) from exc
+
+    # Readable names from the name section (reuse wasm.names' tested parser), so
+    # an internal func[142] carries its compiler-emitted name where present.
+    name_map: dict[int, str] = {}
+    has_name_section = False
+    with suppress(JsReError):
+        names = _parse_wasm_names(data, module=module)
+        has_name_section = bool(names.get("has_name_section"))
+        for named in names.get("functions", []):
+            if isinstance(named, dict) and isinstance(named.get("index"), int):
+                text = str(named.get("name") or "")
+                if text:
+                    name_map[named["index"]] = text
+
+    def _detail(type_index: int) -> tuple[str | None, list[str], list[str]]:
+        if 0 <= type_index < len(type_sigs):
+            params, results = type_sigs[type_index]
+            return _render_wasm_sig(params, results), list(params), list(results)
+        return None, [], []
+
+    functions: list[JsonObject] = []
+    scan_capped = False
+    num_imports = len(func_imports)
+
+    def _add(entry: JsonObject, index: int, type_index: int) -> bool:
+        if len(functions) >= _MAX_WASM_FUNCTIONS_COLLECT:
+            return False
+        sig, params, results = _detail(type_index)
+        exports_here = sorted(export_funcs.get(index, []))
+        if sig is not None:
+            entry["signature"] = sig
+            entry["params"] = params
+            entry["results"] = results
+        entry["exported"] = bool(exports_here)
+        if exports_here:
+            entry["export_names"] = exports_here
+        functions.append(entry)
+        return True
+
+    for i, imp in enumerate(func_imports):
+        type_index = int(imp["type_index"])
+        exports_here = export_funcs.get(i, [])
+        name = name_map.get(i) or imp["import_field"] or (
+            sorted(exports_here)[0] if exports_here else None
+        )
+        entry: JsonObject = {
+            "index": i,
+            "name": name or None,
+            "kind": "import",
+            "type_index": type_index,
+            "import_module": imp["import_module"],
+            "import_field": imp["import_field"],
+        }
+        if not _add(entry, i, type_index):
+            scan_capped = True
+            break
+    else:
+        for j, type_index in enumerate(defined_types):
+            index = num_imports + j
+            exports_here = export_funcs.get(index, [])
+            name = name_map.get(index) or (
+                sorted(exports_here)[0] if exports_here else None
+            )
+            local_entry: JsonObject = {
+                "index": index,
+                "name": name or None,
+                "kind": "local",
+                "type_index": int(type_index),
+            }
+            if j < len(code_entries):
+                local_entry["size"] = code_entries[j]["size"]
+                local_entry["locals"] = code_entries[j]["locals"]
+            if not _add(local_entry, index, int(type_index)):
+                scan_capped = True
+                break
+
+    return {
+        "module": module,
+        "version": version,
+        "functions": functions,
+        "import_function_count": num_imports,
+        "defined_function_count": len(defined_types),
+        "has_name_section": has_name_section,
+        "scan_capped": scan_capped,
+    }
 
 
 # The "name" custom section (WebAssembly binary Appendix, plus the extended
@@ -1415,6 +1642,39 @@ class WasmClient:
         _ = timeout
         resolved = _require_existing_file(path, missing="wasm file not found")
         return _parse_wasm_names(resolved.read_bytes(), module=resolved.name)
+
+    def functions(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Build the module's whole function table (r2.functions for wasm).
+
+        Where wasm.summary lists only imports/exports, this is the full function
+        inventory -- imported and internal alike -- keyed by index, each with a
+        resolved signature and, for defined functions, its code size and local
+        count. It is the navigation entry point: pick a function here, then
+        point wasm.wat / wasm.decompile at it. Reads the bytes directly (no
+        wabt); a malformed module faults cleanly and a missing file is
+        not_found. Paginated by offset/limit.
+        """
+        _ = timeout
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        parsed = _parse_wasm_functions(resolved.read_bytes(), module=resolved.name)
+        collected: list[JsonObject] = parsed["functions"]
+        total = len(collected)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_WASM_FUNCTIONS_PAGE))
+        window = collected[start : start + cap]
+        parsed["functions"] = window
+        parsed["count"] = len(window)
+        parsed["total"] = total
+        parsed["offset"] = start
+        parsed["has_more"] = start + len(window) < total
+        return parsed
 
     def strings(
         self,
