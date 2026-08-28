@@ -27,18 +27,23 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     tools = ToolSetBuilder()
 
     @tools.tool(name="device.list")
-    def device_list() -> dict[str, Any]:
+    def device_list(
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=64)] = 64,
+    ) -> dict[str, Any]:
         """List ADB devices and emulators visible to the local adb server.
 
-        Answers with devices (serial and state), count, and has_more so a page
-        that filled the cap is not read as every device. devices is sorted by
-        serial, so a capped page is the alphabetically first serials and a
+        Answers with devices (serial and state), count, total, offset and
+        has_more so a page that filled the cap is not read as every device.
+        devices is an alphabetical slice by serial starting at offset, so a
         serial that sorts within the page but is absent is genuinely not
         attached; has_more true means more serials sort after the last one
-        returned. Offline and unauthorized serials are included; a missing
-        device is not the same as an offline one.
+        returned. Page with offset to reach serials past the cap on a large
+        farm rather than assuming the first page is every device. Offline and
+        unauthorized serials are included; a missing device is not the same as
+        an offline one.
         """
-        return _dump(analysis.device_list())
+        return _dump(analysis.device_list(offset=offset, limit=limit))
 
     @tools.tool(name="device.connect")
     def device_connect(

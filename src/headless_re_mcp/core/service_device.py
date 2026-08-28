@@ -159,8 +159,8 @@ class DeviceAnalysisMixin:
                 result_summary=summary,
             )
 
-    def device_list(self) -> Result[JsonObject]:
-        return self._adb_wrap("list_devices")
+    def device_list(self, offset: int = 0, limit: int = 64) -> Result[JsonObject]:
+        return self._adb_wrap("list_devices", offset=offset, limit=limit)
 
     def device_connect(self, host: str = "127.0.0.1", port: int = 5555) -> Result[JsonObject]:
         result = self._adb_wrap("connect", host=host, port=port)

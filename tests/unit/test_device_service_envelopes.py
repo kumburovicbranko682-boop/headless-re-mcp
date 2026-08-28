@@ -48,7 +48,7 @@ class _FakeAdb(AdbBackend):
         if op in self.fail:
             raise AdbError("backend_error", f"{op} failed")
 
-    def list_devices(self) -> JsonObject:
+    def list_devices(self, offset: int = 0, limit: int = 64) -> JsonObject:
         self._guard("list_devices")
         return {"devices": [], "count": 0}
 

@@ -417,7 +417,7 @@ class AdbBackend:
             raise AdbError("not_found", f"device unavailable: {exc}", serial=serial) from exc
         return _bind_open_transport(dev, _ADB_TRANSPORT_TIMEOUT_S)
 
-    def list_devices(self) -> JsonObject:
+    def list_devices(self, *, offset: int = 0, limit: int = _MAX_DEVICES) -> JsonObject:
         client = self._client(socket_timeout=_ADB_PROBE_TIMEOUT_S)
         try:
             lister = getattr(client, "list", None)
@@ -438,17 +438,30 @@ class AdbBackend:
                     "timeout", f"adb timed out after {_ADB_PROBE_TIMEOUT_S:g}s"
                 ) from exc
             raise AdbError("backend_error", f"failed to list devices: {exc}") from exc
-        # Sort before the cap, not after: adb hands devices back in its own
+        # Sort before the page, not after: adb hands devices back in its own
         # order, so a farm with more than _MAX_DEVICES attached would return an
         # arbitrary slice -- which serials are visible, and which are stranded
         # past the cap, would shift run to run. Sort by serial (the id every
-        # other device call keys on) so the page is a real alphabetical prefix,
+        # other device call keys on) so the page is a real alphabetical slice,
         # the same honesty packages and properties already hold: a serial that
-        # sorts within the page but is absent is genuinely not attached.
+        # sorts within the page but is absent is genuinely not attached. And
+        # offset makes that hold for the whole farm, not just the first page: a
+        # farm larger than the cap can page to the stranded serials rather than
+        # never seeing (or being able to drive) a device past position cap --
+        # the apk.classes / device.packages offset contract this comment already
+        # invoked but the reader itself had only the sort-before-cap half of.
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_DEVICES))
         items.sort(key=lambda row: row["serial"])
-        has_more = len(items) > _MAX_DEVICES
-        page = items[:_MAX_DEVICES]
-        return {"devices": page, "count": len(page), "has_more": has_more}
+        total = len(items)
+        page = items[start : start + cap]
+        return {
+            "devices": page,
+            "count": len(page),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(page) < total,
+        }
 
     def connect(self, host: str = "127.0.0.1", port: int = 5555) -> JsonObject:
         # Validate the cheap local inputs before touching the adb client, so a

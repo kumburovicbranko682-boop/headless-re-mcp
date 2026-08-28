@@ -141,3 +141,41 @@ def test_the_capped_page_is_the_serial_sorted_prefix_not_a_raw_adb_slice() -> No
     assert serials[-1] == f"d{_MAX_DEVICES - 1:03d}"
     # The 10 highest serials sort past the cap and are absent from the page.
     assert f"d{_MAX_DEVICES:03d}" not in serials
+
+
+def test_offset_pages_the_serials_stranded_past_the_cap_on_a_large_farm() -> None:
+    """A farm larger than the cap must be reachable, not truncated at page one:
+    list_devices is the discovery entry point, so a serial past the cap that
+    offset cannot reach is a device that can never be driven. With cap+10
+    devices, the first page is the serial-sorted head with has_more, and offset
+    fetches the stranded tail with has_more false -- so every attached serial is
+    both visible and, therefore, operable."""
+    total = _MAX_DEVICES + 10
+    rows = [_Info(f"d{index:03d}", "device") for index in reversed(range(total))]
+    backend = _backend_with_client(_ListClient(rows))
+
+    head = backend.list_devices()
+    assert [row["serial"] for row in head["devices"]] == [
+        f"d{index:03d}" for index in range(_MAX_DEVICES)
+    ]
+    assert head["total"] == total
+    assert head["offset"] == 0
+    assert head["has_more"] is True
+
+    tail = backend.list_devices(offset=_MAX_DEVICES)
+    assert [row["serial"] for row in tail["devices"]] == [
+        f"d{index:03d}" for index in range(_MAX_DEVICES, total)
+    ]
+    assert tail["count"] == 10
+    assert tail["offset"] == _MAX_DEVICES
+    assert tail["has_more"] is False
+
+    # A negative offset floors to 0; a past-end offset yields an empty page.
+    floored = backend.list_devices(offset=-5, limit=1)
+    assert [row["serial"] for row in floored["devices"]] == ["d000"]
+    assert floored["offset"] == 0
+    past_end = backend.list_devices(offset=total + 100)
+    assert past_end["devices"] == []
+    assert past_end["count"] == 0
+    assert past_end["total"] == total
+    assert past_end["has_more"] is False

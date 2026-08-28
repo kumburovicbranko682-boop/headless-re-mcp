@@ -59,6 +59,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   即“无事可查”地失败。以把 `service_ext` 某处退回重包裹形态验证非空:守卫精确报出 `('service_ext','FridaError',517)`,
   还原后转绿——这条守卫本可在上一轮就自动逮住那个 `service_ext` 缺口。
 
+### `adb device.list` 现在支持 `offset` 分页，让排在 cap(64)之后的设备序列号可达（此前排序封顶 64、只回 has_more，超过 64 台的设备农场里尾部序列号既看不到、也就无法操作——而 device.list 正是发现序列号的入口）
+
+- `list_devices` 把设备按序列号排序、封顶 `_MAX_DEVICES`(64)、报 `has_more`,其注释明写“与 packages/properties 同款诚实:排在本页却缺失即
+  确实未接入”。但它**没有 offset**,而它是**发现入口**——排在第 64 之后的序列号不仅列不出、连带也无从对其执行任何 device.* 操作,比包名/属性的
+  尾部不可达更要命。补 offset(与 `device.packages` 完全同款):排序后切 `items[offset:offset+cap]`,回包补 `total`/`offset`,`has_more` 改为
+  `offset + len(page) < total`,后端 `max(0,int(offset))`/`min(limit,64)` 兜底。`limit` 默认取 64(= 旧固定 cap),不传参的老调用返回量不变。
+- service `device_list` 与工具 `device.list` 各加 `offset`/`limit`(schema `offset: Field(ge=0)`、`limit: Field(ge=1,le=64)`,过分页 schema/文档
+  双守卫;docstring 现点名 `total`/`offset`/`has_more`)。单测钉住:农场超 cap 时首页取字母序头、`offset` 翻到被搁浅的尾且 `has_more` 归假、
+  负 offset 归零、越界 offset 得空页;既有跨 adbutils 版本的行塑形与 socket_timeout 断言相应补上 `total`/`offset` 字段。
+
 ### `apk.native_libs` 现在支持 `offset`/`limit` 分页，让排在 cap 之后的 .so 可达（与 `device.packages`/`device.properties` 同一缺口：此前固定封顶 256、只回 has_more，多 ABI 大应用的 .so 超过 256 时尾部无法枚举，且这些库别处也不列）
 
 - `apk.native_libs` 遍历整个 APK 文件表收集全部 `lib/` 条目与全部 ABI,排序后固定封顶 `_MAX_NATIVE_LIBS`(256)、报 `has_more`,
