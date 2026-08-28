@@ -15,6 +15,7 @@ from uuid import uuid4
 from headless_re_mcp.backends.frida.client import FridaClient, FridaError
 from headless_re_mcp.backends.ghidra.client import GhidraClient, GhidraError
 from headless_re_mcp.backends.r2.client import R2Client, R2Error
+from headless_re_mcp.backends.r2.mapping import aggregate_r2_endpoints, aggregate_r2_secrets
 from headless_re_mcp.backends.windbg.client import WindbgClient, WindbgError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
@@ -353,6 +354,48 @@ class ExtAnalysisMixin(UiDriveMixin):
 
     def r2_symbols(self, session_id: str, timeout: float = 30.0) -> Result[JsonObject]:
         return _r2_request(self, session_id, ["isj"], timeout=timeout)
+
+    def r2_endpoints(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+        timeout: float = 30.0,
+    ) -> Result[JsonObject]:
+        result = _r2_request(self, session_id, ["izj"], timeout=timeout)
+        if not result.ok or result.data is None:
+            return result
+        payload = aggregate_r2_endpoints(
+            result.data,
+            include_paths=include_paths,
+            name_filter=name_filter,
+            offset=offset,
+            limit=limit,
+        )
+        return _success(payload, session_id=session_id, backend="radare2")
+
+    def r2_secrets(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+        timeout: float = 30.0,
+    ) -> Result[JsonObject]:
+        result = _r2_request(self, session_id, ["izj"], timeout=timeout)
+        if not result.ok or result.data is None:
+            return result
+        payload = aggregate_r2_secrets(
+            result.data,
+            include_generic=include_generic,
+            name_filter=name_filter,
+            offset=offset,
+            limit=limit,
+        )
+        return _success(payload, session_id=session_id, backend="radare2")
 
     def r2_disasm(
         self, session_id: str, address: int, count: int = 32, timeout: float = 30.0

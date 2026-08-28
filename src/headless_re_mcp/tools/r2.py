@@ -142,6 +142,87 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_symbols(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.endpoints")
+    def r2_endpoints(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Extract network endpoints (URLs, hosts, paths) from the strings r2 recovered.
+
+        The native-binary counterpart to apk.endpoints / js.endpoints /
+        dotnet.endpoints: the shared URL/path recogniser run over the same strings
+        r2.strings lists (radare2 izj), answering "what backends does this
+        ELF/Mach-O/PE talk to" without an analyst grepping the raw dump.
+        Deduplicated and aggregated by occurrence. Answers with endpoints (each
+        {value, kind (url|path), scheme, host, source (the containing string,
+        truncated with source_truncated when cut), count, and -- when r2 gave
+        them -- vaddr and address (va/rva/module) of that string, so r2.xrefs /
+        r2.disasm can pivot to the code that loads it}), plus count, total,
+        offset, has_more, hosts (the distinct URL host set, hosts_truncated when
+        over the cap), and scan_capped (r2 returned more than 4096 strings so the
+        underlying list was itself cut). include_paths (default true) also
+        surfaces whole-string request paths (/api/..., /v1/users); set false for
+        URLs only. name_filter keeps only endpoints whose value or host contains
+        that substring (case-insensitive), applied before paging so total is the
+        match count. The list field is endpoints. Reopens the binary one-shot like
+        the other r2 tools; requires radare2 on PATH or HEADLESS_RE_R2. Read-only.
+        """
+        return _dump(
+            analysis.r2_endpoints(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_paths=include_paths,
+                timeout=timeout,
+            )
+        )
+
+    @tools.tool(name="r2.secrets")
+    def r2_secrets(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_generic: bool = False,
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Detect embedded credentials in the strings r2 recovered.
+
+        The native-binary counterpart to apk.secrets / js.secrets /
+        dotnet.secrets: the same shared high-precision detector table (AWS/Google/
+        GitHub/Slack/Stripe/JWT/private-key/basic-auth-URL, plus an opt-in
+        high-entropy catch-all) run over the strings r2.strings lists (radare2
+        izj). Returns only the credential hits, deduplicated by (detector, value).
+        Answers with secrets (each {detector, value (truncated with
+        value_truncated when cut), source (the containing string, source_truncated
+        when cut), count, and -- when r2 gave them -- vaddr and address
+        (va/rva/module), so r2.xrefs can pivot to the code that uses the key}),
+        plus count, total, offset, has_more, detectors (the distinct detector
+        names present), and scan_capped (r2 returned more than 4096 strings so the
+        underlying list was itself cut). include_generic adds a single
+        generic_high_entropy match for a whole-string base64/hex token above the
+        entropy floor when no specific detector claimed it (off by default to keep
+        precision high). name_filter keeps only findings whose detector or value
+        contains that substring (case-insensitive), before paging so total is the
+        match count. The list field is secrets. Reopens the binary one-shot like
+        the other r2 tools; requires radare2 on PATH or HEADLESS_RE_R2. Read-only.
+        """
+        return _dump(
+            analysis.r2_secrets(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_generic=include_generic,
+                timeout=timeout,
+            )
+        )
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,

@@ -4,10 +4,23 @@ import json
 from pathlib import Path
 from typing import Any
 
+from headless_re_mcp.backends.common.endpoint_scan import iter_endpoint_matches
+from headless_re_mcp.backends.common.secret_scan import iter_secret_matches
 from headless_re_mcp.core.models import Address, Architecture
 
 JsonObject = dict[str, Any]
 _MAX_ITEMS = 4096
+# r2.endpoints / r2.secrets aggregate the shared scanners over the strings r2
+# recovered (izj, the same set r2.strings lists); these bound the distinct
+# finding sets, the per-finding value/source kept, the host summary and the page.
+_MAX_R2_EP_FINDINGS = 50000
+_MAX_R2_EP_VALUE = 512
+_MAX_R2_EP_SOURCE = 512
+_MAX_R2_EP_HOSTS = 512
+_MAX_R2_SEC_FINDINGS = 20000
+_MAX_R2_SEC_VALUE = 512
+_MAX_R2_SEC_SOURCE = 512
+_R2_SCAN_PAGE = 2000
 # Enough for any PE header: the DOS stub and the optional header live in the
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
@@ -199,4 +212,180 @@ def enrich_r2_payload(
     else:
         out["parsed"] = False
     out["commands"] = commands
+    return out
+
+
+def _r2_scan_base(data: JsonObject) -> JsonObject:
+    """Carry the identity fields the enriched payload already resolved."""
+    base: JsonObject = {}
+    for key in ("module", "image_base", "architecture"):
+        if key in data:
+            base[key] = data[key]
+    return base
+
+
+def _r2_page(rows: list[JsonObject], offset: int, limit: int) -> tuple[list[JsonObject], int, bool]:
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _R2_SCAN_PAGE))
+    window = rows[start : start + cap]
+    return window, start, start + len(window) < len(rows)
+
+
+def _r2_string_items(data: JsonObject) -> list[JsonObject]:
+    items = data.get("items")
+    return [it for it in items if isinstance(it, dict)] if isinstance(items, list) else []
+
+
+def aggregate_r2_endpoints(
+    data: JsonObject,
+    *,
+    include_paths: bool = True,
+    name_filter: str = "",
+    offset: int = 0,
+    limit: int = 200,
+) -> JsonObject:
+    """Aggregate network endpoints from the strings r2 recovered (izj).
+
+    The native counterpart to apk.endpoints / dotnet.endpoints: the shared
+    URL/path recogniser run over the same strings r2.strings lists. Each finding
+    carries the containing string's vaddr and address so r2.xrefs / r2.disasm can
+    pivot to the code that references it.
+    """
+    aggregates: dict[str, JsonObject] = {}
+    scan_capped = bool(data.get("items_truncated"))
+    stop = False
+    for item in _r2_string_items(data):
+        source = str(item.get("string") or "")
+        if not source:
+            continue
+        vaddr = item.get("vaddr")
+        address = item.get("address") if isinstance(item.get("address"), dict) else None
+        for value, kind, scheme, host in iter_endpoint_matches(source, include_paths=include_paths):
+            current = aggregates.get(value)
+            if current is None:
+                if len(aggregates) >= _MAX_R2_EP_FINDINGS:
+                    scan_capped = True
+                    stop = True
+                    break
+                row: JsonObject = {
+                    "value": value[:_MAX_R2_EP_VALUE],
+                    "kind": kind,
+                    "scheme": scheme,
+                    "host": host,
+                    "source": source[:_MAX_R2_EP_SOURCE],
+                    "count": 1,
+                }
+                if len(value) > _MAX_R2_EP_VALUE:
+                    row["value_truncated"] = True
+                if len(source) > _MAX_R2_EP_SOURCE:
+                    row["source_truncated"] = True
+                if isinstance(vaddr, int):
+                    row["vaddr"] = vaddr
+                if address is not None:
+                    row["address"] = address
+                aggregates[value] = row
+            else:
+                current["count"] = int(current["count"]) + 1
+        if stop:
+            break
+    endpoints = list(aggregates.values())
+    needle = name_filter.strip().casefold() if isinstance(name_filter, str) else ""
+    if needle:
+        endpoints = [
+            e
+            for e in endpoints
+            if needle in str(e["value"]).casefold() or needle in str(e["host"]).casefold()
+        ]
+    endpoints.sort(key=lambda e: (-int(e["count"]), str(e["value"])))
+    host_set = sorted({str(e["host"]) for e in endpoints if e["kind"] == "url" and e["host"]})
+    window, start, has_more = _r2_page(endpoints, offset, limit)
+    out = _r2_scan_base(data)
+    out.update(
+        {
+            "endpoints": window,
+            "count": len(window),
+            "total": len(endpoints),
+            "offset": start,
+            "has_more": has_more,
+            "hosts": host_set[:_MAX_R2_EP_HOSTS],
+            "hosts_truncated": len(host_set) > _MAX_R2_EP_HOSTS,
+            "scan_capped": scan_capped,
+        }
+    )
+    return out
+
+
+def aggregate_r2_secrets(
+    data: JsonObject,
+    *,
+    include_generic: bool = False,
+    name_filter: str = "",
+    offset: int = 0,
+    limit: int = 200,
+) -> JsonObject:
+    """Detect embedded credentials in the strings r2 recovered (izj).
+
+    The native counterpart to apk.secrets / dotnet.secrets: the same shared
+    detector table run over the strings r2.strings lists. Each finding carries
+    the containing string's vaddr and address for an r2.xrefs pivot.
+    """
+    aggregates: dict[tuple[str, str], JsonObject] = {}
+    scan_capped = bool(data.get("items_truncated"))
+    stop = False
+    for item in _r2_string_items(data):
+        source = str(item.get("string") or "")
+        if not source:
+            continue
+        vaddr = item.get("vaddr")
+        address = item.get("address") if isinstance(item.get("address"), dict) else None
+        for detector, matched in iter_secret_matches(source, include_generic=include_generic):
+            key = (detector, matched)
+            current = aggregates.get(key)
+            if current is None:
+                if len(aggregates) >= _MAX_R2_SEC_FINDINGS:
+                    scan_capped = True
+                    stop = True
+                    break
+                row: JsonObject = {
+                    "detector": detector,
+                    "value": matched[:_MAX_R2_SEC_VALUE],
+                    "source": source[:_MAX_R2_SEC_SOURCE],
+                    "count": 1,
+                }
+                if len(matched) > _MAX_R2_SEC_VALUE:
+                    row["value_truncated"] = True
+                if len(source) > _MAX_R2_SEC_SOURCE:
+                    row["source_truncated"] = True
+                if isinstance(vaddr, int):
+                    row["vaddr"] = vaddr
+                if address is not None:
+                    row["address"] = address
+                aggregates[key] = row
+            else:
+                current["count"] = int(current["count"]) + 1
+        if stop:
+            break
+    secrets = list(aggregates.values())
+    needle = name_filter.strip().casefold() if isinstance(name_filter, str) else ""
+    if needle:
+        secrets = [
+            s
+            for s in secrets
+            if needle in str(s["detector"]).casefold() or needle in str(s["value"]).casefold()
+        ]
+    secrets.sort(key=lambda s: (str(s["detector"]), -int(s["count"]), str(s["value"])))
+    detectors = sorted({str(s["detector"]) for s in secrets})
+    window, start, has_more = _r2_page(secrets, offset, limit)
+    out = _r2_scan_base(data)
+    out.update(
+        {
+            "secrets": window,
+            "count": len(window),
+            "total": len(secrets),
+            "offset": start,
+            "has_more": has_more,
+            "detectors": detectors,
+            "scan_capped": scan_capped,
+        }
+    )
     return out
