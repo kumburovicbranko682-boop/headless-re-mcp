@@ -517,6 +517,32 @@ def test_a_corrupt_token_file_regenerates_instead_of_crashing(
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+def test_a_failed_token_write_leaves_no_half_created_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write that dies after the O_EXCL create must not strand an empty file.
+
+    ``load_or_create_web_token`` opens the token path O_CREAT|O_EXCL and only
+    then writes. If that write raises (disk full, fsync error), the empty file
+    is already on disk and O_EXCL would make the next boot read a zero-token
+    file and regenerate every time. The cleanup unlinks it and re-raises so the
+    caller sees the real failure and the next boot starts clean.
+    """
+    path = tmp_path / "web_token.json"
+
+    def _boom(fd: int, payload: bytes) -> None:
+        # Take ownership of the descriptor the caller opened, then fail as a
+        # real write would after the file already exists on disk.
+        os.close(fd)
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(web_auth, "_write_token_fd", _boom)
+
+    with pytest.raises(OSError, match="simulated write failure"):
+        load_or_create_web_token(path=path)
+    assert not path.exists()
+
+
 def test_web_workspace_mode_get_and_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Redirect config persistence to a temp path so the gate never writes the
     # real user config (which would leak workspace_profile into other tests).

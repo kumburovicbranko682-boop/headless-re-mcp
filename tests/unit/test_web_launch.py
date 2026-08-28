@@ -9,12 +9,32 @@ from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.web import launch_util
 from headless_re_mcp.web.launch_util import (
     _parse_healthz_http,
     choose_bind_port,
     port_is_free,
     probe_our_healthz,
 )
+
+
+class _FakeClock:
+    """A ``time``-like stand-in whose ``monotonic`` returns scripted values.
+
+    Patched onto ``launch_util.time`` so only the launcher sees the fabricated
+    clock; the real ``time`` module (used by the test's HTTP server thread and
+    the socket stack) is untouched. Values are consumed in order and the last
+    one sticks, so an extra call cannot raise mid-probe.
+    """
+
+    def __init__(self, values: list[float]) -> None:
+        self._values = values
+        self._index = 0
+
+    def monotonic(self) -> float:
+        value = self._values[min(self._index, len(self._values) - 1)]
+        self._index += 1
+        return value
 
 
 def _serve(handler: type[BaseHTTPRequestHandler]) -> Iterator[int]:
@@ -136,6 +156,50 @@ def test_probe_our_healthz_returns_within_timeout_when_the_body_trickles() -> No
         assert probe_our_healthz("127.0.0.1", port, timeout=0.4) is None
         elapsed = time.perf_counter() - started
         assert elapsed < 1.5, f"healthz probe ran {elapsed:.3f}s against a 0.4s timeout"
+
+
+def test_probe_our_healthz_bails_when_the_deadline_is_already_spent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deadline already in the past must return before opening any socket.
+
+    The launcher recomputes the remaining budget right before connecting; if
+    the clock has run past the deadline it returns without touching the
+    network, so a caller with a tiny timeout cannot block. No socket is opened,
+    so the finally cleanup takes its no-socket path.
+    """
+    # First call fixes the deadline; the pre-connect recheck reads a later time.
+    monkeypatch.setattr(launch_util, "time", _FakeClock([1000.0, 1000.0 + 999.0]))
+    # Port 9 (discard) is never contacted because we bail before connecting.
+    assert probe_our_healthz("127.0.0.1", 9, timeout=0.6) is None
+
+
+def test_probe_our_healthz_bails_when_the_deadline_expires_after_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the budget is spent between connecting and reading, close and bail.
+
+    The connection succeeds but the post-connect recheck finds no time left, so
+    the probe returns None and the finally block still tears the socket down.
+    """
+
+    class Ours(BaseHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            return
+
+        def do_GET(self) -> None:  # pragma: no cover - we bail before requesting
+            body = b'{"ok":true,"service":"headless-re-mcp-web"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    for port in _serve(Ours):
+        # deadline, pre-connect recheck (time left), post-connect recheck (spent).
+        monkeypatch.setattr(
+            launch_util, "time", _FakeClock([1000.0, 1000.1, 1000.0 + 999.0])
+        )
+        assert probe_our_healthz("127.0.0.1", port, timeout=0.6) is None
 
 
 def test_probe_our_healthz_still_recognises_this_console() -> None:
