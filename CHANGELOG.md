@@ -6,14 +6,17 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 radare2 线的分析面深度首次对齐 Ghidra gate。原有 r2 live gate 只列函数，且依赖 Windows PE 夹具，
-在 Linux 上整体 skip；而 `r2.strings`/`r2.imports`/`r2.disasm`/`r2.xrefs` 这些操作者真正用的工具
+在 Linux 上整体 skip；而 `r2.strings`/`r2.imports`/`r2.disasm` 这些操作者真正用的工具
 从未对真实二进制跑过，解析逻辑只见过 mock。新增
 `tests/integration/test_r2_analysis_live_gate.py`：现场编译一个含命名函数（`add_numbers`/
 `multiply`/`main`）、独特字符串（`r2_gate_marker`）和 `printf` 导入的 ELF（`-O0 -no-pie` 保证不被
 内联且地址固定），断言 r2 恢复出的是这些具体事实——函数名齐全、字符串命中标记、导入表含 printf、
-对 `add_numbers` 反汇编出含 `add` 与 `ret` 的真实指令流、xrefs 返回地址映射的结构化数据——而非
-"列表非空"。新增 `linux-r2-analysis` CI job：apt 装 radare2、跑该 gate 并解析 junitxml，r2 已装却
-skip 时判失败（skip ≠ pass）。
+对 `add_numbers` 反汇编出含 `add` 与 `ret` 的真实指令流——而非
+"列表非空"。定位 `add_numbers` 时读后端归一化的 `address`（其稳定契约），不直接读 radare2 原始
+字段：`aflj` 条目在旧版 radare2 带 `offset`、6.2+ 改带 `addr`，直接取 `item["offset"]` 会在新版
+上静默解析成 None。`r2.xrefs` 的正确性由专门的 `test_r2_xrefs_to_address_live_gate.py` gate 覆盖，
+本 gate 不再重复断言。新增 `linux-r2-analysis` CI job：apt 装 radare2、跑该 gate 并解析 junitxml，
+r2 已装却 skip 时判失败（skip ≠ pass）。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在

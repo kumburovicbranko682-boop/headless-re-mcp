@@ -1,12 +1,13 @@
-"""radare2 analysis live gate: strings, imports, disasm and xrefs on Linux.
+"""radare2 analysis live gate: strings, imports and disasm on Linux.
 
 The existing r2 live gate only lists functions (and on ``main`` it still needs a
 Windows PE fixture, so it skips on Linux entirely). radare2 is cross-platform,
 and the r2 line exposes far more than function listing -- ``r2.strings``,
-``r2.imports``, ``r2.disasm`` and ``r2.xrefs`` are all tools an operator uses,
-and none of them ever ran against a real binary; their parsing only saw mocks.
-This gate compiles a small ELF and drives ``R2Client`` across that whole surface,
-so the depth matches the Ghidra gate rather than stopping at "some functions".
+``r2.imports`` and ``r2.disasm`` are all tools an operator uses, and none of
+them ever ran against a real binary; their parsing only saw mocks. This gate
+compiles a small ELF and drives ``R2Client`` across that surface, so the depth
+matches the Ghidra gate rather than stopping at "some functions". (``r2.xrefs``
+has its own dedicated live gate in ``test_r2_xrefs_to_address_live_gate.py``.)
 
 Skip != pass: the gate skips with a reason when r2 or a C compiler is absent, and
 runs for real when both are present. CI installs r2, so a skip there is a genuine
@@ -27,7 +28,7 @@ from headless_re_mcp.backends.r2.client import R2Client
 # A distinctive string literal and named helpers so the assertions prove r2
 # recovered real facts (this exact string, these functions, the printf import)
 # rather than merely returning non-empty lists. -O0 keeps the helpers from being
-# inlined and -no-pie fixes addresses so disasm/xrefs land where aflj reported.
+# inlined and -no-pie fixes addresses so disasm lands where aflj reported.
 _MARKER = "r2_gate_marker"
 _FIXTURE_SRC = f"""
 #include <stdio.h>
@@ -66,13 +67,27 @@ def _compile_elf(tmp_path: Path) -> Path | None:
 
 def _function_offset(functions: dict[str, Any], needle: str) -> int | None:
     for item in functions.get("items", []):
-        if needle in str(item.get("name")) and isinstance(item.get("offset"), int):
-            return int(item["offset"])
+        if needle not in str(item.get("name")):
+            continue
+        # Consume the backend's normalized ``address`` (its stable contract),
+        # not radare2's raw field, whose name drifts across versions: ``aflj``
+        # entries carry ``offset`` on older radare2 but ``addr`` on 6.2+, so a
+        # bare ``item["offset"]`` silently resolves to None on modern builds.
+        address = item.get("address")
+        if isinstance(address, dict):
+            for key in ("va", "rva"):
+                value = address.get(key)
+                if isinstance(value, int):
+                    return value
+        for key in ("offset", "addr"):
+            value = item.get(key)
+            if isinstance(value, int):
+                return int(value)
     return None
 
 
 @pytest.mark.integration
-def test_r2_recovers_strings_imports_disasm_and_xrefs(tmp_path: Path) -> None:
+def test_r2_recovers_strings_imports_and_disasm(tmp_path: Path) -> None:
     client = R2Client()
     if not client.available:
         pytest.skip("radare2/rizin not installed — analysis Gate not run (skip != pass)")
@@ -106,10 +121,3 @@ def test_r2_recovers_strings_imports_disasm_and_xrefs(tmp_path: Path) -> None:
     # A real disassembly of add_numbers contains its addition and its return.
     assert "add" in listing
     assert "ret" in listing
-
-    xrefs = client.xrefs(binary, add_offset, timeout=60.0)
-    assert xrefs.get("parsed") is True
-    # A real xref index is structured, address-mapped data, not an empty stub.
-    assert xrefs.get("count", 0) >= 1
-    first = xrefs["items"][0]
-    assert isinstance(first.get("address"), dict)
