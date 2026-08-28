@@ -116,8 +116,21 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
         "id": "apk.apktool",
         "backend": "apk",
         "status_probe": "apktool",
-        "tools": ["apk.decode", "apk.repack", "apk.sign"],
-        "summary": "apktool decode/rebuild plus apksigner re-signing (requires a JRE)",
+        "tools": ["apk.decode", "apk.repack"],
+        "summary": "apktool decode/rebuild of resources and smali (requires a JRE)",
+        "optional": True,
+    },
+    {
+        # apk.sign is gated on apksigner, not apktool: the client's sign() checks
+        # signer_available (apksigner) independently of apktool, so a host with
+        # apktool but no apksigner (or vice versa) makes them diverge. Keying this
+        # on its own probe stops capabilities.search advertising apk.sign as ready
+        # when only apktool is present, or hiding it when only apksigner is.
+        "id": "apk.apksigner",
+        "backend": "apk",
+        "status_probe": "apksigner",
+        "tools": ["apk.sign"],
+        "summary": "apksigner APK re-signing (requires a JRE)",
         "optional": True,
     },
     {

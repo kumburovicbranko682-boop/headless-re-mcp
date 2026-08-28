@@ -47,6 +47,28 @@ def test_every_status_probe_matches_a_real_doctor_probe() -> None:
     assert not stale, f"capability catalog names probes doctor does not emit: {stale}"
 
 
+def test_apk_signing_is_probed_by_apksigner_not_apktool() -> None:
+    """apk.sign's status must follow the apksigner probe, not apktool.
+
+    The apktool client signs via apksigner and checks signer_available (apksigner)
+    independently of apktool availability, so a host with apktool but no apksigner
+    (or the reverse) makes the two diverge. If apk.sign were advertised under the
+    apktool probe, capabilities.search would report it ready when only apktool is
+    present -- a call that then fails capability_unavailable -- or hide it when
+    only apksigner is present. This pins each apk build tool to the probe that
+    actually gates it.
+    """
+    by_tool = {
+        tool: cap["status_probe"]
+        for cap in _CORE_CAPABILITIES
+        for tool in cap["tools"]
+        if cap["backend"] == "apk"
+    }
+    assert by_tool["apk.sign"] == "apksigner"
+    assert by_tool["apk.decode"] == "apktool"
+    assert by_tool["apk.repack"] == "apktool"
+
+
 def test_each_capability_has_the_required_shape_and_a_unique_id() -> None:
     seen: set[str] = set()
     for cap in _CORE_CAPABILITIES:
