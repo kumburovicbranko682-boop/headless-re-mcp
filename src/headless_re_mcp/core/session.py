@@ -3271,8 +3271,11 @@ def describe_js(path: Path) -> dict[str, Any]:
     (deobfuscate / unpack), so a script on a machine without it yields nothing.
     These are the facts a reverser reads first and that need no tool: the size,
     the line shape (a single 400 KB line is the signature of a minified bundle),
-    and -- most usefully -- whether a ``sourceMappingURL`` points at the original
-    sources, inline or external.
+    whether a ``sourceMappingURL`` points at the original sources (inline or
+    external), and the network endpoints the script names -- the same URL
+    census the binary formats carry, because a bundle's fetch/XHR/WebSocket
+    targets (and its cleartext share) are exactly the script-level "what does
+    this talk to" signal.
 
     Fail-closed and bounded: an unreadable file returns ``{}`` and only the first
     16 MiB is scanned, so session creation never stalls or raises on a script.
@@ -3311,6 +3314,10 @@ def describe_js(path: Path) -> dict[str, Any]:
             # What the referenced map actually delivers -- above all whether
             # the original sources ship inside it (the source-recovery prize).
             "source_map_facts": source_map_facts,
+            # The endpoints baked into the script -- the URL census the binary
+            # formats already carry, sample bounded and count exact, with the
+            # cleartext (http/ws/ftp) share broken out.
+            **_file_url_facts(path),
             "truncated": truncated,
         }
     }
@@ -3824,7 +3831,13 @@ def describe_html(path: Path) -> dict[str, Any]:
     those and its stylesheets and iframes reach, the forms it submits (action,
     method and the named fields it collects), and the page title. stdlib
     html.parser reads all of it without launching a browser -- the page-level
-    analogue of the script-level facts describe_js gives.
+    analogue of the script-level facts describe_js gives. Alongside the parsed
+    resource shape it carries the raw-bytes URL census the binary formats
+    share: every scheme-prefixed endpoint on the page -- inline-script fetch
+    targets, form actions, data attributes, comments -- not just the src/href
+    hosts the parser walks, with the cleartext share broken out. (XML
+    namespace identifiers like the w3.org xmlns are not endpoints and stay out,
+    the same skip list the other formats apply.)
 
     Fail-closed and bounded: an unreadable file returns ``{}``, only the first
     16 MiB is scanned, and a parser hiccup on a hostile page yields the facts
@@ -3868,6 +3881,10 @@ def describe_html(path: Path) -> dict[str, Any]:
             "sri": parser.sri,
             "external_host_count": len(parser.hosts),
             "external_hosts": sorted(parser.hosts)[:_HTML_MAX_ITEMS],
+            # Every scheme-prefixed endpoint in the raw page, broader than the
+            # parser's src/href hosts: the URL census the binary formats carry,
+            # sample bounded and count exact, cleartext share broken out.
+            **_file_url_facts(path),
             "truncated": size > _HTML_MAX_BYTES,
         }
     }

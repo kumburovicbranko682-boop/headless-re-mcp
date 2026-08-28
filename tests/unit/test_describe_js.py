@@ -95,6 +95,60 @@ def test_session_over_a_local_js_carries_the_facts(tmp_path: Path) -> None:
     assert session.metadata["js"]["source_map"] == "app.js.map"
 
 
+class TestJsUrlCensus:
+    """describe_js carries the raw-bytes URL census the binary formats share.
+
+    A bundle's fetch/XHR/WebSocket targets are the script-level "what does
+    this talk to" fact; the census lists a bounded sample, an exact count and
+    the cleartext (http/ws/ftp) share -- the same three facts an ELF or PE
+    session reports, read the same way.
+    """
+
+    def test_endpoints_are_listed_counted_and_split_by_transport(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "app.js"
+        path.write_bytes(
+            b'fetch("https://api.example.com/v1");'
+            b'new WebSocket("ws://c2.example.com/beacon");'
+            b'img.src="http://track.example.com/p.gif";'
+            b'const secure=new WebSocket("wss://live.example.com/s");'
+        )
+        info = describe_js(path)["js"]
+        assert sorted(info["urls"]) == [
+            "http://track.example.com/p.gif",
+            "https://api.example.com/v1",
+            "ws://c2.example.com/beacon",
+            "wss://live.example.com/s",
+        ]
+        assert info["url_count"] == 4
+        # http and ws carry no transport security; https and wss do.
+        assert info["cleartext_url_count"] == 2
+
+    def test_a_script_with_no_endpoints_reads_an_empty_census(self, tmp_path: Path) -> None:
+        path = tmp_path / "pure.js"
+        path.write_bytes(b"const add = (a, b) => a + b;\nexport default add;\n")
+        info = describe_js(path)["js"]
+        assert info["urls"] == []
+        assert info["url_count"] == 0
+        assert info["cleartext_url_count"] == 0
+
+    def test_a_repeated_endpoint_counts_once(self, tmp_path: Path) -> None:
+        path = tmp_path / "dup.js"
+        path.write_bytes(b'a("https://api.example.com/x");b("https://api.example.com/x");')
+        info = describe_js(path)["js"]
+        assert info["urls"] == ["https://api.example.com/x"]
+        assert info["url_count"] == 1
+
+    def test_session_over_a_js_carries_the_census(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.js"
+        path.write_bytes(b'fetch("http://c2.example.com/cmd");')
+        session = SessionRegistry().create(str(path))
+        js = session.metadata["js"]
+        assert js["urls"] == ["http://c2.example.com/cmd"]
+        assert js["cleartext_url_count"] == 1
+
+
 def _map_doc(**overrides: object) -> bytes:
     doc: dict[str, object] = {
         "version": 3,

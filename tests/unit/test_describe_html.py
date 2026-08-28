@@ -277,3 +277,58 @@ def test_session_over_a_local_html_carries_the_facts(tmp_path: Path) -> None:
     assert "wasm" not in session.metadata
     assert session.metadata["html"]["external_script_count"] == 2
     assert session.metadata["html"]["title"] == "Login"
+
+
+class TestHtmlUrlCensus:
+    """describe_html carries the raw-bytes URL census the binary formats share.
+
+    Broader than the parser's src/href hosts: every scheme-prefixed endpoint
+    on the page -- inline-script fetch targets, form actions, values in
+    comments -- with an exact count and the cleartext (http/ws/ftp) share, the
+    same three facts an ELF or PE session reports.
+    """
+
+    def test_endpoints_beyond_the_parsed_hosts_are_censused(self, tmp_path: Path) -> None:
+        path = tmp_path / "index.html"
+        path.write_bytes(
+            b"<!doctype html><html><head>"
+            b'<script src="https://cdn.example.com/app.js"></script></head><body>'
+            b'<form action="http://insecure.example.com/login" method="post"></form>'
+            b'<script>fetch("https://api.example.com/x");'
+            b'new WebSocket("wss://live.example.com/s");'
+            b'var f="ftp://files.example.com/z";</script>'
+            b"</body></html>"
+        )
+        info = describe_html(path)["html"]
+        assert sorted(info["urls"]) == [
+            "ftp://files.example.com/z",
+            "http://insecure.example.com/login",
+            "https://api.example.com/x",
+            "https://cdn.example.com/app.js",
+            "wss://live.example.com/s",
+        ]
+        assert info["url_count"] == 5
+        # http and ftp are cleartext; https and wss are not.
+        assert info["cleartext_url_count"] == 2
+
+    def test_the_xmlns_namespace_is_not_an_endpoint(self, tmp_path: Path) -> None:
+        # An XHTML/SVG page declares the w3.org namespace; it names a format,
+        # not a host, and must not register as a cleartext endpoint (the same
+        # skip list the binary formats apply).
+        path = tmp_path / "svg.html"
+        path.write_bytes(
+            b'<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            b'<a href="https://real.example.com/go">go</a></body></html>'
+        )
+        info = describe_html(path)["html"]
+        assert info["urls"] == ["https://real.example.com/go"]
+        assert info["url_count"] == 1
+        assert info["cleartext_url_count"] == 0
+
+    def test_a_page_with_no_endpoints_reads_an_empty_census(self, tmp_path: Path) -> None:
+        path = tmp_path / "plain.html"
+        path.write_bytes(b"<!doctype html><html><body><p>hello</p></body></html>")
+        info = describe_html(path)["html"]
+        assert info["urls"] == []
+        assert info["url_count"] == 0
+        assert info["cleartext_url_count"] == 0

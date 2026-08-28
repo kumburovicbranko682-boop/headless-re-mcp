@@ -1,4 +1,4 @@
-"""Cross-validate the URL census against GNU strings across four formats.
+"""Cross-validate the URL census against GNU strings across the formats.
 
 A session now reports the endpoint literals baked into the target -- the first
 triage question ("who does it talk to?") answered tool-free at creation. The
@@ -19,7 +19,12 @@ Each format's arm proves the part only that format exercises:
 * WASM (wat2wasm): text staged in data segments of a toolchain-built module;
 * APK (zip): literals in a *deflated* member -- provably invisible to strings
   over the raw archive -- must surface through the member-wise inflating walk,
-  refereed by unzip + strings over the extracted tree.
+  refereed by unzip + strings over the extracted tree;
+* Web (JS/HTML): the census the web line carries just like the binaries -- a
+  bundle's fetch/WebSocket targets and a page's endpoints beyond the parsed
+  src/href hosts; both are text, so strings -e s reads them directly, and the
+  HTML arm additionally shows the xmlns namespace present in the raw output
+  yet dropped by both sides.
 
 A plain gcc probe is the negative: an empty census is the shared answer. gcc,
 binutils (strings) and unzip ship with the CI runner or its apt step; mcs and
@@ -295,3 +300,76 @@ def test_an_apk_reads_inflated_members_like_unzip_plus_strings(tmp_path: Path) -
     assert referee == {"https://api.example.com/v1", "http://plain.example/beacon"}
     assert census["url_count"] == 2
     assert census["cleartext_url_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Web: a JS bundle and an HTML page are text, so strings -e s sees their
+# endpoints directly -- the census must match run for run, and its namespace
+# skip must still drop an XHTML xmlns the page really declares.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_a_js_bundle_reads_the_same_endpoints_as_strings(tmp_path: Path) -> None:
+    strings = shutil.which("strings")
+    if strings is None:
+        pytest.skip("strings (binutils) not installed — referee missing (skip != pass)")
+
+    bundle = tmp_path / "app.js"
+    bundle.write_text(
+        'const api=fetch("https://api.example.com/v1");\n'
+        'const beacon=new Image();beacon.src="http://plain.example/beacon";\n'
+        'const live=new WebSocket("wss://live.example.com/s");\n'
+        'const cmd=new WebSocket("ws://c2.example.com/beacon");\n'
+        'const dup=fetch("https://api.example.com/v1");\n'  # one entry, not two
+    )
+
+    census = _session_census(bundle, "js")
+    referee = _referee_urls(strings, [bundle])
+    assert set(census["urls"]) == referee
+    assert {
+        "https://api.example.com/v1",
+        "http://plain.example/beacon",
+        "wss://live.example.com/s",
+        "ws://c2.example.com/beacon",
+    } <= referee
+    assert census["url_count"] == len(referee)
+    # http and ws are cleartext; https and wss are not -- computed the same
+    # way on both sides.
+    assert census["cleartext_url_count"] == sum(
+        1 for url in referee if not url.lower().startswith(("https://", "wss://"))
+    )
+
+
+@pytest.mark.integration
+def test_an_html_page_reads_the_same_endpoints_as_strings(tmp_path: Path) -> None:
+    strings = shutil.which("strings")
+    if strings is None:
+        pytest.skip("strings (binutils) not installed — referee missing (skip != pass)")
+
+    page = tmp_path / "index.html"
+    page.write_text(
+        '<!doctype html><html xmlns="http://www.w3.org/1999/xhtml"><head>\n'
+        '<script src="https://cdn.example.com/app.js"></script></head><body>\n'
+        '<form action="http://insecure.example.com/login" method="post"></form>\n'
+        '<script>fetch("https://api.example.com/x");</script>\n'
+        "</body></html>\n"
+    )
+
+    census = _session_census(page, "html")
+    referee = _referee_urls(strings, [page])
+    assert set(census["urls"]) == referee
+    # The endpoints the parser would and would not have found alike are in.
+    assert {
+        "https://cdn.example.com/app.js",
+        "http://insecure.example.com/login",
+        "https://api.example.com/x",
+    } <= referee
+    assert census["url_count"] == len(referee)
+    # The decoy is genuinely on the page -- strings sees it raw -- and both
+    # sides drop it: an xmlns names a format, not an endpoint.
+    assert "http://www.w3.org/1999/xhtml" in _strings_output(strings, page, "s")
+    assert "http://www.w3.org/1999/xhtml" not in census["urls"]
+    assert census["cleartext_url_count"] == sum(
+        1 for url in referee if not url.lower().startswith(("https://", "wss://"))
+    )
