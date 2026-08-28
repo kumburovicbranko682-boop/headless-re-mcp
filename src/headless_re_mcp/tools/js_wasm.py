@@ -69,6 +69,38 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.js_unpack_bundle(path, timeout=timeout, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="js.strings")
+    def js_strings(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        min_length: Annotated[int, Field(ge=1, le=256)] = 4,
+    ) -> dict[str, Any]:
+        """Extract string literals from a JavaScript file, node-free.
+
+        `strings` for JavaScript: it surfaces the quoted literals -- URLs, API
+        endpoints, file paths, error messages and embedded secrets -- so unlike
+        js.deobfuscate / js.beautify it needs no webcrack or Node installed. It
+        reads the source as text and makes one comment-aware pass over ' / " /
+        backtick literals, decoding backslash escapes so an obfuscated
+        \\x68\\x74\\x74\\x70 or \\u002f reads back as http / a slash. It does
+        not fully lex JS: regex literals are not tracked, so a divide/regex
+        ambiguity can occasionally misread one -- the accepted cost of a robust
+        best-effort scan. Literals shorter than min_length (default 4) are
+        dropped and longer than 2048 characters clipped; results are
+        de-duplicated and kept in first-appearance order. Answers with
+        input_bytes, min_length, and strings with count, total, offset and
+        has_more so a filled page is not read as every literal; total is capped
+        at 50000 with scan_capped when more may exist, and truncated is true
+        when the text ended inside an open literal or block comment. A missing
+        file is not_found, one over 16 MiB too_large.
+        """
+        return _dump(
+            analysis.js_strings(
+                path, offset=offset, limit=limit, min_length=min_length
+            )
+        )
+
     @tools.tool(name="wasm.callers")
     def wasm_callers(
         path: str,

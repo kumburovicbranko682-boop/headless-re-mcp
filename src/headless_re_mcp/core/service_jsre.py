@@ -34,6 +34,7 @@ from headless_re_mcp.backends.jsre import (
     parse_wasm_start,
     parse_wasm_strings,
     parse_wasm_tables,
+    scan_js_strings,
 )
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
@@ -140,6 +141,23 @@ class JsReAnalysisMixin:
         finally:
             if out_dir is not None:
                 prune_jsre_unpack_dirs(out_dir.parent)
+
+    def js_strings(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: int = 100,
+        min_length: int = 4,
+    ) -> Result[JsonObject]:
+        try:
+            data = scan_js_strings(
+                Path(path), offset=offset, limit=limit, min_length=min_length
+            )
+            return _success(data, backend="jsre")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
 
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:

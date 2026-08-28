@@ -36,6 +36,16 @@ _MAX_COUNTED_FILES = 50_000
 # run_bounded. Sixteen mebibytes is enough for a real module and not enough
 # to keep a core busy for the rest of the timeout.
 _MAX_INPUT_BYTES = 16 * 1024 * 1024
+# js.strings scans JavaScript source for string literals in pure Python, so --
+# unlike js.deobfuscate / js.beautify -- it needs no webcrack or Node. Bounded
+# like every other scan: a collect cap on distinct literals, a per-page cap and
+# a per-string clip. JS literals (data: URIs, tokens, base64 blobs) run longer
+# than the WASM data strings, so the per-string clip is a touch more generous.
+_JS_DEFAULT_MIN_STRING = 4
+_JS_MAX_MIN_STRING = 256
+_MAX_JS_STRINGS_COLLECT = 50000
+_MAX_JS_STRINGS_PAGE = 1000
+_MAX_JS_STRING_LEN = 2048
 # Every WebAssembly binary opens with these four bytes. Checking them before
 # launching wasm2wat / wasm-objdump turns a cryptic tool failure and a wasted
 # subprocess into a precise invalid_params -- the same reason the size cap
@@ -2311,6 +2321,181 @@ def parse_wasm_start(path: Path) -> JsonObject:
         "start_function": start_function,
         "kind": kind,
         "imported_count": imported_count,
+        "truncated": truncated,
+    }
+
+
+_JS_SIMPLE_ESCAPES = {
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "b": "\b",
+    "f": "\f",
+    "v": "\v",
+    "0": "\0",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+    "`": "`",
+    "/": "/",
+    "\n": "",  # a backslash-newline line continuation contributes nothing
+}
+
+
+def _decode_js_escape(text: str, i: int) -> tuple[str, int]:
+    """Decode one JS escape at ``text[i]`` (the char after the backslash).
+
+    Returns (decoded, next_index). Handles the simple one-char escapes plus
+    ``\\xHH`` / ``\\uHHHH`` / ``\\u{...}``; a malformed hex escape degrades to
+    the literal characters rather than raising, so a best-effort scan never
+    dies on bad input.
+    """
+    if i >= len(text):
+        return "\\", i
+    char = text[i]
+    if char == "x" and i + 3 <= len(text):
+        hexits = text[i + 1 : i + 3]
+        try:
+            return chr(int(hexits, 16)), i + 3
+        except ValueError:
+            return "x", i + 1
+    if char == "u":
+        if i + 1 < len(text) and text[i + 1] == "{":
+            close = text.find("}", i + 2)
+            if close != -1:
+                try:
+                    return chr(int(text[i + 2 : close], 16)), close + 1
+                except ValueError:
+                    return "u", i + 1
+        elif i + 5 <= len(text):
+            hexits = text[i + 1 : i + 5]
+            try:
+                return chr(int(hexits, 16)), i + 5
+            except ValueError:
+                return "u", i + 1
+    return _JS_SIMPLE_ESCAPES.get(char, char), i + 1
+
+
+def _scan_js_string_literals(
+    text: str, *, min_len: int, collect_cap: int, str_cap: int
+) -> tuple[list[str], bool, bool]:
+    """Extract distinct JS string literals in first-seen order (best-effort).
+
+    A single left-to-right pass that skips ``//`` and ``/* */`` comments (the
+    biggest source of quote-shaped false positives) and then collects the
+    contents of ``'``, ``"`` and ``` ``` ``` literals, decoding backslash
+    escapes so an obfuscated ``\\x68\\x74\\x74\\x70`` reads back as ``http``.
+    It does not track regex literals, so a divide/regex ambiguity can misread a
+    ``/.../`` containing a quote -- the accepted cost of not lexing JS fully.
+    Literals shorter than min_len are dropped and longer than str_cap clipped;
+    the list is de-duplicated. Returns (strings, scan_more, truncated), where
+    scan_more is True once collect_cap distinct literals are held and another
+    is seen, and truncated is True when the text ended inside an open literal
+    or block comment (that unterminated run is not emitted).
+    """
+    result: dict[str, None] = {}
+    scan_more = False
+    truncated = False
+    n = len(text)
+    i = 0
+    while i < n:
+        char = text[i]
+        if char == "/" and i + 1 < n and text[i + 1] == "/":
+            nl = text.find("\n", i + 2)
+            i = n if nl == -1 else nl + 1
+            continue
+        if char == "/" and i + 1 < n and text[i + 1] == "*":
+            close = text.find("*/", i + 2)
+            if close == -1:
+                truncated = True
+                break
+            i = close + 2
+            continue
+        if char in "'\"`":
+            quote = char
+            i += 1
+            chars: list[str] = []
+            closed = False
+            while i < n:
+                cur = text[i]
+                if cur == "\\":
+                    decoded, i = _decode_js_escape(text, i + 1)
+                    chars.append(decoded)
+                    continue
+                if cur == quote:
+                    closed = True
+                    i += 1
+                    break
+                chars.append(cur)
+                i += 1
+            if not closed:
+                truncated = True
+                break
+            value = "".join(chars)[:str_cap]
+            if len(value) < min_len or value in result:
+                continue
+            if len(result) >= collect_cap:
+                scan_more = True
+                break
+            result[value] = None
+            continue
+        i += 1
+    return list(result.keys()), scan_more, truncated
+
+
+def scan_js_strings(
+    path: Path,
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    min_length: int = _JS_DEFAULT_MIN_STRING,
+) -> JsonObject:
+    """Extract string literals from a JavaScript file in pure Python, node-free.
+
+    `strings` for JavaScript: it surfaces the quoted literals -- the URLs, API
+    endpoints, file paths, error messages and embedded secrets an app hard-codes
+    -- so unlike js.deobfuscate / js.beautify it needs no webcrack or Node
+    installed. It reads the source as text and makes one comment-aware pass over
+    ``'``/``"``/`` `` `` literals, decoding backslash escapes so an obfuscated
+    ``\\x68\\x74\\x74\\x70`` or ``\\u002f`` reads back as ``http`` / ``/``. It
+    does not fully lex JS: regex literals are not tracked, so a divide/regex
+    ambiguity can occasionally misread one (the accepted cost of a robust
+    best-effort scan over a fragile parser). Literals shorter than min_length
+    (default 4) are dropped and longer than 2048 characters clipped; results are
+    de-duplicated and kept in first-appearance order. Answers with input_bytes
+    (the scanned size), min_length, and strings with count, total, offset and
+    has_more so a filled page is not read as every literal; total is capped at
+    50000 with scan_capped when more may exist, and truncated is true when the
+    text ended inside an open literal or block comment. A missing file is
+    not_found, one over 16 MiB too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError(
+            "backend_error", f"input unreadable: {exc}", path=str(resolved)
+        ) from exc
+    text = raw.decode("utf-8", errors="replace")
+    min_len = max(1, min(int(min_length), _JS_MAX_MIN_STRING))
+    found, scan_more, truncated = _scan_js_string_literals(
+        text,
+        min_len=min_len,
+        collect_cap=_MAX_JS_STRINGS_COLLECT,
+        str_cap=_MAX_JS_STRING_LEN,
+    )
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_JS_STRINGS_PAGE))
+    window = found[start : start + cap]
+    return {
+        "strings": window,
+        "input_bytes": len(raw),
+        "min_length": min_len,
+        "count": len(window),
+        "total": len(found),
+        "offset": start,
+        "has_more": start + len(window) < len(found),
+        "scan_capped": scan_more,
         "truncated": truncated,
     }
 
