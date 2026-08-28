@@ -566,16 +566,22 @@ class AgentStore:
         """
         bounded = max(1, min(limit, 8000))
         byte_limit = max(1024, int(self.event_page_max_bytes))
+        # run_id breaks created_at ties. seq restarts at 1 per run, so without
+        # it two runs created inside one clock tick -- routine on Windows 3.12,
+        # where the system clock steps every ~15.6 ms and the audit trim saw
+        # six writes share a stamp -- collapse the final sort to seq alone and
+        # interleave the runs' events, while the cap windows rank the tied rows
+        # in unspecified order. Every other ordering here already ties on id.
         with self._reading() as con:
             rows = con.execute(
                 "SELECT run_id, seq, type, data_json, created_at FROM ("
                 "  SELECT e.run_id, e.seq, e.type, e.data_json, e.created_at,"
                 "    r.created_at AS run_created,"
                 "    ROW_NUMBER() OVER ("
-                "      ORDER BY r.created_at DESC, e.seq DESC"
+                "      ORDER BY r.created_at DESC, e.run_id DESC, e.seq DESC"
                 "    ) AS row_number,"
                 "    SUM(length(CAST(e.data_json AS BLOB))) OVER ("
-                "      ORDER BY r.created_at DESC, e.seq DESC"
+                "      ORDER BY r.created_at DESC, e.run_id DESC, e.seq DESC"
                 "      ROWS UNBOUNDED PRECEDING"
                 "    ) AS bytes_so_far"
                 "  FROM run_events e"
@@ -583,7 +589,7 @@ class AgentStore:
                 "  WHERE r.thread_id=?"
                 ") WHERE row_number<=?"
                 "  AND (bytes_so_far<=? OR row_number=1)"
-                " ORDER BY run_created, seq",
+                " ORDER BY run_created, run_id, seq",
                 (thread_id, bounded, byte_limit),
             ).fetchall()
         return [self._event_from_row(row) for row in rows]

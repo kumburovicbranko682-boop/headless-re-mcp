@@ -5,6 +5,29 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（agent 存储的 thread 事件史在 created_at 平局时按 seq 交织两个 run）
+
+- `AgentStore.list_thread_events` 是 web 监控台会话级事件史的唯一来源，其最终
+  排序只有 `ORDER BY run_created, seq`，两个 ROW_NUMBER/字节截断窗口也只按
+  `r.created_at DESC, e.seq DESC` 排——没有任何 id 平局键。而 `seq` 每个 run 从
+  1 重起，于是两个 run 的 `created_at` 一旦相同，最终排序就塌缩成纯 seq 序，把
+  两个 run 的事件逐条交织返回（实测冻结时钟后为 `[a,b,a,b,a,b]`，修前 100% 复
+  现）；截断窗口对平局行的名次分配则是 SQLite 未定义序，容量顶格时保留哪些行
+  不可复现。平局并非假想：run 的 `created_at` 来自 `datetime.now(UTC)`，本仓库
+  在 audit trim 修复里已实测 Windows 3.12 系统时钟 ~15.6ms 一跳、六次背靠背写
+  入共享同一时间戳——mission 调度器或用户连发消息在同一 tick 里创建两个 run 即
+  中招。交织的事件史正是前端 `RunProgress` 按遍历序配对 llm/tool 区间所输入
+  的数据，配对错位后轮数/耗时全盘算歪（前端分支 `orderRunEvents` 修复能按首
+  现次序重排兜住显示，但服务端截断的不确定性只能在源头修）。全文件其余排序
+  （`list_messages`、`list_missions`、`claim_next_mission`、两个 terminal trim、
+  finished-thread trim）本就全部带 id 平局键，唯独这一处漏掉。修法与家族对齐：
+  两个窗口与最终排序各补 `run_id`（镜像方向：窗口 DESC、输出 ASC），平局 run
+  之间按 run_id 定序（任意但确定），run 内 seq 升序不变。回归用例冻结
+  `store.datetime`（沿用 audit trim 的 SimpleNamespace 假时钟手法）制造同 tick
+  双 run、断言事件史按 run 连续分组且 run 内 seq 升序，修前红（交织 6 组）、
+  修后绿；`test_agent_store.py` 37 例、全部 23 个 agent 测试文件 352 passed +
+  1 个合法 Windows-only skip，ruff / mypy 干净。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

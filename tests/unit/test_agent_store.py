@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from itertools import groupby
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import headless_re_mcp.agent.store as store_module
 from headless_re_mcp.agent.models import MissionStatus, RunStatus
 from headless_re_mcp.agent.store import AgentStore, canonical_args_sha256
 
@@ -91,6 +95,52 @@ def test_list_thread_events_keeps_finished_run_history(tmp_path: Path) -> None:
     dumped = listed[0].dump()
     assert isinstance(dumped.get("created_ms"), int)
     assert dumped["created_ms"] > 0
+
+
+def test_thread_events_stay_grouped_when_runs_share_a_created_at_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two runs created inside one clock tick must not interleave their events.
+
+    Run created_at comes from datetime.now(UTC); on Windows 3.12 the system
+    clock advances in ~15.6 ms steps, so back-to-back create_run calls share
+    one timestamp (the audit-trim fix measured six writes on a single tick).
+    list_thread_events ordered by (run created_at, seq) with no tiebreak, so
+    on a tie the final sort collapsed to seq alone and returned
+    r1/s1, r2/s1, r1/s2, r2/s2 -- the cross-run interleave the web strip
+    mis-pairs into wrong llm/tool spans -- and the tied rows inside the
+    ROW_NUMBER/bytes cap window were ranked in unspecified order. Every other
+    ordering in the store already breaks created_at ties on an id column;
+    this pins the same contract here: events grouped per run, seq ascending
+    within each run.
+    """
+    frozen = datetime(2024, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(
+        store_module, "datetime", SimpleNamespace(now=lambda tz=UTC: frozen)
+    )
+    store = AgentStore(tmp_path / "tied.db")
+    thread = store.create_thread()
+    first = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=30
+    )
+    second = store.create_run(
+        thread.id, provider_profile="default", model="fake", deadline_seconds=30
+    )
+    # The premise: both runs really do carry the same created_at stamp.
+    assert first.created_at == second.created_at
+
+    for run in (first, second):
+        store.append_event(run.id, "llm.started", {"round": 1})
+        store.append_event(run.id, "llm.completed", {"round": 1})
+
+    listed = store.list_thread_events(thread.id)
+    order = [event.run_id for event in listed]
+    contiguous = [run_id for run_id, _ in groupby(order)]
+    assert len(contiguous) == len(set(order)), f"runs interleaved: {order}"
+    for run in (first, second):
+        seqs = [event.seq for event in listed if event.run_id == run.id]
+        assert seqs == sorted(seqs)
+        assert len(seqs) == 3  # run.started + the two appended events
 
 
 def test_tool_call_identity_is_run_scoped_and_arguments_are_redacted(tmp_path: Path) -> None:
