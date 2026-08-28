@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（serve-web 在没装 web extra 时把"缺依赖"当 internal_error 记 incident，埋掉了可执行的修复提示）
+
+- 基础安装（没装 `web` extra）敲 `headless-re-mcp serve-web`，延迟导入
+  `web.app` 抛 `ModuleNotFoundError: fastapi`，一路穿到 `run_cli_safely` 被当成
+  **意外**异常处理：stderr 输出 `internal_error` 信封、铸一个 incident id 写进
+  incidents.log、exit 1。可这是完全可预期的用户状况——web 控制台本来就住在可选
+  extra 后面——真正该说的一句 "装 `pip install "headless-re-mcp[web]"`" 反而被
+  incident 语言埋掉，还让 incident 日志混进非事故。改法：`cli.py` 的 serve-web
+  分支就地接住 `ModuleNotFoundError`，按 `exception_envelope` 同形输出
+  `backend_unavailable`（错误码沿用仓库既有词汇）+ 缺失模块名 + 安装命令，exit 2
+  （与 `run_web` 自身"起服务前拒绝"家族的退出码一致），不铸 incident。新增单测用
+  `monkeypatch.setitem(sys.modules, "headless_re_mcp.web.app", None)` 确定性触发
+  ModuleNotFoundError——装没装 fastapi 都跑同一条路径，断言 exit 2、错误码、安装
+  提示在消息里、且整个 payload 不含 incident。顺带实测裸机 CLI 其余生产路径：
+  `--help`/`doctor`（exit 0，探针如实上报）/`config generate --help`/`serve`
+  （stdio 喂 EOF 干净退出）全部正常。ruff 与 mypy（223 文件）全绿。
+
 ### 修复（tests/unit 裸机收集被 fastapi 直连测试炸穿：13 个模块 + 2 个用例改为 skip != pass）
 
 - 没装 `web` extra（只 `pip install -e ".[test,dev]"`）时，`pytest tests/unit` 在 collection

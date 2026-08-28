@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -258,7 +259,32 @@ def _main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "serve-web":
-        from headless_re_mcp.web.app import run_web
+        try:
+            from headless_re_mcp.web.app import run_web
+        except ModuleNotFoundError as exc:
+            # The web console lives behind the optional ``web`` extra, so a
+            # base install reaching this subcommand is an expected user
+            # condition -- not an internal error. Minting an incident id for a
+            # predictable missing dependency buries the actionable fix; say
+            # what to install instead, in the same envelope shape as
+            # exception_envelope so callers parse one format.
+            envelope = {
+                "ok": False,
+                "data": None,
+                "error": {
+                    "code": "backend_unavailable",
+                    "message": (
+                        "serve-web needs the optional web console dependencies "
+                        f"(missing module: {exc.name}). Install them with: "
+                        'pip install "headless-re-mcp[web]"'
+                    ),
+                    "details": {"missing_module": exc.name},
+                    "retryable": False,
+                },
+                "meta": None,
+            }
+            print(json.dumps(envelope, ensure_ascii=False), file=sys.stderr)
+            return 2
 
         return run_web(settings, host=args.host, port=args.port)
 

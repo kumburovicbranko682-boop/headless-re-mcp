@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -145,6 +146,29 @@ def test_serve_web_forwards_host_and_port(monkeypatch: pytest.MonkeyPatch) -> No
     code = cli_module._main(["serve-web", "--host", "127.0.0.1", "--port", "9001"])
     assert code == 7
     assert captured == {"host": "127.0.0.1", "port": 9001}
+
+
+def test_serve_web_without_the_web_extra_says_what_to_install(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A base install typing serve-web is an expected condition, not an incident.
+
+    ``None`` in ``sys.modules`` makes the deferred ``web.app`` import raise
+    ModuleNotFoundError exactly as a machine without the ``web`` extra does, so
+    this runs identically whether or not fastapi happens to be installed.
+    Before the guard, this surfaced as ``internal_error`` with a minted
+    incident id, burying the actionable fix (install the extra).
+    """
+    monkeypatch.setitem(sys.modules, "headless_re_mcp.web.app", None)
+    code = cli_module._main(["serve-web", "--host", "127.0.0.1", "--port", "9001"])
+    assert code == 2
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "backend_unavailable"
+    assert 'pip install "headless-re-mcp[web]"' in payload["error"]["message"]
+    assert "incident" not in json.dumps(payload).lower(), (
+        "a predictable missing extra must not mint an incident id"
+    )
 
 
 # --------------------------------------------------------------------------- #
