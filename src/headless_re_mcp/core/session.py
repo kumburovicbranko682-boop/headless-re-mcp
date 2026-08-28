@@ -122,6 +122,8 @@ class SessionRegistry:
                 architecture = detect_pe_architecture(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
+            elif kind is TargetKind.ELF:
+                architecture = detect_elf_architecture(path)
             session = Session(
                 target=kind,
                 binary=path,
@@ -391,6 +393,8 @@ def classify_target(reference: str | Path) -> TargetKind:
         return TargetKind.PE
     if magic.startswith(b"MZ"):
         return TargetKind.PE
+    if magic.startswith(b"\x7fELF"):
+        return TargetKind.ELF
     if magic.startswith(b"\x00asm"):
         return TargetKind.WEB
     if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
@@ -439,6 +443,34 @@ def describe_apk(path: Path) -> dict[str, Any]:
             ),
         }
     }
+
+
+_ELF_MACHINE: dict[int, Architecture] = {3: Architecture.X86, 62: Architecture.X64}
+
+
+def detect_elf_architecture(path: Path) -> Architecture | None:
+    """Best-effort ELF machine type, or ``None`` when it is not one we tag.
+
+    Unlike ``detect_pe_architecture`` this never raises on a machine it does not
+    know: an ELF built for ARM, AArch64 or RISC-V is still a valid radare2 /
+    Ghidra / Frida target, it just carries no architecture tag rather than
+    failing session creation. ``classify_target`` has already confirmed the
+    ``\\x7fELF`` magic, so this reads only the endianness byte and ``e_machine``
+    it needs; a truncated or unreadable header degrades to ``None``.
+    """
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(20)
+    except OSError:
+        return None
+    if len(head) < 20 or head[:4] != b"\x7fELF":
+        return None
+    # e_ident[EI_DATA] (byte 5): 2 is big-endian, anything else little.
+    if head[5] == 2:
+        machine = int.from_bytes(head[0x12:0x14], "big")
+    else:
+        machine = int.from_bytes(head[0x12:0x14], "little")
+    return _ELF_MACHINE.get(machine)
 
 
 def detect_pe_architecture(path: Path) -> Architecture:

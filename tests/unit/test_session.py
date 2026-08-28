@@ -9,11 +9,14 @@ from headless_re_mcp.core.models import (
     BackendHandle,
     BackendKind,
     SessionState,
+    TargetKind,
 )
 from headless_re_mcp.core.session import (
     InvalidStateTransition,
     SessionNotFound,
     SessionRegistry,
+    classify_target,
+    detect_elf_architecture,
     detect_pe_architecture,
     hydrate_persisted_sessions,
     session_from_store_row,
@@ -29,6 +32,19 @@ def _write_minimal_pe(path: Path, machine: int) -> None:
     path.write_bytes(image)
 
 
+def _write_minimal_elf(path: Path, machine: int, *, big_endian: bool = False) -> None:
+    """A header-only ELF: enough magic/class/endianness/e_machine to classify."""
+    order = "big" if big_endian else "little"
+    image = bytearray(0x40)
+    image[:4] = b"\x7fELF"
+    image[4] = 2  # ELFCLASS64
+    image[5] = 2 if big_endian else 1
+    image[6] = 1
+    image[0x10:0x12] = (2).to_bytes(2, order)  # ET_EXEC
+    image[0x12:0x14] = machine.to_bytes(2, order)
+    path.write_bytes(image)
+
+
 @pytest.mark.parametrize(
     ("machine", "expected"),
     [(0x014C, Architecture.X86), (0x8664, Architecture.X64)],
@@ -37,6 +53,63 @@ def test_detect_pe_architecture(tmp_path: Path, machine: int, expected: Architec
     binary = tmp_path / "fixture.exe"
     _write_minimal_pe(binary, machine)
     assert detect_pe_architecture(binary) == expected
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [(3, Architecture.X86), (62, Architecture.X64)],
+)
+def test_detect_elf_architecture_names_x86_and_x64(
+    tmp_path: Path, machine: int, expected: Architecture
+) -> None:
+    binary = tmp_path / "a.out"
+    _write_minimal_elf(binary, machine)
+    assert detect_elf_architecture(binary) == expected
+
+
+def test_detect_elf_architecture_is_none_for_an_untagged_machine(tmp_path: Path) -> None:
+    """AArch64 (e_machine 183) is a real ELF the two-value enum cannot name.
+
+    It must not raise the way detect_pe_architecture does for an unknown PE
+    machine: an ARM/AArch64 ELF is still a valid r2/Ghidra target, so the arch
+    tag is simply absent rather than the session being rejected.
+    """
+    binary = tmp_path / "arm.out"
+    _write_minimal_elf(binary, 183)
+    assert detect_elf_architecture(binary) is None
+
+
+def test_detect_elf_architecture_honours_endianness(tmp_path: Path) -> None:
+    binary = tmp_path / "be.out"
+    _write_minimal_elf(binary, 62, big_endian=True)
+    assert detect_elf_architecture(binary) == Architecture.X64
+
+
+def test_classify_target_recognises_an_elf_by_magic(tmp_path: Path) -> None:
+    """An ELF used to fall through to PE and then fail create as 'not a PE file'.
+
+    Magic-based detection makes it a first-class ELF target instead, which is
+    what lets the portable backends open a native Linux binary.
+    """
+    binary = tmp_path / "noext"
+    _write_minimal_elf(binary, 62)
+    assert classify_target(binary) is TargetKind.ELF
+
+
+def test_registry_creates_an_elf_session_with_its_architecture(tmp_path: Path) -> None:
+    """The end-to-end payoff: an ELF binary becomes a usable ELF session.
+
+    Before this the PE-forced classification made detect_pe_architecture raise,
+    so create_session failed outright and r2/Ghidra could never open a Linux
+    ELF. Now the session is ELF-kinded, keeps its binary (so require_binary --
+    what the portable backends gate on -- returns it) and carries the x64 arch.
+    """
+    binary = tmp_path / "a.out"
+    _write_minimal_elf(binary, 62)
+    session = SessionRegistry().create(binary)
+    assert session.target is TargetKind.ELF
+    assert session.binary == binary.resolve()
+    assert session.architecture is Architecture.X64
 
 
 def test_registry_state_machine(tmp_path: Path) -> None:

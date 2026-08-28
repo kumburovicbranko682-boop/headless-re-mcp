@@ -34,7 +34,7 @@ def test_require_pe_accepts_a_pe_session_and_returns_its_binary(tmp_path: Path) 
     assert session.require_target(TargetKind.PE) == binary
 
 
-@pytest.mark.parametrize("wrong", [TargetKind.APK, TargetKind.WEB])
+@pytest.mark.parametrize("wrong", [TargetKind.APK, TargetKind.WEB, TargetKind.ELF])
 def test_require_pe_refuses_non_pe_sessions_with_a_structured_mismatch(
     wrong: TargetKind, tmp_path: Path
 ) -> None:
@@ -58,11 +58,27 @@ def test_require_binary_explains_a_locator_only_session() -> None:
 
     assert caught.value.code == "target_mismatch"
     assert caught.value.details["actual_target"] == TargetKind.WEB.value
-    # A PE or an APK is the thing that would have a local file.
+    # A PE, an APK or an ELF is the thing that would have a local file.
     assert set(caught.value.details["expected_targets"]) == {
         TargetKind.PE.value,
         TargetKind.APK.value,
+        TargetKind.ELF.value,
     }
+
+
+def test_require_binary_returns_the_file_for_an_elf_session(tmp_path: Path) -> None:
+    """An ELF session has a local file: the portable backends must reach it.
+
+    require_pe refuses ELF (asserted above), but r2.*/ghidra.*/frida.* gate on
+    require_binary, not require_pe -- so an ELF session must hand its binary back
+    from require_binary, which is what makes those backends reachable on a native
+    Linux target rather than the session being unusable.
+    """
+    binary = tmp_path / "a.out"
+    session = _session(TargetKind.ELF, binary=binary)
+    assert session.require_binary() == binary
+    with pytest.raises(TargetMismatch):
+        session.require_pe()
 
 
 def test_require_architecture_needs_a_known_machine_type() -> None:

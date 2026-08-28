@@ -35,18 +35,23 @@ def build_core_session_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]
     def session_create(
         binary: str,
         target: Annotated[
-            Literal["pe", "apk", "web"] | None,
+            Literal["pe", "apk", "web", "elf"] | None,
             Field(description="Force a target kind instead of inferring it"),
         ] = None,
     ) -> dict[str, Any]:
-        """Create a session for a local PE, a local APK, or a web target.
+        """Create a session for a local PE, ELF, or APK, or a web target.
 
         binary is a local file path, or an http(s) URL when target is web. The
         target kind is inferred from the extension and magic bytes when omitted,
-        so a PE path behaves exactly as before.
+        so a PE path behaves exactly as before and a native Linux ELF is
+        recognised by its \\x7fELF magic. An ELF session is served by the
+        portable backends -- r2.*, ghidra.*, frida.* -- while the PE-only tools
+        (static.*, detect.*, unpack.*, dotnet.*) answer target_mismatch for it.
 
         Answers with session holding id, target, binary, locator, sha256,
         architecture, state, created_at, updated_at, backends and metadata.
+        architecture is set for an x86/x64 ELF and null for one whose machine
+        this does not tag (ARM, AArch64, ...), which is still a valid session.
         There is no top-level session_id.
         """
         return _dump(analysis.create_session(binary, target))
