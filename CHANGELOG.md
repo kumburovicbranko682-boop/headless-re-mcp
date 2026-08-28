@@ -5,6 +5,56 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（让 Android/Web/portable 三条线的真机 Gate 在 Linux 上真正跑起来）
+
+PE 之外的 Android、Web 与可移植后端三条线，单测契约覆盖已满，但真机 Gate 过去只在
+Windows 上执行：Linux 侧要么因缺后端而 skip、要么因测试自身写死的 Windows 假设而根本
+跑不了——「skip ≠ pass」在这几条线上一直是空头支票。本轮在装好 Linux 可用后端
+（androguard/adbutils/frida、Playwright + Chromium、mitmproxy、radare2、webcrack、wabt）
+的机器上把它们逐个跑通，并修掉挡路的可移植性问题（全部为测试改动，产品代码未动）：
+
+- **Agent 工作台浏览器 Gate（`test_agent_browser_smoke.py`）**：过去在模块顶层
+  `from playwright.sync_api import ...`，缺 browser extra 时不是 skip 而是 collection error，
+  会连累整条 integration run；且写死了 `C:\Program Files\Google\Chrome\...\chrome.exe`，
+  只能在装了 Chrome 的 Windows 上跑。改为经 `importorskip` 引入、启动 Playwright 自带的
+  Chromium（与生产 `WebBackend` 同源），装不了浏览器时干净 skip。跑通后暴露出该 Gate 与
+  现网 UI 已严重漂移：落地页标题、工作台每一个按钮/标签（消息/发送/设置/批准一次/拒绝）、
+  以及它等待的 run 事件字符串全是旧英文构建的产物——`cb3d770c` 改了落地页文案却没同步这个
+  只在配好 runner 才手动跑的 Gate，漂移因此一直没人发现。按当前本地化 UI 与 `RunProgress`
+  汇总行逐一重映射；危险工具从 `workflow.cancel` 换成 `report.generate`：前者只带
+  `state_change`，已被加壳分析默认预设自动批准，再也不会触发本 Gate 要验证的审批卡；后者带
+  `file_write` 且在预设排除名单内，必定停下等人。
+- **浏览器句柄泄漏回归（`test_web_lifecycle_gate.py`）**：console 远程对象不释放这条泄漏在
+  Windows 上表现为 OS 句柄、在 POSIX 上表现为打开的 fd，但探针只用 `num_handles()`
+  （Windows 独有），Linux 上一律返回 None 而 skip——最需要它的平台反而从没跑过。改为
+  Windows 数 `num_handles()`、POSIX 数 `num_fds()`，两端都真正校验「每次导航不涨句柄/fd」，
+  缺 psutil（非本项目依赖）时仍干净 skip。
+- **r2 实时 Gate（`test_m11_r2_live_gate.py`）**：过去只开 `build.ps1` 才产出的 Windows PE
+  夹具，Linux 上为缺夹具而 skip。r2 本就跨平台且对 ELF 的地址映射走同一条路，故改为有 PE
+  夹具时优先用它，否则在 POSIX 上用本机 C 编译器现编一个小的未 strip ELF 来驱动；地址断言
+  本就接受 `va`（ELF）或 `rva`+`module`（PE），两端覆盖同一映射路径，夹具与编译器都没有时
+  才 skip。
+- **本地 Frida 实时 Gate（新增 `test_frida_local_gate.py`）**：唯一的 Frida 实时 Gate
+  （`test_m11_frida_live_gate.py`）探测 Windows 的 kernel32/ntdll，非 Windows 一律强制 skip，
+  于是支撑 Android 动态那条线的 `FridaClient` 核心路径（allow-set 守卫、attach、模块与导出
+  枚举、模板注入）在真正会用到它们的 Linux 上从无真机覆盖。新增一个跨平台 Gate，对着现拉起
+  的解释器子进程驱动这些路径：断言未授权 pid 被拒、attach 成功、模块带名字枚举、系统模块
+  （Linux 的 libc/loader、Windows 的 kernel32/ntdll）能读出导出、noop 模板加载并声明未驻留。
+  frida 缺失或宿主禁止 attach（ptrace 收紧）时干净 skip，保持 skip ≠ pass。
+- **单测降级路径不再赌环境里没装可选后端**（`test_apk_client_*.py`、
+  `test_proxy_client_*.py`、`test_r2_client_paths.py`）：为跑上面的真机 Gate 装上
+  androguard/mitmproxy/radare2 后，一批「后端缺失 → capability_unavailable / 记录 import
+  失败」的用例因后端此刻确实存在而翻车——它们原本靠 CI 环境恰好没装这些可选依赖才成立。
+  改为确定性地模拟缺失：`sys.modules` 里钉一个 `None`（`import` 即抛 ImportError）、或把
+  `_discover` 打桩成返回 `None`，使降级路径无论本机是否装了后端都照跑。其中
+  `test_instance_start_reports_a_thread_that_fails_to_launch_mitmproxy` 此前还会随端口/加载
+  顺序在 `backend_error` 与 `timeout` 之间飘，一并钉死。
+
+在一台配好上述后端的 Linux x86_64 上，`tests/integration` 由 2 passed / 84 skipped 变为
+18 passed / 70 skipped；新跑通的 18 项即 Web（CDP/webcrack/wabt、浏览器生命周期与句柄/fd
+有界、抓包起停、工作台端到端）、portable（r2 ELF 地址映射）与 Android（Frida attach/枚举/
+hook）三条线，其余 skip 均为 x64dbg/WinDbg/Win32/MSI、IDA 或 .NET 夹具等本平台不支持项。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
