@@ -246,7 +246,7 @@ class _Win32World:
 def _install(monkeypatch: pytest.MonkeyPatch, world: _Win32World) -> None:
     monkeypatch.setattr(hd, "os", _NtOsProxy())
     monkeypatch.setattr(
-        hd.ctypes,
+        ctypes,
         "WinDLL",
         lambda name, use_last_error=False: {
             "user32": world.user32,
@@ -255,14 +255,14 @@ def _install(monkeypatch: pytest.MonkeyPatch, world: _Win32World) -> None:
         raising=False,
     )
     monkeypatch.setattr(
-        hd.ctypes,
+        ctypes,
         "WinError",
         lambda code=0: OSError(f"win32 error {code}"),
         raising=False,
     )
-    monkeypatch.setattr(hd.ctypes, "get_last_error", lambda: world.last_error, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: world.last_error, raising=False)
     monkeypatch.setattr(
-        hd.ctypes,
+        ctypes,
         "set_last_error",
         lambda value: setattr(world, "last_error", value),
         raising=False,
@@ -463,9 +463,13 @@ def test_capture_forwards_an_authorized_window(monkeypatch: pytest.MonkeyPatch) 
     world = _Win32World(windows=_TWO_WINDOWS)
     _install(monkeypatch, world)
     forwarded: list[tuple[int, frozenset[int], Any]] = []
+
+    def fake_capture(hwnd: int, pids: frozenset[int], path: Any) -> JsonObject:
+        forwarded.append((hwnd, pids, path))
+        return {"ok": True}
+
     monkeypatch.setattr(
-        "headless_re_mcp.core.ui_win32.capture_hwnd_screenshot",
-        lambda hwnd, pids, path: forwarded.append((hwnd, pids, path)) or {"ok": True},
+        "headless_re_mcp.core.ui_win32.capture_hwnd_screenshot", fake_capture
     )
     desktop = hd.HiddenDesktop("D", 777)
 
@@ -517,14 +521,16 @@ def test_spawn_forwards_to_the_qualified_desktop(monkeypatch: pytest.MonkeyPatch
     world = _Win32World()
     _install(monkeypatch, world)
     calls: list[tuple[Any, str]] = []
-    monkeypatch.setattr(
-        hd,
-        "create_process_on_desktop",
-        lambda args, desktop, **kw: calls.append((args, desktop)) or "PROC",
-    )
+    sentinel = object()
+
+    def fake_create(args: Any, desktop: str, **kw: Any) -> Any:
+        calls.append((args, desktop))
+        return sentinel
+
+    monkeypatch.setattr(hd, "create_process_on_desktop", fake_create)
     desktop = hd.HiddenDesktop("Probe", 777)
 
-    assert desktop.spawn(["x.exe", "--flag"]) == "PROC"
+    assert desktop.spawn(["x.exe", "--flag"]) is sentinel
     assert calls == [(["x.exe", "--flag"], r"WinSta0\Probe")]
 
 
