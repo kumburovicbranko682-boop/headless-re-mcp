@@ -288,6 +288,15 @@ def test_android_apktool_decode_and_repack(tmp_path: Path) -> None:
             ("com.example.headless.MainActivity", "headless", None, None),
         }
 
+        # The custom Application class (<application android:name>) -- the
+        # code that runs before any component, Android's code-before-main --
+        # must be the same class in apktool's text rendering as in the
+        # tool-free reader's AXML walk.
+        app_element = ET.fromstring(manifest_xml).find("application")
+        assert app_element is not None
+        assert reader_flags["application_name"] == app_element.get(f"{{{_ANDROID_NS}}}name")
+        assert reader_flags["application_name"] == "com.example.headless.HeadlessApp"
+
         # apktool's own baksmali must have disassembled the fixture's class: the
         # method and the string it returns have to survive DEX -> smali.
         smali_files = list(decoded_dir.rglob("Sample.smali"))

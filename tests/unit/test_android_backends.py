@@ -160,7 +160,10 @@ def _axml_utf8_manifest() -> bytes:
     return struct.pack("<HHI", 0x0003, 8, 8 + len(payload)) + payload
 
 
-def _axml_flag_manifest(app_attrs: list[tuple[int, int, int]]) -> bytes:
+def _axml_flag_manifest(
+    app_attrs: list[tuple[int, int, int]],
+    extra_strings: list[str] | None = None,
+) -> bytes:
     """A compiled manifest ``<manifest package><application ATTRS>``.
 
     ``app_attrs`` are ``(name_index, data_type, data)`` triples for the
@@ -168,7 +171,9 @@ def _axml_flag_manifest(app_attrs: list[tuple[int, int, int]]) -> bytes:
     -- index 5 is ``debuggable``, 6 ``testOnly``, 7 ``allowBackup``, 8
     ``usesCleartextTraffic`` -- or, with name index 0 (the empty string) whose
     resource-map slot carries the debuggable id, by resource id, exactly how
-    aapt2 leaves a stripped android:* attribute.
+    aapt2 leaves a stripped android:* attribute. ``extra_strings`` extends the
+    pool from index 9 so string-typed attributes (like android:name) can be
+    placed too.
     """
     strings = [
         "",  # 0: stripped-name slot; its resource-map entry names debuggable
@@ -180,7 +185,7 @@ def _axml_flag_manifest(app_attrs: list[tuple[int, int, int]]) -> bytes:
         "testOnly",  # 6
         "allowBackup",  # 7
         "usesCleartextTraffic",  # 8
-    ]
+    ] + (extra_strings or [])
     data = bytearray()
     offsets: list[int] = []
     for text in strings:
@@ -595,6 +600,10 @@ class TestManifestFactsWithoutAndroguard:
         # constant cannot satisfy both; the apktool gate cross-checks them too.
         assert manifest["allow_backup"] is False
         assert manifest["uses_cleartext_traffic"] is True
+        # The custom Application subclass -- instantiated before any component
+        # runs (Android's code-before-main, where a packer's stub lives); the
+        # apktool/androguard gates cross-check this same class.
+        assert manifest["application_name"] == "com.example.headless.HeadlessApp"
         # The launchable activity (entry point) -- the <activity> whose
         # intent-filter carries MAIN + LAUNCHER; the apktool gate cross-checks
         # this same component against apktool's own decode.
@@ -700,6 +709,26 @@ class TestManifestFactsWithoutAndroguard:
         assert "test_only" not in manifest
         assert "allow_backup" not in manifest
         assert "uses_cleartext_traffic" not in manifest
+
+    def test_reads_the_custom_application_class(self, tmp_path: Path) -> None:
+        # <application android:name=".."> names the class instantiated before
+        # any component -- Android's code-before-main; the reader reports it
+        # exactly as declared.
+        manifest_bytes = _axml_flag_manifest(
+            [(9, 0x03, 10)], extra_strings=["name", "com.example.flags.StubApp"]
+        )
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "app.apk", manifest_bytes)
+        )["apk"]["manifest"]
+        assert manifest["application_name"] == "com.example.flags.StubApp"
+
+    def test_no_application_class_reads_as_none(self, tmp_path: Path) -> None:
+        # No android:name on <application> means the framework default class
+        # runs -- None, not a guess and not an activity's name leaking in.
+        manifest = describe_apk(
+            self._apk_with_manifest(tmp_path, "default.apk", _axml_flag_manifest([]))
+        )["apk"]["manifest"]
+        assert manifest["application_name"] is None
 
     def test_reads_allow_backup_and_cleartext_by_name(self, tmp_path: Path) -> None:
         # allowBackup=true, usesCleartextTraffic=false -- the opposite pairing

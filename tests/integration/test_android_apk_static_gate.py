@@ -208,6 +208,15 @@ def test_android_apk_static_happy_path() -> None:
             ("com.example.headless.MainActivity", "headless", None, None),
         }
 
+        # The custom Application class (<application android:name>) -- the code
+        # that runs before any component, where a packer's stub lives -- read
+        # two independent ways: the stdlib reader off the binary AXML and
+        # androguard's text render of the same manifest.
+        app_element = ET.fromstring(manifest.data["manifest_xml"]).find("application")
+        assert app_element is not None
+        assert tool_free["application_name"] == app_element.get(f"{{{_ANDROID_NS}}}name")
+        assert tool_free["application_name"] == "com.example.headless.HeadlessApp"
+
         perms = service.apk_permissions(session_id)
         assert perms.ok, perms.error
         assert "android.permission.INTERNET" in perms.data["permissions"]

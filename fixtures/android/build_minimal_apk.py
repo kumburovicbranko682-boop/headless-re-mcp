@@ -55,6 +55,11 @@ TYPE_INT_BOOLEAN = 0x12
 
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 PACKAGE = "com.example.headless"
+# The custom Application subclass (<application android:name>): instantiated
+# before any component runs -- the app's code-before-main -- so the reader's
+# application_name fact and the apktool/androguard cross-checks have a real
+# declared class to agree on.
+APPLICATION_NAME = "com.example.headless.HeadlessApp"
 MAIN_ACTIVITY = "com.example.headless.MainActivity"
 PERMISSION = "android.permission.INTERNET"
 # Device shared-library dependencies (<uses-library>): one hard requirement
@@ -237,6 +242,7 @@ def build_manifest() -> bytes:
         "data",
         PACKAGE,
         "1.0",
+        APPLICATION_NAME,
         MAIN_ACTIVITY,
         PERMISSION,
         "android.intent.action.MAIN",
@@ -275,6 +281,9 @@ def build_manifest() -> bytes:
     body += _start_element(pool, "uses-permission", [Attr(ANDROID_NS, "name", PERMISSION)])
     body += _end_element(pool, "uses-permission")
     body += _start_element(pool, "application", [
+        # The custom Application class, run before any component -- the fact
+        # the reader reports as application_name.
+        Attr(ANDROID_NS, "name", APPLICATION_NAME),
         Attr(ANDROID_NS, "label", "Headless"),
         # Declared security-posture flags the stdlib AXML reader surfaces and
         # the apktool gate cross-checks against apktool's decoded manifest:

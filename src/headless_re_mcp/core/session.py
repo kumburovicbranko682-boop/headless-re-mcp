@@ -1347,6 +1347,11 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
     test_only: bool | None = None
     allow_backup: bool | None = None
     uses_cleartext: bool | None = None
+    # The custom Application subclass (<application android:name>): it is
+    # instantiated before any component runs, so it is Android's code-before-
+    # main -- the analogue of an ELF DT_INIT or a Mach-O __mod_init_func, and
+    # the classic home of a packer's unpacking stub.
+    application_name: str | None = None
     # Launcher (entry-point) detection is a small state machine over the flat
     # element walk: remember the current <activity>'s name, and whether the
     # intent-filter currently open has declared both MAIN and LAUNCHER. Both in
@@ -1444,6 +1449,8 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
                         {"name": lib, "required": True if required is None else required}
                     )
             elif name == "application":
+                if application_name is None:
+                    application_name = _axml_str(attrs, "name")
                 if debuggable is None:
                     debuggable = _axml_bool(attrs, "debuggable")
                 if test_only is None:
@@ -1508,6 +1515,10 @@ def _walk_axml(data: bytes) -> dict[str, Any]:
         # each with whether it is required -- the manifest-level dependency list,
         # in declaration order. Empty for an app that needs none.
         "uses_libraries": uses_libraries,
+        # The custom Application subclass, instantiated before any component
+        # runs -- the app's code-before-main, where packers put their stub.
+        # None when the manifest names none (the framework default class).
+        "application_name": application_name,
         # The launchable activity (entry point), reported as declared in the
         # manifest -- None for a library/service-only APK with no launcher.
         "launcher_activity": launcher_activity,
