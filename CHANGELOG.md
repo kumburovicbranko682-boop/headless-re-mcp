@@ -236,6 +236,28 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 修复（.NET 元数据表行宽算错导致 `dotnet.enumerate`/`dotnet.xrefs` 读错行）
+
+- `_table_row_size` 是枚举器用来定位表起点的尺子：`_table_start(target)` 把 `target` 之前
+  每张有行表的行宽首尾相接求和。逐列对照 ECMA-335 II.22 与 saferwall/pe 表定义后，发现
+  该尺子有一批列类型写错——某列本该是简单索引却写成编码索引、或整行公式抄了邻表——于是
+  `target` 之后每张表的偏移都被推歪，`dotnet.enumerate kind=resources` 与 `dotnet.xrefs`
+  从错误的字节里读行、报出错误的名字（当错算把某表推过其 `#~` 流末尾时，该表干脆被判定为 0 行
+  而整条丢失）。**AssemblyRef(0x23)** 误抄了 Assembly(0x20) 的行型（多了开头的 HashAlgId(4)、
+  少了结尾的 HashValue blob 索引），在两字节堆索引（常规小程序集）下每行无条件多算 2 字节——
+  而几乎每个程序集都引用别的程序集，所以带资源的程序集里资源枚举普遍读歪；**File(0x26)** 的
+  HashValue 列被当成 Implementation 编码索引（应为 Blob 索引）。此外 **InterfaceImpl(0x09)**
+  的 Interface 列应为 TypeDefOrRef 编码索引（曾写成 MethodDef 简单索引，影响 `dotnet.xrefs`）、
+  **MethodSemantics(0x18)** 的 Method 列应为 MethodDef 简单索引（曾写成 MethodDefOrRef 编码
+  索引）、**NestedClass(0x29)** 第二列应为第二个 TypeDef 简单索引（曾写成 Implementation 编码
+  索引）、**MethodSpec(0x2B) 与 GenericParamConstraint(0x2C)** 的公式被对调（那句错放在 0x2C 上的
+  `# MethodSpec` 注释正是对调的痕迹）；这几处只在行数越过索引宽度阈值的大/构造程序集上才显现，
+  小程序集里两种索引都是两字节故长期潜伏。另补齐缺失的 **ENCLog(0x1E)=8、ENCMap(0x1F)=4** 两张
+  定宽表——它们此前不在尺子里，带 EnC 表的程序集会在 `_table_start` 走到 ManifestResource 之前
+  以 `unsupported_metadata` 中止，尽管这两张表本可平凡定宽。新增直测：逐表在会触发错值的行数下
+  钉住每张表的正确行宽（含新加的 EnC 表），并端到端构造一个 AssemblyRef 后接 ManifestResource
+  的 `#~` 流，断言资源只有在 AssemblyRef 尺寸正确时才按名枚举得到。
+
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
 - `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
