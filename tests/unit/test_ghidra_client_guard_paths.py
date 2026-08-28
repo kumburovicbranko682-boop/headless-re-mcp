@@ -259,6 +259,73 @@ def test_export_maps_a_timeout_to_a_timeout_error(
     assert caught.value.details["killed_pids"] == [4321, 4322]
 
 
+# --- caller timeout clamping -------------------------------------------------
+
+
+def _run_capturing_timeout(captured: dict[str, float], recorded: list[list[str]]) -> Any:
+    """A run_bounded stub that records the timeout it was granted."""
+
+    def fake_run(cmd: list[str], *, timeout: float, **kwargs: Any) -> Completed:
+        del kwargs
+        captured["timeout"] = timeout
+        argv = [str(part) for part in cmd]
+        recorded.append(argv)
+        for arg in argv:
+            if arg.endswith(".json"):
+                Path(arg).write_text('{"items": [], "count": 0}', encoding="utf-8")
+        return Completed(0, b"analyze log", b"")
+
+    return fake_run
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan")])
+def test_analyze_binary_rejects_a_non_positive_or_nan_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    """A bad deadline is invalid_params, and the JVM is never launched for it.
+
+    The ghidra.* schemas declare 0 < timeout <= 600, but the agent transport
+    calls handlers straight from model arguments with no schema enforcement.
+    """
+
+    def must_not_launch(cmd: list[str], **kwargs: Any) -> Completed:
+        raise AssertionError("run_bounded must not be reached for a bad timeout")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", must_not_launch)
+    client = _client(tmp_path)
+    with pytest.raises(GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "project", timeout=bad)
+    assert caught.value.code == "invalid_params"
+
+
+def test_analyze_binary_caps_an_oversized_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timeout past the schema ceiling is capped, not passed straight to cdb."""
+    captured: dict[str, float] = {}
+    recorded: list[list[str]] = []
+    monkeypatch.setattr(
+        ghidra_client, "run_bounded", _run_capturing_timeout(captured, recorded)
+    )
+    client = _client(tmp_path)
+    client.analyze_binary(_binary(tmp_path), tmp_path / "project", timeout=100_000.0)
+    assert captured["timeout"] == ghidra_client._MAX_TIMEOUT_S
+
+
+def test_export_caps_an_oversized_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The export path shares the _run_headless choke point, so it is bounded too."""
+    captured: dict[str, float] = {}
+    recorded: list[list[str]] = []
+    monkeypatch.setattr(
+        ghidra_client, "run_bounded", _run_capturing_timeout(captured, recorded)
+    )
+    client = _client(tmp_path)
+    client.functions(_binary(tmp_path), tmp_path / "project", timeout=100_000.0)
+    assert captured["timeout"] == ghidra_client._MAX_TIMEOUT_S
+
+
 # --- _find_analyze_headless --------------------------------------------------
 
 
