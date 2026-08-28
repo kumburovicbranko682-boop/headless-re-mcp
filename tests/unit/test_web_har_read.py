@@ -291,3 +291,22 @@ def test_service_maps_a_non_har_to_invalid_params(tmp_path: Path) -> None:
         assert result.error.code == "invalid_params"
     finally:
         service.close_all()
+
+
+def test_both_har_exporters_point_at_the_reader(tmp_path: Path) -> None:
+    """Discovery wiring: web.har.read reads a HAR that either exporter writes,
+    but it lives in the web.* namespace, so a proxy user meets it only if the
+    exporter description names it. A tool description is the agent's discovery
+    surface, so pin the cross-reference from both exporters so it cannot rot."""
+    from headless_re_mcp.tools.proxy import build_proxy_tools
+    from headless_re_mcp.tools.web import build_web_tools
+
+    service = _service(tmp_path)
+    try:
+        web = {binding.name: binding for binding in build_web_tools(service)}
+        proxy = {binding.name: binding for binding in build_proxy_tools(service)}
+        assert "web.har.read" in web
+        for exporter in (web["web.har.export"], proxy["proxy.export_har"]):
+            assert "web.har.read" in (exporter.handler.__doc__ or "")
+    finally:
+        service.close_all()

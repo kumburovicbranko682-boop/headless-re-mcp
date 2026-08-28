@@ -186,7 +186,8 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with path, entry_count and truncated, plus artifact_id when
         the HAR was registered. truncated is true when the oldest entries were
         dropped to keep the file under the capture cap. There is no har,
-        entries or artifact field.
+        entries or artifact field. Read the exported file back with
+        web.har.read.
         """
         return _dump(analysis.web_har_export(session_id))
 

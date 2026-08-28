@@ -110,7 +110,8 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         the HAR was registered. truncated is true when the oldest entries were
         dropped to keep the file under the capture cap. There is no har,
         output or artifact field. path is the file; looking for har after a
-        successful export reads as a missing capture.
+        successful export reads as a missing capture. Read the exported file
+        back with web.har.read (the one reader for either exporter's HAR).
         """
         return _dump(analysis.proxy_export_har(session_id))
 
