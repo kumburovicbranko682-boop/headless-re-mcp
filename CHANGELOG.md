@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **288（170 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **289（171 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -410,6 +410,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   加 `imported_func_count` 与 `types_resolved`(类型节解析不了时为 false)。每行带 `module`/`name`/
   `kind`;table 行带 `element_type`/`limits`,memory 行带 `limits`,global 行带 `value_type`/`mutable`。
   导入数触顶置 `scan_capped`。
+- 新增 `wasm.elements`:纯 Python 解开元素段(节 9)——WASM 的间接调用分发表。summary 只数元素段个数;
+  这里解开每段的表槽映射,于是在被裁模块里能还原 `call_indirect` 目标:表槽 = 该段 offset 基址 +
+  在 `func_indices` 中的位置,`func_indices[k]` 即安装在那槽的函数。八种编码(active/passive/
+  declarative、funcidx 向量与元素表达式两种形式)全覆盖。回 `elements`(分页)、`count`/`total`/
+  `offset`/`has_more`/`scan_capped`。每段带 `index`、`mode`、`table_index`(填充的表,passive/
+  declarative 为 null)、`offset`(active 段基槽的常量初始化解码,如 `{op:i32.const,value:0}`,否则 null)、
+  `element_type`(funcref/externref)、`func_indices`(安装的函数索引,`ref.null` 槽为 null)、`count`
+  (声明的条目数)与 `entries_truncated`(单段条目触顶)。非模块报 `invalid_params`,超 16 MiB 报 `too_large`。
 - 新增 `wasm.globals`:纯 Python 列出模块定义的全局变量(节 6)。summary 只给计数,这里逐个命名:
   每行带 `index`(全局索引空间里的位置,导入全局在前故作为偏移加上)、`value_type`、`mutable`
   (可变全局常是加壳器藏栈指针/解密 key 的地方),与 `init`——初始化表达式首指令的解码:`{op}` 加

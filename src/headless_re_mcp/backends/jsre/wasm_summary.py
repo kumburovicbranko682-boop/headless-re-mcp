@@ -1110,3 +1110,114 @@ def list_wasm_imports(data: bytes, *, offset: int = 0, limit: int = 100) -> Json
     result["offset"] = start
     result["has_more"] = start + len(window) < len(items)
     return result
+
+
+_MAX_ELEMENTS_COLLECT = 5000
+_MAX_ELEMENTS_PAGE = 2000
+_MAX_ELEM_ENTRIES = 4096
+
+
+def _parse_element_segments(payload: bytes) -> tuple[list[JsonObject], bool]:
+    """Decode the element section (id 9) into table-init segments.
+
+    Handles the eight bulk-memory/reference-types encodings (flags 0..7),
+    covering active/passive/declarative modes and both the funcidx-vector and
+    element-expression forms. For each segment the function indices it installs
+    are the ``call_indirect`` dispatch table -- the map from table slot to the
+    function a stripped module dispatches through.
+    """
+    count, pos = _uleb(payload, 0)
+    out: list[JsonObject] = []
+    capped = False
+    for seg_index in range(count):
+        if len(out) >= _MAX_ELEMENTS_COLLECT:
+            capped = True
+            break
+        flags, pos = _uleb(payload, pos)
+
+        mode = "active"
+        if flags in (1, 5):
+            mode = "passive"
+        elif flags in (3, 7):
+            mode = "declarative"
+
+        table_index: int | None = 0
+        if flags in (2, 6):
+            table_index, pos = _uleb(payload, pos)
+        elif flags in (1, 3, 5, 7):
+            table_index = None
+
+        offset_expr: JsonObject | None = None
+        if flags in (0, 2, 4, 6):
+            offset_expr, pos = _read_const_init(payload, pos)
+
+        element_type = "funcref"
+        if flags in (1, 2, 3):
+            kind, pos = _u8(payload, pos)
+            element_type = "funcref" if kind == 0x00 else f"elemkind:0x{kind:02x}"
+        elif flags in (5, 6, 7):
+            reftype, pos = _u8(payload, pos)
+            element_type = _valtype(reftype)
+
+        use_expr = flags in (4, 5, 6, 7)
+        declared, pos = _uleb(payload, pos)
+        entries: list[int | None] = []
+        entries_truncated = False
+        for _ in range(declared):
+            if use_expr:
+                init, pos = _read_const_init(payload, pos)
+                idx = init.get("index") if init.get("op") == "ref.func" else None
+            else:
+                idx, pos = _uleb(payload, pos)
+            if len(entries) < _MAX_ELEM_ENTRIES:
+                entries.append(idx)
+            else:
+                entries_truncated = True
+
+        out.append(
+            {
+                "index": seg_index,
+                "mode": mode,
+                "table_index": table_index,
+                "offset": offset_expr,
+                "element_type": element_type,
+                "func_indices": entries,
+                "count": declared,
+                "entries_truncated": entries_truncated,
+            }
+        )
+    return out, capped
+
+
+def list_wasm_elements(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List element segments: the indirect-call dispatch table of a WASM module.
+
+    summary only counts element segments; this decodes each one's table-slot map
+    so a caller can resolve ``call_indirect`` targets in a stripped module. Never
+    raises: a malformed section yields an empty listing.
+    """
+    result: JsonObject = {
+        "elements": [],
+        "count": 0,
+        "total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "scan_capped": False,
+    }
+    sections, _ = _collect_sections(data)
+    if 9 not in sections:
+        return result
+    try:
+        segments, capped = _parse_element_segments(sections[9])
+    except (_WasmTruncated, _WasmMalformed):
+        return result
+    result["scan_capped"] = capped
+    result["total"] = len(segments)
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_ELEMENTS_PAGE))
+    window = segments[start : start + cap]
+    result["elements"] = window
+    result["count"] = len(window)
+    result["offset"] = start
+    result["has_more"] = start + len(window) < len(segments)
+    return result

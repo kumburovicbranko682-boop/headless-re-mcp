@@ -263,4 +263,33 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_imports(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.elements")
+    def wasm_elements(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 100,
+    ) -> dict[str, Any]:
+        """List a .wasm module's element segments: the indirect-call dispatch table.
+
+        summary only counts element segments; this decodes each one's table-slot
+        map, so you can resolve a call_indirect target in a stripped module:
+        table slot = the segment's offset base plus the position in func_indices,
+        and func_indices[k] is the function installed there. Handles all eight
+        encodings (active/passive/declarative, funcidx-vector and element-
+        expression forms). Pure Python, no wabt.
+
+        Answers with elements (paged), count, total, offset, has_more and
+        scan_capped. Each segment carries index, mode (active/passive/
+        declarative), table_index (the table it fills, or null for passive/
+        declarative), offset (the base slot as a decoded const-init dict like
+        {op:i32.const,value:0}, or null when not active), element_type
+        (funcref/externref), func_indices (the installed function indices; a null
+        entry is a ref.null slot), count (declared entry count) and
+        entries_truncated (the per-segment entry cap was hit).
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_elements(path, offset=offset, limit=limit))
+
     return tools.bindings
