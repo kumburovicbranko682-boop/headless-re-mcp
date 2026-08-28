@@ -116,6 +116,10 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     row = payload["requests"][0]
     assert "type" not in row
     assert row["resourceType"] == "XHR"
+    # requestId is the join key to web.network.get: the row must carry it, and
+    # the doc must name it. Without it an agent has a list of requests and no way
+    # to name one to the body fetch, so the whole network-body path is a dead end.
+    assert row["requestId"] == "0"
     normalized = backend.network_list("s", offset=-10, limit=0)
     assert normalized["offset"] == 0
     assert normalized["count"] == 1
@@ -127,6 +131,9 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     assert "has_more" in doc
     assert "dropped" in doc
     assert "metadata_truncated" in doc
+    # The id that feeds web.network.get must be documented, not just present.
+    assert "requestId" in doc
+    assert "web.network.get" in doc
     # started_at (the captured request epoch) rides on a row when CDP reported
     # wallTime, so the field the HAR export reads must be named here too.
     assert "started_at" in doc

@@ -74,10 +74,13 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """List captured network requests.
 
-        Answers with requests (url, method, status, resourceType), count,
-        total, offset, has_more, and dropped so a page that filled the
-        limit is not read as the whole capture, and ring eviction is
-        visible. A request row also carries started_at (the unix epoch, in
+        Answers with requests, count, total, offset, has_more, and dropped
+        so a page that filled the limit is not read as the whole capture,
+        and ring eviction is visible. Each request row carries requestId,
+        url, method, status, resourceType and mimeType; requestId is the id
+        to pass to web.network.get (as request_id) to fetch that request's
+        response body -- it is how this list and the body fetch join. A
+        request row also carries started_at (the unix epoch, in
         seconds, when CDP saw the request begin) when the browser reported
         it -- the same instant the HAR export uses for startedDateTime. A row
         also carries timings (measured send/wait/receive durations in
