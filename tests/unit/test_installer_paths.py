@@ -214,7 +214,7 @@ def test_one_click_setup_on_windows_runs_the_bundle_pipeline(
 ) -> None:
     monkeypatch.setattr(installer, "os", SimpleNamespace(name="nt"))
     empty = _settings(tmp_path)
-    monkeypatch.setattr(installer.Settings, "load", staticmethod(lambda config_path=None: empty))
+    monkeypatch.setattr(Settings, "load", staticmethod(lambda config_path=None: empty))
     monkeypatch.setattr(
         installer,
         "download_dependency_release",
@@ -258,7 +258,7 @@ def test_one_click_setup_on_linux_skips_the_windows_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     empty = _settings(tmp_path)
-    monkeypatch.setattr(installer.Settings, "load", staticmethod(lambda config_path=None: empty))
+    monkeypatch.setattr(Settings, "load", staticmethod(lambda config_path=None: empty))
     monkeypatch.setattr(installer, "discover_ida_home", lambda: None)
     _patch_finishers(monkeypatch, tmp_path, ready=False)
 
@@ -278,7 +278,7 @@ def test_one_click_setup_prompts_for_ida_on_interactive_windows(
 ) -> None:
     monkeypatch.setattr(installer, "os", SimpleNamespace(name="nt"))
     empty = _settings(tmp_path)
-    monkeypatch.setattr(installer.Settings, "load", staticmethod(lambda config_path=None: empty))
+    monkeypatch.setattr(Settings, "load", staticmethod(lambda config_path=None: empty))
     monkeypatch.setattr(installer, "discover_ida_home", lambda: None)
     prompted: list[bool] = []
 
@@ -301,7 +301,7 @@ def test_one_click_setup_refuses_an_invalid_ida_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     empty = _settings(tmp_path)
-    monkeypatch.setattr(installer.Settings, "load", staticmethod(lambda config_path=None: empty))
+    monkeypatch.setattr(Settings, "load", staticmethod(lambda config_path=None: empty))
 
     with pytest.raises(InstallError, match="not a directory"):
         run_one_click_setup(
@@ -315,7 +315,7 @@ def test_one_click_setup_fails_when_ida_configuration_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     empty = _settings(tmp_path)
-    monkeypatch.setattr(installer.Settings, "load", staticmethod(lambda config_path=None: empty))
+    monkeypatch.setattr(Settings, "load", staticmethod(lambda config_path=None: empty))
     from headless_re_mcp.config import ida_library_names
 
     ida = tmp_path / "ida"
