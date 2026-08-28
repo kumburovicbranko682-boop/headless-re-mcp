@@ -334,6 +334,37 @@ def test_memory_read_rejects_a_size_outside_the_window() -> None:
     assert caught.value.code == "invalid_params"
 
 
+@pytest.mark.parametrize(
+    "bad_size",
+    [
+        256 * 1024 + 1,  # one byte past the ceiling
+        10**9,  # a gigabyte read -- the OOM case the ceiling exists for
+        256 * 1024 * 1024,  # a quarter-gigabyte read
+        16.0,  # a float is not an int even though its value is in range
+    ],
+)
+def test_memory_read_refuses_an_oversized_or_mistyped_size_before_attach(bad_size: Any) -> None:
+    """The 1..262144 window is the anti-OOM guard, and it must fire pre-attach.
+
+    ``read`` copies ``size`` bytes out of the target and back into this process,
+    so an unbounded ``size`` -- a gigabyte, or a quarter of one -- would grow the
+    server's RSS without limit; the browser and apk in-process paths get an
+    explicit byte cap for exactly this reason. The one existing test pins only
+    the lower edge (0), so dropping ``<= 256 * 1024`` from the guard would still
+    pass it while letting a gigabyte read through. Wire ``attach`` to raise, so a
+    size that slipped past the guard surfaces as ``backend_error`` (attach was
+    reached) rather than ``invalid_params`` -- which makes this fail on exactly
+    that regression instead of passing vacuously.
+    """
+    tripwire = _LocalFrida(attach_exc=RuntimeError("attach must not be reached"))
+    client = _local_client(tripwire)
+
+    with pytest.raises(FridaError) as caught:
+        client.memory_read(1, 0x1000, bad_size, allowed_pid=1)
+
+    assert caught.value.code == "invalid_params"
+
+
 def test_memory_read_returns_hex_encoded_bytes() -> None:
     api = _Api(read=lambda address, size: [0xDE, 0xAD, 0xBE, 0xEF])
     client = _local_client(_LocalFrida(session=_Session(api=api)))
