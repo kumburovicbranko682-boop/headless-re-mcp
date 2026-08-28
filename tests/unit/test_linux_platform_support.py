@@ -135,6 +135,14 @@ exit "${FAKE_CURL_FAIL:-0}"
         encoding="utf-8",
     )
     fake_unzip.chmod(0o755)
+    # A fake npm must shadow any real one on PATH, or an opt-in backend run
+    # would fire a real global `npm install -g webcrack` from the test.
+    fake_npm = bin_dir / "npm"
+    fake_npm.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "${CAPTURE_NPM}"\n',
+        encoding="utf-8",
+    )
+    fake_npm.chmod(0o755)
 
     captures = {
         "requirement": tmp_path / "requirement.txt",
@@ -143,6 +151,7 @@ exit "${FAKE_CURL_FAIL:-0}"
         "pip_other": tmp_path / "pip_other.txt",
         "curl": tmp_path / "curl.txt",
         "unzip": tmp_path / "unzip.txt",
+        "npm": tmp_path / "npm.txt",
     }
     env = os.environ.copy()
     env["PYTHON"] = str(fake_python)
@@ -153,6 +162,7 @@ exit "${FAKE_CURL_FAIL:-0}"
     env["CAPTURE_PIP_OTHER"] = str(captures["pip_other"])
     env["CAPTURE_CURL"] = str(captures["curl"])
     env["CAPTURE_UNZIP"] = str(captures["unzip"])
+    env["CAPTURE_NPM"] = str(captures["npm"])
     # Point the Ghidra unpack root into the sandbox so an opt-in run neither
     # finds a real ~/ghidra (skipping the download this harness observes) nor
     # writes outside tmp_path.
@@ -231,6 +241,36 @@ def test_linux_installer_backend_provisioning_is_opt_in_and_mirrors_ci(
         for package in line.split("apt-get install -y", 1)[1].split()
     }
     assert packages <= ci_packages, "installer provisions a package CI never proves"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux installer contract")
+def test_linux_installer_provisions_webcrack_via_npm_like_ci(tmp_path: Path) -> None:
+    """webcrack is the JS line's backend, and CI installs it -- so must this.
+
+    webcrack is an npm global rather than an apt package, so the apt parity
+    test above never sees it; without a separate check a user opting into the
+    FOSS backends would still get js.deobfuscate/unpack/beautify reporting
+    capability_unavailable, the exact gap the Ghidra provisioning closed for
+    its line. This asserts the npm install is opt-in (nothing without the
+    switch), that the switch drives `npm install -g webcrack`, and that CI
+    installs the same package so the two never drift.
+    """
+    env, captures = _installer_harness(tmp_path)
+
+    _run_installer(tmp_path, env)
+    assert not captures["npm"].exists(), "webcrack provisioning must stay opt-in"
+
+    env["HEADLESS_RE_INSTALL_BACKENDS"] = "1"
+    _run_installer(tmp_path, env)
+
+    npm_lines = captures["npm"].read_text(encoding="utf-8").splitlines()
+    assert "install -g webcrack" in npm_lines, npm_lines
+
+    repo_root = Path(__file__).resolve().parents[2]
+    ci_text = (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "npm install -g webcrack" in ci_text, (
+        "installer provisions a webcrack CI never proves"
+    )
 
 
 def _ci_ghidra_pin(repo_root: Path) -> tuple[str, str]:

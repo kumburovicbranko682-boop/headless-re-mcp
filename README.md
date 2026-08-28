@@ -82,7 +82,7 @@ python3 -m headless_re_mcp serve
 python3 -m headless_re_mcp serve-web
 ```
 
-`HEADLESS_RE_EXTRAS=pe,web,android,browser,proxy ./scripts/install-linux.sh` 可扩展安装范围；含 `browser` extra 时脚本会自动执行 `playwright install chromium`（失败只警告不中断）。`HEADLESS_RE_INSTALL_BACKENDS=1` 会再经 apt 安装 Linux CI 同款 FOSS 后端（radare2 / UPX / wabt / apktool / apksigner / adb）；jadx 未进 apt，需从[上游 release](https://github.com/skylot/jadx/releases) 自取并放入 PATH。`HEADLESS_RE_INSTALL_GHIDRA=1` 从上游 release 拉取 CI 同款钉版 Ghidra（约 400 MB，默认解包到 `~/ghidra`，可用 `HEADLESS_RE_GHIDRA_ROOT` 改）并装配套 PyGhidra，之后请把脚本提示的 `HEADLESS_RE_GHIDRA_HOME` 持久化；运行 analyzeHeadless 还需 PATH 上有 JDK 21+。
+`HEADLESS_RE_EXTRAS=pe,web,android,browser,proxy ./scripts/install-linux.sh` 可扩展安装范围；含 `browser` extra 时脚本会自动执行 `playwright install chromium`（失败只警告不中断）。`HEADLESS_RE_INSTALL_BACKENDS=1` 会再经 apt 安装 Linux CI 同款 FOSS 后端（radare2 / UPX / wabt / apktool / apksigner / adb），并在 PATH 上有 npm 时再 `npm install -g webcrack`（JS 线后端，需 Node 22/24）；jadx 未进 apt，需从[上游 release](https://github.com/skylot/jadx/releases) 自取并放入 PATH。`HEADLESS_RE_INSTALL_GHIDRA=1` 从上游 release 拉取 CI 同款钉版 Ghidra（约 400 MB，默认解包到 `~/ghidra`，可用 `HEADLESS_RE_GHIDRA_ROOT` 改）并装配套 PyGhidra，之后请把脚本提示的 `HEADLESS_RE_GHIDRA_HOME` 持久化；运行 analyzeHeadless 还需 PATH 上有 JDK 21+。
 
 ### Windows：从源码
 

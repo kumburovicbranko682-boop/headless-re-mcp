@@ -55,6 +55,17 @@ if [[ "${HEADLESS_RE_INSTALL_BACKENDS:-0}" == "1" ]]; then
     echo "HEADLESS_RE_INSTALL_BACKENDS=1 needs apt-get; install radare2, wabt," >&2
     echo "UPX, apktool, apksigner and adb with your distribution's package manager." >&2
   fi
+  # webcrack drives the JS line (js.deobfuscate/unpack/beautify). It is an npm
+  # global rather than an apt package -- the same one Linux CI installs -- so it
+  # is provisioned here, outside the apt branch, whenever npm is on PATH. It
+  # needs Node 22/24; a missing npm is a note, not a failure, like jadx above.
+  if command -v npm >/dev/null 2>&1; then
+    npm install -g webcrack || \
+      echo "WARN: webcrack (npm) install failed; js.* stays unavailable." >&2
+  else
+    echo "webcrack (the JS backend) needs Node 22/24 and npm; once Node is on" >&2
+    echo "PATH install it with 'npm install -g webcrack'." >&2
+  fi
 fi
 
 # Opt-in Ghidra provisioning: the one portable backend apt cannot supply.
