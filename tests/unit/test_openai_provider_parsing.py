@@ -416,6 +416,41 @@ async def test_a_rejected_stream_with_an_empty_body_reraises_the_bare_status() -
 
 
 # ---------------------------------------------------------------------------
+# request payload
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_omits_the_tools_key_when_there_are_none() -> None:
+    # OpenAI's own API rejects "tools": [] with a 400, and the wrap-up round of
+    # a run that spent its tool budget runs with no tools on purpose. Sending
+    # the empty array would 400 that final summarizing round; the key must be
+    # left out entirely instead.
+    captured: dict[str, Any] = {}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(200, text=_sse_body({"choices": [{"delta": {"content": "x"}}]}))
+
+    async for _ in _provider(respond).stream_chat(messages=[], tools=[], model="m"):
+        pass
+    assert "tools" not in captured["payload"]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_sends_the_tools_key_when_there_are_some() -> None:
+    captured: dict[str, Any] = {}
+    tool = {"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(200, text=_sse_body({"choices": [{"delta": {"content": "x"}}]}))
+
+    async for _ in _provider(respond).stream_chat(messages=[], tools=[tool], model="m"):
+        pass
+    assert captured["payload"]["tools"] == [tool]
+
+
+# ---------------------------------------------------------------------------
 # list_models
 
 

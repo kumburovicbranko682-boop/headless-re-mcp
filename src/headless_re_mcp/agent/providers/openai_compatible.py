@@ -331,10 +331,18 @@ class OpenAICompatibleProvider:
         payload: JsonObject = {
             "model": model,
             "messages": list(messages),
-            "tools": list(tools),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        # Only advertise tools when there are some. The wrap-up round runs with
+        # none on purpose, and OpenAI's own API rejects "tools": [] with a 400
+        # ("Invalid 'tools': empty array") -- so sending the empty array turned
+        # the final summarizing round of any run that spent its tool budget into
+        # a failed run instead of the summary it exists to produce. Omitting the
+        # key is the compatible way to say the model may not call a tool.
+        tool_list = list(tools)
+        if tool_list:
+            payload["tools"] = tool_list
         if enable_thinking:
             payload["thinking"] = {"type": "enabled"}
             payload["enable_thinking"] = True
