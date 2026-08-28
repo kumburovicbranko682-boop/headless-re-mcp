@@ -1124,6 +1124,31 @@ def test_apk_field_xrefs_resolve_read_and_write_sites(tmp_path: Path) -> None:
         assert absent.ok and absent.data is not None, absent.error
         assert absent.data["found"] is False, absent.data
         assert absent.data["xrefs"] == []
+
+        # apk.fields is the inventory side of the same field: list Store's fields
+        # and secret must be there with its Dalvik type (I = int) and access, so
+        # the "spot the interesting field, then field_xrefs its name" loop starts
+        # from a real listing rather than a guessed name. Both class spellings
+        # resolve, as with apk.methods.
+        for spelling in (_DEX_STORE_SMALI, "com.example.Store"):
+            listed = service.apk_fields(session_id, spelling)
+            assert listed.ok and listed.data is not None, (spelling, listed.error)
+            assert listed.data["class_name"] == _DEX_STORE_SMALI, spelling
+            secret = next(
+                (f for f in listed.data["fields"] if f["name"] == _DEX_FIELD_NAME), None
+            )
+            assert secret is not None, listed.data
+            assert secret["type"] == "I", secret
+            assert "static" in secret["access"], secret
+            # The name it lists is exactly what field_xrefs pivots on.
+            back = service.apk_field_xrefs(session_id, secret["name"], direction="write")
+            assert back.ok and back.data is not None, back.error
+            assert back.data["found"] is True, back.data
+
+        # A class the DEX does not declare is a clean not_found, not a crash.
+        missing = service.apk_fields(session_id, "com.example.Nope")
+        assert not missing.ok
+        assert missing.error is not None and missing.error.code == "not_found", missing.error
     finally:
         service.close_all()
 

@@ -135,6 +135,28 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
         )
 
+    @tools.tool(name="apk.fields")
+    def apk_fields(
+        session_id: str,
+        class_name: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List a class's declared fields (dotted or Lsmali/form; paginated).
+
+        The read surface lists a class's methods (apk.methods) but had no way to
+        list its fields, though a field is where a key, token, URL or feature flag
+        usually lives -- and apk.field_xrefs needs an exact field name to pivot on.
+        Answers with fields (name, type, access), class_name, count, total, offset,
+        and has_more so a page that filled the limit is not read as the whole
+        class. type is the raw Dalvik type descriptor (I for int,
+        Ljava/lang/String; for a String). total is the number collected;
+        scan_capped is true when more fields may exist. has_more only means a
+        larger offset still has collected rows. Pair with apk.field_xrefs: list
+        here, then pivot on a name to its read/write sites.
+        """
+        return _dump(analysis.apk_fields(session_id, class_name, offset=offset, limit=limit))
+
     @tools.tool(name="apk.method_bytecode")
     def apk_method_bytecode(
         session_id: str,

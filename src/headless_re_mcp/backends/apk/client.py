@@ -478,6 +478,71 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
+    def fields(
+        self,
+        path: Path,
+        class_name: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> JsonObject:
+        """List a class's declared fields (name, type, access).
+
+        The read surface had a lister for a class's methods (``apk.methods``) but
+        not its fields, yet a field is where a key, token, URL or feature flag
+        usually lives, and ``apk.field_xrefs`` needs an exact name to pivot on.
+        This gives the field inventory of one class -- each entry's name, ``type``
+        (the raw Dalvik type descriptor, e.g. ``I`` for int or
+        ``Ljava/lang/String;``) and access -- so a caller can spot the interesting
+        field then hand its name to ``apk.field_xrefs``. Mirrors ``apk.methods``:
+        dotted or Lsmali/ class form, and the same paginated, scan-capped shape.
+        """
+        parsed = self._parsed(path)
+        target = class_name.strip()
+        if not target:
+            raise ApkError("invalid_params", "class_name is required")
+        smali = _dotted_to_smali(target)
+        found = [
+            klass
+            for klass in parsed.analysis.get_classes()
+            if klass.name == target or klass.name == smali
+        ]
+        if not found:
+            raise ApkError("not_found", "class not found", class_name=class_name)
+        fields: list[JsonObject] = []
+        scan_more = False
+        for klass in found:
+            for fa in klass.get_fields():
+                if len(fields) >= _MAX_FIELDS_COLLECT:
+                    scan_more = True
+                    break
+                # The FieldClassAnalysis wraps an EncodedField for an internal
+                # field; go through it for type and access. An external field
+                # reference would lack these accessors, so degrade to the name.
+                ef = fa.get_field()
+                name = ef.get_name() if hasattr(ef, "get_name") else getattr(fa, "name", "")
+                type_desc = ef.get_descriptor() if hasattr(ef, "get_descriptor") else ""
+                access = (
+                    ef.get_access_flags_string()
+                    if hasattr(ef, "get_access_flags_string")
+                    else ""
+                )
+                fields.append(
+                    {"name": str(name), "type": str(type_desc), "access": str(access)}
+                )
+            if scan_more:
+                break
+        window = fields[offset : offset + limit]
+        return {
+            "class_name": found[0].name,
+            "fields": window,
+            "count": len(window),
+            "total": len(fields),
+            "offset": offset,
+            "has_more": offset + len(window) < len(fields),
+            "scan_capped": scan_more,
+        }
+
     def method_bytecode(
         self,
         path: Path,
