@@ -45,11 +45,17 @@ class TargetKind(StrEnum):
     Android and browser targets share the session lifecycle, artifacts and
     knowledge store but cannot answer PE questions, so every tool that needs a
     PE says so explicitly rather than failing deep inside a backend.
+
+    BINARY is any other local executable image -- ELF, Mach-O -- that the
+    portable backends (radare2, Ghidra) analyse the same way they analyse a PE.
+    It has a local file but no PE machine type, so PE-only tools (IDA, x64dbg)
+    refuse it with a target_mismatch while r2.* and ghidra.* run against it.
     """
 
     PE = "pe"
     APK = "apk"
     WEB = "web"
+    BINARY = "binary"
 
 
 class TargetMismatch(RuntimeError):
@@ -181,7 +187,7 @@ class Session(BaseModel):
         if self.binary is None:
             raise TargetMismatch(
                 f"session target {self.target.value} is not backed by a local file",
-                expected=(TargetKind.PE, TargetKind.APK),
+                expected=(TargetKind.PE, TargetKind.APK, TargetKind.BINARY),
                 actual=self.target,
             )
         return self.binary

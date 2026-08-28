@@ -28,6 +28,7 @@ from headless_re_mcp.core.models import (
     Session,
     SessionState,
     TargetKind,
+    TargetMismatch,
 )
 from headless_re_mcp.core.session import (
     InvalidStateTransition,
@@ -286,6 +287,57 @@ def test_classify_recognises_magic_bytes_when_the_extension_lies(tmp_path: Path)
     with zipfile.ZipFile(package, "w") as archive:
         archive.writestr("AndroidManifest.xml", b"<manifest/>")
     assert classify_target(package) is TargetKind.APK
+
+
+def test_classify_recognises_elf_and_macho_as_binary(tmp_path: Path) -> None:
+    # ELF and single-arch Mach-O images are portable-backend targets (r2/ghidra),
+    # not PE. Before BINARY they were funneled into PE and rejected at create with
+    # "not a PE file", so radare2/Ghidra could not be pointed at an ELF at all.
+    elf = tmp_path / "a.out"
+    elf.write_bytes(b"\x7fELF\x02\x01\x01\x00")
+    assert classify_target(elf) is TargetKind.BINARY
+    for magic in (
+        b"\xfe\xed\xfa\xce",
+        b"\xfe\xed\xfa\xcf",
+        b"\xce\xfa\xed\xfe",
+        b"\xcf\xfa\xed\xfe",
+    ):
+        macho = tmp_path / f"m-{magic.hex()}"
+        macho.write_bytes(magic + b"\x00\x00\x00\x00")
+        assert classify_target(macho) is TargetKind.BINARY
+
+
+def test_fat_macho_stays_pe_because_it_collides_with_java_class(tmp_path: Path) -> None:
+    # 0xCAFEBABE is both fat Mach-O and a Java .class magic; classifying it as a
+    # binary would misroute .class files, so it deliberately stays PE.
+    ambiguous = tmp_path / "cafebabe.bin"
+    ambiguous.write_bytes(b"\xca\xfe\xba\xbe\x00\x00\x00\x02")
+    assert classify_target(ambiguous) is TargetKind.PE
+
+
+def test_create_makes_a_binary_session_for_an_elf(tmp_path: Path) -> None:
+    elf = tmp_path / "prog"
+    elf.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 56)
+    session = SessionRegistry().create(elf)
+    assert session.target is TargetKind.BINARY
+    # A binary session is file-backed but has no PE machine type.
+    assert session.binary == elf.resolve()
+    assert session.architecture is None
+    assert session.require_binary() == elf.resolve()
+
+
+def test_binary_session_refuses_pe_only_tools(tmp_path: Path) -> None:
+    # r2/ghidra use require_binary and are happy; the PE-only debugger tools go
+    # through require_pe, which must reject a binary session with target_mismatch
+    # rather than crash deep in a backend.
+    elf = tmp_path / "prog"
+    elf.write_bytes(b"\x7fELF")
+    session = Session(target=TargetKind.BINARY, binary=elf)
+    assert session.require_binary() == elf
+    with pytest.raises(TargetMismatch):
+        session.require_pe()
+    with pytest.raises(TargetMismatch):
+        session.require_architecture()
 
 
 def test_create_reads_apk_identity_facts(tmp_path: Path) -> None:

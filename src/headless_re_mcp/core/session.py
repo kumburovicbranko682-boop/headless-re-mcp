@@ -371,8 +371,10 @@ def classify_target(reference: str | Path) -> TargetKind:
     """Infer the target kind so existing callers keep their one-argument create.
 
     Extension first because it is the caller's stated intent, then magic bytes
-    for files named without one. Anything unrecognised stays PE, which keeps the
-    original "not a PE file" error rather than inventing a vaguer one.
+    for files named without one. An ELF or Mach-O image is BINARY -- the portable
+    backends (radare2, Ghidra) analyse it without a PE header. Anything else
+    unrecognised stays PE, which keeps the original "not a PE file" error rather
+    than inventing a vaguer one.
     """
 
     text = str(reference).strip()
@@ -395,7 +397,26 @@ def classify_target(reference: str | Path) -> TargetKind:
         return TargetKind.WEB
     if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
         return TargetKind.APK
+    if _is_portable_binary(magic):
+        return TargetKind.BINARY
     return TargetKind.PE
+
+
+# ELF and the four single-architecture Mach-O magics (32/64-bit, big/little
+# endian). Fat Mach-O (0xCAFEBABE) is deliberately left out: it collides byte
+# for byte with a Java .class file, so treating it as a binary would misroute
+# those; a fat binary can still be forced with target="binary".
+_ELF_MAGIC = b"\x7fELF"
+_MACHO_MAGICS = (
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+)
+
+
+def _is_portable_binary(magic: bytes) -> bool:
+    return magic.startswith(_ELF_MAGIC) or magic.startswith(_MACHO_MAGICS)
 
 
 def _is_android_package(path: Path) -> bool:

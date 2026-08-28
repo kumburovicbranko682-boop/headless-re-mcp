@@ -5,6 +5,35 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（可移植后端只能对 PE 用：新增 `binary` 会话类型，让 ELF/Mach-O 也能进 r2/Ghidra）
+
+radare2 与 Ghidra 是这个仓库里“可移植后端”这条线的主角——它们本就跨平台、能分析 ELF/Mach-O。但通过
+产品实际路径（`session.create` → 会话 → 服务层）却**只能对 PE 用**：`classify_target` 把任何非
+MZ/wasm/apk 的文件一律归为 `pe`，于是一个 ELF 在建会话时被 `detect_pe_architecture` 以
+“not a PE file” 直接拒掉，`r2.*` / `ghidra.*` 根本拿不到会话。也就是说这条线名义上“可移植”，实际在
+非 Windows 目标或任何 ELF/Mach-O 上都够不着。既有的 r2 活体门之所以直接 new `R2Client`、绕开会话，
+正是被这个限制逼的。
+
+改为新增 `TargetKind.BINARY`：`classify_target` 识别 ELF（`\x7fELF`）与四种单架构 Mach-O magic
+（32/64 位、大小端）时归为 `binary`（fat Mach-O 的 `0xCAFEBABE` 与 Java `.class` 撞魔数，故意留在
+`pe`，需要时可用 `target="binary"` 强制）。`binary` 会话有本地文件但无 PE machine type：`r2.*` 与
+`ghidra.*` 走 `require_binary` 照常跑，而 PE 专属的 IDA/x64dbg 走 `require_pe`，对它干净地报
+`target_mismatch`，不会栽进后端深处。`session.create` 工具的 `target` 也加了 `binary` 选项。这一处
+改动同时把 Ghidra 服务层对 ELF/Mach-O 的路径一并打通（它同样只用 `require_binary`）。
+
+### 测试（radare2 服务层活体门：经会话把 `r2.*` 整条链对真 ELF 跑通，断言恢复出的内容）
+
+既有 M11 门直接 new `R2Client` 只验地址映射；服务层的 `r2.open/info/functions/strings/imports/
+exports/disasm/xrefs` 从没有过活体覆盖（因为上面那个 PE-only 限制根本建不出 ELF 会话）。新增
+`tests/integration/test_r2_service_gate.py`：测试期用 cc 现场编一个非 PIE、未 strip 的小 ELF（自带
+函数 `headless_compute`、marker 字符串、libc `puts` 调用），经 `session.create` 建 `binary` 会话后
+断言 **恢复出的内容** 而非仅信封形状——`functions` 里有 `main` 与 `sym.headless_compute`、`strings`
+命中 marker、`imports` 含 `puts`、`info` 是 elf64、`disasm(main)` 里出现 `call sym.headless_compute`、
+`xrefs(headless_compute)` 里有一条指向它的 CALL 边且 `from_address` 可映射回模块。这样 r2 后端、JSON
+解析或地址富化任一处退化都会被逮住，而不是被 skip 掉。skip ≠ pass：radare2/rizin 或 C 编译器缺失时
+干净 skip。附带三个单测覆盖 `classify_target` 对 ELF/Mach-O→`binary`、fat Mach-O 仍留 `pe`、以及
+`binary` 会话服务 r2/ghidra 但拒 PE 工具。
+
 ### 修复（`web.script.source` 对 WebAssembly 模块返回空——改为回退到 WAT 反汇编）
 
 `web.wasm.list` 能列出页面实例化的 WebAssembly 模块，但对这些模块调用 `web.script.source` 却拿到
