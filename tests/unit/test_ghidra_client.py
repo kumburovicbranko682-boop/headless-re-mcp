@@ -561,6 +561,29 @@ def test_ghidra_memory_map_passes_the_memory_map_mode_to_the_post_script(
     assert bss["write"] is True
 
 
+def test_ghidra_data_passes_the_data_mode_to_the_post_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = (
+        '{"mode": "data", "items": ['
+        '{"address": "00405000", "label": "g_jump_table", "data_type": "pointer[4]",'
+        ' "value": "004010a0,004010b0,004010c0,004010d0", "length": 32,'
+        ' "is_pointer": true, "truncated": false}'
+        '], "count": 1, "has_more": false}'
+    )
+    calls = _capture_mode_run(monkeypatch, payload)
+    client = _client(tmp_path)
+
+    listed = client.data(_binary(tmp_path), tmp_path / "project")
+
+    assert "data" in calls[0]
+    row = listed["items"][0]
+    assert row["label"] == "g_jump_table"
+    assert row["data_type"] == "pointer[4]"
+    assert row["is_pointer"] is True
+    assert listed["export_path"]
+
+
 def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     imports = _tool_docstring("ghidra.imports")
     assert "library" in imports
@@ -581,3 +604,8 @@ def test_ghidra_imports_and_strings_descriptions_name_their_fields() -> None:
     assert "permissions" in memory_map
     assert "initialized" in memory_map
     assert "has_more" in memory_map
+
+    data = _tool_docstring("ghidra.data")
+    assert "label" in data
+    assert "is_pointer" in data
+    assert "has_more" in data

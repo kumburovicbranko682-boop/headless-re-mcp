@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **304（186 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **305（187 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -390,6 +390,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `end`、`size`、`permissions`——rwx 串、`read`/`write`/`execute` 布尔、`initialized`——无文件字节的
   .bss 类块为 false、`overlay`)、`count`、`has_more`。导出失败是错误,不是"没有内存"。大二进制耗时以
   分钟计;需 `HEADLESS_RE_GHIDRA_HOME`。
+- 新增 `ghidra.data`:列出 Ghidra 定型的已定义数据项,是数据视图里 `ghidra.strings` 之外的另一半。
+  `ghidra.strings` 只留字符串型数据,这个列出每一条已定义数据——指针、数组、结构体、数值常量、vtable
+  与配置块——带上分析器给的标签与类型。跳表、函数指针数组、硬编码密钥都躺在这里而非字符串视图里,是看完
+  字符串后接着要看的那一半。回 `items`(每条带 `address`、`label`——该地址的主符号,没有则为空、
+  `data_type`——Ghidra 类型名如 pointer/dword/char[16]、`value`——默认表示,裁过、`length`——字节数、
+  `is_pointer`、`truncated`)、`count`、`has_more`。导出失败是错误,不是"没有数据"。大二进制耗时以分钟
+  计;需 `HEADLESS_RE_GHIDRA_HOME`。
 
 ### 新增（WASM 结构摘要）
 

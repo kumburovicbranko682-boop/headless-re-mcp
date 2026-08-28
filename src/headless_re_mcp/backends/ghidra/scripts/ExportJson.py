@@ -163,6 +163,37 @@ elif mode == "memory_map":
         except Exception:
             continue
     payload["items"] = items
+elif mode == "data":
+    items = []
+    for data in listing.getDefinedData(True):
+        if len(items) >= limit:
+            payload["has_more"] = True
+            break
+        try:
+            label = ""
+            sym = st.getPrimarySymbol(data.getAddress())
+            if sym is not None:
+                label = sym.getName()
+            try:
+                rep = data.getDefaultValueRepresentation()
+            except Exception:
+                rep = ""
+            if rep is None:
+                rep = ""
+            items.append(
+                {
+                    "address": str(data.getAddress()),
+                    "label": label,
+                    "data_type": str(data.getDataType().getName()),
+                    "value": rep[:2000],
+                    "length": int(data.getLength()),
+                    "is_pointer": bool(data.isPointer()),
+                    "truncated": len(rep) > 2000,
+                }
+            )
+        except Exception:
+            continue
+    payload["items"] = items
 elif mode == "strings":
     items = []
     for data in listing.getDefinedData(True):

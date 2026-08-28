@@ -140,6 +140,29 @@ def build_ghidra_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.ghidra_strings(session_id, limit=limit, timeout=timeout))
 
+    @tools.tool(name="ghidra.data")
+    def ghidra_data(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=1024)] = 256,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 180.0,
+    ) -> dict[str, Any]:
+        """Defined data items Ghidra typed, the non-string half of the data view.
+
+        Where ghidra.strings keeps only string-typed data, this lists every
+        defined data item -- pointers, arrays, structs, numeric constants, the
+        vtables and config blobs -- with the label and type the analyzer gave
+        it. The complement a reviewer reaches for after strings: a jump table,
+        a function-pointer array, or a hard-coded key sits here, not in the
+        string view. Answers with items, each carrying address, label (the
+        primary symbol at that address, or empty), data_type (the Ghidra type
+        name, e.g. pointer, dword, char[16]), value (its default representation,
+        clipped), length (bytes), is_pointer and truncated, plus count and
+        has_more so a page that filled the limit is not read as the whole set.
+        A failed export is an error, not a binary with no data. Minutes on a
+        large binary; requires HEADLESS_RE_GHIDRA_HOME.
+        """
+        return _dump(analysis.ghidra_data(session_id, limit=limit, timeout=timeout))
+
     @tools.tool(name="ghidra.xrefs")
     def ghidra_xrefs(
         session_id: str,
