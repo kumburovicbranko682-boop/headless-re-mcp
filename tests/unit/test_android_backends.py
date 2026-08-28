@@ -1492,6 +1492,31 @@ def _so_with_exports(names: list[str], *, machine: int = 62) -> bytes:
     return ehdr + bytes(dynstr) + bytes(syms) + sections
 
 
+def _so_with_loads(flags_per_load: list[int]) -> bytes:
+    """A program-header-only ELF64 shared object whose PT_LOADs carry ``flags``.
+
+    Enough for the W^X census (the flags live in the program headers); no
+    sections, no dynamic table -- the reader must not need them to count.
+    """
+    body = bytearray()
+    for index, p_flags in enumerate(flags_per_load):
+        phdr = bytearray(56)
+        struct.pack_into("<I", phdr, 0, 1)  # PT_LOAD
+        struct.pack_into("<I", phdr, 4, p_flags)
+        struct.pack_into("<Q", phdr, 16, 0x1000 * (index + 1))  # p_vaddr
+        struct.pack_into("<Q", phdr, 32, 0x100)  # p_filesz
+        struct.pack_into("<Q", phdr, 40, 0x100)  # p_memsz
+        body += phdr
+    ehdr = struct.pack(
+        "<16sHHIQQQIHHHHHH",
+        b"\x7fELF\x02\x01\x01" + bytes(9),
+        3,  # ET_DYN
+        62,  # x86-64
+        1, 0, 64, 0, 0, 64, 56, len(flags_per_load), 64, 0, 0,
+    )
+    return ehdr + bytes(body)
+
+
 class TestApkContainerSlack:
     """describe_apk measures data glued on before the ZIP container.
 
@@ -1712,6 +1737,8 @@ class TestApkNativeLibFacts:
             assert lib["needed"] == ["liblog.so"]
             assert lib["jni_onload"] is True
             assert lib["java_natives"] == ["Java_com_example_headless_Sample_getSecret"]
+            # A stock NDK build maps nothing writable and executable at once.
+            assert lib["wx_segments"] == 0
 
     def test_a_stub_elf_member_is_skipped(self, tmp_path: Path) -> None:
         # Magic alone is not an ELF: a member whose header does not parse past
@@ -1778,6 +1805,27 @@ class TestApkNativeLibFacts:
                 archive.writestr(f"lib/x86_64/lib{i:03d}.so", _so_with_exports([]))
         libs = describe_apk(path)["apk"]["native_libs"]
         assert len(libs) == 64
+
+    def test_a_packed_library_shape_counts_its_wx_segments(self, tmp_path: Path) -> None:
+        # The W^X census the ELF reader runs rides along into the lib record:
+        # an Android packer's protected .so maps a region it writes and then
+        # runs, which a stock NDK build never does.
+        path = tmp_path / "packed.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("lib/x86_64/libpacked.so", _so_with_loads([0x5, 0x7]))
+        (lib,) = describe_apk(path)["apk"]["native_libs"]
+        assert lib["wx_segments"] == 1
+
+    def test_a_header_only_member_omits_the_wx_census(self, tmp_path: Path) -> None:
+        # No program headers to walk (the synthetic export-only image): the
+        # census is omitted, like the native session's own fact.
+        path = tmp_path / "hdr.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("lib/x86_64/libhdr.so", _so_with_exports([]))
+        (lib,) = describe_apk(path)["apk"]["native_libs"]
+        assert "wx_segments" not in lib
 
 
 class TestNoShellPassthrough:

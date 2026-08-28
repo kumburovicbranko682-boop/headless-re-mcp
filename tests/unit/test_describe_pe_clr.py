@@ -587,12 +587,15 @@ def _pe_with_posture(
     entry_rva: int = 0,
     image_base: int = 0x1_4000_0000,
     magic: int = 0x20B,
+    os_version: tuple[int, int] = (0, 0),
+    subsys_version: tuple[int, int] = (0, 0),
 ) -> bytes:
     """A minimal PE whose optional header carries the given posture fields.
 
     Subsystem and DllCharacteristics sit at offsets 68/70 for both PE32 and
-    PE32+; only ImageBase moves (32-bit at 28 vs 64-bit at 24), which is what
-    the entry-VA rebase must key off.
+    PE32+ (the OS and subsystem version pairs at 40/48 likewise); only
+    ImageBase moves (32-bit at 28 vs 64-bit at 24), which is what the entry-VA
+    rebase must key off.
     """
     dos = bytearray(0x40)
     dos[0:2] = b"MZ"
@@ -607,6 +610,8 @@ def _pe_with_posture(
         struct.pack_into("<Q", opt, 24, image_base)
     else:
         struct.pack_into("<I", opt, 28, image_base)
+    struct.pack_into("<HH", opt, 40, *os_version)
+    struct.pack_into("<HH", opt, 48, *subsys_version)
     struct.pack_into("<H", opt, 68, subsystem)
     struct.pack_into("<H", opt, 70, dllchar)
     struct.pack_into("<I", opt, 108 if magic == 0x20B else 92, 16)  # NumberOfRvaAndSizes
@@ -628,11 +633,19 @@ class TestPeHardeningFacts:
     def test_a_fully_hardened_gui_pe_reads_every_mitigation_on(self, tmp_path: Path) -> None:
         path = tmp_path / "hardened.exe"
         path.write_bytes(
-            _pe_with_posture(subsystem=2, dllchar=self._ALL_BITS, entry_rva=0x1234)
+            _pe_with_posture(
+                subsystem=2,
+                dllchar=self._ALL_BITS,
+                entry_rva=0x1234,
+                os_version=(10, 0),
+                subsys_version=(6, 2),
+            )
         )
         facts = _pe_hardening_facts(path)
         assert facts == {
             "subsystem": "gui",
+            "os_version": "10.0",
+            "subsystem_version": "6.2",
             "high_entropy_va": True,
             "aslr": True,
             "force_integrity": True,
@@ -642,6 +655,15 @@ class TestPeHardeningFacts:
             "cfg": True,
             "entry": 0x1_4000_1234,
         }
+
+    def test_the_declared_minimum_windows_reads_dotted(self, tmp_path: Path) -> None:
+        # The minimum-runtime pair the loader enforces -- the PE min_os,
+        # rendered dotted the way Mach-O's min_os and link.exe spell it.
+        path = tmp_path / "vista.exe"
+        path.write_bytes(_pe_with_posture(os_version=(6, 0), subsys_version=(6, 0)))
+        facts = _pe_hardening_facts(path)
+        assert facts["os_version"] == "6.0"
+        assert facts["subsystem_version"] == "6.0"
 
     def test_an_unhardened_console_pe_reads_every_mitigation_off(self, tmp_path: Path) -> None:
         path = tmp_path / "soft.exe"
@@ -1533,6 +1555,8 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "imports": [],
             "exports": [],
             "subsystem": "unknown",
+            "os_version": "0.0",
+            "subsystem_version": "0.0",
             "high_entropy_va": False,
             "aslr": False,
             "force_integrity": False,

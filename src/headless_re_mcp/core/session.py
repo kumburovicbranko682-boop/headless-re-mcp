@@ -1409,9 +1409,12 @@ def _apk_native_lib_facts(path: Path) -> list[dict[str, Any]]:
     list (DT_NEEDED), and the binding surface -- exported ``Java_*`` symbols
     (statically registered native methods, whose mangled names encode the Java
     methods they implement) and ``JNI_OnLoad`` (dynamic registration: native
-    methods exist that no export names). Bounded and fail-closed: at most
-    _APK_MAX_NATIVE_LIBS members, each read up to the DEX byte cap, and a
-    member that is not parseable ELF is skipped rather than raising.
+    methods exist that no export names) -- plus ``wx_segments``, the W^X
+    violation count the packed-or-protected .so shape carries (Android
+    packers routinely ship such libraries; a stock NDK build counts zero).
+    Bounded and fail-closed: at most _APK_MAX_NATIVE_LIBS members, each read
+    up to the DEX byte cap, and a member that is not parseable ELF is skipped
+    rather than raising.
     """
     libs: list[dict[str, Any]] = []
     try:
@@ -1449,6 +1452,10 @@ def _apk_native_lib_facts(path: Path) -> list[dict[str, Any]]:
                 }
                 if facts.get("build_id") is not None:
                     record["build_id"] = facts["build_id"]
+                # The W^X census the ELF reader already ran: present whenever
+                # the member has program headers (every linked .so does).
+                if "wx_segments" in facts:
+                    record["wx_segments"] = facts["wx_segments"]
                 libs.append(record)
     except (OSError, zipfile.BadZipFile):
         return []
@@ -3543,6 +3550,13 @@ _PE_MAX_TLS_CALLBACKS = 64
 # and Mach-O nx/pie. The DllCharacteristics bits are the loader mitigation
 # contract that winchecksec and `dumpbin /headers` decode.
 _PE_ENTRY_RVA_OFF = 16
+# MajorOperatingSystemVersion/MinorOperatingSystemVersion and the subsystem
+# version pair: the minimum Windows the image declares it needs -- the PE
+# minimum-runtime fact, the pair to Mach-O's min_os, the ELF ABI-tag
+# min_kernel and an APK's min_sdk. The loader actually enforces the subsystem
+# pair, so malware lying here bricks itself; pefile reads the same fields.
+_PE_OS_VERSION_OFF = 40
+_PE_SUBSYS_VERSION_OFF = 48
 _PE_SUBSYSTEM_OFF = 68
 _PE_DLLCHARACTERISTICS_OFF = 70
 _PE_SUBSYSTEMS = {
@@ -4186,10 +4200,13 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
     (gui, console, a native driver, an EFI image); the DllCharacteristics bits
     are the loader mitigation contract (DYNAMICBASE -> ``aslr``, NX_COMPAT ->
     ``nx``, GUARD_CF -> ``cfg``, plus high-entropy 64-bit ASLR, forced
-    integrity, AppContainer and no-SEH); ``entry`` is AddressOfEntryPoint
-    rebased to the preferred image base -- the address an analyst lands on
-    first, mirroring the ELF/Mach-O ``entry`` facts -- and is omitted when the
-    header declares none (a resource-only DLL).
+    integrity, AppContainer and no-SEH); ``os_version`` and
+    ``subsystem_version`` are the minimum Windows the image declares it needs
+    (the PE minimum-runtime fact, the pair to Mach-O's min_os and the ELF
+    ABI-tag min_kernel -- the loader enforces the subsystem pair); ``entry``
+    is AddressOfEntryPoint rebased to the preferred image base -- the address
+    an analyst lands on first, mirroring the ELF/Mach-O ``entry`` facts --
+    and is omitted when the header declares none (a resource-only DLL).
 
     Fail-closed: a non-PE or an optional header too short to carry the fields
     yields ``{}`` rather than guessed values.
@@ -4223,6 +4240,8 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
     )
     facts: dict[str, Any] = {
         "subsystem": _PE_SUBSYSTEMS.get(subsystem, f"subsystem_{subsystem}"),
+        "os_version": _pe_u16_pair(optional, _PE_OS_VERSION_OFF),
+        "subsystem_version": _pe_u16_pair(optional, _PE_SUBSYS_VERSION_OFF),
     }
     for bit, name in _PE_DLL_MITIGATIONS:
         facts[name] = bool(dllchar & bit)
@@ -4231,6 +4250,13 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
         image_base = int.from_bytes(optional[base_off : base_off + base_len], "little")
         facts["entry"] = image_base + entry_rva
     return facts
+
+
+def _pe_u16_pair(optional: bytes, offset: int) -> str:
+    """Two little-endian u16s at ``offset`` rendered dotted ("major.minor")."""
+    major = int.from_bytes(optional[offset : offset + 2], "little")
+    minor = int.from_bytes(optional[offset + 2 : offset + 4], "little")
+    return f"{major}.{minor}"
 
 
 def _pe_image_base(raw: bytes, magic: int, dir_off: int) -> int | None:

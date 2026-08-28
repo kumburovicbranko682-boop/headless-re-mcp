@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import struct
 import subprocess
 import zipfile
 from pathlib import Path
@@ -82,6 +83,25 @@ def _readelf_dynamic(readelf: str, library: Path) -> tuple[str | None, set[str]]
         soname.group(1) if soname else None,
         set(_NEEDED_RE.findall(result.stdout)),
     )
+
+
+def _readelf_wx_loads(readelf: str, library: Path) -> int:
+    """How many LOAD rows readelf -l -W prints with both W and E in Flg."""
+    result = subprocess.run(
+        [readelf, "-l", "-W", str(library)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    count = 0
+    for line in result.stdout.splitlines():
+        tokens = line.split()
+        if len(tokens) < 8 or tokens[0] != "LOAD":
+            continue
+        # Everything between MemSiz and Align is the Flg column, which may
+        # split on spaces ("R E") or not ("RWE").
+        flags = "".join(tokens[6:-1])
+        if "W" in flags and "E" in flags:
+            count += 1
+    return count
 
 
 def _session_native_libs(apk: Path) -> list[dict]:
@@ -144,6 +164,53 @@ def test_apk_jni_surface_agrees_with_readelf_on_a_gcc_probe(tmp_path: Path) -> N
     soname, needed = _readelf_dynamic(readelf, library)
     assert lib["soname"] == soname == "libjniprobe.so"
     assert set(lib["needed"]) == needed
+
+    # A stock toolchain build maps nothing writable and executable at once;
+    # the record's W^X census must agree with readelf's Flg column on zero.
+    assert lib["wx_segments"] == _readelf_wx_loads(readelf, library) == 0
+
+
+@pytest.mark.integration
+def test_a_packed_library_shape_counts_wx_like_readelf(tmp_path: Path) -> None:
+    """A bundled .so with a writable-executable mapping is the packer shape.
+
+    Android packers ship exactly this: a stub .so that unpacks the real code
+    into a region it maps W+X. The gate plants one RWE PT_LOAD among clean
+    ones, lets readelf's program-header decode referee the count, and requires
+    the APK record to carry the same number.
+    """
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — W^X gate not run (skip != pass)")
+
+    body = bytearray()
+    for index, p_flags in enumerate([0x5, 0x6, 0x7]):  # R+X, R+W, and the violation
+        phdr = bytearray(56)
+        struct.pack_into("<I", phdr, 0, 1)  # PT_LOAD
+        struct.pack_into("<I", phdr, 4, p_flags)
+        struct.pack_into("<Q", phdr, 16, 0x1000 * (index + 1))  # p_vaddr
+        struct.pack_into("<Q", phdr, 32, 0x100)  # p_filesz
+        struct.pack_into("<Q", phdr, 40, 0x100)  # p_memsz
+        body += phdr
+    ehdr = struct.pack(
+        "<16sHHIQQQIHHHHHH",
+        b"\x7fELF\x02\x01\x01" + bytes(9),
+        3,  # ET_DYN
+        62,  # x86-64
+        1, 0, 64, 0, 0, 64, 56, 3, 64, 0, 0,
+    )
+    library = tmp_path / "libpacked.so"
+    library.write_bytes(ehdr + bytes(body))
+    # readelf must see the planted RWE row, so it is a genuine second opinion.
+    assert _readelf_wx_loads(readelf, library) == 1
+
+    apk = tmp_path / "packed.apk"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+        archive.writestr("lib/x86_64/libpacked.so", library.read_bytes())
+
+    (lib,) = _session_native_libs(apk)
+    assert lib["wx_segments"] == 1
 
 
 @pytest.mark.integration

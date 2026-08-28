@@ -4,8 +4,10 @@ A session over a PE now reads its build posture off the optional header -- the
 pair to the ELF nx/relro/canary/pie and Mach-O nx/pie facts: the subsystem
 (gui/console/driver/EFI), the DllCharacteristics loader-mitigation bits
 (DYNAMICBASE -> aslr, NX_COMPAT -> nx, GUARD_CF -> cfg, high-entropy VA, forced
-integrity, AppContainer, no-SEH), and the entry VA rebased to the preferred
-image base. The field offsets, the PE32/PE32+ ImageBase switch and the bit
+integrity, AppContainer, no-SEH), the declared minimum Windows (the OS and
+subsystem version pairs -- the PE minimum-runtime fact, the pair to Mach-O's
+min_os), and the entry VA rebased to the preferred image base. The field
+offsets, the PE32/PE32+ ImageBase switch and the bit
 decode are all ours, so pefile referees them: it locates the optional header
 independently and decodes the same fields through its own constant tables
 (DLL_CHARACTERISTICS, SUBSYSTEM_TYPE), which this compares against the reader's
@@ -63,6 +65,8 @@ def _pe_with_posture(
     dllchar: int,
     entry_rva: int,
     image_base: int,
+    os_version: tuple[int, int] = (6, 0),
+    subsys_version: tuple[int, int] = (6, 0),
 ) -> bytes:
     """A minimal one-section PE whose optional header carries the given posture.
 
@@ -85,6 +89,8 @@ def _pe_with_posture(
         struct.pack_into("<I", opt, 28, image_base)
     struct.pack_into("<I", opt, 32, 0x1000)  # SectionAlignment
     struct.pack_into("<I", opt, 36, 0x200)  # FileAlignment
+    struct.pack_into("<HH", opt, 40, *os_version)
+    struct.pack_into("<HH", opt, 48, *subsys_version)
     struct.pack_into("<I", opt, 56, 0x2000)  # SizeOfImage
     struct.pack_into("<H", opt, 68, subsystem)
     struct.pack_into("<H", opt, 70, dllchar)
@@ -124,6 +130,14 @@ def _pefile_posture(pefile_mod: Any, path: Path) -> dict[str, Any]:
         posture[fact] = bool(
             header.DllCharacteristics & pefile_mod.DLL_CHARACTERISTICS[flag]
         )
+    # The declared minimum Windows -- the pair to Mach-O's min_os, rendered
+    # dotted from the same u16 pairs pefile exposes as named fields.
+    posture["os_version"] = (
+        f"{header.MajorOperatingSystemVersion}.{header.MinorOperatingSystemVersion}"
+    )
+    posture["subsystem_version"] = (
+        f"{header.MajorSubsystemVersion}.{header.MinorSubsystemVersion}"
+    )
     if header.AddressOfEntryPoint:
         posture["entry"] = header.ImageBase + header.AddressOfEntryPoint
     return posture
@@ -136,7 +150,7 @@ def _session_posture(path: Path) -> dict[str, Any]:
         created = service.create_session(str(path))
         assert created.ok, created.error
         pe = created.data["session"]["metadata"]["pe"]
-        keys = {"subsystem", "entry", *_MITIGATION_TO_PEFILE}
+        keys = {"subsystem", "os_version", "subsystem_version", "entry", *_MITIGATION_TO_PEFILE}
         return {key: value for key, value in pe.items() if key in keys}
     finally:
         service.close_all()
@@ -190,9 +204,11 @@ def test_posture_agrees_with_pefile(
     assert pe.OPTIONAL_HEADER.Subsystem == subsystem
     assert pe.OPTIONAL_HEADER.DllCharacteristics == dllchar
     assert pe.OPTIONAL_HEADER.AddressOfEntryPoint == entry_rva
+    assert expected["os_version"] == "6.0"  # the builder's planted minimum
 
-    # Bit for bit: subsystem name, all seven mitigation facts, and the entry VA
-    # (present and rebased identically, or absent on both sides).
+    # Bit for bit: subsystem name, all seven mitigation facts, the declared
+    # minimum Windows pairs, and the entry VA (present and rebased
+    # identically, or absent on both sides).
     assert _session_posture(binary) == expected
 
 
@@ -217,10 +233,13 @@ def test_posture_of_an_mcs_compiled_pe_agrees_with_pefile(tmp_path: Path) -> Non
     expected = _pefile_posture(pefile_mod, binary)
     # Mono's linker has emitted DYNAMICBASE and NX_COMPAT console exes for
     # years; assert the referee sees a real posture so the comparison below
-    # cannot pass vacuously on an all-False parse.
+    # cannot pass vacuously on an all-False parse. The declared minimum
+    # Windows must be a real pair too (the loader refuses a zero subsystem
+    # version, so no working compiler emits one).
     assert expected["subsystem"] == "console"
     assert expected["aslr"] is True
     assert expected["nx"] is True
     assert "entry" in expected
+    assert expected["subsystem_version"] != "0.0"
 
     assert _session_posture(binary) == expected
