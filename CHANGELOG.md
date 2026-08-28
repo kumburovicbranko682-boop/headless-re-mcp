@@ -7,6 +7,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 新增（独立 .dex 离线读取，无需 androguard）
 
+- 新增 `dex.classes`：纯 stdlib 走类定义表（class_defs），逐条解析每个类的类型描述符（`Lcom/
+  example/Foo;` 与点分名 `com.example.Foo`）、父类（NO_INDEX → `null`，即 `java.lang.Object`）、
+  命名的访问标志（public/final/abstract/interface/enum/annotation/…）、`access_flags_raw` 与源文件，
+  诚实分页（`classes_total`/`has_more`）。对标 androguard 的 `apk.classes`，但对一份独立 `.dex`
+  离线可跑、不装 androguard。每个 class_def_item 是固定 32 字节记录，所有索引（类型/字符串）逐一
+  边界检查——坏索引记 warning 并给出部分行，不抛异常。DEX header 解析被抽成 `_read_header` 供
+  `dex.summary` 与 `dex.classes` 共用，文件存在性/大小上限（64 MiB）也抽成 `_read_dex_bytes` 复用，
+  两者对缺文件/超限/非 DEX 的信封完全一致。既有 MCP stdio Gate 扩到同时打 `dex.classes`（手工汇编
+  含类型表与类表的 DEX），并新增单测覆盖类解析、分页、坏索引续跑、无类、非 DEX 拒绝与服务路由。
 - 新增 `dex.summary`：纯 stdlib 直接解析单个 Dalvik 可执行文件（`.dex`），**无需 androguard**。
   `apk.*` 走 androguard 打开 APK 容器，但一份独立 `.dex`——被恶意样本丢下、运行时动态加载、或
   从 APK 里抽出来的——此前在工具面里没有任何读取器，而 androguard 并不总是装着。DEX header 是固定
@@ -55,7 +64,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **267（150 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 

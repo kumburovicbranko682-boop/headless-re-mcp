@@ -39,17 +39,43 @@ def _uleb(value: int) -> bytes:
             return bytes(out)
 
 
-def _build_dex(strings: list[str]) -> bytes:
+def _build_dex(
+    strings: list[str],
+    types: list[int] | None = None,
+    classes: list[dict[str, int | None]] | None = None,
+) -> bytes:
+    """A DEX with a string table and, optionally, real type and class_def tables."""
+    types = types or []
+    classes = classes or []
+    no_index = 0xFFFFFFFF
     header_size = 0x70
     string_ids_off = header_size
-    data_start = string_ids_off + len(strings) * 4
+    type_ids_off = string_ids_off + len(strings) * 4
+    class_defs_off = type_ids_off + len(types) * 4
+    data_start = class_defs_off + len(classes) * 32
     blobs = bytearray()
     offsets: list[int] = []
     for text in strings:
         offsets.append(data_start + len(blobs))
         blobs += _uleb(len(text)) + text.encode("utf-8") + b"\x00"
     string_ids = b"".join(struct.pack("<I", off) for off in offsets)
-    body = string_ids + bytes(blobs)
+    type_ids = b"".join(struct.pack("<I", t) for t in types)
+    class_defs = bytearray()
+    for cls in classes:
+        super_type = cls.get("super_type")
+        source = cls.get("source")
+        class_defs += struct.pack(
+            "<8I",
+            int(cls["class_type"] or 0),
+            int(cls.get("access") or 0),
+            no_index if super_type is None else int(super_type),
+            0,
+            no_index if source is None else int(source),
+            0,
+            0,
+            0,
+        )
+    body = string_ids + type_ids + bytes(class_defs) + bytes(blobs)
     header = bytearray(header_size)
     header[0:8] = b"dex\n035\x00"
     struct.pack_into("<I", header, 0x08, 0x1234ABCD)
@@ -57,7 +83,10 @@ def _build_dex(strings: list[str]) -> bytes:
     fields = [
         header_size + len(body), header_size, 0x12345678, 0, 0, 0,
         len(strings), string_ids_off,
-        3, 0, 2, 0, 4, 0, 5, 0, 1, 0, 0, 0,
+        len(types), type_ids_off,
+        0, 0, 0, 0, 0, 0,
+        len(classes), class_defs_off,
+        0, 0,
     ]
     struct.pack_into("<20I", header, 0x20, *fields)
     return bytes(header) + body
@@ -75,9 +104,18 @@ async def _call(client: ClientSession, tool: str, args: dict[str, Any]) -> dict[
 
 @pytest.mark.asyncio
 async def test_mcp_stdio_dex_summary(tmp_path: Path) -> None:
-    strings = ["Lcom/example/Foo;", "hello", "<init>", "https://evil.example/c2"]
+    strings = [
+        "Lcom/example/Foo;",
+        "Landroid/app/Activity;",
+        "Foo.java",
+        "https://evil.example/c2",
+    ]
+    types = [0, 1]
+    classes: list[dict[str, int | None]] = [
+        {"class_type": 0, "access": 0x1 | 0x10, "super_type": 1, "source": 2},
+    ]
     dex = tmp_path / "classes.dex"
-    dex.write_bytes(_build_dex(strings))
+    dex.write_bytes(_build_dex(strings, types, classes))
     junk = tmp_path / "bad.dex"
     junk.write_bytes(b"not a dalvik executable at all")
 
@@ -95,13 +133,14 @@ async def test_mcp_stdio_dex_summary(tmp_path: Path) -> None:
         await client.initialize()
         tools = {tool.name for tool in (await client.list_tools()).tools}
         assert "dex.summary" in tools
+        assert "dex.classes" in tools
 
         full = await _call(client, "dex.summary", {"path": str(dex)})
         assert full["ok"] is True, full
         data = full["data"]
         assert data["version"] == "035"
         assert data["counts"]["strings"] == 4
-        assert data["counts"]["methods"] == 5
+        assert data["counts"]["classes"] == 1
         assert "Lcom/example/Foo;" in data["strings"]
 
         page = await _call(client, "dex.summary", {"path": str(dex), "offset": 0, "limit": 2})
@@ -109,6 +148,18 @@ async def test_mcp_stdio_dex_summary(tmp_path: Path) -> None:
         assert page["data"]["strings_total"] == 4
         assert page["data"]["has_more"] is True
 
+        listing = await _call(client, "dex.classes", {"path": str(dex)})
+        assert listing["ok"] is True, listing
+        klass = listing["data"]["classes"][0]
+        assert klass["name"] == "com.example.Foo"
+        assert klass["superclass"] == "Landroid/app/Activity;"
+        assert "public" in klass["access_flags"]
+        assert klass["source_file"] == "Foo.java"
+
         bad = await _call(client, "dex.summary", {"path": str(junk)})
         assert bad["ok"] is False
         assert bad["error"]["code"] == "invalid_params"
+
+        bad_classes = await _call(client, "dex.classes", {"path": str(junk)})
+        assert bad_classes["ok"] is False
+        assert bad_classes["error"]["code"] == "invalid_params"
