@@ -24,6 +24,18 @@ until 1.0 the tool surface may still change between minor versions.
   `cursor/*-force-dep-absence-4586` 等分支修好、待并入的可选依赖漂移用例，非本轮
   引入）；从 `/tmp` 以 `--rootdir` 指回仓库的调用也通过；`python -m pytest` 原路径
   行为不变。只动 `pyproject.toml` 一处配置。
+### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
+
+- `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
+  `request_workflow_module_refresh` 对未跟踪的模块 key 必须拒绝（抛
+  `cannot refresh untracked modules`），而不是替它们静默下发刷新；`prepare_workflow_reset`
+  会禁用所有已启用的断点意图，并对本就禁用的意图跳过（循环里的 skip 分支）。
+- `workflows/executor.py` 的 `_remaining(deadline)` 在截止时间已过时抛 `TimeoutError`
+  （第 175 行），让多步工作流停下而不是拿非正的 timeout 去发调用；此前只覆盖了正常返回。
+- 新增 `tests/unit/test_workflow_engine_reset_refresh_guards.py` 与
+  `tests/unit/test_workflow_executor_remaining.py`：覆盖未跟踪 key 拒绝（含多 key 排序渲染）、
+  已跟踪 key 与空参刷新、重置时禁用/跳过的组合，以及 `_remaining` 的超时、恰好到点、
+  截止前返回三条路径。两个模块补齐至 100% 行覆盖，只加测试、不改源码。
 
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
