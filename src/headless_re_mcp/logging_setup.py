@@ -38,10 +38,17 @@ def resolve_log_dir(explicit: Path | None = None) -> Path:
         explicit
         or (Path(configured) if configured else None)
         or user_log_path("headless-re-mcp", appauthor=False)
-    ).expanduser()
+    )
     try:
+        # expanduser is inside the guard because it raises RuntimeError -- not
+        # OSError -- when the tilde cannot be resolved (``~nosuchuser/logs``, or
+        # a service account with no home). mkdir raises ValueError for a path
+        # with an embedded NUL. Left uncaught, either one escaped through
+        # install_global_exception_hooks and refused to start the very server
+        # the sentence above says must start.
+        root = root.expanduser()
         root.mkdir(parents=True, exist_ok=True)
-    except OSError:
+    except (OSError, RuntimeError, ValueError):
         root = Path(tempfile.gettempdir()) / "headless-re-mcp" / "logs"
         # The fallback can fail too -- a full volume takes both with it -- and
         # raising here would defeat the sentence above. The handler is built

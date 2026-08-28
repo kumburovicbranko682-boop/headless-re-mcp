@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import sqlite3
+import tempfile
 import threading
 import time
 import tomllib
@@ -147,6 +148,35 @@ def test_resolve_log_dir_prefers_the_environment(
     resolved = resolve_log_dir()
 
     assert resolved == tmp_path / "logs"
+    assert resolved.is_dir()
+
+
+def test_resolve_log_dir_survives_an_unresolvable_tilde(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bad HEADLESS_RE_LOG_DIR must degrade to the temp dir, not stop startup.
+
+    ``Path.expanduser`` raises RuntimeError -- not OSError -- when the user in
+    ``~user/...`` does not exist, so this used to escape the fallback and kill
+    the process inside install_global_exception_hooks.
+    """
+    monkeypatch.setenv("HEADLESS_RE_LOG_DIR", "~nosuchuser-headless-re/logs")
+
+    resolved = resolve_log_dir()
+
+    assert resolved == Path(tempfile.gettempdir()) / "headless-re-mcp" / "logs"
+    assert resolved.is_dir()
+
+
+def test_resolve_log_dir_survives_an_embedded_nul(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mkdir raises ValueError for a NUL in the path; OSError alone missed it."""
+    monkeypatch.delenv("HEADLESS_RE_LOG_DIR", raising=False)
+
+    resolved = resolve_log_dir(Path("/tmp/bad\x00dir"))
+
+    assert resolved == Path(tempfile.gettempdir()) / "headless-re-mcp" / "logs"
     assert resolved.is_dir()
 
 
