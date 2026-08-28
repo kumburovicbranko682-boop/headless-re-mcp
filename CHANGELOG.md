@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（doctor 对"配置路径失效"的可选 CLI 不再静默回落 PATH 谎报 DETECTED）
+
+- doctor/客户端发现漂移审计的反向情形:`probe_optional_tool` 在配置路径不是文件时会静默回落
+  PATH 搜索,而它背后的六个后端**全都钉死在配置路径上、绝不回落**——`R2Client`/`JadxClient`/
+  `ApktoolClient`(含 apksigner)对非文件路径报 `capability_unavailable`;webcrack 的 `JsClient.available`
+  连 `is_file` 都不查,拿着失效路径直接 spawn 失败;adb 则把 `settings.adb` 导出成
+  `ADBUTILS_ADB_PATH`,失效值会毒化 adb server 的自动拉起。于是 `HEADLESS_RE_JADX` 等打错字、
+  而工具恰好又在 PATH 上时,doctor 报 DETECTED、每次调用却失败——这正是 doctor 本该揪出的
+  错配,反被它掩盖。
+- 修法:配置了就只认配置(与 `probe_ghidra` 对"home 设了但没有 analyzeHeadless"报 MISSING 的
+  既有约定一致)——配置路径不是文件时返回 MISSING,详情带上该路径,补救话术点名对应的
+  `HEADLESS_RE_*` 环境变量并说明"后端只用配置路径、不回落 PATH;改对或撤掉配置以走 PATH 发现"。
+- 新增直测(jadx 失效配置 + PATH 上有真文件 → MISSING,并同场断言 `JadxClient(失效路径).available
+  is False` 钉住探针与客户端的一致性)与按六个真实调用点(radare2/adb/jadx/apktool/apksigner/webcrack)
+  参数化的 `run_doctor` 驱动用例(PATH 上放**真实文件**,旧行为下回落必然读出 DETECTED,故测试承重)。
+  mutation 验证(恢复旧回落,7 例全红)。全量单测 6638 passed / 55 skipped。
+
 ### 修复（doctor 的 wabt 探针改用客户端自己的解析器，目录配置不再误报 MISSING）
 
 - 接着 radare2 探针对齐继续核查 wabt:`HEADLESS_RE_WABT` 按 `WasmClient` 的 `_resolve_wabt_tool`
