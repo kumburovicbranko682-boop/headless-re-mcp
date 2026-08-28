@@ -16,6 +16,13 @@ build tool），未纳入，已在 docstring 说明，避免把 green 误读成"
 `linux-apktool-decode` CI job：装 JDK 21 + apktool、跑该 gate 并解析 junitxml，apktool 已装却 skip 时判失败
 （skip ≠ pass）。
 
+该 gate 现以矩阵在 apktool 2.11.1（2.x 末版）与 3.0.3（当前版）双版本上跑。apktool 3 重写了资源处理：初版夹具的
+`resources.arsc` 用了 id `0` 且包名为空，2.x 能容忍、decode 也正常，但 3.x rebuild 时把它当共享库、向 aapt2 传空的
+`--rename-resources-package` 导致 aapt2 直接 abort（exit 134），整条 repack 在当前 apktool 上不可用，而单版本 pin
+把这个前向兼容缺陷藏住了。夹具已用 aapt2 重建为带真实包名 `com.example.gate`、标准应用包 id `0x7f` 的正常
+`resources.arsc`（classes.dex 保持不变，`ANDROGUARD_APK_MARKER` 与 `addNumbers` 仍在），现已在 2.11.1 与 3.0.3
+双真机各自 decode+build 跑通。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /

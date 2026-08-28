@@ -7,12 +7,17 @@ decoded tree rebuilds into a valid APK. apktool needs a real APK with binary
 resources to do either, which a hand-zipped archive cannot provide.
 
 The fixture ``fixtures/android/gate_sample.apk`` (built once with aapt2 + D8 and
-committed) carries real binary AXML, a resources table and a ``classes.dex`` for
-``com.example.MainActivity``. The gate decodes it -- asserting the smali for that
-class carries its distinctive string and method -- then rebuilds the decoded
-tree, asserting a valid APK comes back out. It covers decode and build; ``sign``
-needs apksigner (a separate Android build tool) and is left out, stated here so
-a green is not read as "the whole repack+sign flow is covered".
+committed) carries real binary AXML, a resources table (package ``com.example.gate``
+at the standard app id ``0x7f``) and a ``classes.dex`` for ``com.example.MainActivity``.
+The fixture must round-trip on both apktool major lines: apktool 3 rewrote resource
+handling, and an earlier fixture whose ``resources.arsc`` had id ``0`` and an empty
+package name decoded fine but made apktool 3's rebuild abort aapt2 with an empty
+``--rename-resources-package`` -- so the fixture now uses a real package. The gate
+decodes it -- asserting the smali for that class carries its distinctive string and
+method -- then rebuilds the decoded tree, asserting a valid APK comes back out. It
+covers decode and build; ``sign`` needs apksigner (a separate Android build tool)
+and is left out, stated here so a green is not read as "the whole repack+sign flow
+is covered".
 
 Skip != pass: the gate skips with a reason when apktool or a JRE is absent, and
 runs for real when both are present. CI installs both, so a skip there is a
