@@ -87,6 +87,15 @@ class WebAnalysisMixin:
                 raise InvalidStateTransition(
                     f"web.open cannot run in {session.state.value} state"
                 )
+            # url is a handler kwarg the web.open tool schema types as a string,
+            # but the agent and OpenAI-bridge transports call the handler straight
+            # from model arguments with no pydantic coercion, so a list/int/null
+            # reaches ``url.strip()``. That raised AttributeError -- filed by the
+            # except BaseException below as an internal_error incident -- rather
+            # than the invalid_params a bad url earns. Refuse it before the browser
+            # launch, the same shape web_navigate's timeout guard gives a bad wait.
+            if not isinstance(url, str):
+                raise WebError("invalid_params", "url must be a string")
             target = url.strip() or (session.locator or "")
             if session.target is not TargetKind.WEB and not target:
                 raise WebError("invalid_params", "a url is required for a non-web session")

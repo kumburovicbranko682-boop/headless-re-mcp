@@ -441,3 +441,29 @@ class TestClosedSessionCannotSpawnBackends:
             assert web.live == set()
         finally:
             service.close_all()
+
+
+def test_web_open_refuses_a_non_string_url_before_launching() -> None:
+    """A non-string url is a clean invalid_params, not an internal_error incident.
+
+    web.open types url as a string, but the agent and OpenAI-bridge transports
+    invoke the handler with no pydantic coercion, so a list slips through to
+    ``url.strip()``. Without the guard that AttributeError was filed as an
+    internal_error incident, and the browser must never launch for what is only a
+    bad argument.
+    """
+    service = AnalysisService()
+    web = _TrackingWebBackend()
+    service._web_backend = web  # type: ignore[assignment]
+    try:
+        created = service.create_session("https://example.com/app", target="web")
+        session_id = created.data["session"]["id"]
+
+        result = service.web_open(session_id, url=["https://example.com"])  # type: ignore[arg-type]
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_params"
+        assert web.opens == []
+        assert web.live == set()
+    finally:
+        service.close_all()
