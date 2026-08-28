@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web.network.get 解码失败的返回体缺少契约里承诺的字段）
+
+- `backends/web/client.py` 的 `network_get()` 有两条“取不到返回体”的分支，二者都应返回统一的
+  契约形状（`body`、`base64_encoded`、`body_truncated`，外加 `body_error`）。CDP 取体失败那条
+  （重定向、体已被缓存驱逐）特意带齐了这些键，注释也写明“调用方读 result['body'] 不会碰到缺失
+  的键”；但 base64 解码失败那条只返回 `{**entry, "body_error": ...}`，把 `body`/`base64_encoded`/
+  `body_truncated` 都丢了。于是唯独在“CDP 报 base64、但内容解不出来”这条路径上，读 `result["body"]`
+  会拿到 KeyError（`entry` 只是请求摘要，不含这些键）。
+- 改法：让 base64 解码失败分支返回与 CDP 失败分支一致的完整形状（空 `body`、`base64_encoded`
+  False、`body_truncated` False、带 `body_error`）。
+- 加固既有用例 `test_network_get_reports_invalid_base64`：原来只断言 `body_error` 含
+  “was not valid base64”，对本 bug 免疫；现补断言 `body == ""`、`base64_encoded is False`、
+  `body_truncated is False`、无 `body_path`。非空验证：改回只返回 `{**entry, "body_error": ...}`
+  后该用例在 `result["body"]` 处抛 KeyError。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

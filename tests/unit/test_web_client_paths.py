@@ -479,6 +479,15 @@ def test_network_get_reports_invalid_base64(tmp_path: Path) -> None:
     backend = _backend_with(handle)
     result = backend.network_get("s", "r", tmp_path)
     assert "was not valid base64" in result["body_error"]
+    # The decode-failure path must carry the same documented shape as every
+    # other network_get result, so a caller reading these keys never hits a
+    # missing key just because the body could not be decoded. Without the fix
+    # this branch returned only the request entry plus body_error, so reading
+    # result["body"] raised KeyError here.
+    assert result["body"] == ""
+    assert result["base64_encoded"] is False
+    assert result["body_truncated"] is False
+    assert "body_path" not in result
 
 
 def test_console_returns_the_newest_tail() -> None:
