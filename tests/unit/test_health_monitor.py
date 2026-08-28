@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import threading
 import time
+from collections.abc import Iterator
 
 from headless_re_mcp.core.health import BackendHealthMonitor
 from headless_re_mcp.core.models import BackendKind
@@ -231,6 +233,63 @@ def test_backing_off_never_delays_a_connection_that_can_be_rebuilt() -> None:
 
     assert worker.reconnects == 1
     assert monitor.report("s1")[0]["connected"] is True
+
+
+def test_forget_tolerates_a_concurrent_reconnect_bookkeeping_write() -> None:
+    """forget() must not crash when the sweep thread is updating the backoff.
+
+    forget() iterates _reconnect_backoff with a comprehension while holding
+    _lock. The sweep thread's reconnect bookkeeping (_reconnect_is_due,
+    _note_reconnect_failed, and the success/connected clears) mutates the same
+    dict. If those writes happen off-lock, one landing mid-iteration raises
+    "dictionary changed size during iteration" -- and a list comprehension over a
+    dict is preemptible bytecode, unlike the GIL-atomic list(deque), so it is
+    genuinely reachable. Every access holding _lock closes it: the writer blocks
+    on the lock forget() holds, so the dict cannot change size during the sweep.
+    """
+    worker = FakeWorker(connected=False)
+    worker.reconnect_error = ConnectionError("pipe is gone")
+    monitor = _monitor(("s1", BackendKind.X64DBG, worker))
+    monitor.check_once()  # records a backoff entry for the failed reconnect
+    assert len(monitor._reconnect_backoff) == 1
+
+    intruder_key = ("s2", "web")
+    fired = threading.Event()
+
+    def _write_off_the_sweep_thread() -> None:
+        # Exactly what the sweep does between forget() calls: a bookkeeping
+        # write on a *different* key, which changes the dict's size.
+        monitor._note_reconnect_failed(intruder_key)
+
+    class _MutatingDuringIteration(dict[tuple[str, str], tuple[int, int]]):
+        """Fires a concurrent bookkeeping write once forget() starts iterating."""
+
+        def __iter__(self) -> Iterator[tuple[str, str]]:
+            live = dict.__iter__(self)  # the real iterator, sensitive to resize
+            first = True
+            for key in live:
+                yield key
+                if first:
+                    first = False
+                    writer = threading.Thread(target=_write_off_the_sweep_thread, daemon=True)
+                    writer.start()
+                    fired.set()
+                    # Off-lock (bug): the write completes now and the next step
+                    # of this iteration raises. Under the fix: the writer is
+                    # blocked on _lock, so this join times out and iteration ends
+                    # cleanly.
+                    writer.join(timeout=0.5)
+
+    monitor._reconnect_backoff = _MutatingDuringIteration(monitor._reconnect_backoff)
+
+    monitor.forget("s1")  # must not raise RuntimeError
+
+    assert fired.is_set()
+    # The blocked writer lands its key once forget() releases the lock.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and intruder_key not in monitor._reconnect_backoff:
+        time.sleep(0.01)
+    assert intruder_key in monitor._reconnect_backoff
 
 
 def test_a_backend_that_recovers_starts_from_zero_if_it_drops_again() -> None:

@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（后端健康监视器的重连退避字典在锁外被改写，forget() 可能崩溃）
+
+- `core/health.py` 的 `BackendHealthMonitor.forget()` 在持有 `_lock` 时用列表推导遍历
+  `_reconnect_backoff`，而清扫线程的重连记账（`_reconnect_is_due`、
+  `_note_reconnect_failed`，以及重连成功/已连接时的清除）却在**锁外**改写同一个字典。
+  由于对 dict 的列表推导是可被 GIL 抢占的 Python 字节码（不同于原子的 `list(deque)`），
+  一次落在遍历中途的写入会抛 `RuntimeError: dictionary changed size during iteration`，
+  把 `forget()`（会话关闭、`session.health` 请求线程调用）打崩。`_entries` 的所有改写
+  本就都在锁内，唯独 `_reconnect_backoff` 漏了。
+- 让 `_reconnect_backoff` 的每一次访问都持 `_lock`：`_reconnect_is_due`、
+  `_note_reconnect_failed` 各自把读改写包进 `with self._lock`，两处清除收敛到新的
+  `_reconnect_clear` 助手里。每个临界区都极短，绝不跨越可能耗时 30s 的 `reconnect()`，
+  因此不会拖住 `forget()`/`report()`。
+- 新增 `tests/unit/test_health_monitor.py::test_forget_tolerates_a_concurrent_reconnect_bookkeeping_write`：
+  把 `_reconnect_backoff` 换成一个在 `forget()` 开始遍历后即从另一线程经监视器自身的
+  `_note_reconnect_failed` 触发并发写入的 dict。带 bug 时该写入在锁外落地、`forget()`
+  抛 `RuntimeError`；修复后写入线程被 `forget()` 持有的锁挡住，遍历干净结束、写入随后落地。
+  把某个记账方法改回锁外可让该用例复现同一个 `RuntimeError`，非空洞。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
