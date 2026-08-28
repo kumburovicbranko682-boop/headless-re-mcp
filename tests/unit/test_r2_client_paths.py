@@ -99,8 +99,16 @@ def test_xrefs_enriches_run_payload(tmp_path: Path) -> None:
     assert out["items"][0]["from_address"]["va"] == 0x140002000
 
 
-def test_run_reports_capability_unavailable_without_executable(tmp_path: Path) -> None:
+def test_run_reports_capability_unavailable_without_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Force discovery to find nothing so the no-executable path runs whether or
+    # not radare2 is installed. ``R2Client(executable=None)`` otherwise falls
+    # back to ``_discover()``; on a machine with r2 on PATH (a supported, common
+    # setup) the client would be available and this guard would never fire.
+    monkeypatch.setattr(r2client.shutil, "which", lambda name: None)
     client = R2Client(executable=None)
+    assert client.available is False
     with pytest.raises(R2Error) as caught:
         client.run(tmp_path / "any.exe", ["i"])
     assert caught.value.code == "capability_unavailable"
