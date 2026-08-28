@@ -497,32 +497,44 @@ class AdbBackend:
         return {"properties": props, "count": len(props), "has_more": has_more}
 
     def packages(
-        self, serial: str, *, third_party_only: bool = False, limit: int = 500
+        self,
+        serial: str,
+        *,
+        third_party_only: bool = False,
+        offset: int = 0,
+        limit: int = 500,
     ) -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PACKAGES))
+        start = max(0, int(offset))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
         text = str(raw)
         if _is_host_error_output(text):
             raise AdbError("backend_error", "pm list failed", output=text[:800])
         pkgs: list[str] = []
-        has_more = False
         for line in text.splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
-            if not name:
-                continue
-            if len(pkgs) >= capped:
-                has_more = True
-                break
-            pkgs.append(name)
+            if name:
+                pkgs.append(name)
+        # Sort the whole list, then window by offset -- pm list packages emits in
+        # the package manager's own order, not alphabetically, so capping first
+        # and sorting the survivors returned a sorted view of an arbitrary subset
+        # (whichever names pm listed early) while reading as the alphabetical
+        # prefix. Sorting first makes every page an honest slice of one stable
+        # order, so offset reaches names past the first page instead of leaving
+        # them unreachable behind has_more.
         pkgs.sort()
+        total = len(pkgs)
+        page = pkgs[start : start + capped]
         return {
-            "packages": pkgs,
-            "count": len(pkgs),
-            "has_more": has_more,
+            "packages": page,
+            "count": len(page),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(page) < total,
             "third_party_only": third_party_only,
         }
 

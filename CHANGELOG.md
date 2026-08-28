@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 改进（`device.packages` 增加 offset 分页，超过上限的包名可达；并先排序后开窗）
+
+- `device.packages` 此前只有 `limit` 无 `offset`，`has_more` 为真时上限之外的包名无从取回；
+  且后端 `packages` 先按 `pm list packages` 的原生顺序截断、再对 survivors 排序，返回的是任意
+  子集的排序视图（读起来却像字母序前缀）。两者叠加：既拿不到"字母序最前的 N 个"，也够不到其余。
+- 改法：后端 `packages` 收集全部包名后 `sort()`，再按 `offset`/`limit` 开窗
+  （`pkgs[start:start+capped]`），返回 `packages, count, total, offset, has_more, third_party_only`，
+  与 `proxy.flows` 的分页契约一致；`offset` 超过末尾即诚实空页，不报错、不回绕。沿工具层
+  (`tools/device.py`，新增 `offset: Field(ge=0)=0`) 与服务层 (`service_device.py`) 贯通。
+- 强化并新增 `tests/unit/test_adb_device_readouts.py`：逆序输入下 cap=3 必须返回真正前缀
+  `[com.a, com.b, com.c]`（原用例只断言页内已排序且是子集，`[com.c, com.d, com.e]` 也能过）；
+  新增 offset 分页用例，`offset=0/3` 取到不相交且连续的两段并覆盖全部、`has_more` 只在到末尾那页
+  翻假，`offset=99` 得诚实空页。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

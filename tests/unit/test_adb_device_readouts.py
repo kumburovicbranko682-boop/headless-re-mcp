@@ -98,18 +98,59 @@ def test_logcat_clamps_the_requested_line_count() -> None:
     assert dev.calls == [["logcat", "-d", "-t", "5000"]]
 
 
-def test_packages_reports_has_more_and_sorts_the_page() -> None:
-    """A list longer than the cap says has_more and comes back sorted."""
+def test_packages_reports_has_more_and_returns_the_alphabetical_prefix() -> None:
+    """A capped page is the alphabetically first names, not an arbitrary subset.
+
+    pm list packages emits in the package manager's own order, not sorted, so
+    capping first and sorting the survivors returned a sorted view of whichever
+    names pm happened to list early -- here [com.c, com.d, com.e] -- while
+    reading as "the sorted packages". Feeding the names reverse-sorted, a cap of
+    three must return the true prefix [com.a, com.b, com.c].
+    """
     listing = "\n".join(
         f"package:{name}" for name in ("com.e", "com.d", "com.c", "com.b", "com.a")
     )
     dev = _ScriptedDev({("pm", "list", "packages"): listing})
     payload = _backend_with(dev).packages("emulator-5554", limit=3)
     assert payload["count"] == 3
+    assert payload["total"] == 5
+    assert payload["offset"] == 0
     assert payload["has_more"] is True
     assert payload["third_party_only"] is False
-    assert payload["packages"] == sorted(payload["packages"])
-    assert set(payload["packages"]) <= {"com.a", "com.b", "com.c", "com.d", "com.e"}
+    assert payload["packages"] == ["com.a", "com.b", "com.c"]
+
+
+def test_packages_offset_reaches_names_past_the_first_page() -> None:
+    """offset pages through one stable sorted order to reach names past has_more.
+
+    Without offset the names past the cap were unreachable behind has_more.
+    Paging offset=0 then offset=3 over the same reverse-sorted five must return
+    disjoint, contiguous slices of the single sorted order and cover them all,
+    with has_more flipping false only on the page that reaches the end.
+    """
+    listing = "\n".join(
+        f"package:{name}" for name in ("com.e", "com.d", "com.c", "com.b", "com.a")
+    )
+    dev = _ScriptedDev({("pm", "list", "packages"): listing})
+    backend = _backend_with(dev)
+
+    first = backend.packages("emulator-5554", offset=0, limit=3)
+    assert first["packages"] == ["com.a", "com.b", "com.c"]
+    assert first["total"] == 5
+    assert first["offset"] == 0
+    assert first["has_more"] is True
+
+    second = backend.packages("emulator-5554", offset=3, limit=3)
+    assert second["packages"] == ["com.d", "com.e"]
+    assert second["total"] == 5
+    assert second["offset"] == 3
+    assert second["has_more"] is False
+
+    # An offset past the end is an honest empty page, not an error or a wrap.
+    past = backend.packages("emulator-5554", offset=99, limit=3)
+    assert past["packages"] == []
+    assert past["count"] == 0
+    assert past["has_more"] is False
 
 
 def test_packages_complete_list_is_not_labelled_partial() -> None:

@@ -75,17 +75,21 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def device_packages(
         serial: str,
         third_party_only: bool = False,
+        offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=2000)] = 500,
     ) -> dict[str, Any]:
         """List installed package names, optionally only third-party ones.
 
-        Answers with packages, count, has_more, and third_party_only so a
-        page that filled the cap is not read as every package. An adb error
-        line (a dead or offline device) is a failure, not an empty device.
+        Answers with packages, count, total, offset, has_more, and
+        third_party_only so a page that filled the cap is not read as every
+        package. The names are sorted, and offset pages through that one stable
+        order: advance offset by the page size to reach packages past has_more.
+        An adb error line (a dead or offline device) is a failure, not an
+        empty device.
         """
         return _dump(
             analysis.device_packages(
-                serial, third_party_only=third_party_only, limit=limit
+                serial, third_party_only=third_party_only, offset=offset, limit=limit
             )
         )
 
