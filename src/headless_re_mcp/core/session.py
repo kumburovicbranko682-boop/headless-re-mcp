@@ -248,6 +248,12 @@ class SessionRegistry:
                     metadata["dotnet"]["module_initializer_token"] = _dotnet_module_initializer(
                         path
                     )
+                    # The self-declared target framework -- which runtime
+                    # family and version the assembly was built for, the
+                    # managed pair to a PE subsystem/os version, an ELF
+                    # minimum kernel and an APK min/target SDK. None means
+                    # the attribute is absent (pre-4.0-era assemblies).
+                    metadata["dotnet"]["target_framework"] = _dotnet_target_framework(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -4562,6 +4568,67 @@ _DOTNET_METHOD_STATIC = 0x0010
 _DOTNET_MODULE_CCTOR = ".cctor"
 _DOTNET_TOKEN_METHODDEF = 0x06
 _DOTNET_MAX_MODULE_METHODS = 4096
+# The TargetFrameworkAttribute walk: a TypeRef (0x01) naming the attribute
+# type, a MemberRef (0x0A) for its .ctor, then the CustomAttribute (0x0C) on
+# the Assembly (row 1) whose value blob carries the framework string
+# (".NETCoreApp,Version=v8.0" / ".NETFramework,Version=v4.8"). The tables
+# come up in that bit order, so each stage uses only what the last collected.
+_DOTNET_TYPE_REF = 0x01
+_DOTNET_MEMBER_REF = 0x0A
+_DOTNET_CUSTOM_ATTRIBUTE = 0x0C
+_DOTNET_TFA_NAME = "TargetFrameworkAttribute"
+_DOTNET_TFA_NAMESPACE = "System.Runtime.Versioning"
+# HasCustomAttribute coded index for the Assembly table (tag 14), row 1.
+_DOTNET_TFA_ASSEMBLY_PARENT = (1 << 5) | 14
+_DOTNET_MEMBER_REF_TYPEREF_TAG = 1
+_DOTNET_CUSTOM_ATTR_MEMBERREF_TAG = 3
+_DOTNET_MAX_TFA_SCAN = 4096
+
+
+def _dotnet_packed_uint(data: bytes, pos: int) -> tuple[int, int] | None:
+    """ECMA-335 II.23.2 compressed unsigned integer -- ``(value, next)`` or None.
+
+    The #Blob length prefix and a custom attribute's SerString length both use
+    this encoding: one, two or four bytes selected by the top bits of the
+    first (a ``111xxxxx`` lead byte is reserved and reads as None).
+    """
+    if pos >= len(data):
+        return None
+    first = data[pos]
+    if first & 0x80 == 0:
+        return first, pos + 1
+    if first & 0xC0 == 0x80:
+        if pos + 2 > len(data):
+            return None
+        return ((first & 0x3F) << 8) | data[pos + 1], pos + 2
+    if first & 0xE0 == 0xC0:
+        if pos + 4 > len(data):
+            return None
+        value = (
+            ((first & 0x1F) << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]
+        )
+        return value, pos + 4
+    return None
+
+
+def _dotnet_custom_attr_string(blob: bytes) -> str | None:
+    """The single SerString fixed argument of a custom-attribute value blob.
+
+    ECMA-335 II.23.3: a u16 prolog 0x0001 then, for a one-string ctor like
+    TargetFrameworkAttribute's, a SerString -- 0xFF for null, else a packed
+    length and that many UTF-8 bytes. The named-argument tail is not read.
+    """
+    if len(blob) < 3 or int.from_bytes(blob[0:2], "little") != 0x0001:
+        return None
+    if blob[2] == 0xFF:
+        return None
+    decoded = _dotnet_packed_uint(blob, 2)
+    if decoded is None:
+        return None
+    length, start = decoded
+    if start + length > len(blob):
+        return None
+    return blob[start : start + length].decode("utf-8", errors="replace")
 _DOTNET_MAX_ASSEMBLY_REF_ROWS = 256
 
 
@@ -5071,6 +5138,188 @@ def _dotnet_module_initializer(path: Path) -> int | None:
                 name_index = int.from_bytes(tables[at + 8 : at + 8 + string_index_size], "little")
                 if flags & _DOTNET_METHOD_STATIC and string_at(name_index) == _DOTNET_MODULE_CCTOR:
                     return (_DOTNET_TOKEN_METHODDEF << 24) | rid
+            return None
+        table_offset += row_size * row_counts[bit]
+    return None
+
+
+def _dotnet_target_framework(path: Path) -> str | None:
+    """The assembly's self-declared target framework, or ``None``.
+
+    The string the SDK stamps into TargetFrameworkAttribute --
+    ``.NETFramework,Version=v4.8`` or ``.NETCoreApp,Version=v8.0`` -- the
+    first triage question for a managed binary: which runtime family and
+    version it was built for. The .NET member of the declared-platform
+    family: the pair to a PE subsystem/os version, an ELF minimum kernel, a
+    Mach-O LC_BUILD_VERSION minos and an APK min/target SDK, and finer than
+    the metadata version (``v4.0.30319`` on Framework and Core alike).
+
+    Resolved by the attribute chain ``monodis --customattr`` decodes: a
+    TypeRef row naming the attribute, a MemberRef row for its ``.ctor``, and
+    the CustomAttribute row on the Assembly whose value blob's SerString is
+    the framework string. Those tables come up in bit order (0x01 < 0x0A <
+    0x0C), so one linear walk suffices. Bounded and fail-closed: capped file,
+    clamped row counts, capped scans, and any structural surprise -- or an
+    assembly old enough to predate the attribute -- yields ``None``.
+    """
+    from headless_re_mcp.dotnet.tables import (
+        CUSTOM_ATTRIBUTE_TYPE_TABLES,
+        HAS_CUSTOM_ATTRIBUTE_TABLES,
+        MEMBER_REF_PARENT_TABLES,
+        RESOLUTION_SCOPE_TABLES,
+        coded_index_size,
+        table_row_size,
+    )
+
+    try:
+        if path.stat().st_size > _DOTNET_MAX_FILE:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    view = _pe_header_view(raw)
+    if view is None:
+        return None
+    _magic, dir_count, dir_off, sections, _base = view
+    entry = dir_off + _PE_COM_DESCRIPTOR_DIR * 8
+    if dir_count <= _PE_COM_DESCRIPTOR_DIR or entry + 8 > len(raw):
+        return None
+    clr_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if clr_rva == 0:
+        return None
+    clr_off = _pe_rva_to_offset(sections, clr_rva)
+    if clr_off is None or clr_off + 16 > len(raw):
+        return None
+    meta_rva = int.from_bytes(raw[clr_off + 8 : clr_off + 12], "little")
+    meta_off = _pe_rva_to_offset(sections, meta_rva)
+    if meta_off is None:
+        return None
+    stream_map = _clr_stream_map(raw, meta_off)
+    tables_span = stream_map.get("#~") or stream_map.get("#-")
+    strings_span = stream_map.get("#Strings")
+    blob_span = stream_map.get("#Blob")
+    if tables_span is None:
+        return None
+    tables = raw[meta_off + tables_span[0] : meta_off + tables_span[0] + tables_span[1]]
+    strings = b""
+    if strings_span is not None:
+        strings = raw[meta_off + strings_span[0] : meta_off + strings_span[0] + strings_span[1]]
+    blob_heap = b""
+    if blob_span is not None:
+        blob_heap = raw[meta_off + blob_span[0] : meta_off + blob_span[0] + blob_span[1]]
+    if len(tables) < 24 or not strings or not blob_heap:
+        return None
+    heap_sizes = tables[6]
+    string_index_size = 4 if (heap_sizes & 0x01) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    valid = int.from_bytes(tables[8:16], "little")
+    cursor = 24
+    row_counts: dict[int, int] = {}
+    for bit in range(64):
+        if valid & (1 << bit):
+            if cursor + 4 > len(tables):
+                return None
+            row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
+            cursor += 4
+    max_rows = max((len(tables) - cursor) // 2, 0)
+    row_counts = {bit: min(count, max_rows) for bit, count in row_counts.items()}
+    if (
+        _DOTNET_TYPE_REF not in row_counts
+        or _DOTNET_MEMBER_REF not in row_counts
+        or _DOTNET_CUSTOM_ATTRIBUTE not in row_counts
+    ):
+        return None
+
+    def string_at(index: int) -> str:
+        if index <= 0 or index >= len(strings):
+            return ""
+        end = strings.find(b"\0", index)
+        return strings[index : (end if end >= 0 else len(strings))].decode(
+            "utf-8", errors="replace"
+        )
+
+    def blob_at(index: int) -> bytes | None:
+        # #Blob entries open with a packed length; index 0 is the empty blob.
+        if index <= 0 or index >= len(blob_heap):
+            return None
+        decoded = _dotnet_packed_uint(blob_heap, index)
+        if decoded is None:
+            return None
+        length, start = decoded
+        if start + length > len(blob_heap):
+            return None
+        return blob_heap[start : start + length]
+
+    tfa_typerefs: set[int] = set()
+    tfa_ctors: set[int] = set()
+    table_offset = cursor
+    for bit in sorted(row_counts):
+        row_size = table_row_size(
+            row_counts, string_index_size, blob_index_size, guid_index_size, bit
+        )
+        if row_size is None:
+            return None
+        if bit == _DOTNET_TYPE_REF:
+            # Row: ResolutionScope(coded), Name(#Strings), Namespace(#Strings).
+            scope_size = coded_index_size(row_counts, RESOLUTION_SCOPE_TABLES, 2)
+            for i in range(min(row_counts[bit], _DOTNET_MAX_TFA_SCAN)):
+                at = table_offset + i * row_size + scope_size
+                if at + 2 * string_index_size > len(tables):
+                    break
+                name_index = int.from_bytes(tables[at : at + string_index_size], "little")
+                ns_at = at + string_index_size
+                ns_index = int.from_bytes(tables[ns_at : ns_at + string_index_size], "little")
+                if (
+                    string_at(name_index) == _DOTNET_TFA_NAME
+                    and string_at(ns_index) == _DOTNET_TFA_NAMESPACE
+                ):
+                    tfa_typerefs.add(i + 1)
+        elif bit == _DOTNET_MEMBER_REF and tfa_typerefs:
+            # Row: Class(coded MemberRefParent), Name(#Strings), Signature(#Blob).
+            parent_size = coded_index_size(row_counts, MEMBER_REF_PARENT_TABLES, 3)
+            for i in range(min(row_counts[bit], _DOTNET_MAX_TFA_SCAN)):
+                at = table_offset + i * row_size
+                if at + parent_size + string_index_size > len(tables):
+                    break
+                parent = int.from_bytes(tables[at : at + parent_size], "little")
+                if parent & 0x7 != _DOTNET_MEMBER_REF_TYPEREF_TAG:
+                    continue
+                if (parent >> 3) not in tfa_typerefs:
+                    continue
+                name_at = at + parent_size
+                name_index = int.from_bytes(tables[name_at : name_at + string_index_size], "little")
+                if string_at(name_index) == ".ctor":
+                    tfa_ctors.add(i + 1)
+        elif bit == _DOTNET_CUSTOM_ATTRIBUTE:
+            if not tfa_ctors:
+                return None
+            # Row: Parent(coded HasCustomAttribute), Type(coded
+            # CustomAttributeType), Value(#Blob).
+            parent_size = coded_index_size(row_counts, HAS_CUSTOM_ATTRIBUTE_TABLES, 5)
+            type_size = coded_index_size(row_counts, CUSTOM_ATTRIBUTE_TYPE_TABLES, 3)
+            for i in range(min(row_counts[bit], _DOTNET_MAX_TFA_SCAN)):
+                at = table_offset + i * row_size
+                if at + parent_size + type_size + blob_index_size > len(tables):
+                    break
+                parent = int.from_bytes(tables[at : at + parent_size], "little")
+                if parent != _DOTNET_TFA_ASSEMBLY_PARENT:
+                    continue
+                type_at = at + parent_size
+                ctor = int.from_bytes(tables[type_at : type_at + type_size], "little")
+                if ctor & 0x7 != _DOTNET_CUSTOM_ATTR_MEMBERREF_TAG:
+                    continue
+                if (ctor >> 3) not in tfa_ctors:
+                    continue
+                value_at = type_at + type_size
+                blob_index = int.from_bytes(
+                    tables[value_at : value_at + blob_index_size], "little"
+                )
+                value = blob_at(blob_index)
+                if value is not None:
+                    framework = _dotnet_custom_attr_string(value)
+                    if framework:
+                        return framework
             return None
         table_offset += row_size * row_counts[bit]
     return None

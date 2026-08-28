@@ -592,3 +592,61 @@ def test_session_assembly_refs_of_an_mcs_assembly_agree_with_monodis(tmp_path: P
         assert [(ref["name"], ref["version"]) for ref in refs] == mono_refs
     finally:
         service.close_all()
+
+
+@pytest.mark.integration
+def test_session_target_framework_agrees_with_monodis(tmp_path: Path) -> None:
+    """The session-level target framework against Mono's CustomAttribute decode.
+
+    ``target_framework`` is now a tool-free session fact -- the .NET member
+    of the declared-platform family (PE subsystem/os version, ELF minimum
+    kernel, Mach-O minos, APK min/target SDK): the TargetFrameworkAttribute
+    string resolved through TypeRef, the .ctor MemberRef and the Assembly's
+    CustomAttribute row. Mono resolves that same chain and decodes the value
+    blob's SerString entirely by itself, so the one string agreeing on the
+    fixture proves the session walk end to end. The mcs leg pins agreement on
+    a compiler-produced assembly either way: whatever Mono decodes (or its
+    absence), the session must report the same.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(
+            "minimal .NET fixture missing; run fixtures/dotnet/build_minimal_dotnet.py"
+            " (skip != pass)"
+        )
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+
+    mono_tfa = _TFA_CA_RE.search(_monodis("--customattr"))
+    assert mono_tfa, "the fixture stamps TargetFrameworkAttribute"
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(_FIXTURE))
+        assert created.ok, created.error
+        declared = created.data["session"]["metadata"]["dotnet"]["target_framework"]
+        assert declared == mono_tfa.group(1)
+        assert declared == ".NETFramework,Version=v4.8"
+    finally:
+        service.close_all()
+
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        return  # the fixture leg already ran; this leg needs a compiler
+    source = tmp_path / "plain.cs"
+    source.write_text('class P { static void Main() { System.Console.WriteLine("hi"); } }\n')
+    binary = tmp_path / "plain.exe"
+    subprocess.run(
+        [mcs, f"-out:{binary}", str(source)], check=True, capture_output=True, timeout=120
+    )
+    # Referee first: whatever Mono decodes off the compiled assembly -- a
+    # framework string or no attribute at all -- is the expected answer.
+    mcs_tfa = _TFA_CA_RE.search(_monodis_file(binary, "--customattr"))
+    expected = mcs_tfa.group(1) if mcs_tfa else None
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok, created.error
+        assert created.data["session"]["metadata"]["dotnet"]["target_framework"] == expected
+    finally:
+        service.close_all()

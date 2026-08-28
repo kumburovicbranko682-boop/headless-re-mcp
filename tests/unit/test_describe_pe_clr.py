@@ -26,6 +26,7 @@ from headless_re_mcp.core.session import (
     _dotnet_module_initializer,
     _dotnet_pinvokes,
     _dotnet_resource_payloads,
+    _dotnet_target_framework,
     _pe_authenticode,
     _pe_build_time,
     _pe_capability_surface,
@@ -2534,6 +2535,61 @@ class TestDotnetModuleInitializer:
             pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
         session = SessionRegistry().create(str(_DOTNET_FIXTURE))
         assert session.metadata["dotnet"]["module_initializer_token"] == 0x06000001
+
+
+class TestDotnetTargetFramework:
+    """_dotnet_target_framework reads the self-declared platform string.
+
+    The .NET member of the declared-platform family -- the pair to a PE
+    subsystem/os version, an ELF minimum kernel, a Mach-O minos and an APK
+    min/target SDK: the TargetFrameworkAttribute's SerString, resolved
+    through the TypeRef -> MemberRef .ctor -> CustomAttribute chain that
+    monodis --customattr decodes. None for assemblies without the attribute
+    and for anything not a walkable managed PE.
+    """
+
+    def test_the_committed_fixture_declares_net_framework_48(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        assert _dotnet_target_framework(_DOTNET_FIXTURE) == ".NETFramework,Version=v4.8"
+
+    def test_an_assembly_with_resources_reads_the_same_string(self, tmp_path: Path) -> None:
+        # ManifestResource rows (0x28) sit behind all three tables of the
+        # attribute chain, but the resource blob moves every stream: the
+        # #Strings and #Blob lookups must survive the re-layout.
+        path = tmp_path / "resourced.exe"
+        path.write_bytes(_dotnet_with_resources([("payload.bin", b"\x00" * 64)]))
+        assert _dotnet_target_framework(path) == ".NETFramework,Version=v4.8"
+
+    def test_a_renamed_attribute_type_is_not_matched(self, tmp_path: Path) -> None:
+        # Same tables, same rows, one byte of the TypeRef's name changed in
+        # #Strings: the walk must match the attribute by name, not by the
+        # row position the fixture happens to use.
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        raw = _DOTNET_FIXTURE.read_bytes()
+        assert raw.count(b"TargetFrameworkAttribute\x00") == 1
+        path = tmp_path / "renamed.exe"
+        path.write_bytes(
+            raw.replace(b"TargetFrameworkAttribute\x00", b"TargetFrameworkAttribuXe\x00")
+        )
+        assert _dotnet_target_framework(path) is None
+
+    def test_a_native_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "native.exe"
+        path.write_bytes(_native_pe())
+        assert _dotnet_target_framework(path) is None
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _dotnet_target_framework(path) is None
+
+    def test_session_over_a_managed_pe_carries_the_declared_platform(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        session = SessionRegistry().create(str(_DOTNET_FIXTURE))
+        assert session.metadata["dotnet"]["target_framework"] == ".NETFramework,Version=v4.8"
 
 
 def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path: Path) -> None:
