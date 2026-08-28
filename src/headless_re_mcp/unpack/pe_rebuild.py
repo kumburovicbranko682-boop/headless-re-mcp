@@ -149,12 +149,23 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     optional_size = _u16(image, file_header + 16)
     characteristics = _u16(image, file_header + 18)
     optional = file_header + 20
-    if optional + optional_size > len(image):
+    if optional + optional_size > len(image) or optional + 2 > len(image):
         raise PeRebuildError("optional header is truncated")
     magic = _u16(image, optional)
     pe32_plus = magic == 0x20B
     if magic not in {0x10B, 0x20B}:
         raise PeRebuildError(f"unsupported optional magic: {magic:#x}")
+
+    dir_count_off = optional + (108 if pe32_plus else 92)
+    dir_off = optional + (112 if pe32_plus else 96)
+    # The scalar fields below and the data directory array live at fixed offsets
+    # past the magic; a dump can declare a SizeOfOptionalHeader that never
+    # reaches them. Refuse with a named error rather than faulting a struct read.
+    if dir_count_off + 4 > len(image):
+        raise PeRebuildError("optional header is truncated")
+    dir_count = min(_u32(image, dir_count_off), 16)
+    if dir_off + dir_count * 8 > len(image):
+        raise PeRebuildError("optional header is truncated")
 
     entry_point_rva = _u32(image, optional + 16)
     image_base = (
@@ -166,9 +177,6 @@ def parse_runtime_headers(image: bytes | bytearray) -> JsonObject:
     size_of_headers = _u32(image, optional + 60)
     subsystem = _u16(image, optional + 68)
     dll_characteristics = _u16(image, optional + 70)
-    dir_count_off = optional + (108 if pe32_plus else 92)
-    dir_off = optional + (112 if pe32_plus else 96)
-    dir_count = min(_u32(image, dir_count_off), 16)
     directories = []
     for index in range(dir_count):
         base = dir_off + index * 8
