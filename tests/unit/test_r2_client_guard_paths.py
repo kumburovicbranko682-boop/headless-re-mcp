@@ -77,12 +77,19 @@ def test_run_reports_a_missing_binary_as_not_found(tmp_path: Path) -> None:
 def test_run_without_a_usable_executable_is_capability_unavailable(
     tmp_path: Path,
 ) -> None:
-    """A configured path that no longer exists must not read as installed."""
+    """A configured path that no longer exists must not read as installed.
+
+    The unset and dangling states used to share one "not installed" message,
+    which sent a HEADLESS_RE_R2 typo to the package manager. The dangling arm
+    now names the configured path and drops the "not installed" claim.
+    """
     client = R2Client(tmp_path / "gone-r2")
     assert client.available is False
     with pytest.raises(R2Error) as caught:
         client.run(_target(tmp_path), ["i"])
     assert caught.value.code == "capability_unavailable"
+    assert caught.value.details["executable"] == str(tmp_path / "gone-r2")
+    assert "not installed" not in caught.value.message
 
 
 # --- disasm ------------------------------------------------------------------

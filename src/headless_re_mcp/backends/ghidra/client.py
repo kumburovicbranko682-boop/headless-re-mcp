@@ -76,6 +76,41 @@ class GhidraClient:
             return importlib.util.find_spec("pyghidra") is not None
         return True
 
+    def _require_analyze(self) -> Path:
+        """Name the actual blocker instead of one catch-all message.
+
+        ``available`` is False for four distinct reasons -- no home configured,
+        a home without analyzeHeadless, no java, or a PyGhidra-only install
+        without the pyghidra module -- and the old single "analyzeHeadless is
+        not configured" message was actively wrong for the last two: the
+        operator with a JDK problem was sent to HEADLESS_RE_GHIDRA_HOME. The
+        doctor's probe_ghidra already distinguishes these states; the client's
+        refusal now matches it.
+        """
+        if self.analyze is None:
+            if self.home is None:
+                raise GhidraError(
+                    "capability_unavailable",
+                    "Ghidra is not configured (set HEADLESS_RE_GHIDRA_HOME)",
+                )
+            raise GhidraError(
+                "capability_unavailable",
+                "analyzeHeadless not found under the configured Ghidra home",
+                home=str(self.home),
+            )
+        if self.java is None:
+            raise GhidraError(
+                "capability_unavailable",
+                "java not found on PATH (Ghidra analyzeHeadless needs a JDK)",
+            )
+        if self.uses_pyghidra and importlib.util.find_spec("pyghidra") is None:
+            raise GhidraError(
+                "capability_unavailable",
+                "this Ghidra ships PyGhidra only; install the pyghidra Python module",
+                home=str(self.home) if self.home is not None else "",
+            )
+        return self.analyze
+
     def analyze_binary(
         self,
         binary: Path,
@@ -85,8 +120,7 @@ class GhidraClient:
         max_heap: str = "2G",
         delete_project: bool = True,
     ) -> JsonObject:
-        if not self.available or self.analyze is None:
-            raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
+        self._require_analyze()
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         project_dir.mkdir(parents=True, exist_ok=True)
@@ -222,8 +256,7 @@ class GhidraClient:
         timeout: float,
         max_heap: str,
     ) -> JsonObject:
-        if not self.available or self.analyze is None:
-            raise GhidraError("capability_unavailable", "Ghidra analyzeHeadless is not configured")
+        self._require_analyze()
         if not binary.is_file():
             raise GhidraError("not_found", "binary not found", path=str(binary))
         if not (_SCRIPT_DIR / _EXPORT_SCRIPT).is_file():

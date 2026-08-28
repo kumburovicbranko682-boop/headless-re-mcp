@@ -53,6 +53,25 @@ def test_export_sources_without_a_configured_jadx_is_capability_unavailable(
     assert caught.value.code == "capability_unavailable"
 
 
+def test_a_dangling_configured_jadx_names_the_bad_path(tmp_path: Path) -> None:
+    """A configured path that is not a file is a settings typo, not an absent tool.
+
+    Both states degrade to capability_unavailable, but they used to share one
+    bare "jadx is not configured" message, so HEADLESS_RE_JADX pointing at a
+    missing file read exactly like jadx never being installed. The dangling arm
+    now carries the path, so the operator fixes the setting instead of
+    reinstalling the tool -- the same split webcrack got and the doctor's
+    dangling-config MISSING report names.
+    """
+    dangling = tmp_path / "vendor" / "jadx"  # never created
+    client = JadxClient(dangling)
+    assert client.available is False
+    with pytest.raises(JadxError) as caught:
+        client.export_sources(_apk(tmp_path), tmp_path / "out")
+    assert caught.value.code == "capability_unavailable"
+    assert caught.value.details["executable"] == str(dangling)
+
+
 def test_export_sources_reports_a_missing_apk_as_not_found(tmp_path: Path) -> None:
     """A configured jadx pointed at a nonexistent apk is not_found, not a launch.
 

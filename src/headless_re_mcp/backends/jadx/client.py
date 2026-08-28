@@ -191,8 +191,16 @@ class JadxClient:
             timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
         except InvalidTimeout as exc:
             raise JadxError("invalid_params", str(exc)) from exc
-        if not self.available or self.executable is None:
+        if self.executable is None:
             raise JadxError("capability_unavailable", "jadx is not configured")
+        if not self.available:
+            # Same split as the other CLI clients: a configured path that is
+            # not a file is a settings typo, not an absent tool, so name it.
+            raise JadxError(
+                "capability_unavailable",
+                "jadx configured path is not a file",
+                executable=str(self.executable),
+            )
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
         out_dir.mkdir(parents=True, exist_ok=True)

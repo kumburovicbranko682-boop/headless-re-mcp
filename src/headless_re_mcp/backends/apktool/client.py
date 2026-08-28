@@ -108,6 +108,36 @@ class ApktoolClient:
     def signer_available(self) -> bool:
         return self.apksigner is not None and self.apksigner.is_file()
 
+    def _require_apktool(self) -> Path:
+        """Distinguish "never configured" from "configured path is not a file".
+
+        Both used to raise the same bare message, so a HEADLESS_RE_APKTOOL typo
+        read exactly like an absent tool and gave the operator nothing to fix.
+        Same split as the webcrack/r2/jadx clients.
+        """
+        if self.apktool is None:
+            raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
+        if not self.available:
+            raise ApktoolError(
+                "capability_unavailable",
+                "apktool configured path is not a file",
+                executable=str(self.apktool),
+            )
+        return self.apktool
+
+    def _require_apksigner(self) -> Path:
+        if self.apksigner is None:
+            raise ApktoolError(
+                "capability_unavailable", "apksigner is not configured (needs a JRE)"
+            )
+        if not self.signer_available:
+            raise ApktoolError(
+                "capability_unavailable",
+                "apksigner configured path is not a file",
+                executable=str(self.apksigner),
+            )
+        return self.apksigner
+
     def decode(
         self,
         apk: Path,
@@ -117,13 +147,12 @@ class ApktoolClient:
         no_resources: bool = False,
     ) -> JsonObject:
         """Decode an APK into smali + resources for editing."""
-        if not self.available or self.apktool is None:
-            raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
+        apktool = self._require_apktool()
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
         _require_apk_zip(apk)
         out_dir.parent.mkdir(parents=True, exist_ok=True)
-        args = [str(self.apktool), "d", str(apk), "-o", str(out_dir), "-f"]
+        args = [str(apktool), "d", str(apk), "-o", str(out_dir), "-f"]
         if no_resources:
             args.append("-r")
         _, stderr, code = _run(args, timeout=timeout)
@@ -145,8 +174,7 @@ class ApktoolClient:
 
     def build(self, decoded_dir: Path, out_apk: Path, *, timeout: float = 600.0) -> JsonObject:
         """Rebuild an APK from a previously decoded (and possibly edited) tree."""
-        if not self.available or self.apktool is None:
-            raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
+        apktool = self._require_apktool()
         if not decoded_dir.is_dir():
             raise ApktoolError("not_found", "decoded directory not found", path=str(decoded_dir))
         if not (decoded_dir / "AndroidManifest.xml").is_file():
@@ -157,7 +185,7 @@ class ApktoolClient:
             )
         out_apk.parent.mkdir(parents=True, exist_ok=True)
         _, stderr, code = _run(
-            [str(self.apktool), "b", str(decoded_dir), "-o", str(out_apk)],
+            [str(apktool), "b", str(decoded_dir), "-o", str(out_apk)],
             timeout=timeout,
         )
         if code != 0 or not out_apk.is_file():
@@ -198,10 +226,7 @@ class ApktoolClient:
         timeout: float = 300.0,
     ) -> JsonObject:
         """Sign an APK, defaulting to the standard Android debug keystore."""
-        if not self.signer_available or self.apksigner is None:
-            raise ApktoolError(
-                "capability_unavailable", "apksigner is not configured (needs a JRE)"
-            )
+        apksigner = self._require_apksigner()
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
         _require_apk_zip(apk)
@@ -229,7 +254,7 @@ class ApktoolClient:
         sign_env[_PASSWORD_ENV] = password
         _, stderr, code = _run(
             [
-                str(self.apksigner),
+                str(apksigner),
                 "sign",
                 "--ks",
                 str(store),
@@ -258,7 +283,7 @@ class ApktoolClient:
             )
         verify_timeout = min(60.0, max(5.0, float(timeout)))
         _, verify_stderr, verify_code = _run(
-            [str(self.apksigner), "verify", str(out_apk)],
+            [str(apksigner), "verify", str(out_apk)],
             timeout=verify_timeout,
         )
         if verify_code != 0:

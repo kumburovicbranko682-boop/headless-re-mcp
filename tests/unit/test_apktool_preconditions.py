@@ -85,6 +85,34 @@ def test_build_without_apktool_degrades_to_capability_unavailable(tmp_path: Path
     assert caught.value.code == "capability_unavailable"
 
 
+def test_a_dangling_configured_apktool_names_the_bad_path(tmp_path: Path) -> None:
+    """Unset and typo'd HEADLESS_RE_APKTOOL must be distinguishable failures.
+
+    Both degrade to capability_unavailable, but the dangling arm carries the
+    configured path so the operator fixes the setting rather than reinstalling
+    apktool -- the same unset/dangling split webcrack, r2 and jadx report.
+    """
+    dangling = tmp_path / "vendor" / "apktool"  # never created
+    client = ApktoolClient(dangling, None)
+    assert client.available is False
+    decoded = tmp_path / "decoded"
+    decoded.mkdir()
+    with pytest.raises(ApktoolError) as caught:
+        client.build(decoded, tmp_path / "out.apk")
+    assert caught.value.code == "capability_unavailable"
+    assert caught.value.details["executable"] == str(dangling)
+
+
+def test_a_dangling_configured_apksigner_names_the_bad_path(tmp_path: Path) -> None:
+    dangling = tmp_path / "vendor" / "apksigner"  # never created
+    client = ApktoolClient(None, dangling)
+    assert client.signer_available is False
+    with pytest.raises(ApktoolError) as caught:
+        client.sign(tmp_path / "app.apk", tmp_path / "signed.apk")
+    assert caught.value.code == "capability_unavailable"
+    assert caught.value.details["executable"] == str(dangling)
+
+
 def test_build_reports_a_missing_decoded_directory_as_not_found(tmp_path: Path) -> None:
     """A decoded directory that is not there is not_found, before any launch.
 

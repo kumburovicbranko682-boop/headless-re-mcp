@@ -80,6 +80,58 @@ def test_a_home_without_any_launcher_yields_no_analyze_path(tmp_path: Path) -> N
     assert client.available is False
 
 
+# ---------------------------------------------------------------------------
+# unavailability refusals name the actual blocker
+#
+# available is False for four distinct reasons, and the refusal used to be one
+# catch-all "Ghidra analyzeHeadless is not configured" -- actively wrong for a
+# missing JDK or pyghidra module, where the operator was sent to
+# HEADLESS_RE_GHIDRA_HOME. Each cause now gets the message the doctor's
+# probe_ghidra already reports for the same state.
+
+
+def test_an_unconfigured_client_refusal_points_at_the_home_setting(tmp_path: Path) -> None:
+    client = ghidra_client.GhidraClient(home=None)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "proj")
+    assert caught.value.code == "capability_unavailable"
+    assert "HEADLESS_RE_GHIDRA_HOME" in caught.value.message
+
+
+def test_a_home_without_a_launcher_refusal_names_the_home(tmp_path: Path) -> None:
+    home = tmp_path / "ghidra-empty"
+    home.mkdir()
+    client = ghidra_client.GhidraClient(home=home)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "proj")
+    assert caught.value.code == "capability_unavailable"
+    assert "analyzeHeadless not found" in caught.value.message
+    assert caught.value.details["home"] == str(home)
+
+
+def test_a_missing_java_refusal_names_the_jdk_not_the_home(tmp_path: Path) -> None:
+    client = ghidra_client.GhidraClient(home=_fake_home(tmp_path))
+    client.java = None
+    client.uses_pyghidra = False
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "proj")
+    assert caught.value.code == "capability_unavailable"
+    assert "JDK" in caught.value.message
+    assert "HEADLESS_RE_GHIDRA_HOME" not in caught.value.message
+
+
+def test_a_pyghidra_only_install_refusal_names_the_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path)
+    client.uses_pyghidra = True
+    monkeypatch.setattr(ghidra_client.importlib.util, "find_spec", lambda _name: None)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "proj")
+    assert caught.value.code == "capability_unavailable"
+    assert "pyghidra" in caught.value.message
+
+
 def test_discovery_walks_the_candidate_list_to_a_bare_launcher(tmp_path: Path) -> None:
     home = tmp_path / "ghidra"
     home.mkdir()

@@ -131,8 +131,17 @@ class R2Client:
             timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
         except InvalidTimeout as exc:
             raise R2Error("invalid_params", str(exc)) from exc
-        if not self.available or self.executable is None:
+        if self.executable is None:
             raise R2Error("capability_unavailable", "radare2/rizin is not installed")
+        if not self.available:
+            # Configured (or discovered) but not a file: a HEADLESS_RE_R2 typo
+            # or a binary removed since load. "not installed" would send the
+            # operator to the package manager when the fix is the setting.
+            raise R2Error(
+                "capability_unavailable",
+                "radare2 configured path is not a file",
+                executable=str(self.executable),
+            )
         if not binary.is_file():
             raise R2Error("not_found", "binary not found", path=str(binary))
         for cmd in commands:
