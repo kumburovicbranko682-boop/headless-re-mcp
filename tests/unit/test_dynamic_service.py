@@ -1936,6 +1936,28 @@ def test_breakpoint_set_rejects_a_bad_runtime_address_before_the_worker(
     assert not [command for command, _ in dynamic.requests if command == "breakpoints.set"]
 
 
+@pytest.mark.parametrize("bad_address", [-1, "0x1000", 1.5, None, True])
+def test_breakpoint_remove_rejects_a_bad_address_before_the_worker(
+    tmp_path: Path, bad_address: object
+) -> None:
+    """breakpoints.remove guards its address the same way breakpoints.set does.
+
+    It takes a live runtime address with no address_space, so it never routed
+    through the coordinate translation that validates one. A string address used
+    to reach the worker's int() and raise an internal_error incident; it now
+    fails as a structured invalid_address without touching the worker.
+    """
+    service, session_id, dynamic = _rebased_service(tmp_path, 0x7FF700000000)
+
+    rejected = service.dynamic_breakpoint_remove(session_id, cast(int, bad_address))
+
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_address"
+    assert not [
+        command for command, _ in dynamic.requests if command == "breakpoints.remove"
+    ]
+
+
 def test_analyze_function_dynamic_reports_stop_on_its_breakpoint(tmp_path: Path) -> None:
     service, session_id, dynamic = _rebased_service(tmp_path, 0x140000000)
 

@@ -2066,6 +2066,22 @@ class AnalysisService(
         session_id: str,
         address: int,
     ) -> Result[JsonObject]:
+        # breakpoints.remove takes a live runtime address and no address_space, so
+        # its address never routes through _runtime_breakpoint_address and never
+        # met the guard breakpoints.set now carries. On the agent transport, which
+        # hands the handler raw model arguments, a string address then reached the
+        # worker's int() and raised an internal_error incident, and a negative one
+        # was discarded verbatim. Reject it here as the same invalid_address every
+        # other breakpoint coordinate does.
+        if isinstance(address, bool) or not isinstance(address, int) or address < 0:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_address",
+                    message="address must be a non-negative integer",
+                    details={"field": "address", "value": address},
+                ),
+            )
         return self._dynamic_request(
             session_id,
             "breakpoints.remove",
