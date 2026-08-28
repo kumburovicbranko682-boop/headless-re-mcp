@@ -1058,6 +1058,48 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    def dotnet_strings(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 64,
+        name_filter: str = "",
+        min_length: Annotated[int, Field(ge=1, le=256)] = 1,
+        require_verified: bool = True,
+    ) -> dict[str, Any]:
+        """Decode the #US user-string heap: the program's ldstr literals.
+
+        The .NET counterpart to apk.strings / js.strings / wasm.strings, and
+        distinct from dotnet.enumerate kind="strings": that walks the #Strings
+        heap (metadata identifiers -- type/method/field names), while this decodes
+        the separate #US heap, where the actual string constants a program loads
+        with ldstr live (URLs, endpoints, messages, format strings, embedded
+        keys). Parsed in-process from the CLR metadata (dotnet_metadata, no dnlib
+        / no IDA). Answers with items (each {offset (byte offset into the #US
+        heap), token (the 0x70xxxxxx user-string token an ldstr operand carries,
+        so a literal here can be tied back to the method that loads it via
+        dotnet.il), value (UTF-16LE-decoded, clipped at 4096 chars with truncated
+        set when cut), char_length}), plus offset, limit, total, truncated (more
+        rows past this page), scan_capped (the heap held more than the 20000-entry
+        collect ceiling), has_us_heap, capability, backend, not_ida_idalib and
+        claims_universal_unpack false. name_filter keeps only strings containing
+        that substring (case-insensitive -- these are prose/URLs, not symbols),
+        applied before paging so total is the match count; min_length drops
+        strings shorter than that many characters (default 1). An assembly with no
+        #US heap answers has_us_heap false with an empty items list -- that is the
+        answer, not an error. The list field is items. A non-.NET input is
+        not_dotnet / clr_unverified.
+        """
+        return _dump(
+            analysis.dotnet_strings(
+                session_id,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                min_length=min_length,
+                require_verified=require_verified,
+            )
+        )
+
     def dotnet_il(
         session_id: str,
         method_token: Annotated[int, Field(ge=0)],
@@ -1108,6 +1150,7 @@ def build_dotnet_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         ("dotnet.deobfuscate", dotnet_deobfuscate),
         ("dotnet.reactor.unpack", dotnet_reactor_unpack),
         ("dotnet.enumerate", dotnet_enumerate),
+        ("dotnet.strings", dotnet_strings),
         ("dotnet.il", dotnet_il),
         ("dotnet.xrefs", dotnet_xrefs),
         ("dotnet.verify", dotnet_verify),

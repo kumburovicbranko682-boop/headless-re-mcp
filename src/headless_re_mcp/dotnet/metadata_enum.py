@@ -22,6 +22,11 @@ MAX_LIMIT: Final[int] = 256
 MAX_IL_BYTES: Final[int] = 4096
 MAX_IL_INSNS: Final[int] = 256
 CAPABILITY: Final[str] = "dotnet_metadata"
+# #US (user-string) heap decode ceilings: a hostile or corrupt heap can claim a
+# huge entry count or per-entry length, so bound both the number collected and
+# each string's kept length, the way apk.strings / wasm.strings bound their scans.
+MAX_US_STRINGS: Final[int] = 20000
+MAX_US_STRING_CHARS: Final[int] = 4096
 
 _TBL_TYPEDEF: Final[int] = 0x02
 _TBL_FIELD: Final[int] = 0x04
@@ -156,6 +161,124 @@ def enumerate_metadata(
         truncated=offset + len(window) < total,
         note=note,
     )
+
+
+def enumerate_user_strings(
+    path: Path | str,
+    *,
+    offset: int = 0,
+    limit: int = DEFAULT_LIMIT,
+    require_verified: bool = True,
+    name_filter: str = "",
+    min_length: int = 1,
+) -> JsonObject:
+    """Decode the #US (user-string) heap -- the program's ldstr literals.
+
+    dotnet.enumerate kind="strings" walks the #Strings heap (metadata
+    identifiers: type/method/field names). This decodes the separate #US heap,
+    which is where the actual string constants a program loads with ldstr live
+    (URLs, messages, format strings, embedded keys) -- the .NET counterpart to
+    apk.strings / js.strings / wasm.strings, not metadata names.
+    """
+    offset, limit = _clamp_page(offset, limit)
+    if min_length < 1:
+        raise DotnetInspectError("invalid_argument", "min_length must be >= 1")
+    inspect_dotnet(path, require_verified=require_verified)
+    meta = _load_metadata_context(Path(path))
+    collected, scan_capped = _collect_user_strings(meta)
+    has_us_heap = "#US" in meta.stream_map
+    needle = name_filter.casefold() if isinstance(name_filter, str) else ""
+    rows: list[JsonObject] = []
+    for row in collected:
+        value = str(row["value"])
+        if row["char_length"] < min_length:
+            continue
+        if needle and needle not in value.casefold():
+            continue
+        rows.append(row)
+    total = len(rows)
+    window = rows[offset : offset + limit]
+    return {
+        "kind": "userstrings",
+        "items": window,
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+        "truncated": offset + len(window) < total,
+        "scan_capped": scan_capped,
+        "has_us_heap": has_us_heap,
+        "capability": CAPABILITY,
+        "backend": "dotnet_metadata",
+        "not_ida_idalib": True,
+        "claims_universal_unpack": False,
+        "note": "#US heap ldstr literals (UTF-16LE); not #Strings metadata names",
+    }
+
+
+def _decompress_uint(buf: bytes, at: int) -> tuple[int, int] | None:
+    """ECMA-335 II.23.2 compressed unsigned integer; None if malformed/short."""
+    if at >= len(buf):
+        return None
+    b0 = buf[at]
+    if b0 & 0x80 == 0:
+        return b0, 1
+    if b0 & 0xC0 == 0x80:
+        if at + 1 >= len(buf):
+            return None
+        return ((b0 & 0x3F) << 8) | buf[at + 1], 2
+    if b0 & 0xE0 == 0xC0:
+        if at + 3 >= len(buf):
+            return None
+        return (
+            ((b0 & 0x1F) << 24) | (buf[at + 1] << 16) | (buf[at + 2] << 8) | buf[at + 3]
+        ), 4
+    return None
+
+
+def _collect_user_strings(meta: _MetaCtx) -> tuple[list[JsonObject], bool]:
+    """Walk the #US heap into decoded rows; second value is True if the cap hit."""
+    span = meta.stream_map.get("#US")
+    if span is None:
+        return [], False
+    off, size = span
+    data = meta.meta[off : off + size]
+    rows: list[JsonObject] = []
+    i = 0
+    scan_capped = False
+    while i < len(data):
+        start = i
+        # A lone 0x00 is the empty blob at offset 0 and any inter-entry padding.
+        if data[i] == 0x00:
+            i += 1
+            continue
+        decoded = _decompress_uint(data, i)
+        if decoded is None:
+            break
+        length, consumed = decoded
+        i += consumed
+        if length <= 0:
+            continue
+        end = min(i + length, len(data))
+        chunk = data[i:end]
+        i = end
+        # The final byte is the terminal flag, not text; the rest is UTF-16LE.
+        text = chunk[:-1].decode("utf-16-le", errors="replace") if len(chunk) > 1 else ""
+        if not text:
+            continue
+        clipped = text[:MAX_US_STRING_CHARS]
+        rows.append(
+            {
+                "offset": start,
+                "token": 0x70000000 | (start & 0x00FFFFFF),
+                "value": clipped,
+                "char_length": len(text),
+                "truncated": len(text) > len(clipped),
+            }
+        )
+        if len(rows) >= MAX_US_STRINGS:
+            scan_capped = i < len(data)
+            break
+    return rows, scan_capped
 
 
 def disassemble_method_il(

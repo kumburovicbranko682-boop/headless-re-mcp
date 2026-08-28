@@ -294,6 +294,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **.NET 这条线（inspect/enumerate/il/xrefs/deobfuscate）没有真正的「字符串」能力**：`dotnet.enumerate
+  kind="strings"` 走的是 #Strings 堆（元数据标识符——类型/方法/字段名），而程序真正用 `ldstr` 加载的字符串常量
+  （URL、端点、提示语、格式串、内嵌密钥）存在另一个 #US 用户字符串堆里，无工具可读。新增只读工具 `dotnet.strings`：
+  纯 Python 从 CLR 元数据解码 #US 堆（UTF-16LE），是 apk.strings / js.strings / wasm.strings 的 .NET 对应物。
+  返回 items（每项 {offset（在 #US 堆内的字节偏移）、token（`ldstr` 操作数携带的 0x70xxxxxx 用户字符串 token，
+  故此处的字面量可经 dotnet.il 回溯到加载它的方法）、value（解码后按 4096 字符裁剪，超出置 truncated）、
+  char_length}），外加 offset/limit/total/truncated/scan_capped（堆内条目超过 20000 收集上限）/has_us_heap，以及
+  capability/backend/not_ida_idalib/claims_universal_unpack=false。`name_filter` 分页前按子串（大小写不敏感）过滤、
+  total 即命中数；`min_length` 丢弃过短串。无 #US 堆时 has_us_heap=false、items 为空——这是答案而非报错；非 .NET
+  输入为 not_dotnet/clr_unverified。只读，工具总数 307→308（188 只读 / 120 写）。
 - **js.sourcemap 需要 `.map` 在磁盘上，但线上 SPA 的 map 通常是「服务出来的」而非落盘**。新增只读工具
   `web.script.sourcemap`：js.sourcemap 的动态对应物。它经 CDP 取到某个已解析脚本的源码，读末尾的
   `//# sourceMappingURL=`；内联 data: URI 直接解码，外部引用则在页面自身上下文里 `fetch`（`credentials: 'include'`，

@@ -15,6 +15,7 @@ from headless_re_mcp.dotnet.de4dot import De4dotError
 from headless_re_mcp.dotnet.metadata_enum import (
     disassemble_method_il,
     enumerate_metadata,
+    enumerate_user_strings,
     list_memberref_xrefs,
 )
 from headless_re_mcp.dotnet.net_reactor_slayer import NetReactorSlayerError
@@ -332,6 +333,36 @@ class DotnetAnalysisMixin:
                 require_verified=require_verified,
             )
             return _success(page.to_dict(), session_id=session_id, backend="dotnet")
+        except DotnetInspectError as exc:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(code=exc.code, message=str(exc), details=exc.details),
+            )
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id, backend="dotnet")
+
+    def dotnet_strings(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 64,
+        name_filter: str = "",
+        min_length: int = 1,
+        require_verified: bool = True,
+    ) -> Result[JsonObject]:
+        """Decode the #US user-string heap (ldstr literals; not #Strings names)."""
+        try:
+            session = self.registry.get(session_id)
+            payload = enumerate_user_strings(
+                session.require_pe(),
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                min_length=min_length,
+                require_verified=require_verified,
+            )
+            return _success(payload, session_id=session_id, backend="dotnet")
         except DotnetInspectError as exc:
             return Result[JsonObject](
                 ok=False,
