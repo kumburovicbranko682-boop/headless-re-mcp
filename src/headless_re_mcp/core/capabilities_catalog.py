@@ -153,6 +153,7 @@ _CORE_CAPABILITIES: tuple[JsonObject, ...] = (
             "js.beautify",
             "js.strings",
             "js.imports",
+            "js.exports",
             "js.unpack_bundle",
         ],
         "summary": "JavaScript deobfuscation and bundle unpacking via webcrack",

@@ -49,6 +49,16 @@ _MAX_JS_SPECIFIERS_SUMMARY = 2000
 _JS_IMPORT_FROM_WINDOW = 8192
 _JS_IMPORT_KINDS = frozenset({"import", "export_from", "dynamic_import", "require"})
 _JS_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*")
+# js.exports is the mirror of js.imports: the names a module exposes (ES
+# default / declaration / named / re-export / star, plus CommonJS
+# module.exports and exports.x). Bounds mirror js.imports so a hostile module
+# cannot make one call build an unbounded reply.
+_MAX_JS_EXPORTS_SCAN = 100_000
+_MAX_JS_EXPORTS_PAGE = 2000
+_MAX_JS_EXPORT_NAMES = 256
+_MAX_JS_EXPORT_NAMES_SUMMARY = 2000
+_JS_EXPORT_KINDS = frozenset({"default", "named", "re_export", "star", "commonjs"})
+_JS_DECL_KEYWORDS = frozenset({"const", "let", "var", "function", "class"})
 # A '/' begins a regex literal (rather than division) only in expression
 # position -- i.e. right after one of these, or at the very start of input.
 _JS_REGEX_PRECEDERS = frozenset("([{,;:?=!&|^~+-*/%<>")
@@ -836,6 +846,307 @@ def _scan_js_imports(text: str, *, max_edges: int) -> tuple[list[JsonObject], bo
     return edges, state["capped"]
 
 
+def _js_slice_bracket(text: str, p: int, n: int) -> tuple[str, int]:
+    """Return (inner, index-after-close) for the {..} or [..] opening at p.
+
+    Nested brackets of the same kind are matched, and strings / comments /
+    templates inside are skipped so a bracket sitting in one cannot end the
+    span early.
+    """
+    opener = text[p]
+    closer = "}" if opener == "{" else "]"
+    depth = 0
+    i = p
+    while i < n:
+        c = text[i]
+        if c in ("'", '"'):
+            _, i = _scan_js_quoted(text, i, n, c)
+            continue
+        if c == "`":
+            i = _js_skip_template(text, i, n)
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i = min(n, i + 2)
+            continue
+        if c == opener:
+            depth += 1
+            i += 1
+            continue
+        if c == closer:
+            depth -= 1
+            i += 1
+            if depth == 0:
+                return text[p + 1 : i - 1], i
+            continue
+        i += 1
+    return text[p + 1 :], i
+
+
+def _js_is_assignment(text: str, i: int, n: int) -> bool:
+    """True if the next code token from i is a plain ``=`` (not == or =>)."""
+    i = _js_skip_ws_comments(text, i, n)
+    if i >= n or text[i] != "=":
+        return False
+    nxt = text[i + 1] if i + 1 < n else ""
+    return nxt not in ("=", ">")
+
+
+def _parse_js_export_names(inner: str) -> list[str]:
+    """Exported names from a ``{ a, b as c }`` clause -- the alias when present.
+
+    Unlike an import list (where the source name is what matters), an export
+    list's exposed name is the right side of ``as``; taking the last identifier
+    of each entry yields exactly that (``a`` -> a, ``b as c`` -> c).
+    """
+    stripped = _js_strip_comments(inner)
+    names: list[str] = []
+    for part in stripped.split(","):
+        idents = _JS_NAME_RE.findall(part)
+        if not idents:
+            continue
+        names.append(idents[-1])
+        if len(names) >= _MAX_JS_EXPORT_NAMES:
+            break
+    return names
+
+
+def _js_pattern_idents(pattern: str) -> list[str]:
+    """Best-effort binding names from a destructuring pattern.
+
+    Collects identifiers sitting in binding position -- those immediately
+    followed by ``,``, ``}``, ``]``, ``=`` or the end -- so ``{ a: b }`` yields
+    b (the local binding) and ``[x, y]`` yields x and y. Deduped and bounded.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    for m in _JS_NAME_RE.finditer(pattern):
+        name = m.group(0)
+        if name == "as":
+            continue
+        j = m.end()
+        while j < len(pattern) and pattern[j].isspace():
+            j += 1
+        nxt = pattern[j] if j < len(pattern) else ""
+        if nxt in (",", "}", "]", "=", ""):
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+            if len(names) >= _MAX_JS_EXPORT_NAMES:
+                break
+    return names
+
+
+def _js_read_decl_exports(text: str, p: int, n: int) -> list[str]:
+    """Names introduced by an ``export const/let/var/function/class`` at p."""
+    word, j = _js_read_word(text, p, n)
+    if word == "async":
+        j = _js_skip_ws_comments(text, j, n)
+        word, j = _js_read_word(text, j, n)
+    if word == "function":
+        k = _js_skip_ws_comments(text, j, n)
+        if k < n and text[k] == "*":
+            k = _js_skip_ws_comments(text, k + 1, n)
+        name, _ = _js_read_word(text, k, n)
+        return [name] if name else []
+    if word == "class":
+        k = _js_skip_ws_comments(text, j, n)
+        name, _ = _js_read_word(text, k, n)
+        return [name] if name else []
+    if word in ("const", "let", "var"):
+        k = _js_skip_ws_comments(text, j, n)
+        if k >= n:
+            return []
+        if text[k] in "{[":
+            inner, _ = _js_slice_bracket(text, k, n)
+            return _js_pattern_idents(inner)
+        name, _ = _js_read_word(text, k, n)
+        return [name] if name else []
+    return []
+
+
+def _js_default_export(text: str, p: int, n: int) -> JsonObject:
+    """Classify ``export default ...`` at p, naming the function/class if any."""
+    _, j = _js_read_word(text, p, n)  # consume 'default'
+    q = _js_skip_ws_comments(text, j, n)
+    word, k = _js_read_word(text, q, n)
+    if word == "async":
+        q = _js_skip_ws_comments(text, k, n)
+        word, k = _js_read_word(text, q, n)
+    if word in ("function", "class"):
+        m = _js_skip_ws_comments(text, k, n)
+        if word == "function" and m < n and text[m] == "*":
+            m = _js_skip_ws_comments(text, m + 1, n)
+        name, _ = _js_read_word(text, m, n)
+        return {"kind": "default", "name": name or "default"}
+    return {"kind": "default", "name": "default"}
+
+
+def _js_exports_from_keyword(text: str, kw_end: int, n: int) -> list[JsonObject]:
+    """Classify what follows a top-level ``export`` keyword into edges."""
+    p = _js_skip_ws_comments(text, kw_end, n)
+    if p >= n:
+        return []
+    ch = text[p]
+    if ch == "*":
+        q = _js_skip_ws_comments(text, p + 1, n)
+        namespace: str | None = None
+        word, j = _js_read_word(text, q, n)
+        if word == "as":
+            q2 = _js_skip_ws_comments(text, j, n)
+            namespace, j = _js_read_word(text, q2, n)
+            q = _js_skip_ws_comments(text, j, n)
+            word, j = _js_read_word(text, q, n)
+        if word != "from":
+            return []  # `export *` is only valid as a re-export
+        k = _js_skip_ws_comments(text, j, n)
+        spec, _ = _js_read_specifier_literal(text, k, n)
+        if spec is None:
+            return []
+        edge: JsonObject = {"kind": "star", "from": spec}
+        if namespace:
+            edge["name"] = namespace
+        return [edge]
+    if ch == "{":
+        inner, after = _js_slice_bracket(text, p, n)
+        names = _parse_js_export_names(inner)
+        q = _js_skip_ws_comments(text, after, n)
+        word, j = _js_read_word(text, q, n)
+        spec = None
+        if word == "from":
+            k = _js_skip_ws_comments(text, j, n)
+            spec, _ = _js_read_specifier_literal(text, k, n)
+        if spec is not None:
+            return [{"kind": "re_export", "name": nm, "from": spec} for nm in names]
+        return [{"kind": "named", "name": nm} for nm in names]
+    word, _ = _js_read_word(text, p, n)
+    if word == "default":
+        return [_js_default_export(text, p, n)]
+    if word in _JS_DECL_KEYWORDS or word == "async":
+        return [{"kind": "named", "name": nm} for nm in _js_read_decl_exports(text, p, n)]
+    return []
+
+
+def _js_cjs_after_base(
+    text: str, p: int, n: int, *, allow_default: bool
+) -> list[JsonObject]:
+    """Read a CommonJS export off a ``module.exports`` / ``exports`` base at p."""
+    q = _js_skip_ws_comments(text, p, n)
+    if q >= n:
+        return []
+    c = text[q]
+    if c == ".":
+        r = _js_skip_ws_comments(text, q + 1, n)
+        name, e = _js_read_word(text, r, n)
+        if name and _js_is_assignment(text, e, n):
+            return [{"kind": "commonjs", "name": name}]
+        return []
+    if c == "[":
+        r = _js_skip_ws_comments(text, q + 1, n)
+        name, e = _js_read_specifier_literal(text, r, n)
+        if name is None:
+            return []
+        e = _js_skip_ws_comments(text, e, n)
+        if e < n and text[e] == "]" and _js_is_assignment(text, e + 1, n):
+            return [{"kind": "commonjs", "name": name}]
+        return []
+    if allow_default and _js_is_assignment(text, q, n):
+        return [{"kind": "commonjs", "name": "default"}]
+    return []
+
+
+def _js_module_lookahead(text: str, kw_end: int, n: int) -> list[JsonObject]:
+    """Detect ``module.exports`` / ``module.exports.x`` assignments."""
+    q = _js_skip_ws_comments(text, kw_end, n)
+    if q >= n or text[q] != ".":
+        return []
+    r = _js_skip_ws_comments(text, q + 1, n)
+    word, e = _js_read_word(text, r, n)
+    if word != "exports":
+        return []
+    return _js_cjs_after_base(text, e, n, allow_default=True)
+
+
+def _scan_js_exports(text: str, *, max_edges: int) -> tuple[list[JsonObject], bool]:
+    """Collect a module's export surface (ES exports plus CommonJS exports).
+
+    The mirror of _scan_js_imports: one left-to-right pass that skips comments,
+    regex and string/template literals, then -- when ``export``, ``module`` or
+    ``exports`` appears in code position -- looks ahead to classify the exposed
+    name(s) without moving the main cursor past the keyword. Returns the edges
+    in source order and whether the edge cap stopped the scan early.
+    """
+    edges: list[JsonObject] = []
+    n = len(text)
+    line_starts = _js_line_starts(text)
+    state = {"capped": False}
+
+    def add(new_edges: list[JsonObject], start: int) -> None:
+        if state["capped"]:
+            return
+        line = bisect.bisect_right(line_starts, start)
+        for edge in new_edges:
+            if len(edges) >= max_edges:
+                state["capped"] = True
+                return
+            edge["line"] = line
+            edges.append(edge)
+
+    i = 0
+    last_sig = ""
+    while i < n and not state["capped"]:
+        c = text[i]
+        if c in " \t\r\n\f\v":
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i = min(n, i + 2)
+            continue
+        if c == "/" and _js_regex_allowed(last_sig):
+            end = _scan_js_regex(text, i, n)
+            i = end if end is not None else i + 1
+            last_sig = "/"
+            continue
+        if c in ("'", '"'):
+            _, i = _scan_js_quoted(text, i, n, c)
+            last_sig = c
+            continue
+        if c == "`":
+            i = _js_skip_template(text, i, n)
+            last_sig = "`"
+            continue
+        if _js_is_ident_char(c) and not c.isdigit():
+            word, j = _js_read_word(text, i, n)
+            prev_dot = last_sig == "."
+            if word == "export" and not prev_dot:
+                add(_js_exports_from_keyword(text, j, n), i)
+            elif word == "module" and not prev_dot:
+                add(_js_module_lookahead(text, j, n), i)
+            elif word == "exports" and not prev_dot:
+                add(_js_cjs_after_base(text, j, n, allow_default=False), i)
+            last_sig = word[-1] if word else c
+            i = j
+            continue
+        last_sig = c
+        i += 1
+    return edges, state["capped"]
+
+
 class JsClient:
     """webcrack-backed JavaScript deobfuscation and bundle unpacking."""
 
@@ -1113,6 +1424,108 @@ class JsClient:
             "specifiers": specifiers,
             "distinct": distinct,
             "kind_counts": kind_counts,
+            "scan_capped": scan_capped,
+        }
+        if kind:
+            result["kind"] = kind
+        if contains:
+            result["contains"] = contains
+        return result
+
+    def exports(
+        self,
+        path: Path,
+        *,
+        kind: str = "",
+        contains: str = "",
+        offset: int = 0,
+        limit: int = 200,
+    ) -> JsonObject:
+        """Inventory a JS/ES module's export surface, no webcrack needed.
+
+        The mirror of js.imports: reads the source directly and answers what a
+        module exposes. A single pass (skipping comments, regex and
+        string/template literals so a keyword inside one is never read as code)
+        finds every ES export -- ``export default`` (naming the function/class
+        when present, else "default"), declaration exports
+        (``export const/let/var/function/class``, including the bindings of a
+        destructuring pattern, best-effort), named lists (``export { a, b as
+        c }`` -> the exposed alias), re-exports (``export { x } from "mod"``)
+        and star re-exports (``export * [as ns] from "mod"``) -- plus CommonJS
+        (``module.exports = ...`` as default, and ``module.exports.x`` /
+        ``exports.x`` / ``exports["x"]`` as named).
+
+        Each edge carries name (absent only for an anonymous ``export *``),
+        kind (default, named, re_export, star or commonjs), line and -- for
+        re-exports and stars -- from (the source module). kind filters the
+        listing to one mechanism and contains is a case-insensitive substring
+        over the name.
+
+        Answers with exports (the edge list, paged), count, total, offset and
+        has_more over the filtered set, names (the sorted unique exported names
+        for the whole file, capped at 2000), distinct (its true size),
+        kind_counts (the breakdown for the whole file), has_default (whether an
+        ES default or module.exports assignment is present) and scan_capped
+        (set once the 100000-edge ceiling stopped the scan). The list field is
+        exports, not results.
+        """
+        if kind and kind not in _JS_EXPORT_KINDS:
+            raise JsReError(
+                "invalid_params",
+                "kind must be default, named, re_export, star, commonjs or empty",
+                kind=kind,
+            )
+        if not isinstance(contains, str):
+            contains = ""
+        if len(contains) > _MAX_JS_STRINGS_CONTAINS:
+            raise JsReError(
+                "invalid_params",
+                f"contains must be at most {_MAX_JS_STRINGS_CONTAINS} chars",
+            )
+        resolved = _require_existing_file(path, missing="input file not found")
+        try:
+            raw_bytes = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        text = raw_bytes.decode("utf-8", errors="replace")
+        edges, scan_capped = _scan_js_exports(text, max_edges=_MAX_JS_EXPORTS_SCAN)
+        kind_counts = {name: 0 for name in sorted(_JS_EXPORT_KINDS)}
+        unique: dict[str, None] = {}
+        has_default = False
+        for edge in edges:
+            edge_kind = str(edge["kind"])
+            kind_counts[edge_kind] += 1
+            name = edge.get("name")
+            if name is not None:
+                unique.setdefault(str(name), None)
+            if edge_kind == "default" or (edge_kind == "commonjs" and name == "default"):
+                has_default = True
+        distinct = len(unique)
+        names = sorted(unique)[:_MAX_JS_EXPORT_NAMES_SUMMARY]
+        needle = contains.lower()
+        selected = [
+            edge
+            for edge in edges
+            if (not kind or edge["kind"] == kind)
+            and (not needle or needle in str(edge.get("name", "")).lower())
+        ]
+        total = len(selected)
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), _MAX_JS_EXPORTS_PAGE))
+        window = selected[start : start + cap]
+        result: JsonObject = {
+            "path": str(resolved),
+            "exports": window,
+            "count": len(window),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(window) < total,
+            "names": names,
+            "distinct": distinct,
+            "kind_counts": kind_counts,
+            "has_default": has_default,
             "scan_capped": scan_capped,
         }
         if kind:

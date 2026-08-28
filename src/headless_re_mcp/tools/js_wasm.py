@@ -152,6 +152,51 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="js.exports")
+    def js_exports(
+        path: str,
+        kind: str = "",
+        contains: str = "",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    ) -> dict[str, Any]:
+        """Inventory a JS/ES module's export surface (no webcrack needed).
+
+        The mirror of js.imports: reads the source directly and answers what a
+        module exposes. A single pass (skipping comments, regex and
+        string/template literals so a keyword inside one is never read as code)
+        finds every ES export -- export default (naming the function/class when
+        present, else "default"), declaration exports (export
+        const/let/var/function/class, including a destructuring pattern's
+        bindings, best-effort), named lists (export { a, b as c } -> the exposed
+        alias), re-exports (export { x } from "mod") and star re-exports
+        (export * [as ns] from "mod") -- plus CommonJS (module.exports = ... as
+        default, and module.exports.x / exports.x / exports["x"] as named).
+
+        Each edge carries name (absent only for an anonymous export *), kind
+        (default, named, re_export, star or commonjs), line and -- for
+        re-exports and stars -- from (the source module). Narrow with kind (one
+        mechanism) and contains (a case-insensitive substring over the name).
+
+        Answers with exports (the edge list, paged), count, total, offset and
+        has_more over the filtered set, names (the sorted unique exported names
+        for the whole file, capped at 2000), distinct (its true size),
+        kind_counts (the breakdown for the whole file), has_default (whether an
+        ES default or module.exports assignment is present) and scan_capped
+        (set once the 100000-edge ceiling stopped the scan). The list field is
+        exports, not results. Works on any .js/.mjs/.cjs file on disk, including
+        one spilled by web.script.source.
+        """
+        return _dump(
+            analysis.js_exports(
+                path,
+                kind=kind,
+                contains=contains,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0
