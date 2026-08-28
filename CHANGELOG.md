@@ -59,6 +59,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   即“无事可查”地失败。以把 `service_ext` 某处退回重包裹形态验证非空:守卫精确报出 `('service_ext','FridaError',517)`,
   还原后转绿——这条守卫本可在上一轮就自动逮住那个 `service_ext` 缺口。
 
+### 测试（非 PE 后端错误码规范表漂移守卫：8 个后端已共用一套 8 码分类，但此前只是 `results.py` 注释里的一句话，没有机器校验——一个 typo(`not_fund`)或近义新码(`bad_request`)会逃出 `_RETRYABLE_BACKEND_CODES`、掉进 agent 的兜底错误分支而无人察觉，现把该分类固化成常量并加 AST 守卫钉死）
+
+- agent 按 `error.code` 路由(重试一部分、上抛一部分、其余进兜底),`backend_error_as_rpc` 与 `_failure` 也据 `code` 推 `retryable`。于是一个
+  拼错的码或某后端自造的近义码不是排版小疵:它既逃出 `_RETRYABLE_BACKEND_CODES`(瞬时故障被当成永久)、又落进 agent 的 catch-all——正是无人
+  值守跑动察觉不到的静默误路由。8 个非 PE 后端其实早已共用同一套码(`backend_error`/`capability_unavailable`/`invalid_params`/`invalid_state`/
+  `not_found`/`permission_denied`/`timeout`/`too_large`),但这套分类此前只活在 `results.py` 一段注释里,没有任何东西拦住第 9 个码溜进来。
+- 把该分类固化为 `results._NON_PE_BACKEND_ERROR_CODES` 常量(与 `_RETRYABLE_BACKEND_CODES` 并列、作注释所述那套码的唯一真源),新增
+  `test_non_pe_error_code_taxonomy.py`:AST 扫每个非 PE 后端 client 里各错误类(`WebError`/`AdbError`/…)构造的**字面量**首参(即路由码),
+  断言无一落在规范表之外。双向 fail-closed:某规范码若无任何后端再抛也会被判“死码”须删,免得分类表烂成噪声;并断言 `_RETRYABLE_BACKEND_CODES`
+  是其子集,杜绝“可重试码却不在分类表里”。动态透传(`ApkError(exc.code, …)` 把 jadx/apktool 的码转手)首参非字面量,按“其码本就在别处字面量
+  raise 处被扫过”跳过。
+- 正向非空:断言扫到四个通用码且覆盖 ≥6 个后端(枚举断了会被发现)。离线另证:合成一个抛 `bad_request` 的后端会被判违规、字面量与动态透传能
+  正确区分,证明该守卫既非恒真也非恒假。
+
 ### 测试（“报了 has_more 就必须能翻页”漂移守卫：`device.packages`/`properties`、`apk.native_libs`、`adb list_devices` 接连四次以同一形态漏掉 offset——全量入内存、排序、回字母序前缀 + has_more，却无从翻到尾部——而 schema/clamp 守卫只查“已声明的 offset 是否有界”，查不出“该声明 offset 却没声明”，新增守卫钉住每个报 has_more 的读取器要么带 offset、要么在具名豁免表里）
 
 - 这四个读取器(前三条已修、`adb list_devices` 本轮同修)都对调用方说“排在本页却缺失即确实不存在”,但没有 offset 时这话只对**首页**成立:

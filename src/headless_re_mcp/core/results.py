@@ -40,6 +40,27 @@ JsonObject = dict[str, Any]
 # invalid_state, permission_denied, too_large, backend_error -- returns the
 # identical failure on retry, so it stays non-retryable and the caller does not
 # spin on a deterministic fault.
+#
+# The canonical taxonomy those backends raise. An agent routes on code, so a
+# typo ("not_fund") or a one-off synonym ("bad_request") does not just read
+# oddly -- it escapes _RETRYABLE_BACKEND_CODES (so a transient fault reads as
+# permanent) and lands in the agent's default error arm. This set is the single
+# source of truth for the enumeration in the comment above, and
+# test_non_pe_error_code_taxonomy fails if any non-PE backend raises a literal
+# code outside it, if a listed code is raised by no backend (so it cannot rot),
+# or if a retryable code is not one of these.
+_NON_PE_BACKEND_ERROR_CODES = frozenset(
+    {
+        "backend_error",
+        "capability_unavailable",
+        "invalid_params",
+        "invalid_state",
+        "not_found",
+        "permission_denied",
+        "timeout",
+        "too_large",
+    }
+)
 _RETRYABLE_BACKEND_CODES = frozenset({"timeout"})
 
 
