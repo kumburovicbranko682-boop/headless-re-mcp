@@ -166,6 +166,35 @@ def test_read_fat_slices_rejects_a_slice_without_a_macho_magic(tmp_path: Path) -
     assert read_fat_slices(path) is None
 
 
+def test_read_fat_slices_rejects_a_slice_that_overlaps_the_header(tmp_path: Path) -> None:
+    # The out-of-bounds test above pins offset+size past EOF; this pins the other
+    # end of the same guard: a slice whose offset points back inside the fat
+    # header + arch table (offset < header_end) is malformed, because the "slice"
+    # would overlap the very table describing it. Rejected before any magic read,
+    # so a self-referential fat cannot smuggle its own header bytes in as a slice.
+    # header_end here is 8 + 20 = 28; offset 8 lands inside the arch table, while
+    # size 64 and offset+size 72 stay within the 256-byte file, so offset<header_end
+    # is the sole reason for the refusal.
+    header = b"\xca\xfe\xba\xbe" + struct.pack(">I", 1)
+    header += struct.pack(">IIIII", 0x01000007, 3, 8, 64, 12)
+    path = tmp_path / "overlap"
+    path.write_bytes(bytes(bytearray(header).ljust(256, b"\x00")))
+    assert read_fat_slices(path) is None
+
+
+def test_read_fat_slices_rejects_a_slice_too_small_to_hold_a_magic(tmp_path: Path) -> None:
+    # The last strand of the same guard: a slice smaller than the 4-byte Mach-O
+    # magic (size < 4) is rejected before the magic probe, so a zero- or tiny-size
+    # arch entry can never be accepted nor drive a meaningless 4-byte read at its
+    # offset. offset 32 sits past the 28-byte header+table (offset>=header_end) and
+    # offset+size stays in the 256-byte file, so size<4 is the sole reason.
+    header = b"\xca\xfe\xba\xbe" + struct.pack(">I", 1)
+    header += struct.pack(">IIIII", 0x01000007, 3, 32, 2, 12)
+    path = tmp_path / "tiny"
+    path.write_bytes(bytes(bytearray(header).ljust(256, b"\x00")))
+    assert read_fat_slices(path) is None
+
+
 def test_registry_create_labels_fat_as_multi_arch_with_slice_metadata(tmp_path: Path) -> None:
     binary = _write_fat(tmp_path / "app", _X64_ARM64)
     session = SessionRegistry().create(binary)
@@ -180,12 +209,12 @@ def test_registry_create_labels_fat_as_multi_arch_with_slice_metadata(tmp_path: 
 @pytest.mark.parametrize(
     ("magic", "endian", "cputype", "expected"),
     [
-        (_LE32, "little", 0x00000007, Architecture.X86),   # CPU_TYPE_X86
-        (_LE64, "little", 0x01000007, Architecture.X64),   # CPU_TYPE_X86_64
-        (_LE32, "little", 0x0000000C, Architecture.ARM),   # CPU_TYPE_ARM
+        (_LE32, "little", 0x00000007, Architecture.X86),  # CPU_TYPE_X86
+        (_LE64, "little", 0x01000007, Architecture.X64),  # CPU_TYPE_X86_64
+        (_LE32, "little", 0x0000000C, Architecture.ARM),  # CPU_TYPE_ARM
         (_LE64, "little", 0x0100000C, Architecture.ARM64),  # CPU_TYPE_ARM64
-        (_LE64, "little", 0x01000012, None),               # CPU_TYPE_POWERPC64
-        (_BE32, "big", 0x00000012, None),                  # CPU_TYPE_POWERPC
+        (_LE64, "little", 0x01000012, None),  # CPU_TYPE_POWERPC64
+        (_BE32, "big", 0x00000012, None),  # CPU_TYPE_POWERPC
     ],
 )
 def test_detect_macho_architecture_names_only_what_the_enum_can(
