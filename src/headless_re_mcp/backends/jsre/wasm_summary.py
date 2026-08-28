@@ -1221,3 +1221,106 @@ def list_wasm_elements(data: bytes, *, offset: int = 0, limit: int = 100) -> Jso
     result["offset"] = start
     result["has_more"] = start + len(window) < len(segments)
     return result
+
+
+_MAX_DATA_SEGMENTS_COLLECT = 5000
+_MAX_DATA_PAGE = 1000
+_DATA_PREVIEW_BYTES = 64
+
+
+def _parse_data_segments_detailed(payload: bytes) -> tuple[list[JsonObject], bool]:
+    """Decode the data section (id 11) keeping each segment's mode and offset.
+
+    Unlike the string-extraction split, this preserves the linear-memory offset
+    an active segment is copied to, so a memory read at runtime can be traced
+    back to the source constant that seeded it.
+    """
+    count, pos = _uleb(payload, 0)
+    out: list[JsonObject] = []
+    capped = False
+    for index in range(count):
+        if len(out) >= _MAX_DATA_SEGMENTS_COLLECT:
+            capped = True
+            break
+        flag, pos = _uleb(payload, pos)
+        mode = "active"
+        memory_index: int | None = 0
+        offset_expr: JsonObject | None = None
+        if flag == 0:  # active, memory 0
+            offset_expr, pos = _read_const_init(payload, pos)
+        elif flag == 1:  # passive
+            mode = "passive"
+            memory_index = None
+        elif flag == 2:  # active, explicit memory index
+            memory_index, pos = _uleb(payload, pos)
+            offset_expr, pos = _read_const_init(payload, pos)
+        else:
+            raise _WasmMalformed
+        length, pos = _uleb(payload, pos)
+        end = pos + length
+        if end > len(payload):
+            raise _WasmTruncated
+        out.append(
+            {
+                "index": index,
+                "mode": mode,
+                "memory_index": memory_index,
+                "offset": offset_expr,
+                "blob": payload[pos:end],
+            }
+        )
+        pos = end
+    return out, capped
+
+
+def list_wasm_data(data: bytes, *, offset: int = 0, limit: int = 100) -> JsonObject:
+    """List a module's data segments with memory offsets, sizes and previews.
+
+    summary only counts data segments and wasm.strings pulls printable runs out
+    of them; this lays out the segment table itself -- where each blob lands in
+    linear memory (the active-segment offset), how large it is, and a bounded hex
+    and text preview -- so a memory read can be tied to its seeding constant.
+    Never raises: a malformed section yields an empty listing.
+    """
+    result: JsonObject = {
+        "segments": [],
+        "count": 0,
+        "total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "scan_capped": False,
+    }
+    sections, _ = _collect_sections(data)
+    if 11 not in sections:
+        return result
+    try:
+        segments, capped = _parse_data_segments_detailed(sections[11])
+    except (_WasmTruncated, _WasmMalformed):
+        return result
+    result["scan_capped"] = capped
+    result["total"] = len(segments)
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_DATA_PAGE))
+    window = segments[start : start + cap]
+    rows: list[JsonObject] = []
+    for seg in window:
+        blob = seg["blob"]
+        preview = blob[:_DATA_PREVIEW_BYTES]
+        text = "".join(chr(b) if 0x20 <= b <= 0x7E else "." for b in preview)
+        rows.append(
+            {
+                "index": seg["index"],
+                "mode": seg["mode"],
+                "memory_index": seg["memory_index"],
+                "offset": seg["offset"],
+                "size": len(blob),
+                "hex": preview.hex(),
+                "text": text,
+                "preview_truncated": len(blob) > _DATA_PREVIEW_BYTES,
+            }
+        )
+    result["segments"] = rows
+    result["count"] = len(rows)
+    result["offset"] = start
+    result["has_more"] = start + len(rows) < len(segments)
+    return result

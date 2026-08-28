@@ -292,4 +292,31 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_elements(path, offset=offset, limit=limit))
 
+    @tools.tool(name="wasm.data")
+    def wasm_data(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List a .wasm module's data segments with memory offsets and previews.
+
+        summary only counts data segments and wasm.strings pulls printable runs
+        out of them; this lays out the segment table itself, so a runtime memory
+        read can be tied back to the constant that seeded it: for an active
+        segment, memory address = the offset base plus the position within the
+        blob. Pure Python, no wabt.
+
+        Answers with segments (paged), count, total, offset, has_more and
+        scan_capped. Each segment carries index, mode (active/passive),
+        memory_index (the linear memory it targets, or null for passive), offset
+        (the base address as a decoded const-init dict like {op:i32.const,
+        value:1024}, or null for passive), size (bytes), hex and text (a bounded
+        64-byte preview; non-printable bytes render as '.') and preview_truncated
+        (the blob is larger than the preview).
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_data(path, offset=offset, limit=limit))
+
     return tools.bindings

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **290（172 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **291（173 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -418,6 +418,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   declarative 为 null)、`offset`(active 段基槽的常量初始化解码,如 `{op:i32.const,value:0}`,否则 null)、
   `element_type`(funcref/externref)、`func_indices`(安装的函数索引,`ref.null` 槽为 null)、`count`
   (声明的条目数)与 `entries_truncated`(单段条目触顶)。非模块报 `invalid_params`,超 16 MiB 报 `too_large`。
+- 新增 `wasm.data`:纯 Python 铺开数据段(节 11)的段表。summary 只数数据段个数、`wasm.strings` 只抽可打印
+  串;这里给出段表本身——每段落在线性内存的哪里(active 段的 offset)、多大、外加有界 hex 与 text 预览——
+  于是运行时的一次内存读可回溯到播种它的常量:active 段的内存地址 = offset 基址 + 在 blob 内的位置。回
+  `segments`(分页)、`count`/`total`/`offset`/`has_more`/`scan_capped`。每段带 `index`、`mode`
+  (active/passive)、`memory_index`(目标线性内存,passive 为 null)、`offset`(基址的常量初始化解码,如
+  `{op:i32.const,value:1024}`,passive 为 null)、`size`(字节)、`hex` 与 `text`(64 字节有界预览,不可打印
+  字节渲染为 '.')与 `preview_truncated`(blob 大于预览)。非模块报 `invalid_params`,超 16 MiB 报 `too_large`。
 - 新增 `wasm.globals`:纯 Python 列出模块定义的全局变量(节 6)。summary 只给计数,这里逐个命名:
   每行带 `index`(全局索引空间里的位置,导入全局在前故作为偏移加上)、`value_type`、`mutable`
   (可变全局常是加壳器藏栈指针/解密 key 的地方),与 `init`——初始化表达式首指令的解码:`{op}` 加
