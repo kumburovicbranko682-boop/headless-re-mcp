@@ -2073,6 +2073,24 @@ _WASM_NAME_SUBSEC_FUNCTIONS = 1
 # this many; the cap only bounds a hostile section.
 _WASM_MAX_FEATURES = 64
 _WASM_FEATURE_PREFIXES = {0x2B: "+", 0x2D: "-", 0x3D: "="}
+# Executable/container magic worth flagging when it is the initial content of a
+# data segment: a WASM module that ships a PE/ELF/DEX/ZIP -- or another WASM --
+# in its linear memory is the dropper shape (the module writes the segment out
+# and hands it to the host to run). MZ needs a DOS-header-sized head so two
+# letters of embedded text cannot read as a Windows executable.
+_WASM_PAYLOAD_KINDS: tuple[tuple[bytes, str], ...] = (
+    (b"\x00asm", "wasm"),
+    (b"\x7fELF", "elf"),
+    (b"dex\n", "dex"),
+    (b"PK\x03\x04", "zip"),
+    (b"\xcf\xfa\xed\xfe", "macho"),
+    (b"\xce\xfa\xed\xfe", "macho"),
+    (b"\xfe\xed\xfa\xcf", "macho"),
+    (b"\xfe\xed\xfa\xce", "macho"),
+    (b"MZ", "pe"),
+)
+_WASM_MAX_DATA_SEGMENTS = 4096
+_WASM_MAX_DATA_PAYLOADS = 32
 
 
 def _read_leb_u32(data: bytes, pos: int) -> tuple[int, int, bool]:
@@ -2124,6 +2142,8 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     exports: list[dict[str, Any]] = []
     imports: list[dict[str, Any]] = []
     defined_memories: list[dict[str, Any]] = []
+    data_payloads: list[dict[str, Any]] = []
+    data_payload_count = 0
     producers: dict[str, list[str]] | None = None
     target_features: list[dict[str, Any]] | None = None
     name_facts: dict[str, Any] = {}
@@ -2157,6 +2177,10 @@ def describe_wasm(path: Path) -> dict[str, Any]:
                 imports = _wasm_imports(data, body_start, body_end)
             elif section_id == 5:
                 defined_memories = _wasm_memories(data, body_start, body_end)
+            elif section_id == 11:
+                data_payloads, data_payload_count = _wasm_data_payloads(
+                    data, body_start, body_end
+                )
         elif section_id == 8:
             has_start = True
             # The section body is one LEB128 function index. A truncated or
@@ -2259,6 +2283,11 @@ def describe_wasm(path: Path) -> dict[str, Any]:
             "function_names": name_facts.get("function_names", []),
             "exports": exports,
             "imports": imports,
+            # Executable/container magic at the head of a data segment -- a
+            # module carrying a PE/ELF/DEX/ZIP (or nested WASM) in its linear
+            # memory is the dropper shape. Count is exact; the list is bounded.
+            "data_payloads": data_payloads,
+            "data_payload_count": data_payload_count,
             # Data past the last well-formed section: None for a clean module,
             # else {offset, size} of the residue (appended payload or a broken
             # tail -- well_formed says which module the engine would accept).
@@ -3145,6 +3174,112 @@ def _wasm_memories(data: bytes, body_start: int, body_end: int) -> list[dict[str
             break
         out.append({"min": minimum, "max": maximum, "shared": shared, "imported": False})
     return out
+
+
+def _wasm_data_payloads(
+    data: bytes, body_start: int, body_end: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Data segments (section 11) whose bytes open with executable magic.
+
+    Each segment is a mode flag, an optional memory index and offset
+    expression (for the active modes), then a vector of raw bytes -- the
+    initial contents of linear memory. A segment whose bytes begin with a
+    PE/ELF/DEX/ZIP (or nested WASM) magic is the dropper payload the module
+    would write out and run: this lists segment index, kind and byte length.
+
+    Bounded and fail-closed: the segment scan and the reported list are
+    capped, and a malformed segment stops the walk (returning what parsed
+    cleanly) rather than raising.
+    """
+    count, pos, ok = _read_leb_u32(data, body_start)
+    if not ok:
+        return [], 0
+    payloads: list[dict[str, Any]] = []
+    found = 0
+    for index in range(min(count, _WASM_MAX_DATA_SEGMENTS)):
+        if pos >= body_end:
+            break
+        flag, pos, ok = _read_leb_u32(data, pos)
+        if not ok:
+            break
+        # flag bit 0: passive (no offset expr); bit 1: explicit memory index.
+        if flag & 0x02:
+            _memidx, pos, ok = _read_leb_u32(data, pos)
+            if not ok:
+                break
+        if not flag & 0x01:  # active: skip the constant offset expression
+            pos, ok = _wasm_skip_const_expr(data, pos, body_end)
+            if not ok:
+                break
+        seg_len, pos, ok = _read_leb_u32(data, pos)
+        if not ok or pos + seg_len > body_end:
+            break
+        head = data[pos : pos + min(seg_len, 0x40)]
+        pos += seg_len
+        kind = next((k for magic, k in _WASM_PAYLOAD_KINDS if head.startswith(magic)), None)
+        if kind == "pe" and len(head) < 0x40:
+            kind = None
+        if kind is None:
+            continue
+        found += 1
+        if len(payloads) < _WASM_MAX_DATA_PAYLOADS:
+            payloads.append({"segment": index, "kind": kind, "size": seg_len})
+    return payloads, found
+
+
+def _wasm_skip_const_expr(data: bytes, pos: int, body_end: int) -> tuple[int, bool]:
+    """Skip a WASM constant expression, returning ``(pos_after_end, ok)``.
+
+    A data segment's offset is a constant expression terminated by the ``end``
+    opcode (0x0B). Only the handful of instructions a constant expression may
+    contain are decoded -- the numeric consts, ``global.get`` and the reference
+    consts -- so the walk lands exactly on the byte after ``end`` and never
+    mistakes payload bytes for the terminator.
+    """
+    steps = 0
+    while pos < body_end and steps < 64:
+        opcode = data[pos]
+        pos += 1
+        steps += 1
+        if opcode == 0x0B:  # end
+            return pos, True
+        if opcode in (0x41, 0x42):  # i32.const / i64.const: signed LEB
+            _value, pos, ok = _read_leb_s64(data, pos, body_end)
+            if not ok:
+                return pos, False
+        elif opcode == 0x43:  # f32.const
+            pos += 4
+        elif opcode == 0x44:  # f64.const
+            pos += 8
+        elif opcode in (0x23, 0xD2):  # global.get / ref.func: u32 LEB
+            _value, pos, ok = _read_leb_u32(data, pos)
+            if not ok:
+                return pos, False
+        elif opcode == 0xD0:  # ref.null: one heap-type byte
+            pos += 1
+        else:
+            # An opcode a constant expression should not carry: bail rather
+            # than guess where the expression ends.
+            return pos, False
+    return pos, False
+
+
+def _read_leb_s64(data: bytes, pos: int, body_end: int) -> tuple[int, int, bool]:
+    """Read a signed LEB128 (max 10 bytes) -> (value, next_pos, ok)."""
+    result = 0
+    shift = 0
+    for _ in range(10):
+        if pos >= body_end:
+            return (0, pos, False)
+        byte = data[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            if byte & 0x40:  # sign-extend
+                result |= -(1 << shift)
+            return (result, pos, True)
+    return (0, pos, False)
 
 
 def _read_wasm_limits(

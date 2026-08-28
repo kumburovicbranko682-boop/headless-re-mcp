@@ -519,6 +519,108 @@ def test_the_section_cap_does_not_claim_an_overlay(tmp_path: Path) -> None:
     assert info["section_counts"]["custom"] == _WASM_MAX_SECTIONS
 
 
+def _active_data(payload: bytes, offset: bytes = b"\x41\x00\x0b") -> bytes:
+    # flag 0: active, memory 0, constant offset expr (default i32.const 0 end).
+    return b"\x00" + offset + _leb(len(payload)) + payload
+
+
+def _passive_data(payload: bytes) -> bytes:
+    # flag 1: passive, no offset expression.
+    return b"\x01" + _leb(len(payload)) + payload
+
+
+def _memidx_data(payload: bytes, memidx: int = 0) -> bytes:
+    # flag 2: active with an explicit memory index, then the offset expr.
+    return b"\x02" + _leb(memidx) + b"\x41\x00\x0b" + _leb(len(payload)) + payload
+
+
+def _data_section(segments: list[bytes]) -> bytes:
+    return _section(11, _leb(len(segments)) + b"".join(segments))
+
+
+# A DOS/PE-header-sized blob: MZ magic padded to 0x40 bytes, the sniffer floor.
+_PE_SHAPED = b"MZ" + b"\x90" * 62
+
+
+class TestWasmDataPayloads:
+    """describe_wasm lists data segments whose bytes open with executable magic.
+
+    A module carrying a PE/ELF/DEX/ZIP -- or a nested WASM -- in a data
+    segment is the dropper shape: at instantiation it copies the segment into
+    linear memory, then writes it out for the host to run. The census names
+    the segment index, the sniffed kind and the byte length; benign data is
+    never listed.
+    """
+
+    def test_each_planted_kind_reads_under_its_own_name(self, tmp_path: Path) -> None:
+        section = _data_section(
+            [
+                _active_data(_PE_SHAPED),
+                _active_data(b"\x7fELF" + b"\x00" * 12),
+                _active_data(b"\x00asm\x01\x00\x00\x00"),
+                _active_data(b"PK\x03\x04" + b"\x00" * 12),
+                _active_data(b"dex\n035\x00" + b"\x00" * 8),
+                _active_data(b"benign configuration bytes here"),
+            ]
+        )
+        path = tmp_path / "dropper.wasm"
+        path.write_bytes(_module([section]))
+        info = describe_wasm(path)["wasm"]
+        assert info["data_payload_count"] == 5
+        assert info["data_payloads"] == [
+            {"segment": 0, "kind": "pe", "size": len(_PE_SHAPED)},
+            {"segment": 1, "kind": "elf", "size": 16},
+            {"segment": 2, "kind": "wasm", "size": 8},
+            {"segment": 3, "kind": "zip", "size": 16},
+            {"segment": 4, "kind": "dex", "size": 16},
+        ]
+
+    def test_a_clean_module_lists_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "add.wasm"
+        path.write_bytes(_ADD_WASM)
+        info = describe_wasm(path)["wasm"]
+        assert info["data_payload_count"] == 0
+        assert info["data_payloads"] == []
+
+    def test_passive_and_explicit_memidx_segments_are_scanned(self, tmp_path: Path) -> None:
+        section = _data_section(
+            [
+                _passive_data(b"\x7fELF" + b"\x00" * 12),
+                _memidx_data(b"\x00asm\x01\x00\x00\x00"),
+            ]
+        )
+        path = tmp_path / "modes.wasm"
+        path.write_bytes(_module([section]))
+        info = describe_wasm(path)["wasm"]
+        assert [p["kind"] for p in info["data_payloads"]] == ["elf", "wasm"]
+
+    def test_prose_opening_with_mz_is_not_an_executable(self, tmp_path: Path) -> None:
+        section = _data_section([_active_data(b"MZ header of a report")])
+        path = tmp_path / "prose.wasm"
+        path.write_bytes(_module([section]))
+        assert describe_wasm(path)["wasm"]["data_payload_count"] == 0
+
+    def test_a_malformed_offset_expr_does_not_crash(self, tmp_path: Path) -> None:
+        # flag 0 then an opcode a constant expression may not carry (0x00,
+        # unreachable): the walk bails on this segment rather than guessing,
+        # and the module's other facts still read.
+        bad = b"\x00\x00" + _leb(4) + b"\x7fELF"
+        section = _data_section([bad])
+        path = tmp_path / "bad.wasm"
+        path.write_bytes(_module([_section(3, _leb(1) + b"\x00"), section]))
+        info = describe_wasm(path)["wasm"]
+        assert info["data_payload_count"] == 0
+        assert info["function_count"] == 1
+
+    def test_the_list_is_bounded_but_the_count_exact(self, tmp_path: Path) -> None:
+        section = _data_section([_active_data(b"\x7fELF" + b"\x00" * 12) for _ in range(40)])
+        path = tmp_path / "many.wasm"
+        path.write_bytes(_module([section]))
+        info = describe_wasm(path)["wasm"]
+        assert info["data_payload_count"] == 40
+        assert len(info["data_payloads"]) == 32
+
+
 def test_describe_wasm_ignores_a_non_wasm_file(tmp_path: Path) -> None:
     path = tmp_path / "app.js"
     path.write_bytes(b"export const x = 1;\n")
