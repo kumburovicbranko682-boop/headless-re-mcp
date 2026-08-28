@@ -19,6 +19,12 @@ purpose-built encoders:
   androguard's full ``AnalyzeAPK`` to enumerate the class, its methods, its
   strings, and the external class it calls into.
 
+* per-ABI native libraries (``lib/arm64-v8a`` and ``lib/x86_64``) as minimal
+  ELF64 shared objects whose dynamic tables and .dynsym carry a real JNI
+  surface -- DT_SONAME, a DT_NEEDED on liblog.so, an exported ``JNI_OnLoad``
+  and one ``Java_..._getSecret`` native method -- for the per-library facts
+  the tool-free APK reader surfaces.
+
 The APK is then v1 (JAR) signed with the JDK's ``keytool`` and ``jarsigner`` so
 certificate parsing is exercised too.
 
@@ -520,12 +526,116 @@ def build_dex() -> bytes:
     return bytes(full)
 
 
+JNI_EXPORT = "Java_com_example_headless_Sample_getSecret"
+EM_X86_64 = 62
+EM_AARCH64 = 183
+
+
+def build_jni_so(machine: int) -> bytes:
+    """A minimal but structurally valid ELF64 shared object with a JNI surface.
+
+    ET_DYN with a PT_LOAD (vaddr == offset == 0, so dynamic-table addresses map
+    straight to file offsets) and a PT_DYNAMIC naming DT_SONAME (libnative.so)
+    and one DT_NEEDED (liblog.so, the classic Android JNI dependency), plus a
+    .dynsym/.dynstr pair exporting ``JNI_OnLoad`` and one statically registered
+    native method (``Java_com_example_headless_Sample_getSecret``) -- exactly
+    the facts the tool-free APK reader surfaces per bundled library. The same
+    bytes are emitted per ABI with only e_machine varying.
+    """
+    dynstr = bytearray(b"\x00")
+    offs: dict[str, int] = {}
+    for text in ("liblog.so", "libnative.so", "JNI_OnLoad", JNI_EXPORT):
+        offs[text] = len(dynstr)
+        dynstr += text.encode("ascii") + b"\x00"
+
+    ehdr_len, phdr_len, shdr_len = 64, 56, 64
+    dynstr_off = ehdr_len + 2 * phdr_len
+    dynsym_off = dynstr_off + len(dynstr)
+    dynsym_off += (-dynsym_off) % 8
+
+    def sym(name_off: int) -> bytes:
+        # GLOBAL FUNC (st_info 0x12), defined in section 1: an export.
+        return struct.pack("<IBBHQQ", name_off, 0x12, 0, 1, 0x1000, 16)
+
+    dynsym = bytes(24) + sym(offs["JNI_OnLoad"]) + sym(offs[JNI_EXPORT])
+    dyn_off = dynsym_off + len(dynsym)
+    dynamic = b"".join(
+        struct.pack("<QQ", tag, val)
+        for tag, val in (
+            (1, offs["liblog.so"]),  # DT_NEEDED
+            (14, offs["libnative.so"]),  # DT_SONAME
+            (5, dynstr_off),  # DT_STRTAB (vaddr == file offset via PT_LOAD)
+            (10, len(dynstr)),  # DT_STRSZ
+            (0, 0),  # DT_NULL
+        )
+    )
+    shstrtab = bytearray(b"\x00")
+    sh_names: dict[str, int] = {}
+    for sect in (".dynsym", ".dynstr", ".dynamic", ".shstrtab"):
+        sh_names[sect] = len(shstrtab)
+        shstrtab += sect.encode("ascii") + b"\x00"
+    shstr_off = dyn_off + len(dynamic)
+    shoff = shstr_off + len(shstrtab)
+    shoff += (-shoff) % 8
+    file_size = shoff + 5 * shdr_len
+
+    def phdr(p_type: int, flags: int, off: int, size: int, align: int) -> bytes:
+        return struct.pack("<IIQQQQQQ", p_type, flags, off, off, off, size, size, align)
+
+    phdrs = phdr(1, 0x5, 0, file_size, 0x1000) + phdr(2, 0x6, dyn_off, len(dynamic), 8)
+
+    def shdr(
+        name: str, sh_type: int, flags: int, off: int, size: int,
+        link: int, info: int, entsize: int,
+    ) -> bytes:
+        addr = off if flags else 0  # allocated sections live at their offset
+        return struct.pack(
+            "<IIQQQQIIQQ", sh_names[name], sh_type, flags, addr, off, size, link, info, 8, entsize
+        )
+
+    _alloc = 0x2  # SHF_ALLOC
+    shdrs = (
+        bytes(shdr_len)  # SHT_NULL
+        # .dynsym linked to .dynstr (3); sh_info = first non-local symbol.
+        + shdr(".dynsym", 11, _alloc, dynsym_off, len(dynsym), 2, 1, 24)
+        + shdr(".dynstr", 3, _alloc, dynstr_off, len(dynstr), 0, 0, 0)
+        + shdr(".dynamic", 6, _alloc, dyn_off, len(dynamic), 2, 0, 16)
+        + shdr(".shstrtab", 3, 0, shstr_off, len(shstrtab), 0, 0, 0)
+    )
+    ehdr = struct.pack(
+        "<16sHHIQQQIHHHHHH",
+        b"\x7fELF\x02\x01\x01" + bytes(9),  # 64-bit, little-endian, SysV
+        3,  # ET_DYN
+        machine,
+        1,
+        0,  # e_entry: none, as a shared object
+        ehdr_len,  # e_phoff
+        shoff,
+        0,
+        ehdr_len,
+        phdr_len,
+        2,
+        shdr_len,
+        5,
+        4,  # e_shstrndx: .shstrtab
+    )
+    blob = bytearray(file_size)
+    blob[0:ehdr_len] = ehdr
+    blob[ehdr_len : ehdr_len + len(phdrs)] = phdrs
+    blob[dynstr_off : dynstr_off + len(dynstr)] = dynstr
+    blob[dynsym_off : dynsym_off + len(dynsym)] = dynsym
+    blob[dyn_off : dyn_off + len(dynamic)] = dynamic
+    blob[shstr_off : shstr_off + len(shstrtab)] = shstrtab
+    blob[shoff:] = shdrs
+    return bytes(blob)
+
+
 def assemble_apk(target: Path) -> None:
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("AndroidManifest.xml", build_manifest())
         archive.writestr("classes.dex", build_dex())
-        archive.writestr("lib/arm64-v8a/libnative.so", b"\x7fELF" + b"\x00" * 32)
-        archive.writestr("lib/x86_64/libnative.so", b"\x7fELF" + b"\x00" * 32)
+        archive.writestr("lib/arm64-v8a/libnative.so", build_jni_so(EM_AARCH64))
+        archive.writestr("lib/x86_64/libnative.so", build_jni_so(EM_X86_64))
         archive.writestr("resources.arsc", b"\x02\x00\x0c\x00" + b"\x00" * 8)
 
 

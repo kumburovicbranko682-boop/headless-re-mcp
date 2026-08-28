@@ -1345,6 +1345,137 @@ class TestDexFactsWithoutAndroguard:
         assert describe_apk(path)["apk"]["dex"] == {}
 
 
+def _so_with_exports(names: list[str], *, machine: int = 62) -> bytes:
+    """A section-header-only ELF64 shared object exporting ``names``.
+
+    Just an ehdr plus .dynsym/.dynstr and their section headers -- enough for
+    the reader's identity and export walks (no program headers, so no dynamic
+    facts), mirroring the native suite's synthetic-dynsym builder.
+    """
+    dynstr = bytearray(b"\x00")
+    offsets: list[int] = []
+    for name in names:
+        offsets.append(len(dynstr))
+        dynstr += name.encode("utf-8") + b"\x00"
+    syms = bytearray(bytes(24))  # the null symbol
+    for off in offsets:
+        syms += struct.pack("<IBBHQQ", off, 0x12, 0, 1, 0x1000, 0)  # GLOBAL FUNC, defined
+    dynstr_off = 64
+    dynsym_off = dynstr_off + len(dynstr)
+    shoff = dynsym_off + len(syms)
+
+    def shdr(sh_type: int, off: int, size: int, link: int, entsize: int) -> bytes:
+        return struct.pack("<IIQQQQIIQQ", 0, sh_type, 0, 0, off, size, link, 0, 8, entsize)
+
+    sections = (
+        bytes(64)
+        + shdr(11, dynsym_off, len(syms), 2, 24)  # SHT_DYNSYM -> .dynstr
+        + shdr(3, dynstr_off, len(dynstr), 0, 0)  # SHT_STRTAB
+    )
+    ehdr = struct.pack(
+        "<16sHHIQQQIHHHHHH",
+        b"\x7fELF\x02\x01\x01" + bytes(9),
+        3,  # ET_DYN
+        machine,
+        1, 0, 0, shoff, 0, 64, 56, 0, 64, 3, 0,
+    )
+    return ehdr + bytes(dynstr) + bytes(syms) + sections
+
+
+class TestApkNativeLibFacts:
+    """describe_apk parses each bundled lib/<abi>/*.so with the ELF reader.
+
+    The JNI boundary -- which Java methods land in native code -- is otherwise
+    invisible until a native session is opened over an extracted library. The
+    same tool-free ELF reader runs over each member's bytes at session
+    creation, so the APK facts name each library's soname, dependencies and
+    binding surface (Java_* exports and JNI_OnLoad) up front.
+    """
+
+    def test_reads_the_committed_fixture_jni_surface(self) -> None:
+        if not _APK_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_APK_FIXTURE}")
+        libs = describe_apk(_APK_FIXTURE)["apk"]["native_libs"]
+        assert [lib["path"] for lib in libs] == [
+            "lib/arm64-v8a/libnative.so",
+            "lib/x86_64/libnative.so",
+        ]
+        by_abi = {lib["abi"]: lib for lib in libs}
+        assert by_abi["arm64-v8a"]["arch"] == "arm64"
+        assert by_abi["x86_64"]["arch"] == "x86-64"
+        for lib in libs:
+            assert lib["soname"] == "libnative.so"
+            assert lib["needed"] == ["liblog.so"]
+            assert lib["jni_onload"] is True
+            assert lib["java_natives"] == ["Java_com_example_headless_Sample_getSecret"]
+
+    def test_a_stub_elf_member_is_skipped(self, tmp_path: Path) -> None:
+        # Magic alone is not an ELF: a member whose header does not parse past
+        # the class byte contributes nothing rather than a hollow record.
+        path = tmp_path / "stub.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("lib/arm64-v8a/libstub.so", b"\x7fELF" + b"\x00" * 32)
+            archive.writestr("lib/x86_64/libjunk.so", b"not an elf at all")
+        assert describe_apk(path)["apk"]["native_libs"] == []
+
+    def test_so_files_outside_an_abi_dir_are_ignored(self, tmp_path: Path) -> None:
+        path = tmp_path / "flat.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("lib/loose.so", _so_with_exports(["JNI_OnLoad"]))
+            archive.writestr("assets/lib/x86_64/smuggled.so", _so_with_exports(["JNI_OnLoad"]))
+        assert describe_apk(path)["apk"]["native_libs"] == []
+
+    def test_exports_split_into_java_natives_and_onload(self, tmp_path: Path) -> None:
+        path = tmp_path / "jni.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr(
+                "lib/x86_64/libprobe.so",
+                _so_with_exports(
+                    ["helper_export", "Java_com_app_Native_run", "JNI_OnLoad"]
+                ),
+            )
+        (lib,) = describe_apk(path)["apk"]["native_libs"]
+        assert lib["jni_onload"] is True
+        # Only the Java_ exports name native methods; other exports are not the
+        # JNI surface and stay out of the sample.
+        assert lib["java_natives"] == ["Java_com_app_Native_run"]
+        assert lib["arch"] == "x86-64"
+        # No program headers in the synthetic image: no dynamic table, so no
+        # soname or dependency facts -- reported as absent, not invented.
+        assert lib["soname"] is None
+        assert lib["needed"] == []
+
+    def test_a_library_with_no_jni_exports_reads_as_plain(self, tmp_path: Path) -> None:
+        path = tmp_path / "plain.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("lib/x86_64/libplain.so", _so_with_exports(["frob", "twiddle"]))
+        (lib,) = describe_apk(path)["apk"]["native_libs"]
+        assert lib["jni_onload"] is False
+        assert lib["java_natives"] == []
+
+    def test_the_java_natives_sample_is_bounded(self, tmp_path: Path) -> None:
+        names = [f"Java_com_app_Native_m{i:03d}" for i in range(300)]
+        path = tmp_path / "many.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            archive.writestr("lib/x86_64/libmany.so", _so_with_exports(names))
+        (lib,) = describe_apk(path)["apk"]["native_libs"]
+        assert len(lib["java_natives"]) == 256
+
+    def test_the_library_walk_is_bounded(self, tmp_path: Path) -> None:
+        path = tmp_path / "crowd.apk"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00manifest")
+            for i in range(70):
+                archive.writestr(f"lib/x86_64/lib{i:03d}.so", _so_with_exports([]))
+        libs = describe_apk(path)["apk"]["native_libs"]
+        assert len(libs) == 64
+
+
 class TestNoShellPassthrough:
     def test_catalog_exposes_no_generic_device_shell(self) -> None:
         """The debugger surface has no dynamic.command; devices get the same rule."""

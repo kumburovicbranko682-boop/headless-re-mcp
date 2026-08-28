@@ -777,6 +777,16 @@ _DEX_MAX_TOTAL_NAMES = 512
 # single DEX holds at most 65536; a header claiming more is walked no further.
 _DEX_MAX_METHOD_IDS = 65_536
 
+# A bundled native library (lib/<abi>/*.so) is the app's JNI boundary: the same
+# tool-free ELF reader a native session uses runs over each member's bytes, so
+# an APK session knows which Java methods land in native code without any tool.
+# Bounded like the DEX walk: at most this many members, each read up to the DEX
+# byte cap, and at most this many Java_* names surfaced per library.
+_APK_MAX_NATIVE_LIBS = 64
+_APK_MAX_JAVA_NATIVES = 256
+_JNI_ONLOAD = "JNI_OnLoad"
+_JNI_EXPORT_PREFIX = "Java_"
+
 # An .aab bundle, an .apks (bundletool) or an .xapk (APKPure) all carry the .apk
 # family suffixes classify_target routes to describe_apk, but none has a compiled
 # AndroidManifest.xml at the archive root: a bundle nests it under
@@ -920,6 +930,9 @@ def describe_apk(path: Path) -> dict[str, Any]:
             "signers": signers,
             "manifest": _apk_manifest_facts_from_apk(path),
             "dex": _apk_dex_facts(path),
+            # The JNI surface of each bundled .so, parsed with the same ELF
+            # reader a native session gets -- the Java<->native boundary.
+            "native_libs": _apk_native_lib_facts(path),
         }
     }
 
@@ -1226,6 +1239,61 @@ def _dex_descriptor_to_name(descriptor: str) -> str:
     if len(descriptor) >= 3 and descriptor[0] == "L" and descriptor[-1] == ";":
         return descriptor[1:-1].replace("/", ".")
     return descriptor
+
+
+def _apk_native_lib_facts(path: Path) -> list[dict[str, Any]]:
+    """The JNI surface of every bundled native library, one record per .so.
+
+    Each ``lib/<abi>/*.so`` member is parsed with the same tool-free ELF reader
+    a native session uses, surfacing the facts that matter at the Java<->native
+    boundary: identity (arch, soname, build-id when stamped), the dependency
+    list (DT_NEEDED), and the binding surface -- exported ``Java_*`` symbols
+    (statically registered native methods, whose mangled names encode the Java
+    methods they implement) and ``JNI_OnLoad`` (dynamic registration: native
+    methods exist that no export names). Bounded and fail-closed: at most
+    _APK_MAX_NATIVE_LIBS members, each read up to the DEX byte cap, and a
+    member that is not parseable ELF is skipped rather than raising.
+    """
+    libs: list[dict[str, Any]] = []
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = sorted(
+                name
+                for name in archive.namelist()
+                if name.startswith("lib/") and name.endswith(".so") and name.count("/") >= 2
+            )
+            for name in members[:_APK_MAX_NATIVE_LIBS]:
+                try:
+                    if archive.getinfo(name).file_size > _DEX_MAX_BYTES:
+                        continue
+                    with archive.open(name) as handle:
+                        data = handle.read(_DEX_MAX_BYTES)
+                except (OSError, zipfile.BadZipFile, KeyError):
+                    continue
+                if not data.startswith(b"\x7fELF"):
+                    continue
+                stream = io.BytesIO(data)
+                facts = _elf_facts(stream.read(_NATIVE_HEADER_BYTES), stream)
+                if not facts.get("bits"):
+                    continue
+                exports: list[str] = facts.get("exported_symbols", [])
+                record: dict[str, Any] = {
+                    "path": name,
+                    "abi": name.split("/")[1],
+                    "arch": facts.get("arch"),
+                    "soname": facts.get("soname"),
+                    "needed": facts.get("needed", []),
+                    "jni_onload": _JNI_ONLOAD in exports,
+                    "java_natives": [
+                        sym for sym in exports if sym.startswith(_JNI_EXPORT_PREFIX)
+                    ][:_APK_MAX_JAVA_NATIVES],
+                }
+                if facts.get("build_id") is not None:
+                    record["build_id"] = facts["build_id"]
+                libs.append(record)
+    except (OSError, zipfile.BadZipFile):
+        return []
+    return libs
 
 
 def _apk_manifest_facts_from_apk(path: Path) -> dict[str, Any]:
