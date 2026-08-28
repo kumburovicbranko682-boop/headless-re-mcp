@@ -360,10 +360,10 @@ def test_web_har_export_reads_back_through_web_har_read(
     }
     assert by_url["https://example.com/0"]["method"] == "GET"
     assert by_url["https://example.com/0"]["status"] == 200
-    assert by_url["https://example.com/0"]["mime_type"] == "text/html"
+    assert by_url["https://example.com/0"]["mimeType"] == "text/html"
     # The browser's resource-type hint survives the export -> read round trip.
-    assert by_url["https://example.com/0"]["resource_type"] == "Document"
-    assert by_url["https://example.com/1"]["resource_type"] == "Script"
+    assert by_url["https://example.com/0"]["resourceType"] == "Document"
+    assert by_url["https://example.com/1"]["resourceType"] == "Script"
 
 
 def test_proxy_har_export_reads_back_through_web_har_read(tmp_path: Path) -> None:
@@ -371,9 +371,10 @@ def test_proxy_har_export_reads_back_through_web_har_read(tmp_path: Path) -> Non
 
     This is the symmetry that justifies the shared module -- either exporter's
     output is readable by the one reader. mitmproxy has no Chrome resource type,
-    so proxy entries carry no ``_resourceType`` and the reader omits
-    ``resource_type`` for them, which is exactly why that key is optional rather
-    than always present.
+    so proxy entries carry no ``_resourceType``; the reader still surfaces
+    ``resourceType`` as ``""`` (the live reader's always-present default) rather
+    than dropping the key, so a caller reads both producers' entries the same
+    way.
     """
     backend = _proxy_backend_with_flows(4)
     out = tmp_path / "capture.har"
@@ -385,7 +386,7 @@ def test_proxy_har_export_reads_back_through_web_har_read(tmp_path: Path) -> Non
     for entry in page["entries"]:
         assert entry["method"] == "GET"
         assert entry["status"] == 200
-        assert entry["mime_type"] == "text/plain"
+        assert entry["mimeType"] == "text/plain"
         assert entry["url"].startswith("http://x/")
-        # The proxy sets no resource type, so the reader leaves the key off.
-        assert "resource_type" not in entry
+        # The proxy sets no resource type, so the reader reports it as "".
+        assert entry["resourceType"] == ""

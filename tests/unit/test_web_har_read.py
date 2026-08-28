@@ -82,13 +82,38 @@ def test_a_serialized_har_reads_back_into_the_network_list_shape() -> None:
     assert [s["url"] for s in summaries] == ["https://a.test/app.js?x=1", "https://a.test/api"]
     assert summaries[0]["method"] == "GET"
     assert summaries[0]["status"] == 200
-    assert summaries[0]["mime_type"] == "application/javascript"
-    assert summaries[0]["resource_type"] == "script"
+    assert summaries[0]["mimeType"] == "application/javascript"
+    assert summaries[0]["resourceType"] == "script"
     # A static HAR is the one place the request timestamp survives.
-    assert summaries[0]["started_date_time"]
-    # No _resourceType on the second entry -> the key is simply absent.
-    assert "resource_type" not in summaries[1]
+    assert summaries[0]["startedDateTime"]
+    # No _resourceType on the second entry -> resourceType defaults to "", the
+    # same always-present empty default the live reader uses, not a missing key.
+    assert summaries[1]["resourceType"] == ""
     assert summaries[1]["status"] == 500
+
+
+def test_the_summary_keys_are_the_live_network_list_camelcase_keys() -> None:
+    """The reader's whole selling point is that a saved capture pages like a
+    running one, which only holds if the keys match verbatim. web.network.list
+    returns CDP-native camelCase (url/method/status/mimeType/resourceType); a
+    regression that spelled these snake_case would silently break any agent that
+    read both, so pin the exact key set (plus the HAR-only startedDateTime)."""
+    entry = har_entry(
+        method="GET",
+        url="https://a.test/x",
+        status=200,
+        mime_type="text/html",
+        resource_type="script",
+    )
+    (summary,) = read_har_entries(serialize_har([entry], max_bytes=10_000).text)
+    assert set(summary) == {
+        "url",
+        "method",
+        "status",
+        "mimeType",
+        "resourceType",
+        "startedDateTime",
+    }
 
 
 def test_reads_a_richer_external_har_and_projects_only_the_summary() -> None:
@@ -137,9 +162,9 @@ def test_reads_a_richer_external_har_and_projects_only_the_summary() -> None:
             "url": "https://ext.test/app.css?v=2",
             "method": "GET",
             "status": 304,
-            "mime_type": "text/css",
-            "started_date_time": "2026-08-28T06:00:00.000Z",
-            "resource_type": "stylesheet",
+            "mimeType": "text/css",
+            "resourceType": "stylesheet",
+            "startedDateTime": "2026-08-28T06:00:00.000Z",
         }
     ]
 

@@ -201,12 +201,14 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         The read counterpart to web.har.export: point it at a .har (one this
         run exported, or captured by another tool) with no browser session
-        needed. Answers with path, entries (url, method, status, mime_type,
-        started_date_time, plus resource_type when the HAR carried it), count,
-        total, offset and has_more, so a page that filled the limit is not read
-        as the whole capture. A file that is not a HAR 1.2 log is refused as
-        invalid_params, a missing path as not_found, and a HAR over the capture
-        cap as too_large rather than read into memory.
+        needed. Answers with path, entries (url, method, status, mimeType,
+        resourceType, startedDateTime -- the same camelCase keys web.network.list
+        returns, so a saved capture reads like a running one; resourceType is ""
+        for a proxy HAR that carried no type hint), count, total, offset and
+        has_more, so a page that filled the limit is not read as the whole
+        capture. A file that is not a HAR 1.2 log is refused as invalid_params,
+        a missing path as not_found, and a HAR over the capture cap as too_large
+        rather than read into memory.
         """
         return _dump(analysis.web_har_read(path, offset=offset, limit=limit))
 

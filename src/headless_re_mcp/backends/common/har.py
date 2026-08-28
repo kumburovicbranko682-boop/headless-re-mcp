@@ -71,11 +71,16 @@ def read_har_entries(text: str) -> list[JsonObject]:
     """Normalise a HAR 1.2 document's entries to the compact request summary.
 
     Reads back what :func:`serialize_har` writes -- and any spec HAR a browser,
-    proxy or ``har-validator`` produced -- projecting each entry onto the same
-    ``url``/``method``/``status``/``mime_type``/``resource_type`` shape the live
-    ``web.network.list`` reader returns, so an agent pages a saved capture the
-    way it pages a running one. ``started_date_time`` rides along because a
-    static HAR is the one place that timestamp survives.
+    proxy or ``har-validator`` produced -- projecting each entry onto the exact
+    ``url``/``method``/``status``/``mimeType``/``resourceType`` keys the live
+    ``web.network.list`` reader returns, in the browser track's CDP-native
+    camelCase, so an agent reads ``entry["mimeType"]`` off a saved capture the
+    same way it does off a running one instead of switching to a snake_case
+    spelling. ``resourceType`` is always present, defaulting to ``""`` when the
+    HAR carried no ``_resourceType`` hint (a proxy-produced HAR), matching the
+    live reader's empty-string default rather than dropping the key. The one
+    field with no live sibling, ``startedDateTime``, rides along under its own
+    HAR-spec name because a static HAR is the one place that timestamp survives.
 
     Sub-objects are read defensively: a malformed entry (not an object, or with
     a non-object ``request``/``response``) contributes its available fields
@@ -107,16 +112,17 @@ def read_har_entries(text: str) -> list[JsonObject]:
         content = response.get("content")
         content = content if isinstance(content, dict) else {}
         status = response.get("status")
+        resource_type = entry.get("_resourceType")
         summary: JsonObject = {
             "url": str(request.get("url", "")),
             "method": str(request.get("method", "")),
             "status": status if isinstance(status, int) else None,
-            "mime_type": str(content.get("mimeType", "")),
-            "started_date_time": str(entry.get("startedDateTime", "")),
+            "mimeType": str(content.get("mimeType", "")),
+            # Always present, "" when absent -- the live reader's default -- so a
+            # caller never has to guard the key across the two producers.
+            "resourceType": resource_type if isinstance(resource_type, str) else "",
+            "startedDateTime": str(entry.get("startedDateTime", "")),
         }
-        resource_type = entry.get("_resourceType")
-        if isinstance(resource_type, str) and resource_type:
-            summary["resource_type"] = resource_type
         summaries.append(summary)
     return summaries
 
