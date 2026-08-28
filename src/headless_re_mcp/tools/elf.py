@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
@@ -38,5 +40,27 @@ def build_elf_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         invalid_params, one over 128 MiB too_large.
         """
         return _dump(analysis.elf_summary(path))
+
+    @tools.tool(name="elf.symbols")
+    def elf_symbols(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """List an ELF's dynamic symbols (imports/exports) with the stdlib.
+
+        The dynamic symbol table (.dynsym) is the binary's link surface: the
+        functions it imports from shared libraries and the ones it exports for
+        others to call -- and unlike .symtab it survives stripping. This reads
+        it by path with no external tool: the offline nm -D triage.
+
+        Answers with one page of symbols (name, bind GLOBAL/WEAK/LOCAL, type
+        FUNC/OBJECT/..., value, size, shndx) plus imported/exported booleans
+        per symbol, and imported_listed / exported_listed / symbols_total /
+        has_more so pages can be walked with offset/limit. A binary with no
+        .dynsym (statically linked) is an empty listing with a warning. A file
+        that is not an ELF is invalid_params, one over 128 MiB too_large.
+        """
+        return _dump(analysis.elf_symbols(path, offset=offset, limit=limit))
 
     return tools.bindings
