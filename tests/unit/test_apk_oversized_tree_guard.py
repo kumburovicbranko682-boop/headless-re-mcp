@@ -133,13 +133,61 @@ def test_apk_decode_refuses_and_deletes_an_oversized_apktool_tree(
         service.close_all()
 
 
+def test_apk_decompile_refuses_and_deletes_an_oversized_jadx_tree(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """apk.decompile is the third guard site the docstring names, and until now
+    no test drove it.
+
+    ``_refuse_oversized_tree`` is called at three separate lines -- apk.decode,
+    apk.export_sources and apk.decompile -- and the guard's contract is that
+    dropping the call at *any* of them regresses silently. decode and
+    export_sources are pinned above, but apk.decompile calls the guard on its own
+    line: it shares export_sources' jadx out dir yet the two are distinct source
+    sites, so a refactor that removed only decompile's call would leave a
+    single-class decompile that inflated past the cap answering ok and stranding
+    the fill under artifact_root -- and every other test here would still pass.
+    This exercises that third site directly, so the "any of three" claim is now
+    actually enforced rather than asserted.
+    """
+    monkeypatch.setattr(service_apk, "UNREGISTERED_CAPTURE_MAX_BYTES", 100)
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings)
+
+    class _FatJadx:
+        def __init__(self, _jadx: Any = None) -> None:
+            pass
+
+        def decompile(
+            self, binary: Path, out_dir: Path, class_name: str, *, timeout: float = 300.0
+        ) -> dict[str, Any]:
+            (out_dir / "sources").mkdir(parents=True, exist_ok=True)
+            (out_dir / "sources" / "Target.java").write_bytes(b"x" * 500)
+            return {"sources_dir": str(out_dir)}
+
+    monkeypatch.setattr(service_apk, "JadxClient", _FatJadx)
+    apk = _write_minimal_apk(tmp_path / "app.apk")
+    try:
+        created = service.create_session(str(apk), target="apk")
+        assert created.ok and created.data is not None, created.error
+        session_id = created.data["session"]["id"]
+        result = service.apk_decompile(session_id, "com.example.Target")
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "too_large"
+        out_dir = settings.artifact_root.expanduser().resolve() / "jadx" / session_id
+        assert not out_dir.exists()
+    finally:
+        service.close_all()
+
+
 def test_apk_export_sources_refuses_and_deletes_an_oversized_jadx_tree(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     """The jadx path shares the same backstop; pin that it is still wired.
 
-    apk.decompile and apk.export_sources both write into the jadx out dir and
-    call the guard, so exercising export_sources covers that call site.
+    apk.export_sources calls the guard on its own line (as does apk.decompile,
+    pinned above); this exercises the export_sources site directly.
     """
     monkeypatch.setattr(service_apk, "UNREGISTERED_CAPTURE_MAX_BYTES", 100)
     settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")

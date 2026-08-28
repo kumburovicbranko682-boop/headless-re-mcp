@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（超大解压树 backstop 的三个调用点，apk.decompile 一直没被任何测试驱动——补钉该第三站，把守卫 docstring “去掉任一处都会静默回归” 的承诺真正落成强制）
+
+- `_refuse_oversized_tree` 是 `check_zip_expansion`（声明尺寸预检）之外的第二层防线:一个 central directory 诚实、
+  却在真实解压时膨胀到磁盘的敌意归档(嵌套压缩、密集生成的 smali、超出存储尺寸的资源表),要靠它在工具实际写完后
+  量一遍产出树,超过 `UNREGISTERED_CAPTURE_MAX_BYTES` 便删树并抛 `too_large`,免得一次填满磁盘的 decode 把填充物
+  留给下一次 close / artifacts.gc 继承。它被 `service_apk` 在**三条不同的源码行**上调用——`apk.decode`(apktool 树)、
+  `apk.export_sources` 与 `apk.decompile`(两者共用同一 jadx out 目录,但各自单独调一次守卫)。守卫 docstring 自陈
+  “去掉三处中任一处都会静默回归”,可 `test_apk_oversized_tree_guard.py` 只驱动了 decode 与 export_sources 两站,
+  第三站 `apk.decompile`(第 215 行)从未被任何用例覆盖:一次只删这一行的重构,会让“单类反编译膨胀过界”照样回
+  `ok` 并把填充物滞留在 artifact_root 下,而其余用例全绿、无人察觉——这正是该守卫自己警告的“三处去其一”缺口。
+  新增 `test_apk_decompile_refuses_and_deletes_an_oversized_jadx_tree`:以假 `JadxClient.decompile` 往 out 目录写出
+  超(缩小后)上限的树,断言 `apk.decompile` 回 `too_large`、且 jadx out 目录被删。以“临时删掉第 215 行守卫调用”
+  验证其非空过——新用例失败(结果为 `ok=True`、树被滞留)而另 6 条照过,证明它精确钉住 decompile 这一站。至此
+  backstop 的三条调用点各有直测,export_sources 用例的 docstring 也从“顺带覆盖 decompile”改为如实只述本站。
+
 ### 测试（apk.classes / strings 的“先排序再切页”是兄弟读取器共同对标的诚实范式，但此前只被喂了升序输入的 clamp 用例覆盖——补钉逆序输入的字母序前缀，掉了 sort 也能被抓住）
 
 - `apk.classes`(`names.sort()`)与 `apk.strings`(`sorted(seen)`)是最早确立“先排序再切页”的两个读取器,`apk.xrefs` /\
