@@ -40,8 +40,9 @@ fi
 # Opt-in provisioning of the FOSS CLI backends the non-PE lines shell out to,
 # mirroring what Linux CI installs. System packages need apt and (unless run
 # as root) sudo, so this never happens implicitly; on other distributions
-# install the equivalents by hand. jadx is not packaged for apt: fetch a
-# release from https://github.com/skylot/jadx and put its bin/ on PATH.
+# install the equivalents by hand. jadx and webcrack are not apt packages --
+# jadx is a GitHub release, webcrack an npm global -- so each is fetched on its
+# own below, best-effort and at the same version Linux CI proves the gates on.
 if [[ "${HEADLESS_RE_INSTALL_BACKENDS:-0}" == "1" ]]; then
   if command -v apt-get >/dev/null 2>&1; then
     apt=(apt-get)
@@ -54,6 +55,34 @@ if [[ "${HEADLESS_RE_INSTALL_BACKENDS:-0}" == "1" ]]; then
   else
     echo "HEADLESS_RE_INSTALL_BACKENDS=1 needs apt-get; install radare2, wabt," >&2
     echo "UPX, apktool, apksigner and adb with your distribution's package manager." >&2
+  fi
+  # jadx (the Android decompiler) is not in apt, so fetch the pinned release
+  # Linux CI proves the jadx.* tools against and point HEADLESS_RE_JADX at its
+  # launcher (the highest-priority source config.py reads). Needs curl+unzip to
+  # fetch and a JRE 21+ to run; a missing fetch tool or a failed download is a
+  # note, not a failure, so an apt-provisioned box still finishes the install.
+  if command -v curl >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
+    jadx_version="1.5.0"
+    jadx_root="${HEADLESS_RE_JADX_ROOT:-${HOME}/jadx}"
+    jadx_bin="${jadx_root}/bin/jadx"
+    jadx_zip="$(mktemp --suffix=.zip)"
+    if [[ -x "${jadx_bin}" ]] || {
+        curl -fsSL -o "${jadx_zip}" \
+          "https://github.com/skylot/jadx/releases/download/v${jadx_version}/jadx-${jadx_version}.zip" \
+          && unzip -oq "${jadx_zip}" -d "${jadx_root}"; }; then
+      rm -f "${jadx_zip}"
+      export HEADLESS_RE_JADX="${jadx_bin}"
+      echo "jadx installed under ${jadx_root}."
+      echo "Persist HEADLESS_RE_JADX=${jadx_bin} (or add ${jadx_root}/bin to PATH) for future sessions."
+    else
+      rm -f "${jadx_zip}"
+      echo "WARN: jadx download failed; doctor will show jadx as missing." >&2
+      echo "      Fetch jadx-${jadx_version}.zip from the upstream releases and set" >&2
+      echo "      HEADLESS_RE_JADX to its bin/jadx." >&2
+    fi
+  else
+    echo "jadx needs curl and unzip to fetch; install those, or fetch jadx from" >&2
+    echo "https://github.com/skylot/jadx/releases and set HEADLESS_RE_JADX." >&2
   fi
   # webcrack drives the JS line (js.deobfuscate/unpack/beautify). It is an npm
   # global rather than an apt package -- the same one Linux CI installs -- so it

@@ -163,13 +163,15 @@ exit "${FAKE_CURL_FAIL:-0}"
     env["CAPTURE_CURL"] = str(captures["curl"])
     env["CAPTURE_UNZIP"] = str(captures["unzip"])
     env["CAPTURE_NPM"] = str(captures["npm"])
-    # Point the Ghidra unpack root into the sandbox so an opt-in run neither
-    # finds a real ~/ghidra (skipping the download this harness observes) nor
-    # writes outside tmp_path.
+    # Point the Ghidra and jadx unpack roots into the sandbox so an opt-in run
+    # neither finds a real ~/ghidra or ~/jadx (skipping the download this
+    # harness observes) nor writes outside tmp_path.
     env["HEADLESS_RE_GHIDRA_ROOT"] = str(tmp_path / "ghidra-root")
+    env["HEADLESS_RE_JADX_ROOT"] = str(tmp_path / "jadx-root")
     env.pop("HEADLESS_RE_EXTRAS", None)
     env.pop("HEADLESS_RE_INSTALL_BACKENDS", None)
     env.pop("HEADLESS_RE_INSTALL_GHIDRA", None)
+    env.pop("HEADLESS_RE_JADX", None)
     env.pop("FAKE_PLAYWRIGHT_MISSING", None)
     env.pop("FAKE_CURL_FAIL", None)
     return env, captures
@@ -271,6 +273,42 @@ def test_linux_installer_provisions_webcrack_via_npm_like_ci(tmp_path: Path) -> 
     assert "npm install -g webcrack" in ci_text, (
         "installer provisions a webcrack CI never proves"
     )
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux installer contract")
+def test_linux_installer_provisions_jadx_from_the_ci_pinned_release(tmp_path: Path) -> None:
+    """jadx is the Android decompiler CI installs, so the installer must too.
+
+    jadx is a GitHub release, not an apt or npm package, so neither parity
+    check above sees it -- yet without it apk.decompile / apk.class report
+    capability_unavailable for a user who opted into the FOSS backends, the
+    same gap the Ghidra and webcrack blocks closed for their lines. This pins
+    that the fetch is opt-in (no download without the switch), that the switch
+    pulls CI's exact pinned version and unzips it into the jadx root, and that
+    the CI pin and the installer pin never drift.
+    """
+    env, captures = _installer_harness(tmp_path)
+
+    _run_installer(tmp_path, env)
+    assert not captures["curl"].exists(), "jadx provisioning must stay opt-in"
+
+    env["HEADLESS_RE_INSTALL_BACKENDS"] = "1"
+    _run_installer(tmp_path, env)
+
+    repo_root = Path(__file__).resolve().parents[2]
+    ci_text = (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    match = re.search(r"JADX_VERSION=(\S+)", ci_text)
+    assert match, "ci.yml no longer pins a jadx release"
+    version = match.group(1)
+
+    expected_url = (
+        f"https://github.com/skylot/jadx/releases/download/v{version}/jadx-{version}.zip"
+    )
+    curl_lines = captures["curl"].read_text(encoding="utf-8").splitlines()
+    assert any(expected_url in line for line in curl_lines), curl_lines
+
+    unzip_lines = captures["unzip"].read_text(encoding="utf-8").splitlines()
+    assert any(f"-d {tmp_path / 'jadx-root'}" in line for line in unzip_lines), unzip_lines
 
 
 def _ci_ghidra_pin(repo_root: Path) -> tuple[str, str]:
