@@ -5,6 +5,30 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试 + 文档（radare2 稳健性门：stripped ELF 靠分析恢复 + 敌意输入的错误契约；README 补上 `binary` 目标类型）
+
+`test_r2_service_gate` 走的是**未 strip** 的 ELF，r2 直接读符号表拿名字；两件它没覆盖的事：
+
+- **stripped 二进制**——真实逆向对象通常已 strip，没有符号表，r2 得靠分析（`aa`）而非查表恢复函数。这
+  恰恰是用 r2 的理由，值得一条活体断言。
+- **敌意输入**——一个能被判成 `binary`（带 ELF 魔数）但其余是垃圾的文件，必须仍以结构化信封返回，绝不
+  能崩或落成 `internal_error` 事件。
+
+新增 `tests/integration/test_r2_binary_robustness_gate.py`，两条都经产品路径（`session.create` → `r2.*`）
+在 `binary` 会话上跑：
+（1）现场编一个 `-s` stripped ELF，断言 `r2.functions` 仍 `count>=1`（且名字里没有源码里的
+`sym.headless_compute`、只剩 `entry*`/`fcn.*` 这类分析/链接派生标签——证明确实 strip 了、且 r2 靠分析找到
+了代码）、`r2.strings` 仍命中 marker（字符串在 .rodata，strip 不掉）、`r2.imports` 仍有 `puts`（.dynsym
+链接必需，也 strip 不掉）、对恢复出的函数 `r2.disasm` 出真实指令。
+（2）对「ELF 魔数 + 垃圾」的样本，逐个 `r2.open/info/functions/strings/imports` 都必须回结构化信封——r2
+宽容地开成空结果（ok、count 0）或结构化 `backend_error` 都行，契约保证的是不崩、不 `internal_error`。
+已实测：radare2 5.5.0 下两条均通过。skip ≠ pass：缺 radare2/rizin 或 C 编译器时干净 skip。
+
+同时补文档：上一条给 `session.create` 加了 `binary` 目标类型，但 README 的「目标类型」小节仍只写
+MZ/APK/Web 三类。现补上「ELF 与单架构 Mach-O→binary（fat Mach-O 的 `0xCAFEBABE` 与 Java `.class` 撞魔数，
+默认留 `pe`）」、`target` 可选值加 `binary`、以及能力清单里新增一条「可移植反汇编/反编译后端」列出
+`r2.*` / `ghidra.*` 并注明同时服务 PE 与 `binary`（含 stripped）会话。
+
 ### 测试（Ghidra 服务层活体门：经 `binary` 会话把 `ghidra.*` 整条链对真 ELF 跑通，含 `xrefs`）
 
 既有 Ghidra 活体门直接 new `GhidraClient`，只覆盖 client 层的 analyze/functions/symbols/decompile，从

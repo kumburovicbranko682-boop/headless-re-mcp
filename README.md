@@ -130,6 +130,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - 自愈：`session.health`（按需检查各后端存活与连接状态，并就地重建掉线的连接）、`session.recover`（重开死掉的后端）
 - Workflow：`workflow.*`
 - 检测/脱壳（可选外部 CLI）：`detect.*`、`unpack.*`（非通杀承诺；`claims_universal_unpack=false`）
+- 可移植反汇编/反编译后端：`r2.open/info/functions/strings/imports/exports/disasm/xrefs`（radare2/rizin）、`ghidra.analyze/functions/symbols/decompile/xrefs`（Ghidra headless）；同时服务 PE 与 `binary`（ELF/Mach-O）会话，含 stripped 目标（靠分析而非符号表恢复函数）
 - 目标 UI（有界）：Win32 交互与截图；UIA/OCR/SendInput 为实验路径，勿默认依赖
 - Android 静态：`apk.open/manifest/permissions/certificates/components/classes/methods/strings/xrefs`（androguard 进程内）、`apk.decompile/export_sources`（jadx CLI）
 - Android 改包：`apk.decode/repack/sign`（apktool + apksigner；`apk.sign` 缺省用 Android debug keystore）
@@ -142,7 +143,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 
 ### 目标类型与工作方向
 
-`session.create` 按扩展名与魔数自动判定目标类型（MZ→PE、含 `AndroidManifest.xml` 的 zip→APK、`http(s)`/`.js`/`.wasm`→Web），也可显式传 `target`。PE 专属工具对非 PE 会话返回结构化 `target_mismatch`，不会深入后端才失败。
+`session.create` 按扩展名与魔数自动判定目标类型（MZ→PE、含 `AndroidManifest.xml` 的 zip→APK、`http(s)`/`.js`/`.wasm`→Web、ELF 与单架构 Mach-O→binary），也可显式传 `target`（`pe`/`apk`/`web`/`binary`）。`binary` 会话有本地文件但无 PE machine type，交给 `r2.*` / `ghidra.*` 等可移植后端分析（fat Mach-O 的 `0xCAFEBABE` 与 Java `.class` 撞魔数，默认留在 `pe`，需要时可显式 `target="binary"`）。PE 专属工具（IDA/x64dbg）对非 PE 会话返回结构化 `target_mismatch`，不会深入后端才失败。
 
 未干净关闭的会话会按同一 ID 从 `sessions.db` 水合回来（`state=created`，`metadata.restored=true`），不自动拉起 IDA/x64dbg。监控台重启后继续用旧 id，不要再 `session.create` 一条新的。
 
