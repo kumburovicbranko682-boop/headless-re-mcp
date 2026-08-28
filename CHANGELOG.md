@@ -24,7 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
-### 测试（x64dbg RPC 客户端派发与 trace 校验）
+### 修复（provider 流式 delta 的两种敌意形态不再变成事故级 run 失败）
+
+- `agent/providers/openai_compatible.py` 的 `_plain_text` 递归展开 content 数组，每层
+  烧两个 Python 帧；而 C 级 json 解码器接受的嵌套深度约为 `sys.getrecursionlimit()` 的
+  十倍（3.12 实测 ~9997 层 vs 提取器 ~500 层就崩）。于是一个 delta.content 为深嵌套
+  数组的 chunk 能顺利通过 `json.loads`，随后在文本提取器里炸出 `RecursionError`——被
+  orchestrator 记成内部事故（incident）而非 provider 故障，且 reasoning/thinking 字段
+  走同一提取器同样可达。改为显式栈迭代展开（输入尺寸已被 SSE 行上限约束），语义与
+  原递归逐项一致（新增顺序保持测试钉住 `"abcd"`）。
+- 同文件 `_usage_output_tokens`：`json.loads` 默认接受裸 `Infinity` 字面量，`inf` 能通过
+  已把 NaN 挡在外面的 `value >= 0` 检查，随后 `int(inf)` 抛 `OverflowError`，一个荒谬的
+  计数字段就终结了输出本身完好的整条流。现要求 float 计数 `math.isfinite` 才采纳，
+  非有限值视同缺席并继续尝试后续拼写（`completion_tokens`=inf 时 `output_tokens`=7
+  仍能取到 7）。两个缺陷各有"修复前必失败"的端到端回归（MockTransport 构造敌意
+  chunk），加上边界参数化共五条新测试。
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
   `wait_for_state`、`close` 与重连,但二十多个细请求包装器、`trace.*` 生命周期与
