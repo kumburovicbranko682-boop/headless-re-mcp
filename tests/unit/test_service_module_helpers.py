@@ -21,9 +21,11 @@ from headless_re_mcp.backends.ida.client import IdaWorkerError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.addressing import AddressSyncError
-from headless_re_mcp.core.models import Architecture, Session, TargetKind
+from headless_re_mcp.core.models import Architecture, BackendKind, Session, TargetKind
 from headless_re_mcp.core.service import (
+    AnalysisService,
     _create_xdbg_worker,
+    _exeinfope_log_path,
     _session_json,
     _session_owns_artifact_path,
     _workflow_failure,
@@ -219,6 +221,11 @@ def test_die_writer_cleans_up_the_temp_file_when_the_rename_fails(
     assert not leftover["src"].exists(), "the temp file must be unlinked in the finally arm"
 
 
+def test_exeinfope_log_path_rejects_an_unsafe_session_id(tmp_path: Path) -> None:
+    with pytest.raises(OSError, match="invalid session id"):
+        _exeinfope_log_path(tmp_path / "artifacts", "..")
+
+
 def test_exeinfope_writer_rejects_an_unsafe_session_id(tmp_path: Path) -> None:
     sample = tmp_path / "sample.exe"
     sample.write_bytes(b"MZ")
@@ -252,3 +259,44 @@ def test_exeinfope_writer_cleans_up_the_temp_file_when_the_rename_fails(
     with pytest.raises(OSError, match="rename failed"):
         _write_exeinfope_artifact(tmp_path / "artifacts", "s" * 32, result)
     assert not leftover["src"].exists()
+
+
+# --- AnalysisService lifecycle guards ---------------------------------------
+
+
+def test_configuring_both_worker_factories_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="worker_factory or static_worker_factory"):
+        AnalysisService(
+            _settings(tmp_path),
+            worker_factory=lambda session, settings: None,  # type: ignore[arg-type,return-value]
+            static_worker_factory=lambda session, settings: None,  # type: ignore[arg-type,return-value]
+        )
+
+
+def test_discarding_a_runtime_that_was_never_registered_is_a_noop(tmp_path: Path) -> None:
+    service = AnalysisService(_settings(tmp_path))
+    # No runtime is registered, so the pop returns None and the method returns
+    # before touching any worker; the call must simply not raise.
+    service._discard_dead_runtime("no-such-session", BackendKind.X64DBG)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink escape semantics")
+def test_session_work_dir_refuses_a_symlink_that_escapes_the_category(tmp_path: Path) -> None:
+    service = AnalysisService(_settings(tmp_path))
+    root = service.settings.artifact_root.expanduser().resolve()
+    category = root / "unpack"
+    category.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    # A single-component id passes the name guard, but the symlink resolves out
+    # of the category tree, so relative_to raises and the dir is refused.
+    (category / "escape").symlink_to(outside, target_is_directory=True)
+    assert service._session_work_dir("unpack", "escape") is None
+
+
+def test_session_work_dir_returns_the_nested_path_for_a_plain_id(tmp_path: Path) -> None:
+    service = AnalysisService(_settings(tmp_path))
+    resolved = service._session_work_dir("unpack", "s" * 32)
+    assert resolved is not None
+    assert resolved.name == "s" * 32
+    assert resolved.parent.name == "unpack"
