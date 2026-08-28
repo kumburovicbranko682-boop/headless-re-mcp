@@ -112,6 +112,10 @@ def test_js_deobfuscate_maps_jsre_error_and_unexpected(
         assert mapped.error is not None and mapped.error.code == "capability_unavailable"
 
         _use_js(monkeypatch, _FakeJs(RuntimeError("node segfault")))
+        deob_boom = service.js_deobfuscate(str(src))
+        assert deob_boom.ok is False
+        assert deob_boom.error is not None and deob_boom.error.code == "internal_error"
+
         unexpected = service.js_beautify(str(src))
         assert unexpected.ok is False
         assert unexpected.error is not None and unexpected.error.code == "internal_error"
@@ -186,6 +190,14 @@ def test_wasm_wat_and_info_map_jsre_error(
         info = service.wasm_info(str(mod))
         assert info.ok is False and info.error is not None
         assert info.error.code == "invalid_params"
+
+        _use_wasm(monkeypatch, _FakeWasm(RuntimeError("wabt panicked")))
+        wat_boom = service.wasm_wat(str(mod))
+        assert wat_boom.ok is False and wat_boom.error is not None
+        assert wat_boom.error.code == "internal_error"
+        info_boom = service.wasm_info(str(mod))
+        assert info_boom.ok is False and info_boom.error is not None
+        assert info_boom.error.code == "internal_error"
     finally:
         service.close_all()
 
