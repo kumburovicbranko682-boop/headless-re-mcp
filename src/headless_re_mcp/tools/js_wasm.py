@@ -27,7 +27,10 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     ) -> dict[str, Any]:
         """Deobfuscate and unminify a JavaScript file via webcrack.
 
-        Answers with code and bytes, plus truncated when the text was cut at
+        path is any local .js file: a standalone download, or one a web session
+        saved -- web.script.source's source_path (a spilled script source) or
+        web.network.get's body_path (a fetched script body). Answers with code
+        and bytes, plus truncated when the text was cut at
         the buffer. When truncated is set, bytes exceeds the returned code
         length and the tail is not in this reply: run js.unpack_bundle on the
         same file to recover the complete output on disk -- webcrack writes the

@@ -166,10 +166,13 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         registered as an artifact and artifact_id names it, so
         artifacts.read can page the full text; if registering it failed
         (a full or locked artifact store) artifact_error is set instead and
-        source_path still points at the file. A WebAssembly script (the kind
-        wasm.list surfaces) has no text source here: source is empty, is_wasm
-        is true, and note points at the path that does yield the bytes -- fetch
-        the module body with web.network.get, then run wasm.wat / wasm.info.
+        source_path still points at the file. When that spilled source is
+        minified or obfuscated JavaScript, hand source_path to js.deobfuscate
+        or js.beautify (they read a file path) to recover readable code. A
+        WebAssembly script (the kind wasm.list surfaces) has no text source
+        here: source is empty, is_wasm is true, and note points at the path
+        that does yield the bytes -- fetch the module body with
+        web.network.get, then run wasm.wat / wasm.info.
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 

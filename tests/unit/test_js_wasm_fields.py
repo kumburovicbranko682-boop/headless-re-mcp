@@ -256,6 +256,24 @@ def test_js_beautify_names_bytes_not_size(tmp_path: Path) -> None:
     assert "bytes" in doc
 
 
+def test_js_deobfuscate_names_where_a_web_session_saves_its_input() -> None:
+    """js.deobfuscate's path can be a captured web artifact; the doc must say so.
+
+    service_jsre's module docstring states these tools run "against a web
+    session's saved artifacts", and js.deobfuscate accepts any file path, but the
+    tool description named no producer -- an agent discovering js.deobfuscate on
+    its own could not learn that web.script.source's source_path (a spilled
+    script) and web.network.get's body_path (a fetched script body) are exactly
+    the inputs it takes. This is the consumer end of the hand-off whose producer
+    end is pinned on web.script.source, so the two directions read as one path.
+    """
+    doc = " ".join(_tool_docstring("js.deobfuscate").split())
+    assert "web.script.source" in doc
+    assert "source_path" in doc
+    assert "web.network.get" in doc
+    assert "body_path" in doc
+
+
 def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with code" in _tool_docstring("js.deobfuscate")
     assert "Answers with code" in _tool_docstring("js.beautify")

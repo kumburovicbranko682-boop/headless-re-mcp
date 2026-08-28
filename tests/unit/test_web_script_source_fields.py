@@ -88,3 +88,23 @@ def test_web_script_source_documents_the_spill_artifact() -> None:
     # the byte-yielding path so wasm.list -> script.source is not a dead end.
     assert "is_wasm" in doc
     assert "web.network.get" in doc
+
+
+def test_web_script_source_points_a_spilled_js_source_at_the_deobfuscators() -> None:
+    """A large obfuscated JS source spills to source_path; the doc must say what next.
+
+    The is_wasm branch already tells an agent holding a WASM script where the
+    bytes are (web.network.get -> wasm.wat/info). The far more common case -- a
+    minified or obfuscated JS bundle whose source is too big to inline and so
+    lands in source_path -- had no such pointer, even though service_jsre's own
+    module docstring states the js.* tools are meant to run "against a web
+    session's saved artifacts" and js.deobfuscate takes exactly a file path with
+    no session-tree restriction. Without the note an agent reads the spilled
+    path as an opaque blob and never connects it to js.deobfuscate/js.beautify,
+    the one step that turns it back into readable code. Pin the producer-side
+    hand-off the same way the is_wasm note is pinned.
+    """
+    doc = " ".join(_tool_docstring("web.script.source").split())
+    assert "source_path" in doc
+    assert "js.deobfuscate" in doc
+    assert "js.beautify" in doc

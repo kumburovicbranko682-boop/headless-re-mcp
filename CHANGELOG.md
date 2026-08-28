@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 文档+测试（补上 web.script.source→js.deobfuscate 的 JS 交接：obfuscated 源码的下一步）
+
+- `service_jsre` 的模块 docstring 早就写明 js.*/wasm.* 工具"既可独立用、也可对着一个 web 会话存下的
+  产物跑"，而且 `js.deobfuscate` 收任意文件路径、对会话 artifact 树不设限。但这层意图在工具层完全看不见：
+  `web.script.source` 只为 WASM 记了交接（is_wasm note → web.network.get → wasm.wat/info），对最常见的
+  情形——一段大到内联不下、于是落到 source_path 的 minified/obfuscated JS——没有任何指向。agent 拿到那个
+  spill 路径只当它是不透明 blob，接不上 `js.deobfuscate`/`js.beautify` 这唯一能把它变回可读代码的一步。
+- 生产端：给 `web.script.source` 加上 is_wasm note 的 JS 对称句——source_path 是 minified/obfuscated JS 时，
+  直接把它喂给 `js.deobfuscate`/`js.beautify`（两者都读文件路径）即可还原可读代码。消费端：给 `js.deobfuscate`
+  加一句输入来源说明——path 可以是独立下载，也可以是 web 会话存下的 `web.script.source` 的 source_path
+  或 `web.network.get` 的 body_path，让先发现 js.deobfuscate 的 agent 也能反向找到它的生产者。
+- 两条 docstring 断言钉死这条双向交接：`test_web_script_source_fields.py` 断 web.script.source 的描述含
+  js.deobfuscate/js.beautify + source_path；`test_js_wasm_fields.py` 断 js.deobfuscate 的描述含
+  web.script.source/source_path 与 web.network.get/body_path。这与上一轮 network.get→wasm.wat 的交接
+  gate 是同一族，只是 JS 源码走文本内联、天然没有 base64 二进制风险，所以钉在描述层而非另起实跑 gate
+  （js.deobfuscate 对文件路径已有 web_re_gate 实跑覆盖，source_path 本就是一个文件路径）。
+- 变异验证承重：删掉 web.script.source 的 JS 句，生产端测立即失败；删掉 js.deobfuscate 的输入来源句，
+  消费端测立即失败。改回后两条复绿。都是纯单测。
+
 ### 测试（让 proxy.start 的两条参数校验分支在 CI 真跑：非法端口 + 不可绑定主机）
 
 - `ProxyBackend.start` 有两条参数校验臂是其它 gate 都够不到的：越界端口报 `invalid_params`，
