@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **270（153 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **272（154 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -275,6 +275,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **adb forward 只能建、不能查也不能单删，填满 32 槽后只有 `close_all` 能回收**。`device.forward` 会在 adb server 上占一个
+  转发槽（frida 的 `tcp:27042`、某个调试端口），而这些转发不随会话关闭消失；此前唯一的清理是 `close_all` 里的
+  `release_forwards` 一次性全删。于是一个跨多个 app、长期运行的 agent 会把 32 槽的表悄悄填满，撞上 `too many adb forwards` 后
+  除了拆掉全部会话别无他法，也看不到到底占了哪些。新增两件：只读的 `device.forwards` 把本进程持有的转发表读出来（每条
+  `{serial, local, remote}`，附 `count` 与 `cap`；纯内存读取，不取 serial、不碰设备），以及会改状态的 `device.forward_remove`——
+  按 `local` 端点（如 `tcp:27042`）单删一条、精确回收一个槽，是 `release_forwards` 的逐条逆操作。`removed` 仅在本进程确实
+  持有该转发时为真；删一个本就不存在的转发是幂等空操作而非报错（仍会请求 adb，"not found" 被吞掉），而删一个我们持有、
+  但 adb 侧失败的转发会保留表项让下次 `close_all` 重试并回 `backend_error`，与 `release_forwards` 的韧性一致。为此把内部
+  转发表从 `list[(serial, local)]` 改为 `dict[(serial, local) -> remote]`，好让列表能报出完整三元组、并在按同一 `local`
+  重新转发到新 `remote` 时同步更新。`device.forwards` 只读、`device.forward_remove` 计入写，工具总数 270→272（154 只读 / 118 写）。
 - **`device.logcat` 只能拉最后 N 行，噪声设备上错误被淹没**。它一直只按 `-t N` 取尾，等价于 console 加 `type_filter` 之前的样子。
   现给它加上 `min_priority`（`V`/`D`/`I`/`W`/`E`/`F`）：交给 logcat 自己的 `*:<级别>` filterspec 在源头过滤，于是 `-t N` 取到的是
   最后 N 条**匹配**行，而不是先取 N 行再由客户端筛剩下寥寥几条——传 `E` 即可从吵闹的设备里只捞错误。级别在固定集合内校验，

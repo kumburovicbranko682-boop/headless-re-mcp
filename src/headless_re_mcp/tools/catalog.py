@@ -196,6 +196,7 @@ _READ_ONLY_NAMES = frozenset((
     'apk.strings',
     'apk.xrefs',
     'device.current_activity',
+    'device.forwards',
     'device.info',
     'device.list',
     'device.logcat',
@@ -279,6 +280,7 @@ _STATE_CHANGE_NAMES = frozenset((
     'device.connect',
     'device.force_stop',
     'device.forward',
+    'device.forward_remove',
     'device.install',
     'device.launch',
     'device.push',
@@ -347,7 +349,7 @@ _FILE_WRITE_NAMES = frozenset((
     'web.screenshot',
 ))
 _ALL_TOOL_NAMES = _READ_ONLY_NAMES | _STATE_CHANGE_NAMES | _FILE_WRITE_NAMES
-if len(_ALL_TOOL_NAMES) != 270:
+if len(_ALL_TOOL_NAMES) != 272:
     raise RuntimeError("tool effect policy contains duplicates or omissions")
 
 _WEB_NAMES = frozenset(['artifacts.describe', 'artifacts.gc', 'artifacts.list', 'audit.list', 'dynamic.breakpoints', 'dynamic.modules', 'dynamic.registers.read', 'dynamic.state', 'session.close', 'session.get', 'session.list', 'static.decompile', 'static.functions', 'static.strings', 'timeline.list', 'unpack.artifacts', 'unpack.cancel', 'unpack.status', 'workflow.cancel', 'workflow.status'])

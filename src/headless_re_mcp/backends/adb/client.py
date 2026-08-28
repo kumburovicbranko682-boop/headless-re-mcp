@@ -275,9 +275,12 @@ class AdbBackend:
         self._available = False
         self._adb_path = adb_path
         self._forward_lock = threading.Lock()
-        # (serial, local) pairs this process created. adb keeps forwards until
-        # they are removed or the adb server dies, so close_all has to know.
-        self._forwards: list[tuple[str, str]] = []
+        # (serial, local) -> remote for every forward this process created. adb
+        # keeps forwards until they are removed or the adb server dies, so
+        # close_all has to know; the remote is kept so device.forwards can report
+        # the full triple, and a local endpoint maps to one remote (re-forwarding
+        # replaces it), which is why (serial, local) alone is the key.
+        self._forwards: dict[tuple[str, str], str] = {}
         try:
             import adbutils
 
@@ -840,23 +843,88 @@ class AdbBackend:
                         cap=_MAX_FORWARDS,
                         held=len(self._forwards),
                     )
-                self._forwards.append(key)
+                self._forwards[key] = remote
                 reserved = True
         try:
             _call(dev.forward, local, remote, timeout=_ADB_SHELL_TIMEOUT_S)
         except AdbError:
             if reserved:
                 with self._forward_lock:
-                    if key in self._forwards:
-                        self._forwards.remove(key)
+                    self._forwards.pop(key, None)
             raise
         except Exception as exc:  # noqa: BLE001
             if reserved:
                 with self._forward_lock:
-                    if key in self._forwards:
-                        self._forwards.remove(key)
+                    self._forwards.pop(key, None)
             raise AdbError("backend_error", f"forward failed: {exc}") from exc
+        # Re-forwarding an existing local to a new remote succeeds on adb, so
+        # keep the stored remote in step: device.forwards must report what adb
+        # actually holds, not the remote this local was first bound to.
+        with self._forward_lock:
+            self._forwards[key] = remote
         return {"local": local, "remote": remote}
+
+    def list_forwards(self) -> JsonObject:
+        """Report the adb forwards this process created and still holds.
+
+        The read side of the forward table ``device.forward`` counts against:
+        each entry is the (serial, local, remote) triple that occupies a slot,
+        so a caller that hit "too many adb forwards" can see what is held and
+        free one with ``remove_forward`` instead of tearing every session down
+        with ``close_all``. This is the process's own reservation table, not
+        adb's global list -- a forward made by another tool is not shown -- and
+        it is read from memory, so it needs no device and cannot time out.
+        """
+        with self._forward_lock:
+            held = list(self._forwards.items())
+        forwards = [
+            {"serial": serial, "local": local, "remote": remote}
+            for (serial, local), remote in held
+        ]
+        return {"forwards": forwards, "count": len(forwards), "cap": _MAX_FORWARDS}
+
+    def remove_forward(self, serial: str, local: str) -> JsonObject:
+        """Remove one adb forward this process created, freeing a slot.
+
+        The per-forward inverse of :meth:`release_forwards` (which drops them
+        all at close_all): a caller that hit the forward cap reclaims exactly
+        the slot it no longer needs. The ``local`` endpoint identifies the
+        forward -- adb keeps one remote per local -- and ``serial`` names the
+        device. Removing a forward this process is not tracking is a no-op, not
+        an error (adb is still asked, and a "not found" from adb is swallowed),
+        so the call is idempotent; ``removed`` is true only when the table
+        actually held it. A removal that fails while the table does hold the
+        forward keeps the entry so the next close_all retries it, matching
+        release_forwards.
+        """
+        if not re.match(r"^(tcp:\d{1,5}|localabstract:[\w.\-]+)$", local):
+            raise AdbError("invalid_params", "invalid local forward spec", local=local)
+        serial_id = _check_serial(serial)
+        key = (serial_id, local)
+        with self._forward_lock:
+            tracked = key in self._forwards
+        dev = self._device(serial)
+        remover = getattr(dev, "forward_remove", None) or getattr(
+            dev, "remove_forward", None
+        )
+        if remover is None:
+            raise AdbError("backend_error", "device has no forward-remove API")
+        try:
+            _call(remover, local, timeout=_ADB_SHELL_TIMEOUT_S)
+        except AdbError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if tracked:
+                # adb still holds our forward; keep the reservation so close_all
+                # retries it rather than silently leaking the slot.
+                raise AdbError(
+                    "backend_error", f"forward remove failed: {exc}", local=local
+                ) from exc
+            # Not ours and adb has no such forward: nothing to reclaim.
+            return {"serial": serial_id, "local": local, "removed": False}
+        with self._forward_lock:
+            removed = self._forwards.pop(key, None) is not None
+        return {"serial": serial_id, "local": local, "removed": removed}
 
     def release_forwards(self) -> JsonObject:
         """Drop every forward this process created.
@@ -866,12 +934,12 @@ class AdbBackend:
         frida or a debug port every night eventually cannot bind another.
         """
         with self._forward_lock:
-            held = list(self._forwards)
+            held = list(self._forwards.items())
             self._forwards.clear()
         removed: list[JsonObject] = []
         failed: list[JsonObject] = []
-        retry: list[tuple[str, str]] = []
-        for serial, local in held:
+        retry: list[tuple[tuple[str, str], str]] = []
+        for (serial, local), remote in held:
             try:
                 dev = self._device(serial)
                 remover = getattr(dev, "forward_remove", None) or getattr(
@@ -885,18 +953,18 @@ class AdbBackend:
                             "error": "device has no forward-remove API",
                         }
                     )
-                    retry.append((serial, local))
+                    retry.append(((serial, local), remote))
                     continue
                 _call(remover, local, timeout=_ADB_SHELL_TIMEOUT_S)
                 removed.append({"serial": serial, "local": local})
             except Exception as exc:  # noqa: BLE001
                 failed.append({"serial": serial, "local": local, "error": str(exc)})
-                retry.append((serial, local))
+                retry.append(((serial, local), remote))
         if retry:
             # A disconnected device at close_all must not make us forget the
             # forward: adb still has it, and the next close_all is the retry.
             with self._forward_lock:
-                for key in retry:
+                for key, remote in retry:
                     if key not in self._forwards:
-                        self._forwards.append(key)
+                        self._forwards[key] = remote
         return {"removed": removed, "failed": failed, "count": len(removed)}

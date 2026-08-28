@@ -3246,7 +3246,7 @@ class TestAdbForwardsAreReleased:
         backend._device = lambda serial: Dev()  # type: ignore[method-assign]
         result = backend.forward("emulator-5554", "tcp:27042", "tcp:27042")
         assert result["local"] == "tcp:27042"
-        assert backend._forwards == [("emulator-5554", "tcp:27042")]
+        assert backend._forwards == {("emulator-5554", "tcp:27042"): "tcp:27042"}
 
     def test_new_forwards_are_refused_once_the_table_is_full(
         self, monkeypatch: Any
@@ -3266,10 +3266,10 @@ class TestAdbForwardsAreReleased:
         with pytest.raises(mod.AdbError) as caught:
             backend.forward("emulator-5554", "tcp:3", "tcp:3")
         assert caught.value.code == "invalid_state"
-        assert backend._forwards == [
-            ("emulator-5554", "tcp:1"),
-            ("emulator-5554", "tcp:2"),
-        ]
+        assert backend._forwards == {
+            ("emulator-5554", "tcp:1"): "tcp:1",
+            ("emulator-5554", "tcp:2"): "tcp:2",
+        }
 
     def test_a_failed_forward_is_not_kept_in_the_table(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
@@ -3283,7 +3283,7 @@ class TestAdbForwardsAreReleased:
         with pytest.raises(AdbError) as caught:
             backend.forward("emulator-5554", "tcp:1", "tcp:1")
         assert caught.value.code == "backend_error"
-        assert backend._forwards == []
+        assert backend._forwards == {}
 
     def test_a_device_lookup_failure_does_not_consume_a_forward_slot(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend, AdbError
@@ -3298,7 +3298,7 @@ class TestAdbForwardsAreReleased:
         with pytest.raises(AdbError) as caught:
             backend.forward("emulator-5554", "tcp:1", "tcp:1")
         assert caught.value.code == "capability_unavailable"
-        assert backend._forwards == []
+        assert backend._forwards == {}
 
     def test_release_removes_every_forward_this_process_created(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend
@@ -3311,11 +3311,11 @@ class TestAdbForwardsAreReleased:
                 removed.append(local)
 
         backend._device = lambda serial: Dev()  # type: ignore[method-assign]
-        backend._forwards = [("emu", "tcp:1"), ("emu", "tcp:2")]
+        backend._forwards = {("emu", "tcp:1"): "tcp:1", ("emu", "tcp:2"): "tcp:2"}
         result = backend.release_forwards()
         assert result["count"] == 2
         assert removed == ["tcp:1", "tcp:2"]
-        assert backend._forwards == []
+        assert backend._forwards == {}
 
     def test_a_failed_release_is_remembered_for_the_next_attempt(self) -> None:
         from headless_re_mcp.backends.adb.client import AdbBackend
@@ -3326,11 +3326,11 @@ class TestAdbForwardsAreReleased:
 
         backend = AdbBackend()
         backend._device = lambda serial: Dev()  # type: ignore[method-assign]
-        backend._forwards = [("emu", "tcp:1"), ("emu", "tcp:2")]
+        backend._forwards = {("emu", "tcp:1"): "tcp:1", ("emu", "tcp:2"): "tcp:2"}
         result = backend.release_forwards()
         assert result["count"] == 0
         assert len(result["failed"]) == 2
-        assert backend._forwards == [("emu", "tcp:1"), ("emu", "tcp:2")]
+        assert backend._forwards == {("emu", "tcp:1"): "tcp:1", ("emu", "tcp:2"): "tcp:2"}
 
     def test_close_all_asks_the_owned_backend_to_release(self) -> None:
         from headless_re_mcp.core.service import AnalysisService

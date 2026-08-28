@@ -194,8 +194,37 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Set an adb forward (e.g. tcp:27042 -> tcp:27042 for frida-server).
 
         Answers with local and remote. Forwards stay on the adb server until
-        close_all; this process will refuse a new one once the table is full.
+        close_all or device.forward_remove; this process refuses a new one once
+        the table is full -- device.forwards shows what is held and
+        device.forward_remove frees a slot.
         """
         return _dump(analysis.device_forward(serial, local, remote))
+
+    @tools.tool(name="device.forwards")
+    def device_forwards() -> dict[str, Any]:
+        """List the adb forwards this process created and still holds.
+
+        Answers with forwards (each {serial, local, remote}), count, and cap.
+        This is the reservation table device.forward counts against: when a
+        forward is refused with "too many adb forwards", this shows what is held
+        so a slot can be freed with device.forward_remove instead of close_all.
+        A forward set by another tool or an earlier process is not listed -- it
+        is this process's own table, not adb's global forward list -- and it is
+        read from memory, so no serial is taken and it never touches a device.
+        """
+        return _dump(analysis.device_forwards())
+
+    @tools.tool(name="device.forward_remove")
+    def device_forward_remove(serial: str, local: str) -> dict[str, Any]:
+        """Remove one adb forward, freeing a slot against the forward cap.
+
+        The per-forward inverse of the close_all teardown: pass the same local
+        endpoint device.forward was given (e.g. tcp:27042) to drop just that
+        forward. Answers with serial, local, and removed -- removed is true when
+        this process was tracking the forward, false when it was not. The call
+        still asks adb to drop it either way, so removing one that is already
+        gone is an idempotent no-op, not an error.
+        """
+        return _dump(analysis.device_forward_remove(serial, local))
 
     return tools.bindings
