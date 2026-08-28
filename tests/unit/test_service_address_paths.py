@@ -195,3 +195,38 @@ def test_analyze_rejects_an_out_of_range_timeout(tmp_path: Path, timeout: float)
         assert result.error is not None
     finally:
         service.close_all()
+
+
+# --------------------------------------------------------------------------- #
+# _annotate_debuggee_pids
+# --------------------------------------------------------------------------- #
+
+
+def test_annotate_attaches_the_debuggee_pid_from_the_state(tmp_path: Path) -> None:
+    """A positive process_id becomes debuggee_pid; without an x64dbg handle the
+    debugger_pid stays None and the original state fields survive untouched."""
+    service = _service(tmp_path)
+    try:
+        session_id = _session(service, tmp_path)
+        annotated = service._annotate_debuggee_pids(
+            session_id, {"state": "paused", "process_id": 1234}
+        )
+        assert annotated["debuggee_pid"] == 1234
+        assert annotated["debugger_pid"] is None
+        assert annotated["state"] == "paused"
+        assert "pid_note" in annotated
+    finally:
+        service.close_all()
+
+
+@pytest.mark.parametrize("process_id", [None, 0, -5, "1234"])
+def test_annotate_refuses_a_non_positive_or_non_int_pid(
+    tmp_path: Path, process_id: Any
+) -> None:
+    service = _service(tmp_path)
+    try:
+        session_id = _session(service, tmp_path)
+        annotated = service._annotate_debuggee_pids(session_id, {"process_id": process_id})
+        assert annotated["debuggee_pid"] is None
+    finally:
+        service.close_all()
