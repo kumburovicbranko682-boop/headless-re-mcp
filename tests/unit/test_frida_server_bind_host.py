@@ -77,3 +77,21 @@ def test_invalid_bind_host_is_refused_before_any_launch(monkeypatch: Any, bad: s
         backend.ensure_frida_server("emulator-5554", bind_host=bad)
     assert caught.value.code == "invalid_params"
     assert commands == []
+
+
+@pytest.mark.parametrize("bad", [0, -1, 65536, 99999, "27042", None, {}, True])
+def test_invalid_port_is_refused_before_any_launch(monkeypatch: Any, bad: Any) -> None:
+    """port joins remote_path and bind_host as a validated parameter.
+
+    port was taken straight to ``int(port)`` when building the su command, so a
+    non-numeric value raised inside the launch ``try`` and was swallowed as a
+    "launch attempted" note, while a negative/oversized one produced a
+    ``host:-1``/``host:99999`` frida never binds. Reject it up front the same way
+    connect() and forward() bound their ports, so nothing is launched.
+    """
+    commands = _capture_launch(monkeypatch)
+    backend = _backend(monkeypatch)
+    with pytest.raises(AdbError) as caught:
+        backend.ensure_frida_server("emulator-5554", port=bad)
+    assert caught.value.code == "invalid_params"
+    assert commands == []

@@ -833,6 +833,15 @@ class AdbBackend:
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
         if not _BIND_HOST_RE.match(bind_host or ""):
             raise AdbError("invalid_params", "invalid bind_host", bind_host=bind_host)
+        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            # remote_path and bind_host are validated above, but port was taken
+            # straight to ``int(port)`` when building the su command. On the agent
+            # transport (no schema coercion) a non-numeric port raised inside the
+            # ``try`` that wraps the launch and was swallowed as a misleading
+            # "launch attempted" note, while a negative/oversized one produced a
+            # ``host:-1``/``host:99999`` frida never binds. Reject it up front the
+            # same way connect() and forward() already bound their ports.
+            raise AdbError("invalid_params", "port must be 1..65535", port=port)
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": False, "port": port}
