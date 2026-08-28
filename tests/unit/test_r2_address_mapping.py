@@ -637,6 +637,13 @@ def test_xrefs_asks_for_axtj_at_the_request_address_and_echoes_it(
     assert f"axtj @ {0x140002000}" in script
     # The dead whole-program command must not be what we send.
     assert "axj @" not in script
+    # A reference *to* an address only exists once r2 has analysed the calling
+    # function, and plain aa analyses only entry0 and symbols -- so xrefs must run
+    # aac (call-graph analysis) before axtj or it stays blind to callers living in
+    # functions aa never discovered (measured: 0 callers for main without aac, 1
+    # with). Guarding the command here catches a revert to the shallow pass
+    # without needing radare2 on the box.
+    assert "aac" in script.splitlines()
 
 
 def test_xrefs_of_a_referent_free_address_is_parsed_with_zero_count(
@@ -713,3 +720,56 @@ def test_discover_returns_the_first_tool_found_on_path(
 
     monkeypatch.setattr(r2_client.shutil, "which", only_rizin)
     assert r2_client._discover() == Path("/opt/bin/rizin")
+
+
+def test_functions_service_runs_aac_so_discovery_is_not_shallow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """r2.functions must run aac, not just aa, or it lists a near-empty set.
+
+    aa analyses only entry0 and symbols; on a stripped or packed PE -- the common
+    RE target -- that finds a handful of functions and misses the rest (measured
+    2 of 68 on the gate fixture). aac walks the call graph to recover them at
+    effectively aa's cost. The command list is a literal in the service, so this
+    drives r2.functions through the service and captures the script r2 would run,
+    asserting aac rides in front of aflj -- a guard that catches a revert to the
+    shallow pass without radare2 on the box, which the live gate (it invokes the
+    client directly) cannot see.
+    """
+    from dataclasses import replace
+
+    from headless_re_mcp.config import Settings
+    from headless_re_mcp.core.service import AnalysisService
+
+    recorded: list[list[str]] = []
+
+    def capture(cmd: list[str], **kwargs: Any) -> Completed:
+        recorded.append(list(cmd))
+        return Completed(returncode=0, stdout=b"[]", stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", capture)
+    pe = _minimal_pe(tmp_path)
+    settings = replace(
+        Settings.load(),
+        r2=str(_stub_executable(tmp_path)),
+        artifact_root=tmp_path / "artifacts",
+    )
+    service = AnalysisService(settings)
+    try:
+        created = service.create_session(str(pe), target="pe")
+        assert created.ok, created.error
+        assert created.data is not None
+        session_id = created.data["session"]["id"]
+        result = service.r2_functions(session_id)
+        assert result.ok, result.error
+    finally:
+        service.close_all()
+
+    assert recorded, "r2.functions never spawned r2"
+    argv = recorded[0]
+    script = argv[argv.index("-c") + 1]
+    lines = script.splitlines()
+    assert "aa" in lines, script
+    assert "aac" in lines, script
+    assert lines.index("aac") < lines.index("aflj"), script

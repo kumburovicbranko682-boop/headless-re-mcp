@@ -39,7 +39,11 @@ def test_m11_r2_live_address_mapping() -> None:
     opened = client.open(fixture, timeout=60.0)
     assert opened.get("opened") is True
 
-    funcs = client.run(fixture, ["aa", "aflj"], timeout=60.0)
+    # aa+aac is what r2.functions runs: aa analyses only entry0 and symbols,
+    # while aac walks the call graph to recover the functions a stripped or
+    # packed PE hides from it. Drive the same commands the tool does so the gate
+    # exercises the real discovery path, not a shallow one that lists a handful.
+    funcs = client.run(fixture, ["aa", "aac", "aflj"], timeout=60.0)
     assert funcs.get("parsed") is True
     assert funcs.get("count", 0) >= 1
     item = funcs["items"][0]
