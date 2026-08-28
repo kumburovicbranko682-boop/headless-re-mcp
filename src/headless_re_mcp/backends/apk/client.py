@@ -44,6 +44,9 @@ class ApkError(RuntimeError):
         self.details = details
 
 
+_ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
+
+
 def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     items: list[str] = []
     has_more = False
@@ -54,6 +57,62 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
         items.append(str(item))
     items.sort()
     return items, has_more
+
+
+def _resolve_component_name(raw: str, package: str) -> str:
+    """Android's own rule for a component's ``android:name`` -> a full class name.
+
+    A leading ``.`` or a bare name (no dot) is relative to the package, matching
+    what ``get_activities()`` and friends already return, so the exported list
+    lines up with the per-type lists; an already-qualified name is left alone.
+    """
+    name = (raw or "").strip()
+    if not name:
+        return name
+    if name.startswith("."):
+        return f"{package}{name}"
+    if "." not in name:
+        return f"{package}.{name}"
+    return name
+
+
+def _exported_components(apk: Any, *, limit: int) -> tuple[list[str], bool]:
+    """The components another app can reach, read from the manifest.
+
+    A component is exported when it says ``android:exported="true"``, or when it
+    advertises an ``<intent-filter>`` and does not say ``exported="false"``. For
+    any installable APK that implicit case means ``targetSdk < 31`` (from 31 an
+    intent-filter with no explicit ``android:exported`` is a build error), so an
+    unset-but-filtered component really is reachable. A component with neither an
+    explicit flag nor a filter is treated as private: that under-reports only the
+    legacy provider default (exported when ``targetSdk < 17``), never the
+    reverse, so the list never calls a private component exposed. Spans
+    activities (including ``activity-alias``), services, receivers and providers.
+    """
+    try:
+        root = apk.get_android_manifest_xml()
+        package = apk.get_package() or ""
+    except Exception:  # noqa: BLE001 - manifest shapes vary by androguard/apk
+        return [], False
+    if root is None:
+        return [], False
+    names: set[str] = set()
+    for tag in ("activity", "activity-alias", "service", "receiver", "provider"):
+        for element in root.iter(tag):
+            raw = element.get(_ANDROID_NS + "name")
+            if not raw:
+                continue
+            explicit = element.get(_ANDROID_NS + "exported")
+            if explicit is not None:
+                exported = str(explicit).strip().lower() == "true"
+            else:
+                exported = any(True for _ in element.iter("intent-filter"))
+            if exported:
+                names.add(_resolve_component_name(str(raw), package))
+    ordered = sorted(names)
+    if len(ordered) > limit:
+        return ordered[:limit], True
+    return ordered, False
 
 
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
@@ -293,13 +352,16 @@ class ApkClient:
         services, s_more = _cap_names(apk.get_services(), _MAX_COMPONENT_NAMES)
         receivers, r_more = _cap_names(apk.get_receivers(), _MAX_COMPONENT_NAMES)
         providers, p_more = _cap_names(apk.get_providers(), _MAX_COMPONENT_NAMES)
+        exported, e_more = _exported_components(apk, limit=_MAX_COMPONENT_NAMES)
         return {
             "activities": activities,
             "services": services,
             "receivers": receivers,
             "providers": providers,
             "main_activity": apk.get_main_activity(),
-            "has_more": a_more or s_more or r_more or p_more,
+            "exported": exported,
+            "exported_count": len(exported),
+            "has_more": a_more or s_more or r_more or p_more or e_more,
         }
 
     def native_libs(self, path: Path) -> JsonObject:

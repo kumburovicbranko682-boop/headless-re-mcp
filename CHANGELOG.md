@@ -24,6 +24,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 新增（apk.components 标注可被外部触达的 exported 组件）
+
+- `apk.components` 现返回 `exported` 与 `exported_count`：即其它应用能触达的组件——
+  显式 `android:exported="true"`，或带 `<intent-filter>` 且未写 `exported="false"` 的那些——
+  这正是 Android 攻击面里最先要看的一批（一个被 exported 的组件若无权限保护，等于对外开的门）。
+  此前 `apk.components` 只给出四类组件的名字清单，无从区分哪些对外可达。判定读清单 XML
+  （androguard 的 `get_android_manifest_xml`）：隐式那条对任何可安装的 APK 都成立——从
+  targetSdk 31 起，带 intent-filter 却不显式写 `android:exported` 会直接编译失败，故「未写 +
+  有 filter」必是较老的 targetSdk、确实对外导出；既无显式标志又无 filter 的组件按私有处理，
+  只会漏报 targetSdk<17 的 provider 历史默认导出、绝不反向把私有误报成导出。名字按 Android
+  规则解析成完整类名（前导 `.`/裸名补包名），与四类清单对齐；涵盖 activity（含
+  `activity-alias`）、service、receiver、provider。已用 aapt 现打的多组件 APK 在真 androguard
+  上核验：显式导出、intent-filter 隐式导出如实入列，显式 `false`、无 filter 私有、私有 provider
+  均排除；无法读到清单时优雅回落成空列表而非报错。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。
