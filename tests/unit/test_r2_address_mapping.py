@@ -639,6 +639,36 @@ def test_xrefs_asks_for_axtj_at_the_request_address_and_echoes_it(
     assert "axj @" not in script
 
 
+def test_xrefs_of_a_referent_free_address_is_parsed_with_zero_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An address nothing references answers parsed True, count 0 -- not an error.
+
+    This is the contract the switch to axtj restored. The first function r2 lists
+    is usually the entry point, which nothing calls, so xrefs at it is the common
+    case, not an edge one. axtj answers ``[]`` there; the old whole-program
+    ``axj`` answered with empty output on radare2 6.x, which parse_r2_json read as
+    a parse failure (parsed False) -- an agent then could not tell "no callers"
+    from "the query broke". Pinning [] -> parsed True, count 0, items [] keeps
+    that distinction honest without needing r2 on the box.
+    """
+
+    def empty_list(cmd: list[str], **kwargs: Any) -> Completed:
+        del cmd, kwargs
+        return Completed(returncode=0, stdout=b"[]\n", stderr=b"")
+
+    monkeypatch.setattr(r2_client, "run_bounded", empty_list)
+    client = r2_client.R2Client(_stub_executable(tmp_path))
+    payload = client.xrefs(_minimal_pe(tmp_path), 0x140001000)
+
+    assert payload["parsed"] is True
+    assert payload["count"] == 0
+    assert payload["items"] == []
+    assert payload["address_va"] == 0x140001000
+    assert "items_truncated" not in payload
+
+
 def test_open_reports_a_missing_binary_as_not_found(tmp_path: Path) -> None:
     """open refuses a nonexistent binary before spawning r2.
 
