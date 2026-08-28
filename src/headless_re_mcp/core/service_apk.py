@@ -330,6 +330,14 @@ class ApkAnalysisMixin:
                 raise InvalidStateTransition(
                     f"apk.repack cannot run in {session.state.value} state"
                 )
+            # decoded_dir is schema-typed as a string, but the agent and OpenAI-bridge
+            # transports bind it from model output with no pydantic coercion. A
+            # non-string value reached decoded_dir.strip() below and raised a raw
+            # AttributeError that the outer except BaseException would file as a logged
+            # internal_error incident. Reject it as the invalid_params caller fault it
+            # is, before the apktool binary lookup.
+            if not isinstance(decoded_dir, str):
+                raise ApkError("invalid_params", "decoded_dir must be a string")
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
             source = Path(decoded_dir).expanduser() if decoded_dir.strip() else root / "decoded"
@@ -378,6 +386,14 @@ class ApkAnalysisMixin:
                 raise InvalidStateTransition(
                     f"apk.sign cannot run in {session.state.value} state"
                 )
+            # apk_path and keystore are schema-typed as strings, but the agent and
+            # OpenAI-bridge transports bind them from model output with no pydantic
+            # coercion. A non-string value reached apk_path.strip()/keystore.strip()
+            # below and raised a raw AttributeError that the outer except BaseException
+            # would file as a logged internal_error incident. Reject the wrong type as
+            # the invalid_params caller fault it is, before the apktool binary lookup.
+            if not isinstance(apk_path, str) or not isinstance(keystore, str):
+                raise ApkError("invalid_params", "apk_path and keystore must be strings")
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
             source = Path(apk_path).expanduser() if apk_path.strip() else root / "repacked.apk"
