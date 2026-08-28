@@ -97,4 +97,37 @@ def build_macho_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.macho_signature(path))
 
+    @tools.tool(name="macho.strings")
+    def macho_strings(
+        path: str,
+        min_length: Annotated[int, Field(ge=1, le=256)] = 4,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+        section: str | None = None,
+    ) -> dict[str, Any]:
+        """Extract a Mach-O's printable strings, labelled by section, stdlib-only.
+
+        A bare ``strings`` flattens the file into one anonymous list; this
+        keeps the two-level provenance an analyst reasons with, reading the
+        binary by path with no external tool.
+
+        Each run of printable bytes at least min_length long is reported with
+        the segment and section it came from -- __TEXT,__cstring for C string
+        constants, __TEXT,__objc_methname for Objective-C selectors,
+        __TEXT,__objc_classname for class names, __TEXT,__const for other
+        literals -- plus its file offset and virtual address (vaddr). Pass
+        section to scan just one section, by full "__TEXT,__cstring" label or
+        bare "__cstring" name. Zerofill/bss sections have no file content and
+        are skipped; a fat binary is read on its first architecture slice (arch
+        and available_arches reported). sections_scanned lists what was read;
+        strings_total is capped (truncated flags the cap) and paged with
+        offset/limit (has_more). A file that is not a Mach-O is invalid_params,
+        one over 128 MiB too_large.
+        """
+        return _dump(
+            analysis.macho_strings(
+                path, min_length=min_length, offset=offset, limit=limit, section=section
+            )
+        )
+
     return tools.bindings

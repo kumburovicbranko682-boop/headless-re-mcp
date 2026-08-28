@@ -5,9 +5,10 @@ With PE covered by a whole tool line and ELF by elf.summary/elf.symbols, Mach-O
 one first-class native format that could not be opened here at all. This mixin
 reads a standalone Mach-O (thin or universal) by path with the stdlib alone:
 macho_summary returns the header/segment/dylib/platform triage, macho_symbols
-pages through the LC_SYMTAB nlist array (imports and exports) and
-macho_signature decodes the LC_CODE_SIGNATURE SuperBlob (signing identity, team
-ID, cdhash, flags and entitlements). These are core,
+pages through the LC_SYMTAB nlist array (imports and exports), macho_signature
+decodes the LC_CODE_SIGNATURE SuperBlob (signing identity, team ID, cdhash,
+flags and entitlements) and macho_strings extracts printable literals labelled
+by the two-level section they sit in. These are core,
 path-based tools -- no session, no target kind -- so they stay visible in every
 workspace profile.
 """
@@ -19,6 +20,7 @@ from typing import Any
 
 from headless_re_mcp.backends.common.macho import (
     MachoParseError,
+    list_macho_strings,
     list_macho_symbols,
     read_macho_signature,
     summarize_macho,
@@ -128,6 +130,41 @@ class MachoAnalysisMixin:
         """
         try:
             listing = read_macho_signature(_load_macho(path))
+            return _success(listing, backend="macho")
+        except _MachoFileError as exc:
+            return _err(exc.code, str(exc), **exc.details)
+        except MachoParseError as exc:
+            return _err("invalid_params", str(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def macho_strings(
+        self,
+        path: str,
+        *,
+        min_length: int = 4,
+        offset: int = 0,
+        limit: int = 200,
+        section: str | None = None,
+    ) -> Result[JsonObject]:
+        """Printable string literals, located by the Mach-O section they sit in.
+
+        Extracts runs of printable bytes (at least min_length long) the way
+        ``strings`` does, but keeps each one's two-level provenance: the
+        segment and section it came from (__TEXT,__cstring for C constants,
+        __TEXT,__objc_methname for Objective-C selectors, __objc_classname for
+        class names), its file offset and virtual address. A section filter
+        (full label or bare name) narrows the scan; a fat binary is read on its
+        first slice. The same file-level failures as macho_summary apply.
+        """
+        try:
+            listing = list_macho_strings(
+                _load_macho(path),
+                min_length=min_length,
+                offset=offset,
+                limit=limit,
+                section=section,
+            )
             return _success(listing, backend="macho")
         except _MachoFileError as exc:
             return _err(exc.code, str(exc), **exc.details)

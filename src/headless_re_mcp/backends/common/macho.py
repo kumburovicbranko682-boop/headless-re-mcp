@@ -17,7 +17,11 @@ resolved to the dylib its library ordinal names) or exported (a defined
 external), and skipping debug stabs. read_macho_signature decodes the
 LC_CODE_SIGNATURE SuperBlob -- the CodeDirectory's signing identifier, team ID,
 flags (adhoc / hardened runtime / linker-signed) and cdhash, plus the
-entitlements plist -- the ``codesign -dvv`` view, offline.
+entitlements plist -- the ``codesign -dvv`` view, offline. list_macho_strings
+extracts printable literals the way ``strings`` does but keeps each one's
+two-level section provenance -- ``__TEXT,__cstring`` constants,
+``__TEXT,__objc_methname`` selectors, ``__TEXT,__objc_classname`` class names --
+with the file offset and virtual address.
 
 Universal ("fat") binaries are handled too: each architecture slice is listed
 with its CPU/offset/size and summarized in place, bounded by a slice cap. Both
@@ -40,6 +44,16 @@ JsonObject = dict[str, Any]
 _MAX_NAME = 256
 _MAX_CMDS = 2048
 _MAX_SEGMENTS = 128
+_MAX_SECTIONS = 1024
+
+_MAX_STRINGS = 50000
+_MAX_STRING_LEN = 8192
+_MAX_STRING_PAGE = 1000
+_MIN_STRING_LENGTH = 4
+# GNU strings' default alphabet: space through tilde, plus horizontal tab.
+_PRINTABLE = frozenset(range(0x20, 0x7F)) | {0x09}
+# Section types (flags & 0xff) with no file content -- bss-like, skipped.
+_S_ZEROFILL_TYPES = frozenset({0x1, 0xC, 0x12})
 _MAX_DYLIBS = 512
 _MAX_RPATHS = 64
 _MAX_SLICES = 16
@@ -940,3 +954,233 @@ def list_macho_symbols(data: bytes, *, offset: int = 0, limit: int = 200) -> Jso
     if magic in (_FAT_MAGIC_32, _FAT_MAGIC_64):
         return _list_fat_symbols(data, offset, limit)
     raise MachoParseError("not a Mach-O file: unknown magic")
+
+
+def _scan_printable(blob: bytes, min_length: int) -> list[tuple[int, str]]:
+    """Runs of printable bytes of at least ``min_length``, as (offset, text)."""
+    found: list[tuple[int, str]] = []
+    i = 0
+    n = len(blob)
+    while i < n:
+        if blob[i] in _PRINTABLE:
+            start = i
+            while i < n and blob[i] in _PRINTABLE:
+                i += 1
+            if i - start >= min_length:
+                raw = blob[start : min(i, start + _MAX_STRING_LEN)]
+                found.append((start, raw.decode("ascii", errors="replace")))
+        else:
+            i += 1
+    return found
+
+
+def _collect_macho_sections(
+    data: bytes, endian: str, bits: int, hdr_size: int, ncmds: int
+) -> tuple[list[tuple[str, str, int, int, int, int]], list[str]]:
+    """Every section in the LC_SEGMENT(_64) commands: (seg, sect, addr, off, size, flags).
+
+    The section table is what carries the two-level ``__TEXT,__cstring`` name a
+    Mach-O analyst reasons with, so this follows each segment command into its
+    nsects records defensively -- a record that leaves the command or the file
+    stops that segment with a warning rather than raising.
+    """
+    warnings: list[str] = []
+    seg_cmd = _LC_SEGMENT_64 if bits == 64 else _LC_SEGMENT
+    seg_hdr = 72 if bits == 64 else 56
+    nsects_at = 64 if bits == 64 else 48
+    sect_size = 80 if bits == 64 else 68
+    sect_fmt = endian + ("16s16sQQIIIIIIII" if bits == 64 else "16s16sIIIIIIIII")
+
+    sections: list[tuple[str, str, int, int, int, int]] = []
+    offset = hdr_size
+    for index in range(min(ncmds, _MAX_CMDS)):
+        if offset + 8 > len(data):
+            warnings.append(f"load command {index} is past end of file")
+            break
+        cmd, cmdsize = struct.unpack_from(endian + "II", data, offset)
+        if cmdsize < 8 or offset + cmdsize > len(data):
+            warnings.append(f"load command {index} has a bad size")
+            break
+        if cmd == seg_cmd and cmdsize >= seg_hdr:
+            (nsects,) = struct.unpack_from(endian + "I", data, offset + nsects_at)
+            base = offset + seg_hdr
+            for sidx in range(nsects):
+                if len(sections) >= _MAX_SECTIONS:
+                    break
+                rec = base + sidx * sect_size
+                if rec + sect_size > offset + cmdsize or rec + sect_size > len(data):
+                    warnings.append(f"section {sidx} of command {index} is out of bounds")
+                    break
+                fields = struct.unpack_from(sect_fmt, data, rec)
+                sectname = fields[0].rstrip(b"\x00").decode("utf-8", errors="replace")[:_MAX_NAME]
+                segname = fields[1].rstrip(b"\x00").decode("utf-8", errors="replace")[:_MAX_NAME]
+                sections.append((segname, sectname, fields[2], fields[4], fields[3], fields[8]))
+        offset += cmdsize
+    return sections, warnings
+
+
+def _strings_thin(
+    data: bytes, *, min_length: int, offset: int, limit: int, section: str | None, extra: JsonObject
+) -> JsonObject:
+    """Printable strings of one thin image, located by the section they sit in."""
+    magic = data[:4]
+    if magic not in _THIN_MAGICS:
+        raise MachoParseError("not a Mach-O image: unknown magic")
+    bits, endian, endian_name = _THIN_MAGICS[magic]
+    hdr_size = 32 if bits == 64 else 28
+    if len(data) < hdr_size:
+        raise MachoParseError("truncated Mach-O header")
+    cputype, _cpusubtype, _filetype, ncmds, _sizeofcmds, _flags = struct.unpack_from(
+        endian + "iiIIII", data, 4
+    )
+
+    collected, warnings = _collect_macho_sections(data, endian, bits, hdr_size, ncmds)
+    warnings = warnings[:_MAX_WARNINGS]
+
+    def warn(message: str) -> None:
+        if len(warnings) < _MAX_WARNINGS:
+            warnings.append(message)
+
+    min_length = max(1, min(int(min_length), 256))
+    start = max(0, int(offset))
+    window = max(1, min(int(limit), _MAX_STRING_PAGE))
+
+    matched_filter = section is None
+    scanned: list[str] = []
+    all_strings: list[JsonObject] = []
+    truncated = False
+    for segname, sectname, addr, sec_off, size, flags in collected:
+        label = f"{segname},{sectname}"
+        if section is not None and section not in (label, sectname):
+            continue
+        matched_filter = True
+        if (flags & 0xFF) in _S_ZEROFILL_TYPES:
+            continue  # bss-like: no file content
+        if sec_off <= 0 or size <= 0:
+            continue
+        if sec_off + size > len(data):
+            warn(f"section {label} content is past end of file")
+            continue
+        scanned.append(label)
+        for rel, text in _scan_printable(data[sec_off : sec_off + size], min_length):
+            all_strings.append(
+                {
+                    "segment": segname,
+                    "section": sectname,
+                    "offset": sec_off + rel,
+                    "vaddr": f"0x{addr + rel:x}" if addr else None,
+                    "value": text,
+                }
+            )
+            if len(all_strings) >= _MAX_STRINGS:
+                truncated = True
+                break
+        if truncated:
+            break
+
+    if section is not None and not matched_filter:
+        warn(f"no section named {section!r}")
+
+    total = len(all_strings)
+    page = all_strings[start : start + window]
+    result: JsonObject = {
+        "format": "Mach-O",
+        "bits": bits,
+        "endianness": endian_name,
+        "cpu": _CPU.get(cputype, f"0x{cputype:x}"),
+        "min_length": min_length,
+        "section_filter": section,
+        "sections_scanned": scanned,
+        "strings": page,
+        "strings_listed": len(page),
+        "strings_total": total,
+        "offset": start,
+        "limit": window,
+        "has_more": start + len(page) < total,
+        "truncated": truncated,
+        "warnings": warnings,
+    }
+    result.update(extra)
+    return result
+
+
+def list_macho_strings(
+    data: bytes,
+    *,
+    min_length: int = _MIN_STRING_LENGTH,
+    offset: int = 0,
+    limit: int = 200,
+    section: str | None = None,
+) -> JsonObject:
+    """Printable string literals, located by the Mach-O section they sit in.
+
+    Where a bare ``strings`` flattens the file into one anonymous list, this
+    keeps the provenance an analyst reasons with: each run of printable bytes
+    (at least ``min_length`` long) is reported with the two-level section it
+    came from -- ``__TEXT,__cstring`` for C constants, ``__TEXT,__objc_methname``
+    for Objective-C selectors, ``__TEXT,__objc_classname`` for class names,
+    ``__TEXT,__const`` for other literals -- plus its file offset and virtual
+    address. The ``section`` filter matches either the full ``segment,section``
+    label or the bare section name (so ``__cstring`` narrows the scan).
+
+    Sections with no file content (zerofill/bss) are skipped; a fat binary is
+    read on its first architecture slice (the arch and the full slice list are
+    reported). Raises MachoParseError only when the bytes are not a Mach-O; the
+    total is capped and paginated with offset/limit, and an out-of-file section
+    is skipped with a warning rather than raising.
+    """
+    if len(data) < 8:
+        raise MachoParseError("not a Mach-O file: too short for any header")
+    magic = data[:4]
+    if magic in _THIN_MAGICS:
+        return _strings_thin(
+            data,
+            min_length=min_length,
+            offset=offset,
+            limit=limit,
+            section=section,
+            extra={"fat": False},
+        )
+    if magic not in (_FAT_MAGIC_32, _FAT_MAGIC_64):
+        raise MachoParseError("not a Mach-O file: unknown magic")
+
+    is64 = magic == _FAT_MAGIC_64
+    (nfat_arch,) = struct.unpack_from(">I", data, 4)
+    if nfat_arch == 0:
+        raise MachoParseError("fat binary with no architecture slices")
+    if nfat_arch > _MAX_SLICES:
+        raise MachoParseError(
+            f"implausible fat arch count {nfat_arch}"
+            " (a Java class file shares the 0xcafebabe magic)"
+        )
+    arch_fmt = ">iiQQII" if is64 else ">iiIII"
+    arch_size = struct.calcsize(arch_fmt)
+    available: list[str] = []
+    slices: list[tuple[int, int]] = []
+    for index in range(nfat_arch):
+        base = 8 + index * arch_size
+        if base + arch_size > len(data):
+            break
+        fields = struct.unpack_from(arch_fmt, data, base)
+        cputype, sliceoff, size = fields[0], fields[2], fields[3]
+        available.append(_CPU.get(cputype, f"0x{cputype:x}"))
+        slices.append((sliceoff, size))
+    if not slices:
+        raise MachoParseError("fat binary with no readable architecture slices")
+    sliceoff, size = slices[0]
+    if sliceoff < 0 or size < 0 or sliceoff + size > len(data):
+        raise MachoParseError("first fat slice extends past end of file")
+    extra: JsonObject = {"fat": True, "arch": available[0], "available_arches": available}
+    result = _strings_thin(
+        data[sliceoff : sliceoff + size],
+        min_length=min_length,
+        offset=offset,
+        limit=limit,
+        section=section,
+        extra=extra,
+    )
+    if len(available) > 1:
+        note = f"fat binary; read the {available[0]} slice of {available}"
+        if len(result["warnings"]) < _MAX_WARNINGS:
+            result["warnings"] = [note, *result["warnings"]]
+    return result
