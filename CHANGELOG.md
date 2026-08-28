@@ -5,6 +5,62 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+
+- main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
+  `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +
+  `_ReadyMarker` addon，防两个 DumpMaster 抢共享的 mitmproxy 全局 ctx）在合并树上
+  语义冲突：`test_instance_start_returns_once_the_port_accepts` 的假 `_run` 不会像真
+  `_run` 那样经 running() 钩子置位 `_ready`，start() 在新形态下等 `_ready` 而超时；
+  `test_instance_run_drives_a_master_to_completion` 钉死 `added == [recorder]`，而新
+  形态多挂一个 `_ReadyMarker`。两侧各自的树都绿，只有合并树红——与此前 .NET 元数据
+  API 的语义冲突同类。改法（两树兼容）：假 `_run` 若实例有 `_ready` 就置位；addon
+  断言改钉 `added[0] is recorder`（顺序而非全等）。两棵树上该文件 57 例均过。
+
+### 修复（audit trim 测试假设时钟每次调用严格递增）
+
+- main 新落的 `test_repository_inmemory_close_trim.py::test_audit_log_trims_to_the_newest_rows`
+  连续 6 次 `append_audit` 后断言 `list_audit` 按 `action-5,4,3` 返回。`list_audit`
+  只按 `at` 时间戳降序排（内存仓稳定排序、SQLite `ORDER BY at DESC`，平局序两侧都无契约）；
+  POSIX 上 `datetime.now()` 微秒级分辨率让 6 行时间戳严格递增，断言恰好成立，但 Windows
+  系统时钟 ~15.6 ms 一跳，6 次背靠背写入共享同一时间戳，稳定排序平局退回插入序，返回
+  `action-3,4,5`，双版本同点失败。产品的平局序本就未定义，是测试编码了"时钟严格递增"的
+  POSIX-only 前提。修复已落 main（monkeypatch 仓库模块的 `datetime` 为每次调用递增
+  1 秒的假时钟，平台无关地钉住 newest-first 序，也顺带让测试不再依赖真实时钟）。
+
+### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
+
+- main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
+  `_probe_run` 以 `creationflags=0` 调 `run_bounded`。但 `_probe_run` 用的
+  `_no_window_flags()` 在 Windows 上返回 `subprocess.CREATE_NO_WINDOW`（0x08000000 =
+  134217728，用来抑制探针子进程弹出的控制台窗口），只有 POSIX 才返回 0——产品行为正确，
+  是测试钉死了 POSIX 侧的值，于是在 Windows 3.12 上以
+  `assert seen == {... 'creationflags': 0}` 收到 134217728 而失败。改法：按平台用
+  `getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0` 独立派生期望值
+  （与 `_no_window_flags()` 同法），POSIX 行为不变，Windows 断言到正确的抑制窗口标志。
+
+### 修复（NETReactorSlayer 输出别名测试的同款 Windows-only 路径炸裂）
+
+- 与 de4dot 同批落地的 `test_net_reactor_slayer_paths.py::test_output_equal_to_input_is_refused`
+  是同一 dot-dot 模式的第三个实例：用 `tmp_path/nope/../managed.exe` 断言别名到输入的输出被
+  "differ from input" 拒绝。POSIX 下 `nope/` 无法遍历、exists() 为假，别名滑到 resolve 相等
+  守卫；Windows 在 stat 前词法折叠 `..`，同一拼法 stat 为已存在的 source，被更早的
+  "must not already exist" 守卫拒绝，钉死消息的断言必挂。修法与 Scylla、de4dot 两个先例
+  一致：只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。全套 dot-dot 构造
+  已排查（`rg '/ "\.\."' tests/unit/`），仅此一处残留；`test_web_console.py` 的用法断言
+  共享结果（403），不受守卫顺序影响。
+
+### 修复（de4dot 输出别名测试的 Windows-only 路径炸裂）
+
+- main 新落的 `test_dotnet_de4dot_run_paths.py::test_run_rejects_an_output_path_aliasing_the_input`
+  用 `tmp_path/missing/../input.exe` 这种 dot-dot 拼法验证输出别名到输入会被拒。前置断言
+  `assert not aliased.exists()` 与末尾钉死 `"differ from input_path"` 都编码了 POSIX-only 假设：
+  POSIX 下 `missing/` 无法遍历故 stat 为不存在、`resolve()` 才把它折叠回存在的 input，别名滑过
+  exists() 守卫、被 resolve 相等守卫（"differ from input_path"）捕获；Windows 在 stat 前就把
+  `..` 词法折叠，同一拼法 stat 为**存在**，于是前置断言直接失败、且会被更早的 exists() 守卫
+  以 "must not already exist" 拒绝。这与此前 Scylla 的 Windows 路径别名缺陷同源。改法照 Scylla
+  先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
+
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
 Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
@@ -218,62 +274,6 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `os` 换成钉住 `name="posix"` 的代理(`_NtOsProxy` 相应泛化为带构造参数的
   `_OsProxy`,与 `test_config_discovery_paths.py` 的既有惯例同形)。用例选中
   哪条臂由被测模块读到的值决定,与宿主平台无关,五个用例在全矩阵上都执行。
-
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
-
-- main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
-  `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +
-  `_ReadyMarker` addon，防两个 DumpMaster 抢共享的 mitmproxy 全局 ctx）在合并树上
-  语义冲突：`test_instance_start_returns_once_the_port_accepts` 的假 `_run` 不会像真
-  `_run` 那样经 running() 钩子置位 `_ready`，start() 在新形态下等 `_ready` 而超时；
-  `test_instance_run_drives_a_master_to_completion` 钉死 `added == [recorder]`，而新
-  形态多挂一个 `_ReadyMarker`。两侧各自的树都绿，只有合并树红——与此前 .NET 元数据
-  API 的语义冲突同类。改法（两树兼容）：假 `_run` 若实例有 `_ready` 就置位；addon
-  断言改钉 `added[0] is recorder`（顺序而非全等）。两棵树上该文件 57 例均过。
-
-### 修复（audit trim 测试假设时钟每次调用严格递增）
-
-- main 新落的 `test_repository_inmemory_close_trim.py::test_audit_log_trims_to_the_newest_rows`
-  连续 6 次 `append_audit` 后断言 `list_audit` 按 `action-5,4,3` 返回。`list_audit`
-  只按 `at` 时间戳降序排（内存仓稳定排序、SQLite `ORDER BY at DESC`，平局序两侧都无契约）；
-  POSIX 上 `datetime.now()` 微秒级分辨率让 6 行时间戳严格递增，断言恰好成立，但 Windows
-  系统时钟 ~15.6 ms 一跳，6 次背靠背写入共享同一时间戳，稳定排序平局退回插入序，返回
-  `action-3,4,5`，双版本同点失败。产品的平局序本就未定义，是测试编码了"时钟严格递增"的
-  POSIX-only 前提。修复已落 main（monkeypatch 仓库模块的 `datetime` 为每次调用递增
-  1 秒的假时钟，平台无关地钉住 newest-first 序，也顺带让测试不再依赖真实时钟）。
-
-### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
-
-- main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
-  `_probe_run` 以 `creationflags=0` 调 `run_bounded`。但 `_probe_run` 用的
-  `_no_window_flags()` 在 Windows 上返回 `subprocess.CREATE_NO_WINDOW`（0x08000000 =
-  134217728，用来抑制探针子进程弹出的控制台窗口），只有 POSIX 才返回 0——产品行为正确，
-  是测试钉死了 POSIX 侧的值，于是在 Windows 3.12 上以
-  `assert seen == {... 'creationflags': 0}` 收到 134217728 而失败。改法：按平台用
-  `getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0` 独立派生期望值
-  （与 `_no_window_flags()` 同法），POSIX 行为不变，Windows 断言到正确的抑制窗口标志。
-
-### 修复（NETReactorSlayer 输出别名测试的同款 Windows-only 路径炸裂）
-
-- 与 de4dot 同批落地的 `test_net_reactor_slayer_paths.py::test_output_equal_to_input_is_refused`
-  是同一 dot-dot 模式的第三个实例：用 `tmp_path/nope/../managed.exe` 断言别名到输入的输出被
-  "differ from input" 拒绝。POSIX 下 `nope/` 无法遍历、exists() 为假，别名滑到 resolve 相等
-  守卫；Windows 在 stat 前词法折叠 `..`，同一拼法 stat 为已存在的 source，被更早的
-  "must not already exist" 守卫拒绝，钉死消息的断言必挂。修法与 Scylla、de4dot 两个先例
-  一致：只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。全套 dot-dot 构造
-  已排查（`rg '/ "\.\."' tests/unit/`），仅此一处残留；`test_web_console.py` 的用法断言
-  共享结果（403），不受守卫顺序影响。
-
-### 修复（de4dot 输出别名测试的 Windows-only 路径炸裂）
-
-- main 新落的 `test_dotnet_de4dot_run_paths.py::test_run_rejects_an_output_path_aliasing_the_input`
-  用 `tmp_path/missing/../input.exe` 这种 dot-dot 拼法验证输出别名到输入会被拒。前置断言
-  `assert not aliased.exists()` 与末尾钉死 `"differ from input_path"` 都编码了 POSIX-only 假设：
-  POSIX 下 `missing/` 无法遍历故 stat 为不存在、`resolve()` 才把它折叠回存在的 input，别名滑过
-  exists() 守卫、被 resolve 相等守卫（"differ from input_path"）捕获；Windows 在 stat 前就把
-  `..` 词法折叠，同一拼法 stat 为**存在**，于是前置断言直接失败、且会被更早的 exists() 守卫
-  以 "must not already exist" 拒绝。这与此前 Scylla 的 Windows 路径别名缺陷同源。改法照 Scylla
-  先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 ### 修复（事故日志脱敏关键字与结构化脱敏对齐）
 
