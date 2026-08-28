@@ -1119,6 +1119,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **`web.console` 的行数下限在尾切片前的钳制被钉死**：与带 offset 的列表读取器不同,`web.console`
+  没有 offset,它以 `page = held[-capped:]` 返回最新的 `limit` 行,其中
+  `capped = max(1, min(int(limit), _MAX_CONSOLE))`。schema 只在 MCP 传输上约束 `limit`,agent 与
+  OpenAI 桥传输直接调处理器,非正的 limit 会原样抵达这一行。`max(1, ...)` 下限是要害护栏,而既有每个
+  console 用例传的都是正 limit,使其全程失效。它防的失败是尾切片特有的:`held[-0:]` 就是 `held[0:]`
+  ——**整个**缓冲区——所以丢了下限的 `limit=0` 会把所有保留行整吐出来,恰与“安全默认”相反;而 `-5`
+  这样的负 limit 变成 `held[5:]`,把最新的几行切掉,同时 `has_more`(`len(held) > capped`)对着一个负的
+  界读作 True。下限把任何非正 limit 收敛成单条最新行。新增 2 个用例针对真实的 `_WebSession` console
+  环(有界 `deque`)钉住这两条非正腿,并断言保留的是最新行而非最旧行。相邻的 `min(..., _MAX_CONSOLE)`
+  上限有意不在此钉:它无法经该方法观察到——环的 `maxlen` 恰等于 `_MAX_CONSOLE`,故 `len(held)` 永不
+  超过上限,夹具无从把两者拉开。变异(去掉 `max(1, ...)`)被两个用例逐一逮住,源文件
+  `backends/web/client.py` 未改。
 - **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
   崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
   非法 architecture、天真/垃圾时间戳、`resolve()` 抛 OSError 的死挂载——一律安静跳过或
