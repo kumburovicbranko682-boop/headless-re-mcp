@@ -171,6 +171,9 @@ class DeviceAnalysisMixin:
             "packages", serial=serial, third_party_only=third_party_only, limit=limit
         )
 
+    def device_udp(self, serial: str, limit: int = 500) -> Result[JsonObject]:
+        return self._adb_wrap("udp", serial=serial, limit=limit)
+
     def device_install(
         self, serial: str, apk_path: str, reinstall: bool = True
     ) -> Result[JsonObject]:

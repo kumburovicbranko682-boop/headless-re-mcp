@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import socket
 import stat
 import threading
 import zipfile
@@ -40,6 +41,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_UDP = 500
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -190,6 +192,37 @@ def _is_host_error_output(text: str) -> bool:
     return bool(captured) and all(
         line.lstrip().lower().startswith(("error:", "adb:")) for line in captured
     )
+
+
+def _udp_endpoint(token: str) -> str | None:
+    """Decode a ``/proc/net/udp`` ``hexip:hexport`` column into ``ip:port``.
+
+    The kernel prints the address as raw little-endian bytes: an IPv4 address
+    is four bytes to reverse, an IPv6 address is four little-endian 32-bit words
+    to reverse word by word. ``None`` for anything that is not a valid endpoint
+    (a header cell, a truncated line) so the caller skips it rather than
+    inventing a host. IPv6 is bracketed so the ``:port`` suffix stays
+    unambiguous.
+    """
+    if ":" not in token:
+        return None
+    hexip, _, hexport = token.rpartition(":")
+    try:
+        port = int(hexport, 16)
+    except ValueError:
+        return None
+    try:
+        raw = bytes.fromhex(hexip)
+    except ValueError:
+        return None
+    if len(raw) == 4:
+        ip = socket.inet_ntop(socket.AF_INET, raw[::-1])
+    elif len(raw) == 16:
+        ordered = b"".join(raw[i : i + 4][::-1] for i in range(0, 16, 4))
+        ip = socket.inet_ntop(socket.AF_INET6, ordered)
+    else:
+        return None
+    return f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
 
 
 def _call(method: Any, *args: Any, timeout: float | None = None, **kwargs: Any) -> Any:
@@ -525,6 +558,82 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def udp(self, serial: str, *, limit: int = 500) -> JsonObject:
+        """List UDP sockets from ``/proc/net/udp`` and ``/proc/net/udp6``.
+
+        The companion to the TCP view: UDP is connectionless, so there is no
+        state machine to report -- a socket bound to receive shows a wildcard
+        remote (``0.0.0.0:0`` / ``[::]:0``) and a connect()ed one shows its
+        peer. Each row carries the decoded local/remote endpoint, the owning
+        uid, and the socket inode.
+
+        Honesty: a family whose ``/proc`` file is missing or refused (older or
+        locked-down kernels, or an IPv6-less build) is named in ``unavailable``
+        rather than silently dropped; an empty but readable table is a real
+        zero-socket result, not an error. Both families failing is a
+        ``backend_error``. The list is capped and flags ``has_more`` when the
+        device holds more sockets than the cap.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_UDP))
+        sockets: list[JsonObject] = []
+        unavailable: list[str] = []
+        has_more = False
+        for proto, source in (("udp", "/proc/net/udp"), ("udp6", "/proc/net/udp6")):
+            if has_more:
+                break
+            try:
+                text = str(_device_shell(dev, f"cat {source}"))
+            except AdbError:
+                unavailable.append(proto)
+                continue
+            # The header line ("sl local_address rem_address ...") is the proof
+            # the read reached the kernel table; its absence means the device
+            # answered with "No such file" / "Permission denied" text instead.
+            if "local_address" not in text.lower():
+                unavailable.append(proto)
+                continue
+            for line in text.splitlines():
+                fields = line.split()
+                if len(fields) < 10 or not fields[0].endswith(":"):
+                    continue
+                local = _udp_endpoint(fields[1])
+                remote = _udp_endpoint(fields[2])
+                if local is None or remote is None:
+                    continue
+                if len(sockets) >= capped:
+                    has_more = True
+                    break
+                try:
+                    uid: int | None = int(fields[7])
+                except ValueError:
+                    uid = None
+                try:
+                    inode: int | None = int(fields[9])
+                except ValueError:
+                    inode = None
+                sockets.append(
+                    {
+                        "proto": proto,
+                        "local": local,
+                        "remote": remote,
+                        "uid": uid,
+                        "inode": inode,
+                    }
+                )
+        if len(unavailable) == 2:
+            raise AdbError(
+                "backend_error", "reading /proc/net/udp failed", unavailable=unavailable
+            )
+        result: JsonObject = {
+            "udp": sockets,
+            "count": len(sockets),
+            "has_more": has_more,
+        }
+        if unavailable:
+            result["unavailable"] = unavailable
+        return result
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a

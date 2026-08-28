@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -127,6 +127,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   非 PE / 截断的 COFF 头 / 截断的可选头 / 可选头 magic 不符 / 镜像基址为 0 分别报
   `module_file_invalid`；并补 `RuntimeModuleCatalog` 与 `RebasedModuleMapping` 的 `to_dict`
   序列化。模块覆盖率 88% → 99%。
+
+### 新增（`device.udp` 读 UDP 套接字，做 TCP 连接视图的无连接补集）
+
+- 新增只读工具 `device.udp`，从 `/proc/net/udp` 与 `/proc/net/udp6` 解析 UDP 套接字。UDP
+  无连接、没有 TCP 那套状态机，故只如实给出解码后的本地/远端端点、`uid` 与 inode，不臆造
+  `state` 字段：接收方远端显示通配（`0.0.0.0:0` / `[::]:0`），`connect()` 过的显示对端。
+  地址按内核的小端字节序解码（IPv4 反转四字节，IPv6 逐 32 位字反转），IPv6 加方括号使
+  `:port` 后缀不产生歧义。诚实边界:某一族的 `/proc` 文件缺失或被拒（较旧或收紧的内核、无
+  IPv6 的构建）会记入 `unavailable` 而非静默丢弃；可读但为空的表是真实的零套接字结果，不是
+  错误；两族都失败才报 `backend_error`。列表有界并在超过上限时置 `has_more`。
+  新增 `tests/unit/test_device_udp_fields.py` 以固定桩覆盖 IPv4/IPv6 端点解码、通配远端、
+  分页截断、单族不可用与双族失败等分支。工具面 265 → 266（只读 148 → 149）。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 

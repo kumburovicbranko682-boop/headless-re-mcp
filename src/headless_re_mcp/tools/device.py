@@ -89,6 +89,26 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.udp")
+    def device_udp(
+        serial: str, limit: Annotated[int, Field(ge=1, le=500)] = 500
+    ) -> dict[str, Any]:
+        """List UDP sockets from /proc/net/udp and /proc/net/udp6.
+
+        The connectionless companion to the TCP connection view. Answers with
+        udp (each entry: proto udp/udp6, decoded local and remote endpoint,
+        uid, inode), count, and has_more so a page that filled the cap is not
+        read as every socket. UDP has no state machine, so a receiver shows a
+        wildcard remote and a connect()ed socket shows its peer -- no state
+        field is invented.
+
+        Honesty: a family whose /proc file is missing or refused is named in
+        unavailable rather than dropped, an empty but readable table is a real
+        zero-socket result, and both families failing is an error, not an
+        empty list.
+        """
+        return _dump(analysis.device_udp(serial, limit=limit))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True
