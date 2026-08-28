@@ -410,6 +410,17 @@ _TOOL_TIMEOUTS: dict[str, float] = {
     # Browser launch + navigation block until the page settles; advertised 120s.
     "web.open": 120.0,
     "web.navigate": 120.0,
+    # ADB file transfers block on the wire for up to adb's own _ADB_TRANSFER_TIMEOUT_S
+    # (120s) and expose no `timeout` parameter, so the transport ceiling must cover
+    # that transfer plus the follow-up verify shell (install: pm path; pull: stat).
+    # Pushing a large APK or pulling a capture routinely runs past the 60s default.
+    "device.install": 180.0,
+    "device.uninstall": 180.0,
+    "device.pull": 180.0,
+    "device.push": 180.0,
+    # frida.server.ensure pushes the frida-server binary (transfer, up to 120s) and
+    # then chmods, launches and probes it (several bounded shells) before returning.
+    "frida.server.ensure": 240.0,
 }
 
 

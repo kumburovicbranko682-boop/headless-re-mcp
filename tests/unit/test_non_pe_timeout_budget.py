@@ -115,3 +115,33 @@ def test_transport_deadline_covers_the_advertised_timeout(
         f"only {policy:g}s, so the call is killed before that timeout can be reached. "
         "Raise its ResourcePolicy.timeout_seconds (see _TOOL_TIMEOUTS in catalog.py)."
     )
+
+
+# The transfer tools below take no `timeout` parameter, so the rule above cannot
+# see them -- yet they block on the wire for up to adb's own transfer deadline
+# (``_ADB_TRANSFER_TIMEOUT_S``, 120s): device.install pushes an APK, pull/push move
+# a file, uninstall can churn through a large app's data, and frida.server.ensure
+# pushes the frida-server binary. If the transport ceiling is left at the 60s
+# default the call dies mid-transfer, so the ceiling is pinned to the constant that
+# actually bounds the work. A raised transfer timeout that outgrew these policies
+# would trip this test.
+_ADB_TRANSFER_TOOLS = (
+    "device.install",
+    "device.uninstall",
+    "device.pull",
+    "device.push",
+    "frida.server.ensure",
+)
+
+
+@pytest.mark.parametrize("name", _ADB_TRANSFER_TOOLS)
+def test_transport_deadline_covers_the_adb_transfer_timeout(name: str) -> None:
+    from headless_re_mcp.backends.adb.client import _ADB_TRANSFER_TIMEOUT_S
+
+    catalog = CommandCatalog()
+    policy = catalog.require(name).resource_policy.timeout_seconds
+    assert policy >= _ADB_TRANSFER_TIMEOUT_S, (
+        f"{name} blocks on an adb transfer bounded at {_ADB_TRANSFER_TIMEOUT_S:g}s but "
+        f"its transport deadline is only {policy:g}s, so the call is killed mid-transfer. "
+        "Raise its ResourcePolicy.timeout_seconds (see _TOOL_TIMEOUTS in catalog.py)."
+    )
