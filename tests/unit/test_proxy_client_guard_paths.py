@@ -421,9 +421,14 @@ def test_instance_start_times_out_when_the_port_never_accepts(
 
 
 def _run_in_thread(inst: _ProxyInstance) -> None:
-    thread = threading.Thread(target=inst._run)
+    # daemon=True so a hung _run cannot block interpreter shutdown (a
+    # non-daemon worker left alive froze the whole suite on Windows CI
+    # before), and the aliveness assert turns that hang into a clear
+    # failure here instead.
+    thread = threading.Thread(target=inst._run, daemon=True)
     thread.start()
     thread.join(timeout=5.0)
+    assert not thread.is_alive(), "_ProxyInstance._run did not return within 5s"
 
 
 def test_instance_run_starts_and_tears_down_a_fake_master(
