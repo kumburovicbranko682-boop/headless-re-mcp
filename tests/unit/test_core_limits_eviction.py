@@ -405,6 +405,28 @@ def test_dir_size_over_cap_fails_closed_past_the_file_ceiling(
     assert measured == 0
 
 
+def test_dir_size_over_cap_fails_closed_on_a_directory_flood(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file ceiling must bound a directory flood, not just a file flood.
+
+    An empty-dir tree never moves the byte total and holds no files, so counting
+    only files (as this once did) left the ceiling untripped and the walk stat'ing
+    every one of a hostile archive's millions of directories before answering. The
+    ceiling now counts every entry walked, so a directory flood is refused
+    fail-closed exactly like the empty-file flood above. Shrink the ceiling so a
+    handful of directories stands in for millions.
+    """
+    monkeypatch.setattr(limits, "_TREE_SIZE_FILE_CEILING", 3)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for index in range(5):
+        (tree / f"d{index}").mkdir()
+    measured, over = limits.dir_size_over_cap(tree, 1_000_000_000)
+    assert over is True
+    assert measured == 0
+
+
 def test_dir_size_over_cap_survives_a_walk_that_raises(tmp_path: Path) -> None:
     """A directory torn down mid-measure answers from what it counted, never crashes."""
     measured, over = limits.dir_size_over_cap(_DirWhoseWalkRaises(), 100)  # type: ignore[arg-type]

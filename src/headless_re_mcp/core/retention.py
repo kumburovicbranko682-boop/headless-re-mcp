@@ -52,10 +52,20 @@ def measure_usage(root: Path, *, file_limit: int = USAGE_FILE_LIMIT) -> DiskUsag
     """
     total = 0
     files = 0
+    seen = 0
     try:
         for path in root.rglob("*"):
-            if files >= file_limit:
+            # Bound the walk by every entry visited, not by files alone. rglob
+            # yields directories too, and a decode/unpack tree -- or a hostile
+            # archive -- can be mostly, or entirely, empty directories; a
+            # files-only ceiling never trips on such a tree and walks it to the
+            # end, which is the health-probe stall this cap exists to prevent (the
+            # size backstop dir_size_over_cap shares the blind spot, so an
+            # all-directories tree can even reach here unrefused). ``files`` still
+            # reports only the files counted, so the reported shape is unchanged.
+            if seen >= file_limit:
                 return DiskUsage(bytes=total, files=files, truncated=True)
+            seen += 1
             try:
                 stat = path.stat()
             except OSError:

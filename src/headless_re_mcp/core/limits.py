@@ -222,13 +222,21 @@ def dir_size_over_cap(directory: Path, cap: int) -> tuple[int, bool]:
     try:
         for child in directory.rglob("*"):
             try:
+                # Count every entry walked toward the ceiling, including
+                # directories, before the is_file() filter below. Incrementing
+                # ``seen`` only for files (as this once did) left an all-directories
+                # tree -- an empty-dir flood a hostile archive can generate, or a
+                # deep decode tree -- walking every entry with the ceiling never
+                # tripping, so the stat()-storm guard did not bound that shape at
+                # all. An empty-dir tree is ~0 bytes and stays under the byte cap
+                # honestly; the ceiling is what keeps the *walk* bounded either way.
+                seen += 1
+                if seen >= _TREE_SIZE_FILE_CEILING:
+                    return total, True
                 if not child.is_file():
                     continue
                 total += child.stat().st_size
                 if total > cap:
-                    return total, True
-                seen += 1
-                if seen >= _TREE_SIZE_FILE_CEILING:
                     return total, True
             except OSError:
                 continue

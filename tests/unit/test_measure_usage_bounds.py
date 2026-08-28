@@ -63,6 +63,26 @@ def test_a_file_that_cannot_be_stated_is_skipped_not_fatal(tmp_path: Path) -> No
     assert usage.truncated is False
 
 
+def test_a_directory_flood_still_trips_the_walk_ceiling(tmp_path: Path) -> None:
+    """A tree of directories must truncate too, not just a tree of files.
+
+    rglob yields directories as well as files, and a decode/unpack tree -- or a
+    hostile archive -- can be mostly, or entirely, empty directories. The ceiling
+    used to count only files, so such a tree walked to the very end without ever
+    tripping it, which is exactly the health-probe stall the cap exists to
+    prevent. Here every entry is a directory and none is a file, yet the walk must
+    stop at the entry ceiling and flag its answer a floor.
+    """
+    for index in range(10):
+        (tmp_path / f"d{index}").mkdir()
+    usage = measure_usage(tmp_path, file_limit=3)
+    assert usage.truncated is True
+    # No files were seen, but the walk still stopped early rather than visiting
+    # all ten directories -- and truncated keeps the zero honest as a floor.
+    assert usage.files == 0
+    assert usage.bytes == 0
+
+
 def test_an_empty_root_is_zero_and_complete(tmp_path: Path) -> None:
     usage = measure_usage(tmp_path)
     assert usage.files == 0
