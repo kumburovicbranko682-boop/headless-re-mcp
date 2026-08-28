@@ -117,12 +117,11 @@ def test_empty_export_list_is_no_edge() -> None:
 
 
 def test_named_re_export_carries_from() -> None:
-    (edge,) = _edges('export { Button, Icon as Glyph } from "./ui.js";')
-    assert edge["kind"] == "re_export"
-    assert edge["from"] == "./ui.js"
-    # Two names -> two edges; check the aliases came through.
-    names = {e["name"] for e in _edges('export { Button, Icon as Glyph } from "./ui.js";')}
-    assert names == {"Button", "Glyph"}
+    edges = _edges('export { Button, Icon as Glyph } from "./ui.js";')
+    assert all(e["kind"] == "re_export" for e in edges)
+    assert all(e["from"] == "./ui.js" for e in edges)
+    # Two names -> two edges; the `as` alias is what gets exposed.
+    assert {e["name"] for e in edges} == {"Button", "Glyph"}
 
 
 def test_star_re_export_has_no_name() -> None:

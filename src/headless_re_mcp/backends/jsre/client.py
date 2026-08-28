@@ -1050,12 +1050,12 @@ def _js_cjs_after_base(
         return []
     if c == "[":
         r = _js_skip_ws_comments(text, q + 1, n)
-        name, e = _js_read_specifier_literal(text, r, n)
-        if name is None:
+        key, e = _js_read_specifier_literal(text, r, n)
+        if key is None:
             return []
         e = _js_skip_ws_comments(text, e, n)
         if e < n and text[e] == "]" and _js_is_assignment(text, e + 1, n):
-            return [{"kind": "commonjs", "name": name}]
+            return [{"kind": "commonjs", "name": key}]
         return []
     if allow_default and _js_is_assignment(text, q, n):
         return [{"kind": "commonjs", "name": "default"}]
