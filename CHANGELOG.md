@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -85,6 +85,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   全部写效果；`GET` 回传 `mode`。切换立即写入本机配置，完全访问时会放行当前停着的批准卡片。
 - 未配置 autonomy 键时，加壳 PE 分析所需的 `state_change` 加相关 `file_write` 默认自动批准
   （patches / APK 改包除外）。
+
+### 新增（设备侦察）
+
+- **`device.packet_sockets`（只读）**：读 `/proc/net/packet`，列出 AF_PACKET 链路层套接字。
+  AF_PACKET 套接字直接收原始帧，绑定 ETH_P_ALL（协议 `0x0003`）的即在抓取全部流量——正是
+  tcpdump/tshark 与抓包类恶意软件的特征。每条回 `type`/`type_name`、`protocol`/`protocol_hex`、
+  `capture_all`（是否 ETH_P_ALL）、`iface_index`、`uid`、`inode`，配合 `count`/`has_more`，页满不
+  被误读为全集。诚实契约：Android Q+ SELinux 常拒绝 shell 访问 `/proc/net`、内核未开 CONFIG_PACKET
+  则无此文件，两者回 `available: false` 并附原因，而非伪装成空成功；文件可读但无套接字则
+  `available: true` 且空列表；adb 主机错误（设备离线）按失败上报。
 
 ### 新增（x64dbg 用户态反检测）
 

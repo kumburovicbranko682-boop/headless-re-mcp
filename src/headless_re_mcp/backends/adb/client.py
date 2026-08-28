@@ -41,6 +41,19 @@ _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
+# /proc/net/packet lists every AF_PACKET socket system-wide; bound the page.
+_MAX_PACKET_SOCKETS = 512
+# AF_PACKET socket type numbers as reported in /proc/net/packet's Type column.
+_PACKET_SOCKET_TYPES = {
+    1: "stream",
+    2: "datagram",
+    3: "raw",
+    4: "rdm",
+    5: "seqpacket",
+}
+# The Proto column holds an ethertype; ETH_P_ALL (0x0003) means the socket
+# receives every frame on its interface -- the signature of a packet sniffer.
+_ETH_P_ALL = 0x0003
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -476,6 +489,87 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
+
+    def packet_sockets(self, serial: str, *, limit: int = 500) -> JsonObject:
+        """List AF_PACKET sockets from /proc/net/packet.
+
+        An AF_PACKET socket receives raw link-layer frames; one bound to
+        ETH_P_ALL (protocol 0x0003) is capturing every frame on its interface,
+        which is what tcpdump/tshark and packet-sniffing malware do. Each row
+        reports the socket type, ethertype (with a ``capture_all`` flag for
+        ETH_P_ALL), interface index, owning uid and inode, so an analyst can
+        tell who is sniffing.
+
+        Honesty contract: an adb host error (offline device) is a
+        ``backend_error``. On Android Q+ SELinux commonly denies the shell user
+        ``/proc/net`` access, and a kernel without CONFIG_PACKET has no file at
+        all; both answer ``No such file`` or ``Permission denied``, reported as
+        ``available: false`` with the reason rather than an empty success or a
+        fabricated failure. A readable file with only its header is
+        ``available: true`` with an empty list -- no AF_PACKET sockets are open.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_PACKET_SOCKETS))
+        text = _device_shell(dev, "cat /proc/net/packet")
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "reading /proc/net/packet failed", output=text[:800])
+        lowered = text.lower()
+        if any(marker in lowered for marker in ("no such file", "permission denied")):
+            return {
+                "available": False,
+                "reason": text.strip()[:200],
+                "sockets": [],
+                "count": 0,
+                "has_more": False,
+            }
+        header_seen = False
+        sockets: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            if not header_seen:
+                # Header row: sk RefCnt Type Proto Iface R Rmem User Inode
+                if fields[0].lower() == "sk" and "inode" in line.lower():
+                    header_seen = True
+                continue
+            # Data row: pointer RefCnt Type Proto Iface R Rmem User Inode
+            if len(fields) < 9:
+                continue
+            try:
+                type_num = int(fields[2])
+                proto = int(fields[3], 16)
+                iface_index = int(fields[4])
+                uid = int(fields[7])
+                inode = int(fields[8])
+            except ValueError:
+                continue
+            if len(sockets) >= capped:
+                has_more = True
+                break
+            sockets.append(
+                {
+                    "type": type_num,
+                    "type_name": _PACKET_SOCKET_TYPES.get(type_num, str(type_num)),
+                    "protocol": proto,
+                    "protocol_hex": f"0x{proto:04x}",
+                    "capture_all": proto == _ETH_P_ALL,
+                    "iface_index": iface_index,
+                    "uid": uid,
+                    "inode": inode,
+                }
+            )
+        if not header_seen:
+            raise AdbError(
+                "backend_error", "unrecognized /proc/net/packet output", output=text[:800]
+            )
+        return {
+            "available": True,
+            "sockets": sockets,
+            "count": len(sockets),
+            "has_more": has_more,
+        }
 
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
         dev = self._device(serial)

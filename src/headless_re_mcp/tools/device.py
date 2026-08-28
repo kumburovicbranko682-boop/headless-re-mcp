@@ -58,6 +58,26 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_info(serial))
 
+    @tools.tool(name="device.packet_sockets")
+    def device_packet_sockets(
+        serial: str, limit: Annotated[int, Field(ge=1, le=512)] = 500
+    ) -> dict[str, Any]:
+        """List AF_PACKET (link-layer) sockets from /proc/net/packet.
+
+        An AF_PACKET socket reads raw frames off an interface; one bound to
+        ETH_P_ALL (protocol 0x0003) is capturing everything, which is what
+        tcpdump/tshark and sniffing malware do. Answers with available, sockets
+        (each with type, type_name, protocol, protocol_hex, capture_all,
+        iface_index, uid, inode), count and has_more so a filled page is not
+        read as the whole set.
+
+        available is false with a reason when the device denies /proc/net access
+        (Android Q+ SELinux) or lacks CONFIG_PACKET -- not an empty success. A
+        readable file with no sockets is available true with an empty list. An
+        adb host error (offline device) is a failure, not an empty set.
+        """
+        return _dump(analysis.device_packet_sockets(serial, limit=limit))
+
     @tools.tool(name="device.properties")
     def device_properties(
         serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500
