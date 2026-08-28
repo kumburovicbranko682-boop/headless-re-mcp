@@ -5,6 +5,14 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（补齐 frida.java.classes 的 scan_capped 分支覆盖）
+
+- 前面给 `frida.java.classes` 加分页时引入的 `scan_capped` 分支（目标侧枚举命中 5 万类上限、`total` 只是下界）
+  一直没有测试覆盖。新增 `test_frida_java_classes_flags_scan_capped_when_the_target_ceiling_is_hit`：用一个
+  返回 `capped: True` 的探针桩驱动 `java_enumerate`，断言 `scan_capped is True`、`total` 为下界、`has_more`
+  为真；同时给正常（未命中上限）路径的既有测试补一句 `assert "scan_capped" not in payload`，锁定该标志只在
+  真的命中上限时才出现，避免普通枚举把 `total` 误读成下界。纯测试改动，无源码变更。
+
 ### 修复（proxy.replay 不写时间线，唯一一个主动向目标重放请求却不留审计痕迹的代理操作）
 
 - 与 web.navigate / frida.memory.read 同一类缺陷，收尾会话级服务（frida/web/proxy）的时间线审计一致性：

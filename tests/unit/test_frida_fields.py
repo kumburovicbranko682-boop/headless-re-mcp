@@ -398,6 +398,9 @@ def test_frida_java_classes_puts_the_list_in_classes_and_says_when_it_stopped() 
     assert payload["offset"] == 0
     assert len(payload["classes"]) == 10
     assert payload["has_more"] is True
+    # The 50k-ceiling flag is present only when the target actually capped its
+    # scan; an ordinary enumeration must not carry it, or total reads as a floor.
+    assert "scan_capped" not in payload
     doc = _tool_docstring("frida.java.classes")
     assert "Answers with classes" in doc
     assert "has_more" in doc
@@ -436,6 +439,52 @@ def test_frida_java_classes_offset_pages_past_a_filled_limit() -> None:
     assert negative["offset"] == 0
     assert negative["classes"] == [f"c{index:02d}" for index in range(0, 10)]
     assert negative["has_more"] is True
+
+
+def test_frida_java_classes_flags_scan_capped_when_the_target_ceiling_is_hit() -> None:
+    """scan_capped marks total as a floor when the 50k enumeration ceiling hit.
+
+    The target-side script stops enumerating loaded classes at a 50k ceiling to
+    bound the array it materializes, and sets capped so the client can report
+    that total is a floor -- classes past it were never scanned, so has_more True
+    must not be read as "exactly total minus count remain". The flag is surfaced
+    only when the ceiling was actually hit (the ordinary path omits it, asserted
+    above); this scan_capped branch of java_enumerate had no test.
+    """
+
+    class _CappedApi:
+        def classes(self, name_filter: str, offset: int = 0, limit: int = 200) -> dict[str, Any]:
+            window = [f"c{index:05d}" for index in range(offset, offset + limit)]
+            return {"classes": window, "total": 50000, "capped": True}
+
+    class _CappedScript:
+        exports_sync = _CappedApi()
+
+        def load(self) -> None:
+            return None
+
+    class _CappedSession:
+        def create_script(self, source: str) -> _CappedScript:
+            return _CappedScript()
+
+        def detach(self) -> None:
+            return None
+
+    class _CappedDevice:
+        def attach(self, pid: int) -> _CappedSession:
+            return _CappedSession()
+
+    client = FridaClient()
+    client._available = True
+    client._frida = object()
+    client._resolve_device = lambda device_id: _CappedDevice()  # type: ignore[method-assign]
+
+    payload = client.java_enumerate(None, 1, allowed_pids={1}, mode="classes", limit=10)
+    assert payload["scan_capped"] is True
+    assert payload["total"] == 50000
+    assert payload["count"] == 10
+    assert payload["has_more"] is True
+
 
 def test_frida_java_methods_puts_the_list_in_methods_and_says_when_it_stopped() -> None:
     """The catalog never named the payload.
