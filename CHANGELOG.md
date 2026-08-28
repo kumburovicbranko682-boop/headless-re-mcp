@@ -68,6 +68,8 @@ Android 线的包名校验现在跨 adb 与 frida 两后端锁定一致。`devic
 
 顺带修正 `test_r2_address_mapping.py::test_function_list_is_items_not_functions` 里一处随 `r2.functions` docstring 改写而失配的断言：旧 docstring 写「There is no functions field」，改成与兄弟工具一致的「There is no functions, truncated or has_more field」后，「no functions field」不再是连续子串（兄弟工具的「no strings/imports/exports field」同样不是），该用例遂将断言放宽为 `"no functions" in described`——被固定的诚实语义（不存在 functions 字段）不变。
 
+给所有非 PE CLI 后端共用的 `run_bounded` 补上「意外异常也不漏杀子进程」这条收尾契约的钉子。jadx/apktool/Ghidra/webcrack/r2 都经 `run_bounded` 起进程，它的每条正常出口都在返回前停掉或回收了进程：干净退出走排空后返回、超时与调用方取消杀整棵树、失败且孤儿仍握着管道时也杀。但介于「spawn 成功」与「进入 wait 循环」之间的收尾动作——把子进程钉进服务的 job/进程组（`assign_to_process_group`）、起两个读取线程——本身可能抛异常；一旦在那里抛出，启动的 launcher（jadx/apktool/Ghidra 起的 JVM、webcrack 起的 node、r2 本身）就会在没有任何代码再去停它的情况下继续跑，正是整个模块要防的「占着核、锁着样本」泄漏，只是从另一扇门进来。函数末尾 `finally` 里的兜底扫尾（`if process.poll() is None: terminate_process_tree(process)`）就是这道保险，此前是 `bounded_run.py` 唯一没被覆盖的行——既有各用例都走正常出口，没人从「spawn 之后的意外」这条路进来验证它。新增 `test_bounded_run_surprise_sweep.py`：让 `assign_to_process_group` 在子进程刚 spawn 出来的下一刻抛异常（此时超时/取消/失败孤儿三条分支都还没跑，能停子进程的只剩这道扫尾），起一个 `sleep(30)` 的真实子进程，断言异常照常上抛、扫尾确实调了 `terminate_process_tree`（且只此一次），并断言子进程在 `run_bounded` 退栈后确已死亡而非仅被发信号。已验证非空洞——把该 `finally` 的 `terminate_process_tree` 一步禁用后，用例即报「the finally sweep did not terminate the spawned child」并因子进程存活而转红。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
