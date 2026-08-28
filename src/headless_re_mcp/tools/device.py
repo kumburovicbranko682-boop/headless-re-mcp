@@ -58,6 +58,28 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.device_info(serial))
 
+    @tools.tool(name="device.netlink")
+    def device_netlink(
+        serial: str, limit: Annotated[int, Field(ge=1, le=512)] = 500
+    ) -> dict[str, Any]:
+        """List netlink sockets from /proc/net/netlink.
+
+        Netlink carries kernel<->userspace events: routing/link updates
+        (route), device hotplug (kobject_uevent), socket enumeration
+        (sock_diag), audit and netfilter telemetry. A nonzero groups mask means
+        the process subscribes to a multicast event stream, which monitors -- and
+        malware watching for USB/network changes -- do. Answers with available,
+        sockets (each with protocol, protocol_name, portid, groups, groups_hex,
+        rmem, wmem, drops, inode), count and has_more so a filled page is not
+        read as the whole set.
+
+        available is false with a reason when the device denies /proc/net access
+        (Android Q+ SELinux) or the file is absent -- not an empty success. A
+        readable file is available true. An adb host error (offline device) is a
+        failure, not an empty set.
+        """
+        return _dump(analysis.device_netlink(serial, limit=limit))
+
     @tools.tool(name="device.properties")
     def device_properties(
         serial: str, limit: Annotated[int, Field(ge=1, le=2000)] = 500

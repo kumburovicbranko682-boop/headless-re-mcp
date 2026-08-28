@@ -41,6 +41,33 @@ _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
 _MAX_DEVICES = 64
+# /proc/net/netlink lists every netlink socket system-wide; bound the page.
+_MAX_NETLINK_SOCKETS = 512
+# Netlink protocol families (linux/netlink.h) named for the "Eth" column, which
+# actually holds the netlink protocol number, not an ethertype.
+_NETLINK_PROTOCOLS = {
+    0: "route",
+    2: "usersock",
+    3: "firewall",
+    4: "sock_diag",
+    5: "nflog",
+    6: "xfrm",
+    7: "selinux",
+    8: "iscsi",
+    9: "audit",
+    10: "fib_lookup",
+    11: "connector",
+    12: "netfilter",
+    13: "ip6_fw",
+    14: "dnrtmsg",
+    15: "kobject_uevent",
+    16: "generic",
+    18: "scsitransport",
+    19: "ecryptfs",
+    20: "rdma",
+    21: "crypto",
+    22: "smc",
+}
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -476,6 +503,93 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
+
+    def netlink(self, serial: str, *, limit: int = 500) -> JsonObject:
+        """List netlink sockets from /proc/net/netlink.
+
+        Netlink is how userspace talks to the kernel: NETLINK_ROUTE carries
+        routing/link updates, NETLINK_KOBJECT_UEVENT carries device hotplug
+        events, NETLINK_SOCK_DIAG enumerates other sockets, NETLINK_AUDIT and
+        NETLINK_NETFILTER carry security telemetry. A process bound to a
+        multicast group (nonzero ``groups``) is subscribing to a stream of
+        kernel events, which is what monitors -- and some malware watching for
+        USB or network changes -- do. Each row reports the protocol family (with
+        ``protocol_name``), the owning ``portid`` (the process's netlink id,
+        usually its pid; 0 is a kernel socket), the ``groups`` multicast mask,
+        receive/send queue bytes, dropped messages, and inode.
+
+        Honesty contract: an adb host error (offline device) is a
+        ``backend_error``. Android Q+ SELinux commonly denies the shell user
+        ``/proc/net`` access, answering ``Permission denied`` (or ``No such
+        file``), reported as ``available: false`` with the reason rather than an
+        empty success. A readable file is ``available: true``; netlink normally
+        has kernel sockets, but a header-only reply is still an honest empty.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_NETLINK_SOCKETS))
+        text = _device_shell(dev, "cat /proc/net/netlink")
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "reading /proc/net/netlink failed", output=text[:800])
+        lowered = text.lower()
+        if any(marker in lowered for marker in ("no such file", "permission denied")):
+            return {
+                "available": False,
+                "reason": text.strip()[:200],
+                "sockets": [],
+                "count": 0,
+                "has_more": False,
+            }
+        header_seen = False
+        sockets: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            if not header_seen:
+                # Header row: sk Eth Pid Groups Rmem Wmem Dump Locks Drops Inode
+                if fields[0].lower() == "sk" and "inode" in line.lower():
+                    header_seen = True
+                continue
+            # Data row: pointer Eth Pid Groups Rmem Wmem Dump Locks Drops Inode
+            if len(fields) < 10:
+                continue
+            try:
+                protocol = int(fields[1])
+                portid = int(fields[2])
+                groups = int(fields[3], 16)
+                rmem = int(fields[4])
+                wmem = int(fields[5])
+                drops = int(fields[8])
+                inode = int(fields[9])
+            except ValueError:
+                continue
+            if len(sockets) >= capped:
+                has_more = True
+                break
+            sockets.append(
+                {
+                    "protocol": protocol,
+                    "protocol_name": _NETLINK_PROTOCOLS.get(protocol, str(protocol)),
+                    "portid": portid,
+                    "groups": groups,
+                    "groups_hex": f"0x{groups:08x}",
+                    "rmem": rmem,
+                    "wmem": wmem,
+                    "drops": drops,
+                    "inode": inode,
+                }
+            )
+        if not header_seen:
+            raise AdbError(
+                "backend_error", "unrecognized /proc/net/netlink output", output=text[:800]
+            )
+        return {
+            "available": True,
+            "sockets": sockets,
+            "count": len(sockets),
+            "has_more": has_more,
+        }
 
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
         dev = self._device(serial)
