@@ -50,6 +50,25 @@ _DEBUG_EVENT_BUDGET_PER_BATCH = 64
 _REPORT_INLINE_MAX_BYTES = 64 * 1024
 
 
+def _page_int(value: object, name: str) -> int:
+    """Coerce a caller pagination argument to int, naming a bad one clearly.
+
+    Every meta listing clamps its page in the store with
+    ``max(1, min(int(limit), N))`` / ``max(0, int(offset))``. On the MCP path
+    pydantic guarantees ints, but the agent transport invokes the handler
+    straight from model arguments, so a JSON ``null`` or object reached
+    ``int()`` and raised TypeError -- which _failure files as an internal_error
+    incident -- while a non-numeric string already raised ValueError and mapped
+    to the invalid_request it should be. Route both through one ValueError so a
+    malformed offset/limit is always a clean parameter error, and keep taking
+    the ints, floats and numeric strings ``int()`` already accepted.
+    """
+    try:
+        return int(cast(Any, value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
 def _breakpoint_binding_address(workflow_data: Mapping[str, Any], intent_id: str) -> int:
     if not isinstance(intent_id, str) or not intent_id.strip():
         raise ValueError("breakpoint intent_id must not be blank")
@@ -691,8 +710,8 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _success(
                 self.services.artifacts.list_artifacts(
                     session_id,
-                    offset=offset,
-                    limit=limit,
+                    offset=_page_int(offset, "offset"),
+                    limit=_page_int(limit, "limit"),
                 )
             )
         except BaseException as exc:
@@ -730,8 +749,8 @@ class ExtAnalysisMixin(UiDriveMixin):
             )
         if not path.is_file():
             return Result(ok=False, error=RpcError(code="not_found", message="artifact file missing"))
-        limit = max(1, min(int(limit), 256 * 1024))
-        offset = max(0, int(offset))
+        limit = max(1, min(_page_int(limit, "limit"), 256 * 1024))
+        offset = max(0, _page_int(offset, "offset"))
         # Seek rather than read-then-slice. Artifacts here are process dumps and
         # traces: measured on a 200 MB one, twenty paginated 256 KiB reads spiked
         # to 243 MB of RSS against a 42 MB baseline and touched 4 GB to serve
@@ -767,8 +786,8 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _success(
                 self.services.artifacts.list_timeline(
                     session_id,
-                    offset=offset,
-                    limit=limit,
+                    offset=_page_int(offset, "offset"),
+                    limit=_page_int(limit, "limit"),
                 )
             )
         except BaseException as exc:
@@ -777,7 +796,7 @@ class ExtAnalysisMixin(UiDriveMixin):
     def sessions_unclean(self, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
             items, total = _ensure_repository(self).list_unclean_sessions(
-                offset=offset, limit=limit
+                offset=_page_int(offset, "offset"), limit=_page_int(limit, "limit")
             )
         except BaseException as exc:
             return _failure(exc)
@@ -837,8 +856,8 @@ class ExtAnalysisMixin(UiDriveMixin):
             return _success(
                 self.services.artifacts.list_audit(
                     session_id,
-                    offset=offset,
-                    limit=limit,
+                    offset=_page_int(offset, "offset"),
+                    limit=_page_int(limit, "limit"),
                 )
             )
         except BaseException as exc:

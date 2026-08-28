@@ -505,6 +505,81 @@ def test_audit_list_maps_a_store_failure(tmp_path: Path) -> None:
     assert result.error.code == "internal_error"
 
 
+# --- meta pagination arguments are coerced at the boundary -------------------
+
+# None/{}/[] used to reach int() in the store and raise TypeError, which
+# _failure files as an internal_error incident; "abc"/"1.5" already raised
+# ValueError. Both must now surface as the invalid_request a bad page argument
+# is, on the agent transport that hands the handler raw model arguments.
+_NON_INTEGER_PAGES = [None, {}, [], "abc", "1.5"]
+
+
+@pytest.mark.parametrize("bad", _NON_INTEGER_PAGES)
+def test_artifacts_list_rejects_a_non_integer_limit(tmp_path: Path, bad: object) -> None:
+    result = _Service(tmp_path).artifacts_list("sid", limit=cast(int, bad))
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize("bad", _NON_INTEGER_PAGES)
+def test_artifacts_list_rejects_a_non_integer_offset(tmp_path: Path, bad: object) -> None:
+    result = _Service(tmp_path).artifacts_list("sid", offset=cast(int, bad))
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize("bad", _NON_INTEGER_PAGES)
+def test_artifacts_read_rejects_a_non_integer_limit(tmp_path: Path, bad: object) -> None:
+    service = _Service(tmp_path)
+    blob = tmp_path / "dump.bin"
+    blob.write_bytes(bytes(range(16)))
+    recorded = _register(service, blob)
+
+    result = service.artifacts_read(str(recorded["id"]), limit=cast(int, bad))
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize("bad", _NON_INTEGER_PAGES)
+def test_timeline_list_rejects_a_non_integer_limit(tmp_path: Path, bad: object) -> None:
+    result = _Service(tmp_path).timeline_list("sid", limit=cast(int, bad))
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize("bad", _NON_INTEGER_PAGES)
+def test_audit_list_rejects_a_non_integer_limit(tmp_path: Path, bad: object) -> None:
+    result = _Service(tmp_path).audit_list("sid", limit=cast(int, bad))
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize("bad", _NON_INTEGER_PAGES)
+def test_sessions_unclean_rejects_a_non_integer_limit(tmp_path: Path, bad: object) -> None:
+    result = _Service(tmp_path).sessions_unclean(limit=cast(int, bad))
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize("value", ["5", 5.0, 5.9])
+def test_meta_paging_still_takes_what_int_accepted(tmp_path: Path, value: object) -> None:
+    service = _Service(tmp_path)
+    blob = tmp_path / "a.bin"
+    blob.write_bytes(b"x" * 8)
+    _register(service, blob)
+
+    result = service.artifacts_list("sid", limit=cast(int, value))
+
+    assert result.ok and result.data is not None
+    assert result.data["limit"] == 5
+
+
 # --- knowledge ----------------------------------------------------------------
 
 
