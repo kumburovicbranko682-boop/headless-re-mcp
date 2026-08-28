@@ -620,6 +620,18 @@ _N_SECT = 0x0E
 _N_UNDF = 0x00
 _MACHO_MAX_NSYMS_SCAN = 200_000
 _MACHO_MAX_EXPORTS = 8192
+# The load-time constructor surface, the Mach-O counterpart of ELF's
+# DT_INIT_ARRAY: dyld calls every pointer in a section typed
+# S_MOD_INIT_FUNC_POINTERS before the entry point (and the term pointers
+# after), and newer chained-fixup images carry 32-bit offsets in an
+# S_INIT_FUNC_OFFSETS section instead. The section type lives in the low byte
+# of the section flags; only the declared sizes are read -- no pointer is
+# followed -- and the derived counts are clamped like the ELF ones.
+_S_SECTION_TYPE_MASK = 0xFF
+_S_MOD_INIT_FUNC_POINTERS = 0x09
+_S_MOD_TERM_FUNC_POINTERS = 0x0A
+_S_INIT_FUNC_OFFSETS = 0x16
+_MACHO_MAX_INIT_FUNCS = 8192
 # The header window read for identity facts is small, but a real image's load
 # commands can run past it, so the command region is read in full from the file
 # (bounded) rather than truncated at the window, the way the ELF reader seeks.
@@ -3295,6 +3307,11 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         # FairPlay: an LC_ENCRYPTION_INFO with cryptid != 0 means the code is
         # ciphertext on disk; no command at all means not encrypted.
         facts["encrypted"] = bool(lc["cryptid"])
+        # The load-time constructor surface (S_MOD_INIT_FUNC_POINTERS and
+        # friends), the Mach-O counterpart of the ELF init_funcs fact: how
+        # many entries dyld runs before the entry point and after exit.
+        # Always present: "runs nothing before main" is a real answer.
+        facts["init_funcs"] = {"mod_init": lc["mod_init"], "mod_term": lc["mod_term"]}
         # Signed at all -- and by whom. macOS (and iOS unconditionally) refuse
         # unsigned code, so the macOS analogue of the APK signer facts starts
         # with whether an LC_CODE_SIGNATURE exists, then names the signing
@@ -3543,11 +3560,13 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
     (LC_ENCRYPTION_INFO's crypt id, or None when the image carries none),
     ``code_signature`` (LC_CODE_SIGNATURE's (dataoff, datasize) locating the
     embedded signature SuperBlob, or None when unsigned),
-    ``rpaths`` (the LC_RPATH search paths, the DT_RPATH/DT_RUNPATH analogue)
-    and ``platform``/``min_os``/``sdk`` (LC_BUILD_VERSION, or the older
-    LC_VERSION_MIN_* whose command kind names the platform). Bounded by the
-    command count and the region already sized; a command whose body runs past
-    that region stops the walk.
+    ``rpaths`` (the LC_RPATH search paths, the DT_RPATH/DT_RUNPATH analogue),
+    ``platform``/``min_os``/``sdk`` (LC_BUILD_VERSION, or the older
+    LC_VERSION_MIN_* whose command kind names the platform) and
+    ``mod_init``/``mod_term`` (the entry counts of the init/term pointer
+    sections dyld runs around the entry point, off the segments' section
+    headers). Bounded by the command count and the region already sized; a
+    command whose body runs past that region stops the walk.
     """
     result: dict[str, Any] = {
         "dylibs": None,
@@ -3563,6 +3582,10 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
         "platform": None,
         "min_os": None,
         "sdk": None,
+        # The load-time constructor surface off the segments' section headers:
+        # how many init/term entries dyld runs around the entry point.
+        "mod_init": 0,
+        "mod_term": 0,
     }
     if ncmds <= 0 or ncmds > _MACHO_MAX_LOAD_CMDS:
         return result
@@ -3652,6 +3675,18 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
                     int.from_bytes(cmds[pos + 48 : pos + 56], order),  # type: ignore[arg-type]
                 )
             )
+            # nsects section_64 headers (80 bytes: size u64 at +40, flags u32
+            # at +64) follow the 72-byte segment header; the walk is bounded
+            # by the command's own size, so a lying nsects reads nothing.
+            if cmdsize >= 72:
+                nsects = int.from_bytes(cmds[pos + 64 : pos + 68], order)  # type: ignore[arg-type]
+                for i in range(nsects):
+                    sect = pos + 72 + 80 * i
+                    if sect + 80 > pos + cmdsize:
+                        break
+                    size = int.from_bytes(cmds[sect + 40 : sect + 48], order)  # type: ignore[arg-type]
+                    flags = int.from_bytes(cmds[sect + 64 : sect + 68], order)  # type: ignore[arg-type]
+                    _macho_tally_init_section(result, flags, size, 8)
         elif cmd == _LC_SEGMENT and cmdsize >= 40:
             # segname(16) then vmaddr/vmsize/fileoff/filesize as u32s.
             segments.append(
@@ -3661,8 +3696,42 @@ def _macho_load_commands(cmds: bytes, order: str, ncmds: int) -> dict[str, Any]:
                     int.from_bytes(cmds[pos + 36 : pos + 40], order),  # type: ignore[arg-type]
                 )
             )
+            # nsects section headers (68 bytes: size u32 at +36, flags u32 at
+            # +56) follow the 56-byte segment header, bounded the same way.
+            if cmdsize >= 56:
+                nsects = int.from_bytes(cmds[pos + 48 : pos + 52], order)  # type: ignore[arg-type]
+                for i in range(nsects):
+                    sect = pos + 56 + 68 * i
+                    if sect + 68 > pos + cmdsize:
+                        break
+                    size = int.from_bytes(cmds[sect + 36 : sect + 40], order)  # type: ignore[arg-type]
+                    flags = int.from_bytes(cmds[sect + 56 : sect + 60], order)  # type: ignore[arg-type]
+                    _macho_tally_init_section(result, flags, size, 4)
         pos += cmdsize
     return result
+
+
+def _macho_tally_init_section(
+    result: dict[str, Any], flags: int, size: int, ptr_width: int
+) -> None:
+    """Count one section's contribution to the load-time init/term surface.
+
+    Init and term pointer sections hold pointer-width entries; the newer
+    S_INIT_FUNC_OFFSETS type holds 32-bit offsets regardless of pointer width.
+    Counts are clamped so a section header lying about its size yields a
+    bounded number rather than a fantastical one.
+    """
+    section_type = flags & _S_SECTION_TYPE_MASK
+    if section_type == _S_MOD_INIT_FUNC_POINTERS:
+        key, width = "mod_init", ptr_width
+    elif section_type == _S_MOD_TERM_FUNC_POINTERS:
+        key, width = "mod_term", ptr_width
+    elif section_type == _S_INIT_FUNC_OFFSETS:
+        key, width = "mod_init", 4
+    else:
+        return
+    total = result[key] + max(size, 0) // width
+    result[key] = min(total, _MACHO_MAX_INIT_FUNCS)
 
 
 def _macho_entry(entryoff: int | None, segments: list[tuple[int, int, int]]) -> int | None:

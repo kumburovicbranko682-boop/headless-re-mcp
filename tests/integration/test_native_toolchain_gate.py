@@ -24,11 +24,14 @@ Two triage themes the other native gates cannot cover from system binaries:
   A library linked with a version script carries the Verdef chain readelf -V
   renders as its "Version definition section", which the reader must match node
   for node (BASE flag and inherited parents included).
-- The load-time constructor surface (ELF DT_INIT/DT_INIT_ARRAY): the code the
-  loader runs before the entry point -- where implants and anti-debug hooks
-  hide, since they fire before any breakpoint on main. gcc builds a library
-  with two real constructors and a destructor, and readelf -d must agree on
-  the INIT/FINI presence and every ARRAYSZ-derived count.
+- The load-time constructor surface (ELF DT_INIT/DT_INIT_ARRAY, Mach-O
+  S_MOD_INIT_FUNC_POINTERS sections): the code the loader runs before the
+  entry point -- where implants and anti-debug hooks hide, since they fire
+  before any breakpoint on main. gcc builds a library with two real
+  constructors and a destructor, and readelf -d must agree on the INIT/FINI
+  presence and every ARRAYSZ-derived count; the Mach-O fixture's
+  __mod_init_func/__mod_term_func pointers are re-counted from llvm-objdump's
+  section decode.
 - The symbol surface (ELF .dynsym, Mach-O LC_SYMTAB), both sides of one split:
   exports (the object's public API, the raw-symbol complement to DT_VERDEF)
   and imports (the undefined symbols the loader must resolve -- capability at
@@ -132,6 +135,36 @@ _LLVM_BUILD_VERSION_RE = re.compile(
     r"\s*sdk (\S+)\n"
     r"\s*minos (\S+)"
 )
+
+
+def _llvm_macho_sections(objdump: str, binary: Path) -> list[dict[str, Any]]:
+    """Each section's fields as llvm-objdump --macho --all-headers prints them.
+
+    The otool-style output renders one block per section ("sectname __text" /
+    "size 0x..." / "type S_REGULAR" lines); a plain line walk collects them
+    into dicts, so the caller can re-derive any section-typed fact from
+    LLVM's independent (and strict) decode.
+    """
+    result = subprocess.run(
+        [objdump, "--macho", "--all-headers", str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    sections: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        key, value = parts
+        if key == "sectname":
+            sections.append({"sectname": value})
+        elif sections and key in ("segname", "type"):
+            sections[-1][key] = value
+        elif sections and key == "size":
+            sections[-1]["size"] = int(value, 16)
+    return sections
 
 _PROBE_C = "int main(void) { return 0; }\n"
 # $ORIGIN exercises the loader token passthrough; the reader must not expand it.
@@ -666,6 +699,41 @@ def test_macho_symbol_surface_agrees_with_llvm_nm() -> None:
         assert set(native["exported_symbols"]) == llvm_exports == {"_main"}
         expected_imports = {"___stack_chk_fail", "___stack_chk_guard"}
         assert set(native["imported_symbols"]) == llvm_imports == expected_imports
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_macho_init_surface_agrees_with_llvm_objdump() -> None:
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — Mach-O init gate not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    # Re-derive the constructor surface from LLVM's independent section
+    # decode: the typed sections' sizes over their entry widths, the same
+    # arithmetic the reader applies to the same headers.
+    sections = _llvm_macho_sections(objdump, _MACHO_FIXTURE)
+    assert sections, "llvm-objdump printed no sections"
+    truth_init = truth_term = 0
+    for sect in sections:
+        if sect.get("type") == "S_MOD_INIT_FUNC_POINTERS":
+            truth_init += sect["size"] // 8
+        elif sect.get("type") == "S_MOD_TERM_FUNC_POINTERS":
+            truth_term += sect["size"] // 8
+        elif sect.get("type") == "S_INIT_FUNC_OFFSETS":
+            truth_init += sect["size"] // 4
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, _MACHO_FIXTURE)
+        # The tool-free section walk and llvm-objdump count the same load-time
+        # surface: the fixture's one constructor and one destructor pointer.
+        assert native["init_funcs"] == {"mod_init": truth_init, "mod_term": truth_term}
+        assert native["init_funcs"] == {"mod_init": 1, "mod_term": 1}
     finally:
         if session_id is not None:
             service.close_session(session_id)

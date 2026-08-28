@@ -104,7 +104,7 @@ def test_native_macho_analyzes_through_ghidra() -> None:
         assert native["interpreter"] == "/usr/lib/dyld"
         assert native["dylibs"] == ["/usr/lib/libSystem.B.dylib"]
         # LC_MAIN's offset mapped through __TEXT: the fixture's known entry.
-        assert native["entry"] == 0x100000358
+        assert native["entry"] == 0x100000440
         session_id = str(session["id"])
 
         functions = service.ghidra_functions(session_id, limit=64, timeout=240.0)

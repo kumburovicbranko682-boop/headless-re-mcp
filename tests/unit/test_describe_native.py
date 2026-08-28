@@ -250,6 +250,49 @@ def _lc_segment32(vmaddr: int, fileoff: int, filesize: int) -> bytes:
     return bytes(cmd)
 
 
+def _lc_segment64_with_sections(
+    sections: list[tuple[int, int]], *, nsects: int | None = None
+) -> bytes:
+    """An LC_SEGMENT_64 whose section_64 headers carry the given (flags, size).
+
+    Only the fields the init walk reads (the u64 size and the u32 flags whose
+    low byte is the section type) are populated; names and offsets stay zero,
+    which the reader must not care about. ``nsects`` overrides the declared
+    section count for the lying-count case.
+    """
+    total = 72 + 80 * len(sections)
+    cmd = bytearray(72)
+    cmd[0:4] = (0x19).to_bytes(4, "little")  # LC_SEGMENT_64
+    cmd[4:8] = total.to_bytes(4, "little")
+    cmd[8:24] = b"__DATA".ljust(16, b"\x00")
+    declared = nsects if nsects is not None else len(sections)
+    cmd[64:68] = declared.to_bytes(4, "little")
+    body = bytearray()
+    for flags, size in sections:
+        sect = bytearray(80)
+        sect[40:48] = size.to_bytes(8, "little")
+        sect[64:68] = flags.to_bytes(4, "little")
+        body += sect
+    return bytes(cmd) + bytes(body)
+
+
+def _lc_segment32_with_sections(sections: list[tuple[int, int]]) -> bytes:
+    """The 32-bit twin: 68-byte section headers with u32 sizes at +36."""
+    total = 56 + 68 * len(sections)
+    cmd = bytearray(56)
+    cmd[0:4] = (0x01).to_bytes(4, "little")  # LC_SEGMENT
+    cmd[4:8] = total.to_bytes(4, "little")
+    cmd[8:24] = b"__DATA".ljust(16, b"\x00")
+    cmd[48:52] = len(sections).to_bytes(4, "little")
+    body = bytearray()
+    for flags, size in sections:
+        sect = bytearray(68)
+        sect[36:40] = size.to_bytes(4, "little")
+        sect[56:60] = flags.to_bytes(4, "little")
+        body += sect
+    return bytes(cmd) + bytes(body)
+
+
 def _macho32_full(filetype: int, flags: int, load_cmds: bytes = b"", ncmds: int = 0) -> bytes:
     # 32-bit little-endian mach_header (28 bytes, no reserved field).
     return (
@@ -1716,12 +1759,16 @@ def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     if not fixture.is_file():
         pytest.skip(f"fixture missing: {fixture}")
     facts = describe_native(fixture)["native"]
-    assert facts["entry"] == 0x100000358
+    assert facts["entry"] == 0x100000440
     # Its build posture, cross-checked against radare2 by the r2 gate: NX on,
     # stack-protector imports present, no FairPlay encryption.
     assert facts["nx"] is True
     assert facts["canary"] is True
     assert facts["encrypted"] is False
+    # The load-time constructor surface: the __DATA segment carries one
+    # __mod_init_func and one __mod_term_func pointer, whose section types
+    # llvm-objdump independently confirms in the toolchain gate.
+    assert facts["init_funcs"] == {"mod_init": 1, "mod_term": 1}
     # The one symbol the fixture defines externally (_main); the stack_chk pair
     # are undefined imports on the other side of the split. The toolchain gate
     # cross-checks both sets against llvm-nm.
@@ -1739,6 +1786,69 @@ def test_committed_macho_fixture_entry_matches_its_layout() -> None:
     assert facts["platform"] == "macos"
     assert facts["min_os"] == "13.0"
     assert facts["sdk"] == "14.2"
+
+
+def test_macho_init_and_term_pointer_sections_are_counted(tmp_path: Path) -> None:
+    # dyld calls every 8-byte pointer in S_MOD_INIT_FUNC_POINTERS before main
+    # and every S_MOD_TERM_FUNC_POINTERS pointer after -- the Mach-O
+    # counterpart of the ELF init_array/fini_array counts.
+    cmds = _lc_segment64_with_sections([(0x9, 24), (0xA, 8)])
+    facts = describe_native(
+        _write(tmp_path, "a.bin", _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1))
+    )["native"]
+    assert facts["init_funcs"] == {"mod_init": 3, "mod_term": 1}
+
+
+def test_macho_init_offsets_section_counts_u32_entries(tmp_path: Path) -> None:
+    # The chained-fixups era encoding: S_INIT_FUNC_OFFSETS holds 32-bit
+    # offsets regardless of pointer width, so 12 bytes is three constructors.
+    cmds = _lc_segment64_with_sections([(0x16, 12)])
+    facts = describe_native(
+        _write(tmp_path, "a.bin", _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1))
+    )["native"]
+    assert facts["init_funcs"] == {"mod_init": 3, "mod_term": 0}
+
+
+def test_macho_ordinary_sections_add_no_init_entries(tmp_path: Path) -> None:
+    # A regular section and a cstring section carry code/data, not
+    # constructors; an image with none reads as a zeroed surface -- "runs
+    # nothing before main" is a real answer.
+    cmds = _lc_segment64_with_sections([(0x0, 64), (0x2, 32)])
+    facts = describe_native(
+        _write(tmp_path, "a.bin", _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1))
+    )["native"]
+    assert facts["init_funcs"] == {"mod_init": 0, "mod_term": 0}
+
+
+def test_macho_32bit_init_sections_use_4_byte_pointers(tmp_path: Path) -> None:
+    # A 32-bit image's mod_init pointers are 4 bytes wide, so the same byte
+    # size means twice the constructors.
+    cmds = _lc_segment32_with_sections([(0x9, 8)])
+    facts = describe_native(
+        _write(tmp_path, "a.bin", _macho32_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1))
+    )["native"]
+    assert facts["init_funcs"] == {"mod_init": 2, "mod_term": 0}
+
+
+def test_macho_lying_init_section_size_stays_bounded(tmp_path: Path) -> None:
+    # The section size is attacker-controlled; only the header field is read
+    # (no pointer is followed) and the count is clamped, so a hostile image
+    # cannot put a fantastical number in the facts.
+    cmds = _lc_segment64_with_sections([(0x9, 1 << 40)])
+    facts = describe_native(
+        _write(tmp_path, "a.bin", _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1))
+    )["native"]
+    assert facts["init_funcs"]["mod_init"] == 8192
+
+
+def test_macho_lying_nsects_reads_nothing_past_the_command(tmp_path: Path) -> None:
+    # nsects is attacker-controlled too; the walk is bounded by the command's
+    # own size, so a huge claim counts only the sections that actually fit.
+    cmds = _lc_segment64_with_sections([(0x9, 8)], nsects=1_000_000)
+    facts = describe_native(
+        _write(tmp_path, "a.bin", _macho64_full(filetype=2, flags=0x4, load_cmds=cmds, ncmds=1))
+    )["native"]
+    assert facts["init_funcs"] == {"mod_init": 1, "mod_term": 0}
 
 
 def test_macho_reads_load_commands_past_the_header_window(tmp_path: Path) -> None:

@@ -19,7 +19,11 @@ indirect-symbol table) -- an ``LC_RPATH`` so the @rpath search-path fact
 (the ELF rpath/runpath analogue) has a positive case llvm-objdump confirms,
 and an ``LC_BUILD_VERSION`` naming the target platform and minimum OS / SDK
 versions the way every modern linker does, so the platform facts have a
-positive case both llvm-objdump and radare2 (its ``os`` line) confirm.
+positive case both llvm-objdump and radare2 (its ``os`` line) confirm. A
+``__DATA`` segment carries one ``__mod_init_func`` and one ``__mod_term_func``
+pointer (both aimed at the function body), so the load-time constructor facts
+(the ELF .init_array analogue) have a positive case llvm-objdump's section
+types confirm.
 The symbol machinery lives in a final ``__LINKEDIT`` segment exactly like a
 linker lays it out -- which is also what lets a real code signer (rcodesign)
 sign this fixture, since a signature is appended to ``__LINKEDIT`` and
@@ -73,6 +77,11 @@ _LC_RPATH = 0x8000001C
 _LC_BUILD_VERSION = 0x32
 _S_CSTRING_LITERALS = 0x00000002
 _S_ATTR_PURE_INSTRUCTIONS_SOME = 0x80000400
+# The load-time constructor machinery: dyld calls every pointer in a
+# __mod_init_func section before main and every __mod_term_func pointer after
+# exit -- the Mach-O counterpart of ELF's .init_array/.fini_array.
+_S_MOD_INIT_FUNC_POINTERS = 0x00000009
+_S_MOD_TERM_FUNC_POINTERS = 0x0000000A
 _VM_BASE = 0x100000000
 # Slack between the last load command and the first byte of content, exactly
 # like a real linker leaves: a code signer inserts its LC_CODE_SIGNATURE (16
@@ -166,6 +175,7 @@ def build() -> bytes:
     buildver = _lc_build_version()
     seg_pagezero = 72
     seg_text = 72 + 80 * 2  # two sections: __text and __cstring
+    seg_data = 72 + 80 * 2  # two sections: __mod_init_func and __mod_term_func
     seg_linkedit = 72
     lc_main = 24
     lc_uuid = 24
@@ -174,6 +184,7 @@ def build() -> bytes:
     sizeofcmds = (
         seg_pagezero
         + seg_text
+        + seg_data
         + seg_linkedit
         + len(dylinker)
         + len(dylib)
@@ -184,14 +195,21 @@ def build() -> bytes:
         + lc_symtab
         + lc_dysymtab
     )
-    ncmds = 11
+    ncmds = 12
     code_off = 32 + sizeofcmds + _HEADER_PAD
     cstr_off = code_off + len(CODE)
-    total = cstr_off + len(MARKER)
+    # The constructor/destructor pointer data rides in its own __DATA segment
+    # between __TEXT and __LINKEDIT: one init pointer and one term pointer,
+    # both aimed at the fixture's one real function -- dyld would genuinely
+    # call it around main. 8-byte aligned like any pointer section.
+    data_off = (cstr_off + len(MARKER) + 7) & ~7
+    init_off = data_off
+    term_off = init_off + 8
+    total = term_off + 8
     # radare2 reads dylib names with a fixed 256-byte buffer and rejects the
     # whole image if that read would run past EOF, so a file this small needs
     # tail padding to keep the name read in bounds.
-    dylib_name_off = 32 + seg_pagezero + seg_text + len(dylinker) + 24
+    dylib_name_off = 32 + seg_pagezero + seg_text + seg_data + len(dylinker) + 24
     padding = max(0, dylib_name_off + 256 - total)
     total += padding
 
@@ -232,17 +250,45 @@ def build() -> bytes:
     cstr_sect = _sect64(
         "__cstring", "__TEXT", _VM_BASE + cstr_off, len(MARKER), cstr_off, _S_CSTRING_LITERALS
     )
-    # __TEXT maps the header, commands, code and marker; __LINKEDIT (the final
-    # segment) maps the symbol data on the next page, mirroring a real layout.
-    text = _seg64("__TEXT", _VM_BASE, 0x1000, 0, symoff, 5, 5, 2, 0) + text_sect + cstr_sect
-    linkedit = _seg64("__LINKEDIT", _VM_BASE + 0x1000, 0x1000, symoff, linkedit_size, 1, 1, 0, 0)
+    # __TEXT maps the header, commands, code and marker; __DATA the init/term
+    # pointers (plus the radare2 tail padding) on the next page; __LINKEDIT
+    # (the final segment) the symbol data on the page after, mirroring a real
+    # layout with non-overlapping file ranges.
+    data_vm = _VM_BASE + 0x1000
+    text = _seg64("__TEXT", _VM_BASE, 0x1000, 0, data_off, 5, 5, 2, 0) + text_sect + cstr_sect
+    init_sect = _sect64(
+        "__mod_init_func", "__DATA", data_vm, 8, init_off, _S_MOD_INIT_FUNC_POINTERS
+    )
+    term_sect = _sect64(
+        "__mod_term_func", "__DATA", data_vm + 8, 8, term_off, _S_MOD_TERM_FUNC_POINTERS
+    )
+    data = (
+        _seg64("__DATA", data_vm, 0x1000, data_off, symoff - data_off, 3, 3, 2, 0)
+        + init_sect
+        + term_sect
+    )
+    linkedit = _seg64("__LINKEDIT", _VM_BASE + 0x2000, 0x1000, symoff, linkedit_size, 1, 1, 0, 0)
     main = struct.pack("<IIQQ", _LC_MAIN, 24, code_off, 0)  # entryoff, stacksize
     uuid = struct.pack("<II", _LC_UUID, 24) + bytes(range(16))
     blob = (
-        header + pagezero + text + linkedit + dylinker + dylib + rpath + buildver + main + uuid
+        header
+        + pagezero
+        + text
+        + data
+        + linkedit
+        + dylinker
+        + dylib
+        + rpath
+        + buildver
+        + main
+        + uuid
     ) + symtab + dysymtab
     blob += b"\x00" * _HEADER_PAD
     blob += CODE + MARKER
+    blob += b"\x00" * (init_off - cstr_off - len(MARKER))
+    # One constructor and one destructor pointer, both aimed at the fixture's
+    # real function body -- dyld would genuinely call it around main.
+    blob += struct.pack("<QQ", _VM_BASE + code_off, _VM_BASE + code_off)
     blob += b"\x00" * padding
     blob += nlists + strtab + indirect
     assert len(blob) == total, (len(blob), total)
