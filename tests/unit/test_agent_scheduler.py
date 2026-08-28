@@ -605,6 +605,13 @@ async def test_a_run_that_never_finishes_does_not_park_the_scheduler(
     other = store.create_mission(thread.id, "next one")
     assert store.claim_next_mission().id == other.id
 
+# 700 serial add_message calls, one fsync-per-commit WAL transaction each. Same
+# Windows-runner slowness that tripped the 120s per-test --timeout in
+# test_agent_store's long-thread tests; this one has an even higher count. The
+# cap contract needs the thread past 500 messages, so the count cannot shrink --
+# give it the same generous ceiling that still trips on a real hang. Runs in
+# well under a second locally.
+@pytest.mark.timeout(300)
 @pytest.mark.asyncio
 async def test_a_mission_still_completes_on_a_thread_past_the_message_cap(
     tmp_path: Path,
