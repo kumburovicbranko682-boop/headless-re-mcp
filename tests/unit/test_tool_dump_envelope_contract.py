@@ -20,8 +20,11 @@ import pytest
 
 from headless_re_mcp.core.results import _success
 
-# The non-PE tool surfaces: Android (apk/device/frida), web, proxy, JS/WASM and
-# the shared dynamic-analysis surface. Each carries its own copy of _dump.
+# The non-PE tool surfaces: Android (apk/device/frida), web, proxy, JS/WASM, the
+# shared dynamic-analysis surface, and the native reverse-engineering line
+# (radare2 and Ghidra, which read ELF/Mach-O as well as PE). Each carries its own
+# copy of _dump. The PE-only surfaces are excluded on purpose: tools.dynamic
+# fronts the Windows x64dbg RPC and tools.meta the IDA address-sync tools.
 _NON_PE_TOOL_MODULES = [
     "headless_re_mcp.tools.apk",
     "headless_re_mcp.tools.device",
@@ -30,6 +33,8 @@ _NON_PE_TOOL_MODULES = [
     "headless_re_mcp.tools.proxy",
     "headless_re_mcp.tools.web",
     "headless_re_mcp.tools.dynamic_analysis",
+    "headless_re_mcp.tools.r2",
+    "headless_re_mcp.tools.ghidra",
 ]
 
 
