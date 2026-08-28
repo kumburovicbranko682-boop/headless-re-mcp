@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（stub_calls 把"未测量"的代码解密率误报为"已测量的全零"）
+
+- `unpack/stub_calls.py` 的 `_analyze_dump_data` 用
+  `round(code_nonzero / float(max(code_total, 1)), 4)` 计算 `code_nonzero_ratio`：当
+  没有任何代码节落在 dump 内（`code_total == 0`，例如所有代码节都越界、dump 被截断、或
+  只识别出保护壳节而无应用代码节）时，它得到 `0.0`。下游 IAT 重建门（`core/service_unpack.py`
+  与 `pause_quality.assess_pause_quality`）把 `code_nonzero_ratio < 0.05` 读作"代码仍加密"
+  并 **拒绝重建**（`code_not_decrypted`），于是"没量到"被冒充成"量到全是密文"——正是这个
+  fail-closed 信号最不该撒的谎。改法：`code_total == 0` 时返回 `None`（消费方本就以
+  `isinstance(..., (int, float))` / `is not None` 守卫，契约就是 `None` 表示未测量）。
+- 同一循环原先对第一个越界节 `break`，会在后面还有合法在界节时提前放弃扫描，凭空制造上面的
+  未测量场景。改为对越界节 `continue`，只在扫描字节预算耗尽时 `break`。
+- `code_section_ranges` 与其无代码节时的回退挑选逻辑此前不校验 `virtual_address < 0`（而
+  `vmp_like_section_ranges` 校验了），负 RVA 会让 `data[rva:rva+take]` 从 dump 尾部切片、
+  伪造字节与调用计数；`count_stub_vs_api_calls` 的扫描循环同理。三处补齐 `rva < 0` 守卫。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言

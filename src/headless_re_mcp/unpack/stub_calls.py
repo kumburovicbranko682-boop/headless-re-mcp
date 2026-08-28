@@ -104,7 +104,7 @@ def code_section_ranges(
         rva = section.get("virtual_address")
         size = section.get("virtual_size") or section.get("raw_size") or 0
         chars = int(section.get("characteristics") or 0)
-        if type(rva) is not int or type(size) is not int or size <= 0:
+        if type(rva) is not int or rva < 0 or type(size) is not int or size <= 0:
             continue
         if (rva, size) in vmp:
             continue
@@ -152,7 +152,9 @@ def count_stub_vs_api_calls(
         return any(start <= rva < start + size for start, size in ranges)
 
     for rva0, size0 in code_norm:
-        if size0 <= 0:
+        if rva0 < 0 or size0 <= 0:
+            # A negative RVA would slice from the tail of the dump and forge
+            # call counts, so skip it instead of scanning phantom bytes.
             continue
         take = min(size0, max_scan_bytes - scanned)
         if take <= 0:
@@ -290,7 +292,7 @@ def _analyze_dump_data(
             rva = section.get("virtual_address")
             size = section.get("virtual_size") or 0
             name = str(section.get("name") or "")
-            if type(rva) is not int or type(size) is not int or size <= 0:
+            if type(rva) is not int or rva < 0 or type(size) is not int or size <= 0:
                 continue
             if any(rva == sr and size == ss for sr, ss, _ in stub):
                 continue
@@ -311,17 +313,21 @@ def _analyze_dump_data(
     code_nonzero = 0
     code_total = 0
     for rva, size, _name in code:
-        take = min(
-            size,
-            max(0, len(data) - rva),
-            max(0, max_scan_bytes - code_total),
-        )
-        if take <= 0:
+        remaining = max_scan_bytes - code_total
+        if remaining <= 0:
             break
+        take = min(size, max(0, len(data) - rva), remaining)
+        if take <= 0:
+            # This section falls outside the dump, but a later one may still be
+            # inside it, so keep measuring instead of abandoning the scan.
+            continue
         blob = data[rva : rva + take]
         code_total += len(blob)
         code_nonzero += sum(1 for b in blob if b)
-    code_nonzero_ratio = round(code_nonzero / float(max(code_total, 1)), 4)
+    # None means "not measured": no code section landed inside the dump. Zero
+    # would read as a measured all-zero CODE section, which the rebuild gate
+    # treats as proof the code is still encrypted.
+    code_nonzero_ratio = round(code_nonzero / float(code_total), 4) if code_total else None
     return {
         "ok": True,
         "dump_path": str(path),
