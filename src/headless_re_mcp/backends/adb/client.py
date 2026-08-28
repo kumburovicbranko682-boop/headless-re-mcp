@@ -34,6 +34,11 @@ _MAX_LOGCAT_CHARS = 200_000
 _LOGCAT_PRIORITIES = ("V", "D", "I", "W", "E", "F")
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+# An app installed from an app bundle splits into a base plus per-density,
+# per-language and per-ABI config APKs. A real app has a handful; cap the list
+# so a device that reports a pathological number cannot grow the answer without
+# bound (paths_truncated when hit).
+_MAX_PACKAGE_PATHS = 64
 _MAX_DEVICES = 64
 # Only the head of AndroidManifest.xml is scanned for a package id, and it is
 # read as a bounded stream so a decompression-bomb manifest cannot OOM install().
@@ -456,6 +461,55 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def package_paths(self, serial: str, package: str) -> JsonObject:
+        """Where an installed package's APK(s) live on the device.
+
+        The bridge from the dynamic device line to the static apk line: given a
+        package id (from device.packages), return its on-device APK path(s) so
+        device.pull can fetch the file and the apk.* tools can analyse it,
+        without shipping the APK off the device by hand. ``pm path`` lists the
+        base APK plus every split (per-density/language/abi config APK) an app
+        installed from a bundle carries. The package id is validated and passed
+        as a single argv token to ``pm path`` (never interpolated into a shell
+        string), so it cannot inject a shell command. A package that is not
+        installed -- ``pm path`` prints nothing -- is not_found.
+        """
+        pkg = _check_package(package)
+        dev = self._device(serial)
+        raw = _device_shell(dev, ["pm", "path", pkg], timeout=_ADB_PROBE_TIMEOUT_S)
+        paths: list[str] = []
+        truncated = False
+        for line in str(raw).splitlines():
+            line = line.strip()
+            if not line.startswith("package:"):
+                continue
+            path = line.split(":", 1)[1].strip()
+            if not path or path in paths:
+                continue
+            if len(paths) >= _MAX_PACKAGE_PATHS:
+                truncated = True
+                break
+            paths.append(path)
+        if not paths:
+            raise AdbError(
+                "not_found", "package not installed or has no apk path", package=pkg
+            )
+        # Prefer the member literally named base.apk; fall back to the first path
+        # so a device that names it differently still yields a usable base_apk.
+        base = next(
+            (path for path in paths if path.rsplit("/", 1)[-1] == "base.apk"), paths[0]
+        )
+        result: JsonObject = {
+            "package": pkg,
+            "paths": paths,
+            "count": len(paths),
+            "base_apk": base,
+            "split": len(paths) > 1,
+        }
+        if truncated:
+            result["paths_truncated"] = True
+        return result
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         dev = self._device(serial)

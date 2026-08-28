@@ -96,6 +96,26 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.package_paths")
+    def device_package_paths(serial: str, package: str) -> dict[str, Any]:
+        """Locate an installed package's APK(s) on the device (pm path).
+
+        The bridge from the device line to the static apk line: given a package
+        id from device.packages, this returns its on-device APK path(s) so
+        device.pull can fetch the file and the apk.* tools can analyse it --
+        rather than needing the original APK by hand. Answers with package,
+        paths (the base APK plus every split -- the per-density/language/abi
+        config APKs an app installed from a bundle carries), count, base_apk
+        (the member named base.apk, or the first path when none is), split (true
+        when there is more than one path), and paths_truncated when the list hit
+        its 64-entry cap. A package that is not installed is not_found; an
+        invalid package id is invalid_params. The id is passed as a single argv
+        token to pm path, never interpolated into a shell string, so it cannot
+        inject a shell command. There is no path field; the list is paths and
+        the one to pull first is base_apk.
+        """
+        return _dump(analysis.device_package_paths(serial, package))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True

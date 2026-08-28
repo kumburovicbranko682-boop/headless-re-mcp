@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **278（160 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **279（161 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -320,6 +320,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   同样的 `offset`/`limit` 分页与 `total`/`has_more`，成员数超 `_MAX_FILES_COLLECT`（10000）采集上限时置 `scan_capped`；
   `name_filter` 对成员路径做大小写敏感子串匹配、在采集上限前应用，故超上限的 `assets/` 载荷仍可按名找到。加密/损坏的成员
   仍按元数据列出、`kind` 留空。只读，工具总数 273→274（156 只读 / 118 写）。
+- **`device.packages` 只报包名，拿不到已装应用在设备上的 APK 路径，动态线与静态线之间断了一截**。分析者在设备上锁定一个包后，
+  下一步通常是把它的 APK 拉下来交给 `apk.*` 静态分析，但此前没有工具能给出安装位置，只能靠手头另有一份 APK。新增只读工具
+  `device.package_paths`：对给定包名跑 `pm path`，返回其在设备上的 APK 路径——base APK 以及 app bundle 安装时带的每个 split
+  （按 density/语言/abi 切分的 config APK）。答复带 `package`、`paths`、`count`、`base_apk`（名为 base.apk 的那个，没有则取第一个）、
+  `split`（多于一个路径时为真），路径数超 64 上限时置 `paths_truncated`。于是 `device.package_paths`→`device.pull`→`apk.open` 把
+  动态设备线接到静态 apk 线上。包名经 `_check_package` 校验、作为单个 argv 传给 `pm path`（绝不拼进 shell 字符串），无法注入命令；
+  未安装的包（`pm path` 无输出）报 `not_found`、非法包名报 `invalid_params`。只读，工具总数 278→279（161 只读 / 118 写）。
 - **adb forward 只能建、不能查也不能单删，填满 32 槽后只有 `close_all` 能回收**。`device.forward` 会在 adb server 上占一个
   转发槽（frida 的 `tcp:27042`、某个调试端口），而这些转发不随会话关闭消失；此前唯一的清理是 `close_all` 里的
   `release_forwards` 一次性全删。于是一个跨多个 app、长期运行的 agent 会把 32 槽的表悄悄填满，撞上 `too many adb forwards` 后
