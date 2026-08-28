@@ -24,6 +24,15 @@ _MAX_OUTPUT = 1_000_000
 # an embedded key/certificate, while bounding the pxj int-array output (each
 # byte costs ~4 chars of JSON, so 64 KiB stays well under _MAX_OUTPUT).
 _MAX_READ_BYTES = 64 * 1024
+# The longest byte pattern r2.search accepts (a magic, a crypto constant, a
+# marker): long enough for any realistic signature, short enough that the
+# whitelisted /xj command stays small.
+_MAX_SEARCH_BYTES = 256
+# Cap how many hits r2 itself emits, so a 2-byte pattern in a large image cannot
+# produce a JSON blob that overruns _MAX_OUTPUT and gets truncated mid-array.
+# Kept equal to mapping._MAX_ITEMS (4096): r2 stops at the same ceiling the
+# enrich step would trim to, so the truncation disclosure stays honest.
+_SEARCH_MAXHITS_COMMAND = "e search.maxhits=4096"
 _ALLOWED = frozenset(
     {
         "i",
@@ -42,11 +51,16 @@ _ALLOWED = frozenset(
         "pdj",
         "axj",
         "aa",
+        _SEARCH_MAXHITS_COMMAND,
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 # pxj <n> @ addr: read n raw bytes at a virtual address as a JSON int array.
 _PXJ_COMMAND = re.compile(r"pxj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# /xj <hexpairs>: search the mapped bytes for an exact pattern. Even-length hex
+# only -- r2.search builds the pattern from bytes, so the command can never
+# carry anything but whole bytes (and thus cannot inject r2 command syntax).
+_XJ_COMMAND = re.compile(r"/xj (?:[0-9a-f]{2})+\Z")
 # axj (whole DB), axtj (refs to), axfj (refs from), each seeked with ``@ addr``.
 # r2 6.x makes ``axj @ addr`` return nothing, so xrefs queries axtj/axfj, which
 # honour the seek on every version; axj stays whitelisted for the enrich filter
@@ -83,6 +97,8 @@ def _require_allowed_command(command: str) -> None:
         return
     pxj = _PXJ_COMMAND.fullmatch(command)
     if pxj is not None and int(pxj.group(1)) <= _MAX_READ_BYTES:
+        return
+    if _XJ_COMMAND.fullmatch(command) is not None:
         return
     if _AXREF_COMMAND.fullmatch(command) is not None:
         return
@@ -234,6 +250,61 @@ class R2Client:
         if len(blob) < size:
             result["short_read"] = True
         return result
+
+    def search(
+        self,
+        binary: Path,
+        query: str,
+        *,
+        kind: str = "text",
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Find every occurrence of an exact byte pattern in the mapped image.
+
+        ``r2.strings`` lists the strings r2 auto-detected, but finds nothing you
+        name that it did not: a file magic, a crypto constant, a marker r2 did
+        not classify as a string, a non-printable byte pattern. This searches the
+        mapped bytes for an exact pattern with ``/xj`` and maps each hit to an
+        address. A ``text`` query is UTF-8 encoded to a byte pattern; a ``hex``
+        query is the raw pattern as hex pairs (spaces and a ``0x`` prefix are
+        tolerated). Either way the command only ever carries hex digits, so a
+        query can never inject r2 command syntax. r2's own hit count is capped so
+        a short pattern in a large image cannot flood the output.
+        """
+        if kind not in {"text", "hex"}:
+            raise R2Error("invalid_params", "kind must be 'text' or 'hex'")
+        if not isinstance(query, str) or query == "":
+            raise R2Error("invalid_params", "query is required")
+        if kind == "text":
+            pattern = query.encode("utf-8")
+        else:
+            cleaned = query.strip().lower().replace(" ", "")
+            if cleaned.startswith("0x"):
+                cleaned = cleaned[2:]
+            try:
+                pattern = bytes.fromhex(cleaned)
+            except ValueError as exc:
+                raise R2Error(
+                    "invalid_params", "hex query must be whole bytes (even-length hex)"
+                ) from exc
+        if not 1 <= len(pattern) <= _MAX_SEARCH_BYTES:
+            raise R2Error(
+                "invalid_params", f"pattern must be 1..{_MAX_SEARCH_BYTES} bytes"
+            )
+        hexpairs = pattern.hex()
+        cmd = f"/xj {hexpairs}"
+        # ``e search.maxhits=...`` caps r2's own output; ``/xj`` needs no analysis
+        # pass, so no ``aa``. run() enriches the JSON array into address-mapped
+        # items (r2 6.x names the hit offset ``addr``, which the mapping reads).
+        data = self.run(binary, [_SEARCH_MAXHITS_COMMAND, cmd], timeout=timeout)
+        # Echo what was searched, so an empty result reads as "pattern absent"
+        # (not "bad query"), and the byte pattern a text query encoded to is
+        # visible for a follow-up hex search or an r2.read at a hit.
+        data["query"] = query
+        data["kind"] = kind
+        data["pattern_hex"] = hexpairs
+        data["pattern_len"] = len(pattern)
+        return data
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
         if not self.available or self.executable is None:

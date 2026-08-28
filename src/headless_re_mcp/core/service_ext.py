@@ -447,6 +447,38 @@ class ExtAnalysisMixin(UiDriveMixin):
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
+    def r2_search(
+        self, session_id: str, query: str, kind: str = "text", timeout: float = 30.0
+    ) -> Result[JsonObject]:
+        try:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"r2.search cannot run in {session.state.value} state"
+                )
+            exe = getattr(self.settings, "r2", None)
+            client = R2Client(Path(exe) if exe else None)
+            data = client.search(session.require_binary(), query, kind=kind, timeout=timeout)
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"r2.search cannot run in {session.state.value} state"
+                )
+            _timeline_append(self, session_id, "r2.search", "r2 pattern search", kind=kind)
+            return _success(data, session_id=session_id, backend="radare2")
+        except R2Error as exc:
+            return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
+
     def ghidra_analyze(self, session_id: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
             session = self.registry.get(session_id)

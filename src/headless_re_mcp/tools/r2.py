@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -208,4 +208,28 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         address field and no inline byte array; decode data from hex.
         """
         return _dump(analysis.r2_read(session_id, address, size=size, timeout=timeout))
+
+    @tools.tool(name="r2.search")
+    def r2_search(
+        session_id: str,
+        query: str,
+        kind: Literal["text", "hex"] = "text",
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Find every occurrence of an exact byte pattern (or text) in the image.
+
+        r2.strings only lists strings r2 auto-detected; this finds anything you
+        name that it did not -- a file magic, a crypto constant, a marker split
+        across the binary, a non-printable pattern -- the r2 twin of
+        static.search.bytes/text. kind "text" UTF-8-encodes the query to a byte
+        pattern; kind "hex" takes raw hex pairs (spaces and a 0x prefix are
+        tolerated). Runs ``/xj``. Answers with items, each carrying addr, type,
+        data (the matched bytes as hex) and address (va/rva/module), plus count
+        and the echoed query, kind, pattern_hex and pattern_len. An absent
+        pattern is a clean empty items list, not an error. Read items_truncated,
+        items_total and items_limit when the hit list filled the cap (4096);
+        r2's own hit count is capped there too so a short pattern cannot flood.
+        Pivot from a hit with r2.read (bytes) or r2.disasm (code) at its addr.
+        """
+        return _dump(analysis.r2_search(session_id, query, kind=kind, timeout=timeout))
     return tools.bindings

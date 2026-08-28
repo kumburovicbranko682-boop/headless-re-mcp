@@ -370,6 +370,42 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         assert as_code.ok and as_code.data is not None, as_code.error
         assert as_code.data.get("invalid_count", 0) >= 1, as_code.data
 
+        # r2.search finds a pattern by the content the caller names, where
+        # r2.strings only lists what r2 auto-detected. The marker text must be
+        # found at the very address strings reported it -- proving search reads
+        # the real mapped bytes and maps each hit for a pivot (r2.read/r2.disasm).
+        found = service.r2_search(session_id, _ELF_MARKER, kind="text", timeout=60.0)
+        assert found.ok and found.data is not None, found.error
+        assert found.data.get("parsed") is True
+        assert found.data.get("pattern_hex") == _ELF_MARKER.encode("utf-8").hex()
+        hits = found.data.get("items") or []
+        assert hits, "marker text was not found by r2.search"
+        for hit in hits:
+            _assert_mapped(hit.get("address"))
+            assert hit["address"].get("architecture") == expect_arch, hit
+        assert any(int(h["addr"]) == marker_va for h in hits), (
+            marker_va,
+            [h.get("addr") for h in hits],
+        )
+        # The same pattern as raw hex bytes must land on the same address: text
+        # is a UTF-8 convenience over the byte search, not a different search.
+        as_hex = service.r2_search(
+            session_id, _ELF_MARKER.encode("utf-8").hex(), kind="hex", timeout=60.0
+        )
+        assert as_hex.ok and as_hex.data is not None, as_hex.error
+        assert any(int(h["addr"]) == marker_va for h in (as_hex.data.get("items") or [])), (
+            as_hex.data
+        )
+        # A pattern absent from the image is a clean empty result -- not an error,
+        # not a stale whole-file dump.
+        absent = service.r2_search(
+            session_id, "ZZ_absent_from_this_binary_9449_ZZ", kind="text", timeout=60.0
+        )
+        assert absent.ok and absent.data is not None, absent.error
+        assert absent.data.get("parsed") is True
+        assert absent.data.get("count") == 0
+        assert absent.data.get("items") == []
+
         imports = service.r2_imports(session_id, timeout=60.0)
         assert imports.ok and imports.data is not None, imports.error
         assert imports.data.get("parsed") is True
