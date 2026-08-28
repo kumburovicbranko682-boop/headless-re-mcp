@@ -113,6 +113,18 @@ class Page:
 
 
 def _clamp_page(offset: int, limit: int) -> tuple[int, int]:
+    # offset/limit are schema-typed as integers, but the agent and OpenAI-bridge
+    # transports bind them straight from model output with no pydantic coercion, so
+    # a non-int (a string, list, ...) arrives unchanged and the ``< 0``/``< 1``
+    # comparisons below raise a raw TypeError that the service files as an
+    # internal_error incident instead of the invalid_argument a negative offset
+    # already earns. Reject the wrong type here so it stays a caller fault. bool is
+    # excluded: it satisfies isinstance(int) but True as an offset/limit is never
+    # what the caller meant.
+    if isinstance(offset, bool) or not isinstance(offset, int):
+        raise DotnetInspectError("invalid_argument", "offset must be an integer")
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise DotnetInspectError("invalid_argument", "limit must be an integer")
     if offset < 0:
         raise DotnetInspectError("invalid_argument", "offset must be >= 0")
     if limit < 1:
@@ -130,6 +142,12 @@ def enumerate_metadata(
 ) -> Page:
     """Paginated enumeration: types|methods|fields|resources|strings."""
     offset, limit = _clamp_page(offset, limit)
+    # kind is schema-typed as a string but arrives uncoerced on the agent/
+    # OpenAI-bridge transports; a non-string reaches kind.strip() and raises a raw
+    # AttributeError the service files as an internal_error incident rather than the
+    # invalid_argument an unknown kind value already earns. Reject the wrong type.
+    if not isinstance(kind, str):
+        raise DotnetInspectError("invalid_argument", "kind must be a string")
     kind_norm = kind.strip().casefold()
     allowed = {"types", "methods", "fields", "resources", "strings"}
     if kind_norm not in allowed:

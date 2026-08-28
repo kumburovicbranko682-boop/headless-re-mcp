@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
+from headless_re_mcp.dotnet import DotnetInspectError
 from headless_re_mcp.dotnet.metadata_enum import (
     CAPABILITY,
     _coded_index_size,
@@ -115,6 +117,62 @@ def test_enumerate_empty_tables_is_ok(tmp_path: Path) -> None:
     assert page.total == 0
     assert page.backend == "dotnet_metadata"
     assert page.claims_universal_unpack is False
+
+
+@pytest.mark.parametrize("kind", [5, None, ["types"], {"kind": "types"}, b"types", True])
+def test_enumerate_rejects_a_non_string_kind(kind: object) -> None:
+    """A non-string kind is an invalid_argument, not an internal_error incident.
+
+    kind.strip() would raise a raw AttributeError the service files as an
+    internal_error; it must read like the unknown-kind value case instead. The
+    type check fires before any file access, so no binary is needed.
+    """
+    with pytest.raises(DotnetInspectError) as excinfo:
+        enumerate_metadata(Path("/nonexistent-clr"), cast(Any, kind))
+    assert excinfo.value.code == "invalid_argument"
+
+
+@pytest.mark.parametrize("offset", ["bad", 1.5, ["0"], None, True])
+def test_enumerate_rejects_a_non_integer_offset(offset: object) -> None:
+    """A non-int offset is an invalid_argument, not a raw TypeError from ``< 0``."""
+    with pytest.raises(DotnetInspectError) as excinfo:
+        enumerate_metadata(Path("/nonexistent-clr"), "types", offset=cast(Any, offset))
+    assert excinfo.value.code == "invalid_argument"
+
+
+@pytest.mark.parametrize("limit", ["bad", 1.5, [1], None, True])
+def test_enumerate_rejects_a_non_integer_limit(limit: object) -> None:
+    """A non-int limit is an invalid_argument, not a raw TypeError from ``< 1``."""
+    with pytest.raises(DotnetInspectError) as excinfo:
+        enumerate_metadata(Path("/nonexistent-clr"), "types", limit=cast(Any, limit))
+    assert excinfo.value.code == "invalid_argument"
+
+
+def test_service_enumerate_reports_a_bad_kind_type_as_invalid_argument(
+    tmp_path: Path,
+) -> None:
+    """dotnet_enumerate maps the type guard to a clean invalid_argument result.
+
+    Without the guard the AttributeError became an internal_error incident; the
+    caller should instead see the caller fault it is.
+    """
+    binary = tmp_path / "empty_tables.exe"
+    _write_minimal_clr(binary)
+    service = AnalysisService(
+        Settings(
+            ida_home=None,
+            x64dbg_source=None,
+            x64dbg_headless_x64=None,
+            x64dbg_headless_x86=None,
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+
+    rejected = service.dotnet_enumerate(session_id, cast(Any, 5))
+
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_argument"
 
 
 def test_il_branch_and_constant_operands_are_signed() -> None:
