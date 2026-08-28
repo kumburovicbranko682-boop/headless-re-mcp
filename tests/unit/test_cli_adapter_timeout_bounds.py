@@ -8,6 +8,11 @@ straight from model arguments with no schema enforcement, the same gap
 make ``run_bounded`` launch a JVM/node/r2 only to kill it at once and report a
 misleading timeout, and a huge one would let a tool that hangs on hostile input
 hold a worker for as long as the caller named.
+
+The windbg (cdb) adapter shares this contract -- it clamps at its ``_run_dump``
+(le=300) and ``_run_process`` (le=120) chokepoints -- but its tests need a
+stubbed cdb and dump file, so they live with the other cdb guards in
+``test_windbg_input_guards.py`` rather than being duplicated here.
 """
 
 from __future__ import annotations

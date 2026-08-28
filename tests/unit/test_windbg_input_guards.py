@@ -1,11 +1,11 @@
 """Input guards and error mapping for the cdb/WinDbg client.
 
-The client hands model-supplied addresses, lengths and PIDs to cdb. The command
-allow-list and truncation notices already have tests; this file pins the
-refusals that keep a bad address or a wrong PID from ever reaching a launch, the
-translation of a failed or unlaunchable probe into a structured error, and the
-cross-platform arms of cdb discovery. cdb itself is stubbed, so these run on any
-host.
+The client hands model-supplied addresses, lengths, PIDs and deadlines to cdb.
+The command allow-list and truncation notices already have tests; this file pins
+the refusals that keep a bad address, a wrong PID or a non-positive/oversized
+timeout from ever reaching a launch, the translation of a failed or unlaunchable
+probe into a structured error, and the cross-platform arms of cdb discovery. cdb
+itself is stubbed, so these run on any host.
 """
 
 from __future__ import annotations
@@ -40,6 +40,19 @@ def _record_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
     def fake_run(argv: list[str], *args: Any, **kwargs: Any) -> Completed:
         seen.append(list(argv))
+        return Completed(0, b"session-text", b"")
+
+    monkeypatch.setattr(windbg_module, "run_bounded", fake_run)
+    return seen
+
+
+def _record_timeout(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Capture the (already clamped) deadline handed to run_bounded."""
+    seen: list[float] = []
+
+    def fake_run(argv: list[str], *args: Any, **kwargs: Any) -> Completed:
+        del argv, args
+        seen.append(kwargs["timeout"])
         return Completed(0, b"session-text", b"")
 
     monkeypatch.setattr(windbg_module, "run_bounded", fake_run)
@@ -291,6 +304,56 @@ def test_a_live_probe_timeout_reports_the_killed_debugger(
         client.attach(4242, allowed_pid=4242)
     assert caught.value.code == "timeout"
     assert caught.value.details["killed_pids"] == [4242]
+
+
+# --- timeout clamping across transports -------------------------------------
+# The tool schema bounds 0 < timeout <= 300 (dump) / <= 120 (live), but the
+# agent/OpenAI transports call the service straight from model arguments and skip
+# that pydantic check. A non-positive value must be a fail-fast invalid_params,
+# not a cdb launch killed on the first loop and mis-reported as a timeout; a huge
+# value must be capped so a hostile dump cannot hold a worker past the ceiling.
+
+
+@pytest.mark.parametrize("bad", [0, -1, -0.5, float("nan")])
+def test_a_dump_reader_refuses_a_non_positive_timeout_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    launched = _record_run(monkeypatch)
+    with pytest.raises(WindbgError) as caught:
+        client.modules(_dump(tmp_path), timeout=bad)
+    assert caught.value.code == "invalid_params"
+    assert launched == []
+
+
+@pytest.mark.parametrize("bad", [0, -1, float("nan")])
+def test_a_live_probe_refuses_a_non_positive_timeout_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    launched = _record_run(monkeypatch)
+    with pytest.raises(WindbgError) as caught:
+        client.attach(4242, allowed_pid=4242, timeout=bad)
+    assert caught.value.code == "invalid_params"
+    assert launched == []
+
+
+def test_a_dump_reader_timeout_is_capped_at_the_schema_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    seen = _record_timeout(monkeypatch)
+    client.modules(_dump(tmp_path), timeout=99_999.0)
+    assert seen == [300.0]
+
+
+def test_a_live_probe_timeout_is_capped_at_the_schema_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    seen = _record_timeout(monkeypatch)
+    client.attach(4242, allowed_pid=4242, timeout=99_999.0)
+    assert seen == [120.0]
 
 
 # --- cdb discovery ----------------------------------------------------------

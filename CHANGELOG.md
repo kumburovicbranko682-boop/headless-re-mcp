@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（windbg/cdb 适配器把调用方 timeout 直接喂给 run_bounded,绕过 schema 边界不设防)
+
+- apktool/jadx/webcrack/wabt/radare2 各 CLI 适配器都在把 `timeout` 交给 `run_bounded` 前经 `clamp_cli_timeout` 收口——因为
+  agent/OpenAI 传输直接用模型参数调 handler、绕过 MCP schema 的 `0 < timeout <= max`,只有 MCP 路径才跑 pydantic 校验。windbg
+  的 `_run_dump`/`_run_process` 却把原始 `timeout` 直送 `run_bounded`:非正值会让它启动 cdb 又在首个循环迭代立刻杀掉,把一次
+  参数错误报成 `timeout`;超大值则让在恶意 dump 上挂死的 cdb 把 worker 占用到调用方指定的时长,远超 schema 天花板。现在两个
+  chokepoint 都按各自 schema 上限收口——dump 读取(open_dump/threads/modules/disasm)le=300、实时探针(attach/live_*)le=120——
+  非正值/NaN 立即抛 `invalid_params`(在启动 cdb 前),超大值封顶到对应上限,与 `clamp_cli_timeout` 给 apktool/jadx 的 fail-fast
+  边界一致。收口点置于 `_require_cdb()` 之后,故 cdb 缺失仍优先报 capability_unavailable。新增测试:dump 读取与实时探针对
+  非正/NaN timeout 都在启动前抛 invalid_params 且 run_bounded 从未被调用、超大 timeout 分别封顶到 300/120;
+  `test_cli_adapter_timeout_bounds` 文档补记 windbg 同属该契约(测试因需桩化 cdb 与 dump 而随其余 cdb 守卫置于 windbg 用例文件)。
+  有效范围内的 timeout 原样透传,不改成功路径。
+
 ### 修复（windbg 后端超时错误被标为不可重试,与其余所有后端的错误契约不一致)
 
 - 之前我把"后端 `timeout` 要像原生 `TimedOut` 一样对调用方回带 `retryable=True`"这条契约统一到共享的 `_rpc_from_backend`,

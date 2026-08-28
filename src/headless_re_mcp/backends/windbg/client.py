@@ -6,9 +6,25 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.common.bounded_run import (
+    InvalidTimeout,
+    TimedOut,
+    clamp_cli_timeout,
+    run_bounded,
+)
 
 JsonObject = dict[str, Any]
+# The windbg tool schemas declare le=300 for the dump readers (open_dump /
+# threads / modules / disasm) and le=120 for the live user-mode probes (attach /
+# live_*). Clamp at the two run chokepoints too: the agent and OpenAI-bridge
+# transports call the service straight from model arguments and never run that
+# pydantic bound, only the MCP path does. Left unchecked, a non-positive timeout
+# makes run_bounded launch cdb only to kill it on the first loop iteration and
+# report a misleading timeout for what is really a bad parameter, and a huge one
+# lets a cdb that hangs on a hostile dump hold a worker far past the schema
+# ceiling -- the same fail-fast bound clamp_cli_timeout gives apktool/jadx.
+_MAX_DUMP_TIMEOUT_S = 300.0
+_MAX_LIVE_TIMEOUT_S = 120.0
 _ALLOWED_CMDS = frozenset({"lm", "k", "r", "u", "~*", "version", "vertarget"})
 # cdb -c treats these as command composition, so a head token of `lm` must
 # not smuggle `lm; !process` or `k\n.shell` past the allow-list. `&` is the
@@ -228,6 +244,10 @@ class WindbgClient:
         timeout: float,
     ) -> JsonObject:
         cdb = self._require_cdb()
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_LIVE_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise WindbgError("invalid_params", str(exc)) from exc
         if type(pid) is not int or pid <= 0:
             raise WindbgError("invalid_params", "pid must be a positive integer")
         if pid != allowed_pid:
@@ -277,6 +297,10 @@ class WindbgClient:
 
     def _run_dump(self, dump: Path, commands: list[str], *, timeout: float) -> JsonObject:
         cdb = self._require_cdb()
+        try:
+            timeout = clamp_cli_timeout(timeout, maximum=_MAX_DUMP_TIMEOUT_S)
+        except InvalidTimeout as exc:
+            raise WindbgError("invalid_params", str(exc)) from exc
         if not dump.is_file():
             raise WindbgError("not_found", "dump file not found", path=str(dump))
         for cmd in commands:
