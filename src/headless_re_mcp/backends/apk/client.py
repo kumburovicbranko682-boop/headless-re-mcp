@@ -8,6 +8,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
@@ -25,6 +26,9 @@ _MAX_FIELDS_COLLECT = 20_000
 _MAX_CLASSES_COLLECT = 10_000
 _MAX_METHODS_COLLECT = 2000
 _MAX_NATIVE_LIBS = 256
+# A single native library is at most tens of MB; refuse anything absurd so a
+# crafted APK cannot make extraction write a huge file.
+_MAX_NATIVE_LIB_BYTES = 128 * 1024 * 1024
 _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
@@ -338,6 +342,69 @@ class ApkClient:
             }
 
         return self._read_manifest(path, build)
+
+    def extract_native_lib(self, path: Path, name: str, dest_dir: Path) -> JsonObject:
+        """Pull one embedded native library out of the APK to a file on disk.
+
+        ``apk.native_libs`` can list the ``.so`` files an app ships, but nothing
+        could hand one to the native RE backends -- jadx and apktool only touch
+        Java/smali, so an app's crypto, DRM or anti-tamper logic (which lives in
+        native code) was a dead end. This reads the exact bytes of a
+        ``lib/<abi>/<name>.so`` entry and writes them to ``dest_dir``, so a
+        follow-up native session can open the file with radare2 or Ghidra. The
+        entry must be a real ``.so`` present in the archive; anything else is
+        refused so this cannot be turned into an arbitrary zip extractor.
+        """
+        resolved = self._require(path)
+        entry = str(name).strip()
+        if not entry:
+            raise ApkError("invalid_params", "name is required")
+        apk = self._apk(resolved)
+        try:
+            files = {str(item) for item in (apk.get_files() or [])}
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to list APK files: {exc}") from exc
+        if entry not in files:
+            raise ApkError("not_found", "no such file in the APK", name=entry)
+        parts = entry.split("/")
+        if not (entry.startswith("lib/") and len(parts) >= 3 and entry.endswith(".so")):
+            raise ApkError(
+                "invalid_params",
+                "not a native library entry (expected lib/<abi>/<name>.so)",
+                name=entry,
+            )
+        try:
+            blob = apk.get_file(entry)
+        except Exception as exc:  # noqa: BLE001 - androguard raises FileNotPresent etc.
+            raise ApkError(
+                "backend_error", f"failed to read native library: {exc}", name=entry
+            ) from exc
+        if not isinstance(blob, (bytes, bytearray)) or len(blob) == 0:
+            raise ApkError("backend_error", "native library entry was empty", name=entry)
+        if len(blob) > _MAX_NATIVE_LIB_BYTES:
+            raise ApkError(
+                "too_large",
+                "native library exceeds extraction cap",
+                name=entry,
+                size=len(blob),
+                cap=_MAX_NATIVE_LIB_BYTES,
+            )
+        blob = bytes(blob)
+        abi = parts[1]
+        # The zip path is attacker-influenced; keep only the basename and prefix
+        # the ABI so two same-named libs from different ABIs cannot collide, and
+        # nothing can escape dest_dir.
+        safe = Path(entry).name
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        out = dest_dir / f"{abi}-{safe}"
+        out.write_bytes(blob)
+        return {
+            "name": entry,
+            "abi": abi,
+            "path": str(out),
+            "size": len(blob),
+            "sha256": hashlib.sha256(blob).hexdigest(),
+        }
 
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)

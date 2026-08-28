@@ -83,6 +83,23 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.extract_native_lib")
+    def apk_extract_native_lib(session_id: str, name: str) -> dict[str, Any]:
+        """Extract one embedded native library to a file the native tools can open.
+
+        apk.native_libs lists the .so files an app ships but could not hand one
+        off: jadx and apktool only touch Java/smali, so an app's crypto, DRM or
+        anti-tamper logic (which lives in native code) was a dead end. This pulls
+        the exact bytes of a lib/<abi>/<name>.so entry to disk so a follow-up
+        native session (session.create on the returned path) can analyze it with
+        r2.* or ghidra.* -- the seam from the Android line to the native line.
+        Pass name exactly as apk.native_libs reports it. Answers with name, abi,
+        path, size, sha256 and artifact_id (the registered handle). A name that
+        is not a real .so entry in the archive is refused (not_found or
+        invalid_params), so this is not an arbitrary zip extractor.
+        """
+        return _dump(analysis.apk_extract_native_lib(session_id, name))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,

@@ -20,7 +20,11 @@ from headless_re_mcp.config import Settings
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, _dir_size
 from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success
-from headless_re_mcp.core.service_ext import _record_backend, _timeline_append
+from headless_re_mcp.core.service_ext import (
+    _record_backend,
+    _register_capture,
+    _timeline_append,
+)
 from headless_re_mcp.core.session import InvalidStateTransition, SessionRegistry
 
 JsonObject = dict[str, Any]
@@ -113,6 +117,64 @@ class ApkAnalysisMixin:
 
     def apk_native_libs(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "native_libs")
+
+    def _native_out_dir(self, session_id: str) -> Path:
+        if not session_id or Path(session_id).name != session_id:
+            raise ApkError("invalid_params", "invalid session id")
+        root = self.settings.artifact_root.expanduser().resolve() / "apk_native" / session_id
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def apk_extract_native_lib(self, session_id: str, name: str) -> Result[JsonObject]:
+        try:
+            session = self.registry.get(session_id)
+            if session.state in {
+                SessionState.CLOSING,
+                SessionState.CLOSED,
+                SessionState.FAILED,
+            }:
+                raise InvalidStateTransition(
+                    f"apk.extract_native_lib cannot run in {session.state.value} state"
+                )
+            binary = self._apk_binary(session_id)
+            out_dir = self._native_out_dir(session_id)
+            data = ApkClient().extract_native_lib(binary, name, out_dir)
+            try:
+                session = self.registry.get(session_id)
+                if session.state in {
+                    SessionState.CLOSING,
+                    SessionState.CLOSED,
+                    SessionState.FAILED,
+                }:
+                    raise InvalidStateTransition(
+                        f"apk.extract_native_lib cannot run in {session.state.value} state"
+                    )
+            except BaseException:
+                # close already ran _forget_session_work_dirs; a file written after
+                # that is invisible to the next close and to artifacts.gc.
+                with suppress(OSError):
+                    Path(data["path"]).unlink()
+                raise
+            # Register the extracted .so so it has an id an agent can read back and
+            # retention can reclaim, then a native session can open data["path"]
+            # with radare2/Ghidra -- the seam from the APK line to the native line.
+            data = _register_capture(
+                self,
+                session_id,
+                Path(data["path"]),
+                kind="apk_native_lib",
+                source="apk.extract_native_lib",
+                payload=data,
+            )
+            _record_backend(self, session_id, "apk", endpoint=str(out_dir))
+            _timeline_append(
+                self, session_id, "apk.extract_native_lib", "native library extracted", name=name
+            )
+            return _success(data, session_id=session_id, backend="apk")
+        except ApkError as exc:
+            return _failure(_as_rpc(exc), session_id=session_id)
+        except BaseException as exc:
+            return _failure(exc, session_id=session_id)
 
     def apk_classes(self, session_id: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
