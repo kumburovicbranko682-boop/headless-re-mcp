@@ -96,3 +96,22 @@ def test_stealth_set_is_a_file_write() -> None:
     assert spec.write is True
     assert spec.agent_auto_execute is False
     assert spec.effects == frozenset({ToolEffect.STATE_CHANGE, ToolEffect.FILE_WRITE})
+
+
+def test_ghidra_exports_are_file_writes_not_auto_executing_reads() -> None:
+    """Ghidra exports register durable artifacts, so they cannot auto-run as reads.
+
+    ghidra.functions/symbols/xrefs/decompile each shell out to analyzeHeadless
+    and register a durable export-JSON artifact under the artifact root -- the
+    same durable side effect that makes the screenshot and HAR capture tools
+    file writes. Classified read_only, decide() auto-approved them even under a
+    bare fail-closed policy, which the autonomy contract ("everything that
+    writes a file waits for approval") forbids. Pinned so a revert to read_only
+    fails loudly. The packed-analysis preset still auto-runs them (they are not
+    on the sensitive-write denylist); this only gates them in REQUEST mode.
+    """
+    for name in ("ghidra.functions", "ghidra.symbols", "ghidra.xrefs", "ghidra.decompile"):
+        spec = COMMAND_CATALOG.require(name)
+        assert spec.write is True, name
+        assert spec.agent_auto_execute is False, name
+        assert spec.effects == frozenset({ToolEffect.STATE_CHANGE, ToolEffect.FILE_WRITE}), name

@@ -96,10 +96,6 @@ _READ_ONLY_NAMES = frozenset((
     'frida.exports',
     'frida.memory.read',
     'frida.modules',
-    'ghidra.decompile',
-    'ghidra.functions',
-    'ghidra.symbols',
-    'ghidra.xrefs',
     'imports.read',
     'imports.scan',
     'memory.protect.query',
@@ -204,6 +200,9 @@ _READ_ONLY_NAMES = frozenset((
     'frida.java.methods',
     'js.beautify',
     'js.deobfuscate',
+    # NB: ghidra.functions/symbols/xrefs/decompile are FILE_WRITE, not read-only
+    # queries. Each runs analyzeHeadless and registers a durable export artifact
+    # under the artifact root -- see _FILE_WRITE_NAMES.
     'proxy.flow.get',
     'proxy.flows',
     'proxy.status',
@@ -297,6 +296,22 @@ _FILE_WRITE_NAMES = frozenset((
     'dotnet.reactor.unpack',
     'dynamic.stealth.set',
     'ghidra.analyze',
+    # ghidra.analyze plus the four exports below all shell out to analyzeHeadless
+    # and write under artifact_root/ghidra/<session>/. The exports additionally
+    # register a *durable* export JSON artifact (via _ghidra_export ->
+    # _record_artifact), the same durable side effect that makes the screenshot
+    # and HAR capture tools file writes. They were classified read_only, so
+    # decide() auto-approved them ("read_only") even under a bare fail-closed
+    # policy that gates every other write -- the one direction the autonomy
+    # contract ("everything that writes a file waits for approval") forbids.
+    # FILE_WRITE keeps them behind the human gate in REQUEST mode while the
+    # packed-analysis preset (the Settings.load() default) still auto-runs them,
+    # because they are analysis reads that happen to cache, not sensitive writes,
+    # and so are deliberately absent from _EXCLUDED_AUTO_FILE_WRITES.
+    'ghidra.decompile',
+    'ghidra.functions',
+    'ghidra.symbols',
+    'ghidra.xrefs',
     'modules.dump',
     'patches.apply',
     'patches.restore',

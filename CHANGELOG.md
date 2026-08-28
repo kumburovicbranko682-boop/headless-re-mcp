@@ -5,6 +5,28 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 安全（Ghidra 导出工具被误标为只读——bare fail-closed 策略下会无人值守直接执行并落盘）
+
+- 缺陷：`ghidra.functions/symbols/xrefs/decompile` 被归到 `_READ_ONLY_NAMES`，于是
+  `AutonomyPolicy.decide` 对它们返回 `read_only` 自动放行——即使在「门全关」的空策略下，
+  它们也绕过人工审批直接跑。但这四个工具每个都 shell 出 `analyzeHeadless`（起 JVM、2G 堆、
+  最长 180s），在 `artifact_root/ghidra/<session>/` 下建目录、写 `export_<mode>.json`，并经
+  `_ghidra_export -> _record_artifact` 注册一条**持久 artifact**——与截图、HAR 导出这些
+  已归为 FILE_WRITE 的采集工具是同一种持久副作用。全仓核对：三处 `_record_artifact` 调用点里，
+  采集工具（FILE_WRITE）与这四个 Ghidra 导出（曾为 read_only）会注册 artifact，其余所有 read_only
+  工具都不注册——「注册持久 artifact ⟹ FILE_WRITE」这条不变量唯独在这四个上被打破。而做同样
+  analyzeHeadless 机械动作的 `ghidra.analyze` 本就是 FILE_WRITE，分类自相矛盾。这正违反 autonomy
+  模块自己写下的契约：「一切会写文件的操作都要等人工审批」。
+- 改法：把四个导出从 `_READ_ONLY_NAMES` 迁到 `_FILE_WRITE_NAMES`（总数仍 265）。刻意**不**加入
+  `_EXCLUDED_AUTO_FILE_WRITES` 敏感写名单——它们是「顺带缓存的分析读」，不是补丁/重签/删数据那类
+  敏感写。于是行为按预期分层：生产默认（`Settings.load()` 的 packed-analysis 预设，自动放行所有
+  非敏感 FILE_WRITE）下四者照样无人值守跑，**默认行为不变**；只有在显式「REQUEST 全部门关」的空
+  策略下它们才回到人工审批——而在那个模式下,门住一个会写文件的工具本就是正确语义。
+- 测试：新增 `test_ghidra_exports_are_file_writes_not_auto_executing_reads` 钉死四者为 FILE_WRITE、
+  非自动执行，防止回退。既有 packed-preset 一致性测试按活目录重算，自动纳入四者仍绿；README 读写
+  归类由 148/117 更正为 144/121（`test_readme_catalog_consistency` 守住）。全量单元套件 6047 通过，
+  `ruff` / `mypy --strict` 干净。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
