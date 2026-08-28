@@ -91,6 +91,14 @@ rpc.exports = { ping: function () { return 'root_bypass_loaded'; } };
 """,
 }
 
+# The single source of truth for which template names frida.hook.template
+# accepts. The tool schema derives its allow-pattern from this rather than
+# re-listing the names: a hand-maintained second copy would silently reject a
+# template added here but not there (the schema rejects before the client is
+# even reached), so anything added to _HOOK_TEMPLATES becomes callable with no
+# second edit. Insertion order is preserved so the derived pattern is stable.
+HOOK_TEMPLATE_NAMES: tuple[str, ...] = tuple(_HOOK_TEMPLATES)
+
 _ENUM_SCRIPT = """
 rpc.exports = {
   modules: function (limit) {

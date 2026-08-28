@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（frida.hook.template 的可用模板名在三处各写一遍、易漂移）
+
+- 可用模板名过去写在三个地方：客户端的 `_HOOK_TEMPLATES` 字典（真源）、工具 schema 里手写的
+  `Field(pattern="^(noop|android_ssl_unpin|...)$")` 正则、以及测试里另一份硬编码元组。危险的
+  漂移没人拦得住：往字典里加一个模板、却忘了改 schema 正则，schema 会在请求还没到客户端前就
+  静默拒掉这个本该合法的模板，而旧测试只校验它那四个名字是字典的子集、且正则等于那四个名字，
+  正好漏掉这种情况。现把字典设为唯一真源：新增有序公共视图 `HOOK_TEMPLATE_NAMES = tuple(
+  _HOOK_TEMPLATES)`，工具 schema 的 `pattern` 由它派生（`re.escape` 防未来非标识符名），往
+  字典里加模板即自动可调、无需第二处改动。测试改为从字典派生断言：加模板保持绿、两处不同步即
+  失败。当前四个模板派生出的正则与原硬编码完全一致，纯属可维护性重构，不改行为。
+
 ### 诊断（Android/Web 后端的 capability_unavailable 报错补上安装提示）
 
 - 各可选后端在依赖缺失时抛 `capability_unavailable`，但报错文案不一致：apktool/apksigner

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any
 
 from pydantic import Field  # noqa: F401 - used by Annotated Field constraints
 
+from headless_re_mcp.backends.frida import HOOK_TEMPLATE_NAMES
 from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
+
+# Built from the client's canned-template dict so the tool accepts exactly the
+# templates that exist -- see HOOK_TEMPLATE_NAMES. re.escape guards a future
+# name that is not a bare identifier; today's are, so the pattern is unchanged.
+_HOOK_TEMPLATE_PATTERN = "^(" + "|".join(re.escape(name) for name in HOOK_TEMPLATE_NAMES) + ")$"
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -72,7 +79,7 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         session_id: str,
         template: Annotated[
             str,
-            Field(pattern="^(noop|android_ssl_unpin|android_crypto_monitor|android_root_bypass)$"),
+            Field(pattern=_HOOK_TEMPLATE_PATTERN),
         ] = "noop",
     ) -> dict[str, Any]:
         """Load a canned Frida probe template and destroy it before returning.
