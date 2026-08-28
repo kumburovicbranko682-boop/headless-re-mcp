@@ -50,7 +50,21 @@ jobs:
         run: python -m pip check
 
       - name: Python dependency audit
-        run: python -m pip_audit --skip-editable --progress-spinner=off
+        # pip_audit queries the PyPI advisory API, and a transient read timeout
+        # against it was failing this whole job -- before the unit tests ran --
+        # on a network blip unrelated to the code, masking the test signal.
+        # Retry with backoff so a real advisory still fails the gate (every
+        # attempt exits non-zero and the final one propagates that) while a
+        # flaky network recovers. pwsh to match the job's default shell.
+        run: |
+          foreach ($attempt in 1..3) {
+            python -m pip_audit --skip-editable --progress-spinner=off
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Write-Host "pip_audit attempt $attempt failed (exit $LASTEXITCODE); retrying after backoff"
+            Start-Sleep -Seconds ($attempt * 10)
+          }
+          python -m pip_audit --skip-editable --progress-spinner=off
+          exit $LASTEXITCODE
 
       - name: Unit tests
         # -rs prints every skip reason: a suite that quietly skips half of
