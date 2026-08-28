@@ -44,6 +44,70 @@ def test_linux_non_x86_64_is_not_claimed_supported() -> None:
     assert report["support_level"] == "unsupported"
 
 
+def test_windows_x86_64_platform_report_names_full_scope() -> None:
+    """The Windows/x86_64 report is 'full' with MSI packaging and ready backends.
+
+    The Linux CI runner never takes this branch, so without an explicit
+    override the "full" support level, the MSI package format, and the
+    windows_only "ready" status are unpinned -- a refactor that mislabelled
+    Windows as "core" or dropped MSI would pass every test on Linux. Drive it
+    with the real Windows machine spelling ("AMD64") so the casefold-to-amd64
+    arm is exercised too.
+    """
+    report = runtime_platform_report(
+        os_name="nt",
+        system="Windows",
+        machine="AMD64",
+    )
+
+    assert report["name"] == "windows"
+    assert report["core_supported"] is True
+    assert report["support_level"] == "full"
+    assert report["package_format"] == "wheel_sdist_or_msi"
+    assert report["windows_only_status"] == "ready"
+    assert report["architecture"] == "x86_64"
+
+
+def test_windows_non_x86_64_is_not_claimed_full() -> None:
+    """Windows on a non-x86_64 arch must not inherit the 'full' claim.
+
+    core_supported gates on x86_64, so an ARM Windows host is unsupported. This
+    pins that the 'windows' platform key alone never promotes an unsupported
+    arch to 'full' or to a 'ready' backend status.
+    """
+    report = runtime_platform_report(
+        os_name="nt",
+        system="Windows",
+        machine="ARM64",
+    )
+
+    assert report["name"] == "windows"
+    assert report["core_supported"] is False
+    assert report["support_level"] == "unsupported"
+    assert report["windows_only_status"] == "unsupported_on_platform"
+
+
+def test_an_unrecognized_platform_reports_its_own_name_and_is_unsupported() -> None:
+    """A non-Windows/non-Linux host reports its own key and claims no support.
+
+    platform_key falls back to the casefolded system name for anything outside
+    the two supported platforms; runtime_platform_report must then report that
+    name, refuse core support, and leave the package format on the portable
+    default rather than silently mislabelling an unknown OS as supported.
+    """
+    report = runtime_platform_report(
+        os_name="posix",
+        system="Darwin",
+        machine="x86_64",
+    )
+
+    assert report["name"] == "darwin"
+    assert report["core_supported"] is False
+    assert report["support_level"] == "unsupported"
+    assert report["package_format"] == "wheel_or_sdist"
+    assert report["windows_only_status"] == "unsupported_on_platform"
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux installer contract")
 def test_linux_installer_resolves_repo_independently_of_working_directory(
     tmp_path: Path,
