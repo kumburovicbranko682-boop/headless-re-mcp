@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from threading import RLock, Thread
+from threading import Event, RLock, Thread
 from typing import Any, TextIO
 
 from headless_re_mcp.backends.common.subprocess_rpc import (
@@ -31,6 +31,14 @@ JsonObject = dict[str, Any]
 _MAX_IDA_STARTUP_SECONDS = 240.0
 _MAX_DIAGNOSTIC_LINE_CHARS = 16 * 1024
 _MAX_RPC_LINE_CHARS = 8 * 1024 * 1024
+# The worker protocol normally has one response in flight. A flood of
+# unsolicited JSON used to accumulate without limit whenever no request was
+# receiving; retain enough headroom for progress while bounding malformed output.
+_MAX_PENDING_WORKER_MESSAGES = 1_024
+# An analyzer window's title can differ on every retried gate (progress
+# percentages, file names).  Keep enough distinct sightings for diagnostics
+# without retaining a session-long log of every title ever seen.
+_MAX_OBSERVED_WINDOWS = 128
 
 
 def next_receive_deadline(
@@ -130,7 +138,11 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         # asked to stop, so without this a hard restart leaves one behind for
         # every session that was open.
         assign_to_process_group(self._process.pid)
-        self._messages: queue.Queue[JsonObject | None] = queue.Queue()
+        self._messages: queue.Queue[JsonObject | None] = queue.Queue(
+            maxsize=_MAX_PENDING_WORKER_MESSAGES
+        )
+        self._message_overflow = Event()
+        self._messages_dropped = 0
         self._stdout_log: deque[str] = deque(maxlen=100)
         self._stderr_log: deque[str] = deque(maxlen=100)
         self._request_lock = RLock()
@@ -139,6 +151,7 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         self._metadata: JsonObject = {}
         self._capabilities: frozenset[str] = frozenset()
         self._observed_windows: set[str] = set()
+        self._observed_windows_dropped = 0
 
         assert self._process.stdout is not None
         assert self._process.stderr is not None
@@ -228,9 +241,10 @@ class IdaWorkerClient(ManagedSubprocessMixin):
                     lambda item: item.get("id") == request_id, timeout
                 )
             except IdaWorkerError as exc:
-                if exc.code == "worker_timeout":
-                    # The worker is still inside Hex-Rays; the next request
-                    # would queue behind that call for the rest of the session.
+                if exc.code in {"worker_timeout", "worker_output_overflow"}:
+                    # A timed-out worker is still inside Hex-Rays, while an
+                    # overflowing worker has already lost protocol messages.
+                    # Neither can safely serve the next request.
                     with suppress(BaseException):
                         self.terminate()
                 raise
@@ -282,11 +296,21 @@ class IdaWorkerClient(ManagedSubprocessMixin):
                     self._stdout_log.append(stripped)
                     continue
                 if isinstance(payload, dict):
-                    self._messages.put(payload)
+                    self._enqueue_message(payload)
                 else:
                     self._stdout_log.append(stripped)
         finally:
-            self._messages.put(None)
+            self._enqueue_message(None)
+
+    def _enqueue_message(self, message: JsonObject | None) -> None:
+        try:
+            self._messages.put_nowait(message)
+        except queue.Full:
+            # A worker that floods faster than a request drains must not grow
+            # the heap without bound. Drop the overflow, remember it happened,
+            # and let _receive surface it as worker_output_overflow.
+            self._messages_dropped += 1
+            self._message_overflow.set()
 
     def _read_stderr(self, stream: TextIO) -> None:
         while True:
@@ -312,6 +336,13 @@ class IdaWorkerClient(ManagedSubprocessMixin):
         absolute_deadline = started + extra
         while True:
             self._observe_windows()
+            if self._message_overflow.is_set():
+                raise IdaWorkerError(
+                    "worker_output_overflow",
+                    "IDA worker exceeded the unread message queue capacity",
+                    details=self._diagnostics(),
+                    retryable=True,
+                )
             remaining = startup_receive_remaining(
                 now=time.monotonic(),
                 idle_deadline=deadline,
@@ -351,14 +382,21 @@ class IdaWorkerClient(ManagedSubprocessMixin):
     def _observe_windows(self) -> None:
         """Refuse the call while a window is up, without latching on history.
 
-        ``analyzer_windows`` stays cumulative so a gate still fails on a window
-        that opened and closed mid-analysis. Refusing on that history instead
+        ``analyzer_windows`` stays cumulative (capped at ``_MAX_OBSERVED_WINDOWS``
+        distinct sightings) so a gate still fails on a window that opened and
+        closed mid-analysis. Refusing on that history instead
         would retire the worker permanently over a dialog that is already gone.
         """
         windows = describe_process_windows(self._process.pid)
         if not windows:
             return
-        self._observed_windows.update(windows)
+        for window in windows:
+            if window in self._observed_windows:
+                continue
+            if len(self._observed_windows) < _MAX_OBSERVED_WINDOWS:
+                self._observed_windows.add(window)
+            else:
+                self._observed_windows_dropped += 1
         raise IdaWorkerError(
             "analyzer_window_detected",
             "IDA worker has an analyzer window open",
@@ -380,4 +418,9 @@ class IdaWorkerClient(ManagedSubprocessMixin):
             "stdout": list(self._stdout_log),
             "stderr": list(self._stderr_log),
             "analyzer_windows": sorted(self._observed_windows),
+            "pending_messages": self._messages.qsize(),
+            "message_capacity": _MAX_PENDING_WORKER_MESSAGES,
+            "messages_dropped": self._messages_dropped,
+            "analyzer_window_capacity": _MAX_OBSERVED_WINDOWS,
+            "analyzer_windows_dropped": self._observed_windows_dropped,
         }

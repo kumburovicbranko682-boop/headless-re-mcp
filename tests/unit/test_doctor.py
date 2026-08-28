@@ -19,6 +19,7 @@ from headless_re_mcp.doctor import (
     format_report,
     probe_die,
     probe_exeinfope,
+    probe_optional_tool,
     probe_upx,
     probe_x64dbg_binaries,
     probe_x64dbg_source,
@@ -59,6 +60,56 @@ def _settings(
         x64dbg_headless_x86=x86,
         artifact_root=artifacts,
     )
+
+
+def test_radare2_probe_honors_a_configured_off_path_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """doctor must not report radare2 MISSING when r2 is configured off PATH.
+
+    r2.* runs ``R2Client(settings.r2)``, which uses the configured path directly,
+    so a probe that consulted only PATH (``shutil.which``) reported the backend
+    missing while the tools worked -- the same doctor/tool split the webcrack
+    resolver fixed. Configured-first with a PATH fallback matches every other
+    optional-CLI probe (adb, jadx, apktool, webcrack, wabt).
+    """
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    r2 = tmp_path / "vendor" / "r2"
+    r2.parent.mkdir(parents=True)
+    r2.write_text("#!/bin/sh\n", encoding="utf-8")
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=r2)
+
+    report = run_doctor(settings)
+
+    probe = next(p for p in report.probes if p.name == "radare2")
+    assert probe.status == ProbeStatus.DETECTED
+    assert probe.details.get("path") == str(r2)
+
+
+def test_radare2_probe_falls_back_to_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    on_path = tmp_path / "r2"
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        doctor_module.shutil, "which", lambda cmd: str(on_path) if cmd == "r2" else None
+    )
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
+
+    probe = probe_optional_tool("radare2", settings, "r2", ("r2", "rizin"))
+
+    assert probe.status == ProbeStatus.DETECTED
+
+
+def test_radare2_probe_missing_when_neither_configured_nor_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    settings = replace(_settings(None, tmp_path / "artifacts"), r2=None)
+
+    probe = probe_optional_tool("radare2", settings, "r2", ("r2", "rizin"))
+
+    assert probe.status == ProbeStatus.MISSING
 
 
 def test_x64dbg_source_probe_requires_official_target(tmp_path: Path) -> None:

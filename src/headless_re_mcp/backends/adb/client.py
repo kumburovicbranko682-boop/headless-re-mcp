@@ -28,6 +28,10 @@ JsonObject = dict[str, Any]
 # constrained so nothing that reaches a shell command can carry metacharacters.
 _SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+# frida-server's -l listen host. An IPv4 address or a simple hostname; the
+# strict set keeps a value that reaches the su -c command line from carrying
+# shell metacharacters, quotes, or the colon that separates host from port.
+_BIND_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,64}$")
 _MAX_LOGCAT_LINES = 5000
 _MAX_LOGCAT_CHARS = 200_000
 # Only the package attribute near the top of the manifest is needed. Reading
@@ -81,6 +85,26 @@ def _check_package(package: str) -> str:
     if not _PACKAGE_RE.match(value):
         raise AdbError("invalid_params", "invalid package name", package=package)
     return value
+
+
+def _require_apk_zip(path: Path) -> None:
+    """Refuse a non-APK before pushing it to the device.
+
+    ``adb install`` transfers the file to the device and runs ``pm install``;
+    an APK is a zip, so a non-zip -- a truncated download, a path pointing at
+    the wrong file, a decoded resource mistaken for the rebuilt apk -- can only
+    fail after the whole transfer, and ``pm`` reports it as an opaque device
+    error rather than the parameter mistake it is. ``zipfile.is_zipfile`` reads
+    only the archive's tail (it does not decompress, so the check itself has no
+    zip-bomb exposure) and refuses it up front, the same fail-fast shape apktool
+    and apksigner use before launching their JVM.
+    """
+    if not zipfile.is_zipfile(path):
+        raise AdbError(
+            "invalid_params",
+            "input is not a valid APK (not a zip archive)",
+            path=str(path),
+        )
 
 
 def _check_forward_spec(spec: str, *, side: str, allow_jdwp: bool = False) -> None:
@@ -151,6 +175,22 @@ def _device_shell(dev: Any, args: str | list[str], *, timeout: float = _ADB_SHEL
             raise AdbError("timeout", f"adb timed out after {timeout:g}s") from exc
         raise AdbError("backend_error", f"adb shell failed: {exc}") from exc
     return str(raw)
+
+
+def _is_host_error_output(text: str) -> bool:
+    """Whether adb handed back only host-error text instead of a real result.
+
+    adbutils' ``shell`` can return the adb host's own ``error:`` / ``adb:``
+    message as stdout rather than raising, so a dead or offline device answers
+    a text command with an error string. A reply whose every non-blank line is
+    such a line is a failure, not an empty-but-successful result. A real result
+    -- even a logcat line that merely mentions "error" -- has at least one line
+    that does not start with those prefixes.
+    """
+    captured = [line for line in text.splitlines() if line.strip()]
+    return bool(captured) and all(
+        line.lstrip().lower().startswith(("error:", "adb:")) for line in captured
+    )
 
 
 def _call(method: Any, *args: Any, timeout: float | None = None, **kwargs: Any) -> Any:
@@ -251,7 +291,18 @@ def _apk_package_name(path: Path) -> str | None:
 
 def _pm_path(dev: Any, package: str) -> str | None:
     raw = _device_shell(dev, ["pm", "path", package], timeout=_ADB_PROBE_TIMEOUT_S)
-    for line in str(raw).splitlines():
+    text = str(raw)
+    # adbutils can hand back the adb host's own "error:" / "adb:" line as stdout
+    # rather than raising -- an offline device answers pm path with a host error,
+    # the same way it does getprop / pm list. Read as "no package: line" that
+    # would report a real install as installed=False and an uninstall as
+    # uninstalled=True: the verify never ran. Raise so install/uninstall report
+    # None ("could not verify"), the honest answer their handlers already emit
+    # when the probe cannot run. A genuinely absent package answers with empty
+    # output (exit 1, no text), which is not a host error and stays None.
+    if _is_host_error_output(text):
+        raise AdbError("backend_error", "pm path failed", output=text[:800])
+    for line in text.splitlines():
         line = line.strip()
         if line.startswith("package:"):
             return line.split(":", 1)[1].strip() or line
@@ -470,9 +521,12 @@ class AdbBackend:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PROPERTIES))
         raw = _device_shell(dev, "getprop")
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "getprop failed", output=text[:800])
         props: dict[str, str] = {}
         has_more = False
-        for line in str(raw).splitlines():
+        for line in text.splitlines():
             match = re.match(r"^\[(.+?)\]:\s*\[(.*)\]$", line.strip())
             if not match:
                 continue
@@ -489,9 +543,12 @@ class AdbBackend:
         capped = max(1, min(int(limit), _MAX_PACKAGES))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
+        text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "pm list failed", output=text[:800])
         pkgs: list[str] = []
         has_more = False
-        for line in str(raw).splitlines():
+        for line in text.splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
@@ -510,10 +567,16 @@ class AdbBackend:
         }
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
-        dev = self._device(serial)
+        # Check the local APK before resolving the device: a missing file is a
+        # cheap local fact and the most common caller mistake, while _device
+        # reaches the adb server. Ordering it first means a bad path fails fast
+        # as not_found instead of being masked by a device error when the server
+        # or device is also unreachable.
         path = Path(apk_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "apk not found", path=str(path))
+        _require_apk_zip(path)
+        dev = self._device(serial)
         try:
             extra = _accepted_kwargs(
                 dev.install,
@@ -630,21 +693,40 @@ class AdbBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AdbError("backend_error", f"failed to read current activity: {exc}") from exc
-        return {
-            "package": getattr(current, "package", None),
-            "activity": getattr(current, "activity", None),
-        }
+        package = getattr(current, "package", None) if current is not None else None
+        activity = getattr(current, "activity", None) if current is not None else None
+        # Measured: app_current() returning None still answered
+        # {package: None, activity: None} as success, so an agent treated a
+        # failed dumpsys as an empty foreground rather than a read that failed.
+        if not package:
+            raise AdbError(
+                "backend_error",
+                "failed to read current activity",
+                package=package or None,
+                activity=activity or None,
+            )
+        return {"package": package, "activity": activity}
 
     def logcat(self, serial: str, *, lines: int = 200) -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
         raw = _device_shell(dev, ["logcat", "-d", "-t", str(capped)])
         text = str(raw)
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "logcat failed", output=text[:800])
         truncated = len(text) > _MAX_LOGCAT_CHARS
         if truncated:
+            # Keep the newest bytes, but that slice starts mid-line, so drop
+            # the leading partial fragment. Returned as lines[0] it reads as a
+            # complete log entry and mis-parses -- the truncated flag says
+            # bytes were cut, not that the first line is half a line.
             text = text[-_MAX_LOGCAT_CHARS:]
+            newline = text.find("\n")
+            text = text[newline + 1 :] if newline != -1 else ""
+        out_lines = text.splitlines()[-capped:]
         return {
-            "lines": text.splitlines()[-capped:],
+            "lines": out_lines,
+            "count": len(out_lines),
             "requested": capped,
             "truncated": truncated,
         }
@@ -735,7 +817,10 @@ class AdbBackend:
         return {"remote": remote_path, "local": str(local_path), "size": pulled}
 
     def push(self, serial: str, local_path: str, remote_path: str) -> JsonObject:
-        dev = self._device(serial)
+        # Validate the local file (exists, stat, size cap) before resolving the
+        # device: all cheap local facts, and a bad path or oversized file should
+        # fail fast rather than after a device round-trip -- or be masked by a
+        # device error when the adb server is unreachable.
         path = Path(local_path).expanduser()
         if not path.is_file():
             raise AdbError("not_found", "local file not found", path=str(path))
@@ -754,6 +839,7 @@ class AdbBackend:
                 size=size,
                 cap=cap,
             )
+        dev = self._device(serial)
         try:
             _call(dev.sync.push, str(path), remote_path, timeout=_ADB_TRANSFER_TIMEOUT_S)
         except AdbError:
@@ -769,16 +855,24 @@ class AdbBackend:
         server_binary: str | None = None,
         remote_path: str = "/data/local/tmp/frida-server",
         port: int = 27042,
+        bind_host: str = "127.0.0.1",
     ) -> JsonObject:
         """Best-effort: push and start frida-server on a rooted device/emulator.
 
         Idempotent-ish: if a frida-server process is already running it does
         nothing. Requires root (su) on the device; failures surface as
         structured errors rather than exceptions.
+
+        bind_host is the interface frida-server listens on. It defaults to
+        loopback: frida then only accepts connections over the USB/adb transport
+        or an adb forward, not from any host that can route to the device. Pass
+        ``0.0.0.0`` to expose it on the network for a remote-by-IP connection.
         """
         dev = self._device(serial)
         if not re.match(r"^/[\w./\-]+$", remote_path):
             raise AdbError("invalid_params", "invalid remote_path", remote_path=remote_path)
+        if not _BIND_HOST_RE.match(bind_host or ""):
+            raise AdbError("invalid_params", "invalid bind_host", bind_host=bind_host)
         visible = _frida_server_visible(dev)
         if visible:
             return {"running": True, "pushed": False, "port": port}
@@ -799,7 +893,7 @@ class AdbBackend:
             # Launch detached under root; bounded so a blocking su prompt cannot hang.
             _device_shell(
                 dev,
-                f"su -c 'nohup {remote_path} -l 0.0.0.0:{int(port)} >/dev/null 2>&1 &'",
+                f"su -c 'nohup {remote_path} -l {bind_host}:{int(port)} >/dev/null 2>&1 &'",
                 timeout=8.0,
             )
         except Exception as exc:  # noqa: BLE001 - a timeout here often means it launched
