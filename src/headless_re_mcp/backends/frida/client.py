@@ -410,6 +410,15 @@ class FridaClient:
         self._require(pid, allowed_pid)
         if type(size) is not int or not 1 <= size <= 256 * 1024:
             raise FridaError("invalid_params", "size must be 1..262144")
+        if type(address) is not int or not 0 <= address < (1 << 64):
+            # address was not validated the way size is: it flows straight from
+            # the tool arguments, and the agent transport skips the schema, so a
+            # float (inf from a JSON 1e400), null, or non-hex string reaches
+            # int(address) below and raises OverflowError/TypeError/ValueError --
+            # none of them a FridaError, so the service filed an internal_error
+            # incident for a bad pointer instead of this invalid_params.
+            # ``type(...) is not int`` also rejects a bool, never a real address.
+            raise FridaError("invalid_params", "address must be a 0..2**64-1 integer")
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
