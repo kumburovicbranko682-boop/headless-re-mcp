@@ -521,10 +521,16 @@ class AdbBackend:
         }
 
     def packages(
-        self, serial: str, *, third_party_only: bool = False, limit: int = 500
+        self,
+        serial: str,
+        *,
+        third_party_only: bool = False,
+        limit: int = 500,
+        offset: int = 0,
     ) -> JsonObject:
         dev = self._device(serial)
         capped = max(1, min(int(limit), _MAX_PACKAGES))
+        start = max(0, int(offset))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
         text = str(raw)
@@ -537,19 +543,25 @@ class AdbBackend:
             name = line.split(":", 1)[1].strip()
             if name:
                 names.append(name)
-        # Sort before the cap, not after: a capped list must be a real
-        # alphabetical prefix, not an arbitrary install-order slice that was
-        # merely sorted for display. Only then can a caller reading a name's
-        # absence conclude "it sorts within this page and is not present, so it
-        # is not installed" -- with cap-then-sort a package could sit past the
-        # cap yet sort early, going missing from the middle of the page so an
-        # agent read a real install as "not installed".
+        # Sort before the page, not after: a paged list must be a real
+        # alphabetical slice, not an arbitrary install-order one that was merely
+        # sorted for display. Only then can a caller reading a name's absence
+        # conclude "it sorts within this page and is not installed" -- and only
+        # offset makes that conclusion cover the whole set. pm list returns every
+        # package deterministically, so paging past _MAX_PACKAGES reaches the
+        # tail that a lone capped first page (has_more true) leaves unreachable,
+        # closing the gap where a real install sorting past the cap read as "not
+        # installed". This is the apk.classes / apk.strings offset contract, the
+        # sibling those readers' comments already name device.packages as.
         names.sort()
         total = len(names)
+        page = names[start : start + capped]
         return {
-            "packages": names[:capped],
-            "count": min(total, capped),
-            "has_more": total > capped,
+            "packages": page,
+            "count": len(page),
+            "total": total,
+            "offset": start,
+            "has_more": start + len(page) < total,
             "third_party_only": third_party_only,
         }
 

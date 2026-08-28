@@ -60,7 +60,13 @@ class _FakeAdb(AdbBackend):
         self._guard("properties")
         return {"properties": {}, "count": 0}
 
-    def packages(self, serial: str, third_party_only: bool = False, limit: int = 500) -> JsonObject:
+    def packages(
+        self,
+        serial: str,
+        third_party_only: bool = False,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> JsonObject:
         self._guard("packages")
         return {"packages": [], "count": 0}
 

@@ -672,6 +672,48 @@ class TestPackagesDoesNotInventAnEmptyDevice:
         result = _adb_with_shell(raw).packages("emulator-5554")
         assert result["packages"] == ["com.example.app", "com.other.app"]
         assert result["count"] == 2
+        assert result["total"] == 2
+        assert result["offset"] == 0
+        assert result["has_more"] is False
+
+    def test_offset_pages_the_sorted_tail_that_a_capped_first_page_hides(self) -> None:
+        # Six packages, page size two: the first page is a real alphabetical
+        # prefix with has_more, and offset reaches the tail a lone capped page
+        # would leave unreachable -- so "sorts within a reachable page and
+        # absent => not installed" holds for the whole set, not just the head.
+        raw = "".join(f"package:com.app{i}\n" for i in (5, 3, 1, 4, 2, 0))
+        adb = _adb_with_shell(raw)
+
+        first = adb.packages("emulator-5554", limit=2)
+        assert first["packages"] == ["com.app0", "com.app1"]
+        assert first["count"] == 2
+        assert first["total"] == 6
+        assert first["offset"] == 0
+        assert first["has_more"] is True
+
+        tail = adb.packages("emulator-5554", limit=2, offset=4)
+        assert tail["packages"] == ["com.app4", "com.app5"]
+        assert tail["offset"] == 4
+        assert tail["total"] == 6
+        assert tail["has_more"] is False
+
+    def test_offset_is_floored_and_a_past_end_page_is_empty(self) -> None:
+        raw = "package:com.b\npackage:com.a\n"
+        adb = _adb_with_shell(raw)
+
+        # A negative offset floors to 0 rather than slicing from the list tail
+        # via Python's negative indexing.
+        floored = adb.packages("emulator-5554", limit=1, offset=-5)
+        assert floored["packages"] == ["com.a"]
+        assert floored["offset"] == 0
+        assert floored["has_more"] is True
+
+        past_end = adb.packages("emulator-5554", offset=99)
+        assert past_end["packages"] == []
+        assert past_end["count"] == 0
+        assert past_end["total"] == 2
+        assert past_end["offset"] == 99
+        assert past_end["has_more"] is False
 
 
 class TestLogcatDoesNotInventASnapshot:

@@ -59,6 +59,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   即“无事可查”地失败。以把 `service_ext` 某处退回重包裹形态验证非空:守卫精确报出 `('service_ext','FridaError',517)`,
   还原后转绿——这条守卫本可在上一轮就自动逮住那个 `service_ext` 缺口。
 
+### `device.packages` 现在支持 `offset` 分页，让排在 cap 之后的包名可达（此前只回“字母序前缀 + has_more”，装机数超过 2000 时尾部包名无法翻到，读取器 docstring 自己主张的“页内缺失即未安装”推断对尾部并不成立）
+
+- `device.packages` 排序后按 `limit`(上限 2000)切页,回包带 `count`/`has_more`/`third_party_only`,并声明:packages 是字母序前缀,
+  “页内应排到却缺失即确实未安装”。问题在于它**没有 offset**:`pm list packages` 每次都完整、确定地列出全部包,而排在第 2000 个
+  之后的包一旦被 cap 截掉就再也翻不到——只由 `has_more` 如实标出“还有”,却无从抵达。于是它 docstring 自己那句推断只对**首页**
+  成立:一个真实安装、但字母序排在 cap 之后的包,既不在首页、`has_more` 又为真,一个不核对 `has_more` 的 agent 会把它读成“未安装”。
+  这正是 `apk.classes` / `apk.strings` 当初用 offset 补上的同一类“诚实但不可达”缺口——而 `apk`/`jadx` client 的注释早已把
+  `device.packages` 列为“分页其排序集”的同门,实现却一直缺这一半。
+- 新增 caller `offset`:排序后切 `names[offset:offset+capped]`,回包补 `total`(共多少)与 `offset`(本页起点),`has_more` 改为
+  `offset + len(page) < total`。schema 层 `offset: Field(ge=0)`(与其它 offset 读取器一致,过 `test_non_pe_pagination_schema_bounds`
+  的 schema/文档双守卫——docstring 现点名 `total`/`offset`/`has_more`),后端再 `max(0, int(offset))` 兜底(与 `apk._clamp_page`
+  同款、过 `test_non_pe_backend_clamp_guard`)。这样翻到该包应在的页即可确定它在/不在,字母序前缀那句推断对整个集合成立而非仅首页。
+- 单测钉住:首页是真实字母序前缀且 `has_more` 为真、`offset` 翻到尾部取回其余且 `has_more` 归假;负 `offset` 归零(而非按 Python
+  负索引绕到列表尾)、越界 `offset` 得空页而非报错。既有“host error 行不是空设备”“无包行即空”等断言不受影响(offset 默认 0)。
+
 ### 测试（非 PE 分页读取器“后端夹取”漂移守卫：schema 的上界只在 MCP 通道生效，agent / OpenAI 桥直连后端时靠的是后端自己的 `min`/`max` 夹取，此前这半只零散测过，新增 AST 守卫钉住每个读取器都在后端夹 `limit`、兜 `offset`）
 
 - `test_non_pe_pagination_schema_bounds` 钉的是“对外声明”那半:pydantic schema 声明 `limit` 有 maximum、`offset` 下界为 0。
