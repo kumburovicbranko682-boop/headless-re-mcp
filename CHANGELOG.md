@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（device.force_stop 的 ps -A 回退用整行子串匹配，会把兄弟包的进程算成目标）
+
+- `backends/adb/client.py` 的 `_pids_for_package()` 在没有 `pidof` 的老设备上回退到解析
+  `ps -A`，判断行是否属于目标包时用的是 `if package not in line`——对整行做子串匹配。
+  于是名字里包含目标包的兄弟包会被误判：`com.example.apple` 与 `com.example.app.helper`
+  都含有 `com.example.app`，它们的 PID 会被算进目标包。`force_stop` 随后按
+  `stopped = (pids == [])` 报告，于是目标其实已经停了、却因为某个同前缀的兄弟进程还在，
+  被谎报成 “仍在运行”（`stopped=False`，`remaining_pids` 里混入了别的包的 PID）。
+- 改法：只匹配进程的 NAME 列（`ps` 行的最后一个字段），要么与包名完全相等，要么是同一应用的
+  子进程（`com.foo:remote`，`am force-stop` 同样会杀掉它），不再对整行做子串匹配。PID 仍从前
+  三列里取（跳过形如 `u0_a12` 的 USER 列）、上限仍为 16。长包名在老设备上 `comm` 会被截断到
+  15 字符，这属于该回退本就有的尽力而为局限（截断时旧的整行子串同样匹配不上完整包名），本次
+  不改变。
+- 新增用例 `test_pids_for_package_ignores_a_sibling_package_in_the_ps_fallback`：`ps -A` 里同时
+  有 `com.example.app`(4321)、子进程 `com.example.app:svc`(4322) 和兄弟 `com.example.apple`
+  (9999)，钉死返回 `[4321, 4322]`。非空验证：改回整行子串匹配后返回 `[4321, 4322, 9999]`
+  （把兄弟包的 9999 也算了进去）。既有的 pidof 主路径、ps 回退取 PID、16 上限、不可读时置
+  null 等用例不受影响。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

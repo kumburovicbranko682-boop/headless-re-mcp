@@ -324,9 +324,19 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
             return None
         pids: list[int] = []
         for line in str(ps).splitlines():
-            if package not in line:
+            parts = line.split()
+            if not parts:
                 continue
-            for token in line.split()[:3]:
+            # Match the process NAME column (the last field), exactly or as a
+            # same-app child process (com.foo:remote), which force-stop also
+            # kills. A substring test over the whole line matched sibling
+            # packages -- com.foobar and com.example.apple both contain
+            # com.example.app -- and attributed their pids to this package, so
+            # force_stop then reported the target as still running.
+            name = parts[-1]
+            if name != package and not name.startswith(package + ":"):
+                continue
+            for token in parts[:3]:
                 if token.isdigit():
                     pids.append(int(token))
                     break

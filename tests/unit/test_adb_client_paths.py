@@ -289,6 +289,28 @@ def test_pids_for_package_is_none_for_unparseable_nonempty_output() -> None:
     assert _pids_for_package(dev, "com.example.app") is None
 
 
+def test_pids_for_package_ignores_a_sibling_package_in_the_ps_fallback() -> None:
+    """The ps -A fallback must match the NAME column, not a whole-line substring.
+
+    com.example.apple contains com.example.app as a substring; the old test
+    attributed the sibling's pid to the target, so force_stop reported the app
+    still running after it had been stopped. A same-app child process
+    (com.example.app:svc) is still the target -- force-stop kills it too -- so
+    it stays. Pinning the exact pid set is what makes this non-vacuous: a
+    substring match would return all three pids and fail here.
+    """
+    ps_table = "\n".join(
+        [
+            "USER   PID  PPID VSZ RSS WCHAN ADDR S NAME",
+            "u0_a10 4321 1 0 0 ffff 0 S com.example.app",
+            "u0_a11 4322 1 0 0 ffff 0 S com.example.app:svc",
+            "u0_a12 9999 1 0 0 ffff 0 S com.example.apple",
+        ]
+    )
+    dev = _PidsDev({"pidof": "pidof: not found", "ps": ps_table})
+    assert _pids_for_package(dev, "com.example.app") == [4321, 4322]
+
+
 # --------------------------------------------------------------------------- #
 # _client / _device construction arms (fake adbutils module)
 # --------------------------------------------------------------------------- #
