@@ -703,7 +703,15 @@ def parse_exeinfope_log(raw_log: str) -> tuple[DetectionFinding, ...]:
             "Exeinfo PE log exceeds the configured size limit",
             details={"max_log_size": DEFAULT_MAX_LOG_SIZE},
         )
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # Split on the record separator (newline) only. ``str.splitlines`` also
+    # breaks on form feed, vertical tab, NEL and the Unicode line separators
+    # U+2028/U+2029, which an Exeinfo detection string can carry verbatim when
+    # it echoes a version/product token lifted out of the PE. Splitting on those
+    # fragments one detection into several -- an extra spurious finding, a shifted
+    # index, and enough phantom lines to trip _MAX_LOG_LINES and reject an
+    # otherwise-valid log. ``line.strip()`` still drops the trailing CR of a CRLF
+    # log and filters blank lines, so normal logs parse identically.
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
     if len(lines) > _MAX_LOG_LINES:
         raise ExeinfopeProtocolError(
             ExeinfopeErrorCode.PROTOCOL_ERROR,

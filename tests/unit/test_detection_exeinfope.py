@@ -63,6 +63,30 @@ def test_parse_log_rejects_empty() -> None:
     assert caught.value.code == ExeinfopeErrorCode.PROTOCOL_ERROR
 
 
+def test_parse_log_keeps_a_detection_with_an_embedded_line_separator() -> None:
+    # An Exeinfo detection string can echo a token lifted from the PE that
+    # carries a Unicode line/paragraph separator or a form feed. Those are not
+    # record boundaries; the record boundary is the newline. Splitting on them
+    # would fragment one detection into several spurious findings.
+    for separator in ("\u2028", "\u2029", "\x85", "\x0c", "\x0b"):
+        raw = f"sample.exe -  x64 UPX{separator}v3.9 - exe signature"
+        findings = parse_exeinfope_log(raw)
+        assert len(findings) == 1, separator
+        assert findings[0].category == FindingCategory.PACKER
+        assert findings[0].name == "UPX"
+        assert separator in findings[0].summary
+
+
+def test_parse_log_embedded_separators_do_not_inflate_the_line_count() -> None:
+    # Phantom lines from over-splitting could push a valid log past the line cap
+    # and get the whole scan rejected. One real record stays one record.
+    raw = "\n".join(
+        f"sample.exe -  detection {index}\u2028continued" for index in range(10)
+    )
+    findings = parse_exeinfope_log(raw)
+    assert len(findings) == 10
+
+
 def test_scan_builds_whitelisted_argv_and_reads_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
