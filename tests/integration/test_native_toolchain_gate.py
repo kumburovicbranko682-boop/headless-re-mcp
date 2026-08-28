@@ -24,6 +24,11 @@ Two triage themes the other native gates cannot cover from system binaries:
   A library linked with a version script carries the Verdef chain readelf -V
   renders as its "Version definition section", which the reader must match node
   for node (BASE flag and inherited parents included).
+- The load-time constructor surface (ELF DT_INIT/DT_INIT_ARRAY): the code the
+  loader runs before the entry point -- where implants and anti-debug hooks
+  hide, since they fire before any breakpoint on main. gcc builds a library
+  with two real constructors and a destructor, and readelf -d must agree on
+  the INIT/FINI presence and every ARRAYSZ-derived count.
 - The symbol surface (ELF .dynsym, Mach-O LC_SYMTAB), both sides of one split:
   exports (the object's public API, the raw-symbol complement to DT_VERDEF)
   and imports (the undefined symbols the loader must resolve -- capability at
@@ -77,6 +82,25 @@ _VERSION_SCRIPT = (
     "PROBE_2.0 { global: probe_two; } PROBE_1.0;\n"
 )
 _LIB_SONAME = "libprobe.so.1"
+
+# A library with two load-time constructors and one destructor: the loader
+# runs these before any breakpoint on an entry point could fire, which is why
+# the init surface is a first-order triage fact. gcc places each
+# __attribute__((constructor)) in .init_array (plus whatever the CRT adds,
+# e.g. frame_dummy), so the known lower bounds are two init entries and one
+# fini entry, and readelf -d prints the same INIT/FINI/ARRAYSZ tags the
+# reader derives its counts from.
+_CTORS_C = (
+    "static int state;\n"
+    "__attribute__((constructor)) static void boot_one(void){state = 1;}\n"
+    "__attribute__((constructor)) static void boot_two(void){state = 2;}\n"
+    "__attribute__((destructor)) static void teardown(void){state = 0;}\n"
+    "int ctor_state(void){return state;}\n"
+)
+# readelf -d prints " 0x... (INIT_ARRAYSZ)  24 (bytes)" and bare "(INIT)".
+_READELF_INIT_SZ_RE = re.compile(r"\(INIT_ARRAYSZ\)\s+(\d+) \(bytes\)")
+_READELF_FINI_SZ_RE = re.compile(r"\(FINI_ARRAYSZ\)\s+(\d+) \(bytes\)")
+_READELF_PREINIT_SZ_RE = re.compile(r"\(PREINIT_ARRAYSZ\)\s+(\d+) \(bytes\)")
 
 # A plain library (no version script) whose default-visibility globals become
 # the .dynsym exports the reader must recover -- functions and a datum, plus a
@@ -465,6 +489,61 @@ def test_elf_exported_symbols_agree_with_readelf(tmp_path: Path) -> None:
         assert reader_exports >= _KNOWN_EXPORTS
         assert "helper" not in reader_exports
         assert reader_imports >= _KNOWN_IMPORTS
+    finally:
+        if session_id is not None:
+            service.close_session(session_id)
+
+
+@pytest.mark.integration
+def test_elf_init_funcs_agree_with_readelf(tmp_path: Path) -> None:
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — init gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — init gate not run (skip != pass)")
+
+    # A shared library with two real __attribute__((constructor)) functions
+    # and one destructor -- the load-time code surface this gate cross-checks.
+    source = tmp_path / "ctors.c"
+    source.write_text(_CTORS_C)
+    lib = tmp_path / "libctors.so"
+    result = subprocess.run(
+        [gcc, "-shared", "-fPIC", "-O2", "-o", str(lib), str(source)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+
+    dynamic = subprocess.run(
+        [readelf, "-d", str(lib)], capture_output=True, text=True, timeout=60
+    )
+    assert dynamic.returncode == 0, dynamic.stderr
+
+    def truth_count(pattern: re.Pattern[str]) -> int:
+        match = pattern.search(dynamic.stdout)
+        # A 64-bit image's init/fini arrays hold 8-byte function pointers, so
+        # readelf's byte size over 8 is the entry count -- the same derivation
+        # the reader makes from the same ARRAYSZ tags.
+        return int(match.group(1)) // 8 if match else 0
+
+    service = AnalysisService()
+    session_id = None
+    try:
+        session_id, native = _session_native(service, lib)
+        init_funcs = native["init_funcs"]
+        # The tool-free walk and readelf -d decode the same dynamic table:
+        # legacy INIT/FINI presence and every array count, tag for tag.
+        assert init_funcs["has_init"] is ("(INIT)" in dynamic.stdout)
+        assert init_funcs["has_fini"] is ("(FINI)" in dynamic.stdout)
+        assert init_funcs["init_array"] == truth_count(_READELF_INIT_SZ_RE)
+        assert init_funcs["fini_array"] == truth_count(_READELF_FINI_SZ_RE)
+        assert init_funcs["preinit_array"] == truth_count(_READELF_PREINIT_SZ_RE)
+        # And the two constructors and the destructor the source declared are
+        # really in there, whatever the CRT added on top.
+        assert init_funcs["init_array"] >= 2
+        assert init_funcs["fini_array"] >= 1
     finally:
         if session_id is not None:
             service.close_session(session_id)

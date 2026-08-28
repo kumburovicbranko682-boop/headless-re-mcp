@@ -459,6 +459,22 @@ _DT_VERDEFNUM = 0x6FFFFFFD
 _VER_FLG_BASE = 0x1
 _ELF_MAX_VERDEF = 128
 _ELF_MAX_VERDAUX = 128
+# The code the loader runs before handing control to the entry point (and
+# after main returns): DT_INIT/DT_FINI point at the legacy single init/fini
+# functions, and DT_INIT_ARRAYSZ / DT_FINI_ARRAYSZ / DT_PREINIT_ARRAYSZ give
+# the byte size of the pointer arrays whose every entry gets called. Load-time
+# constructors are the classic hiding place for code that fires before any
+# breakpoint on main (LD_PRELOAD implants, anti-debug hooks), so whether they
+# exist and how many there are is a first-order triage fact. readelf -d prints
+# the same tags, so the toolchain gate can cross-check them. Only sizes are
+# read -- no pointer is followed -- and the derived counts are clamped so a
+# lying size yields a bounded number, not a fantastical one.
+_DT_INIT = 12
+_DT_FINI = 13
+_DT_INIT_ARRAYSZ = 27
+_DT_FINI_ARRAYSZ = 28
+_DT_PREINIT_ARRAYSZ = 33
+_ELF_MAX_INIT_FUNCS = 8192
 _DT_BIND_NOW = 24
 _DT_FLAGS = 30
 _DT_FLAGS_1 = 0x6FFFFFFB
@@ -2599,6 +2615,11 @@ def _elf_layout_facts(
                 # readelf -V shows the same "Version definition section".
                 if names["version_defs"]:
                     facts["version_defs"] = names["version_defs"]
+                # The load-time constructor/destructor surface -- the code
+                # that runs before the entry point (readelf -d shows the same
+                # INIT/INIT_ARRAYSZ tags). Always present for a parsed dynamic
+                # table: "no constructors" is a real answer.
+                facts["init_funcs"] = names["init_funcs"]
         else:
             pie = False
         if pie is not None:
@@ -2792,11 +2813,14 @@ def _elf_dynamic_names(
     the dynamic string table. ``canary`` is whether that string table names a
     stack-guard symbol -- the same read costs nothing extra and answers the
     fourth checksec question. ``rpath``/``runpath`` are the colon-separated
-    library search paths split into lists. Bounded at every step: the entry
-    count, the name count and the string-table read are all capped, so a
-    corrupt table yields ``None`` (dynamic but undetermined) rather than a
-    large read; a dynamic image that names nothing yields empty/None values.
-    DT_SONAME is present only on a shared object.
+    library search paths split into lists. ``init_funcs`` is the load-time
+    constructor/destructor surface off the same walk: whether DT_INIT/DT_FINI
+    exist and how many entries the init/fini/preinit pointer arrays declare.
+    Bounded at every step: the entry count, the name count and the
+    string-table read are all capped, so a corrupt table yields ``None``
+    (dynamic but undetermined) rather than a large read; a dynamic image that
+    names nothing yields empty/None values. DT_SONAME is present only on a
+    shared object.
     """
     if dyn_off <= 0 or dyn_sz <= 0 or not loads:
         return None
@@ -2817,6 +2841,8 @@ def _elf_dynamic_names(
     verneed_num: int | None = None
     verdef_va: int | None = None
     verdef_num: int | None = None
+    has_init = has_fini = False
+    init_array_sz = fini_array_sz = preinit_array_sz = 0
     for i in range(count):
         entry = table[i * entsize : (i + 1) * entsize]
         if len(entry) < entsize:
@@ -2846,6 +2872,16 @@ def _elf_dynamic_names(
             verdef_va = val
         elif tag == _DT_VERDEFNUM:
             verdef_num = val
+        elif tag == _DT_INIT:
+            has_init = val != 0
+        elif tag == _DT_FINI:
+            has_fini = val != 0
+        elif tag == _DT_INIT_ARRAYSZ:
+            init_array_sz = val
+        elif tag == _DT_FINI_ARRAYSZ:
+            fini_array_sz = val
+        elif tag == _DT_PREINIT_ARRAYSZ:
+            preinit_array_sz = val
     if strtab_va is None:
         return None
     str_off = _elf_vaddr_to_off(strtab_va, loads)
@@ -2883,6 +2919,12 @@ def _elf_dynamic_names(
         if vd_off is not None:
             version_defs = _elf_version_defs(stream, order, vd_off, verdef_num, read_name)
 
+    # The array counts are the declared byte sizes over the pointer width
+    # (vsize is exactly the ELF class's pointer size); only the size fields
+    # are read, so a lying size costs nothing but is clamped to stay sane.
+    def array_count(size: int) -> int:
+        return min(max(size, 0) // vsize, _ELF_MAX_INIT_FUNCS)
+
     return {
         "needed": [name for off in needed_offsets if (name := read_name(off))],
         "soname": read_name(soname_off) if soname_off is not None else None,
@@ -2891,6 +2933,13 @@ def _elf_dynamic_names(
         "version_needs": version_needs,
         "version_defs": version_defs,
         "canary": any(sym in blob for sym in _ELF_CANARY_SYMBOLS),
+        "init_funcs": {
+            "has_init": has_init,
+            "has_fini": has_fini,
+            "init_array": array_count(init_array_sz),
+            "fini_array": array_count(fini_array_sz),
+            "preinit_array": array_count(preinit_array_sz),
+        },
     }
 
 

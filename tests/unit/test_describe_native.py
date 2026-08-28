@@ -553,6 +553,7 @@ def _elf64_dynamic_with_strtab(
     verneed_num: int = 1,
     verdef: bytes | None = None,
     verdef_num: int = 1,
+    extra_tags: list[tuple[int, int]] | None = None,
 ) -> bytes:
     """A dynamic ELF whose DT_STRTAB points at ``strtab``.
 
@@ -563,9 +564,10 @@ def _elf64_dynamic_with_strtab(
     string-table offset. ``verneed`` appends a .gnu.version_r blob behind the
     dynamic array and points DT_VERNEED at it, declaring ``verneed_num``
     records; ``verdef`` appends a .gnu.version_d blob behind that and points
-    DT_VERDEF at it, declaring ``verdef_num`` records.
+    DT_VERDEF at it, declaring ``verdef_num`` records. ``extra_tags`` are raw
+    ``(tag, value)`` rows prepended verbatim (DT_INIT and friends).
     """
-    entries: list[tuple[int, int]] = []
+    entries: list[tuple[int, int]] = list(extra_tags or [])
     if rpath is not None:
         entries.append((15, rpath))  # DT_RPATH
     if runpath is not None:
@@ -903,6 +905,74 @@ def test_a_lying_verdaux_count_stays_bounded(tmp_path: Path) -> None:
     )
     facts = describe_native(path)["native"]
     assert facts["version_defs"] == [{"name": "libprobe.so.1", "base": True, "parents": []}]
+
+
+def test_init_funcs_report_the_constructor_surface(tmp_path: Path) -> None:
+    # The code that runs before the entry point: legacy DT_INIT/DT_FINI plus
+    # the three pointer arrays, whose declared byte sizes over the 8-byte
+    # pointer width are the entry counts readelf -d derives from the same
+    # INIT_ARRAYSZ/FINI_ARRAYSZ/PREINIT_ARRAYSZ tags.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_dynamic_with_strtab(
+            b"\x00",
+            extra_tags=[
+                (12, 0x1000),  # DT_INIT
+                (13, 0x2000),  # DT_FINI
+                (27, 24),  # DT_INIT_ARRAYSZ: three constructors
+                (28, 8),  # DT_FINI_ARRAYSZ: one destructor
+                (33, 16),  # DT_PREINIT_ARRAYSZ: two preinit hooks
+            ],
+        ),
+    )
+    assert describe_native(path)["native"]["init_funcs"] == {
+        "has_init": True,
+        "has_fini": True,
+        "init_array": 3,
+        "fini_array": 1,
+        "preinit_array": 2,
+    }
+
+
+def test_no_constructor_tags_read_as_a_zeroed_surface(tmp_path: Path) -> None:
+    # A dynamic image with no init/fini tags still answers -- "runs nothing
+    # before main" is a real, reassuring fact, not a missing one.
+    path = _write(tmp_path, "a.bin", _elf64_dynamic_with_strtab(b"\x00"))
+    assert describe_native(path)["native"]["init_funcs"] == {
+        "has_init": False,
+        "has_fini": False,
+        "init_array": 0,
+        "fini_array": 0,
+        "preinit_array": 0,
+    }
+
+
+def test_a_zero_dt_init_is_not_a_constructor(tmp_path: Path) -> None:
+    # A DT_INIT whose pointer is null names nothing to run; only a real
+    # address counts, so a zeroed tag cannot fake a constructor.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_dynamic_with_strtab(b"\x00", extra_tags=[(12, 0), (27, 12)]),
+    )
+    facts = describe_native(path)["native"]
+    assert facts["init_funcs"]["has_init"] is False
+    # 12 bytes is one whole 8-byte pointer: partial trailing entries do not
+    # count, exactly as the loader would never call half a pointer.
+    assert facts["init_funcs"]["init_array"] == 1
+
+
+def test_a_lying_init_array_size_stays_bounded(tmp_path: Path) -> None:
+    # INIT_ARRAYSZ is attacker-controlled; only the size field is read (no
+    # pointer is followed), and the derived count is clamped so a hostile
+    # image cannot put a fantastical number in the facts.
+    path = _write(
+        tmp_path,
+        "a.bin",
+        _elf64_dynamic_with_strtab(b"\x00", extra_tags=[(27, 1 << 40)]),
+    )
+    assert describe_native(path)["native"]["init_funcs"]["init_array"] == 8192
 
 
 def test_exported_symbols_lists_defined_global_and_weak(tmp_path: Path) -> None:
