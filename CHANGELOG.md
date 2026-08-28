@@ -65,6 +65,18 @@ until 1.0 the tool surface may still change between minor versions.
   拒绝写入已存在目录（`output directory already exists`），于是每次解包都退成 `backend_error`。mock 掉
   subprocess 的单测永远看不到这条。`backends/jsre/client.py` 的 unpack 命令补上 `--force`（目录本就是我们
   刚建的空目录，覆盖安全），解包恢复可用。托管 Linux 上真跑的 Gate 由此到 23 个。
+- 又补两条此前无集成覆盖、且属于"包 CLI/API"这类易藏 bug 的可移植 Gate（`js.unpack_bundle` 的真 bug
+  正是这类漏出来的），本轮都对着真后端验过：
+  - `proxy.replay`（`tests/integration/test_proxy_capture_gate.py::test_proxy_replays_a_captured_flow`）
+    包着 mitmproxy 的 `replay.client` 命令，若 client-playback 插件没加载这条命令就不存在。Gate 经代理发一
+    次请求、重放抓到的 flow，再断言 origin 又被打了一次：出现第二条打到同一 URL、状态 200、响应体一致的
+    完成态 flow，证明请求真被重发而非只回了个漂亮信封。实测对真 mitmproxy 12.2.3 通过。
+  - `web.navigate`（`tests/integration/test_web_re_gate.py::test_web_navigate_switches_the_live_page`）
+    此前只有 `web.open` 载入会话初始 URL 被覆盖，重导航从没测过。Gate 开一个 data: 页、导航到第二个，再读回
+    DOM 标题：navigate 的返回与新快照都翻成第二页标题，证明浏览器真的换了页而非回显。实测对真 Chromium 通过。
+  - 两条把可移植非 PE Gate 从 23 提到 25。按与 `linux-integration` 完全一致的工具版本在托管 Linux 上实测
+    `pytest tests/integration` = **25 passed / 71 skipped / 0 failed**（skip 仅剩 Windows-only 与未配置的
+    de4dot/radare2）。
 - 修 `tests/integration/test_agent_browser_smoke.py` 三处长期漂移（这条 Gate 从未在 Linux 跑过，也就
   没人发现它已经烂了）：
   - 顶层 `from playwright.sync_api import ...` 会让缺 browser extra 的机器在收集阶段直接 ImportError、
