@@ -49,6 +49,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（r2 JSON 提取在大括号洪流下退化为二次复杂度）
+
+- `parse_r2_json` 在 r2 输出里从头逐个 `[`/`{` 尝试 `raw_decode`，找到第一个能解析的 JSON
+  值即返回。但每次失败并不便宜：`JSONDecodeError` 构造时会从缓冲区开头数行/列，代价是
+  O(index)，因此逐个括号尝试整体是 O(n²)。该扫描发生在采集之后、r2 子进程超时之外，而
+  `raw` 只受 `_MAX_OUTPUT`（1 MB）约束、并非小量，且其字节受被分析二进制影响——一段几乎全是
+  `{` 的回复会把这段有界缓冲拖成无截止期的分钟级运算。现与 diec 的同类扫描一致，加上
+  `_MAX_JSON_OBJECT_SCANS=256` 的尝试上限：r2 至多在几行横幅后就输出唯一的 JSON 文档，真正的
+  开括号总在最前面一小撮里，把上限设得远高于任何真实前言即可让洪流线性化；藏在一兆字节垃圾
+  后的值宁可不解析，也不再被追着跑。新增两条直测：一兆字节 `{` 洪流在 20s 内返回（旧路径约
+  100s，现毫秒级），以及带 `{`/`[` 杂串的横幅行之后仍能找到真正的数组。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

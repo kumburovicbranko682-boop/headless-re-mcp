@@ -12,6 +12,11 @@ _MAX_ITEMS = 4096
 # first pages. The second read below covers the pathological ones.
 _HEADER_WINDOW = 64 * 1024
 _MAX_HEADER = 1024 * 1024
+# How many candidate ``[``/``{`` positions the JSON scan will try to decode
+# before giving up. r2 emits its one JSON document after at most a few banner
+# or warning lines, so the real value's opening bracket is among the first
+# handful; this only bounds the cost of output that is mostly brackets.
+_MAX_JSON_OBJECT_SCANS = 256
 
 
 def pe_preferred_base(binary: Path) -> tuple[Architecture | None, int | None]:
@@ -101,14 +106,29 @@ def parse_r2_json(raw: str) -> Any | None:
     opcodes (``mov eax, dword [rbp+0x10]``), C++ names, and strings. That
     slice is not the root array, so the ``{…}`` fallback loaded only the last
     object and ``enrich_r2_payload`` reported ``parsed: True`` with no items.
+
+    The scan is capped at ``_MAX_JSON_OBJECT_SCANS`` candidates. A failed
+    ``raw_decode(text, index)`` is not free: the ``JSONDecodeError`` constructor
+    counts the line and column from the buffer start, which is O(index), so
+    trying every bracket is O(n^2). This runs after capture, outside the r2
+    subprocess timeout, on a ``raw`` that is only bounded (``_MAX_OUTPUT`` is a
+    megabyte), not small -- a brace-heavy reply that never decodes turned that
+    bounded buffer into quadratic work with no deadline. r2 prints its one JSON
+    document after at most a few banner lines, so the opening bracket is among
+    the first handful; capping the scan far above any real preamble keeps a
+    flood linear.
     """
     text = (raw or "").strip()
     if not text:
         return None
     decoder = json.JSONDecoder()
+    attempts = 0
     for index, char in enumerate(text):
         if char not in "[{":
             continue
+        if attempts >= _MAX_JSON_OBJECT_SCANS:
+            break
+        attempts += 1
         try:
             value, _end = decoder.raw_decode(text, index)
         except json.JSONDecodeError:

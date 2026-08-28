@@ -123,6 +123,44 @@ def test_parse_r2_json_keeps_the_whole_list_when_opcodes_contain_brackets() -> N
     assert parsed[1]["opcode"] == "ret"
 
 
+def test_parse_r2_json_brace_flood_is_bounded_not_quadratic() -> None:
+    """The scan runs after capture, outside the r2 subprocess timeout.
+
+    ``parse_r2_json`` walks ``raw`` trying to decode a value at each ``[``/``{``.
+    A failed ``raw_decode(text, index)`` is not free: the JSONDecodeError
+    constructor counts the line and column from the buffer start, which is
+    O(index), so trying every bracket is O(n^2). ``raw`` is only bounded
+    (``_MAX_OUTPUT`` is a megabyte) and its bytes are influenced by the analyzed
+    binary, so a reply that is almost all ``{`` turned that bounded buffer into
+    minutes of work with no deadline. Capping the decode attempts keeps the
+    flood linear -- and a value hidden behind a megabyte of junk is left
+    unparsed rather than chased. The 20s bound separates the two without being
+    flaky (the old path was ~100s, the capped path is milliseconds).
+    """
+    import time
+
+    flood = "{" * (1024 * 1024) + json.dumps([{"offset": 0x1000, "name": "entry0"}])
+    started = time.perf_counter()
+    parsed = parse_r2_json(flood)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 20.0, f"brace-heavy r2 scan took {elapsed:.1f}s"
+    assert parsed is None
+
+
+def test_parse_r2_json_finds_value_after_a_banner_with_stray_brackets() -> None:
+    """The attempt cap must not break the reason the scan tries many brackets.
+
+    r2 can print a warning line carrying its own ``{`` or ``[`` before the real
+    document, so the scan still has to walk past a false bracket to the value.
+    The cap sits far above any real preamble, so this keeps working.
+    """
+    banner = "WARN: cannot open {handle} at [0x0]\n"
+    raw = banner + json.dumps([{"offset": 0x140001000, "name": "entry0", "size": 16}])
+    parsed = parse_r2_json(raw)
+    assert isinstance(parsed, list)
+    assert parsed[0]["name"] == "entry0"
+
+
 def test_address_dict_with_rva() -> None:
     mapped = address_dict(
         0x140001000,
