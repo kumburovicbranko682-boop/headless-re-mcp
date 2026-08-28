@@ -89,6 +89,23 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.sockstat")
+    def device_sockstat(serial: str) -> dict[str, Any]:
+        """Report the socket-allocation summary from /proc/net/sockstat.
+
+        The system-wide totals the per-socket tables (device.connections /
+        device.udp) cannot show. Answers with stats (a per-label map of counter
+        to integer: TCP inuse/orphan/tw/alloc/mem, UDP inuse/mem, and the
+        leading sockets used count), count, and has_more. Rising tw (TIME_WAIT)
+        or alloc/orphan while an app runs points at connection churn or a
+        socket leak a snapshot of individual sockets can miss.
+
+        Honesty: a label whose values do not parse contributes nothing, and
+        parsing zero labels is a failure (missing file, permission denied,
+        offline device), not an empty result.
+        """
+        return _dump(analysis.device_sockstat(serial))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True

@@ -40,6 +40,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_SOCKSTAT_LABELS = 32
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -525,6 +526,54 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def sockstat(self, serial: str) -> JsonObject:
+        """Report the socket-allocation summary from ``/proc/net/sockstat``.
+
+        The system-wide totals the per-socket tables (connections/udp) cannot
+        show: ``TCP inuse/orphan/tw/alloc/mem``, ``UDP inuse/mem``, and the
+        overall ``sockets used`` count. The triage value is aggregate but
+        actionable -- ``tw`` (TIME_WAIT) or ``alloc``/``orphan`` climbing while
+        an app runs points at connection churn or a socket leak that a snapshot
+        of individual sockets can miss.
+
+        Every line is ``Label: name value name value ...``, so it is decoded
+        uniformly into a per-label map of counter to integer (the leading
+        ``sockets: used N`` line included). Honesty: a label whose values do
+        not parse contributes nothing, and parsing zero labels means the read
+        failed (missing file, permission denied, offline device) and is a
+        ``backend_error`` rather than an empty result. The label set is capped
+        and flags ``has_more`` when truncated.
+        """
+        dev = self._device(serial)
+        text = str(_device_shell(dev, "cat /proc/net/sockstat"))
+        stats: dict[str, JsonObject] = {}
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 3 or not fields[0].endswith(":"):
+                continue
+            label = fields[0][:-1]
+            if not label:
+                continue
+            rest = fields[1:]
+            pairs: dict[str, int] = {}
+            for index in range(0, len(rest) - 1, 2):
+                try:
+                    pairs[rest[index]] = int(rest[index + 1])
+                except ValueError:
+                    continue
+            if not pairs or label in stats:
+                continue
+            if len(stats) >= _MAX_SOCKSTAT_LABELS:
+                has_more = True
+                break
+            stats[label] = pairs
+        if not stats:
+            raise AdbError(
+                "backend_error", "reading /proc/net/sockstat failed", output=text[:800]
+            )
+        return {"stats": stats, "count": len(stats), "has_more": has_more}
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a

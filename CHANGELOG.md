@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -151,6 +151,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   报 `capability_unavailable`；dump 与活体探针超时都把被杀的 pid 随 `timeout` 回报（避免
   调试器悬在活体目标上）。cdb 发现覆盖环境变量优先、`which` 的非 Store 路径、Windows Kits
   glob 布局、以及跳过不可启动的命中与全无安装时返回 None。模块覆盖率 80% → 99%。
+
+### 新增（`device.sockstat` 从 `/proc/net/sockstat` 报套接字分配汇总）
+
+- 新增只读工具 `device.sockstat`，给出逐套接字表（connections/udp）看不到的系统级总量:
+  `TCP inuse/orphan/tw/alloc/mem`、`UDP inuse/mem`，以及总的 `sockets used`。分诊价值虽为聚合但
+  可操作——应用运行时 `tw`（TIME_WAIT）或 `alloc`/`orphan` 攀升，指向单个套接字快照会漏掉的连接
+  抖动或套接字泄漏。每行都是 `Label: name value name value ...`，故统一解析为逐标签的「计数名→
+  整数」映射（含开头的 `sockets: used N` 行）。诚实边界:值无法解析的标签不贡献任何条目;解析到零个
+  标签即读取失败（文件缺失、权限拒绝、设备离线），报 `backend_error` 而非空结果。标签集合有界并在
+  超过上限时置 `has_more`。新增 `tests/unit/test_device_sockstat_fields.py` 覆盖逐标签键值对解析、
+  非法值跳过、分页截断与零标签报错等分支。工具面 265 → 266（只读 148 → 149）。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
