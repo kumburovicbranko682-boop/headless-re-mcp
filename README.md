@@ -390,7 +390,11 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 80 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+  Android 身份识别经真实 MCP 端到端：无 androguard/jadx 也能建 APK 会话并读纯 stdlib 元数据
+  (native_abis 去重排序、dex 计数、entry 计数、signed_v1;丰/瘠两包证明字段确会变)、PE-only 工具
+  对 APK 会话报 target_mismatch、apk.* 后端缺失时降级为 capability_unavailable 结构化信封而非崩溃、
+  目标种类按内容判定(WASM 按 magic 归 web、.apk 坏档清晰报错、普通 zip 回退保留 not a PE file)、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
   浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
