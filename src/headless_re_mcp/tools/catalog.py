@@ -365,13 +365,51 @@ _SERVICE_OVERRIDES = {
     "meta.metrics": "tool_metrics",
 }
 
-# Agent tool_timeout is a ceiling; most tools stay at the 60s default.
-# First IDA/x64dbg/Ghidra/APK open of a large sample routinely exceeds that.
+# The transport deadline (ResourcePolicy.timeout_seconds) is a hard ceiling on the
+# whole tool call, enforced by both the MCP adapter (offload timeout) and the agent
+# orchestrator (min(tool_timeout, policy)). For tools that block synchronously on a
+# CLI subprocess or a browser navigation, that ceiling must be at least as large as
+# the tool's own advertised `timeout` maximum -- otherwise the transport kills the
+# call before the tool's own timeout can fire, and the advertised timeout is a lie.
+# Most tools return quickly and stay at the 60s default; the entries below cover the
+# ones whose `timeout` parameter (in seconds) bounds the call itself.
 _TOOL_TIMEOUTS: dict[str, float] = {
+    # In-process parse / first open of a large sample routinely exceeds 60s.
     "apk.open": 180.0,
     "dynamic.open": 180.0,
-    "ghidra.analyze": 180.0,
     "static.open": 1800.0,
+    # Android CLI subprocesses (apktool / jadx) on a real APK take minutes; each of
+    # these advertises `timeout` up to 1800s, so the transport must allow it.
+    "apk.decode": 1800.0,
+    "apk.decompile": 1800.0,
+    "apk.export_sources": 1800.0,
+    "apk.repack": 1800.0,
+    "apk.sign": 1800.0,
+    # Ghidra headless (analyze + every export re-imports the binary); advertised 600s.
+    "ghidra.analyze": 600.0,
+    "ghidra.decompile": 600.0,
+    "ghidra.functions": 600.0,
+    "ghidra.symbols": 600.0,
+    "ghidra.xrefs": 600.0,
+    # radare2 / rizin sessions; advertised 120s.
+    "r2.open": 120.0,
+    "r2.info": 120.0,
+    "r2.functions": 120.0,
+    "r2.strings": 120.0,
+    "r2.imports": 120.0,
+    "r2.exports": 120.0,
+    "r2.disasm": 120.0,
+    "r2.xrefs": 120.0,
+    # JS deobfuscation / bundle unpacking via node (webcrack); advertised 600s / 1200s.
+    "js.beautify": 600.0,
+    "js.deobfuscate": 600.0,
+    "js.unpack_bundle": 1200.0,
+    # WebAssembly disassembly / info via wabt; advertised 600s.
+    "wasm.info": 600.0,
+    "wasm.wat": 600.0,
+    # Browser launch + navigation block until the page settles; advertised 120s.
+    "web.open": 120.0,
+    "web.navigate": 120.0,
 }
 
 
