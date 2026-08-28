@@ -49,6 +49,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（代理流元数据里的孤立代理项让 Web 渲染 500）
+
+- `proxy.flows` / `proxy.flow.get` 的 URL、host、method、content-type、header 名值都由
+  `_bounded_metadata` 归一，但它在“未超长”的常见分支直接返回原始串——只“测量”replace 编码后的
+  长度、并不返回清洗结果。mitmproxy 用 `surrogateescape` 解码请求行里的非 UTF-8 字节，于是
+  `pretty_url` / `host` / header 里的一个孤立代理项被原样带进工具结果。监控台经 Starlette
+  `JSONResponse`（`json.dumps(..., ensure_ascii=False).encode("utf-8")`）回包，孤立代理项在
+  响应渲染阶段抛 `UnicodeEncodeError`——这发生在路由 try/except 之外的 ASGI send 里，成为一条
+  恶意流即可触发、无法被路由捕获的 500。现让 `_bounded_metadata` 两个分支都走
+  `encode("utf-8","replace")`（合法串无损往返、仅丢不可编码码点），并对 `_bounded_headers` 里
+  过去绕过归一的 header 名一并清洗。新增回归：`_bounded_metadata` 未超长分支清洗代理项且保留
+  合法非 ASCII（中文 + café）、header 名值均被清洗、录制流摘要含代理项 URL 时经真实
+  `JSONResponse` 渲染不再抛异常，并钉住“不清洗就会 500”的 egress 行为。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null

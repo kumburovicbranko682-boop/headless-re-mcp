@@ -208,10 +208,23 @@ def _flow_stored_bytes(flow: Any) -> int:
 
 
 def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
+    """A size-bounded metadata string that always encodes as UTF-8.
+
+    mitmproxy decodes a request line's non-UTF-8 bytes with ``surrogateescape``,
+    so ``pretty_url`` / ``host`` / a header value can carry a lone surrogate.
+    Returning it verbatim here (as the fits-case once did) let it reach the tool
+    result, where the web console renders via a Starlette ``JSONResponse`` that
+    does ``json.dumps(..., ensure_ascii=False).encode("utf-8")`` -- and a lone
+    surrogate raises ``UnicodeEncodeError`` during response rendering, an
+    uncatchable 500 from one hostile flow. Both branches now go through
+    ``encode("utf-8", "replace")``, which drops only the unencodable code points
+    (a valid string round-trips unchanged), so the caller can never receive a
+    surrogate-bearing string.
+    """
     text = value if isinstance(value, str) else ("" if value is None else str(value))
     payload = text.encode("utf-8", errors="replace")
     if len(payload) <= max_bytes:
-        return text, False
+        return payload.decode("utf-8"), False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
@@ -283,7 +296,10 @@ def _bounded_headers(part: Any) -> tuple[dict[str, str], bool]:
     truncated = False
     total = 0
     for key, value in items:
-        name = str(key)
+        # The value goes through _bounded_metadata; the name must be scrubbed
+        # too, or a header field whose name mitmproxy decoded with
+        # surrogateescape reaches the JSONResponse render and 500s it.
+        name = str(key).encode("utf-8", "replace").decode("utf-8")
         if name not in out and len(out) >= _MAX_FLOW_HEADERS:
             truncated = True
             break
