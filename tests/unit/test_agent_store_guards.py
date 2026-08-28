@@ -118,6 +118,91 @@ def test_a_tool_call_cannot_be_decided_twice(store: AgentStore) -> None:
         store.decide_tool_call(run_id, "c1", sha, approved=False)
 
 
+def test_a_completed_unattended_call_cannot_be_decided_afterwards(store: AgentStore) -> None:
+    """decide() must not rewrite history for a call that already ran.
+
+    Auto-approved and read-only calls keep ``approved``/``consumed_at`` NULL,
+    so the "already decided or consumed" guard never fired for them: a decide
+    arriving after completion was accepted, flipping the status back to
+    approved/rejected while the stored result proved the work had run
+    (verified before the fix -- the row read ``rejected`` with its result kept).
+    """
+    run_id = _run(store)
+    store.transition(run_id, RunStatus.STREAMING)
+    proposed = store.propose_tool_call(run_id, "c1", "static.strings", {"x": 1}, ["read_only"])
+    store.complete_tool_call(run_id, "c1", {"ok": True, "data": {}}, ok=True)
+
+    with pytest.raises(ValueError, match="already started or finished"):
+        store.decide_tool_call(run_id, "c1", str(proposed["args_sha256"]), approved=False)
+
+    after = store.get_tool_call(run_id, "c1")
+    assert after["status"] == "completed"
+    assert after["approved"] is None
+
+
+def test_begin_unattended_execution_blocks_decides_while_the_tool_runs(
+    store: AgentStore,
+) -> None:
+    run_id = _run(store)
+    store.transition(run_id, RunStatus.STREAMING)
+    proposed = store.propose_tool_call(run_id, "c1", "dynamic.resume", {"x": 1}, ["state_change"])
+    sha = str(proposed["args_sha256"])
+
+    assert store.begin_unattended_execution(run_id, "c1", sha) is True
+
+    row = store.get_tool_call(run_id, "c1")
+    assert row["status"] == "executing"
+    assert row["consumed_at"] is not None
+    # No human decided, and none may pretend to have afterwards.
+    assert row["approved"] is None
+    with pytest.raises(ValueError, match="already decided or consumed"):
+        store.decide_tool_call(run_id, "c1", sha, approved=False)
+
+
+def test_begin_unattended_execution_yields_to_a_human_veto(store: AgentStore) -> None:
+    """A rejection landing in the propose->execute window wins over the grant."""
+    run_id = _run(store)
+    store.transition(run_id, RunStatus.STREAMING)
+    proposed = store.propose_tool_call(run_id, "c1", "dynamic.resume", {"x": 1}, ["state_change"])
+    sha = str(proposed["args_sha256"])
+    store.decide_tool_call(run_id, "c1", sha, approved=False)
+
+    assert store.begin_unattended_execution(run_id, "c1", sha) is False
+
+
+def test_begin_unattended_execution_proceeds_past_a_redundant_human_approval(
+    store: AgentStore,
+) -> None:
+    run_id = _run(store)
+    store.transition(run_id, RunStatus.STREAMING)
+    proposed = store.propose_tool_call(run_id, "c1", "dynamic.resume", {"x": 1}, ["state_change"])
+    sha = str(proposed["args_sha256"])
+    store.decide_tool_call(run_id, "c1", sha, approved=True)
+
+    assert store.begin_unattended_execution(run_id, "c1", sha) is True
+
+
+def test_begin_unattended_execution_is_false_for_missing_mismatched_or_cancelled(
+    store: AgentStore,
+) -> None:
+    assert store.begin_unattended_execution("nope", "c1", "0" * 64) is False
+
+    run_id = _run(store)
+    store.transition(run_id, RunStatus.STREAMING)
+    proposed = store.propose_tool_call(run_id, "c1", "dynamic.resume", {"x": 1}, ["state_change"])
+    sha = str(proposed["args_sha256"])
+    assert store.begin_unattended_execution(run_id, "c1", "0" * 64) is False
+    assert store.begin_unattended_execution(run_id, "c1", sha) is True
+    # Already consumed: a second begin must not re-enter.
+    assert store.begin_unattended_execution(run_id, "c1", sha) is False
+
+    other = _run(store)
+    store.transition(other, RunStatus.STREAMING)
+    queued = store.propose_tool_call(other, "c2", "dynamic.resume", {"x": 1}, ["state_change"])
+    store.request_cancel(other)
+    assert store.begin_unattended_execution(other, "c2", str(queued["args_sha256"])) is False
+
+
 def test_consume_approval_is_false_for_terminal_cancelled_or_unapproved_calls(
     store: AgentStore,
 ) -> None:

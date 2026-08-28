@@ -681,6 +681,33 @@ class AgentOrchestrator:
                 raise RuntimeError("tool approval timed out")
         if self._check_cancelled(run_id):
             raise asyncio.CancelledError
+        if decision.approved and not self.store.begin_unattended_execution(
+            run_id, call_id, str(proposed["args_sha256"])
+        ):
+            # An auto-approved (or read-only) call must be marked as consumed
+            # before it runs, or a decide() arriving during or after execution
+            # is accepted against its still-"proposed" row and rewrites the
+            # audit trail. When marking fails and the run is not cancelling,
+            # the only remaining cause is a human rejection that landed in the
+            # propose->execute window; the veto wins over the autonomy grant.
+            if self._check_cancelled(run_id):
+                raise asyncio.CancelledError
+            rejection = {"ok": False, "error": {"code": "tool_rejected", "message": "user rejected this invocation"}}
+            self.store.complete_tool_call(run_id, call_id, rejection, ok=False)
+            # REJECTED is only reachable from AWAITING_APPROVAL, which is true
+            # here in spirit: the call did await a decision and got a no.
+            self.store.transition(run_id, RunStatus.AWAITING_APPROVAL)
+            self.store.transition(
+                run_id,
+                RunStatus.REJECTED,
+                error="dangerous tool invocation rejected",
+            )
+            self.store.append_event(
+                run_id,
+                "run.rejected",
+                {"status": RunStatus.REJECTED.value, "tool_call_id": call_id},
+            )
+            return rejection
         self.store.transition(run_id, RunStatus.EXECUTING_TOOL)
         self.store.append_event(run_id, "tool.started", {"tool_call_id": call_id, "name": name})
         timeout = min(self.tool_timeout, spec.resource_policy.timeout_seconds)

@@ -641,6 +641,15 @@ class AgentStore:
                 raise ValueError("approval arguments hash mismatch")
             if row["approved"] is not None or row["consumed_at"] is not None:
                 raise ValueError("approval already decided or consumed")
+            if str(row["status"]) != "proposed":
+                # Calls that skipped the human gate (auto-approved, read-only)
+                # used to keep approved/consumed_at NULL for their whole life,
+                # so a decision arriving after execution was accepted here and
+                # rewrote a completed call to approved/rejected -- exactly the
+                # relabeling the approval.auto audit event exists to prevent.
+                # Execution now marks consumption, but rows written before that
+                # (or moved by any future path) still need the status to gate.
+                raise ValueError("tool call already started or finished")
             status = "approved" if approved else "rejected"
             con.execute(
                 "UPDATE tool_calls SET approved=?,status=?,updated_at=? "
@@ -663,6 +672,43 @@ class AgentStore:
             if row is None or str(row["args_sha256"]) != args_sha256 or row["consumed_at"] is not None:
                 return False
             if row["approved"] != 1:
+                return False
+            con.execute(
+                "UPDATE tool_calls SET consumed_at=?,status='executing',updated_at=? "
+                "WHERE id=? AND run_id=?",
+                (utc_now(), utc_now(), tool_call_id, run_id),
+            )
+            return True
+
+    def begin_unattended_execution(self, run_id: str, tool_call_id: str, args_sha256: str) -> bool:
+        """Atomically mark a call that skipped the human gate as executing.
+
+        Auto-approved and read-only calls never pass through decide/consume, so
+        their rows stayed ``proposed`` with ``approved``/``consumed_at`` NULL
+        while the tool ran and after it finished -- indistinguishable from a
+        call still waiting for a human, which let ``decide_tool_call`` accept a
+        late decision and rewrite the audit trail of executed work. Setting
+        ``consumed_at`` at execution start makes the existing decide/consume
+        guards refuse. ``approved`` stays NULL on purpose: no human decided.
+
+        Returns False instead of proceeding when the run is terminal or
+        cancelling, or when a human rejection landed first (``approved`` = 0) --
+        the veto wins and the caller must not run the work. A human approval in
+        that same window (``approved`` = 1) is harmless and proceeds.
+        """
+        with self.transaction() as con:
+            run = con.execute(
+                "SELECT status, cancel_requested FROM runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+            if run is None or RunStatus(run["status"]) in TERMINAL_RUN_STATUSES:
+                return False
+            if int(run["cancel_requested"] or 0):
+                return False
+            row = con.execute("SELECT * FROM tool_calls WHERE id=? AND run_id=?", (tool_call_id, run_id)).fetchone()
+            if row is None or str(row["args_sha256"]) != args_sha256 or row["consumed_at"] is not None:
+                return False
+            if row["approved"] is not None and int(row["approved"]) == 0:
                 return False
             con.execute(
                 "UPDATE tool_calls SET consumed_at=?,status='executing',updated_at=? "

@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 安全（自动批准的工具调用可被事后「补决断」——已执行完的调用状态被 decide 改写，审计痕迹失真）
+
+- 缺陷：跳过人工闸门的调用（自动批准、只读）全生命周期保持 `approved`/`consumed_at` 为 NULL、
+  `status='proposed'`——与「仍在等人批」的行在存储层无法区分。`decide_tool_call` 只挡
+  「已决断或已消费」，于是 run 未终结期间，HTTP decide 端点可对一个**已执行完毕**的调用补投一票：
+  实测 `status` 从 `completed` 被改写回 `rejected`（结果还在），审计上这条调用「被用户拒绝」但
+  它明明跑完了——这正是 `approval.auto` 事件的注释所强调要防的「审计无法区分自动与人工批准」。
+  工具执行中（`await` 期间事件循环可处理 decide 请求）同样可被改写。
+- 改法：两层。存储层 `decide_tool_call` 增加 `status=='proposed'` 硬守卫（兜住旧库存量行）；
+  新增 `begin_unattended_execution`——无人值守调用进入执行时原子置 `consumed_at` 并转
+  `status='executing'`（`approved` 刻意保持 NULL：没有人决断过），此后 decide 命中既有的
+  「已消费」守卫。副产品是一个更正确的竞态语义：若人工拒绝恰好落在 propose→execute 窗口内
+  （多线程/多进程共享库时可达），标记返回 False，编排器不执行该调用，按被拒路径收尾
+  （经 `AWAITING_APPROVAL` 两跳到 `REJECTED`，状态机合法）——人的否决赢过自治授权。
+- 测试：存储层 5 例（已完成调用补决断被拒、执行中 decide 被拒且 `approved` 保持 NULL、
+  窗口内人工否决使 begin 返回 False、窗口内冗余人工批准放行、missing/sha 不符/重复消费/取消
+  各自返回 False）；编排层 2 例（自动批准调用执行后 decide 被拒且状态不回退、窗口内否决则
+  工具不执行且 run 转 `REJECTED`）。修复前逐一验证过确实可改写。全量单元套件 6050 通过，
+  `ruff` / `mypy --strict` 干净。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

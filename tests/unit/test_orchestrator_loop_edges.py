@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 import headless_re_mcp.agent.orchestrator as orchestrator_module
+from headless_re_mcp.agent.autonomy import AutonomyPolicy
 from headless_re_mcp.agent.config import ProviderConfigStore, ProviderProfile
 from headless_re_mcp.agent.models import RunStatus
 from headless_re_mcp.agent.orchestrator import (
@@ -591,6 +592,70 @@ async def test_a_slow_tool_emits_progress_heartbeats(
     assert progress, "a tool past the heartbeat interval must be visible as running"
     assert progress[0]["tool_call_id"] == "c1"
     assert progress[0]["name"] == "test.tool"
+
+
+@pytest.mark.asyncio
+async def test_an_unattended_call_is_consumed_so_late_decides_are_refused(
+    tmp_path: Path,
+) -> None:
+    """Executed-without-a-human must be final: no post-hoc relabeling.
+
+    The row of a call that skipped the human gate used to stay fully
+    "proposed" while the tool ran and after it completed, so decide()
+    accepted a late decision and rewrote the audit trail -- the status
+    flipped back to approved/rejected on a call whose stored result proves
+    it ran (verified before the fix).
+    """
+    runner, store = _runner(tmp_path, spec=_spec(lambda: {"ok": True, "data": {}}))
+    run_id, _ = _new_run(store)
+    store.transition(run_id, RunStatus.STREAMING)
+
+    result = await runner._handle_tool_call(run_id, "c1", "test.tool", {})
+    assert result["ok"] is True
+
+    row = store.get_tool_call(run_id, "c1")
+    assert row["status"] == "completed"
+    assert row["consumed_at"] is not None, "execution must consume the call"
+    with pytest.raises(ValueError, match="decided or consumed"):
+        await runner.decide(run_id, "c1", str(row["args_sha256"]), approved=False)
+    after = store.get_tool_call(run_id, "c1")
+    assert after["status"] == "completed"
+    assert after["approved"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_human_veto_in_the_execute_window_beats_the_autonomy_grant(
+    tmp_path: Path,
+) -> None:
+    ran: list[str] = []
+
+    def handler() -> JsonObject:
+        ran.append("ran")
+        return {"ok": True}
+
+    runner, store = _runner(
+        tmp_path,
+        spec=_spec(handler, effect=ToolEffect.STATE_CHANGE),
+        autonomy=AutonomyPolicy(auto_approve_effects=frozenset({ToolEffect.STATE_CHANGE})),
+    )
+    run_id, _ = _new_run(store)
+    store.transition(run_id, RunStatus.STREAMING)
+    # Land the rejection inside the propose->execute window by stitching it
+    # onto the consumption attempt the orchestrator makes just before running.
+    original = store.begin_unattended_execution
+
+    def reject_first(run_id_: str, call_id_: str, sha_: str) -> bool:
+        store.decide_tool_call(run_id_, call_id_, sha_, approved=False)
+        return original(run_id_, call_id_, sha_)
+
+    store.begin_unattended_execution = reject_first  # type: ignore[method-assign]
+
+    result = await runner._handle_tool_call(run_id, "c1", "test.tool", {})
+
+    assert result["error"]["code"] == "tool_rejected"
+    assert ran == [], "a vetoed call must never execute"
+    run = store.get_run(run_id)
+    assert run is not None and run.status is RunStatus.REJECTED
 
 
 def test_arguments_that_exhaust_the_encoder_are_refused(
