@@ -32,6 +32,7 @@ from headless_re_mcp.core.session import (
     _dotnet_public_types,
     _dotnet_resource_payloads,
     _dotnet_target_framework,
+    _dotnet_type_forwards,
     _pe_authenticode,
     _pe_build_time,
     _pe_capability_surface,
@@ -2827,6 +2828,45 @@ class TestDotnetAssemblyRefs:
         assert session.metadata["dotnet"]["assembly_refs"] == [
             {"name": "mscorlib", "version": "4.0.0.0"}
         ]
+
+
+class TestDotnetTypeForwards:
+    """_dotnet_type_forwards reads the managed API-redirection surface.
+
+    Forwarder ExportedType rows are how a facade assembly redirects a type to
+    wherever it really lives -- the .NET pair to a PE forwarded export and a
+    Mach-O reexported dylib. The forwarder positive case is built by a real
+    compiler in the monodis gate; here the empty answers and the refusals.
+    """
+
+    def test_the_committed_fixture_forwards_nothing(self) -> None:
+        # No ExportedType table at all: the honest empty list, not None.
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        assert _dotnet_type_forwards(_DOTNET_FIXTURE) == []
+
+    def test_an_assembly_with_resources_reads_the_same_answer(self, tmp_path: Path) -> None:
+        # Extra ManifestResource rows change the walk in front of 0x27 but
+        # must not invent forwards.
+        path = tmp_path / "resourced.exe"
+        path.write_bytes(_dotnet_with_resources([("payload.bin", b"\x00" * 64)]))
+        assert _dotnet_type_forwards(path) == []
+
+    def test_a_native_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "native.exe"
+        path.write_bytes(_native_pe())
+        assert _dotnet_type_forwards(path) is None
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _dotnet_type_forwards(path) is None
+
+    def test_session_over_a_managed_pe_carries_the_empty_surface(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        session = SessionRegistry().create(str(_DOTNET_FIXTURE))
+        assert session.metadata["dotnet"]["type_forwards"] == []
 
 
 class TestDotnetPinvokeImports:

@@ -264,6 +264,12 @@ class SessionRegistry:
                     pinvokes = _dotnet_pinvokes(path)
                     if pinvokes is not None:
                         metadata["dotnet"]["pinvoke_imports"] = pinvokes
+                    # Managed API redirection: forwarder ExportedType rows,
+                    # the .NET pair to PE forwarded exports and Mach-O
+                    # reexported dylibs. Empty is the common real answer.
+                    forwards = _dotnet_type_forwards(path)
+                    if forwards is not None:
+                        metadata["dotnet"]["type_forwards"] = forwards
                     # The module initializer (<Module>::.cctor) -- the code
                     # the CLR runs before any entry point, the managed pair
                     # to a PE TLS callback / ELF init_func / WASM start.
@@ -5345,6 +5351,14 @@ def _dotnet_custom_attr_string(blob: bytes) -> str | None:
         return None
     return blob[start : start + length].decode("utf-8", errors="replace")
 _DOTNET_MAX_ASSEMBLY_REF_ROWS = 256
+# ExportedType (0x27) rows whose forwarder flag is set redirect a type to
+# another assembly (System.Runtime facades are built from them) -- the managed
+# pair to a PE export forwarder ("NTDLL.RtlAllocateHeap") and a Mach-O
+# LC_REEXPORT_DYLIB. tdForwarder is ECMA-335 II.23.1.15.
+_DOTNET_EXPORTED_TYPE = 0x27
+_DOTNET_TD_FORWARDER = 0x00200000
+_DOTNET_IMPL_TAG_ASSEMBLY_REF = 1  # Implementation coded-index tag (II.24.2.6)
+_DOTNET_MAX_TYPE_FORWARDS = 256
 
 
 def _dotnet_embedded_resources(path: Path) -> tuple[bytes, list[tuple[str, int, int]]]:
@@ -5602,6 +5616,135 @@ def _dotnet_assembly_refs(path: Path) -> list[dict[str, Any]] | None:
             continue
         refs.append({"name": name, "version": version})
     return refs
+
+
+def _dotnet_type_forwards(path: Path) -> list[dict[str, Any]] | None:
+    """Forwarder ExportedType rows -- managed API redirection -- or ``None``.
+
+    An ExportedType row with tdForwarder set tells the runtime "this type now
+    lives in that assembly": the mechanism .NET facades (System.Runtime and
+    friends) are made of, and the managed pair to a PE forwarded export and a
+    Mach-O reexported dylib -- both already session facts. Each forward names
+    the redirected type (namespace-qualified) and the AssemblyRef it points
+    at, the same rows ``monodis --exported`` prints. An empty list is the
+    real answer nearly every ordinary assembly gives; non-forwarder
+    ExportedType rows (multi-module manifests) are not forwards and stay out.
+
+    ``None`` -- fact absent -- when the file is not a managed PE or its
+    metadata tables cannot be walked. Bounded and fail-closed like the
+    AssemblyRef walk above, whose refs also resolve the destination names.
+    """
+    from headless_re_mcp.dotnet.tables import coded_index_size, table_row_size
+
+    try:
+        if path.stat().st_size > _DOTNET_MAX_FILE:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    view = _pe_header_view(raw)
+    if view is None:
+        return None
+    _magic, dir_count, dir_off, sections, _base = view
+    entry = dir_off + _PE_COM_DESCRIPTOR_DIR * 8
+    if dir_count <= _PE_COM_DESCRIPTOR_DIR or entry + 8 > len(raw):
+        return None
+    clr_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if clr_rva == 0:
+        return None
+    clr_off = _pe_rva_to_offset(sections, clr_rva)
+    if clr_off is None or clr_off + 16 > len(raw):
+        return None
+    meta_rva = int.from_bytes(raw[clr_off + 8 : clr_off + 12], "little")
+    meta_off = _pe_rva_to_offset(sections, meta_rva)
+    if meta_off is None:
+        return None
+    stream_map = _clr_stream_map(raw, meta_off)
+    tables_span = stream_map.get("#~") or stream_map.get("#-")
+    strings_span = stream_map.get("#Strings")
+    if tables_span is None:
+        return None
+    tables = raw[meta_off + tables_span[0] : meta_off + tables_span[0] + tables_span[1]]
+    strings = b""
+    if strings_span is not None:
+        strings = raw[meta_off + strings_span[0] : meta_off + strings_span[0] + strings_span[1]]
+    if len(tables) < 24:
+        return None
+    heap_sizes = tables[6]
+    string_index_size = 4 if (heap_sizes & 0x01) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    valid = int.from_bytes(tables[8:16], "little")
+    cursor = 24
+    row_counts: dict[int, int] = {}
+    for bit in range(64):
+        if valid & (1 << bit):
+            if cursor + 4 > len(tables):
+                return None
+            row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
+            cursor += 4
+    max_rows = max((len(tables) - cursor) // 2, 0)
+    row_counts = {bit: min(count, max_rows) for bit, count in row_counts.items()}
+    if _DOTNET_EXPORTED_TYPE not in row_counts:
+        return []  # no ExportedType table at all: nothing forwarded
+    table_offset = cursor
+    for bit in sorted(row_counts):
+        if bit >= _DOTNET_EXPORTED_TYPE:
+            break
+        row_size = table_row_size(
+            row_counts, string_index_size, blob_index_size, guid_index_size, bit
+        )
+        if row_size is None:
+            return None
+        table_offset += row_size * row_counts[bit]
+    exp_row_size = table_row_size(
+        row_counts, string_index_size, blob_index_size, guid_index_size, _DOTNET_EXPORTED_TYPE
+    )
+    if exp_row_size is None:
+        return None
+    impl_size = coded_index_size(row_counts, (0x26, 0x23, 0x27), 2)
+
+    # The destination names live in the AssemblyRef table; its walk above is
+    # this fact's other half, so reuse it (1-based Implementation rows).
+    refs = _dotnet_assembly_refs(path) or []
+
+    forwards: list[dict[str, Any]] = []
+    for i in range(min(row_counts[_DOTNET_EXPORTED_TYPE], _DOTNET_MAX_TYPE_FORWARDS)):
+        at = table_offset + i * exp_row_size
+        if at + exp_row_size > len(tables):
+            break
+        flags = int.from_bytes(tables[at : at + 4], "little")
+        if not flags & _DOTNET_TD_FORWARDER:
+            continue
+        name_at = at + 8  # Flags(4) + TypeDefId(4)
+        name = _dotnet_string_at(strings, tables, name_at, string_index_size)
+        namespace = _dotnet_string_at(
+            strings, tables, name_at + string_index_size, string_index_size
+        )
+        impl_at = name_at + 2 * string_index_size
+        impl = int.from_bytes(tables[impl_at : impl_at + impl_size], "little")
+        if impl & 0x3 != _DOTNET_IMPL_TAG_ASSEMBLY_REF:
+            continue  # a forwarder always points at an AssemblyRef
+        ref_row = impl >> 2
+        assembly = refs[ref_row - 1]["name"] if 0 < ref_row <= len(refs) else None
+        if not name:
+            continue
+        forwards.append(
+            {
+                "type": f"{namespace}.{name}" if namespace else name,
+                "assembly": assembly,
+            }
+        )
+    return forwards
+
+
+def _dotnet_string_at(strings: bytes, tables: bytes, at: int, index_size: int) -> str:
+    """The #Strings entry a table cell at ``at`` points to, or ""."""
+    index = int.from_bytes(tables[at : at + index_size], "little")
+    if not 0 < index < len(strings):
+        return ""
+    end = strings.find(b"\0", index)
+    return strings[index : (end if end >= 0 else len(strings))].decode("utf-8", errors="replace")
 
 
 def _dotnet_pinvokes(path: Path) -> list[dict[str, Any]] | None:

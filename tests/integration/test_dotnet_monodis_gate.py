@@ -905,3 +905,83 @@ def test_session_debuggable_agrees_with_monodis(tmp_path: Path) -> None:
         "edit_and_continue": False,
         "jit_optimizer_disabled": False,
     }
+
+
+# monodis --exported prints each ExportedType row as
+# "1: Real.Thing is in assemblyref 1, index=0, flags=0x200000".
+_EXPORTED_RE = re.compile(
+    r"^\d+: (\S+) is in assemblyref (\d+), index=\d+, flags=0x([0-9a-fA-F]+)$", re.M
+)
+
+
+@pytest.mark.integration
+def test_session_type_forwards_agree_with_monodis(tmp_path: Path) -> None:
+    """The managed API-redirection surface against monodis --exported.
+
+    A session now reads forwarder ExportedType rows -- the .NET pair to PE
+    forwarded exports and Mach-O reexported dylibs, and the mechanism real
+    facade assemblies (System.Runtime) are built from. The 0x27 table walk,
+    the tdForwarder filter and the Implementation coded-index decode are all
+    ours, so a real compiler provides the rows: mcs builds a library and a
+    facade that TypeForwardedTo-redirects two of its types (one namespaced,
+    one bare), and monodis --exported must print exactly the rows the reader
+    hands back -- type for type, destination assembly for destination
+    assembly, through monodis's own assemblyref resolution. The library
+    itself must read the honest empty list. skip != pass.
+    """
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        pytest.skip("mcs (mono-mcs) not installed — compiler assembly gate not run (skip != pass)")
+
+    lib_source = tmp_path / "real_home.cs"
+    lib_source.write_text(
+        "namespace Real { public class Thing { public static int N() { return 1; } } }\n"
+        "public class Bare { }\n"
+    )
+    library = tmp_path / "real_home.dll"
+    subprocess.run(
+        [mcs, "-target:library", f"-out:{library}", str(lib_source)],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+    facade_source = tmp_path / "facade.cs"
+    facade_source.write_text(
+        "using System.Runtime.CompilerServices;\n"
+        "[assembly: TypeForwardedTo(typeof(Real.Thing))]\n"
+        "[assembly: TypeForwardedTo(typeof(Bare))]\n"
+    )
+    facade = tmp_path / "facade.dll"
+    subprocess.run(
+        [mcs, "-target:library", f"-r:{library}", f"-out:{facade}", str(facade_source)],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+
+    # The referee's view: every forwarder row (flag 0x00200000), its type name
+    # and its destination resolved through monodis's own assemblyref dump.
+    ref_dump = _monodis_file(facade, "--assemblyref")
+    ref_names = [name for _version, name in _ASSEMBLYREF_RE.findall(ref_dump)]
+    expected = []
+    for full_name, ref_index, flags in _EXPORTED_RE.findall(_monodis_file(facade, "--exported")):
+        if int(flags, 16) & 0x00200000:
+            expected.append({"type": full_name, "assembly": ref_names[int(ref_index) - 1]})
+    # Referee sanity: both forwards landed, pointing at the real library.
+    assert {"type": "Real.Thing", "assembly": "real_home"} in expected, expected
+    assert {"type": "Bare", "assembly": "real_home"} in expected, expected
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(facade))
+        assert created.ok, created.error
+        assert created.data["session"]["metadata"]["dotnet"]["type_forwards"] == expected
+
+        # The library forwards nothing: the empty list, not an invention.
+        created = service.create_session(str(library))
+        assert created.ok, created.error
+        assert created.data["session"]["metadata"]["dotnet"]["type_forwards"] == []
+    finally:
+        service.close_all()
