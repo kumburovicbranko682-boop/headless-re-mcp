@@ -142,6 +142,29 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             analysis.apk_files(session_id, offset=offset, limit=limit, name_filter=name_filter)
         )
 
+    @tools.tool(name="apk.extract")
+    def apk_extract(session_id: str, member: str) -> dict[str, Any]:
+        """Copy one archive member out to a file so the next tool can read it.
+
+        apk.files names a bundled payload; this pulls that one member out. Use
+        it on a member apk.files flagged -- a nested apk/zip (kind zip), an ELF
+        (kind elf), a hidden classesN.dex (kind dex) under assets/ -- to get it
+        on disk for re-analysis (re-open the nested apk as its own target, hand
+        the ELF to the native path). member is the exact archive path from
+        apk.files (case-sensitive, no globbing); a directory or a missing member
+        is refused. Only that single member is copied, never the whole tree --
+        that is apk.decode/apk.export_sources. The bytes land under a uuid file
+        in the session artifact tree (never a caller-chosen name, so a member
+        path like ../../x cannot escape it) and are registered, so retention
+        reclaims them and artifacts.open can read them back. Answers with member,
+        size, path, sha256 (of the extracted bytes, for a hash/VT lookup),
+        artifact_id, and kind when the magic bytes name it (dex, elf, zip, axml,
+        png, jpeg, pdf, class). A member whose declared size, or actual read,
+        exceeds the 64 MiB cap is refused (too_large) rather than inflated, so a
+        decompression bomb cannot be extracted.
+        """
+        return _dump(analysis.apk_extract(session_id, member))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,

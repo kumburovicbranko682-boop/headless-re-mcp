@@ -8,6 +8,7 @@ and mtime keeps repeated tool calls within one session from re-parsing.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import zipfile
 from collections import OrderedDict
@@ -877,6 +878,91 @@ class ApkClient:
             return [metadata_row(entry) for entry in window]
         return rows
 
+    def extract(
+        self,
+        path: Path,
+        member: str,
+        out_dir: Path,
+        *,
+        max_bytes: int = UNREGISTERED_CAPTURE_MAX_BYTES,
+    ) -> JsonObject:
+        """Copy one named archive member out to a file, bounded and classified.
+
+        apk.files names a bundled payload; this pulls that one member out so the
+        next tool can read it -- a nested apk/zip re-opened as its own target, an
+        ELF handed to the native path, a hidden classesN.dex. Only the single
+        member named is copied, never the whole tree (that is apk.decode), and
+        never under a caller-chosen output name: the bytes land under a uuid file
+        in the session artifact dir, so a member path like ``../../etc/passwd``
+        cannot escape it (zip-slip). The declared uncompressed size is checked
+        against the cap before the read and the read itself is bounded one byte
+        past it, so a member that lies low about its size or is a decompression
+        bomb is refused rather than inflated into this process. Returns member,
+        size, path, sha256 (of the extracted bytes, for a hash lookup), and kind
+        when the magic names it.
+        """
+        resolved = self._require(path)
+        name = member.strip() if isinstance(member, str) else ""
+        if not name:
+            raise ApkError("invalid_params", "member is required")
+        try:
+            with zipfile.ZipFile(resolved) as archive:
+                try:
+                    info = archive.getinfo(name)
+                except KeyError as exc:
+                    raise ApkError(
+                        "not_found", "member not found in apk", member=name
+                    ) from exc
+                if info.is_dir():
+                    raise ApkError(
+                        "invalid_params", "member is a directory, not a file", member=name
+                    )
+                declared = int(info.file_size)
+                if declared > max_bytes:
+                    raise ApkError(
+                        "too_large",
+                        f"member decompresses to {declared} bytes, over the {max_bytes} cap",
+                        member=name,
+                        size=declared,
+                        cap=max_bytes,
+                    )
+                with archive.open(info) as fh:
+                    # One byte past the cap so a central-directory size that lies
+                    # low cannot slip a larger payload through; zipfile also stops
+                    # at the declared size and raises on a mismatch.
+                    data = fh.read(max_bytes + 1)
+        except ApkError:
+            raise
+        except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError, EOFError) as exc:
+            raise ApkError(
+                "backend_error", f"cannot extract member: {exc}", member=name
+            ) from exc
+        if len(data) > max_bytes:
+            raise ApkError(
+                "too_large",
+                f"member exceeds the {max_bytes} byte cap",
+                member=name,
+                cap=max_bytes,
+            )
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"member-{uuid4().hex}{_member_suffix(name)}"
+            out_path.write_bytes(data)
+        except OSError as exc:
+            raise ApkError(
+                "backend_error", f"cannot write extracted member: {exc}", member=name
+            ) from exc
+        result: JsonObject = {
+            "member": name,
+            "size": len(data),
+            "path": str(out_path),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        kind = _sniff_kind(data[:_FILE_MAGIC_BYTES])
+        if kind:
+            result["kind"] = kind
+        return result
+
     def classes(
         self, path: Path, *, offset: int = 0, limit: int = 100, name_filter: str = ""
     ) -> JsonObject:
@@ -1253,4 +1339,18 @@ def _sniff_kind(head: bytes) -> str:
         return "pdf"
     if head[:4] == b"\xca\xfe\xba\xbe":
         return "class"  # Java .class (CAFEBABE)
+    return ""
+
+
+def _member_suffix(name: str) -> str:
+    """A short, safe extension for an extracted member's on-disk name.
+
+    Cosmetic only -- the artifact is keyed by uuid, so this just makes the
+    written file recognisable. Keep at most a short alphanumeric suffix and drop
+    anything else, so a crafted member name cannot smuggle path characters or an
+    absurd extension into the filename this process writes.
+    """
+    suffix = Path(name).suffix
+    if 1 < len(suffix) <= 8 and suffix[1:].isalnum():
+        return suffix.lower()
     return ""

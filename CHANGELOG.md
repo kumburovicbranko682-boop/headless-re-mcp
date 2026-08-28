@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **274（156 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **275（157 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -284,6 +284,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **`apk.files` 能看见藏在 `assets/` 里的载荷，却没有任何工具能把它取出来做下一步分析**。`apk.files` 标出一个嵌套 apk/zip
+  （`kind` 为 `zip`）、一段 ELF（`elf`）或多出来的 `classesN.dex`（`dex`）后，此前想拿到那一个成员只能整树 `apk.decode`/
+  `apk.export_sources`（apktool/jadx 子进程，把整包铺开），没有"只取这一个成员"的办法。新增只读工具 `apk.extract`：按 `apk.files`
+  给出的精确归档路径（大小写敏感、无通配）把**单个**成员复制到会话制品树下的一个 uuid 文件——绝不用调用方给的名字落盘，故一个
+  形如 `../../etc/passwd` 的成员路径无法逃出该目录（zip-slip）；目录成员或不存在的成员分别报 `invalid_params`/`not_found`。
+  取出的字节登记为制品，故受保留策略回收、可由 `artifacts.open` 读回；返回 `{member, size, path, sha256（取出字节的哈希，便于
+  按 hash/VT 检索）, artifact_id}`，magic 命中时附 `kind`。成员声明的未压缩大小在读取前先对 64 MiB 上限校验、读取本身再多读一
+  字节封顶，故一个谎报大小或本身就是解压炸弹的成员会被 `too_large` 拒绝而非撑爆本进程。只读，工具总数 274→275（157 只读 / 118 写）。
 - **`apk.native_libs` 只看 `lib/`，assets 里藏的第二段 dex / ELF / 嵌套 apk 全看不见**。恶意样本常把真正的载荷塞进
   `assets/`、`res/raw/` 或多出来的 `classes2.dex`——`apk.native_libs` 只枚举 `lib/*.so`，其余归档成员没有任何工具能列出。
   新增只读工具 `apk.files`，直接读 zip 中央目录列出全部成员（不解压归档）：每行 `{path, size（未压缩）, compressed_size,
