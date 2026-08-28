@@ -9,10 +9,12 @@ make ``run_bounded`` launch a JVM/node/r2 only to kill it at once and report a
 misleading timeout, and a huge one would let a tool that hangs on hostile input
 hold a worker for as long as the caller named.
 
-The windbg (cdb) adapter shares this contract -- it clamps at its ``_run_dump``
-(le=300) and ``_run_process`` (le=120) chokepoints -- but its tests need a
-stubbed cdb and dump file, so they live with the other cdb guards in
-``test_windbg_input_guards.py`` rather than being duplicated here.
+The windbg (cdb) and ghidra (analyzeHeadless) adapters share this contract --
+windbg clamps at its ``_run_dump`` (le=300) and ``_run_process`` (le=120)
+chokepoints, ghidra at its single ``_run_headless`` (le=600) chokepoint -- but
+their tests need a stubbed launcher (and, for windbg, a dump file), so they live
+with the other backend guards in ``test_windbg_input_guards.py`` and
+``test_ghidra_client.py`` rather than being duplicated here.
 """
 
 from __future__ import annotations

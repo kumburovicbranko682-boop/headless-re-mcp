@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（ghidra analyzeHeadless 把调用方 timeout 直接喂给 run_bounded,绕过 schema 边界不设防)
+
+- 继 windbg 之后,ghidra 是 `run_bounded` 兄弟适配器里最后一个未在边界收口 timeout 的:jadx/apktool/jsre/radare2/windbg 都经
+  `clamp_cli_timeout` 收口,而 ghidra 的 `_run_headless`(analyze 与全部导出 functions/symbols/xrefs/decompile 的唯一启动
+  chokepoint)把原始 `timeout` 直送 `run_bounded`——它自己的 OSError 处理注释甚至就点名了"jadx、apktool、jsre、windbg 这些兄弟
+  适配器"。agent/OpenAI 传输绕过 MCP schema 的 `0 < timeout <= 600`:非正值会让它启动 analyzeHeadless(JVM)又在首个循环迭代
+  立刻杀掉、把参数错误报成 `timeout`;超大值则让在恶意二进制上挂死的分析把一个核和 project 目录占用到调用方指定的时长。现在
+  `_run_headless` 开头按 schema 上限 600 收口:非正值/NaN 在启动前抛 `invalid_params`,超大值封顶到 600。收口点在各公开方法的
+  可用性检查之后(未配置 ghidra 仍优先报 capability_unavailable)。新增测试:analyze 与导出对非正/NaN timeout 都在启动前抛
+  invalid_params 且 run_bounded 从未被调用、超大 timeout 都封顶到 600(单一 chokepoint 覆盖 analyze 与导出);
+  `test_cli_adapter_timeout_bounds` 文档补记 ghidra 同属该契约。有效范围内的 timeout 原样透传,不改成功路径。至此所有 run_bounded
+  适配器(jadx/apktool/jsre/radare2/windbg/ghidra)都在边界统一收口 timeout。
+
 ### 修复（.NET deobfuscate/unpack 把后端已标好的 retryable 丢弃,超时到调用方变不可重试)
 
 - de4dot 与 NETReactorSlayer 的错误类都自带 `retryable` 字段,并在超时(及进程失败)时显式置 `retryable=True`——与其余每个有界

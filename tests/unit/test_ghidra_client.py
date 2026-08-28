@@ -582,3 +582,66 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def _capture_timeouts(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the (already clamped) deadline analyzeHeadless would be launched with."""
+    seen: list[float] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        seen.append(kwargs["timeout"])
+        for arg in cmd:
+            if str(arg).endswith(".json"):
+                Path(str(arg)).write_text('{"items": [], "count": 0}', encoding="utf-8")
+        return Completed(0, b"ok", b"")
+
+    monkeypatch.setattr(ghidra_client, "run_bounded", fake_run)
+    return seen
+
+
+# analyzeHeadless is launched only through _run_headless, so clamping the caller
+# deadline there guards analyze and every export against a transport that skips
+# the tool schema's 0 < timeout <= 600 (the agent/OpenAI paths call the service
+# straight from model arguments; only the MCP path runs pydantic).
+
+
+@pytest.mark.parametrize("bad", [0, -1, -0.5, float("nan")])
+def test_analyze_refuses_a_non_positive_timeout_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    seen = _capture_timeouts(monkeypatch)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.analyze_binary(_binary(tmp_path), tmp_path / "project", timeout=bad)
+    assert caught.value.code == "invalid_params"
+    assert seen == []
+
+
+def test_analyze_caps_a_huge_timeout_at_the_schema_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _capture_timeouts(monkeypatch)
+    client = _client(tmp_path)
+    client.analyze_binary(_binary(tmp_path), tmp_path / "project", timeout=10**9)
+    assert seen == [ghidra_client._MAX_TIMEOUT_S]
+
+
+def test_an_export_refuses_a_non_positive_timeout_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The clamp lives at the shared chokepoint, so exports inherit the guard too.
+    seen = _capture_timeouts(monkeypatch)
+    client = _client(tmp_path)
+    with pytest.raises(ghidra_client.GhidraError) as caught:
+        client.functions(_binary(tmp_path), tmp_path / "project", timeout=0)
+    assert caught.value.code == "invalid_params"
+    assert seen == []
+
+
+def test_an_export_caps_a_huge_timeout_at_the_schema_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _capture_timeouts(monkeypatch)
+    client = _client(tmp_path)
+    client.functions(_binary(tmp_path), tmp_path / "project", timeout=10**9)
+    assert seen == [ghidra_client._MAX_TIMEOUT_S]
