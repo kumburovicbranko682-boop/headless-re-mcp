@@ -239,3 +239,50 @@ def test_release_drops_every_cached_parse_for_one_path(
 
     # Nothing left to drop: a second release is honest about freeing nothing.
     assert ApkClient.release(apk) is False
+
+
+def test_full_analysis_cache_evicts_the_oldest_past_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The expensive DEX cache is capped independently of the light one.
+
+    A full ``_ParsedApk`` is tens to hundreds of MB, so an unbounded full cache is
+    the real memory leak the cap guards. The light-cache eviction is pinned above;
+    this proves the ``_full_cache`` obeys the same bound -- filling it to the cap
+    and analysing one more APK drops the oldest entry rather than growing without
+    limit, so an agent that walks a directory of APKs cannot exhaust the process.
+    """
+    _install_analyze_fake(monkeypatch)
+    client = ApkClient()
+    files = [_apk_file(tmp_path, name=f"g{i}.apk", body=bytes([i])) for i in range(_CACHE_LIMIT)]
+    for path in files:
+        client._parsed(path)
+    assert len(ApkClient._full_cache) == _CACHE_LIMIT
+
+    extra = _apk_file(tmp_path, name="extra.apk", body=b"extra")
+    client._parsed(extra)
+
+    keys = {key[0] for key in ApkClient._full_cache}
+    assert len(ApkClient._full_cache) == _CACHE_LIMIT
+    # The first-inserted APK is the oldest and is evicted; the newest survives.
+    assert str(files[0].resolve()) not in keys
+    assert str(extra.resolve()) in keys
+
+
+def test_release_reports_false_when_the_path_cannot_be_resolved() -> None:
+    """A path that cannot be resolved frees nothing rather than crashing close.
+
+    release runs on session close, and the path can be gone or unresolvable by
+    then (a deleted temp dir, a broken symlink, an ELOOP). resolve() raising must
+    answer False -- freed nothing -- not let an OSError escape and abort the
+    session teardown that was only trying to reclaim memory.
+    """
+
+    class _UnresolvablePath:
+        def expanduser(self) -> _UnresolvablePath:
+            return self
+
+        def resolve(self) -> Path:
+            raise OSError("too many levels of symbolic links")
+
+    assert ApkClient.release(_UnresolvablePath()) is False  # type: ignore[arg-type]
