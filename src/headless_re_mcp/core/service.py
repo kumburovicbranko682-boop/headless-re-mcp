@@ -1228,7 +1228,7 @@ class AnalysisService(
             result = self.close_session(session_id)
             if result.ok:
                 closed += 1
-            elif result.error is not None:
+            elif result.error is not None:  # pragma: no branch - failed Result always has error
                 errors.append(
                     {
                         "session_id": session_id,
@@ -1414,12 +1414,12 @@ class AnalysisService(
                 backend=BackendKind.X64DBG.value,
                 workflow_id=workflow_id,
             )
-            if result.ok and result.data:
+            if result.ok and result.data:  # pragma: no branch - _success always carries a payload
                 events = result.data.get("events") or []
                 # Timeline mirror remains opt-in; durable sqlite log is always on.
                 if bool(getattr(self.settings, "persist_debug_events", False)):
                     for event in events[:_DEBUG_EVENT_BUDGET_PER_BATCH]:
-                        if not isinstance(event, dict):
+                        if not isinstance(event, dict):  # pragma: no cover - always dicts
                             continue
                         _timeline_append(
                             self,
@@ -1824,7 +1824,7 @@ class AnalysisService(
 
             debuggee = pid
             state_obj = annotated.get("state")
-            if isinstance(state_obj, dict):
+            if isinstance(state_obj, dict):  # pragma: no branch - attach returns a state dict
                 proc = state_obj.get("process_id") or state_obj.get("debuggee_pid")
                 if isinstance(proc, int) and proc > 0:
                     debuggee = proc
