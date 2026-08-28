@@ -27,6 +27,7 @@ from headless_re_mcp.core.session import (
     _pe_hardening_facts,
     _pe_overlay,
     _pe_resource_payloads,
+    _pe_rich_header,
     _pe_tls_facts,
     _pe_version_info,
     describe_pe_clr,
@@ -1153,6 +1154,109 @@ class TestPeVersionInfo:
         info = session.metadata["pe"]["version_info"]
         assert info["file_version"] == "1.2.3.4"
         assert info["strings"]["CompanyName"] == "Contoso Ltd"
+
+
+def _pe_with_rich(
+    entries: list[tuple[int, int, int]],
+    *,
+    key: int = 0x1F2E3D4C,
+    corrupt_dans: bool = False,
+    stray_rich: bool = False,
+) -> bytes:
+    """A minimal PE32 whose pre-header bytes carry a Rich header.
+
+    ``entries`` are (product id, build, count) rows, masked the way MSVC's
+    linker masks them: DanS ^ key at 0x80, three masked zeros, the pairs, the
+    plain ``Rich`` marker and the plain key. ``corrupt_dans`` writes a wrong
+    sentinel so the mask must be rejected; ``stray_rich`` plants only the
+    marker text with no census behind it.
+    """
+
+    def mask(value: int) -> bytes:
+        return (value ^ key).to_bytes(4, "little")
+
+    if stray_rich:
+        region = b"prose mentioning Rich" + key.to_bytes(4, "little") + b"\x00" * 3
+    else:
+        sentinel = 0x536E6144 ^ (0xFF if corrupt_dans else 0)
+        region = mask(sentinel) + mask(0) * 3
+        for product_id, build, count in entries:
+            region += mask((product_id << 16) | build) + mask(count)
+        region += b"Rich" + key.to_bytes(4, "little")
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    e_lfanew = 0x80 + ((len(region) + 7) & ~7)
+    dos[0x3C:0x40] = e_lfanew.to_bytes(4, "little")
+    stub = bytes(dos) + region + bytes(e_lfanew - 0x80 - len(region))
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x014C, 0, 0, 0, 0, 0xE0, 0)
+    optional = bytearray(0xE0)
+    optional[0:2] = (0x10B).to_bytes(2, "little")  # PE32
+    optional[92:96] = (16).to_bytes(4, "little")  # NumberOfRvaAndSizes
+    return stub + coff + bytes(optional)
+
+
+class TestPeRichHeader:
+    """_pe_rich_header decodes MSVC's toolchain census -- the PE provenance.
+
+    The pair to an ELF .comment, a Mach-O build-tool entry and the WASM
+    producers section: one (product id, build, count) row per tool the
+    Microsoft linker consumed objects from, XOR-masked between the DOS stub
+    and the PE header. Only MSVC-family linkers write it, so absence is a
+    real answer; the mask is trusted only once the DanS sentinel confirms it.
+    """
+
+    def test_a_pe_without_a_rich_header_reports_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_rich_header(path) == {}
+
+    def test_planted_census_rows_decode_exactly(self, tmp_path: Path) -> None:
+        path = tmp_path / "msvc.exe"
+        path.write_bytes(_pe_with_rich([(0x104, 31933, 5), (0x0F2, 40116, 1)]))
+        rich = _pe_rich_header(path)["rich_header"]
+        assert rich["checksum"] == 0x1F2E3D4C
+        assert rich["entries"] == [
+            {"product_id": 0x104, "build": 31933, "count": 5},
+            {"product_id": 0x0F2, "build": 40116, "count": 1},
+        ]
+
+    def test_an_empty_census_is_still_a_census(self, tmp_path: Path) -> None:
+        # DanS immediately followed by Rich: present, zero rows -- distinct
+        # from a PE with no Rich header at all.
+        path = tmp_path / "empty.exe"
+        path.write_bytes(_pe_with_rich([]))
+        assert _pe_rich_header(path)["rich_header"]["entries"] == []
+
+    def test_a_rich_marker_without_dans_is_not_a_census(self, tmp_path: Path) -> None:
+        path = tmp_path / "prose.exe"
+        path.write_bytes(_pe_with_rich([], stray_rich=True))
+        assert _pe_rich_header(path) == {}
+
+    def test_a_corrupt_sentinel_rejects_the_mask(self, tmp_path: Path) -> None:
+        path = tmp_path / "corrupt.exe"
+        path.write_bytes(_pe_with_rich([(0x104, 31933, 5)], corrupt_dans=True))
+        assert _pe_rich_header(path) == {}
+
+    def test_the_walk_is_bounded_at_the_entry_cap(self, tmp_path: Path) -> None:
+        # 64 rows (the cap) decode; a census larger than the backwards-walk
+        # bound never reaches its sentinel and fails closed.
+        path = tmp_path / "cap.exe"
+        path.write_bytes(_pe_with_rich([(i, i, 1) for i in range(64)]))
+        assert len(_pe_rich_header(path)["rich_header"]["entries"]) == 64
+        path.write_bytes(_pe_with_rich([(i, i, 1) for i in range(80)]))
+        assert _pe_rich_header(path) == {}
+
+    def test_a_non_pe_reports_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "not.exe"
+        path.write_bytes(b"\x7fELF" + bytes(0x100))
+        assert _pe_rich_header(path) == {}
+
+    def test_session_over_a_rich_pe_carries_the_census(self, tmp_path: Path) -> None:
+        path = tmp_path / "msvc.exe"
+        path.write_bytes(_pe_with_rich([(0x105, 31937, 12)]))
+        session = SessionRegistry().create(str(path))
+        rich = session.metadata["pe"]["rich_header"]
+        assert rich["entries"] == [{"product_id": 0x105, "build": 31937, "count": 12}]
 
 
 class TestPeResourcePayloads:

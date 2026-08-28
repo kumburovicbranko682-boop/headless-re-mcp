@@ -171,6 +171,10 @@ class SessionRegistry:
                 # VS_VERSIONINFO -- the self-declared identity (versions,
                 # CompanyName/ProductName strings); a claim, not a verdict.
                 metadata["pe"].update(_pe_version_info(path))
+                # The Rich header -- MSVC's toolchain census, the PE pair to
+                # an ELF .comment and a Mach-O build-tool entry; only
+                # Microsoft linkers write it, so absence is a real answer.
+                metadata["pe"].update(_pe_rich_header(path))
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -3432,6 +3436,16 @@ _VS_FIXED_SIZE = 52
 _PE_MAX_VERSION_BLOB = 64 * 1024
 _PE_MAX_VERSION_STRINGS = 32
 _PE_MAX_VERSION_CHARS = 256
+# The Rich header: MSVC's XOR-masked toolchain census between the DOS stub and
+# the PE header (DanS ^ key, three masked zeros, (comp.id ^ key, count ^ key)
+# pairs, "Rich", key). Each comp.id is a product id (high word) and build
+# number (low word) -- the PE toolchain provenance, the pair to an ELF
+# .comment, a Mach-O build-tool entry and the WASM producers section. Only
+# MSVC-family linkers write it; pefile's parse_rich_header referees the gate.
+_PE_RICH_MARKER = b"Rich"
+_PE_DANS = 0x536E6144  # 'DanS' as a little-endian dword
+_PE_MAX_RICH_ENTRIES = 64
+_PE_MAX_RICH_SCAN = 0x1000
 _PE_RES_MAX_NAME = 128
 # The standard RT_* resource type ids, so a flagged payload names the resource
 # it hid in (RT_RCDATA is the dropper's usual choice, but a PE in a "bitmap" is
@@ -4348,6 +4362,67 @@ def _pe_debug_fingerprint(path: Path) -> dict[str, Any]:
                 }
             }
     return {}
+
+
+def _pe_rich_header(path: Path) -> dict[str, Any]:
+    """The Rich header -- MSVC's toolchain census -- as ``{"rich_header": ...}``.
+
+    Every object the Microsoft linker consumed leaves one row in the XOR-masked
+    block between the DOS stub and the PE header: a product id naming the tool
+    (compiler, masm, the linker itself, per-version), the tool's build number
+    and how many objects it contributed. The PE toolchain provenance, the pair
+    to an ELF .comment, a Mach-O build-tool entry and the WASM producers
+    section -- and a classic attribution artifact, since the census survives
+    even a fully stripped build.
+
+    The mask (the "checksum" dword after the ``Rich`` marker) is only trusted
+    once unmasking backwards reaches the ``DanS`` sentinel; a stray ``Rich``
+    string without one is not a Rich header. Bounded and fail-closed: the scan
+    stays inside the pre-PE-header bytes, the backwards walk and the entry
+    list are capped, and absence -- every gcc-, mingw- or mcs-built image --
+    is a real answer, since only MSVC-family linkers write the census.
+    """
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(_PE_MAX_RICH_SCAN)
+    except OSError:
+        return {}
+    if len(head) < 0x40 or head[:2] != b"MZ":
+        return {}
+    e_lfanew = int.from_bytes(head[0x3C:0x40], "little")
+    end = min(e_lfanew, len(head))
+    if end <= 0x40:
+        return {}
+    region = head[:end]
+    rich_at = region.rfind(_PE_RICH_MARKER)
+    if rich_at < 0 or rich_at + 8 > len(region):
+        return {}
+    key = int.from_bytes(region[rich_at + 4 : rich_at + 8], "little")
+
+    def unmask(offset: int) -> int:
+        return int.from_bytes(region[offset : offset + 4], "little") ^ key
+
+    dans_at = -1
+    pos = rich_at - 8
+    while pos >= 0x40 and rich_at - pos <= 8 * (_PE_MAX_RICH_ENTRIES + 2):
+        if unmask(pos) == _PE_DANS:
+            dans_at = pos
+            break
+        pos -= 8
+    if dans_at < 0:
+        return {}
+    # The census rows sit between DanS's 16-byte prologue (the sentinel plus
+    # three masked-zero pads) and the Rich marker, one (comp.id, count) pair
+    # of dwords each; comp.id splits into product id and build number.
+    entries: list[dict[str, int]] = []
+    for entry_at in range(dans_at + 16, rich_at - 7, 8):
+        if len(entries) >= _PE_MAX_RICH_ENTRIES:
+            break
+        comp = unmask(entry_at)
+        entries.append(
+            {"product_id": comp >> 16, "build": comp & 0xFFFF, "count": unmask(entry_at + 4)}
+        )
+    return {"rich_header": {"checksum": key, "entries": entries}}
 
 
 def _pe_version_info(path: Path) -> dict[str, Any]:
