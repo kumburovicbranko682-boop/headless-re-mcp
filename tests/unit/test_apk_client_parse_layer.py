@@ -8,10 +8,11 @@ signing block that will not enumerate, a certificate that will not render, a
 top-level ``lib/`` entry with no ABI, an external class skipped, a blank/absent
 class or method).
 
-androguard is optional and not installed in this environment, so a tiny fake
+androguard is optional. These tests never touch a real APK parser: a tiny fake
 ``androguard`` package is installed into ``sys.modules`` to drive the import the
-client does lazily. Nothing here needs a real APK parser; the fake returns
-sentinels and the tests assert the client's own caching and error mapping.
+client does lazily and the fake returns sentinels, while the availability/guard
+tests instead pin a None entry so the ``import`` raises. Either way the outcome
+is fixed regardless of whether androguard happens to be installed here.
 """
 
 from __future__ import annotations
@@ -82,15 +83,21 @@ def test_available_is_true_when_androguard_imports(monkeypatch: pytest.MonkeyPat
     assert ApkClient().available is True
 
 
-def test_available_is_false_when_androguard_is_absent() -> None:
-    # androguard is not installed in this environment; no fake is set up here.
+def test_available_is_false_when_androguard_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Simulate the absence rather than rely on the host lacking androguard: a
+    # None entry makes the lazy ``import androguard`` raise ImportError, so the
+    # degradation path runs whether or not the optional dep is installed here.
+    monkeypatch.setitem(sys.modules, "androguard", None)
     assert ApkClient().available is False
 
 
 # --- _require ----------------------------------------------------------------
 
 
-def test_require_reports_capability_unavailable_without_androguard(tmp_path: Path) -> None:
+def test_require_reports_capability_unavailable_without_androguard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(sys.modules, "androguard", None)
     client = ApkClient()  # available False
     with pytest.raises(ApkError) as caught:
         client.open(_apk_file(tmp_path))

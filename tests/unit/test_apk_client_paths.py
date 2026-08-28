@@ -2,10 +2,12 @@
 
 The apk *_fields tests monkeypatch ``_apk`` / ``_parsed`` to bypass parsing, so
 the availability gate, the light/full parse-and-cache paths, ``release`` and a
-handful of version-tolerant ``except`` arms never run. androguard is optional
-and not installed here, so a fake ``androguard`` package tree is injected to
-drive the real parse/cache code; the error-branch tests keep monkeypatching the
-parse seams the way the existing suite does.
+handful of version-tolerant ``except`` arms never run. androguard is optional,
+so a fake ``androguard`` package tree is injected to drive the real parse/cache
+code; the availability test instead pins a None entry so the ``import`` raises,
+making the unavailable arm run whether or not androguard is installed here. The
+error-branch tests keep monkeypatching the parse seams the way the existing
+suite does.
 """
 
 from __future__ import annotations
@@ -63,8 +65,14 @@ def _apk_file(tmp_path: Path, name: str = "app.apk") -> Path:
 # --- availability + require -----------------------------------------------------
 
 
-def test_without_androguard_the_client_is_unavailable(tmp_path: Path) -> None:
-    client = ApkClient()  # androguard genuinely absent in this environment
+def test_without_androguard_the_client_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Simulate androguard's absence so the degradation path runs even where the
+    # optional dependency is installed: a None entry in sys.modules makes the
+    # lazy ``import androguard`` raise, exactly as a bare host would.
+    monkeypatch.setitem(sys.modules, "androguard", None)
+    client = ApkClient()
 
     assert client.available is False
     with pytest.raises(ApkError) as caught:

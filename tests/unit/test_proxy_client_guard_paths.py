@@ -8,8 +8,10 @@ Windows path), the leaked-handler sweep (``_uninstall_master_logging``), the
 byte-accounting helpers' defensive returns, the ``_FlowRecorder`` omit/eviction
 lockstep, the ``_ProxyInstance`` lifecycle (``start`` error/exit/accept/timeout
 and ``_run`` with a fake mitmproxy), and every ``ProxyBackend`` method's error
-contract. mitmproxy is not installed, so the threaded paths run against a fake
-module injected exactly where the real one would be imported.
+contract. mitmproxy is optional, so the threaded paths run against a fake
+module injected exactly where the real one would be imported; the
+import-failure test instead pins a None entry so the ``import`` raises whether
+or not mitmproxy is installed here.
 """
 
 from __future__ import annotations
@@ -454,9 +456,13 @@ def test_instance_run_falls_back_when_the_constructor_signature_differs(
     assert calls["dumpmaster"] == 2
 
 
-def test_instance_run_records_an_import_failure() -> None:
+def test_instance_run_records_an_import_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """With mitmproxy absent, the run thread records the import error."""
-    assert "mitmproxy" not in sys.modules
+    # A None entry makes ``from mitmproxy import ...`` raise ImportError, so the
+    # run thread's import-failure arm is exercised whether or not mitmproxy is
+    # installed in this environment. sys.modules is process-global, so the
+    # spawned run thread sees the same pinned absence.
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
     inst = _free_instance()
     _run_in_thread(inst)
     assert inst._error is not None
