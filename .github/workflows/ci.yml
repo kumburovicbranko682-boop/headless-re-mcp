@@ -157,6 +157,77 @@ jobs:
           json.loads(Path("upstream.lock.json").read_text(encoding="utf-8"))
           PY
 
+  linux-nonpe-gates:
+    # Real-backend integration gates for the non-PE lines: web/CDP (Playwright),
+    # HTTP interception (mitmproxy), Android static analysis (androguard),
+    # cross-platform static analysis (radare2), and JS/WASM deobfuscation
+    # (webcrack, wabt). Every one of these backends is OSS and cross-platform, so
+    # unlike the Windows self-hosted integration job they run on a hosted runner
+    # on every push -- turning gates that previously could only ever skip
+    # ("skip != pass") into real coverage for the lines this project cares about
+    # beyond PE reversing. IDA (proprietary, PE-only) and the x64dbg/WinDbg/Win32
+    # gates stay on windows-integration.yml; the conftest already skips the
+    # Windows-only modules here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          # webcrack needs Node 22 or 24; pin 22 to match the js.* backend's
+          # documented floor.
+          node-version: "22"
+
+      - name: Install backend CLIs
+        run: |
+          sudo apt-get update
+          # radare2 -> r2.* static gate; wabt -> wasm2wat/wasm-objdump for the
+          # WASM gate; the mingw cross-compiler builds the PE fixture below.
+          sudo apt-get install -y radare2 wabt gcc-mingw-w64-x86-64
+          # webcrack -> js.deobfuscate / js.unpack_bundle gate. shutil.which finds
+          # it on the npm global bin that setup-node puts on PATH.
+          npm install -g webcrack
+
+      - name: Install package
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[test,dev,web,android,proxy,browser]"
+          # --with-deps pulls the OS libraries headless Chromium needs to launch
+          # on a bare runner; without them the web gates fail at browser launch.
+          python -m playwright install --with-deps chromium
+
+      - name: Build the x64 PE fixture the r2 gate maps
+        run: |
+          # radare2 analyses a real PE. The fixture is console_fixture.c built as
+          # a windows-subsystem executable, exactly as CMakeLists' headless_fixture
+          # target does; mingw cross-compiles it on Linux with no Windows host.
+          mkdir -p artifacts/fixtures-x64
+          x86_64-w64-mingw32-gcc -O2 -DHEADLESS_RE_FIXTURE_WINDOWS_SUBSYSTEM -mwindows \
+            fixtures/native/console_fixture.c -o artifacts/fixtures-x64/headless_fixture.exe
+
+      - name: Non-PE integration gates
+        run: |
+          # -rs prints every skip reason so a skip never reads as a pass. Three
+          # gates are excluded rather than run:
+          #   * the two idalib gates need IDA, a proprietary PE-only backend that
+          #     cannot run on a hosted OSS runner, and on main they fail instead
+          #     of skip once a fixture is present (the honest-skip fix is not yet
+          #     merged here);
+          #   * the browser smoke gate hardcodes a Windows Chrome path on main and
+          #     fails until its portable-launch fix lands -- drop this --ignore
+          #     once that merges.
+          # Everything else either runs on the OSS backends installed above or
+          # skips itself as Windows-only via the integration conftest.
+          python -m pytest tests/integration -rs --tb=short \
+            --ignore=tests/integration/test_idalib_gate.py \
+            --ignore=tests/integration/test_mcp_static_idalib.py \
+            --ignore=tests/integration/test_agent_browser_smoke.py
+
   webui:
     runs-on: windows-latest
     timeout-minutes: 20

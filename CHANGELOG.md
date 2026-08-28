@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### CI（新增 Linux 非-PE 真机集成门作业，把长期只 skip 的门变成实测）
+
+- 非-PE 各线（web/CDP、mitmproxy 抓包、androguard 静态、radare2 跨平台静态、
+  webcrack/wabt 的 JS/WASM 反混淆）的集成 gate 此前在 CI 里从不真正运行:
+  `windows-integration.yml` 只装 `.[test,dev,web]`、且是手动触发的自托管作业,而
+  `ci.yml` 根本没有集成作业。这些后端全是开源、跨平台的,于是它们的 gate 永远 skip——
+  对这些恰恰是本项目"PE 逆向之外"重点的线来说,"skip != pass" 形同虚设。
+- 新增 `ci.yml` 的 `linux-nonpe-gates` 作业(ubuntu-latest,每次 push/PR):apt 装
+  radare2、wabt、mingw-w64;npm 全局装 webcrack;pip 装 `.[test,dev,web,android,proxy,browser]`
+  并 `playwright install --with-deps chromium`;用 mingw 把 `console_fixture.c` 交叉编译成
+  windows-subsystem PE(与 CMake 的 `headless_fixture` 目标一致)供 r2 gate 分析;随后
+  `pytest tests/integration -rs`。本地已实测:web/proxy 生命周期、web RE(CDP+JS+WASM)、
+  Android 静态、r2 live 共 15 例过、68 例(Windows-only 等)诚实 skip、0 失败;并直接核对
+  r2 地址映射对真 radare2 5.5.0 正确(ImageBase 0x140000000、VA 0x1400013e0→RVA 0x13e0)。
+- 三个 gate 显式 `--ignore`:两个 idalib gate(IDA 是专有、仅 PE 的后端,开源 runner 上跑不了,
+  且在 main 上有 fixture 时会失败而非 skip——honest-skip 修复尚未并入本分支);browser smoke
+  gate(main 上硬编码了 Windows Chrome 路径,其 portable-launch 修复合入后即可移除该 ignore)。
+  其余 gate 要么跑在上面装好的开源后端上,要么经集成 conftest 自行按 Windows-only skip。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
