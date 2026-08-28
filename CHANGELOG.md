@@ -5,7 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 修复（WebUI Markdown 围栏代码块无法识别含非单词字符的语言标签)
+
+- `webui/src/lib/markdown.ts` 的开围栏正则 `/^```(\w*)\s*$/` 只接受 `\w`
+  语言标识,遇到模型常输出的 `c++`、`c#`、`objective-c`、`f#`、`sh-session`
+  等含 `+`/`#`/`-` 的标签时整行不被识别为围栏。后果是连锁的:该行退化成普通
+  段落,其内的代码逐行按段落渲染,而结尾的 ``` 反被当成一个新代码块的开头,
+  把消息剩余内容整段吞进一个未闭合的代码块——一条本应是"一个带语言标签的代码
+  块"的回复变成了排版彻底错乱的输出。修复按 CommonMark 语义拆成两个正则:开
+  围栏 `/^```([^`]*)$/` 接受任意不含反引号的信息串、并取首个空白分隔 token 作
+  为语言(`ts title=x.ts` → `ts`);结束围栏 `/^```\s*$/` 只匹配裸 ```(带尾随
+  空白),这样代码块内部一行 ```bash 不会提前把块关掉。回归测试参数化覆盖五种
+  非单词语言、信息串取首 token、以及"内部信息串行不提前闭合"三类,在旧正则上七
+  项断言按预期失败;已重建并提交 SPA 产物以过 CI 的 stale 校验。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +

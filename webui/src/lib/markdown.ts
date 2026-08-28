@@ -6,7 +6,17 @@ export type MarkdownBlock =
   | { type: "quote"; text: string }
   | { type: "hr" };
 
-const FENCE = /^```(\w*)\s*$/;
+// An opening fence carries an info string that is any text without a backtick,
+// not just word characters: models routinely tag blocks c++, c#, objective-c,
+// sh-session and the like. Matching only \w meant the opening line was not
+// recognised as a fence at all, so the code lines rendered as paragraphs and
+// the trailing ``` was read as a *new* fence that swallowed the rest of the
+// message. The language is the first whitespace-delimited token of the info
+// string, per CommonMark.
+const FENCE_OPEN = /^```([^`]*)$/;
+// A closing fence is a bare ``` with only trailing whitespace and no info
+// string, so an info-carrying line inside a block cannot close it early.
+const FENCE_CLOSE = /^```\s*$/;
 const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
 const HR = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const QUOTE = /^>\s?(.*)$/;
@@ -18,7 +28,7 @@ function isBlank(line: string): boolean {
 }
 
 function isStructural(line: string): boolean {
-  return FENCE.test(line) || HEADING.test(line) || HR.test(line) || QUOTE.test(line) || UL.test(line) || OL.test(line);
+  return FENCE_OPEN.test(line) || HEADING.test(line) || HR.test(line) || QUOTE.test(line) || UL.test(line) || OL.test(line);
 }
 
 export function parseMarkdown(source: string): MarkdownBlock[] {
@@ -29,16 +39,17 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
   while (index < lines.length) {
     const line = lines[index];
 
-    const fence = line.match(FENCE);
+    const fence = line.match(FENCE_OPEN);
     if (fence) {
       const body: string[] = [];
       index += 1;
-      while (index < lines.length && !FENCE.test(lines[index])) {
+      while (index < lines.length && !FENCE_CLOSE.test(lines[index])) {
         body.push(lines[index]);
         index += 1;
       }
       if (index < lines.length) index += 1;
-      blocks.push({ type: "code", lang: fence[1] ?? "", text: body.join("\n") });
+      const lang = (fence[1] ?? "").trim().split(/\s+/)[0] ?? "";
+      blocks.push({ type: "code", lang, text: body.join("\n") });
       continue;
     }
 

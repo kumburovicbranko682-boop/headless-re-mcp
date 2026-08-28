@@ -44,6 +44,30 @@ describe("parseMarkdown", () => {
       { type: "code", lang: "js", text: "const x = 1;" },
     ]);
   });
+
+  it.each(["c++", "c#", "objective-c", "sh-session", "f#"])(
+    "recognises a fence tagged with the non-word language %s",
+    (lang) => {
+      // \w-only matching failed to see the opening fence, so the body rendered
+      // as paragraphs and the closing ``` opened a new block that ate the rest.
+      expect(parseMarkdown(`\`\`\`${lang}\ncode line\n\`\`\``)).toEqual([
+        { type: "code", lang, text: "code line" },
+      ]);
+    },
+  );
+
+  it("keeps only the first token of the info string as the language", () => {
+    expect(parseMarkdown("```ts title=example.ts\nconst x = 1;\n```")).toEqual([
+      { type: "code", lang: "ts", text: "const x = 1;" },
+    ]);
+  });
+
+  it("does not let an info-carrying inner line close the block early", () => {
+    // Only a bare ``` closes a block; a nested ```bash line stays content.
+    expect(parseMarkdown("```\n```bash\nstill code\n```")).toEqual([
+      { type: "code", lang: "", text: "```bash\nstill code" },
+    ]);
+  });
 });
 
 describe("prettyJson", () => {
