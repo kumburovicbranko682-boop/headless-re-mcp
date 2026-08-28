@@ -215,19 +215,32 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
-def _raw_body(part: Any) -> bytes:
-    """The raw bytes of a request/response, or empty when there is no body.
+def _decoded_body(part: Any) -> bytes:
+    """The message body with its Content-Encoding undone, or empty when none.
 
-    mitmproxy decodes ``raw_content`` lazily and can raise while doing so; a
-    failure there is not a reason to fail the whole fetch, so it reads as an
-    empty body the same way a bodyless message does.
+    ``raw_content`` is the body exactly as it crossed the wire, so a gzip/br/
+    deflate/zstd response -- the overwhelmingly common case on the web -- stays
+    compressed. Handing those bytes to :func:`_emit_body` failed the UTF-8 check
+    and spilled a ``.bin`` artifact tagged ``binary``: an analyst who fetched the
+    flow for a JSON or HTML response got an unreadable compressed blob and no
+    hint that decompressing it was all that stood between them and the payload.
+    ``content`` is that same body decoded per ``Content-Encoding``. Prefer it,
+    and fall back to the wire bytes only when the encoding cannot be undone (a
+    corrupt or unknown Content-Encoding makes ``content`` raise) -- those bytes
+    really are opaque and spilling them as binary is then the honest outcome.
     """
     if part is None:
         return b""
+    content: object
     try:
-        content = part.raw_content
-    except Exception:  # noqa: BLE001 - a decode failure is an empty body here
-        return b""
+        content = part.content
+    except Exception:  # noqa: BLE001 - undecodable encoding: fall back to wire bytes
+        content = None
+    if content is None:
+        try:
+            content = part.raw_content
+        except Exception:  # noqa: BLE001 - no readable body at all
+            return b""
     if isinstance(content, (bytes, bytearray)):
         return bytes(content)
     return b""
@@ -671,14 +684,14 @@ class ProxyBackend:
         # The request body is what an agent reverse-engineering an API most
         # wants to see -- what was actually POSTed -- and used to be dropped
         # entirely, leaving only the response.
-        request.update(_emit_body(_raw_body(req), artifact_dir))
+        request.update(_emit_body(_decoded_body(req), artifact_dir))
         response: JsonObject = {
             "status": getattr(resp, "status_code", None),
             "headers": resp_headers,
         }
         if resp_headers_cut:
             response["metadata_truncated"] = True
-        response.update(_emit_body(_raw_body(resp), artifact_dir))
+        response.update(_emit_body(_decoded_body(resp), artifact_dir))
         return {"id": flow_id, "request": request, "response": response}
 
     def replay(self, session_id: str, flow_id: str) -> JsonObject:
