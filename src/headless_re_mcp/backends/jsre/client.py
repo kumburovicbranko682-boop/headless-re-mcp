@@ -371,6 +371,127 @@ def _parse_wasm_names(data: bytes, *, limit: int) -> JsonObject:
     }
 
 
+# --- custom-section index (needs no wabt) -----------------------------------
+# Beyond "name", a module's custom sections are where the analysis-relevant
+# metadata hides: DWARF debug info (.debug_*) makes source-level RE possible, a
+# sourceMappingURL points at the original JS/TS, producers fingerprints the
+# toolchain, and target_features says which WASM proposals (SIMD, threads, ...)
+# the module needs. Listing them is the fast "what can I recover here?" triage.
+_MAX_WASM_CUSTOM = 4096
+_MAX_WASM_TARGET_FEATURES = 256
+# The use-prefix byte that opens each target_features entry.
+_TARGET_FEATURE_PREFIX = {0x2B: "+", 0x2D: "-", 0x3D: "="}
+
+
+def _decode_target_features(body: bytes) -> tuple[list[JsonObject], bool]:
+    """Decode a target_features body: a count, then (prefix byte, name) pairs."""
+    features: list[JsonObject] = []
+    truncated = False
+    end = len(body)
+    try:
+        count, pos = _read_uleb(body, 0, end)
+        for _ in range(count):
+            if pos >= end or len(features) >= _MAX_WASM_TARGET_FEATURES:
+                truncated = pos < end
+                break
+            prefix_byte = body[pos]
+            pos += 1
+            name, pos = _read_name(body, pos, end)
+            features.append({"feature": name, "flag": _TARGET_FEATURE_PREFIX.get(prefix_byte, "?")})
+    except _WasmTruncated:
+        truncated = True
+    return features, truncated
+
+
+def _parse_wasm_custom_sections(data: bytes, *, limit: int) -> JsonObject:
+    """Index every custom section and decode the analysis-relevant ones."""
+    items: list[JsonObject] = []
+    total_custom = 0
+    truncated = False
+    debug_sections: list[str] = []
+    target_features: list[JsonObject] = []
+    source_map_url: str | None = None
+    has_name = False
+    has_producers = False
+    total = len(data)
+    if total < _WASM_HEADER:
+        return {
+            "items": [],
+            "count": 0,
+            "items_total": 0,
+            "items_limit": limit,
+            "items_truncated": False,
+            "has_dwarf": False,
+            "debug_sections": [],
+            "target_features": [],
+            "has_name_section": False,
+            "has_producers_section": False,
+            "truncated": True,
+        }
+    pos = _WASM_HEADER
+    try:
+        while pos < total:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb(data, pos, total)
+            body_start = pos
+            body_end = body_start + sec_size
+            if sec_size < 0 or body_end > total:
+                truncated = True
+                break
+            if sec_id == 0:  # custom section: named payload
+                try:
+                    name, name_end = _read_name(data, body_start, body_end)
+                except _WasmTruncated:
+                    truncated = True
+                    pos = body_end
+                    continue
+                total_custom += 1
+                if len(items) < limit:
+                    items.append(
+                        {
+                            "name": name,
+                            "size": sec_size,
+                            "content_size": body_end - name_end,
+                            "offset": body_start,
+                        }
+                    )
+                if name.startswith(".debug_"):
+                    if len(debug_sections) < limit:
+                        debug_sections.append(name)
+                elif name == "name":
+                    has_name = True
+                elif name == "producers":
+                    has_producers = True
+                elif name == "sourceMappingURL":
+                    try:
+                        source_map_url, _ = _read_name(data, name_end, body_end)
+                    except _WasmTruncated:
+                        truncated = True
+                elif name == "target_features":
+                    target_features, feat_trunc = _decode_target_features(data[name_end:body_end])
+                    truncated = truncated or feat_trunc
+            pos = body_end
+    except _WasmTruncated:
+        truncated = True
+    out: JsonObject = {
+        "items": items,
+        "count": len(items),
+        "items_total": total_custom,
+        "items_limit": limit,
+        "items_truncated": total_custom > len(items),
+        "has_dwarf": bool(debug_sections),
+        "debug_sections": debug_sections,
+        "target_features": target_features,
+        "has_name_section": has_name,
+        "has_producers_section": has_producers,
+        "truncated": truncated,
+    }
+    if source_map_url is not None:
+        out["source_map_url"] = source_map_url
+    return out
+
+
 class WasmClient:
     """wabt-backed WebAssembly inspection (wasm2wat, wasm-objdump)."""
 
@@ -443,6 +564,29 @@ class WasmClient:
                 "backend_error", f"input unreadable: {exc}", path=str(resolved)
             ) from exc
         return _parse_wasm_names(data, limit=_MAX_WASM_NAMES)
+
+    def custom_sections(self, path: Path) -> JsonObject:
+        """Index the module's custom sections, in-process (no wabt).
+
+        Beyond the name section, custom sections carry the metadata that decides
+        how far RE can go: DWARF debug info (.debug_*), a sourceMappingURL,
+        the producers toolchain fingerprint, and the target_features a module
+        needs. This lists them and decodes the high-value ones inline.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        return _parse_wasm_custom_sections(data, limit=_MAX_WASM_CUSTOM)
 
 
 def _discover_webcrack() -> Path | None:

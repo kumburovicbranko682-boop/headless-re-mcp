@@ -113,4 +113,21 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_names(path))
 
+    @tools.tool(name="wasm.custom_sections")
+    def wasm_custom_sections(path: str) -> dict[str, Any]:
+        """Index a .wasm module's custom sections, in-process (no wabt).
+
+        Answers with items (each name, size, content_size and offset) and
+        count -- and decodes the analysis-relevant ones inline: has_dwarf with
+        debug_sections (.debug_* means source-level RE is possible),
+        source_map_url when a sourceMappingURL section points at the original
+        source, target_features (each feature and its +/-/= flag), and
+        has_name_section / has_producers_section pointing at wasm.names and the
+        producers toolchain fingerprint. Reads items_truncated / items_total /
+        items_limit when the list filled the cap (4096), and truncated when the
+        module was malformed past a point. A file that is not a WebAssembly
+        module is invalid_params. Parsed in-process, so no wabt is required.
+        """
+        return _dump(analysis.wasm_custom_sections(path))
+
     return tools.bindings

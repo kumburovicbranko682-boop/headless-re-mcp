@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（wasm.custom_sections：纯 Python 索引 WASM 自定义段并解码高价值元数据）
+
+- 新增只读工具 `wasm.custom_sections`：走一遍段头，列出全部自定义段（每项 name、size、
+  content_size、offset），并就地解码决定「RE 能走多远」的几类元数据——`has_dwarf` 及
+  `debug_sections`（存在 `.debug_*` 意味着可做源码级逆向）、`source_map_url`（有
+  `sourceMappingURL` 段时指向原始 JS/TS 源）、`target_features`（每项 feature 及其
+  `+`/`-`/`=` 标志，说明模块需要 SIMD/threads 等提案），以及 `has_name_section` /
+  `has_producers_section`（分别指向 `wasm.names` 与 producers 工具链指纹）。填满 4096 上限
+  读 `items_truncated`/`items_total`/`items_limit`，段畸形则 `truncated=True`；非 WASM 输入
+  报 `invalid_params`。与 `wasm.wat`/`wasm.info` 不同纯 Python 解析、无需 wabt。已用
+  `wat2wasm --debug-names` 构建真实模块，自定义段的 name/size/offset 与 `wasm-objdump -h`
+  逐字节一致。工具总数 266 → 267（只读 150）。
+
 ### 新增（wasm.names：纯 Python 解析 WASM name 段的函数名，无需 wabt）
 
 - 新增只读工具 `wasm.names`：直接走 WASM 段头，解析自定义 `name` 段（段 id 0、段名
