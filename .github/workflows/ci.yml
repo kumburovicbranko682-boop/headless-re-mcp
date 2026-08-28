@@ -3,7 +3,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, "cursor/ci-checkpoint-webcracknpm-a32fabc6-82ce"]
   pull_request:
 
 concurrency:
