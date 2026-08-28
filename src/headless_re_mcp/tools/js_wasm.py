@@ -114,6 +114,49 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="js.endpoints")
+    def js_endpoints(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+    ) -> dict[str, Any]:
+        """Extract the network surface (URLs, hosts, request paths) of a JS file.
+
+        The "what does this bundle talk to" answer, without webcrack. js.strings
+        returns every literal; this is the higher-signal cut on top of the same
+        lexer -- it pulls the scheme'd URLs (http/https/ws/wss/ftp) and, unless
+        include_paths is false, the whole-literal request paths (/api/...,
+        /v1/users, any two-segment path) out of the string literals,
+        deduplicates them, and aggregates by occurrence. Because it reuses the
+        lexer, \\x/\\u-escaped URLs are decoded (an obfuscated endpoint surfaces)
+        and quotes inside comments or regex literals are not mistaken for
+        endpoints. Answers with endpoints (each {value, kind (url|path), scheme,
+        host, count (occurrences across the file), first_offset (char index of
+        the first literal it came from)}, sorted by count then value), count,
+        total, offset, has_more, hosts (the distinct host set of the URL
+        endpoints, the domains at a glance) with hosts_truncated when that set
+        overflowed its cap, and scan_capped when the file held more distinct
+        endpoints than the collect ceiling. A path endpoint has empty scheme/host.
+        name_filter keeps only endpoints whose value or host contains that
+        substring (case-insensitive), applied before the host summary and paging
+        so total is the match count -- the way to isolate one api host among
+        many. include_paths false drops the relative paths to leave only external
+        URLs. The list field is endpoints; for every raw literal (not just the
+        network ones) use js.strings. A missing file is not_found; one over
+        16 MiB is too_large.
+        """
+        return _dump(
+            analysis.js_endpoints(
+                path,
+                offset=offset,
+                limit=limit,
+                name_filter=name_filter,
+                include_paths=include_paths,
+            )
+        )
+
     @tools.tool(name="wasm.summary")
     def wasm_summary(
         path: str,

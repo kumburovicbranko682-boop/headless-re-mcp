@@ -37,6 +37,30 @@ _MAX_STRING_TEXT = 8192
 # A caller-supplied minimum length is clamped to this so a value of 0 does not
 # turn every empty literal into a row.
 _MIN_LEN_MAX = 1024
+# Distinct endpoints aggregated by js.endpoints before the scan stops.
+_MAX_ENDPOINTS_COLLECT = 50000
+# Distinct hosts summarised alongside them.
+_MAX_HOSTS = 512
+
+# A scheme'd URL inside a string literal. The character class stops at anything
+# that cannot sit unencoded in a URL (whitespace, quotes, backtick, backslash,
+# angle brackets, and the template/pipe/caret punctuation), and the trailing
+# punctuation a URL is often followed by is stripped afterwards.
+_URL_RE = re.compile(r"(?:https?|wss?|ftp)://[^\s\"'`<>\\{}|^]+", re.IGNORECASE)
+# A whole-literal request path: starts with '/', an alnum second char (so '//'
+# and '/?...' are not paths), then path/query characters.
+_PATH_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._~%/@:{}?=&*-]*$")
+# Path segments that mark a single-segment literal as a real endpoint (so '/api'
+# counts but a bare '/x' does not); a path with two or more segments counts
+# regardless.
+_API_SEGMENTS = frozenset(
+    {
+        "api", "v1", "v2", "v3", "v4", "graphql", "gql", "rest", "oauth", "auth",
+        "token", "login", "logout", "signin", "signup", "session", "account",
+        "admin", "upload", "download", "callback", "webhook", "rpc", "ws",
+    }
+)
+_URL_TRAILING = ".,;:!?)]}>\"'`"
 
 _DELIM_RE = re.compile(r"['\"`/]")
 
@@ -348,3 +372,114 @@ def extract_strings(
         prev_word = ""
         i = end
     return results, capped
+
+
+def _clean_url(url: str) -> str:
+    """Trim the trailing punctuation a URL is commonly written next to."""
+    end = len(url)
+    while end > 0 and url[end - 1] in _URL_TRAILING:
+        end -= 1
+    return url[:end]
+
+
+def _url_scheme(url: str) -> str:
+    return url.split("://", 1)[0].lower()
+
+
+def _url_host(url: str) -> str:
+    """The host of a scheme'd URL: authority minus userinfo and port, lowered."""
+    after = url.split("://", 1)[1] if "://" in url else url
+    authority = re.split(r"[/?#]", after, maxsplit=1)[0]
+    if "@" in authority:
+        authority = authority.rsplit("@", 1)[1]
+    return authority.split(":", 1)[0].lower()
+
+
+def _looks_like_path(text: str) -> bool:
+    """Whether a whole literal reads as an HTTP request path worth surfacing."""
+    if not (2 <= len(text) <= 512) or not _PATH_RE.match(text):
+        return False
+    segments = [s for s in text.split("/") if s]
+    if not segments:
+        return False
+    if len(segments) >= 2:
+        return True
+    return segments[0].split("?", 1)[0].lower() in _API_SEGMENTS
+
+
+def extract_endpoints(
+    source: str, *, include_paths: bool = True, name_filter: str = ""
+) -> tuple[list[JsonObject], list[str], bool, bool]:
+    """Extract network endpoints -- absolute URLs and request paths -- from JS.
+
+    Returns ``(endpoints, hosts, hosts_truncated, scan_capped)``. Built on the
+    same string-literal lexer as extract_strings (so quotes in comments/regex are
+    not mistaken for strings, and \\x/\\u-escaped URLs are decoded), it scans each
+    literal for scheme'd URLs (http/https/ws/wss/ftp) and, when include_paths is
+    set, whole-literal request paths ('/api/...', '/v1/users', a two-segment
+    path). Endpoints are deduplicated: each row is ``{value, kind (url|path),
+    scheme, host, count (occurrences), first_offset}``, sorted by count then
+    value. ``hosts`` is the distinct host set of the URL endpoints (the "what
+    does this bundle talk to" answer), capped (hosts_truncated when over).
+    ``name_filter`` keeps only endpoints whose value or host contains that
+    substring (case-insensitive), applied before the host summary and paging so
+    total is the match count.
+    """
+    rows, str_capped = extract_strings(source, min_length=1, name_filter="")
+    aggregates: dict[str, JsonObject] = {}
+    scan_capped = str_capped
+
+    def add(value: str, kind: str, scheme: str, host: str, offset: int) -> bool:
+        nonlocal scan_capped
+        current = aggregates.get(value)
+        if current is None:
+            if len(aggregates) >= _MAX_ENDPOINTS_COLLECT:
+                scan_capped = True
+                return False
+            aggregates[value] = {
+                "value": value,
+                "kind": kind,
+                "scheme": scheme,
+                "host": host,
+                "count": 1,
+                "first_offset": offset,
+            }
+        else:
+            current["count"] = int(current["count"]) + 1
+            if offset < int(current["first_offset"]):
+                current["first_offset"] = offset
+        return True
+
+    stop = False
+    for row in rows:
+        text = str(row.get("text", ""))
+        offset = int(row.get("offset", 0))
+        for match in _URL_RE.finditer(text):
+            value = _clean_url(match.group())
+            if "://" not in value:
+                continue
+            host = _url_host(value)
+            if not host:
+                continue
+            if not add(value, "url", _url_scheme(value), host, offset):
+                stop = True
+                break
+        if stop:
+            break
+        if include_paths:
+            trimmed = text.strip()
+            if _looks_like_path(trimmed) and not add(trimmed, "path", "", "", offset):
+                break
+
+    needle = name_filter.strip().lower() if isinstance(name_filter, str) else ""
+    endpoints = list(aggregates.values())
+    if needle:
+        endpoints = [
+            e
+            for e in endpoints
+            if needle in str(e["value"]).lower() or needle in str(e["host"]).lower()
+        ]
+    endpoints.sort(key=lambda e: (-int(e["count"]), str(e["value"])))
+    host_set = sorted({str(e["host"]) for e in endpoints if e["kind"] == "url" and e["host"]})
+    hosts_truncated = len(host_set) > _MAX_HOSTS
+    return endpoints, host_set[:_MAX_HOSTS], hosts_truncated, scan_capped

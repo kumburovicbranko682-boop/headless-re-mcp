@@ -16,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
+from headless_re_mcp.backends.jsre.js_strings import extract_endpoints as extract_js_endpoints
 from headless_re_mcp.backends.jsre.js_strings import extract_strings as extract_js_strings
 from headless_re_mcp.backends.jsre.wasm_summary import WasmParseError
 from headless_re_mcp.backends.jsre.wasm_summary import parse_data_strings as parse_wasm_strings
@@ -51,6 +52,8 @@ _MAX_WASM_NAMES_PAGE = 2000
 _MAX_WASM_STRINGS_PAGE = 2000
 # Same rationale for js.strings.
 _MAX_JS_STRINGS_PAGE = 2000
+# Same rationale for js.endpoints.
+_MAX_JS_ENDPOINTS_PAGE = 2000
 
 
 def _capped_file_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
@@ -294,6 +297,48 @@ class JsClient:
             "total": len(rows),
             "offset": start,
             "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_capped,
+        }
+
+    def endpoints(
+        self,
+        path: Path,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+        name_filter: str = "",
+        include_paths: bool = True,
+    ) -> JsonObject:
+        """Extract network endpoints (URLs, hosts, request paths) from JS, no webcrack.
+
+        Dependency-free, built on the same lexer as strings(): URLs and request
+        paths are pulled from string literals (escape-decoded, comment/regex
+        safe), deduplicated and aggregated by occurrence. Paged; total is the
+        count that matched the filter, hosts is the distinct URL host set, and
+        scan_capped marks a file with more distinct endpoints than the ceiling.
+        """
+        resolved = _require_existing_file(path, missing="input file not found")
+        try:
+            raw = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        source = raw.decode("utf-8", errors="replace")
+        endpoints, hosts, hosts_truncated, scan_capped = extract_js_endpoints(
+            source, include_paths=include_paths, name_filter=name_filter
+        )
+        start = max(0, int(offset))
+        capped = max(1, min(int(limit), _MAX_JS_ENDPOINTS_PAGE))
+        window = endpoints[start : start + capped]
+        return {
+            "endpoints": window,
+            "count": len(window),
+            "total": len(endpoints),
+            "offset": start,
+            "has_more": start + len(window) < len(endpoints),
+            "hosts": hosts,
+            "hosts_truncated": hosts_truncated,
             "scan_capped": scan_capped,
         }
 
