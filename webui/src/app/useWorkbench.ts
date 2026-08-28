@@ -46,6 +46,7 @@ export function useWorkbench() {
   const sessionsRef = useRef<Session[]>([]);
   const selectedThreadRef = useRef<string | null>(null);
   const sessionIdRef = useRef("");
+  const selectTokenRef = useRef(0);
   const lostRef = useRef<LostSample | null>(null);
   const [lost, setLost] = useState<LostSample | null>(null);
   sessionsRef.current = sessions;
@@ -182,12 +183,20 @@ export function useWorkbench() {
   }, []);
 
   const selectThread = async (id: string) => {
+    // Two quick clicks race their GETs: a heavy thread's slow response used to
+    // land after a lighter one's and flip the workbench back to the thread the
+    // user had already left -- transcript, events and bound session included.
+    // Every selection takes a fresh token; a continuation whose token is no
+    // longer current is stale and must drop out instead of applying its state.
+    const token = ++selectTokenRef.current;
     const result = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(id)}`);
+    if (token !== selectTokenRef.current) return;
     dispatch({ type: "select", threadId: id, messages: result.messages, events: result.events ?? [] });
     const bound = result.thread.session_id ?? "";
     let listed = sessionsRef.current;
     if (bound && !listed.some((session) => session.id === bound)) {
       listed = await loadSessions();
+      if (token !== selectTokenRef.current) return;
     }
     if (bound && !listed.some((session) => session.id === bound)) {
       setSessionId(bound);
@@ -219,6 +228,9 @@ export function useWorkbench() {
       await selectThread(next.id);
       return;
     }
+    // Clearing the selection is itself a selection; invalidate any in-flight
+    // selectThread so its late response cannot resurrect the deleted view.
+    selectTokenRef.current += 1;
     dispatch({ type: "select", threadId: null, messages: [] });
     setLost(null);
     lostRef.current = null;
@@ -235,6 +247,8 @@ export function useWorkbench() {
       });
       selected = created.thread.id;
       await loadThreads();
+      // This is also a selection; a stale selectThread must not clobber it.
+      selectTokenRef.current += 1;
       dispatch({ type: "select", threadId: selected, messages: [] });
     }
     const text = draft;
