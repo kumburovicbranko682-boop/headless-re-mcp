@@ -217,18 +217,38 @@ def test_prune_sizes_and_evicts_subdirectories(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # _dir_size and _remove_entry                                                 #
 # --------------------------------------------------------------------------- #
-def test_dir_size_stops_counting_at_the_file_cap(
+def test_dir_size_bounds_the_walk_by_entries_not_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(limits, "_DIR_SIZE_FILE_CAP", 1)
-    sub = tmp_path / "tree"
-    sub.mkdir()
-    (sub / "nested").mkdir()
-    (sub / "a.bin").write_bytes(b"x" * 10)
-    (sub / "nested" / "b.bin").write_bytes(b"x" * 10)
-    # With the file cap at one, exactly one file's bytes are summed before the
-    # walk bails out; the nested directory entry is skipped, not counted.
-    assert limits._dir_size(sub) == 10
+    """A directory flood must trip the walk cap, which a files-only bound misses.
+
+    An unpack tree (or a hostile archive) can be mostly empty directories. If
+    the walk cap only advances on files, it never trips on such a tree and
+    walks it to the end -- the pruner stall this cap exists to prevent, and it
+    runs on the capture write path. Here the walk is forced to visit the empty
+    directories before the one real file; with an entry bound the walk stops
+    inside the flood and never reaches the file (size 0). A files-only bound
+    would instead cross all twenty directories to reach and count it, returning
+    the file's size -- which is what makes this guard non-vacuous.
+    """
+    monkeypatch.setattr(limits, "_DIR_SIZE_FILE_CAP", 5)
+    root = tmp_path / "tree"
+    root.mkdir()
+    for index in range(20):
+        (root / f"d{index:03d}").mkdir()
+    (root / "big.bin").write_bytes(b"x" * 999)
+
+    real_rglob = Path.rglob
+
+    def dirs_before_files(self: Path, pattern: str) -> list[Path]:
+        entries = list(real_rglob(self, pattern))
+        directories = sorted(path for path in entries if path.is_dir())
+        files = sorted(path for path in entries if path.is_file())
+        return directories + files
+
+    monkeypatch.setattr(Path, "rglob", dirs_before_files)
+
+    assert limits._dir_size(root) == 0
 
 
 def test_dir_size_sums_files_and_skips_nested_directories(tmp_path: Path) -> None:

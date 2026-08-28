@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（core/limits 的 _dir_size 只按文件计数封顶，目录洪泛会让 pruner 走满整棵树）
+
+- `core/limits.py` 的 `_dir_size()`（供 `prune_capped_dir` 给未登记的抓取目录——设备截图、
+  jsre 解包树——估算大小、决定驱逐）把 `_DIR_SIZE_FILE_CAP`（4096）的遍历上限只加在
+  `if child.is_file()` 分支里：`seen` 仅在遇到文件时自增。于是一棵几乎全是（或全是）空目录的
+  树——解包产物或恶意压缩包都能造出——永远触不到这个上限，`rglob` 会把整棵树走完。这正是该
+  上限要防的停顿，而且 `_dir_size` 跑在抓取写入路径上，走满整棵树就把那次调用卡住。与上一轮
+  `core/retention.py` `measure_usage` 的目录洪泛修复是同一类问题。
+- 改法：把上限检查与 `seen += 1` 移到 `is_file()` 判断之外，对 `rglob` 产出的每一个条目
+  （文件和目录）都计数，从而无论树的构成如何遍历都有界。`total` 仍只累加文件字节，因此凡是能被
+  完整走完的（小）树，报告出的大小不变。
+- 用 entry-bound 的洪泛用例 `test_dir_size_bounds_the_walk_by_entries_not_files` 取代原先按
+  文件计数封顶的 `test_dir_size_stops_counting_at_the_file_cap`（后者在 entry 语义下结果随
+  `rglob` 顺序漂移）：把遍历强制成「先目录后文件」，在 20 个空目录后放一个 999 字节的文件，
+  上限压到 5，钉死返回 0（遍历停在洪泛里、够不到那个文件）。非空验证：改回只按文件计数后该用例
+  失败，返回 999（越过 20 个空目录数到了那个文件）。`test_dir_size_sums_files_and_skips_
+  nested_directories`（未触上限，两种写法都遍历全部）与 `prune_capped_dir` 各用例不受影响。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

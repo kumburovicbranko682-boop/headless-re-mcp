@@ -160,12 +160,20 @@ def _dir_size(directory: Path) -> int:
     seen = 0
     try:
         for child in directory.rglob("*"):
+            # Bound the walk by every entry visited, not by files alone. rglob
+            # yields directories too, and an unpack tree -- or a hostile archive
+            # -- can be mostly, or entirely, empty directories; a files-only
+            # ceiling never trips on such a tree and walks it to the end, which
+            # is the pruner stall this cap exists to prevent. This runs on the
+            # capture write path, so an unbounded walk stalls that call. total
+            # still sums only files, so the reported size is unchanged for any
+            # tree small enough to be walked in full.
+            if seen >= _DIR_SIZE_FILE_CAP:
+                break
+            seen += 1
             try:
                 if child.is_file():
                     total += child.stat().st_size
-                    seen += 1
-                    if seen >= _DIR_SIZE_FILE_CAP:
-                        break
             except OSError:
                 continue
     except OSError:
