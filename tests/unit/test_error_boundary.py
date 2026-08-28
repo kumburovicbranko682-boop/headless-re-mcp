@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
+import types
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -10,6 +13,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import headless_re_mcp.error_boundary as boundary
+
+
+@pytest.fixture
+def restore_global_hooks() -> Iterator[None]:
+    saved = (sys.excepthook, threading.excepthook, sys.unraisablehook)
+    try:
+        yield
+    finally:
+        sys.excepthook, threading.excepthook, sys.unraisablehook = saved
 
 
 @pytest.fixture
@@ -261,6 +273,100 @@ def test_run_cli_safely_turns_failures_into_exit_codes_not_tracebacks(
     assert "[REDACTED]" in envelope["error"]["message"]
 
 
+def test_the_process_hook_prints_an_envelope_and_passes_ctrl_c_through(
+    incident_log: Path,
+    restore_global_hooks: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The last-resort process hook: crashes become envelopes, Ctrl-C stays Ctrl-C.
+
+    An uncaught exception at the top of the process must leave a redacted
+    incident on disk and one machine-readable envelope on stderr, while a
+    KeyboardInterrupt must reach the default hook untouched so the shell still
+    sees an interrupt instead of a fabricated incident.
+    """
+    boundary.install_global_exception_hooks("test-process")
+
+    try:
+        raise KeyboardInterrupt
+    except KeyboardInterrupt as interrupt:
+        sys.excepthook(KeyboardInterrupt, interrupt, interrupt.__traceback__)
+    assert not incident_log.exists(), "Ctrl-C must not be recorded as an incident"
+
+    secret = "sk-live-" + "feedface9876"
+    try:
+        raise ValueError(f"boot rejected api_key={secret}")
+    except ValueError as crash:
+        sys.excepthook(ValueError, crash, crash.__traceback__)
+
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.err.strip().splitlines()[-1])
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "uncaught_exception"
+    assert envelope["error"]["message"].startswith("ValueError:")
+    assert secret not in captured.err
+    logged = incident_log.read_text(encoding="utf-8")
+    assert secret not in logged
+    assert "[REDACTED]" in logged
+
+
+def test_the_thread_hook_synthesizes_an_error_when_given_no_exception(
+    incident_log: Path,
+    restore_global_hooks: None,
+) -> None:
+    """A hook args with exc_value=None must still leave an incident, not raise."""
+    boundary.install_global_exception_hooks("test-process")
+
+    args = types.SimpleNamespace(
+        exc_type=RuntimeError,
+        exc_value=None,
+        exc_traceback=None,
+        thread=None,
+    )
+    threading.excepthook(args)  # type: ignore[arg-type]
+
+    logged = incident_log.read_text(encoding="utf-8")
+    assert "thread exception hook received no exception" in logged
+    assert "thread:unknown" in logged
+
+
+def test_the_unraisable_hook_records_real_and_synthesized_exceptions(
+    incident_log: Path,
+    restore_global_hooks: None,
+) -> None:
+    """__del__ failures land in the incident log whether or not an exception exists.
+
+    The interpreter reports unraisable errors (finalizers, weakref callbacks)
+    with an exception object most of the time, but the contract allows
+    exc_value to be None with only err_msg set; both shapes must produce a
+    logged incident instead of vanishing or double-faulting.
+    """
+    boundary.install_global_exception_hooks("test-process")
+
+    with_exception = types.SimpleNamespace(
+        exc_type=RuntimeError,
+        exc_value=RuntimeError("finalizer exploded"),
+        exc_traceback=None,
+        err_msg=None,
+        object="<locked resource token=abc123>",
+    )
+    sys.unraisablehook(with_exception)  # type: ignore[arg-type]
+
+    without_exception = types.SimpleNamespace(
+        exc_type=None,
+        exc_value=None,
+        exc_traceback=None,
+        err_msg="Exception ignored in weakref callback",
+        object=None,
+    )
+    sys.unraisablehook(without_exception)  # type: ignore[arg-type]
+
+    logged = incident_log.read_text(encoding="utf-8")
+    assert "finalizer exploded" in logged
+    assert "abc123" not in logged, "the repr of the failing object must be redacted"
+    assert "Exception ignored in weakref callback" in logged
+
+
 def test_background_thread_exception_is_logged(incident_log: Path) -> None:
     boundary.install_global_exception_hooks("test-process")
 
@@ -311,3 +417,17 @@ def test_the_asyncio_hook_logs_unawaited_failures_and_scrubs_secrets(
 def test_installing_the_asyncio_hook_outside_a_loop_is_a_quiet_no_op() -> None:
     """install_global_exception_hooks runs before any loop exists; it must not raise."""
     boundary.install_asyncio_exception_handler()
+
+
+def test_the_asyncio_hook_accepts_an_explicit_loop(incident_log: Path) -> None:
+    """A caller holding a not-yet-running loop can install the handler up front."""
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        boundary.install_asyncio_exception_handler(loop)
+        loop.call_exception_handler({"exception": RuntimeError("explicit loop failure")})
+    finally:
+        loop.close()
+
+    assert "explicit loop failure" in incident_log.read_text(encoding="utf-8")
