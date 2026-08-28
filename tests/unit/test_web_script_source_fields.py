@@ -84,3 +84,7 @@ def test_web_script_source_documents_the_spill_artifact() -> None:
     # Registration can fail (full/locked store); the doc must name the
     # artifact_error fallback so an agent expecting an id knows to read source_path.
     assert "artifact_error" in doc
+    # A Wasm script has no text source here; the doc must say so and point at
+    # the byte-yielding path so wasm.list -> script.source is not a dead end.
+    assert "is_wasm" in doc
+    assert "web.network.get" in doc

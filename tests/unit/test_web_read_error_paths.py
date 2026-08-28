@@ -58,6 +58,45 @@ def test_script_source_cdp_failure_is_not_found(
     assert info.value.details.get("script_id") == "42"
 
 
+def test_script_source_on_a_wasm_script_flags_it_instead_of_answering_empty(
+    tmp_path: Any, runner: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A WebAssembly script has no text source; say so and point at the bytes.
+
+    wasm.list surfaces WebAssembly scripts, and an agent will reasonably call
+    script.source on one. CDP's Debugger.getScriptSource returns an empty
+    scriptSource for Wasm and carries the module in a separate base64 bytecode
+    field, which this tool does not decode. Answering with a silent empty source
+    is a dead end, so the read must flag is_wasm and name the working path
+    (web.network.get -> wasm.wat/info). Only the bytecode field distinguishes it
+    from a genuinely empty JS source, so that is what must trip the branch.
+    """
+    def send(method: str, params: Any) -> Any:
+        # \x00asm\x01\x00\x00\x00 -> the wasm magic+version, base64-encoded, as
+        # CDP delivers a Wasm module's bytecode.
+        return {"scriptSource": "", "bytecode": "AGFzbQEAAAA="}
+
+    backend = WebBackend()
+    handle = SimpleNamespace(cdp=SimpleNamespace(send=send), runner=runner)
+    _wire(backend, handle, monkeypatch)
+
+    result = backend.script_source("s", "42", tmp_path)
+
+    assert result["is_wasm"] is True
+    assert result["source"] == "", "a Wasm module has no text source to inline"
+    assert "source_path" not in result, "nothing text was spilled"
+    assert "web.network.get" in str(result["note"])
+    # An ordinary empty JS source (no bytecode) must NOT be mislabelled wasm.
+    def send_plain(method: str, params: Any) -> Any:
+        return {"scriptSource": ""}
+
+    handle_plain = SimpleNamespace(cdp=SimpleNamespace(send=send_plain), runner=runner)
+    _wire(backend, handle_plain, monkeypatch)
+    plain = backend.script_source("s", "43", tmp_path)
+    assert "is_wasm" not in plain
+    assert plain["source"] == ""
+
+
 def test_script_source_passes_a_web_error_through_unchanged(
     tmp_path: Any, runner: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

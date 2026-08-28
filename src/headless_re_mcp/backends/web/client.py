@@ -910,6 +910,22 @@ class WebBackend:
         }
         if spill is not None:
             result["source_path"] = str(spill)
+        # A WebAssembly script (the kind wasm.list surfaces) has no text source:
+        # Debugger.getScriptSource leaves scriptSource empty and returns the
+        # module in a separate base64 `bytecode` field, which this tool does not
+        # decode. Answering with a silent empty source is a dead end, so flag it
+        # and name the path that does yield the bytes -- fetch the module's
+        # response body with web.network.get, then run wasm.wat / wasm.info on
+        # the saved .wasm. Only trips when bytecode is actually present, so a
+        # genuinely empty JS source is unaffected.
+        bytecode = resp.get("bytecode")
+        if not source and isinstance(bytecode, str) and bytecode:
+            result["is_wasm"] = True
+            result["note"] = (
+                "WebAssembly module: no text source here. Fetch the module's "
+                "response body with web.network.get, then analyze the saved "
+                ".wasm with wasm.wat or wasm.info."
+            )
         return result
 
     def dom_snapshot(self, session_id: str) -> JsonObject:
