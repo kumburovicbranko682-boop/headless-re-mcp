@@ -426,7 +426,14 @@ class ApkClient:
         callers: list[JsonObject] = []
         has_more = False
         for method in parsed.analysis.get_methods():
-            if method.is_external() or method.name != target:
+            # Include external (framework/library) methods, not only app-defined
+            # ones. "Who calls Cipher.doFinal / Runtime.exec / URL.openConnection"
+            # is the primary reason to ask for xrefs, and the target there is an
+            # external MethodAnalysis whose get_xref_from() is exactly the set of
+            # in-app call sites. Skipping is_external() made apk.xrefs answer an
+            # empty caller list for every framework API, contradicting this tool's
+            # own contract of listing callers of *every* method named method_name.
+            if method.name != target:
                 continue
             for _, call, _ in method.get_xref_from():
                 if len(callers) >= cap:
