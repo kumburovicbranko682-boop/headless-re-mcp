@@ -312,6 +312,45 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="apk.method_cfg")
+    def apk_method_cfg(
+        session_id: str,
+        class_name: str,
+        method_name: str,
+        descriptor: str = "",
+    ) -> dict[str, Any]:
+        """Control-flow graph of one Dalvik method (the Android r2.cfg/static.cfg).
+
+        Where apk.method_bytecode lists a method's instructions in order, this
+        reads its shape -- basic blocks and the branch edges between them -- so
+        loops, conditionals and fall-through are legible without tracing every
+        goto, which is exactly what an obfuscated guard or a licence check hides
+        in its branching. Resolve by class_name (dotted or Lsmali/ form) plus
+        method_name; pass descriptor (e.g. "(I)Z") to pin one overload, else the
+        first is used and overloads reports how many share the name.
+
+        Answers with class_name, method, descriptor, access, has_code, entry (the
+        start offset of the entry block), nodes and edges. Each node carries addr
+        (byte offset of the block start -- the same offset space apk.method_bytecode
+        uses, so a node pivots straight to its instructions), end, size, ninstr,
+        name (androguard's block label) and terminator (the block's last
+        mnemonic -- if-eqz, goto, return-void, throw, ...). Each edge carries src,
+        dst and kind: "fall_through" for the sequential successor (a not-taken
+        conditional or straight-line flow) and "branch" for an explicit target (a
+        taken conditional, a goto, a switch arm). Edges are deduplicated and
+        sorted; node_count/edge_count summarise the graph and
+        blocks_truncated/blocks_total disclose a method past the 4096-block cap.
+        An abstract/native method has has_code false and an empty graph.
+        """
+        return _dump(
+            analysis.apk_method_cfg(
+                session_id,
+                class_name,
+                method_name,
+                descriptor=descriptor,
+            )
+        )
+
     @tools.tool(name="apk.method_refs")
     def apk_method_refs(
         session_id: str,

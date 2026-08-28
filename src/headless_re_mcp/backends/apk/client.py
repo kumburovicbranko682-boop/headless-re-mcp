@@ -55,6 +55,64 @@ _MAX_CLASS_XREFS_PAGE = 1000
 # the tool-schema maximum.
 _MAX_METHOD_XREFS_COLLECT = 20_000
 _MAX_METHOD_XREFS_PAGE = 1000
+# apk.method_cfg returns a whole method's basic-block graph in one reply (a CFG
+# paginated block-by-block is unreadable), so it caps the block count and
+# discloses truncation rather than paging; an obfuscated method with a huge
+# block count is trimmed, edges built only from the kept blocks.
+_MAX_CFG_BLOCKS = 4096
+
+
+def _bb_start(block: Any) -> int:
+    """A basic block's start byte offset, tolerant of androguard accessor drift."""
+    getter = getattr(block, "get_start", None)
+    if callable(getter):
+        return int(getter())
+    return int(getattr(block, "start", 0))
+
+
+def _bb_end(block: Any) -> int:
+    """A basic block's end byte offset (exclusive), tolerant of accessor drift."""
+    getter = getattr(block, "get_end", None)
+    if callable(getter):
+        return int(getter())
+    return int(getattr(block, "end", 0))
+
+
+def _bb_children(block: Any) -> list[Any]:
+    """The successor blocks of a basic block.
+
+    androguard models an edge as ``(pos, child_start, child_block)`` in
+    ``childs``; the child block is the third element. Guard the shape so a
+    version that stored bare blocks (or an unexpected tuple) does not raise.
+    """
+    out: list[Any] = []
+    for child in getattr(block, "childs", None) or []:
+        if isinstance(child, (tuple, list)):
+            if len(child) >= 3:
+                out.append(child[2])
+        else:
+            out.append(child)
+    return out
+
+
+def _bb_instr_summary(block: Any) -> tuple[int, str]:
+    """(instruction count, last mnemonic) for a basic block.
+
+    The terminator names the block's role -- a conditional (``if-*``), an
+    unconditional ``goto``, a ``return``/``throw`` sink, a ``*-switch`` -- without
+    the caller pivoting to apk.method_bytecode. Iteration is bounded by the DEX
+    code format and the method-instruction cap.
+    """
+    count = 0
+    last = ""
+    getter = getattr(block, "get_instructions", None)
+    if callable(getter):
+        for ins in getter():
+            count += 1
+            last = str(ins.get_name())
+            if count >= _MAX_METHOD_INSNS:
+                break
+    return count, last
 
 
 class ApkError(RuntimeError):
@@ -883,6 +941,103 @@ class ApkClient:
             # disambiguate if they meant another.
             "overloads": len(matches),
             "insns_capped": total >= _MAX_METHOD_INSNS,
+        }
+
+    def method_cfg(
+        self,
+        path: Path,
+        class_name: str,
+        method_name: str,
+        *,
+        descriptor: str | None = None,
+    ) -> JsonObject:
+        """The control-flow graph of one Dalvik method: basic blocks and edges.
+
+        Where apk.method_bytecode lists a method's instructions in address order,
+        this reads its shape -- the basic blocks and the branch edges between them
+        -- so loops, conditionals and fall-through are legible without tracing
+        every goto by hand. It is the Android twin of r2.cfg (native) and
+        static.cfg (PE), the seam from apk.method_bytecode to "how does control
+        move through this routine", which is exactly what an obfuscated guard or a
+        licence check hides in its branching.
+
+        Resolves one method by class + name (plus an optional ``descriptor`` to
+        pin an overload; ``overloads`` reports how many share the name). Each node
+        carries addr (byte offset of the block start, the same offset space
+        apk.method_bytecode uses so a node pivots straight to its instructions),
+        end, size, ninstr, name (androguard's block label) and terminator (the
+        block's last mnemonic -- if-eqz, goto, return-void, throw, ...). Each edge
+        carries src, dst and kind: "fall_through" when the successor is the next
+        sequential block (a not-taken conditional or straight-line flow) and
+        "branch" for an explicit jump target (a taken conditional, a goto, a
+        switch arm). Edges are deduplicated and sorted; entry is the start offset
+        of the entry block, node_count/edge_count summarise the graph, and
+        blocks_truncated/blocks_total disclose a method past the 4096-block cap
+        (edges are built only from the kept blocks). An abstract or native method
+        resolves with has_code False and an empty graph, not an error.
+        """
+        mname = method_name.strip()
+        class_display, chosen, matches = self._resolve_method(
+            path, class_name, method_name, descriptor
+        )
+        has_code = False
+        nodes: list[JsonObject] = []
+        edge_set: set[tuple[int, int, str]] = set()
+        blocks_total = 0
+        try:
+            encoded = chosen.get_method()
+            has_code = encoded.get_code() is not None
+            if has_code:
+                bbs = chosen.basic_blocks
+                try:
+                    raw_blocks = list(bbs.get())
+                except AttributeError:
+                    raw_blocks = list(bbs)
+                blocks_total = len(raw_blocks)
+                # Sort by start offset so the node list is deterministic and the
+                # entry (offset 0) leads; androguard does not promise an order.
+                raw_blocks.sort(key=_bb_start)
+                for block in raw_blocks[:_MAX_CFG_BLOCKS]:
+                    start = _bb_start(block)
+                    end = _bb_end(block)
+                    ninstr, terminator = _bb_instr_summary(block)
+                    node: JsonObject = {
+                        "addr": start,
+                        "end": end,
+                        "size": max(0, end - start),
+                        "ninstr": ninstr,
+                        "name": str(block.get_name()),
+                    }
+                    if terminator:
+                        node["terminator"] = terminator
+                    nodes.append(node)
+                    for child in _bb_children(block):
+                        child_start = _bb_start(child)
+                        # The sequential successor (start == this block's end) is
+                        # the fall-through; anything else is an explicit target.
+                        kind = "fall_through" if child_start == end else "branch"
+                        edge_set.add((start, child_start, kind))
+        except ApkError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError(
+                "backend_error", f"failed to read method cfg: {exc}", method_name=mname
+            ) from exc
+        edges = [{"src": s, "dst": d, "kind": k} for s, d, k in sorted(edge_set)]
+        return {
+            "class_name": class_display,
+            "method": mname,
+            "descriptor": str(getattr(chosen, "descriptor", "")),
+            "access": str(getattr(chosen, "access", "")),
+            "has_code": has_code,
+            "entry": nodes[0]["addr"] if nodes else None,
+            "nodes": nodes,
+            "edges": edges,
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "overloads": len(matches),
+            "blocks_truncated": blocks_total > _MAX_CFG_BLOCKS,
+            "blocks_total": blocks_total,
         }
 
     def method_refs(

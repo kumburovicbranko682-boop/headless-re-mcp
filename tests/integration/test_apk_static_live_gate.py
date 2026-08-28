@@ -478,6 +478,8 @@ def _build_single_class_dex(
     method_name: str,
     method_is_static: bool,
     calls: tuple[str, str] | None = None,
+    insns: list[int] | None = None,
+    registers: int | None = None,
 ) -> bytes:
     """A valid DEX 035 defining exactly one class with one method.
 
@@ -487,6 +489,10 @@ def _build_single_class_dex(
     ``classes2.dex``: the reference is a method-id, resolved across DEX files by
     androguard's merged analysis. String/type/method tables are emitted in the
     sorted order the DEX spec mandates so androguard parses it as-is.
+
+    ``insns`` (with ``registers``) overrides the method body with raw 16-bit code
+    units, so a caller can hand-assemble a branchy method (if-eqz/goto) whose CFG
+    the analysis then recovers. It is mutually exclusive with ``calls``.
     """
     no_index = 0xFFFFFFFF
     obj_desc = "Ljava/lang/Object;"
@@ -536,15 +542,20 @@ def _build_single_class_dex(
 
     align4()
     code_off = cursor()
-    if calls is not None:
+    if insns is not None:
+        # Hand-assembled body (e.g. a branchy method for a CFG); the caller sized
+        # the register window, and a raw body makes no outward calls.
+        body = list(insns)
+        registers, outs = (registers or 0), 0
+    elif calls is not None:
         # const/4 v0, 0; invoke-virtual {v0}, <callee>; return-void
-        insns = [0x0012, 0x106E, midx[calls], 0x0000, 0x000E]
+        body = [0x0012, 0x106E, midx[calls], 0x0000, 0x000E]
         registers, outs = 1, 1
     else:
-        insns = [0x000E]  # return-void
+        body = [0x000E]  # return-void
         registers, outs = 0, 0
-    data += struct.pack("<HHHHII", registers, 0, outs, 0, 0, len(insns))
-    data += b"".join(struct.pack("<H", unit) for unit in insns)
+    data += struct.pack("<HHHHII", registers, 0, outs, 0, 0, len(body))
+    data += b"".join(struct.pack("<H", unit) for unit in body)
 
     class_data_off = cursor()
     defined = _uleb128(midx[(class_desc, method_name)])
