@@ -94,6 +94,29 @@ def test_oversized_request_metadata_is_clipped_and_flagged(
     assert entry["metadata_truncated"] is True
 
 
+def test_request_records_started_at_from_a_positive_walltime_only() -> None:
+    """requestWillBeSent's wallTime becomes started_at, but a junk clock is dropped.
+
+    HAR's startedDateTime wants the true epoch each request began, not the single
+    export instant, so the request handler stamps started_at from CDP's wallTime.
+    Only a positive value: a zero or missing wallTime (CDP has not resolved wall
+    time for this request) must leave started_at off so the export can fall back,
+    rather than dating the request to the 1970 epoch.
+    """
+    handle, cdp = _wired_session()
+    on_request = cdp.handlers["Network.requestWillBeSent"]
+
+    stamped = _request_event("stamped")
+    stamped["wallTime"] = 1_700_000_000.5
+    on_request(stamped)
+    assert handle.requests["stamped"]["started_at"] == 1_700_000_000.5
+
+    bare = _request_event("bare")
+    bare["wallTime"] = 0
+    on_request(bare)
+    assert "started_at" not in handle.requests["bare"]
+
+
 def test_response_enriches_its_request_and_ignores_an_unknown_id() -> None:
     """A response fills in status/mime on its request; an orphan is a no-op.
 
@@ -182,6 +205,39 @@ def test_loading_finished_drops_junk_clocks_instead_of_negative_receive() -> Non
     assert handle.receive_anchors == {}
     on_finished({"requestId": "na", "timestamp": 200.0})
     assert "receive" not in handle.requests["na"].get("timings", {})
+
+
+def test_loading_finished_creates_the_timings_map_when_only_receive_is_measurable() -> None:
+    """A response with only a receive anchor still gets timings.receive at finish.
+
+    Some responses (served from cache, early-hints, an odd redirect) carry
+    requestTime + receiveHeadersEnd -- enough to anchor the body download -- but
+    no sendStart/sendEnd, so _cdp_phase_timings yields nothing and responseReceived
+    leaves the row with no timings map at all. loadingFinished must then create
+    that map and put receive in it, rather than skipping the phase because the
+    map it expected to enrich was never there.
+    """
+    handle, cdp = _wired_session()
+    cdp.handlers["Network.requestWillBeSent"](_request_event("r1"))
+    cdp.handlers["Network.responseReceived"](
+        {
+            "requestId": "r1",
+            "response": {
+                "status": 200,
+                "mimeType": "application/json",
+                # Only the receive anchor is derivable: no send/wait phases.
+                "timing": {"requestTime": 100.0, "receiveHeadersEnd": 40.0},
+            },
+        }
+    )
+    assert "timings" not in handle.requests["r1"]
+    assert "r1" in handle.receive_anchors
+
+    cdp.handlers["Network.loadingFinished"]({"requestId": "r1", "timestamp": 100.1})
+    # Headers done at 100.04, finished at 100.1 -> a 60ms body download, and it
+    # lands in a map created here rather than one the response left behind.
+    assert handle.requests["r1"]["timings"] == {"receive": 60.0}
+    assert handle.receive_anchors == {}
 
 
 def test_receive_anchors_are_evicted_and_cleared_with_their_rows(
