@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（js.unpack_bundle 对当前 webcrack 从来没成功过：输出目录被提前建好导致每次都失败）
+
+给 Web 静态线补 bundle 拆包真机 Gate 时发现 `js.unpack_bundle` 有一处只有跑真 webcrack 才会
+暴露、被子进程 mock 的单测一路放过的实质缺陷。`JsClient.unpack_bundle` 在调用
+`webcrack <input> -o <out_dir>` 前先 `out_dir.mkdir(parents=True, exist_ok=True)` 把输出目录
+建好，但 webcrack（≥2，即需要 Node 22/24 的当前版本）遇到**已存在**的 `-o` 目录会直接
+「output directory already exists」退出 1——哪怕那目录是空的。于是每一次 `js.unpack_bundle`
+都在写出任何一个模块之前就以 `backend_error` 失败，这条能力对当前 webcrack 实际上从未跑通过。
+改为只建父目录、把叶子目录留给 webcrack 自己创建（失败时它不留目录，正好被下面的清单逻辑当作
+「没有文件」处理）。适配器单测只 mock 子进程、从不真跑 webcrack，所以一直没发觉。
+
+配套新增 `tests/integration/test_web_re_gate.py::test_js_unpack_bundle_when_webcrack_present`：
+在测试时手搓一个经典 webpack bundle（bootstrap + 模块数组），经 `js.unpack_bundle` 拆包后断言
+webcrack 真把它拆回了各个源模块——`bundle.json` 记为 `webpack` 且含两个模块、入口模块里的
+`__webpack_require__(1)` 被改写成真正的跨模块 `require(...)`、拆出的模块带回了 `greet` 函数体，
+且模块源码里不再残留 bootstrap 的 `__webpack_require__`（这些是「拆包」区别于单文件「去混淆」的
+决定性变化）。同时在 `test_jsre_unpack_dirs.py` 补一条回归护栏：用一个「遇到已存在目录就报错」的
+假 webcrack（正是真 webcrack ≥2 的行为）跑 `unpack_bundle`，断言它仍能成功——旧代码会因提前建目录
+而失败。skip ≠ pass：webcrack 缺失时干净 skip。已在装有 webcrack 2.16 的 Linux x86_64 上实跑
+通过（非 skip）。
+
 ### 测试（Web 动态线首次真机证明 CDP 确实抓到了一个真实请求及其响应体）
 
 `test_web_re_gate.py` 里的 CDP Gate 只在一个 `data:` URL 上开浏览器，查 DOM/console/脚本列表
