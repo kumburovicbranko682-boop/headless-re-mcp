@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import socket
 import stat
 import threading
 import zipfile
@@ -40,7 +41,15 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_IPV6_ADDRS = 256
 _MAX_DEVICES = 64
+# /proc/net/if_inet6 scope column: the kernel's address-scope constants.
+_IF_INET6_SCOPES = {
+    0x00: "global",
+    0x10: "host",
+    0x20: "link",
+    0x40: "site",
+}
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
 _MAX_FORWARDS = 32
@@ -190,6 +199,24 @@ def _is_host_error_output(text: str) -> bool:
     return bool(captured) and all(
         line.lstrip().lower().startswith(("error:", "adb:")) for line in captured
     )
+
+
+def _if_inet6_addr(hexip: str) -> str | None:
+    """Decode a ``/proc/net/if_inet6`` 32-char hex column into an IPv6 string.
+
+    Unlike ``/proc/net/tcp6`` and ``/proc/net/udp6`` -- which store the address
+    as little-endian 32-bit words -- ``if_inet6`` prints the 16 bytes in network
+    order, so it decodes straight with no reversal. ``None`` for anything that
+    is not exactly 16 hex-encoded bytes so a header or truncated cell is
+    skipped rather than turned into a bogus address.
+    """
+    if len(hexip) != 32:
+        return None
+    try:
+        raw = bytes.fromhex(hexip)
+    except ValueError:
+        return None
+    return socket.inet_ntop(socket.AF_INET6, raw)
 
 
 def _call(method: Any, *args: Any, timeout: float | None = None, **kwargs: Any) -> Any:
@@ -525,6 +552,74 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def ipv6_addrs(self, serial: str, *, limit: int = 256) -> JsonObject:
+        """List the device's IPv6 addresses from ``/proc/net/if_inet6``.
+
+        The interface counters (netdev) name the links but not their addresses,
+        and no other read exposes the device's own IP addresses. Each row gives
+        the interface name, the decoded IPv6 address, its prefix length, and the
+        address scope (global / link / host / site) so a routable global address
+        is told apart from a link-local ``fe80::`` one. IPv4 has no comparable
+        ``/proc`` file, so this is deliberately IPv6-only.
+
+        Honesty: three outcomes are kept distinct. A dead or offline device
+        (an adb host-error reply) is a ``backend_error``. A device whose kernel
+        has IPv6 disabled or the file locked down answers with a "No such file"
+        / "Permission denied" line and no addresses -- that is reported as a
+        real ``available: false`` state, not a failure and not an empty success.
+        A readable file yields the addresses with ``available: true`` (an empty
+        list only when the kernel truly has none). Unrecognized non-error output
+        is a ``backend_error`` rather than a guessed-empty result. The list is
+        capped and flags ``has_more`` when truncated.
+        """
+        dev = self._device(serial)
+        capped = max(1, min(int(limit), _MAX_IPV6_ADDRS))
+        text = str(_device_shell(dev, "cat /proc/net/if_inet6"))
+        addresses: list[JsonObject] = []
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 6:
+                continue
+            address = _if_inet6_addr(fields[0])
+            if address is None:
+                continue
+            try:
+                prefix_len = int(fields[2], 16)
+                scope_raw = int(fields[3], 16)
+            except ValueError:
+                continue
+            if len(addresses) >= capped:
+                has_more = True
+                break
+            addresses.append(
+                {
+                    "name": fields[5],
+                    "address": address,
+                    "prefix_len": prefix_len,
+                    "scope": _IF_INET6_SCOPES.get(scope_raw, "unknown"),
+                }
+            )
+        if addresses:
+            return {
+                "addresses": addresses,
+                "count": len(addresses),
+                "has_more": has_more,
+                "available": True,
+            }
+        # No address parsed: separate a dead device from a legitimately
+        # IPv6-less one from output we do not recognize.
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "reading /proc/net/if_inet6 failed", output=text[:800])
+        lowered = text.lower()
+        if not text.strip():
+            return {"addresses": [], "count": 0, "has_more": False, "available": True}
+        if any(marker in lowered for marker in ("no such file", "permission denied", "not found")):
+            return {"addresses": [], "count": 0, "has_more": False, "available": False}
+        raise AdbError(
+            "backend_error", "unrecognized /proc/net/if_inet6 output", output=text[:800]
+        )
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a

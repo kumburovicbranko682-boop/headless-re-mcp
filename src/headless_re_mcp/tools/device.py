@@ -89,6 +89,25 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.ipv6_addrs")
+    def device_ipv6_addrs(
+        serial: str, limit: Annotated[int, Field(ge=1, le=256)] = 256
+    ) -> dict[str, Any]:
+        """List the device's IPv6 addresses from /proc/net/if_inet6.
+
+        The interface counters (device.netdev) name the links but not their
+        addresses. Answers with addresses (each entry: name, address,
+        prefix_len, scope global/link/host/site), count, has_more, and
+        available. IPv4 has no comparable /proc file, so this is IPv6-only.
+
+        Honesty: three outcomes stay distinct. A dead/offline device is an
+        error; a kernel with IPv6 disabled (or the file locked down) is
+        available=false with no addresses -- not a failure and not an empty
+        success; a readable file is available=true with the addresses (empty
+        only when the kernel truly has none).
+        """
+        return _dump(analysis.device_ipv6_addrs(serial, limit=limit))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True
