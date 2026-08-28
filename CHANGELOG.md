@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **291（174 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **292（175 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -648,6 +648,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   去重(打包中每模块重复的横幅折成一条)、首见排序。返回 `input_bytes`、`min_length` 与含
   `count/total/offset/has_more` 的 `comments`；`total` 上限 50000、越限置 `scan_capped`;`truncated` 在文本
   于未闭合字符串或块注释中戛然而止时为真。缺文件报 not_found、超 16 MiB 报 too_large。
+- `js.capabilities`：JS 静态四件套的行为侧收口——`js.strings` 答"它说什么"、`js.endpoints` 答"它连谁"、
+  `js.imports` 答"它依赖什么"，本工具一次调用答"它能做什么"：对固定的安全敏感 API 表计数并按类别分组——
+  code_execution（`eval`、`Function`、`importScripts`、字符串实参的 `setTimeout`/`setInterval`）、network
+  （`fetch`、`WebSocket`、`XMLHttpRequest`、`EventSource`）、storage（`localStorage`、`sessionStorage`、
+  `indexedDB`、`.cookie`）、dom_injection（`.innerHTML`、`.outerHTML`、`.insertAdjacentHTML`）、encoding
+  （`atob`/`btoa`）、messaging（`.postMessage`）与 wasm（`WebAssembly`），纯 Python、**不需要 webcrack 或
+  Node**。复用 `js.imports` 的词法器，故字符串或注释里的名字不计数，且每个名字只在使其有意义的句法形态下
+  才计：调用类须为全局调用、全局类须为非属性标识符（`x.eval` 不算 `eval`）、属性类须跟在点号后、定时器仅在
+  首实参为字符串字面量的 eval 形态下计。这是对固定表的出现计数、不是恶意判定，动态到达的名字
+  （`window["eval"]`）不可见。返回按 count 再按名排序的 `capabilities`（api/category/count）、去重排序的
+  `categories` 与 `input_bytes`；token 上限截断扫描置 `scan_capped`，文本于未闭合字面量或块注释中戛然而止
+  置 `truncated`。缺文件报 not_found、超 16 MiB 报 too_large。
 - `wasm.imports`：纯 Python 解析 .wasm 的 import 段，列出模块的导入，**不需要 wabt**（`wasm.info/
   wat` 依赖 wabt CLI）。导入就是模块从宿主拿的东西——它离不开的 JS 函数、内存、表与全局量——读它是
   看清一个模块到底干什么的最快路径（带 `env.emscripten_*` 的内存导入是一回事，孤零零一个 crypto

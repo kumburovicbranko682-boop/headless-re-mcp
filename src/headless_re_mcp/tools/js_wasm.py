@@ -181,6 +181,34 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_comments(path, offset=offset, limit=limit, min_length=min_length))
 
+    @tools.tool(name="js.capabilities")
+    def js_capabilities(path: str) -> dict[str, Any]:
+        """Fingerprint what a JavaScript file can do, node-free.
+
+        The behavioral counterpart to js.strings (what it says), js.endpoints
+        (who it talks to) and js.imports (what it depends on): one call answers
+        "what can this script do" by counting references to a fixed table of
+        security-relevant APIs, grouped by category -- code_execution (eval,
+        Function, importScripts, string-argument setTimeout/setInterval),
+        network (fetch, WebSocket, XMLHttpRequest, EventSource), storage
+        (localStorage, sessionStorage, indexedDB, .cookie), dom_injection
+        (.innerHTML, .outerHTML, .insertAdjacentHTML), encoding (atob, btoa),
+        messaging (.postMessage) and wasm (WebAssembly). It lexes the source
+        with the same tokenizer as js.imports, so a name inside a string or
+        comment never counts, and each name only counts in the syntactic shape
+        that makes it meaningful: calls as a global call, globals as a
+        non-property identifier (x.eval does not count as eval), properties
+        only behind a dot, and the timers only with a string literal as first
+        argument. This is an occurrence count against a fixed table, never a
+        maliciousness verdict, and dynamically reached names (window["eval"])
+        are invisible. Answers with capabilities rows (api, category, count)
+        sorted by count then name, the distinct categories, input_bytes,
+        scan_capped when the token ceiling cut the scan short and truncated
+        when the source ends inside an open literal or block comment. A missing
+        file is not_found, one over 16 MiB too_large.
+        """
+        return _dump(analysis.js_capabilities(path))
+
     @tools.tool(name="wasm.callers")
     def wasm_callers(
         path: str,

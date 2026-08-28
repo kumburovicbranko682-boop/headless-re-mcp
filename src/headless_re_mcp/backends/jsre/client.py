@@ -66,6 +66,38 @@ _JS_MAX_MIN_COMMENT = 256
 _MAX_JS_COMMENTS_COLLECT = 50000
 _MAX_JS_COMMENTS_PAGE = 1000
 _MAX_JS_COMMENT_LEN = 4096
+# js.capabilities fingerprints a script against a fixed table of security-
+# relevant Web/Node APIs. Matching is over the js.imports token stream, so
+# occurrences inside string literals and comments never count, and each table
+# encodes the syntactic shape that makes the name meaningful: _CALLS entries
+# only match a global call `name(`, _REFS entries only a non-property
+# identifier, _MEMBERS entries only a `.name` property access, and the timers
+# only count in their eval-like form (a string literal as the first argument).
+_JS_CAP_CALLS = {
+    "eval": "code_execution",
+    "Function": "code_execution",
+    "importScripts": "code_execution",
+    "fetch": "network",
+    "atob": "encoding",
+    "btoa": "encoding",
+}
+_JS_CAP_REFS = {
+    "WebSocket": "network",
+    "XMLHttpRequest": "network",
+    "EventSource": "network",
+    "localStorage": "storage",
+    "sessionStorage": "storage",
+    "indexedDB": "storage",
+    "WebAssembly": "wasm",
+}
+_JS_CAP_MEMBERS = {
+    "innerHTML": "dom_injection",
+    "outerHTML": "dom_injection",
+    "insertAdjacentHTML": "dom_injection",
+    "postMessage": "messaging",
+    "cookie": "storage",
+}
+_JS_CAP_STRING_TIMERS = frozenset({"setTimeout", "setInterval"})
 # Every WebAssembly binary opens with these four bytes. Checking them before
 # launching wasm2wat / wasm-objdump turns a cryptic tool failure and a wasted
 # subprocess into a precise invalid_params -- the same reason the size cap
@@ -3287,6 +3319,83 @@ def scan_js_comments(
         "offset": start,
         "has_more": start + len(window) < len(found),
         "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def _match_js_capabilities(
+    tokens: list[tuple[str, str]],
+) -> tuple[dict[str, int], dict[str, str]]:
+    """Tally capability-table hits in a token stream.
+
+    Returns (counts, category) both keyed by API name. A ``w`` token preceded
+    by ``.`` is a property, so it can never hit the call/ref tables (``x.eval``
+    is not the global ``eval``); the member table conversely only counts names
+    reached through a ``.``. The two tables are disjoint, so no occurrence is
+    counted twice.
+    """
+    counts: dict[str, int] = {}
+    category: dict[str, str] = {}
+
+    def bump(api: str, cat: str) -> None:
+        counts[api] = counts.get(api, 0) + 1
+        category[api] = cat
+
+    n = len(tokens)
+    for i, (kind, value) in enumerate(tokens):
+        if kind == "p" and value == ".":
+            if i + 1 < n and tokens[i + 1][0] == "w":
+                prop = tokens[i + 1][1]
+                if prop in _JS_CAP_MEMBERS:
+                    bump(prop, _JS_CAP_MEMBERS[prop])
+            continue
+        if kind != "w" or (i > 0 and tokens[i - 1] == ("p", ".")):
+            continue
+        is_call = i + 1 < n and tokens[i + 1] == ("p", "(")
+        if is_call and value in _JS_CAP_CALLS:
+            bump(value, _JS_CAP_CALLS[value])
+        elif value in _JS_CAP_REFS:
+            bump(value, _JS_CAP_REFS[value])
+        elif value in _JS_CAP_STRING_TIMERS and is_call and i + 2 < n and tokens[i + 2][0] == "s":
+            bump(value, "code_execution")
+    return counts, category
+
+
+def scan_js_capabilities(path: Path) -> JsonObject:
+    """Fingerprint a script's use of security-relevant Web/Node APIs.
+
+    Pure-Python and node-free: lexes the source with the same tokenizer as
+    js.imports, so API names inside string literals and comments never count,
+    and each name only counts in the syntactic shape that makes it meaningful
+    -- eval/Function/importScripts/fetch/atob/btoa as a global call,
+    WebSocket/XMLHttpRequest/EventSource/localStorage/sessionStorage/indexedDB/
+    WebAssembly as a non-property identifier, innerHTML/outerHTML/
+    insertAdjacentHTML/postMessage/cookie as a property access, and setTimeout/
+    setInterval only in the eval-like string-first-argument form. This is a
+    fixed-table occurrence count -- an answer to "what can this script do",
+    never a maliciousness verdict -- and names reached dynamically (for
+    example ``window["eval"]``) are invisible to it. Answers with capabilities
+    rows (api, category, count) sorted by count then name, the sorted distinct
+    categories, input_bytes, scan_capped when the token ceiling cut the scan
+    short and truncated when the source ends inside an open literal or block
+    comment. A missing file is not_found, one over 16 MiB too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
+    text = raw.decode("utf-8", errors="replace")
+    tokens, truncated, capped = _tokenize_js(text)
+    counts, category = _match_js_capabilities(tokens)
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {
+        "capabilities": [
+            {"api": api, "category": category[api], "count": count} for api, count in ordered
+        ],
+        "categories": sorted(set(category.values())),
+        "input_bytes": len(raw),
+        "scan_capped": capped,
         "truncated": truncated,
     }
 

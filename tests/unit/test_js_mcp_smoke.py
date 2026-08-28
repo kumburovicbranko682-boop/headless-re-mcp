@@ -26,15 +26,16 @@ from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.tools.assembly import bind_all_tools
 from headless_re_mcp.tools.catalog import CommandCatalog
 
-# One source that exercises all four scanners: string literals for js.strings, a
-# schemed URL for js.endpoints, an ESM import and a require for js.imports, and
-# a line and block comment for js.comments.
+# One source that exercises all five scanners: string literals for js.strings, a
+# schemed URL for js.endpoints, an ESM import and a require for js.imports, a
+# line and block comment for js.comments, and a fetch call for js.capabilities.
 _SOURCE = """// entry point of the app
 import React from 'react';
 const http = require('http');
 /* configuration block */
 const endpoint = 'https://api.example.com/v1/status';
 const label = "dashboard-widget";
+fetch(endpoint);
 """
 
 # (service method, the key its payload must carry, extra kwargs beyond path).
@@ -43,6 +44,7 @@ _SERVICE_CASES: tuple[tuple[str, str, dict[str, int]], ...] = (
     ("js_endpoints", "endpoints", {}),
     ("js_imports", "imports", {}),
     ("js_comments", "comments", {}),
+    ("js_capabilities", "capabilities", {}),
 )
 
 # The payload key each dotted tool name must return. Keyed by the public tool
@@ -52,6 +54,7 @@ _TOOL_KEYS: dict[str, str] = {
     "js.endpoints": "endpoints",
     "js.imports": "imports",
     "js.comments": "comments",
+    "js.capabilities": "capabilities",
 }
 
 # Shell out to Node, so out of scope for a wiring smoke that assumes no Node.

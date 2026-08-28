@@ -37,6 +37,7 @@ from headless_re_mcp.backends.jsre import (
     parse_wasm_start,
     parse_wasm_strings,
     parse_wasm_tables,
+    scan_js_capabilities,
     scan_js_comments,
     scan_js_endpoints,
     scan_js_imports,
@@ -188,6 +189,15 @@ class JsReAnalysisMixin:
     ) -> Result[JsonObject]:
         try:
             data = scan_js_comments(Path(path), offset=offset, limit=limit, min_length=min_length)
+            return _success(data, backend="jsre")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def js_capabilities(self, path: str) -> Result[JsonObject]:
+        try:
+            data = scan_js_capabilities(Path(path))
             return _success(data, backend="jsre")
         except JsReError as exc:
             return _failure(_as_rpc(exc))

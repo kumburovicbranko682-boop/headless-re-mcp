@@ -303,6 +303,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "js.endpoints",
         "js.imports",
         "js.comments",
+        "js.capabilities",
         "wasm.opcodes",
         "wasm.locals",
         "wasm.custom_sections",
