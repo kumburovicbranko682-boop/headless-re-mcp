@@ -563,3 +563,236 @@ def extract_wasm_strings(data: bytes, *, min_length: int = 4) -> JsonObject:
     result["items_total"] = total
     result["items_truncated"] = truncated
     return result
+
+
+# The function index space (imports first, then defined) can run to tens of
+# thousands in a real emscripten build; cap the materialised list and page it.
+_MAX_FUNCTIONS_COLLECT = 50_000
+_MAX_FUNCTIONS_PAGE = 2000
+
+
+def _collect_sections(data: bytes) -> tuple[dict[int, bytes], bytes | None]:
+    """Return {section_id: payload} (first occurrence) and the name section body.
+
+    A single linear walk shared by the function listing: it needs the type,
+    import and function sections plus the custom ``name`` section, and reading
+    them together keeps the offset logic in one place.
+    """
+    sections: dict[int, bytes] = {}
+    name_payload: bytes | None = None
+    if data[:4] != _WASM_MAGIC or len(data) < 8:
+        return sections, name_payload
+    pos = 8
+    while pos < len(data):
+        try:
+            section_id, pos = _u8(data, pos)
+            size, pos = _uleb(data, pos)
+        except (_WasmTruncated, _WasmMalformed):
+            break
+        end = pos + size
+        if end > len(data):
+            break
+        payload = data[pos:end]
+        if section_id == 0:
+            try:
+                cname, after = _name(payload, 0)
+                if cname == "name" and name_payload is None:
+                    name_payload = payload[after:]
+            except (_WasmTruncated, _WasmMalformed):
+                pass
+        elif section_id not in sections:
+            sections[section_id] = payload
+        pos = end
+    return sections, name_payload
+
+
+def _parse_types(payload: bytes) -> list[tuple[list[str], list[str]]]:
+    """Decode the type section into (params, results) function signatures."""
+    count, pos = _uleb(payload, 0)
+    types: list[tuple[list[str], list[str]]] = []
+    for _ in range(count):
+        form, pos = _u8(payload, pos)
+        if form != 0x60:
+            # A non-func type (GC struct/array, etc.) has a different layout we
+            # do not model; stopping keeps later indices from desyncing.
+            raise _WasmMalformed
+        nparams, pos = _uleb(payload, pos)
+        params: list[str] = []
+        for _ in range(nparams):
+            vt, pos = _u8(payload, pos)
+            params.append(_valtype(vt))
+        nresults, pos = _uleb(payload, pos)
+        results: list[str] = []
+        for _ in range(nresults):
+            vt, pos = _u8(payload, pos)
+            results.append(_valtype(vt))
+        types.append((params, results))
+    return types
+
+
+def _parse_func_imports(payload: bytes) -> list[tuple[str, str, int]]:
+    """Extract (module, name, type_index) for each function import, in order."""
+    count, pos = _uleb(payload, 0)
+    funcs: list[tuple[str, str, int]] = []
+    for _ in range(count):
+        module, pos = _name(payload, pos)
+        field, pos = _name(payload, pos)
+        kind, pos = _u8(payload, pos)
+        if kind == 0:  # func: type index
+            type_index, pos = _uleb(payload, pos)
+            funcs.append((module, field, type_index))
+        elif kind == 1:  # table: reftype + limits
+            _, pos = _u8(payload, pos)
+            _, pos = _limits(payload, pos)
+        elif kind == 2:  # memory: limits
+            _, pos = _limits(payload, pos)
+        elif kind == 3:  # global: valtype + mutability
+            _, pos = _u8(payload, pos)
+            _, pos = _u8(payload, pos)
+        else:
+            break
+    return funcs
+
+
+def _parse_function_section(payload: bytes) -> list[int]:
+    """Decode the function section into the type index of each defined function."""
+    count, pos = _uleb(payload, 0)
+    indices: list[int] = []
+    for _ in range(count):
+        type_index, pos = _uleb(payload, pos)
+        indices.append(type_index)
+    return indices
+
+
+def _parse_function_names(payload: bytes) -> dict[int, str]:
+    """Decode subsection 1 (function names) of the name custom section."""
+    names: dict[int, str] = {}
+    pos = 0
+    while pos < len(payload):
+        sub_id, pos = _u8(payload, pos)
+        size, pos = _uleb(payload, pos)
+        end = pos + size
+        if end > len(payload):
+            raise _WasmTruncated
+        if sub_id == 1:  # function name subsection: a namemap
+            body = payload[pos:end]
+            bpos = 0
+            entry_count, bpos = _uleb(body, bpos)
+            for _ in range(entry_count):
+                index, bpos = _uleb(body, bpos)
+                text, bpos = _name(body, bpos)
+                names[index] = text
+        pos = end
+    return names
+
+
+def list_wasm_functions(
+    data: bytes, *, offset: int = 0, limit: int = 100
+) -> JsonObject:
+    """List a module's functions with resolved signatures, imports first.
+
+    Where summary only counts them, this walks the whole function index space:
+    each imported function (with its module/name) followed by each defined
+    function, resolving every type index to params/results and attaching the
+    debug name from the name section when present. Never raises on malformed
+    input: a section that will not parse is skipped and the affected fields are
+    simply absent (types_resolved goes false when the type section is bad).
+    """
+    result: JsonObject = {
+        "functions": [],
+        "count": 0,
+        "total": 0,
+        "offset": max(0, int(offset)),
+        "has_more": False,
+        "imported_count": 0,
+        "defined_count": 0,
+        "types_resolved": True,
+        "scan_capped": False,
+    }
+    sections, name_payload = _collect_sections(data)
+
+    types: list[tuple[list[str], list[str]]] | None = None
+    if 1 in sections:
+        try:
+            types = _parse_types(sections[1])
+        except (_WasmTruncated, _WasmMalformed):
+            types = None
+            result["types_resolved"] = False
+
+    func_imports: list[tuple[str, str, int]] = []
+    if 2 in sections:
+        try:
+            func_imports = _parse_func_imports(sections[2])
+        except (_WasmTruncated, _WasmMalformed):
+            func_imports = []
+
+    defined: list[int] = []
+    if 3 in sections:
+        try:
+            defined = _parse_function_section(sections[3])
+        except (_WasmTruncated, _WasmMalformed):
+            defined = []
+
+    func_names: dict[int, str] = {}
+    if name_payload is not None:
+        try:
+            func_names = _parse_function_names(name_payload)
+        except (_WasmTruncated, _WasmMalformed):
+            func_names = {}
+
+    def _signature(type_index: int) -> JsonObject:
+        if types is not None and 0 <= type_index < len(types):
+            params, results = types[type_index]
+            return {"params": list(params), "results": list(results)}
+        return {}
+
+    functions: list[JsonObject] = []
+    index = 0
+    capped = False
+    for module, field, type_index in func_imports:
+        if len(functions) >= _MAX_FUNCTIONS_COLLECT:
+            capped = True
+            break
+        entry: JsonObject = {
+            "index": index,
+            "kind": "imported",
+            "module": module,
+            "name": field,
+            "type_index": type_index,
+        }
+        entry.update(_signature(type_index))
+        if index in func_names:
+            entry["debug_name"] = func_names[index]
+        functions.append(entry)
+        index += 1
+    imported_count = index
+
+    if not capped:
+        for type_index in defined:
+            if len(functions) >= _MAX_FUNCTIONS_COLLECT:
+                capped = True
+                break
+            entry = {
+                "index": index,
+                "kind": "defined",
+                "type_index": type_index,
+            }
+            entry.update(_signature(type_index))
+            if index in func_names:
+                entry["name"] = func_names[index]
+            functions.append(entry)
+            index += 1
+
+    result["imported_count"] = imported_count
+    result["defined_count"] = len(functions) - imported_count
+    result["total"] = len(functions)
+    result["scan_capped"] = capped
+
+    start = max(0, int(offset))
+    cap = max(1, min(int(limit), _MAX_FUNCTIONS_PAGE))
+    window = functions[start : start + cap]
+    result["functions"] = window
+    result["count"] = len(window)
+    result["offset"] = start
+    result["has_more"] = start + len(window) < len(functions)
+    return result

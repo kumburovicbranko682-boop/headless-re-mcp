@@ -153,4 +153,33 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_strings(path, min_length=min_length))
 
+    @tools.tool(name="wasm.functions")
+    def wasm_functions(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=2000)] = 100,
+    ) -> dict[str, Any]:
+        """List a .wasm module's functions with resolved signatures (no wabt).
+
+        Where wasm.summary only counts them, this walks the whole function index
+        space in order: each imported function first, then each defined one.
+        Pure Python; needs no external tool.
+
+        Answers with functions (paged), count, total, offset, has_more, plus
+        imported_count and defined_count. Each row carries index (its position
+        in the function index space), kind (imported or defined), type_index,
+        and -- when the type section resolved -- params and results (lists of
+        value types like i32/i64/f32/f64/funcref). An imported row also carries
+        module and name (the import descriptor); a defined row carries name when
+        the name section named it, and an imported row a debug_name likewise.
+        types_resolved is false when the type section could not be parsed (so
+        params/results are absent), and scan_capped marks a module whose
+        function count hit the collect cap. Read has_more so a page that filled
+        the limit is not read as every function.
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_functions(path, offset=offset, limit=limit))
+
     return tools.bindings
