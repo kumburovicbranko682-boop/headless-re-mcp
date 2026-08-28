@@ -104,6 +104,15 @@ def _monodis(*args: str) -> str:
     return result.stdout
 
 
+def _monodis_file(binary: Path, *args: str) -> str:
+    """monodis's dump of an arbitrary assembly (the fixture-independent form)."""
+    result = subprocess.run(
+        ["monodis", *args, str(binary)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    return result.stdout
+
+
 def _service(tmp_path: Path) -> AnalysisService:
     return AnalysisService(
         Settings(
@@ -382,6 +391,65 @@ def test_session_assembly_refs_agree_with_monodis(tmp_path: Path) -> None:
         assert created.ok, created.error
         refs = created.data["session"]["metadata"]["dotnet"]["assembly_refs"]
         assert [(ref["name"], ref["version"]) for ref in refs] == mono_refs
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_session_module_initializer_agrees_with_monodis(tmp_path: Path) -> None:
+    """The session-level module-initializer token against Mono's global .cctor.
+
+    ``module_initializer_token`` is now a tool-free session fact -- the
+    managed member of the code-before-main family (PE TLS callback / ELF
+    init_func / WASM start), the <Module>::.cctor the CLR runs before any
+    entry point. The session reader walks <Module>'s MethodList span itself,
+    so Mono's independent global-method decode referees it row for row on the
+    fixture, and an mcs program with no module initializer pins the honest
+    None: absence of the fact, agreed by both sides.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(
+            "minimal .NET fixture missing; run fixtures/dotnet/build_minimal_dotnet.py"
+            " (skip != pass)"
+        )
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+
+    full_dump = _monodis()
+    assert "end of global method .cctor" in full_dump, full_dump
+    line_match = _GLOBAL_CCTOR_LINE_RE.search(full_dump)
+    assert line_match, full_dump
+    mono_row = int(line_match.group(1))
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(_FIXTURE))
+        assert created.ok, created.error
+        token = created.data["session"]["metadata"]["dotnet"]["module_initializer_token"]
+        # Row for row: the session token names the same MethodDef row Mono
+        # printed the global .cctor from.
+        assert token == 0x06000000 | mono_row
+        assert token == 0x06000001
+    finally:
+        service.close_all()
+
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        return  # the fixture leg already ran; the negative leg needs a compiler
+    source = tmp_path / "plain.cs"
+    source.write_text('class P { static void Main() { System.Console.WriteLine("hi"); } }\n')
+    binary = tmp_path / "plain.exe"
+    subprocess.run(
+        [mcs, f"-out:{binary}", str(source)], check=True, capture_output=True, timeout=120
+    )
+    # Referee: an ordinary program declares no global .cctor at all.
+    assert "end of global method .cctor" not in _monodis_file(binary)
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok, created.error
+        assert created.data["session"]["metadata"]["dotnet"]["module_initializer_token"] is None
     finally:
         service.close_all()
 

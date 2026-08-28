@@ -241,6 +241,13 @@ class SessionRegistry:
                     pinvokes = _dotnet_pinvokes(path)
                     if pinvokes is not None:
                         metadata["dotnet"]["pinvoke_imports"] = pinvokes
+                    # The module initializer (<Module>::.cctor) -- the code
+                    # the CLR runs before any entry point, the managed pair
+                    # to a PE TLS callback / ELF init_func / WASM start.
+                    # None is the honest common answer.
+                    metadata["dotnet"]["module_initializer_token"] = _dotnet_module_initializer(
+                        path
+                    )
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -4542,6 +4549,19 @@ _DOTNET_MODULE_REF = 0x1A
 _DOTNET_IMPL_MAP = 0x1C
 _DOTNET_MEMBER_FORWARDED_TABLES = (0x04, 0x06)
 _DOTNET_MAX_PINVOKE_ROWS = 256
+# The module initializer: TypeDef (0x02) row 1 is the <Module> pseudo-type,
+# whose MethodList span in MethodDef (0x06) is searched for a static .cctor
+# -- the code the CLR runs before any managed entry point. The Extends field
+# is a TypeDefOrRef coded index (over TypeDef/TypeRef/TypeSpec); FieldList is
+# a simple index into Field (0x04). A static method carries flag 0x0010.
+_DOTNET_TYPE_DEF = 0x02
+_DOTNET_METHOD_DEF = 0x06
+_DOTNET_FIELD = 0x04
+_DOTNET_TYPEDEF_OR_REF = (0x02, 0x01, 0x1B)
+_DOTNET_METHOD_STATIC = 0x0010
+_DOTNET_MODULE_CCTOR = ".cctor"
+_DOTNET_TOKEN_METHODDEF = 0x06
+_DOTNET_MAX_MODULE_METHODS = 4096
 _DOTNET_MAX_ASSEMBLY_REF_ROWS = 256
 
 
@@ -4927,6 +4947,133 @@ def _dotnet_pinvokes(path: Path) -> list[dict[str, Any]] | None:
             break
         table_offset += row_size * row_counts[bit]
     return pinvokes
+
+
+def _dotnet_module_initializer(path: Path) -> int | None:
+    """The module initializer's MethodDef token, or ``None``.
+
+    The ``<Module>`` type's static ``.cctor`` -- the code the CLR runs at
+    module load, before the entry point and before any other managed code,
+    which is exactly why .NET packers and anti-tamper stubs hide their
+    unpacking there. The managed member of the code-before-main family: the
+    pair to a PE TLS callback, an ELF/Mach-O init function and a WASM start
+    function, and the token ``monodis`` prints the global ``.cctor`` from.
+    ``None`` is the common, honest answer -- most unobfuscated assemblies
+    declare no module initializer.
+
+    Located by the same table walk as the AssemblyRef/ImplMap reads:
+    ``<Module>`` is TypeDef row 1, whose MethodList (up to row 2's, or the
+    whole table when it is the only type) bounds the methods it owns; the
+    first static ``.cctor`` in that span is the initializer. Bounded and
+    fail-closed: capped file, clamped row counts, a capped ``<Module>``
+    method span, and any structural surprise yields ``None``.
+    """
+    from headless_re_mcp.dotnet.tables import coded_index_size, simple_index_size, table_row_size
+
+    try:
+        if path.stat().st_size > _DOTNET_MAX_FILE:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    view = _pe_header_view(raw)
+    if view is None:
+        return None
+    _magic, dir_count, dir_off, sections, _base = view
+    entry = dir_off + _PE_COM_DESCRIPTOR_DIR * 8
+    if dir_count <= _PE_COM_DESCRIPTOR_DIR or entry + 8 > len(raw):
+        return None
+    clr_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if clr_rva == 0:
+        return None
+    clr_off = _pe_rva_to_offset(sections, clr_rva)
+    if clr_off is None or clr_off + 16 > len(raw):
+        return None
+    meta_rva = int.from_bytes(raw[clr_off + 8 : clr_off + 12], "little")
+    meta_off = _pe_rva_to_offset(sections, meta_rva)
+    if meta_off is None:
+        return None
+    stream_map = _clr_stream_map(raw, meta_off)
+    tables_span = stream_map.get("#~") or stream_map.get("#-")
+    strings_span = stream_map.get("#Strings")
+    if tables_span is None:
+        return None
+    tables = raw[meta_off + tables_span[0] : meta_off + tables_span[0] + tables_span[1]]
+    strings = b""
+    if strings_span is not None:
+        strings = raw[meta_off + strings_span[0] : meta_off + strings_span[0] + strings_span[1]]
+    if len(tables) < 24:
+        return None
+    heap_sizes = tables[6]
+    string_index_size = 4 if (heap_sizes & 0x01) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    valid = int.from_bytes(tables[8:16], "little")
+    cursor = 24
+    row_counts: dict[int, int] = {}
+    for bit in range(64):
+        if valid & (1 << bit):
+            if cursor + 4 > len(tables):
+                return None
+            row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
+            cursor += 4
+    max_rows = max((len(tables) - cursor) // 2, 0)
+    row_counts = {bit: min(count, max_rows) for bit, count in row_counts.items()}
+    if _DOTNET_TYPE_DEF not in row_counts or _DOTNET_METHOD_DEF not in row_counts:
+        return None
+
+    def string_at(index: int) -> str:
+        if index <= 0 or index >= len(strings):
+            return ""
+        end = strings.find(b"\0", index)
+        return strings[index : (end if end >= 0 else len(strings))].decode(
+            "utf-8", errors="replace"
+        )
+
+    # One linear walk collects <Module>'s method span at TypeDef (0x02), then
+    # scans that span in MethodDef (0x06) -- 0x02 precedes 0x06, so a single
+    # pass suffices.
+    module_span: list[int] = []
+    table_offset = cursor
+    for bit in sorted(row_counts):
+        row_size = table_row_size(
+            row_counts, string_index_size, blob_index_size, guid_index_size, bit
+        )
+        if row_size is None:
+            return None
+        if bit == _DOTNET_TYPE_DEF:
+            # Row: Flags(4), Name, Namespace, Extends(coded TypeDefOrRef),
+            # FieldList, MethodList. Only rows 1 and 2 bound <Module>'s span.
+            extends_size = coded_index_size(row_counts, _DOTNET_TYPEDEF_OR_REF, 2)
+            field_size = simple_index_size(row_counts, _DOTNET_FIELD)
+            method_size = simple_index_size(row_counts, _DOTNET_METHOD_DEF)
+            mlist_at = 4 + string_index_size * 2 + extends_size + field_size
+            for i in range(min(row_counts[bit], 2)):
+                at = table_offset + i * row_size
+                if at + mlist_at + method_size > len(tables):
+                    break
+                module_span.append(
+                    int.from_bytes(tables[at + mlist_at : at + mlist_at + method_size], "little")
+                )
+        elif bit == _DOTNET_METHOD_DEF:
+            if not module_span:
+                return None
+            method_rows = row_counts[bit]
+            span_start = max(module_span[0], 1)
+            span_end = module_span[1] if len(module_span) > 1 else method_rows + 1
+            span_end = min(span_end, method_rows + 1, span_start + _DOTNET_MAX_MODULE_METHODS)
+            for rid in range(span_start, span_end):
+                at = table_offset + (rid - 1) * row_size
+                if at + row_size > len(tables):
+                    break
+                # Row: RVA(4), ImplFlags(2), Flags(2), Name(#Strings), ...
+                flags = int.from_bytes(tables[at + 6 : at + 8], "little")
+                name_index = int.from_bytes(tables[at + 8 : at + 8 + string_index_size], "little")
+                if flags & _DOTNET_METHOD_STATIC and string_at(name_index) == _DOTNET_MODULE_CCTOR:
+                    return (_DOTNET_TOKEN_METHODDEF << 24) | rid
+            return None
+        table_offset += row_size * row_counts[bit]
+    return None
 
 
 def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:

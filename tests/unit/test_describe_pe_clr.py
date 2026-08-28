@@ -23,6 +23,7 @@ from headless_re_mcp.core.session import (
     SessionRegistry,
     _dotnet_assembly_refs,
     _dotnet_high_entropy_resources,
+    _dotnet_module_initializer,
     _dotnet_pinvokes,
     _dotnet_resource_payloads,
     _pe_authenticode,
@@ -2492,6 +2493,47 @@ class TestDotnetPinvokeImports:
         assert session.metadata["dotnet"]["pinvoke_imports"] == [
             {"name": "Beep", "module": "kernel32.dll"}
         ]
+
+
+class TestDotnetModuleInitializer:
+    """_dotnet_module_initializer reads the <Module>::.cctor token.
+
+    The managed member of the code-before-main family -- the pair to a PE TLS
+    callback, an ELF/Mach-O init function and a WASM start: the static .cctor
+    on TypeDef row 1 the CLR runs at module load, before any entry point,
+    where .NET packers hide their unpacking. None is the honest common answer
+    (most assemblies declare none) and for anything not a walkable managed PE.
+    """
+
+    def test_the_committed_fixture_declares_the_module_cctor(self) -> None:
+        # The fixture's <Module>::.cctor is MethodDef row 1, so its token is
+        # 0x06000001 -- the same row monodis prints the global .cctor from.
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        assert _dotnet_module_initializer(_DOTNET_FIXTURE) == 0x06000001
+
+    def test_an_assembly_with_resources_finds_the_same_initializer(self, tmp_path: Path) -> None:
+        # ManifestResource rows (0x28) sit behind MethodDef (0x06); the extra
+        # rows must not move the <Module> method span the scan walks.
+        path = tmp_path / "resourced.exe"
+        path.write_bytes(_dotnet_with_resources([("payload.bin", b"\x00" * 64)]))
+        assert _dotnet_module_initializer(path) == 0x06000001
+
+    def test_a_native_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "native.exe"
+        path.write_bytes(_native_pe())
+        assert _dotnet_module_initializer(path) is None
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _dotnet_module_initializer(path) is None
+
+    def test_session_over_a_managed_pe_carries_the_initializer_token(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        session = SessionRegistry().create(str(_DOTNET_FIXTURE))
+        assert session.metadata["dotnet"]["module_initializer_token"] == 0x06000001
 
 
 def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path: Path) -> None:
