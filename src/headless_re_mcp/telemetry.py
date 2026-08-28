@@ -242,20 +242,41 @@ def record_tool_call(
     return record
 
 
+# Alert severity picks the record's log level so downstream routing that keys
+# off level -- a second handler that pages on WARNING+, a filter that hides
+# INFO -- sees the urgency the severity field names. An unrecognised severity
+# stays at WARNING: a typo must surface, never be silently demoted below the
+# sink's INFO threshold and dropped.
+_ALERT_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL,
+}
+
+
 def record_alert(
     kind: str,
     *,
     severity: str = "warning",
     fields: dict[str, Any] | None = None,
 ) -> None:
-    """Emit one alert onto the telemetry stream.
+    """Emit one alert onto the telemetry stream at the level its severity names.
 
     Alerts go down the same channel as tool calls so an external collector
     already tailing that log sees them without being told about a second
     endpoint. Nothing here notifies anyone directly: choosing who to wake is the
     operator's, and a service that mails people is a service with credentials.
+
+    The log level tracks ``severity`` rather than being fixed at WARNING: an
+    ``info`` recovery -- event drain back to normal, artifact measurement
+    succeeding again, a provider retry -- must not be logged at the level
+    operators page on, nor contradict the record's own ``severity`` field.
     """
-    _LOGGER.warning(
+    level = _ALERT_LEVELS.get(str(severity).strip().lower(), logging.WARNING)
+    _LOGGER.log(
+        level,
         json.dumps(
             {
                 "event": "alert",
@@ -266,7 +287,7 @@ def record_alert(
             },
             ensure_ascii=False,
             default=str,
-        )
+        ),
     )
 
 

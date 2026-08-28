@@ -5,7 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
+### 修复（telemetry 告警按 severity 落到对应日志级别，不再一律 WARNING）
+
+- `telemetry.py` 的 `record_alert` 此前无论 `severity` 是什么，一律用 `_LOGGER.warning(...)`
+  发出。于是 `severity="info"` 的恢复/重试类告警——`event_drain_recovered`、
+  `artifact_usage_measurement_recovered`、`watchdog` 的 `session_health_recovered`/worker
+  恢复、`provider_retry`——都以 WARNING 级别落盘：既与记录自身的 `severity` 字段自相矛盾，
+  又会触发按级别路由/告警的下游（例如把 WARNING+ 转发到 pager）把一条“恢复正常”的通知
+  当成故障。
+- 现按 severity 映射日志级别（debug/info/warning/error/critical → 对应 logging 级别），
+  用 `_LOGGER.log(level, ...)` 发出。未识别的 severity 仍留在 WARNING：既让拼写错误被看见，
+  又不会被降到 sink 的 INFO 阈值以下而被静默丢弃。telemetry logger 本就设为 INFO 级，故
+  info 级告警照常入库，不会因此丢记录。
+- 新增/加强 `tests/unit/test_telemetry_helpers.py`：`event_drain_recovered`（info）钉死
+  `record.levelno == INFO`（在 INFO 捕获下断言级别，才能抓住旧的固定 WARNING——WARNING≥INFO
+  一样会被捕获，只有钉 levelno 才非空）；未知 severity 钉死留在 WARNING；既有 warning 用例
+  补 `levelno == WARNING` 断言。
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
   `request_workflow_module_refresh` 对未跟踪的模块 key 必须拒绝（抛

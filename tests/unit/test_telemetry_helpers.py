@@ -117,11 +117,57 @@ def test_record_alert_emits_a_structured_warning(caplog: pytest.LogCaptureFixtur
     with caplog.at_level(logging.WARNING, logger="headless_re_mcp.telemetry"):
         telemetry.record_alert("thing_failing", fields={"error": "boom"})
 
-    payload = json.loads(caplog.records[-1].message)
+    record = caplog.records[-1]
+    payload = json.loads(record.message)
     assert payload["event"] == "alert"
     assert payload["kind"] == "thing_failing"
     assert payload["severity"] == "warning"
     assert payload["error"] == "boom"
+    # A warning-severity alert stays at WARNING level.
+    assert record.levelno == logging.WARNING
+
+
+def test_record_alert_logs_an_info_severity_at_info_level(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An info-severity alert must be emitted at INFO, not WARNING.
+
+    Recoveries and retries -- event drain back to normal, artifact measurement
+    succeeding again, a provider retrying -- carry severity="info". The record
+    once went out at a fixed WARNING level regardless, so a routine "back to
+    normal" notice landed at the level operators page on and contradicted its
+    own severity field. Capturing at INFO but asserting the record's level is
+    exactly INFO is what makes this non-vacuous: the old fixed-WARNING code
+    still produced a record here (WARNING >= INFO passes the capture), so only
+    pinning levelno catches the regression.
+    """
+    with caplog.at_level(logging.INFO, logger="headless_re_mcp.telemetry"):
+        telemetry.record_alert(
+            "event_drain_recovered", severity="info", fields={"failed_attempts": 3}
+        )
+
+    record = caplog.records[-1]
+    payload = json.loads(record.message)
+    assert payload["event"] == "alert"
+    assert payload["severity"] == "info"
+    assert payload["failed_attempts"] == 3
+    assert record.levelno == logging.INFO
+
+
+def test_record_alert_keeps_an_unknown_severity_at_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unrecognised severity must stay at WARNING, never be demoted.
+
+    Demoting a typo to DEBUG would push it below the sink's INFO threshold and
+    drop it silently; WARNING keeps it visible so the bad severity is noticed.
+    """
+    with caplog.at_level(logging.INFO, logger="headless_re_mcp.telemetry"):
+        telemetry.record_alert("odd", severity="bogus", fields={})
+
+    record = caplog.records[-1]
+    assert json.loads(record.message)["severity"] == "bogus"
+    assert record.levelno == logging.WARNING
 
 
 def test_instrument_reads_session_id_from_a_positional_argument() -> None:
