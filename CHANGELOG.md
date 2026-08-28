@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（de4dot/NRS/Scylla/VMP/XVLKC 适配器:缺输入泄漏原始异常、数值参数不设防）
+
+- 五个 CLI 适配器(de4dot、NETReactorSlayer、Scylla、VMProtect dumper、XVLKC)在解析输入路径时
+  用 `Path(input_path).expanduser().resolve(strict=True)`。`strict=True` 在输入不存在时直接抛
+  `FileNotFoundError`——抢在下面那句结构化的 `INPUT_NOT_FOUND`(`input_not_found`)检查之前,于是一个
+  本该是 `invalid_params` 的“文件没找到”被泄漏成原始异常/内部错误。改为不带 `strict` 的 `resolve()`,
+  让执行走到 `is_file()` 判定并如实回结构化错误;路径本身仍照常规整。
+- 同时这些适配器把 `timeout`/`max_file_size`/`max_output_size` 直接下发给子进程与截断逻辑,却从不校验:
+  `timeout<=0` 会让子进程无限期挂着、`max_*<=0`(或布尔/非数字)会破坏截断。现在每个适配器在 spawn 前先过
+  `_require_positive_number`/`_require_positive_int`,非正或错类型一律 `INVALID_ARGUMENT` 拒绝(布尔不算整数)。
+  新增 `test_tool_adapter_numeric_bounds.py` 与 `test_xvlkc_adapter_guards.py` 覆盖各适配器的缺输入与数值边界。
+
 ### 修复（NETReactorSlayer 输出别名测试的同款 Windows-only 路径炸裂）
 
 - 与 de4dot 同批落地的 `test_net_reactor_slayer_paths.py::test_output_equal_to_input_is_refused`
