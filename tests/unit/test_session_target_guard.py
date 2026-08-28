@@ -58,10 +58,11 @@ def test_require_binary_explains_a_locator_only_session() -> None:
 
     assert caught.value.code == "target_mismatch"
     assert caught.value.details["actual_target"] == TargetKind.WEB.value
-    # A PE or an APK is the thing that would have a local file.
+    # A PE, an APK or an ELF is the thing that would have a local file.
     assert set(caught.value.details["expected_targets"]) == {
         TargetKind.PE.value,
         TargetKind.APK.value,
+        TargetKind.ELF.value,
     }
 
 

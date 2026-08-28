@@ -120,6 +120,8 @@ class SessionRegistry:
             metadata: dict[str, Any] = {}
             if kind is TargetKind.PE:
                 architecture = detect_pe_architecture(path)
+            elif kind is TargetKind.ELF:
+                architecture = detect_elf_architecture(path)
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             session = Session(
@@ -391,6 +393,8 @@ def classify_target(reference: str | Path) -> TargetKind:
         return TargetKind.PE
     if magic.startswith(b"MZ"):
         return TargetKind.PE
+    if magic.startswith(b"\x7fELF"):
+        return TargetKind.ELF
     if magic.startswith(b"\x00asm"):
         return TargetKind.WEB
     if magic.startswith(b"PK\x03\x04") and _is_android_package(path):
@@ -439,6 +443,31 @@ def describe_apk(path: Path) -> dict[str, Any]:
             ),
         }
     }
+
+
+def detect_elf_architecture(path: Path) -> Architecture | None:
+    """Machine type from the ELF header, or None for one this tool does not model.
+
+    Unlike detect_pe_architecture, this never raises: the Architecture enum only
+    spans x86 and x86-64, but an ELF for another machine (ARM, AArch64, RISC-V)
+    still opens -- radare2 and Ghidra analyse it -- and simply has no PE-style
+    machine type to report.
+    """
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(20)
+    except OSError:
+        return None
+    if len(header) < 20 or header[:4] != b"\x7fELF":
+        return None
+    e_machine = int.from_bytes(
+        header[18:20], "little" if header[5] == 1 else "big"
+    )
+    if e_machine == 0x03:  # EM_386
+        return Architecture.X86
+    if e_machine == 0x3E:  # EM_X86_64
+        return Architecture.X64
+    return None
 
 
 def detect_pe_architecture(path: Path) -> Architecture:
