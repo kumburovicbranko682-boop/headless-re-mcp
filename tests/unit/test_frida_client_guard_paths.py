@@ -208,6 +208,21 @@ def test_client_marks_itself_available_when_frida_imports(
     assert client._frida is fake
 
 
+def test_client_marks_itself_unavailable_when_frida_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A None entry in sys.modules makes ``import frida`` raise, the same as a
+    # real missing install. Construction must swallow that and degrade to
+    # unavailable (so callers get capability_unavailable) rather than letting the
+    # ImportError escape the constructor.
+    monkeypatch.setitem(sys.modules, "frida", None)
+
+    client = FridaClient()
+
+    assert client.available is False
+    assert client._frida is None
+
+
 # ----------------------------------------------------------------------
 # attach (local) and its authorization guards.
 # ----------------------------------------------------------------------
@@ -291,6 +306,30 @@ def test_modules_reads_the_dict_shaped_enumeration() -> None:
     assert payload["total"] == 30
     assert payload["offset"] == 0
     assert payload["has_more"] is True
+
+
+def test_modules_tolerates_the_bare_list_older_script_shape() -> None:
+    """An older injected script returns a bare list, not {modules, total}.
+
+    modules keeps reading that shape rather than raising: with no total it treats
+    the window as the tail (total = offset + count) so has_more stays False, the
+    degraded-shape fallback the else branch documents. This is the reason modules
+    (unlike exports, which always expects the dict) tolerates a non-dict payload.
+    """
+    api = _Api(
+        modules=lambda offset, cap: [
+            {"name": "a", "base": "0x1", "size": 1, "path": "/a"},
+            {"name": "b", "base": "0x2", "size": 2, "path": "/b"},
+        ]
+    )
+    client = _local_client(_LocalFrida(session=_Session(api=api)))
+
+    payload = client.modules(1, allowed_pid=1, limit=5)
+
+    assert payload["count"] == 2
+    assert payload["total"] == 2
+    assert payload["offset"] == 0
+    assert payload["has_more"] is False
 
 
 def test_modules_offset_pages_past_a_filled_limit() -> None:

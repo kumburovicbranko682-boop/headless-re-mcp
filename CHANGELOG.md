@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（补齐 FridaClient 两条退化路径的覆盖：frida 缺失时的构造降级、modules 的旧脚本裸列表回退）
+
+- `FridaClient.__init__` 的 `import frida` 失败分支（缺 frida 时降级为 unavailable，而非让 ImportError 逸出
+  构造函数）此前只测了成功分支；新增用 `sys.modules["frida"]=None` 触发 ImportError 的用例，断言
+  `available is False`、`_frida is None`。另补 `modules` 的旧注入脚本裸列表形态（返回 list 而非
+  `{modules, total}`）回退分支：无 total 时按尾部处理（total = offset + count、has_more False），这也正是
+  modules 容忍非 dict 载荷、而 exports 始终要求 dict 的原因。两处均为 hermetic 单测，把该文件相关退化路径
+  补到覆盖。
+
 ### 修复（frida.exports 报 has_more 却没有 offset，翻不到第一页之后的导出）
 
 - 与之前修的 frida.modules / frida.applications 同一个缺陷：`frida.exports` 只回 `count`/`has_more`（游标式
