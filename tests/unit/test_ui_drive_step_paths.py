@@ -183,6 +183,20 @@ def test_wait_parent_defaults_from_root_and_last(
     assert [call["parent_hwnd"] for call in calls] == [11, 22, 33]
 
 
+@pytest.mark.parametrize("field", ["timeout", "poll_interval"])
+@pytest.mark.parametrize("bad", ["soon", None, {}, [1], 10**400])
+def test_wait_rejects_a_non_numeric_deadline_before_calling_out(
+    monkeypatch: pytest.MonkeyPatch, field: str, bad: Any
+) -> None:
+    """A caller step field reaches float() verbatim; a non-numeric one used to
+    escape the drive loop as a workflow fault, not this invalid_params."""
+    calls = _capture_wait(monkeypatch, {"matched": False, "window": None})
+    with pytest.raises(UiPidBoundaryError) as info:
+        run_drive_step({"action": "wait", field: bad}, allowed_pids=_PIDS, handles={})
+    assert info.value.code == "invalid_params"
+    assert calls == []
+
+
 # --------------------------------------------------------------------------
 # run_drive_step: hwnd-bound actions
 # --------------------------------------------------------------------------
@@ -314,6 +328,48 @@ def test_invoke_forwards_the_invoke_action(monkeypatch: pytest.MonkeyPatch) -> N
 
     default = run_drive_step({"action": "invoke", "hwnd": 4}, allowed_pids=_PIDS, handles={})
     assert default["action"] == "click"
+
+
+@pytest.mark.parametrize("bad", ["soon", None, {}, [1], float("inf"), float("nan")])
+def test_a_non_numeric_timeout_ms_is_a_bad_parameter(
+    monkeypatch: pytest.MonkeyPatch, bad: Any
+) -> None:
+    """timeout_ms took int() verbatim; a non-numeric one (and an inf/NaN float,
+    which int() refuses) escaped the drive loop instead of naming the bad
+    parameter. A merely large int is clamped, not rejected -- see the bounds
+    test below."""
+    seen: list[int] = []
+    monkeypatch.setattr(
+        ui_drive,
+        "click_hwnd",
+        lambda hwnd, allowed_pids, *, timeout_ms: seen.append(timeout_ms) or {},
+    )
+    with pytest.raises(UiPidBoundaryError) as info:
+        run_drive_step(
+            {"action": "click", "hwnd": 9, "timeout_ms": bad},
+            allowed_pids=_PIDS,
+            handles={},
+        )
+    assert info.value.code == "invalid_params"
+    assert seen == []
+
+
+def test_timeout_ms_is_bounded_to_a_sane_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A huge timeout_ms becomes a ~49-day SendMessageTimeout via c_uint, and a
+    value past 2**32 raises inside the send; clamp both extremes here."""
+    seen: list[int] = []
+    monkeypatch.setattr(
+        ui_drive,
+        "click_hwnd",
+        lambda hwnd, allowed_pids, *, timeout_ms: seen.append(timeout_ms) or {},
+    )
+    run_drive_step(
+        {"action": "click", "hwnd": 9, "timeout_ms": 10**9}, allowed_pids=_PIDS, handles={}
+    )
+    run_drive_step(
+        {"action": "click", "hwnd": 9, "timeout_ms": -5}, allowed_pids=_PIDS, handles={}
+    )
+    assert seen == [ui_drive._MAX_STEP_TIMEOUT_MS, 0]
 
 
 def test_an_unknown_action_with_a_target_still_fails_closed() -> None:
