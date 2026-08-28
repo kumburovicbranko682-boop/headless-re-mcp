@@ -130,6 +130,9 @@ def test_web_network_list_puts_the_page_in_requests_not_type(
     # started_at (the captured request epoch) rides on a row when CDP reported
     # wallTime, so the field the HAR export reads must be named here too.
     assert "started_at" in doc
+    # timings (measured send/wait ms) rides on a row the same way and feeds the
+    # HAR's per-entry timings, so the catalog must name it too.
+    assert "timings" in doc
 
 
 def test_web_event_metadata_is_bounded_before_entering_capture_rings() -> None:

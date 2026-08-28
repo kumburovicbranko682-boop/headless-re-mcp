@@ -188,6 +188,25 @@ def test_web_capture_chain_records_real_traffic(site: str) -> None:
             expected = datetime.fromtimestamp(started_at, UTC).isoformat()
             assert by_url[site + "/data.json"]["startedDateTime"] == expected
 
+            # Real per-phase timings, derived from CDP's response.timing the way
+            # Chrome's own HAR export does: the fetch row must carry measured
+            # send/wait durations (ms), and they must thread through to the HAR
+            # entry's timings with receive left at the spec's -1 (loadingFinished
+            # is not wired) and time equal to their non-negative sum. Measured
+            # against real Chromium, where a synthetic ResourceTiming cannot
+            # reach; a regression that dropped the timing object would revert
+            # every entry to time 0 / all -1 and fail here.
+            row_timings = row.get("timings")
+            assert isinstance(row_timings, dict), row
+            assert row_timings.get("wait", -1) >= 0, row_timings
+            assert all(value >= 0 for value in row_timings.values()), row_timings
+            har_timings = by_url[site + "/data.json"]["timings"]
+            assert har_timings["send"] == row_timings.get("send", -1)
+            assert har_timings["wait"] == row_timings["wait"]
+            assert har_timings["receive"] == -1, har_timings
+            measured = [v for v in har_timings.values() if v >= 0]
+            assert by_url[site + "/data.json"]["time"] == round(sum(measured), 3)
+
             # screenshot must be a real PNG, not merely a file that exists.
             shot = service.web_screenshot(session_id)
             assert shot.ok, shot.error

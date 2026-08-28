@@ -33,7 +33,7 @@ from headless_re_mcp.backends.common.har import (
 from headless_re_mcp.backends.proxy import client as proxy_client
 from headless_re_mcp.backends.proxy.client import ProxyBackend, ProxyError, _FlowRecorder
 from headless_re_mcp.backends.web import client as web_client
-from headless_re_mcp.backends.web.client import WebBackend, WebError
+from headless_re_mcp.backends.web.client import WebBackend, WebError, _cdp_phase_timings
 
 # Mandatory members per the HAR 1.2 spec. A consumer that finds any of these
 # missing rejects the whole log, which is exactly the interop break this file
@@ -492,6 +492,86 @@ def test_web_har_export_uses_the_captured_request_time(
     )
     # The row with no wallTime still produced a valid (fallback) instant.
     datetime.fromisoformat(stamps["https://example.com/2"])
+
+
+def test_cdp_phase_timings_derives_send_and_wait_and_drops_junk() -> None:
+    """CDP ResourceTiming offsets become HAR send/wait; -1 or backwards drop out.
+
+    The offsets are ms ticks relative to requestTime, so a difference is already
+    a duration -- send is sendEnd-sendStart, wait is receiveHeadersEnd-sendEnd,
+    the two phases responseReceived can measure. receive needs loadingFinished
+    (unwired) so it is never produced here. A -1 "not applicable" endpoint or a
+    backwards pair must be dropped, not shipped as a negative duration that
+    would corrupt the HAR time sum.
+    """
+    good = _cdp_phase_timings(
+        {"sendStart": 1.0, "sendEnd": 3.5, "receiveHeadersEnd": 40.0}
+    )
+    assert good == {"send": 2.5, "wait": 36.5}
+    assert "receive" not in good
+
+    # sendEnd present but receiveHeadersEnd -1 (not applicable): only send.
+    assert _cdp_phase_timings(
+        {"sendStart": 0.0, "sendEnd": 2.0, "receiveHeadersEnd": -1}
+    ) == {"send": 2.0}
+    # Backwards pair (receiveHeadersEnd before sendEnd) drops wait, keeps send.
+    assert _cdp_phase_timings(
+        {"sendStart": 0.0, "sendEnd": 5.0, "receiveHeadersEnd": 3.0}
+    ) == {"send": 5.0}
+    # No timing object at all (cached response): nothing measured.
+    assert _cdp_phase_timings(None) == {}
+    assert _cdp_phase_timings({}) == {}
+
+
+def test_web_har_export_carries_the_measured_phase_timings(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A row's measured send/wait must reach the HAR entry's timings and time.
+
+    on_response derives the phases from CDP's response.timing and stores them on
+    the request row; the export passes them to har_entry, which replaces the -1
+    sentinel and reports time as the sum -- the same pipeline the proxy HAR uses
+    from mitmproxy timestamps. A row with no measured phase keeps the historical
+    all -1 / time 0.
+    """
+
+    class _Handle:
+        def __init__(self) -> None:
+            self.lock = Lock()
+            self.requests = {
+                "0": {
+                    "requestId": "0",
+                    "url": "https://example.com/timed",
+                    "method": "GET",
+                    "resourceType": "Document",
+                    "status": 200,
+                    "mimeType": "text/html",
+                    "timings": {"send": 1.5, "wait": 18.0},
+                },
+                "1": {
+                    "requestId": "1",
+                    "url": "https://example.com/untimed",
+                    "method": "GET",
+                    "resourceType": "Script",
+                    "status": 200,
+                    "mimeType": "text/javascript",
+                },
+            }
+
+    backend = WebBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: _Handle())
+    out = tmp_path / "capture.har"
+    backend.har_export("s", out)
+    doc = _assert_valid_har(out.read_text(encoding="utf-8"))
+    entries = {e["request"]["url"]: e for e in doc["log"]["entries"]}
+    timed = entries["https://example.com/timed"]
+    assert timed["timings"]["send"] == 1.5
+    assert timed["timings"]["wait"] == 18.0
+    assert timed["timings"]["receive"] == -1
+    assert timed["time"] == 19.5
+    untimed = entries["https://example.com/untimed"]
+    assert untimed["timings"] == {"send": -1, "wait": -1, "receive": -1}
+    assert untimed["time"] == 0
 
 
 def test_web_har_export_is_bounded_by_the_capture_cap(

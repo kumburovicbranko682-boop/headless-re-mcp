@@ -79,9 +79,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         limit is not read as the whole capture, and ring eviction is
         visible. A request row also carries started_at (the unix epoch, in
         seconds, when CDP saw the request begin) when the browser reported
-        it -- the same instant the HAR export uses for startedDateTime.
-        metadata_truncated marks bounded oversized request fields.
-        There is no type field.
+        it -- the same instant the HAR export uses for startedDateTime. A row
+        also carries timings (measured send/wait durations in milliseconds,
+        from CDP's response timing; phases it could not measure are absent) --
+        the same values the HAR export puts in each entry's timings, whose
+        non-negative sum is that entry's time. metadata_truncated marks
+        bounded oversized request fields. There is no type field.
         """
         return _dump(analysis.web_network_list(session_id, offset=offset, limit=limit))
 

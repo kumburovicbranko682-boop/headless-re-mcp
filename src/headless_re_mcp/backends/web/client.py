@@ -92,6 +92,40 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
+def _cdp_phase_timings(timing: Any) -> JsonObject:
+    """HAR send/wait (ms) from CDP's ResourceTiming, the way Chrome's HAR does.
+
+    ``Network.responseReceived`` carries ``response.timing``, whose ``*Start`` /
+    ``*End`` members are millisecond ticks relative to ``requestTime`` -- so a
+    difference between two of them is already a duration in ms. ``send`` is the
+    request write (``sendEnd - sendStart``) and ``wait`` is the server's think
+    time until the first response header (``receiveHeadersEnd - sendEnd``), the
+    two phases this event alone can measure and exactly what Chrome DevTools'
+    own HAR export derives from this object. ``receive`` (body download) needs
+    ``loadingFinished``, which this capture does not wire, so it stays the HAR's
+    -1 "not measured" sentinel rather than being guessed. Only a phase whose
+    both offsets are present and ordered is emitted; a -1 "not applicable"
+    endpoint or a backwards pair is dropped rather than shipped as a negative
+    duration.
+    """
+    if not isinstance(timing, dict):
+        return {}
+    phases: JsonObject = {}
+
+    def measure(name: str, start: Any, end: Any) -> None:
+        if (
+            isinstance(start, (int, float))
+            and isinstance(end, (int, float))
+            and start >= 0
+            and end >= start
+        ):
+            phases[name] = round(float(end) - float(start), 3)
+
+    measure("send", timing.get("sendStart"), timing.get("sendEnd"))
+    measure("wait", timing.get("sendEnd"), timing.get("receiveHeadersEnd"))
+    return phases
+
+
 def _clip_console_text(params: JsonObject) -> tuple[str, bool]:
     """Join console args, stopping at ``_MAX_CONSOLE_TEXT``.
 
@@ -499,11 +533,18 @@ class WebBackend:
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            # CDP hands the real per-phase durations in response.timing; keep the
+            # ones this event can measure so the HAR export reports them instead
+            # of the -1 "not measured" sentinel, the same fidelity the proxy HAR
+            # gets from mitmproxy's flow timestamps.
+            timings = _cdp_phase_timings(resp.get("timing"))
             with handle.lock:
                 entry = handle.requests.get(str(params.get("requestId")))
                 if entry is not None:
                     entry["status"] = resp.get("status")
                     entry["mimeType"] = mime_type
+                    if timings:
+                        entry["timings"] = timings
                     if mime_truncated:
                         entry["metadata_truncated"] = True
 
@@ -838,6 +879,7 @@ class WebBackend:
                     mime_type=e.get("mimeType") or "",
                     resource_type=e.get("resourceType"),
                     started_date_time=iso_from_epoch(e.get("started_at")),
+                    timings_ms=e.get("timings"),
                 )
                 for e in handle.requests.values()
             ]
