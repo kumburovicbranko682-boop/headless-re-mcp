@@ -619,6 +619,34 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_start(path))
 
+    @tools.tool(name="wasm.opcodes")
+    def wasm_opcodes(path: str) -> dict[str, Any]:
+        """Tally a WebAssembly module's instruction mix by family, wabt-free.
+
+        A "what does this module do" fingerprint: every function body in the
+        code section is walked in pure Python -- no wabt needed -- and each
+        opcode is bucketed into a family, so a glance says whether a module is
+        memory-heavy, SIMD-accelerated, call-dense or plain arithmetic without
+        disassembling it (pair with wasm.calls for the call graph and
+        wasm.features for the proposals declared). The families are control,
+        call, call_indirect, parametric, variable, table, memory, reference,
+        numeric, simd and atomic; categories carries only the families present,
+        each with a count, sorted by count then name. Unlike the listing tools
+        this is an aggregate and does not page. It also reports total_functions
+        (bodies in the code section), decoded_functions (those walked to the end
+        -- a body that hits an opcode outside the walker's table, e.g. a GC
+        proposal instruction, is abandoned but its opcodes up to that point are
+        still counted, so decoded_functions < total_functions signals a partial
+        tally) and instruction_count (opcodes tallied in total). Answers with
+        has_code_section (false for a module with no code section -- then
+        categories is empty and the counts are 0, not an error); scan_capped is
+        true when the module has more functions than the walk ceiling, and
+        truncated when the section itself is malformed. A file that is not a
+        WebAssembly module is refused as invalid_params, one over 16 MiB as
+        too_large.
+        """
+        return _dump(analysis.wasm_opcodes(path))
+
     @tools.tool(name="wasm.strings")
     def wasm_strings(
         path: str,

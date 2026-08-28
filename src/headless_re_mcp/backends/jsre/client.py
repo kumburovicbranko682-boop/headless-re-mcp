@@ -204,6 +204,11 @@ _WASM_OPS_ONE_LEB = frozenset(
 _MAX_WASM_CALLS_COLLECT = 50000
 _MAX_WASM_CALLS_PAGE = 1000
 _MAX_WASM_CALLEES = 100
+# wasm.opcodes tallies each body's instructions into families (control, memory,
+# numeric, simd, ...) for a "what does this module do" fingerprint. It reuses
+# the wasm.calls walker's immediate layout, so it stops walking after this many
+# bodies (scan_capped) just as wasm.calls stops collecting.
+_MAX_WASM_OPCODES_FUNCS = 50000
 # wasm.callers is the reverse of wasm.calls: given a target function index it
 # walks every body (via _walk_body) and reports the functions that directly
 # call it -- the "xrefs to this function" view. A body the walker cannot fully
@@ -1860,6 +1865,112 @@ def _walk_body(code: bytes) -> tuple[list[int], int, int, bool]:
     return callees, direct, indirect, True
 
 
+def _wasm_opcode_category(op: int, sub: int | None) -> str:
+    """Bucket one opcode into an instruction family for the histogram.
+
+    Only opcodes the walker already advanced past reach here, so the trailing
+    fall-through is exactly the control-flow set (block/loop/if/br/return and
+    br_on_null); anything the walker cannot decode never gets classified.
+    """
+    if op in (0x10, 0x12, 0x14, 0x15):  # call / return_call / call_ref
+        return "call"
+    if op in (0x11, 0x13):  # call_indirect / return_call_indirect
+        return "call_indirect"
+    if op in (0x1A, 0x1B, 0x1C):  # drop / select / select t
+        return "parametric"
+    if 0x20 <= op <= 0x24:  # local.*/global.*
+        return "variable"
+    if op in (0x25, 0x26):  # table.get / table.set
+        return "table"
+    if 0x28 <= op <= 0x40:  # loads/stores, memory.size / memory.grow
+        return "memory"
+    if op in (0xD0, 0xD1, 0xD2, 0xD4):  # ref.null / is_null / func / as_non_null
+        return "reference"
+    if op == 0xFC:
+        if sub is not None and 8 <= sub <= 11:  # bulk memory init/copy/fill
+            return "memory"
+        if sub is not None and 12 <= sub <= 17:  # table init/copy/grow/size/fill
+            return "table"
+        return "numeric"  # trunc_sat 0..7
+    if op == 0xFD:
+        return "simd"
+    if op == 0xFE:
+        return "atomic"
+    if 0x41 <= op <= 0xC4:  # consts, comparisons, arithmetic, conversions
+        return "numeric"
+    return "control"
+
+
+def _histogram_body(code: bytes) -> tuple[dict[str, int], int, bool]:
+    """Tally one function body's opcodes by family (best-effort).
+
+    Mirrors _walk_body's immediate layout but counts categories instead of
+    collecting calls. Returns (counts, instructions, decoded); on an opcode the
+    walker cannot decode the body is abandoned (decoded False) with the tally so
+    far kept, so a partial body still contributes, and the caller resumes at the
+    next size-delimited body.
+    """
+    counts: dict[str, int] = {}
+    total = 0
+    try:
+        declcount, pos = _read_uleb(code, 0)
+        for _ in range(declcount):
+            _n, pos = _read_uleb(code, pos)
+            pos += 1  # the declared valtype
+        if pos > len(code):
+            raise _WasmParseError("locals run past the body")
+        while pos < len(code):
+            op = code[pos]
+            pos += 1
+            sub: int | None = None
+            if op in _WASM_OPS_NO_IMMEDIATE:
+                pass
+            elif op in _WASM_OPS_ONE_LEB or op in (0x10, 0x12):  # +call/return_call
+                pos = _skip_leb(code, pos)
+            elif op in (0x11, 0x13):  # call_indirect variants: typeidx + tableidx
+                pos = _skip_leb(code, pos)
+                pos = _skip_leb(code, pos)
+            elif op == 0x0E:  # br_table
+                n, pos = _read_uleb(code, pos)
+                for _ in range(n + 1):
+                    pos = _skip_leb(code, pos)
+            elif op == 0x1C:  # select t*
+                n, pos = _read_uleb(code, pos)
+                pos += n
+            elif 0x28 <= op <= 0x3E:  # loads/stores: memarg
+                pos = _skip_leb(code, pos)
+                pos = _skip_leb(code, pos)
+            elif op == 0x43:  # f32.const
+                pos += 4
+            elif op == 0x44:  # f64.const
+                pos += 8
+            elif op == 0xFC:
+                sub, pos = _read_uleb(code, pos)
+                pos = _skip_misc_immediates(code, sub, pos)
+            elif op == 0xFD:
+                sub, pos = _read_uleb(code, pos)
+                pos = _skip_simd_immediates(code, sub, pos)
+            elif op == 0xFE:  # atomics
+                sub, pos = _read_uleb(code, pos)
+                if sub == 3:
+                    pos += 1
+                elif sub <= 0x4E:
+                    pos = _skip_leb(code, pos)
+                    pos = _skip_leb(code, pos)
+                else:
+                    raise _WasmParseError(f"unknown atomic subop {sub}")
+            else:  # 0xFB GC prefix and anything newer
+                raise _WasmParseError(f"unknown opcode {op:#x}")
+            if pos > len(code):
+                raise _WasmParseError("instruction runs past the body")
+            category = _wasm_opcode_category(op, sub)
+            counts[category] = counts.get(category, 0) + 1
+            total += 1
+    except _WasmParseError:
+        return counts, total, False
+    return counts, total, True
+
+
 def parse_wasm_calls(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
     """Extract each function's direct call targets (the call graph), wabt-free.
 
@@ -2033,6 +2144,77 @@ def parse_wasm_callers(
         "total": len(rows),
         "offset": start,
         "has_more": start + len(window) < len(rows),
+        "scan_capped": scan_more,
+        "truncated": truncated,
+    }
+
+
+def parse_wasm_opcodes(path: Path) -> JsonObject:
+    """Tally the code section's instruction mix by family, wabt-free.
+
+    A "what does this module do" fingerprint: every function body is walked in
+    pure Python -- no wabt needed -- and each opcode is bucketed into a family,
+    so a glance says whether a module is memory-heavy, SIMD-accelerated,
+    call-dense or plain arithmetic without disassembling it. The families are
+    control, call, call_indirect, parametric, variable, table, memory,
+    reference, numeric, simd and atomic; categories carries only the families
+    present, each with a count, sorted by count then name. It also reports
+    total_functions (bodies in the code section), decoded_functions (those
+    walked to the end -- a body that hits an opcode outside the walker's table,
+    e.g. a GC-proposal instruction, is abandoned but its opcodes up to that
+    point are still tallied, so decoded_functions < total_functions signals a
+    partial count) and instruction_count (opcodes tallied in total). This is an
+    aggregate, so unlike wasm.calls it does not page. Answers with
+    has_code_section (false for a module with no code section -- then categories
+    is empty and the counts are 0, not an error); scan_capped is true when the
+    module has more functions than the walk ceiling, and truncated when the
+    section itself is malformed (the tally so far is still returned). A file
+    that is not a WebAssembly module is refused as invalid_params, one over 16
+    MiB as too_large.
+    """
+    resolved = _require_existing_file(path, missing="input file not found")
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise JsReError("backend_error", f"input unreadable: {exc}", path=str(resolved)) from exc
+    if raw[:4] != _WASM_MAGIC:
+        raise JsReError("invalid_params", "not a WebAssembly module", path=str(resolved))
+    bodies, truncated = _collect_section_bodies(raw, frozenset({_WASM_CODE_SECTION_ID}))
+    has_code_section = _WASM_CODE_SECTION_ID in bodies
+    totals: dict[str, int] = {}
+    total_functions = 0
+    decoded_functions = 0
+    instruction_count = 0
+    scan_more = False
+    if has_code_section:
+        body = bodies[_WASM_CODE_SECTION_ID]
+        try:
+            count, pos = _read_uleb(body, 0)
+            for _ in range(count):
+                if total_functions >= _MAX_WASM_OPCODES_FUNCS:
+                    scan_more = True
+                    break
+                size, pos = _read_uleb(body, pos)
+                if pos + size > len(body):
+                    raise _WasmParseError("function body runs past the section")
+                counts, n, decoded = _histogram_body(body[pos : pos + size])
+                pos += size
+                total_functions += 1
+                if decoded:
+                    decoded_functions += 1
+                instruction_count += n
+                for category, hits in counts.items():
+                    totals[category] = totals.get(category, 0) + hits
+        except _WasmParseError:
+            truncated = True
+    ordered = sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))
+    categories = [{"category": name, "count": hits} for name, hits in ordered]
+    return {
+        "categories": categories,
+        "has_code_section": has_code_section,
+        "total_functions": total_functions,
+        "decoded_functions": decoded_functions,
+        "instruction_count": instruction_count,
         "scan_capped": scan_more,
         "truncated": truncated,
     }

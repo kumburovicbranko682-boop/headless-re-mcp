@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **288（171 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **289（172 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -796,6 +796,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   值得注意),模块自定义函数为 "local",无 start 时为 null(索引可与 `wasm.functions` 联查名字,再用
   `wasm.calls` 看它接着调用了什么);`imported_count` 作为解读索引所需的上下文一并给出。`truncated` 在段
   畸形时为 true。非 WebAssembly 文件按 `invalid_params` 拒绝,超过 16 MiB 按 `too_large` 拒绝。
+- `wasm.opcodes`：把 code 段的指令按族统计——"这个模块到底在干什么"的指纹,纯 Python、**不需要 wabt**。
+  逐个函数体复用 `wasm.calls` 的走查器,把每条 opcode 归入 control/call/call_indirect/parametric/variable/
+  table/memory/reference/numeric/simd/atomic 之一,一眼看出模块是内存密集、SIMD 加速、调用密集还是纯算术
+  (与 `wasm.calls` 的调用图、`wasm.features` 声明的提案互补)。`categories` 只列出现的族、各带计数、按计数再
+  按名排序。与列表类工具不同这是聚合、不分页。另报 `total_functions`(code 段函数体数)、`decoded_functions`
+  (完整走完的——命中走查器表外 opcode(如 GC 提案指令)的函数体会中止,但其此前的 opcode 仍计入,故
+  `decoded_functions < total_functions` 表示部分统计)与 `instruction_count`(累计 opcode 数)。返回
+  `has_code_section`(无 code 段时为 false——此时 `categories` 空、计数为 0,非错误);函数数超过走查上限时
+  `scan_capped` 为真,段本身畸形时 `truncated` 为真。非 WebAssembly 文件按 `invalid_params` 拒绝,超过
+  16 MiB 按 `too_large` 拒绝。
 - **动态**：`web.*` 12 个工具，Playwright 驱动 CDP，采集网络请求、console、已解析脚本与
   WASM 模块、DOM 快照、截图与 HAR。大响应体（响应正文、脚本源码）落盘为产物并回引用，
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。

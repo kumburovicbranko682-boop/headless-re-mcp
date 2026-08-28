@@ -29,6 +29,7 @@ from headless_re_mcp.backends.jsre import (
     parse_wasm_imports,
     parse_wasm_memory,
     parse_wasm_names,
+    parse_wasm_opcodes,
     parse_wasm_producers,
     parse_wasm_sections,
     parse_wasm_start,
@@ -357,6 +358,15 @@ class JsReAnalysisMixin:
     def wasm_start(self, path: str) -> Result[JsonObject]:
         try:
             data = parse_wasm_start(Path(path))
+            return _success(data, backend="jsre")
+        except JsReError as exc:
+            return _failure(_as_rpc(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def wasm_opcodes(self, path: str) -> Result[JsonObject]:
+        try:
+            data = parse_wasm_opcodes(Path(path))
             return _success(data, backend="jsre")
         except JsReError as exc:
             return _failure(_as_rpc(exc))
