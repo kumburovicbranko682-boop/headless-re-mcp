@@ -52,10 +52,20 @@ def measure_usage(root: Path, *, file_limit: int = USAGE_FILE_LIMIT) -> DiskUsag
     """
     total = 0
     files = 0
+    scanned = 0
     try:
         for path in root.rglob("*"):
-            if files >= file_limit:
+            # Bound the walk by entries examined, not by files found. rglob
+            # yields directories too (and entries whose stat fails), and this
+            # stats every one, so a files-only ceiling never trips on a tree
+            # that is mostly -- or entirely -- empty directories: a hostile or
+            # runaway producer could then make the walk unbounded, defeating the
+            # cap whose whole point is keeping it off a health probe's critical
+            # path. Directories count toward the ceiling as well, and rglob is
+            # lazy, so returning here actually stops the descent.
+            if scanned >= file_limit:
                 return DiskUsage(bytes=total, files=files, truncated=True)
+            scanned += 1
             try:
                 stat = path.stat()
             except OSError:

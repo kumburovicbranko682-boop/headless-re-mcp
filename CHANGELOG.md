@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（measure_usage 的遍历上限现在按「检查过的条目」计，而非「找到的文件」）
+
+- `core/retention.py` 的 `measure_usage` 用 `if files >= file_limit` 给磁盘遍历封顶，但
+  `root.rglob("*")` 也会产出目录（以及 stat 失败的条目），而只有文件才让 `files` 自增。于是
+  一棵几乎（或全是）空目录的树永远触不到上限——文件数一直是 0——该遍历（对每个条目都 stat）
+  就会跑遍整棵树，正好破坏了这个上限存在的意义：别让它成为健康探针关键路径上最慢的一环。
+  恶意或失控的生产者据此可让遍历无界。改为按「检查过的条目」计数封顶（目录、stat 失败者也
+  计入），且 rglob 惰性求值，提前 return 会真正停止下探。文件的字节/计数语义不变，正常文件多
+  的树几乎无差别。此前该磁盘遍历上限无任何用例覆盖（被引用的
+  `test_retention_measure_usage.py` 并不存在），故新建该文件，钉死空目录洪泛仍会截断、正常
+  小树不被误截、文件同样计入上限三条（去掉修复即因空目录洪泛返回 truncated=False 抛断言，
+  非空覆盖）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
