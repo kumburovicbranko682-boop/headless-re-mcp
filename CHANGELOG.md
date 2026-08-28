@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -541,6 +541,25 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不撑爆上下文。**刻意不提供 `web.evaluate`**——它是浏览器侧的 `dynamic.command`。
 - **抓包**：`proxy.*` 8 个工具，mitmproxy 以 addon 形式跑在独立线程，Web 与 Android 共用，
   含 `proxy.ca.install_android`。
+
+### 新增（HAR 离线读取，闭合导出/读取往返）
+
+- 新增 `web.har.inspect`：纯 stdlib 离线读取会话绑定的 `.har` 文件并汇总其网络日志，无需浏览器、
+  代理或任何 CLI。此前两个导出器（`web.har.export`、`proxy.export_har`）**只写不读**——分析者手里
+  拿着一份 `.har`（本工具导出的、Chrome DevTools 存的、或 mitmproxy 抓的）却没有离线追问「它连了
+  哪些 host、哪些请求失败、那条 URL 从哪来」的办法，除非再把浏览器或代理拉起来。`.har` 本就按后缀
+  归类为 Web 目标并能 `session.create` 建会话，但在此之前那种会话是死路一条（建得出、用不上）；
+  现在它是一等可读目标。
+- 汇总面按已有分页采集列表的诚实约定给出：`entries`（每条含 method/url/host/status/mime_type/
+  response_size/started，采集记了 `_resourceType` 时带上）、`count/total/offset/limit/has_more`
+  （填满一页不等于读完整个日志）、`entries_total`（过滤前总数），外加**描述整份（已过滤）日志**而非
+  当前页的 host 直方图（`hosts` + `hosts_truncated` + `distinct_hosts`）、`version`、`creator`
+  与回显的 `filters`。可选 `host`（精确 host[:port]）、`method`（大小写不敏感）、`status`（精确）
+  过滤在同一遍扫描里完成，过长的 URL/mime 字段有界。
+- 坏输入是精确信封而非内部事故：非 JSON 或非 HAR 1.2 日志报 `invalid_params`，超过 64 MiB 上限报
+  `too_large`，而挂在远程 URL 上的实时 Web 会话（没有本地文件）由 `require_binary` 报
+  `target_mismatch`。新增真实 MCP stdio 端到端 Gate（`test_web_har_inspect_gate.py`，无需任何后端，
+  始终执行）与 `test_har_inspect.py` 单测覆盖以上契约。
 
 ### 修复（HAR 导出规范与边界）
 
