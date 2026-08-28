@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Frida-on-Android 活体门：自建 APK → spawn → 枚举出自己那个类和方法）
+
+移动动态分析这条线过去只有主机侧（本地 pid）的 frida 门，从没对真 Android 设备验证过。新增
+`tests/integration/test_frida_android_gate.py`：对真设备/模拟器（需 frida-server 在线），测试期用
+javac/d8/aapt2/zipalign/apksigner 现场构一个带**已知类与方法**的可启动 APK，装上去、经 frida
+`spawn` 起进程，然后断言 frida 恰好枚举到那个自建的 `com.example.gateapp.MainActivity`、以及它的
+`headlessCompute(int,int)`——把 `frida.device.connect / applications / spawn / java.classes /
+java.methods` 整条链端到端跑通。
+
+这条门同时是上面那个 frida<17 修复的回归哨兵：因为它真的驱动了 `Java` 桥。已实测：配 frida 16.7.19
+它通过；换 frida 17.17.0（spawn 仍成功、但 Java 枚举以 ReferenceError 失败）它**失败**——正好逮住
+这个 bug。
+
+skip ≠ pass：frida 缺失、无设备、Android 构建工具不全、或设备上 frida-server 不可达时，均干净
+skip（连不上时先做一次 applications 前探，把「server 没起」判成 skip 而非误报失败）。可通过
+`HEADLESS_RE_FRIDA_SERVER` 指向 frida-server 二进制，让门自己 push/起服务。
+
 ### 修复（把 frida 封顶到 <17：17.0 移除了内建 Java/ObjC 桥，会让所有 Java 设备操作直接报错）
 
 `android` extra 原本写的是 `frida>=16.5` 无上界，于是默认安装会拉到 frida 17.x。而 frida 17.0 把
