@@ -729,3 +729,79 @@ def test_session_assembly_identity_agrees_with_monodis(tmp_path: Path) -> None:
         assert facts["public_key_token"] is None
     finally:
         service.close_all()
+
+
+# monodis --typedef prints each row's flags too; visibility is the low three
+# bits (ECMA-335 II.23.1.15) and 1 is Public -- Mono's own decode of the same
+# bit the session reader tests.
+_TYPEDEF_FLAGS_RE = re.compile(
+    r"^\d+:\s+(.+?)\s+\(flist=\d+, mlist=\d+, flags=(0x[0-9a-fA-F]+)", re.MULTILINE
+)
+
+
+@pytest.mark.integration
+def test_session_public_types_agree_with_monodis(tmp_path: Path) -> None:
+    """The session-level managed export surface against Mono's TypeDef decode.
+
+    ``public_types`` is now a tool-free session fact -- the .NET member of
+    the capability-surface family (PE export table, ELF/Mach-O exported
+    symbols, WASM exports): every top-level TypeDef whose visibility bits
+    read Public. Mono prints each row's name and flags off its own walk, so
+    filtering Mono's rows by the Public visibility must reproduce the session
+    list name for name. The mcs leg compiles one public and one internal
+    class: the split proves the reader tests the visibility bits, not just
+    row presence.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(
+            "minimal .NET fixture missing; run fixtures/dotnet/build_minimal_dotnet.py"
+            " (skip != pass)"
+        )
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+
+    def mono_public_types(dump: str) -> list[str]:
+        return [
+            name
+            for name, flags in _TYPEDEF_FLAGS_RE.findall(dump)
+            if int(flags, 16) & 0x7 == 0x1
+        ]
+
+    expected = mono_public_types(_monodis("--typedef"))
+    assert expected == ["Sample"], expected
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(_FIXTURE))
+        assert created.ok, created.error
+        facts = created.data["session"]["metadata"]["dotnet"]
+        assert facts["public_types"] == expected
+        assert facts["public_type_count"] == len(expected)
+    finally:
+        service.close_all()
+
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        return  # the fixture leg already ran; this leg needs a compiler
+    source = tmp_path / "split.cs"
+    source.write_text(
+        "namespace Deep { public class Exposed { } }\n"
+        'internal class Hidden { static void Main() { System.Console.WriteLine("hi"); } }\n'
+    )
+    binary = tmp_path / "split.exe"
+    subprocess.run(
+        [mcs, f"-out:{binary}", str(source)], check=True, capture_output=True, timeout=120
+    )
+    plain_expected = mono_public_types(_monodis_file(binary, "--typedef"))
+    # Referee sanity: Mono sees exactly the public half of the split.
+    assert plain_expected == ["Deep.Exposed"], plain_expected
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok, created.error
+        facts = created.data["session"]["metadata"]["dotnet"]
+        assert facts["public_types"] == plain_expected
+        assert facts["public_type_count"] == 1
+    finally:
+        service.close_all()

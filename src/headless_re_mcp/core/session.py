@@ -261,6 +261,13 @@ class SessionRegistry:
                     identity = _dotnet_assembly_identity(path)
                     if identity is not None:
                         metadata["dotnet"].update(identity)
+                    # The managed export surface: top-level public types, the
+                    # .NET pair to a PE export table / ELF-Mach-O exported
+                    # symbols / WASM exports. Listed capped, counted exactly.
+                    surface = _dotnet_public_types(path)
+                    if surface is not None:
+                        metadata["dotnet"]["public_types"] = surface[0]
+                        metadata["dotnet"]["public_type_count"] = surface[1]
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -4585,6 +4592,12 @@ _DOTNET_MEMBER_REF = 0x0A
 _DOTNET_CUSTOM_ATTRIBUTE = 0x0C
 _DOTNET_MODULE_TABLE = 0x00
 _DOTNET_ASSEMBLY_TABLE = 0x20
+# TypeDef visibility lives in the low three flag bits (ECMA-335 II.23.1.15);
+# 1 is Public -- a top-level type visible outside the assembly. Nested
+# visibilities (2..7) describe inner types and are not part of the surface.
+_DOTNET_TYPE_VISIBILITY_MASK = 0x7
+_DOTNET_TYPE_PUBLIC = 0x1
+_DOTNET_MAX_PUBLIC_TYPES = 64
 _DOTNET_TFA_NAME = "TargetFrameworkAttribute"
 _DOTNET_TFA_NAMESPACE = "System.Runtime.Versioning"
 # HasCustomAttribute coded index for the Assembly table (tag 14), row 1.
@@ -5471,6 +5484,112 @@ def _dotnet_assembly_identity(path: Path) -> dict[str, Any] | None:
             break
         table_offset += row_size * row_counts[bit]
     return identity
+
+
+def _dotnet_public_types(path: Path) -> tuple[list[str], int] | None:
+    """Top-level public types -- the managed export surface, or ``None``.
+
+    What the assembly offers callers: every TypeDef row whose visibility bits
+    read Public (top-level, outside-visible -- ECMA-335 II.23.1.15), named
+    ``Namespace.Name``. The .NET member of the capability-surface family: the
+    pair to a PE export table, ELF/Mach-O exported symbols and WASM exports,
+    and the same rows ``monodis --typedef`` prints with their flags. The
+    ``<Module>`` pseudo-type and internal types read NotPublic and drop out;
+    nested visibilities are inner plumbing, not surface. The listed names are
+    capped but the count stays exact within the clamped row count. ``None``
+    -- fact absent -- for anything that is not a walkable managed PE.
+    """
+    from headless_re_mcp.dotnet.tables import table_row_size
+
+    try:
+        if path.stat().st_size > _DOTNET_MAX_FILE:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    view = _pe_header_view(raw)
+    if view is None:
+        return None
+    _magic, dir_count, dir_off, sections, _base = view
+    entry = dir_off + _PE_COM_DESCRIPTOR_DIR * 8
+    if dir_count <= _PE_COM_DESCRIPTOR_DIR or entry + 8 > len(raw):
+        return None
+    clr_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if clr_rva == 0:
+        return None
+    clr_off = _pe_rva_to_offset(sections, clr_rva)
+    if clr_off is None or clr_off + 16 > len(raw):
+        return None
+    meta_rva = int.from_bytes(raw[clr_off + 8 : clr_off + 12], "little")
+    meta_off = _pe_rva_to_offset(sections, meta_rva)
+    if meta_off is None:
+        return None
+    stream_map = _clr_stream_map(raw, meta_off)
+    tables_span = stream_map.get("#~") or stream_map.get("#-")
+    strings_span = stream_map.get("#Strings")
+    if tables_span is None or strings_span is None:
+        return None
+    tables = raw[meta_off + tables_span[0] : meta_off + tables_span[0] + tables_span[1]]
+    strings = raw[meta_off + strings_span[0] : meta_off + strings_span[0] + strings_span[1]]
+    if len(tables) < 24 or not strings:
+        return None
+    heap_sizes = tables[6]
+    string_index_size = 4 if (heap_sizes & 0x01) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    valid = int.from_bytes(tables[8:16], "little")
+    cursor = 24
+    row_counts: dict[int, int] = {}
+    for bit in range(64):
+        if valid & (1 << bit):
+            if cursor + 4 > len(tables):
+                return None
+            row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
+            cursor += 4
+    max_rows = max((len(tables) - cursor) // 2, 0)
+    row_counts = {bit: min(count, max_rows) for bit, count in row_counts.items()}
+    if _DOTNET_TYPE_DEF not in row_counts:
+        return None
+
+    def string_at(index: int) -> str:
+        if index <= 0 or index >= len(strings):
+            return ""
+        end = strings.find(b"\0", index)
+        return strings[index : (end if end >= 0 else len(strings))].decode(
+            "utf-8", errors="replace"
+        )
+
+    table_offset = cursor
+    for bit in sorted(row_counts):
+        row_size = table_row_size(
+            row_counts, string_index_size, blob_index_size, guid_index_size, bit
+        )
+        if row_size is None:
+            return None
+        if bit == _DOTNET_TYPE_DEF:
+            # Row: Flags(4), Name(#Strings), Namespace(#Strings), Extends,
+            # FieldList, MethodList -- only the first three matter here.
+            names: list[str] = []
+            count = 0
+            for i in range(row_counts[bit]):
+                at = table_offset + i * row_size
+                if at + row_size > len(tables):
+                    break
+                flags = int.from_bytes(tables[at : at + 4], "little")
+                if flags & _DOTNET_TYPE_VISIBILITY_MASK != _DOTNET_TYPE_PUBLIC:
+                    continue
+                count += 1
+                if len(names) >= _DOTNET_MAX_PUBLIC_TYPES:
+                    continue
+                name_index = int.from_bytes(tables[at + 4 : at + 4 + string_index_size], "little")
+                ns_at = at + 4 + string_index_size
+                ns_index = int.from_bytes(tables[ns_at : ns_at + string_index_size], "little")
+                name = string_at(name_index)
+                namespace = string_at(ns_index)
+                names.append(f"{namespace}.{name}" if namespace else name)
+            return names, count
+        table_offset += row_size * row_counts[bit]
+    return None
 
 
 def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:

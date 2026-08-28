@@ -26,6 +26,7 @@ from headless_re_mcp.core.session import (
     _dotnet_high_entropy_resources,
     _dotnet_module_initializer,
     _dotnet_pinvokes,
+    _dotnet_public_types,
     _dotnet_resource_payloads,
     _dotnet_target_framework,
     _pe_authenticode,
@@ -2640,6 +2641,47 @@ class TestDotnetAssemblyIdentity:
         session = SessionRegistry().create(str(_DOTNET_FIXTURE))
         facts = session.metadata["dotnet"]
         assert {key: facts[key] for key in self._EXPECTED} == self._EXPECTED
+
+
+class TestDotnetPublicTypes:
+    """_dotnet_public_types reads the managed export surface.
+
+    The .NET member of the capability-surface family -- the pair to a PE
+    export table, ELF/Mach-O exported symbols and WASM exports: every
+    top-level TypeDef whose visibility bits read Public, the same rows
+    monodis --typedef prints with flags ...1. The <Module> pseudo-type and
+    internal types read NotPublic and drop out. None -- fact absent -- for
+    anything that is not a walkable managed PE.
+    """
+
+    def test_the_committed_fixture_offers_one_public_type(self) -> None:
+        # TypeDef row 1 is <Module> (flags 0x0, NotPublic); row 2 is Sample
+        # with flags 0x100001 -- visibility Public. One type, counted once.
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        assert _dotnet_public_types(_DOTNET_FIXTURE) == (["Sample"], 1)
+
+    def test_an_assembly_with_resources_reads_the_same_surface(self, tmp_path: Path) -> None:
+        path = tmp_path / "resourced.exe"
+        path.write_bytes(_dotnet_with_resources([("payload.bin", b"\x00" * 64)]))
+        assert _dotnet_public_types(path) == (["Sample"], 1)
+
+    def test_a_native_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "native.exe"
+        path.write_bytes(_native_pe())
+        assert _dotnet_public_types(path) is None
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _dotnet_public_types(path) is None
+
+    def test_session_over_a_managed_pe_carries_the_export_surface(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        session = SessionRegistry().create(str(_DOTNET_FIXTURE))
+        assert session.metadata["dotnet"]["public_types"] == ["Sample"]
+        assert session.metadata["dotnet"]["public_type_count"] == 1
 
 
 def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path: Path) -> None:
