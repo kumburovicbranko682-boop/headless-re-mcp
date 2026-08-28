@@ -234,6 +234,49 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.js_secrets(path, offset=offset, limit=limit))
 
+    @tools.tool(name="js.blobs")
+    def js_blobs(
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=500)] = 200,
+    ) -> dict[str, Any]:
+        """Decode embedded base64/hex payloads in a JavaScript file (pure Python).
+
+        Obfuscated scripts hide their real payload in a long encoded string that
+        an atob/fromCharCode chain unpacks at runtime. This pulls those strings
+        out of the literal inventory, decodes them, and tells you what came out,
+        so you do not have to run the script to see it: the killer field is
+        indicators -- the URLs and IPs found inside a decoded payload, i.e. the
+        C2 a base64 blob would have contacted. It reads decoded string values
+        (like js.strings), so an encoded run in a comment is still seen but a
+        name in prose is not a payload.
+
+        Each candidate run is decoded as hex (pure-hex, even length) or base64
+        (standard or url-safe alphabet); a run that fails to decode is not a
+        blob. The decoded bytes are classified: a magic wins first (pe, elf,
+        gzip, zlib, zip, pdf, png, jpeg, gif, dex, java_class), otherwise a
+        mostly-printable payload becomes script/json/url/text and a
+        non-printable one is opaque binary. Opaque binary with no magic is NOT
+        reported -- it is the noise of minified bundles -- but is counted in
+        opaque_skipped. A gzip/zlib blob is inflated one level into nested.
+
+        Answers with blobs (paged, executable/compressed kinds first then by
+        size), count, total, offset, has_more, a kinds tally, opaque_skipped and
+        scan_capped. Each blob carries encoding (base64/base64url/hex), kind,
+        encoded_length, decoded_length, count (occurrences), lines (up to 5
+        sample 1-based lines), and preview -- decoded text (preview_truncated
+        when clipped) or, for binary, a hex preview with preview_is_hex.
+        indicators (urls, ips) appears when the decoded text carried any; nested
+        (kind, decoded_length, preview, its own indicators) appears for an
+        inflated gzip/zlib blob. This is a lexical, one-level decoder: it will
+        not follow an XOR/RC4 layer or a second encoding pass, and a decoded
+        payload is a lead, not proof of malice.
+
+        A file over 16 MiB is refused as too_large and a missing one as
+        not_found.
+        """
+        return _dump(analysis.js_blobs(path, offset=offset, limit=limit))
+
     @tools.tool(name="wasm.wat")
     def wasm_wat(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

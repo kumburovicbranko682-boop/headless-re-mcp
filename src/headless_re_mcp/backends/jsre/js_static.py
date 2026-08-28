@@ -2,7 +2,7 @@
 
 Where js.deobfuscate / js.beautify shell out to webcrack (and go
 capability_unavailable when Node is absent), these read the file text
-themselves, so they answer on any host. Five reads:
+themselves, so they answer on any host. Six reads:
 
 - ``extract_js_strings`` walks the source with a small state machine that
   understands line/block comments, single/double/template string literals and
@@ -21,6 +21,10 @@ themselves, so they answer on any host. Five reads:
 - ``extract_js_secrets`` classifies string-literal values against a
   high-precision table of provider credentials (AWS/GCP/GitHub/Slack/Stripe
   keys, JWTs, private keys, ...), deduping and redacting each match.
+- ``extract_js_blobs`` pulls embedded base64/hex payloads out of the literals,
+  decodes them, and classifies what came out (script/json/url/text or a binary
+  by magic), with the URLs/IPs inside and one gzip/zlib inflate -- the "what is
+  hidden in that long string" view for packed/obfuscated code.
 
 extract_js_api_usage and extract_js_imports share ``_noise_spans``, which marks
 the byte ranges that are comments, string literals or regex literals so a match
@@ -31,7 +35,12 @@ axis so a hostile bundle cannot blow memory or time.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import gzip
+import json
 import re
+import zlib
 from bisect import bisect_right
 from collections import Counter, OrderedDict
 from typing import Any
@@ -67,6 +76,64 @@ _MAX_PACKAGE_ROLLUP = 500
 _MAX_API_MATCHES = 50_000
 _MAX_API_SAMPLE_LINES = 5
 _MAX_API_ROWS = 50
+
+# js.blobs caps: bound the candidate runs scanned, distinct blobs collected,
+# sample lines per blob, the decode size, the preview and the page.
+_MAX_BLOB_RUNS = 50_000
+_MAX_BLOBS_COLLECT = 2000
+_MAX_BLOB_SAMPLE_LINES = 5
+_MAX_BLOBS_PAGE = 500
+_MAX_BLOB_DECODE_BYTES = 2 * 1024 * 1024
+_MAX_BLOB_PREVIEW = 240
+_MAX_BLOB_INDICATORS = 20
+# A decoded payload of mostly printable bytes is treated as text (script/json/
+# url/text); below this it is opaque binary and only reported if it has a magic.
+_BLOB_PRINTABLE_RATIO = 0.85
+# A candidate encoded run: base64 (std or url alphabet) with optional padding, or
+# a pure-hex run. Runs shorter than this decode to too little to be a payload.
+_BLOB_RUN_RE = re.compile(r"[A-Za-z0-9+/_-]{32,}={0,2}")
+_HEX_ONLY_RE = re.compile(r"[0-9a-fA-F]+")
+_SCRIPT_HINT_RE = re.compile(
+    r"(?:\bfunction\b|=>|\beval\b|\bvar\b|\bconst\b|\blet\b|document\s*\.|"
+    r"window\s*\.|\brequire\s*\(|\bimport\b|\bnew\s+Function\b)"
+)
+# Leading-byte signatures for common embedded payload types.
+_BLOB_MAGICS: tuple[tuple[bytes, str], ...] = (
+    (b"MZ", "pe"),
+    (b"\x7fELF", "elf"),
+    (b"\x1f\x8b", "gzip"),
+    (b"PK\x03\x04", "zip"),
+    (b"PK\x05\x06", "zip"),
+    (b"%PDF", "pdf"),
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"GIF87a", "gif"),
+    (b"GIF89a", "gif"),
+    (b"\xca\xfe\xba\xbe", "java_class"),
+    (b"dex\n", "dex"),
+    (b"\x25\x21PS", "postscript"),
+)
+# Sort priority: executable/compressed/archive payloads first, then structured
+# text, then plain text and opaque binary last.
+_BLOB_KIND_RANK = {
+    "script": 0,
+    "pe": 1,
+    "elf": 1,
+    "dex": 1,
+    "java_class": 1,
+    "gzip": 2,
+    "zlib": 2,
+    "zip": 2,
+    "json": 3,
+    "url": 3,
+    "pdf": 4,
+    "png": 5,
+    "jpeg": 5,
+    "gif": 5,
+    "postscript": 5,
+    "text": 6,
+    "binary": 7,
+}
 
 _URL_TRAILING = ".,;:!?'\")]}>"
 _URL_RE = re.compile(r"(?:https?|wss?|ftp)://[^\s\"'<>\\)\]}(]+", re.IGNORECASE)
@@ -697,3 +764,220 @@ def extract_js_secrets(
     return classify_secrets(
         items, offset=offset, limit=limit, scan_capped=scan_capped
     )
+
+
+def _decode_blob_run(run: str) -> tuple[str, bytes] | None:
+    """Decode one candidate run to (encoding, bytes), or None if it is not one.
+
+    A pure-hex even-length run is hex; otherwise the run is base64 (standard, or
+    the url-safe alphabet when it carries - or _ but no + or /). Anything that
+    fails to decode -- bad padding, wrong length -- is simply not a blob.
+    """
+    core = run.rstrip("=")
+    if _HEX_ONLY_RE.fullmatch(core) and len(core) % 2 == 0:
+        try:
+            return "hex", bytes.fromhex(core)
+        except ValueError:
+            return None
+    url_safe = ("-" in core or "_" in core) and "+" not in core and "/" not in core
+    std = core.translate(str.maketrans("-_", "+/")) if url_safe else core
+    padded = std + "=" * (-len(std) % 4)
+    try:
+        data = base64.b64decode(padded, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if len(data) < 8:
+        return None
+    return ("base64url" if url_safe else "base64"), data
+
+
+def _printable_ratio(data: bytes) -> float:
+    if not data:
+        return 0.0
+    printable = sum(1 for b in data if 32 <= b <= 126 or b in (9, 10, 13))
+    return printable / len(data)
+
+
+def _blob_text_indicators(text: str) -> JsonObject:
+    """URLs and bare IPv4 literals found inside a decoded payload, bounded."""
+    urls: list[str] = []
+    for match in _URL_RE.finditer(text):
+        url = match.group(0).rstrip(_URL_TRAILING)[:_MAX_URL_VALUE_LEN]
+        if url and url not in urls:
+            urls.append(url)
+        if len(urls) >= _MAX_BLOB_INDICATORS:
+            break
+    ips: list[str] = []
+    for match in _IPV4_RE.finditer(text):
+        ip = match.group(0)
+        if ip not in ips:
+            ips.append(ip)
+        if len(ips) >= _MAX_BLOB_INDICATORS:
+            break
+    out: JsonObject = {}
+    if urls:
+        out["urls"] = urls
+    if ips:
+        out["ips"] = ips
+    return out
+
+
+def _classify_payload(data: bytes) -> tuple[str, str | None, JsonObject]:
+    """Classify decoded bytes into (kind, text_preview_or_None, indicators).
+
+    Magic-byte types (pe/elf/gzip/zip/...) win first. Otherwise a mostly-printable
+    payload is text, refined to script/json/url; a low-printable payload with no
+    magic is opaque binary.
+    """
+    for magic, kind in _BLOB_MAGICS:
+        if data.startswith(magic):
+            return kind, None, {}
+    # zlib has no fixed magic: first byte 0x78 (common) and the two-byte header a
+    # multiple of 31 is the standard check.
+    if len(data) >= 2 and data[0] == 0x78 and (data[0] * 256 + data[1]) % 31 == 0:
+        return "zlib", None, {}
+    if _printable_ratio(data) >= _BLOB_PRINTABLE_RATIO:
+        text = data.decode("utf-8", errors="replace")
+        stripped = text.lstrip()
+        kind = "text"
+        if _SCRIPT_HINT_RE.search(text):
+            kind = "script"
+        elif stripped[:1] in "{[":
+            try:
+                json.loads(text)
+                kind = "json"
+            except (ValueError, RecursionError):
+                kind = "text"
+        elif stripped[:4].lower() == "http" and _URL_RE.match(stripped):
+            kind = "url"
+        return kind, text[:_MAX_BLOB_PREVIEW], _blob_text_indicators(text)
+    return "binary", None, {}
+
+
+def _decompress_blob(kind: str, data: bytes) -> bytes | None:
+    """Best-effort one-level gzip/zlib inflate, bounded, or None on failure."""
+    try:
+        if kind == "gzip":
+            return gzip.decompress(data)[:_MAX_BLOB_DECODE_BYTES]
+        if kind == "zlib":
+            return zlib.decompress(data)[:_MAX_BLOB_DECODE_BYTES]
+    except (OSError, zlib.error, EOFError):
+        return None
+    return None
+
+
+def _hex_preview(data: bytes) -> str:
+    return data[: _MAX_BLOB_PREVIEW // 2].hex()
+
+
+def _build_blob_finding(encoding: str, run: str, data: bytes) -> JsonObject:
+    kind, preview, indicators = _classify_payload(data)
+    finding: JsonObject = {
+        "encoding": encoding,
+        "kind": kind,
+        "encoded_length": len(run),
+        "decoded_length": len(data),
+        "count": 0,
+        "lines": [],
+    }
+    if preview is not None:
+        finding["preview"] = preview
+        if len(preview) < len(data):
+            finding["preview_truncated"] = True
+    else:
+        finding["preview"] = _hex_preview(data)
+        finding["preview_is_hex"] = True
+    if indicators:
+        finding["indicators"] = indicators
+    if kind in ("gzip", "zlib"):
+        inner = _decompress_blob(kind, data)
+        if inner is not None:
+            inner_kind, inner_preview, inner_ind = _classify_payload(inner)
+            nested: JsonObject = {
+                "kind": inner_kind,
+                "decoded_length": len(inner),
+            }
+            if inner_preview is not None:
+                nested["preview"] = inner_preview
+            else:
+                nested["preview"] = _hex_preview(inner)
+                nested["preview_is_hex"] = True
+            if inner_ind:
+                nested["indicators"] = inner_ind
+            finding["nested"] = nested
+    return finding
+
+
+def extract_js_blobs(
+    text: str, *, offset: int = 0, limit: int = 200
+) -> JsonObject:
+    """Extract, decode and classify embedded base64/hex payloads (pure Python).
+
+    Obfuscated scripts hide their real payload in a long encoded string that a
+    ``atob``/``fromCharCode`` chain unpacks at runtime; this pulls those strings
+    out of the literal inventory, decodes them, and tells you what came out --
+    another script, JSON, a URL, or a binary (PE/ELF/gzip/zip/...) by magic --
+    plus any URLs/IPs inside the decoded text and one level of gzip/zlib inflate.
+    Opaque binary with no recognizable magic is not reported (it is the noise of
+    minified bundles) but is counted in opaque_skipped.
+    """
+    literals, scan_capped = _scan_string_literals(text, min_length=32)
+    found: OrderedDict[str, JsonObject] = OrderedDict()
+    kinds: Counter[str] = Counter()
+    runs_scanned = 0
+    opaque_skipped = 0
+    for lit in literals:
+        value = str(lit["value"])
+        line = int(lit["line"])
+        for match in _BLOB_RUN_RE.finditer(value):
+            runs_scanned += 1
+            if runs_scanned > _MAX_BLOB_RUNS:
+                scan_capped = True
+                break
+            run = match.group(0)
+            decoded = _decode_blob_run(run)
+            if decoded is None:
+                continue
+            encoding, data = decoded
+            existing = found.get(run)
+            if existing is not None:
+                existing["count"] = int(existing["count"]) + 1
+                lines_list: list[int] = existing["lines"]
+                if line not in lines_list and len(lines_list) < _MAX_BLOB_SAMPLE_LINES:
+                    lines_list.append(line)
+                continue
+            kind_probe, _, _ = _classify_payload(data)
+            if kind_probe == "binary":
+                opaque_skipped += 1
+                continue
+            if len(found) >= _MAX_BLOBS_COLLECT:
+                scan_capped = True
+                continue
+            finding = _build_blob_finding(encoding, run, data)
+            finding["count"] = 1
+            finding["lines"] = [line]
+            found[run] = finding
+            kinds[str(finding["kind"])] += 1
+        if scan_capped:
+            break
+
+    rows = sorted(
+        found.values(),
+        key=lambda f: (
+            _BLOB_KIND_RANK.get(str(f["kind"]), 8),
+            -int(f["decoded_length"]),
+            int(f["lines"][0]) if f["lines"] else 0,
+        ),
+    )
+    start, cap = _clamp_page(offset, limit, max_limit=_MAX_BLOBS_PAGE)
+    window = rows[start : start + cap]
+    return {
+        "blobs": window,
+        "count": len(window),
+        "total": len(rows),
+        "offset": start,
+        "has_more": start + len(window) < len(rows),
+        "kinds": dict(kinds),
+        "opaque_skipped": opaque_skipped,
+        "scan_capped": scan_capped,
+    }

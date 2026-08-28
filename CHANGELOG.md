@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **332（214 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **333（215 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -393,6 +393,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   kinds 计数、total_findings 与 scan_capped(DEX 字符串池命中 5000 条采集上限,可能还有更多)。词法扫描:
   运行时拼出的密钥、只存在 resources.arsc 里的密钥不在射程内,测试/示例密钥照样命中。非 APK 会话回
   target_mismatch。同时把 `js.secrets` 改为复用共享分类器 `classify_secrets`,`js_static` 只负责 JS 分词取值。
+
+### 新增（JavaScript 内嵌载荷解码）
+
+- 新增 `js.blobs`:纯 Python 把 JavaScript 里内嵌的 base64/hex 载荷抽出来解码分类——混淆脚本常把真正的
+  载荷塞进一长串编码字符串,运行时再用 `atob`/`fromCharCode` 链解开;这个从字面量清单里把那些串挖出来解码,
+  告诉你解出来的是什么,不必真跑脚本就能看到。杀手字段是 indicators:解码后文本里的 URL/IP,也就是一个
+  base64 块本会联系的 C2。每个候选串按 hex(纯 hex、偶数长度)或 base64(标准或 url-safe 字母表)解码,解不开
+  的不算 blob;解出的字节先看魔数(pe/elf/gzip/zlib/zip/pdf/png/jpeg/gif/dex/java_class),否则大部分可打印的归为
+  script/json/url/text,不可打印且无魔数的是不透明二进制。不透明二进制**不**上报(那是压缩包/minified 的噪声),
+  但计入 opaque_skipped;gzip/zlib 会再解一层放进 nested。回 blobs(分页,可执行/压缩类在前再按大小)、count、
+  total、offset、has_more、kinds 计数、opaque_skipped 与 scan_capped。每条 blob 带 encoding、kind、
+  encoded_length、decoded_length、count、lines(至多 5 个采样行号)与 preview(解码文本,截断时带 preview_truncated;
+  二进制则给 hex 预览带 preview_is_hex);解码文本含指标时给 indicators;解压出的内层给 nested(kind、
+  decoded_length、preview 及其自己的 indicators)。这是词法的一层解码器:不会跟进 XOR/RC4 层或第二轮编码,
+  解出的载荷是线索不是定罪。超 16 MiB 报 too_large,不存在报 not_found。
 
 ### 新增（JavaScript 静态提取）
 
