@@ -239,6 +239,11 @@ def enrich_r2_payload(
     # the r2.imports contract (and 5.x) said ``lib``. Naming the DLL each import
     # comes from is the whole point of the tool, so alias it back, iij-scoped.
     is_imports = any(str(command).strip() == "iij" for command in commands)
+    # And the inverse drift on /xj: a search hit names its location ``addr`` on
+    # r2 6.x but ``offset`` on r2 5.x. The r2.search contract (and the docstring)
+    # promise ``addr`` for every hit, so alias it forward, /xj-scoped, or a
+    # caller pivoting on a hit with r2.read/r2.disasm reads nothing on r2 5.x.
+    is_search = any(str(command).strip().startswith("/xj ") for command in commands)
     parsed = parse_r2_json(raw)
     out = dict(data)
     out["module"] = module
@@ -281,6 +286,8 @@ def enrich_r2_payload(
                 item["offset"] = va
             if is_imports and "lib" not in item and item.get("libname"):
                 item["lib"] = item["libname"]
+            if is_search and "addr" not in item and va is not None:
+                item["addr"] = va
             # Named xref endpoints, gated on the row being xref-shaped: it names
             # an origin under ``from``. Only then does ``addr`` mean "referenced
             # target" (r2 5.x) rather than, say, a function-start key -- so a

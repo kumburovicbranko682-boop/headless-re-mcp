@@ -92,6 +92,29 @@ def test_r2_search_text_encodes_to_hex_and_maps_hits(tmp_path: Path, monkeypatch
     assert "items" in doc
 
 
+def test_r2_search_aliases_the_r2_5x_offset_hit_key_to_addr(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """r2 5.x names a /xj hit's location ``offset``; 6.x names it ``addr``.
+
+    The contract (and the docstring) promise ``addr`` for every hit so a caller
+    can pivot with r2.read/r2.disasm. Without the /xj-scoped alias an r2 5.x hit
+    carried only ``offset`` and ``item["addr"]`` KeyError-ed -- the exact drift
+    that made the whole native ELF gate red on r2 5.x. The hit must expose both
+    the integer ``addr`` and the mapped ``address``.
+    """
+    binary = tmp_path / "f.bin"
+    binary.write_bytes(b"MZ" + b"\x00" * 200)
+    # r2 5.x shape: the location is ``offset``, there is no ``addr`` key.
+    hits = [{"offset": 0x2010, "type": "hexpair", "data": "52455f4d"}]
+    client = R2Client(executable=Path("/nonexistent-r2"))
+    monkeypatch.setattr(client, "run", _canned(hits))
+    out = client.search(binary, "RE_M", kind="text")
+    item = out["items"][0]
+    assert item["addr"] == 0x2010
+    assert item["address"].get("va") == 0x2010
+
+
 def test_r2_search_hex_normalizes_and_absence_is_clean(tmp_path: Path, monkeypatch: Any) -> None:
     """A hex query tolerates spaces/0x, and a not-present pattern is empty, not error.
 
