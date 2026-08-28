@@ -47,11 +47,13 @@ export function useWorkbench() {
   const selectedThreadRef = useRef<string | null>(null);
   const sessionIdRef = useRef("");
   const lostRef = useRef<LostSample | null>(null);
+  const errorRef = useRef<string | null>(null);
   const [lost, setLost] = useState<LostSample | null>(null);
   sessionsRef.current = sessions;
   selectedThreadRef.current = state.selectedThread;
   sessionIdRef.current = sessionId;
   lostRef.current = lost;
+  errorRef.current = state.error;
 
   const [personaTitle, setPersonaTitle] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("request");
@@ -78,6 +80,51 @@ export function useWorkbench() {
     });
     if (refresh) await loadThreads();
   }, [loadThreads]);
+
+  const markLost = useCallback(async (id: string, threadId: string | null) => {
+    if (!id || lostRef.current?.sessionId === id) return;
+    const listed = sessionsRef.current.find((session) => session.id === id);
+    const recalled = recallSample(threadId, id);
+    let path = listed?.binary || listed?.locator || recalled?.path || "";
+    if (!path) {
+      try {
+        const known = await api<LastKnownResponse>(`/api/sessions/${encodeURIComponent(id)}/last-known`);
+        if (known.ok) path = known.data?.binary || "";
+      } catch { /* process just came back without this id */ }
+    }
+    if (!path) {
+      try {
+        const unclean = await api<UncleanResponse>("/api/sessions/unclean?limit=20");
+        const hit = (unclean.data?.sessions ?? []).find((row) => row.id === id);
+        path = hit?.binary || "";
+      } catch { /* optional */ }
+    }
+    const name = asFileName(path) || recalled?.name || "sample";
+    const next: LostSample = { sessionId: id, path, name };
+    lostRef.current = next;
+    setLost(next);
+    if (path) setBinaryPath(path);
+    setSessions((prev) => prev.filter((session) => session.id !== id));
+    if (path) rememberSample({ threadId, sessionId: id, path });
+  }, []);
+
+  const selectThread = useCallback(async (id: string) => {
+    const result = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(id)}`);
+    dispatch({ type: "select", threadId: id, messages: result.messages, events: result.events ?? [] });
+    const bound = result.thread.session_id ?? "";
+    let listed = sessionsRef.current;
+    if (bound && !listed.some((session) => session.id === bound)) {
+      listed = await loadSessions();
+    }
+    if (bound && !listed.some((session) => session.id === bound)) {
+      setSessionId(bound);
+      await markLost(bound, id);
+      return;
+    }
+    setLost(null);
+    lostRef.current = null;
+    setSessionId(bound);
+  }, [loadSessions, markLost]);
 
   const consume = useCallback(async (runId: string, initialAfter = 0) => {
     abortRef.current?.abort();
@@ -108,8 +155,24 @@ export function useWorkbench() {
     if (threadId) {
       const result = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(threadId)}`).catch(() => null);
       if (result) dispatch({ type: "messages", messages: result.messages });
+      return;
     }
-  }, []);
+    // No thread is selected when the stream ends after a page reload: boot()
+    // resumes the run from history.state without selecting its thread. The
+    // terminal event has just cleared streamingText, so without this branch
+    // everything the run said after the reload simply vanished -- the
+    // reconciliation above never ran, and a follow-up typed into the composer
+    // would even land in a brand-new thread. Select the run's own thread
+    // instead: that commits the run's messages to the transcript and lets the
+    // conversation continue where it was. Selecting resets the error banner,
+    // so re-issue the terminal failure hint (e.g. "写操作被拒绝") afterwards.
+    const owner = await api<{ run?: { thread_id?: string } }>(`/api/agent/runs/${encodeURIComponent(runId)}`).catch(() => null);
+    const ownerThread = owner?.run?.thread_id;
+    if (typeof ownerThread !== "string" || !ownerThread) return;
+    const hint = errorRef.current;
+    await selectThread(ownerThread).catch(() => undefined);
+    if (hint) dispatch({ type: "error", message: hint });
+  }, [selectThread]);
 
   useEffect(() => {
     bootstrapToken();
@@ -153,51 +216,6 @@ export function useWorkbench() {
       abortRef.current?.abort();
     };
   }, [consume, loadSessions]);
-
-  const markLost = useCallback(async (id: string, threadId: string | null) => {
-    if (!id || lostRef.current?.sessionId === id) return;
-    const listed = sessionsRef.current.find((session) => session.id === id);
-    const recalled = recallSample(threadId, id);
-    let path = listed?.binary || listed?.locator || recalled?.path || "";
-    if (!path) {
-      try {
-        const known = await api<LastKnownResponse>(`/api/sessions/${encodeURIComponent(id)}/last-known`);
-        if (known.ok) path = known.data?.binary || "";
-      } catch { /* process just came back without this id */ }
-    }
-    if (!path) {
-      try {
-        const unclean = await api<UncleanResponse>("/api/sessions/unclean?limit=20");
-        const hit = (unclean.data?.sessions ?? []).find((row) => row.id === id);
-        path = hit?.binary || "";
-      } catch { /* optional */ }
-    }
-    const name = asFileName(path) || recalled?.name || "sample";
-    const next: LostSample = { sessionId: id, path, name };
-    lostRef.current = next;
-    setLost(next);
-    if (path) setBinaryPath(path);
-    setSessions((prev) => prev.filter((session) => session.id !== id));
-    if (path) rememberSample({ threadId, sessionId: id, path });
-  }, []);
-
-  const selectThread = async (id: string) => {
-    const result = await api<ThreadResponse>(`/api/agent/threads/${encodeURIComponent(id)}`);
-    dispatch({ type: "select", threadId: id, messages: result.messages, events: result.events ?? [] });
-    const bound = result.thread.session_id ?? "";
-    let listed = sessionsRef.current;
-    if (bound && !listed.some((session) => session.id === bound)) {
-      listed = await loadSessions();
-    }
-    if (bound && !listed.some((session) => session.id === bound)) {
-      setSessionId(bound);
-      await markLost(bound, id);
-      return;
-    }
-    setLost(null);
-    lostRef.current = null;
-    setSessionId(bound);
-  };
 
   const createThread = async () => {
     const result = await api<{ thread: Thread }>("/api/agent/threads", {
