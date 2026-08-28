@@ -323,6 +323,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   加 `dropped()`(= `_seq - len(flows)`),`proxy.status` 一并返回 `dropped`,补齐健康快照,便于及时 export/fetch。
   (新增字段,向后兼容;docstring 同步说明。)
 
+### 测试（钉住 proxy 的 status / flows / export_har 对同一抓包环报告一致的 dropped 淘汰计数）
+
+- 三个工具都回 `dropped`（抓包环因溢出淘汰了多少条摘要），`recorder.dropped()` 的契约是它们应是同一个数:\
+  `status` / `export_har` 读 `recorder.dropped()`（`_seq - 保留数`），而 `flows` 从自己的分页快照重算\
+  （`items[-1].seq - len(items)`）。两个公式在构造上相等,但此前没有测试钉住它们保持一致——一旦任一处重构,\
+  运维就会对同一个环拿到两个不同的"我丢了多少"答案。
+- `tests/unit/test_proxy_fields.py` 新增一例:用容量 4 的真实 `_FlowRecorder` 灌入 10 条(六条被淘汰),\
+  断言 `status` / `flows` / `export_har` 三者的 `dropped` 都等于 6、彼此相等。(纯测试新增,无行为变更。)
+
 ### 测试（新增 drift guard：非 PE 工具的 timeout 参数一律在 schema 层上下界收敛）
 
 - 非 PE 的所有超时入参（web 五个驱动 `open` / `navigate` / `click` / `type` / `wait`、JS/WASM 的

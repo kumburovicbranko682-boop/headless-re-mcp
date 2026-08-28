@@ -233,6 +233,37 @@ def test_proxy_status_reports_dropped_once_the_ring_overflows() -> None:
     assert payload["dropped"] == 6
 
 
+def test_status_flows_and_har_agree_on_the_dropped_count(tmp_path: Path) -> None:
+    """All three views of one capture ring report the same eviction count.
+
+    status, flows and export_har each surface `dropped`, and the recorder's
+    contract (dropped()'s docstring) is that it is the same figure: status and
+    export_har read recorder.dropped() (_seq - retained), while flows recomputes
+    it from its own page snapshot (items[-1].seq - len(items)). Those two
+    formulas are equal by construction, but nothing pinned that they stay so --
+    a refactor to either would silently hand an operator two different "how much
+    did I lose" answers for one ring. Pin the agreement on an overflowed ring.
+    """
+    recorder = _FlowRecorder(capacity=4)
+    for index in range(10):
+        request = SimpleNamespace(method="GET", pretty_url=f"http://x/{index}", host="x")
+        response = SimpleNamespace(status_code=200, headers={"content-type": "text/plain"})
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    backend._instances["s"] = SimpleNamespace(
+        host="127.0.0.1", port=8080, recorder=recorder
+    )
+
+    status_dropped = backend.status("s")["dropped"]
+    flows_dropped = backend.flows("s")["dropped"]
+    har_dropped = backend.export_har("s", tmp_path / "capture.har")["dropped"]
+
+    # Ten recorded, four retained -> six evicted, the same from every view.
+    assert status_dropped == flows_dropped == har_dropped == 6
+
+
 def test_proxy_export_har_names_path_and_entry_count(
     tmp_path: Path,
 ) -> None:
