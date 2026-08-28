@@ -465,6 +465,17 @@ class ApkClient:
                 )
             if scan_more:
                 break
+        # Sort before paging, like classes()/strings()/xrefs() and _cap_names: a
+        # page must be a real prefix of the sorted methods, not an arbitrary
+        # DEX-declaration-order slice. Everything collected is reachable via offset
+        # either way (get_methods() order is deterministic), but only a sorted
+        # prefix gives the single-page-absence reasoning the sibling readers
+        # promise -- a method absent from within a page's range is genuinely not
+        # among the collected methods, not merely walked-late past the cap. methods
+        # was the lone paged apk reader that paged a raw slice; this brings it into
+        # line. Overloads share a name, so descriptor (then access) breaks ties for
+        # a total, deterministic order.
+        methods.sort(key=lambda entry: (entry["name"], entry["descriptor"], entry["access"]))
         start, cap = _clamp_page(offset, limit, max_limit=_MAX_METHODS_PAGE)
         window = methods[start : start + cap]
         return {

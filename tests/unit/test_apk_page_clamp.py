@@ -168,6 +168,62 @@ def test_classes_page_is_the_sorted_prefix_not_a_raw_enumeration_slice(
     assert second["classes"] == ["L0003;", "L0004;", "L0005;"]
 
 
+class _NamedMethod:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.descriptor = "()V"
+        self.access = "public"
+
+
+class _NamedMethodClass:
+    def __init__(self, names: list[str]) -> None:
+        self.name = "Lcom/example/Foo;"
+        self._methods = [_NamedMethod(name) for name in names]
+
+    def get_methods(self) -> list[_NamedMethod]:
+        return self._methods
+
+
+class _NamedMethodParsed:
+    def __init__(self, names: list[str]) -> None:
+        self.analysis = self
+        self._classes = [_NamedMethodClass(names)]
+
+    def get_classes(self) -> list[_NamedMethodClass]:
+        return self._classes
+
+
+def test_methods_page_is_the_sorted_prefix_not_a_raw_declaration_slice(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Methods arrive reverse-ordered and overflow the page: the first page must be
+    the sorted prefix, and a later offset must return the next names.
+
+    The methods clamp tests below feed already-ascending ``m0..m{n}`` names, so
+    they pass whether or not ``methods()`` sorts -- they pin the window math, not
+    the ordering. ``methods()`` collects in ``get_methods()`` (DEX-declaration)
+    order, which is deterministic and fully reachable via offset either way, so
+    this is not a reachability fix; sorting is what gives methods the single-page
+    absence property its siblings (classes/strings/xrefs) and ``_cap_names``
+    already promise -- a method absent from within a page's alphabetical range is
+    genuinely not among the collected methods, not merely walked-late past the
+    cap. Feeding ``get_methods()`` reversed and requiring the cap-3 page to be
+    ``m00..m02`` (a dropped sort would yield ``m09..m07``) pins the sort before the
+    slice. Zero-padded names keep the alphabetical and numeric orders aligned.
+    """
+    reversed_names = [f"m{i:02d}" for i in reversed(range(10))]
+    monkeypatch.setattr(
+        ApkClient, "_parsed", lambda self, path: _NamedMethodParsed(reversed_names)
+    )
+    client = ApkClient()
+    first = client.methods(tmp_path / "app.apk", "com.example.Foo", offset=0, limit=3)
+    assert first["total"] == 10
+    assert [entry["name"] for entry in first["methods"]] == ["m00", "m01", "m02"]
+    assert first["has_more"] is True
+    second = client.methods(tmp_path / "app.apk", "com.example.Foo", offset=3, limit=3)
+    assert [entry["name"] for entry in second["methods"]] == ["m03", "m04", "m05"]
+
+
 def test_methods_clamp_negative_offset(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeMethodParsed(10))
     client = ApkClient()
