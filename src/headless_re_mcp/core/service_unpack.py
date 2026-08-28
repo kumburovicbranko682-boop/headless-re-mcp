@@ -92,6 +92,12 @@ JsonObject = dict[str, Any]
 _OEP_REGION_SNAPSHOT_LIMIT = 512
 
 
+def _safe_expanduser(path: Path) -> Path:
+    from headless_re_mcp.core.service import _safe_expanduser as real
+
+    return real(path)
+
+
 def _refuse_rebuild_that_will_not_fit(
     path: Path, *, observed_size: int | None = None
 ) -> Result[JsonObject] | None:
@@ -353,7 +359,7 @@ class UnpackMixin:
             blocked = self._guard_unpack_active(session_id, stage="stub_coupling")
             if blocked is not None:
                 return blocked
-            path = Path(dump_path).expanduser().resolve(strict=True)
+            path = _safe_expanduser(Path(dump_path)).resolve(strict=True)
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in path.parents and path.parent != artifact_root:
                 return Result[JsonObject](
@@ -502,7 +508,23 @@ class UnpackMixin:
         stub_coupling: JsonObject | None = None
         still_vm_stub_count: int | None = None
         if dump_path:
-            dump = Path(dump_path).expanduser().resolve()
+            try:
+                dump = _safe_expanduser(Path(dump_path)).resolve()
+            except (OSError, ValueError):
+                # Unlike its siblings, this method has no outer except boundary,
+                # so a resolve() that raises -- ValueError for an embedded NUL --
+                # escaped as an uncaught 500 rather than a client error. A path
+                # that will not resolve cannot be inside the artifact root, so
+                # answer with the same invalid_params the containment check below
+                # gives any dump_path pointing elsewhere.
+                return Result[JsonObject](
+                    ok=False,
+                    error=RpcError(
+                        code="invalid_params",
+                        message="dump_path is not a usable path",
+                        details={"dump_path": str(dump_path)[:256]},
+                    ),
+                )
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in dump.parents and dump.parent != artifact_root:
                 return Result[JsonObject](
@@ -626,7 +648,7 @@ class UnpackMixin:
             blocked = self._guard_unpack_active(session_id, stage="iat_rebuild")
             if blocked is not None:
                 return blocked
-            path = Path(dump_path).expanduser().resolve(strict=True)
+            path = _safe_expanduser(Path(dump_path)).resolve(strict=True)
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in path.parents and path.parent != artifact_root:
                 return Result[JsonObject](
@@ -788,7 +810,7 @@ class UnpackMixin:
             blocked = self._guard_unpack_active(session_id, stage="pe_rebuild")
             if blocked is not None:
                 return blocked
-            path = Path(dump_path).expanduser().resolve(strict=True)
+            path = _safe_expanduser(Path(dump_path)).resolve(strict=True)
             artifact_root = self.settings.artifact_root.expanduser().resolve()
             if artifact_root not in path.parents and path.parent != artifact_root:
                 return Result[JsonObject](
@@ -916,7 +938,7 @@ class UnpackMixin:
         try:
             session = self.registry.get(session_id)
             session.require_pe()
-            target = Path(path).expanduser().resolve(strict=True)
+            target = _safe_expanduser(Path(path)).resolve(strict=True)
             from headless_re_mcp.core.service import _session_owns_artifact_path
 
             if not _session_owns_artifact_path(

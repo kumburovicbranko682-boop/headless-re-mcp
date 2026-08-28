@@ -6,6 +6,8 @@ import struct
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from tests.unit.test_dynamic_service import FakeDynamicWorker, FakeStaticWorker
@@ -171,3 +173,91 @@ def test_unpack_verify_refuses_a_host_pe(tmp_path: Path) -> None:
     assert verified.ok is False
     assert verified.error is not None
     assert verified.error.code == "invalid_params"
+
+
+def _session_for_path_tests(tmp_path: Path) -> tuple[AnalysisService, str]:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = _service(tmp_path, FakeDynamicWorker())
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+    return service, session_id
+
+
+# A ~user that resolves to nothing (RuntimeError from expanduser) and an
+# embedded NUL (ValueError from resolve) are the two ways a caller-supplied
+# path used to reach the handlers' ``except BaseException`` and surface as an
+# internal_error incident. They must be clean client errors instead: the
+# literal ~nosuchuser directory does not exist (file_not_found), and a NUL is
+# a malformed request (invalid_request).
+_HOSTILE_PATHS = [
+    ("~nosuchuser-headless-re/dump.bin", "file_not_found"),
+    ("dump\x00.bin", "invalid_request"),
+]
+
+
+@pytest.mark.parametrize(("bad", "code"), _HOSTILE_PATHS)
+def test_unpack_strict_dump_path_methods_reject_a_hostile_path(
+    tmp_path: Path, bad: str, code: str
+) -> None:
+    """The methods that resolve(strict=True) before any worker read.
+
+    A tilde no user resolves lands on file_not_found (the literal ~nosuchuser
+    directory is absent) and an embedded NUL on invalid_request; neither is an
+    internal_error incident any more.
+    """
+    service, session_id = _session_for_path_tests(tmp_path)
+    try:
+        calls = [
+            service.unpack_stub_coupling(session_id, bad),
+            service.unpack_iat_rebuild(session_id, bad, iat_va=0x1000, size=0x100),
+            service.unpack_pe_rebuild(session_id, bad),
+            service.unpack_verify(session_id, bad, use_die=False, open_ida=False),
+        ]
+        for result in calls:
+            assert result.ok is False
+            assert result.error is not None
+            assert result.error.code == code
+            assert result.error.code != "internal_error"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.parametrize("bad", ["~nosuchuser-headless-re/dump.bin", "dump\x00.bin"])
+def test_unpack_iat_validate_rejects_a_hostile_dump_path(tmp_path: Path, bad: str) -> None:
+    """iat_validate resolves dump_path non-strictly and has no outer except.
+
+    Before the guard the NUL escaped resolve() as an uncaught 500 and the tilde
+    escaped expanduser() the same way. Both are now the invalid_params the
+    containment check gives any dump_path outside the session artifact root.
+    """
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    worker = _LowConfidenceImportsWorker()
+    service = _service(tmp_path, worker)
+    session_id = service.create_session(str(binary)).data["session"]["id"]
+    assert service.open_dynamic(session_id).ok
+    try:
+        result = service.unpack_iat_validate(
+            session_id,
+            iat_va=worker.module_base + 0x2000,
+            size=0x20,
+            module_base=worker.module_base,
+            dump_path=bad,
+        )
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+@pytest.mark.parametrize(("bad", "code"), _HOSTILE_PATHS)
+def test_dotnet_verify_rejects_a_hostile_path(tmp_path: Path, bad: str, code: str) -> None:
+    service, session_id = _session_for_path_tests(tmp_path)
+    try:
+        result = service.dotnet_verify(session_id, bad)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.code == code
+    finally:
+        service.close_all()

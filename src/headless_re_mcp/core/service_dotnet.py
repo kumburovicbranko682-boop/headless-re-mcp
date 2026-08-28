@@ -46,6 +46,12 @@ def _session_artifact_roots(artifact_root: Path, session_id: str) -> tuple[Path,
     return real(artifact_root, session_id)
 
 
+def _safe_expanduser(path: Path) -> Path:
+    from headless_re_mcp.core.service import _safe_expanduser as real
+
+    return real(path)
+
+
 class DotnetAnalysisMixin:
     """.NET inspect / deobfuscate / IL / verify ops.
 
@@ -400,7 +406,7 @@ class DotnetAnalysisMixin:
         """Re-inspect a .NET artifact with the built-in CLR metadata checker."""
         try:
             self.registry.get(session_id)
-            target = Path(path).expanduser().resolve(strict=True)
+            target = _safe_expanduser(Path(path)).resolve(strict=True)
             owned = _session_owns_artifact_path(
                 self.settings.artifact_root,
                 session_id,

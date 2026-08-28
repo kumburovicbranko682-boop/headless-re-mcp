@@ -3139,6 +3139,23 @@ def _is_safe_session_segment(session_id: str) -> bool:
     return Path(session_id).name == session_id
 
 
+def _safe_expanduser(path: Path) -> Path:
+    """``path.expanduser()`` that does not raise on an unresolvable ``~``.
+
+    ``expanduser`` raises RuntimeError -- not OSError -- when the user in
+    ``~someone/...`` cannot be resolved (a service account with no home, or a
+    typo). Callers feed this caller-supplied paths and then ``.resolve()``; the
+    raw path is returned so that resolve makes the decision: ``resolve(strict=
+    True)`` answers ``file_not_found`` for the literal ``~someone`` directory,
+    and a containment check answers ``invalid_params``. Either is a clean client
+    error instead of the internal_error incident the bare RuntimeError became.
+    """
+    try:
+        return path.expanduser()
+    except RuntimeError:
+        return path
+
+
 def _session_artifact_roots(artifact_root: Path, session_id: str) -> tuple[Path, ...]:
     """Return owned artifact subtrees for one session (fail-closed ownership)."""
     if not _is_safe_session_segment(session_id):
