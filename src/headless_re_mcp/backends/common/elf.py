@@ -16,7 +16,10 @@ whether it is imported (undefined) or exported (defined and visible).
 list_elf_segments reads the program header table instead -- the loadable view
 the kernel maps (``readelf -l``) -- with each segment's type, rwx permissions
 and sizes, plus the dynamic linker path (PT_INTERP) and the nx/relro/W^X
-security posture.
+security posture. list_elf_dynamic decodes the whole .dynamic array
+(``readelf -d``): every tag named, string tags resolved, the DT_FLAGS and
+DT_FLAGS_1 words spelled out, and the verdicts stated -- pie, bind_now,
+textrel, and relro as the checksec full/partial/none tri-state.
 
 Both ELF classes (32- and 64-bit) and both byte orders are handled. The header
 walk is exact; the section, program, dynamic and symbol tables are followed
@@ -98,6 +101,91 @@ _DT_NEEDED = 1
 _DT_SONAME = 14
 _DT_RPATH = 15
 _DT_RUNPATH = 29
+_DT_STRTAB = 5
+_DT_STRSZ = 10
+_DT_TEXTREL = 22
+_DT_BIND_NOW = 24
+_DT_FLAGS = 30
+_DT_FLAGS_1 = 0x6FFFFFFB
+
+# The full tag vocabulary of ``readelf -d``, for naming every entry.
+_DT_NAME = {
+    0: "NULL",
+    1: "NEEDED",
+    2: "PLTRELSZ",
+    3: "PLTGOT",
+    4: "HASH",
+    5: "STRTAB",
+    6: "SYMTAB",
+    7: "RELA",
+    8: "RELASZ",
+    9: "RELAENT",
+    10: "STRSZ",
+    11: "SYMENT",
+    12: "INIT",
+    13: "FINI",
+    14: "SONAME",
+    15: "RPATH",
+    16: "SYMBOLIC",
+    17: "REL",
+    18: "RELSZ",
+    19: "RELENT",
+    20: "PLTREL",
+    21: "DEBUG",
+    22: "TEXTREL",
+    23: "JMPREL",
+    24: "BIND_NOW",
+    25: "INIT_ARRAY",
+    26: "FINI_ARRAY",
+    27: "INIT_ARRAYSZ",
+    28: "FINI_ARRAYSZ",
+    29: "RUNPATH",
+    30: "FLAGS",
+    32: "PREINIT_ARRAY",
+    33: "PREINIT_ARRAYSZ",
+    0x6FFFFEF5: "GNU_HASH",
+    0x6FFFFFF0: "VERSYM",
+    0x6FFFFFF9: "RELACOUNT",
+    0x6FFFFFFA: "RELCOUNT",
+    0x6FFFFFFB: "FLAGS_1",
+    0x6FFFFFFC: "VERDEF",
+    0x6FFFFFFD: "VERDEFNUM",
+    0x6FFFFFFE: "VERNEED",
+    0x6FFFFFFF: "VERNEEDNUM",
+    0x7FFFFFFD: "AUXILIARY",
+    0x7FFFFFFF: "FILTER",
+}
+
+# Tags whose value is an offset into the dynamic string table.
+_DT_STRING_TAGS = frozenset({_DT_NEEDED, _DT_SONAME, _DT_RPATH, _DT_RUNPATH})
+
+_DF_BITS = (
+    (0x1, "ORIGIN"),
+    (0x2, "SYMBOLIC"),
+    (0x4, "TEXTREL"),
+    (0x8, "BIND_NOW"),
+    (0x10, "STATIC_TLS"),
+)
+_DF_TEXTREL = 0x4
+_DF_BIND_NOW = 0x8
+
+_DF_1_BITS = (
+    (0x1, "NOW"),
+    (0x2, "GLOBAL"),
+    (0x4, "GROUP"),
+    (0x8, "NODELETE"),
+    (0x10, "LOADFLTR"),
+    (0x20, "INITFIRST"),
+    (0x40, "NOOPEN"),
+    (0x80, "ORIGIN"),
+    (0x100, "DIRECT"),
+    (0x400, "INTERPOSE"),
+    (0x800, "NODEFLIB"),
+    (0x1000, "NODUMP"),
+    (0x8000000, "PIE"),
+)
+_DF_1_NOW = 0x1
+_DF_1_PIE = 0x8000000
 
 _SYM_BIND = {0: "LOCAL", 1: "GLOBAL", 2: "WEAK", 10: "GNU_UNIQUE"}
 _SYM_TYPE = {
@@ -114,6 +202,7 @@ _SYM_TYPE = {
 _MAX_SEGMENTS = 256
 
 _PT_LOAD = 1
+_PT_DYNAMIC = 2
 _PT_INTERP = 3
 _PT_GNU_STACK = 0x6474E551
 _PT_GNU_RELRO = 0x6474E552
@@ -599,5 +688,190 @@ def list_elf_segments(data: bytes) -> JsonObject:
         "nx": nx if has_gnu_stack else None,
         "relro": relro,
         "writable_executable": writable_executable,
+        "warnings": warnings,
+    }
+
+
+def _collect_phdrs(data: bytes, image: JsonObject) -> list[tuple[int, int, int, int]]:
+    """Raw (p_type, p_offset, p_vaddr, p_filesz) tuples, bounds-checked."""
+    bits: int = image["bits"]
+    endian: str = image["endian"]
+    e_phoff: int = image["e_phoff"]
+    e_phnum: int = image["e_phnum"]
+    ph_size = 56 if bits == 64 else 32
+    ph_fmt = endian + ("IIQQQQQQ" if bits == 64 else "IIIIIIII")
+    phdrs: list[tuple[int, int, int, int]] = []
+    if not (e_phoff and e_phnum):
+        return phdrs
+    for index in range(min(e_phnum, _MAX_SEGMENTS)):
+        base = e_phoff + index * ph_size
+        if base + ph_size > len(data):
+            break
+        fields = struct.unpack_from(ph_fmt, data, base)
+        if bits == 64:
+            p_type, _flags, p_offset, p_vaddr, _paddr, p_filesz = fields[:6]
+        else:
+            p_type, p_offset, p_vaddr, _paddr, p_filesz = fields[:5]
+        phdrs.append((p_type, p_offset, p_vaddr, p_filesz))
+    return phdrs
+
+
+def _vaddr_to_offset(phdrs: list[tuple[int, int, int, int]], vaddr: int) -> int | None:
+    """Map a virtual address to a file offset through the PT_LOAD segments."""
+    for p_type, p_offset, p_vaddr, p_filesz in phdrs:
+        if p_type == _PT_LOAD and p_vaddr <= vaddr < p_vaddr + p_filesz:
+            return p_offset + (vaddr - p_vaddr)
+    return None
+
+
+def list_elf_dynamic(data: bytes) -> JsonObject:
+    """Every .dynamic entry, decoded: the ``readelf -d`` view plus the verdicts.
+
+    summarize_elf pulls only the linking basics (DT_NEEDED/SONAME/RPATH/RUNPATH)
+    out of the dynamic array; this reads the whole thing -- every tag named
+    (STRTAB, SYMTAB, INIT/FINI arrays, PLTGOT, GNU_HASH, VERNEED, DEBUG, ...)
+    with its value, string tags resolved through the dynamic string table --
+    and decodes the two flag words an analyst otherwise decodes by hand:
+    DT_FLAGS (ORIGIN/SYMBOLIC/TEXTREL/BIND_NOW/STATIC_TLS) and DT_FLAGS_1
+    (NOW/NODELETE/NOOPEN/PIE/...). From those it states the verdicts directly:
+    pie (DF_1_PIE), bind_now (DT_BIND_NOW or DF_BIND_NOW or DF_1_NOW), textrel
+    (DT_TEXTREL or DF_TEXTREL, i.e. writable code at load), and relro upgraded
+    to the checksec tri-state -- ``full`` needs both the PT_GNU_RELRO segment
+    and bind-now, ``partial`` is the segment alone, ``none`` is neither.
+
+    The .dynamic array is found by section name or type; when the section
+    table is stripped it falls back to the PT_DYNAMIC program header, and the
+    string table falls back from .dynstr to DT_STRTAB mapped through PT_LOAD,
+    so a section-stripped binary still decodes. Raises ElfParseError only when
+    the bytes are not an ELF; a statically linked binary is present=false with
+    a warning, and a corrupt offset warns instead of raising.
+    """
+    image = _read_image(data)
+    bits: int = image["bits"]
+    endian: str = image["endian"]
+    warnings: list[str] = image["warnings"]
+
+    def warn(message: str) -> None:
+        if len(warnings) < _MAX_WARNINGS:
+            warnings.append(message)
+
+    phdrs = _collect_phdrs(data, image)
+
+    # Locate the dynamic array: the .dynamic section, or PT_DYNAMIC when the
+    # section table is stripped.
+    source: str | None = None
+    dyn_off = 0
+    dyn_size = 0
+    section = _section_named(image, ".dynamic")
+    if section is None:
+        for raw in image["sections"]:
+            if raw["type"] == 6:  # SHT_DYNAMIC, in case the name was mangled
+                section = raw
+                break
+    if section is not None:
+        dyn_off, dyn_size = section["offset"], section["size"]
+        source = "section"
+    else:
+        for p_type, p_offset, _p_vaddr, p_filesz in phdrs:
+            if p_type == _PT_DYNAMIC:
+                dyn_off, dyn_size = p_offset, p_filesz
+                source = "program header"
+                break
+
+    dyn_fmt = endian + ("qQ" if bits == 64 else "iI")
+    dyn_entry = 16 if bits == 64 else 8
+
+    raw_entries: list[tuple[int, int]] = []
+    if source is not None:
+        available = dyn_size // dyn_entry if dyn_size else _MAX_DYN_ENTRIES
+        for index in range(min(available, _MAX_DYN_ENTRIES)):
+            eoff = dyn_off + index * dyn_entry
+            if eoff < 0 or eoff + dyn_entry > len(data):
+                warn("dynamic section extends past end of file")
+                break
+            tag, value = struct.unpack_from(dyn_fmt, data, eoff)
+            if tag == _DT_NULL:
+                break
+            raw_entries.append((tag, value))
+    else:
+        warn("no .dynamic section or PT_DYNAMIC segment: statically linked")
+
+    # The dynamic string table: .dynstr, or DT_STRTAB mapped through PT_LOAD.
+    dynstr = _table_bytes(data, _section_named(image, ".dynstr"))
+    if not dynstr and raw_entries:
+        strtab_vaddr = next((v for t, v in raw_entries if t == _DT_STRTAB), None)
+        strsz = next((v for t, v in raw_entries if t == _DT_STRSZ), 0)
+        if strtab_vaddr is not None and strsz > 0:
+            str_off = _vaddr_to_offset(phdrs, strtab_vaddr)
+            if str_off is not None and str_off + strsz <= len(data):
+                dynstr = data[str_off : str_off + strsz]
+        if not dynstr and any(t in _DT_STRING_TAGS for t, _ in raw_entries):
+            warn("dynamic string table missing; names unavailable")
+
+    entries: list[JsonObject] = []
+    needed: list[str] = []
+    soname: str | None = None
+    rpath: str | None = None
+    runpath: str | None = None
+    df = 0
+    df_1 = 0
+    has_bind_now_tag = False
+    has_textrel_tag = False
+    for tag, value in raw_entries:
+        entry: JsonObject = {
+            "tag": _DT_NAME.get(tag, f"0x{tag:x}"),
+            "tag_raw": tag,
+            "value": f"0x{value:x}",
+        }
+        if tag in _DT_STRING_TAGS:
+            name = _name_at(dynstr, value)
+            entry["name"] = name
+            if tag == _DT_NEEDED:
+                if len(needed) < _MAX_NEEDED:
+                    needed.append(name)
+            elif tag == _DT_SONAME:
+                soname = name
+            elif tag == _DT_RPATH:
+                rpath = name
+            elif tag == _DT_RUNPATH:
+                runpath = name
+        elif tag == _DT_FLAGS:
+            df |= value
+        elif tag == _DT_FLAGS_1:
+            df_1 |= value
+        elif tag == _DT_BIND_NOW:
+            has_bind_now_tag = True
+        elif tag == _DT_TEXTREL:
+            has_textrel_tag = True
+        entries.append(entry)
+
+    flags = [name for bit, name in _DF_BITS if df & bit]
+    flags_1 = [name for bit, name in _DF_1_BITS if df_1 & bit]
+    bind_now = has_bind_now_tag or bool(df & _DF_BIND_NOW) or bool(df_1 & _DF_1_NOW)
+    textrel = has_textrel_tag or bool(df & _DF_TEXTREL)
+    pie = bool(df_1 & _DF_1_PIE)
+
+    has_relro_segment = any(p_type == _PT_GNU_RELRO for p_type, _o, _v, _s in phdrs)
+    relro = ("full" if bind_now else "partial") if has_relro_segment else "none"
+
+    return {
+        "class": f"ELF{bits}",
+        "bitness": bits,
+        "endianness": image["endian_name"],
+        "type": _ETYPE.get(image["e_type"], f"0x{image['e_type']:x}"),
+        "present": source is not None,
+        "source": source,
+        "entries": entries,
+        "entries_listed": len(entries),
+        "needed": needed,
+        "soname": soname,
+        "rpath": rpath,
+        "runpath": runpath,
+        "flags": flags,
+        "flags_1": flags_1,
+        "pie": pie,
+        "bind_now": bind_now,
+        "textrel": textrel,
+        "relro": relro,
         "warnings": warnings,
     }

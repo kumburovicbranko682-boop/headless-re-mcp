@@ -82,4 +82,26 @@ def build_elf_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.elf_segments(path))
 
+    @tools.tool(name="elf.dynamic")
+    def elf_dynamic(path: str) -> dict[str, Any]:
+        """Decode an ELF's full .dynamic array with the stdlib: readelf -d.
+
+        elf.summary pulls only the linking basics (needed/soname/rpath) out of
+        .dynamic; this lists every entry -- STRTAB, SYMTAB, INIT/FINI arrays,
+        PLTGOT, GNU_HASH, VERNEED, DEBUG, ... -- each named with its value and
+        string tags resolved, with no external tool.
+
+        Answers with entries (tag, tag_raw, value, name for string tags), the
+        convenience fields needed/soname/rpath/runpath, the decoded flag words
+        flags (DT_FLAGS: ORIGIN/SYMBOLIC/TEXTREL/BIND_NOW/STATIC_TLS) and
+        flags_1 (DT_FLAGS_1: NOW/NODELETE/NOOPEN/PIE/...), and the verdicts
+        stated directly: pie (DF_1_PIE), bind_now (DT_BIND_NOW or DF_BIND_NOW
+        or DF_1_NOW), textrel (writable code at load) and relro as the checksec
+        tri-state full/partial/none (full needs PT_GNU_RELRO plus bind-now).
+        Works on a section-stripped binary via the PT_DYNAMIC fallback; a
+        statically linked one is present=false with a warning. A file that is
+        not an ELF is invalid_params, one over 128 MiB too_large.
+        """
+        return _dump(analysis.elf_dynamic(path))
+
     return tools.bindings

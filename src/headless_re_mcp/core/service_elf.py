@@ -4,10 +4,11 @@ Native code -- an Android app's ``lib/**/*.so``, a Linux executable, an ELF
 malware sample -- could only be opened here through r2 or Ghidra, external tools
 that are not always installed. This mixin reads a standalone ELF by path with the
 stdlib alone: elf_summary returns the header/section/dependency triage,
-elf_symbols pages through the dynamic symbol table (imports and exports) and
+elf_symbols pages through the dynamic symbol table (imports and exports),
 elf_segments reads the program header table (the loadable view plus the
-interp/nx/relro/W^X security posture), so a native binary is a first-class
-thing to inspect offline. These are core,
+interp/nx/relro/W^X security posture) and elf_dynamic decodes the whole
+.dynamic array with the pie/bind_now/textrel/relro verdicts, so a native
+binary is a first-class thing to inspect offline. These are core,
 path-based tools -- no session, no target kind -- so they stay visible in every
 workspace profile.
 """
@@ -19,6 +20,7 @@ from typing import Any
 
 from headless_re_mcp.backends.common.elf import (
     ElfParseError,
+    list_elf_dynamic,
     list_elf_segments,
     list_elf_symbols,
     summarize_elf,
@@ -120,6 +122,27 @@ class ElfAnalysisMixin:
         """
         try:
             listing = list_elf_segments(_load_elf(path))
+            return _success(listing, backend="elf")
+        except _ElfFileError as exc:
+            return _err(exc.code, str(exc), **exc.details)
+        except ElfParseError as exc:
+            return _err("invalid_params", str(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def elf_dynamic(self, path: str) -> Result[JsonObject]:
+        """The full .dynamic array, decoded: ``readelf -d`` plus the verdicts.
+
+        Every dynamic entry named with its value, string tags (NEEDED/SONAME/
+        RPATH/RUNPATH) resolved, DT_FLAGS and DT_FLAGS_1 decoded into flag
+        names, and the verdicts stated directly: pie, bind_now, textrel, and
+        relro as the checksec tri-state (full/partial/none). Works even when
+        the section table is stripped, via the PT_DYNAMIC fallback. A
+        statically linked binary is present=false with a warning; the same
+        file-level failures as elf_summary apply.
+        """
+        try:
+            listing = list_elf_dynamic(_load_elf(path))
             return _success(listing, backend="elf")
         except _ElfFileError as exc:
             return _err(exc.code, str(exc), **exc.details)
