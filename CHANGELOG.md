@@ -5,6 +5,15 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（frida.memory.read 不写时间线，唯一没有审计痕迹的 frida 探针）
+
+- `frida.memory.read` 是 `service_ext` 里唯一不追加时间线行的 frida 探针：兄弟们 `frida.attach`/`frida.modules`/
+  `frida.exports`/`frida.hook.template` 都写。而读取进程任意内存恰恰是最该留审计痕迹的操作——密钥、令牌最有可能
+  正是从这里被提取——却偏偏没留。现在它和兄弟们一样追加一行 `frida.memory.read`（"frida memory read as a
+  probe"），只记 `address` 与 `size`，绝不记读回的字节（可能很大或很敏感，且已随结果返回）。新增断言到既有的
+  探针测试：spy 掉 `_timeline_append`，确认四个兄弟事件都在、且 `frida.memory.read` 这一行恰好带 `address`/`size`
+  而不含字节；旧实现少这一行即失败。
+
 ### 修复（frida.java.classes 报 has_more 却没有 offset，翻不到第一页之后的类，且返回的还是运行时任意顺序的子集）
 
 - 与刚修的 frida.modules / frida.exports 同一类缺陷，但更严重：`frida.java.classes` 用 `_page` 做无游标的

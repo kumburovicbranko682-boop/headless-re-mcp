@@ -516,6 +516,20 @@ class ExtAnalysisMixin(UiDriveMixin):
             pid = _require_debuggee_pid(self, session_id)
             client = FridaClient()
             data = client.memory_read(pid, address, size, allowed_pid=pid)
+            # Record the read in the timeline like every sibling probe (attach,
+            # modules, exports, hook all do). Reading arbitrary process memory --
+            # where a key or token most plausibly gets lifted -- is the probe most
+            # worth an audit trail, yet it was the one that left none. Only the
+            # address and size go in the row, never the bytes: those can be large
+            # or sensitive and already ride back in the result.
+            _timeline_append(
+                self,
+                session_id,
+                "frida.memory.read",
+                "frida memory read as a probe",
+                address=address,
+                size=size,
+            )
             return _success(data, session_id=session_id, backend="frida")
         except FridaError as exc:
             return _failure(XdbgRpcError(exc.code, exc.message, details=dict(exc.details)), session_id=session_id)

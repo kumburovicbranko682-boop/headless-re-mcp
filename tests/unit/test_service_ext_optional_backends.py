@@ -483,8 +483,16 @@ def _patch_frida_probe(monkeypatch: pytest.MonkeyPatch, *, pid: int = 4242) -> N
 def test_frida_probe_methods_record_and_wrap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """attach/modules/exports/memory_read/hook all wrap on a live debuggee."""
+    """attach/modules/exports/memory_read/hook all wrap and record a timeline row."""
     _patch_frida_probe(monkeypatch)
+    rows: list[tuple[str, dict[str, object]]] = []
+    real_append = service_ext._timeline_append
+
+    def _capture(service: object, session_id: str, event: str, message: str, **d: object) -> None:
+        rows.append((event, d))
+        real_append(service, session_id, event, message, **d)
+
+    monkeypatch.setattr(service_ext, "_timeline_append", _capture)
     service, session_id = _service_with_session(tmp_path)
     try:
         assert service.frida_attach(session_id).ok is True
@@ -496,6 +504,13 @@ def test_frida_probe_methods_record_and_wrap(
         assert hook.ok is True and hook.data is not None and hook.data["hooked"] is True
     finally:
         service.close_all()
+    events = {event for event, _ in rows}
+    # memory_read used to be the one probe that left no timeline row; it must now
+    # record like its siblings so an arbitrary-memory read is not invisible in
+    # the audit trail, and the row must carry the address/size (never the bytes).
+    assert {"frida.attach", "frida.modules", "frida.exports", "frida.hook"} <= events
+    memory_rows = [d for event, d in rows if event == "frida.memory.read"]
+    assert memory_rows == [{"address": 0x1000, "size": 16}]
 
 
 def test_frida_probe_methods_map_frida_errors(
