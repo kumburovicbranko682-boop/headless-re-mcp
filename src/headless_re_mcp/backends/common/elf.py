@@ -13,11 +13,15 @@ the run-time search path from the .dynamic section -- the offline
 stripped. list_elf_symbols pages through .dynsym -- the import/export surface
 that survives stripping -- naming each symbol with its binding, type and
 whether it is imported (undefined) or exported (defined and visible).
+list_elf_segments reads the program header table instead -- the loadable view
+the kernel maps (``readelf -l``) -- with each segment's type, rwx permissions
+and sizes, plus the dynamic linker path (PT_INTERP) and the nx/relro/W^X
+security posture.
 
 Both ELF classes (32- and 64-bit) and both byte orders are handled. The header
-walk is exact; the section, dynamic and symbol tables are followed defensively
--- an offset or count that leaves the file contributes a warning, not an
-exception -- and every name, list and page is bounded.
+walk is exact; the section, program, dynamic and symbol tables are followed
+defensively -- an offset or count that leaves the file contributes a warning,
+not an exception -- and every name, list and page is bounded.
 """
 
 from __future__ import annotations
@@ -107,6 +111,34 @@ _SYM_TYPE = {
     10: "GNU_IFUNC",
 }
 
+_MAX_SEGMENTS = 256
+
+_PT_LOAD = 1
+_PT_INTERP = 3
+_PT_GNU_STACK = 0x6474E551
+_PT_GNU_RELRO = 0x6474E552
+_P_TYPE = {
+    0: "NULL",
+    1: "LOAD",
+    2: "DYNAMIC",
+    3: "INTERP",
+    4: "NOTE",
+    5: "SHLIB",
+    6: "PHDR",
+    7: "TLS",
+    0x6474E550: "GNU_EH_FRAME",
+    0x6474E551: "GNU_STACK",
+    0x6474E552: "GNU_RELRO",
+    0x6474E553: "GNU_PROPERTY",
+    0x65A3DBE6: "GNU_MBIND",
+    0x6FFFFFFB: "SUNW_STACK",
+    0x70000001: "ARM_EXIDX",
+    0x70000000: "MIPS_REGINFO",
+}
+_PF_X = 0x1
+_PF_W = 0x2
+_PF_R = 0x4
+
 
 class ElfParseError(ValueError):
     """Bytes that are not an ELF binary.
@@ -116,6 +148,14 @@ class ElfParseError(ValueError):
     precise ``invalid_params`` can catch this type by name. Raised only for the
     header; a bad section, dynamic or symbol entry is a warning, not a failure.
     """
+
+
+def _prog_flags(flags: int) -> str:
+    return (
+        ("r" if flags & _PF_R else "-")
+        + ("w" if flags & _PF_W else "-")
+        + ("x" if flags & _PF_X else "-")
+    )
 
 
 def _name_at(table: bytes, offset: int) -> str:
@@ -177,11 +217,11 @@ def _read_image(data: bytes) -> JsonObject:
         e_machine,
         _e_version,
         e_entry,
-        _e_phoff,
+        e_phoff,
         e_shoff,
         e_flags,
         _e_ehsize,
-        _e_phentsize,
+        e_phentsize,
         e_phnum,
         _e_shentsize,
         e_shnum,
@@ -241,6 +281,8 @@ def _read_image(data: bytes) -> JsonObject:
         "e_machine": e_machine,
         "e_entry": e_entry,
         "e_flags": e_flags,
+        "e_phoff": e_phoff,
+        "e_phentsize": e_phentsize,
         "e_phnum": e_phnum,
         "e_shnum": e_shnum,
         "has_sections": has_sections,
@@ -457,5 +499,105 @@ def list_elf_symbols(data: bytes, *, offset: int = 0, limit: int = 200) -> JsonO
         "offset": start,
         "limit": window,
         "has_more": start + len(symbols) < total,
+        "warnings": warnings,
+    }
+
+
+def list_elf_segments(data: bytes) -> JsonObject:
+    """The program header table: the loadable view and its security posture.
+
+    Where summarize_elf reads the section table (the linker's view), this reads
+    the program headers -- the segments the kernel actually maps -- the way
+    ``readelf -l`` shows them: each with its type (LOAD, DYNAMIC, INTERP,
+    GNU_STACK, GNU_RELRO, ...), rwx permissions, file/memory offsets and sizes,
+    and alignment. It also pulls the triage an analyst reads first: the dynamic
+    linker path from PT_INTERP (interp), whether the stack is non-executable
+    (nx, from PT_GNU_STACK), whether RELRO is present (relro) and whether any
+    loadable segment is both writable and executable (writable_executable, a
+    W^X violation worth flagging).
+
+    Raises ElfParseError only when the bytes are not an ELF. A program header
+    that leaves the file contributes a warning and stops the walk; the field
+    order difference between the 32- and 64-bit phdr is handled.
+    """
+    image = _read_image(data)
+    bits: int = image["bits"]
+    endian: str = image["endian"]
+    warnings: list[str] = image["warnings"]
+
+    def warn(message: str) -> None:
+        if len(warnings) < _MAX_WARNINGS:
+            warnings.append(message)
+
+    e_phoff: int = image["e_phoff"]
+    e_phnum: int = image["e_phnum"]
+    ph_size = 56 if bits == 64 else 32
+    # The 64-bit phdr moves p_flags up next to p_type; the 32-bit one keeps it
+    # after the sizes. Two explicit layouts rather than one clever unpack.
+    ph_fmt = endian + ("IIQQQQQQ" if bits == 64 else "IIIIIIII")
+
+    segments: list[JsonObject] = []
+    interp: str | None = None
+    nx = False
+    relro = False
+    writable_executable = False
+    has_gnu_stack = False
+
+    if e_phoff and e_phnum:
+        if e_phnum > _MAX_SEGMENTS:
+            warn(f"program header count {e_phnum} exceeds cap; listing truncated")
+        for index in range(min(e_phnum, _MAX_SEGMENTS)):
+            base = e_phoff + index * ph_size
+            if base + ph_size > len(data):
+                warn(f"program header {index} is past end of file")
+                break
+            fields = struct.unpack_from(ph_fmt, data, base)
+            if bits == 64:
+                p_type, p_flags, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_align = fields
+            else:
+                p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags, p_align = fields
+            segments.append(
+                {
+                    "type": _P_TYPE.get(p_type, f"0x{p_type:x}"),
+                    "type_raw": p_type,
+                    "flags": _prog_flags(p_flags),
+                    "offset": p_offset,
+                    "vaddr": f"0x{p_vaddr:x}",
+                    "paddr": f"0x{p_paddr:x}",
+                    "filesz": p_filesz,
+                    "memsz": p_memsz,
+                    "align": p_align,
+                }
+            )
+            if p_type == _PT_INTERP and interp is None:
+                end = p_offset + p_filesz
+                if 0 <= p_offset <= end <= len(data):
+                    raw = data[p_offset:end]
+                    interp = raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")[:_MAX_NAME]
+                else:
+                    warn("PT_INTERP segment is past end of file")
+            elif p_type == _PT_GNU_STACK:
+                has_gnu_stack = True
+                nx = not (p_flags & _PF_X)
+            elif p_type == _PT_GNU_RELRO:
+                relro = True
+            if p_type == _PT_LOAD and (p_flags & _PF_W) and (p_flags & _PF_X):
+                writable_executable = True
+    elif not e_phoff:
+        warn("no program header table (a relocatable object or a corrupt file)")
+
+    return {
+        "class": f"ELF{bits}",
+        "bitness": bits,
+        "endianness": image["endian_name"],
+        "type": _ETYPE.get(image["e_type"], f"0x{image['e_type']:x}"),
+        "entry": f"0x{image['e_entry']:x}",
+        "segment_count": e_phnum,
+        "segments": segments,
+        "segments_listed": len(segments),
+        "interp": interp,
+        "nx": nx if has_gnu_stack else None,
+        "relro": relro,
+        "writable_executable": writable_executable,
         "warnings": warnings,
     }

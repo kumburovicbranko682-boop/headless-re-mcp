@@ -63,4 +63,23 @@ def build_elf_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.elf_symbols(path, offset=offset, limit=limit))
 
+    @tools.tool(name="elf.segments")
+    def elf_segments(path: str) -> dict[str, Any]:
+        """List an ELF's program headers (loadable segments) with the stdlib.
+
+        Where elf.summary reads the section table (the linker's view), this
+        reads the program header table -- the segments the kernel actually maps
+        -- with no external tool: the offline readelf -l triage.
+
+        Answers with one entry per segment (type LOAD/DYNAMIC/INTERP/GNU_STACK/
+        GNU_RELRO/..., rwx flags, file offset, vaddr/paddr, filesz/memsz, align)
+        and the security posture an analyst reads first: interp (the dynamic
+        linker path from PT_INTERP), nx (non-executable stack, from
+        PT_GNU_STACK; null when the binary has no GNU_STACK), relro (PT_GNU_RELRO
+        present) and writable_executable (a loadable segment that is both W and
+        X -- a W^X violation). A program header past end of file is a warning. A
+        file that is not an ELF is invalid_params, one over 128 MiB too_large.
+        """
+        return _dump(analysis.elf_segments(path))
+
     return tools.bindings

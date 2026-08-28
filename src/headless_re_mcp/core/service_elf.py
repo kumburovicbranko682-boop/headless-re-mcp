@@ -3,9 +3,11 @@
 Native code -- an Android app's ``lib/**/*.so``, a Linux executable, an ELF
 malware sample -- could only be opened here through r2 or Ghidra, external tools
 that are not always installed. This mixin reads a standalone ELF by path with the
-stdlib alone: elf_summary returns the header/section/dependency triage and
-elf_symbols pages through the dynamic symbol table (imports and exports), so a
-native binary is a first-class thing to inspect offline. These are core,
+stdlib alone: elf_summary returns the header/section/dependency triage,
+elf_symbols pages through the dynamic symbol table (imports and exports) and
+elf_segments reads the program header table (the loadable view plus the
+interp/nx/relro/W^X security posture), so a native binary is a first-class
+thing to inspect offline. These are core,
 path-based tools -- no session, no target kind -- so they stay visible in every
 workspace profile.
 """
@@ -15,7 +17,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from headless_re_mcp.backends.common.elf import ElfParseError, list_elf_symbols, summarize_elf
+from headless_re_mcp.backends.common.elf import (
+    ElfParseError,
+    list_elf_segments,
+    list_elf_symbols,
+    summarize_elf,
+)
 from headless_re_mcp.core.limits import ELF_SUMMARY_MAX_BYTES
 from headless_re_mcp.core.models import Result, RpcError
 from headless_re_mcp.core.results import _failure, _success
@@ -93,6 +100,26 @@ class ElfAnalysisMixin:
         """
         try:
             listing = list_elf_symbols(_load_elf(path), offset=offset, limit=limit)
+            return _success(listing, backend="elf")
+        except _ElfFileError as exc:
+            return _err(exc.code, str(exc), **exc.details)
+        except ElfParseError as exc:
+            return _err("invalid_params", str(exc))
+        except BaseException as exc:
+            return _failure(exc)
+
+    def elf_segments(self, path: str) -> Result[JsonObject]:
+        """The ELF program header table: loadable segments and security posture.
+
+        Reads the program headers -- the segments the kernel maps -- the way
+        ``readelf -l`` shows them: each with type, rwx permissions, offsets and
+        sizes; plus the dynamic linker path from PT_INTERP, whether the stack is
+        non-executable (nx), whether RELRO is present (relro) and whether any
+        loadable segment is both writable and executable (a W^X violation). The
+        same file-level failures as elf_summary apply.
+        """
+        try:
+            listing = list_elf_segments(_load_elf(path))
             return _success(listing, backend="elf")
         except _ElfFileError as exc:
             return _err(exc.code, str(exc), **exc.details)
