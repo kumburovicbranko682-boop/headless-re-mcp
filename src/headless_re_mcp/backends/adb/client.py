@@ -15,6 +15,7 @@ import shutil
 import stat
 import threading
 import zipfile
+from contextlib import suppress
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
@@ -708,6 +709,21 @@ class AdbBackend:
                 "screenshot exceeds capture cap",
                 size=size,
                 cap=UNREGISTERED_CAPTURE_MAX_BYTES,
+            )
+        if size <= 0:
+            # image.save can return without leaving a usable PNG: a device that
+            # captured nothing, or a stub image whose save wrote a zero-byte (or
+            # no) file. capped_file_size reports 0 for both an empty and a
+            # missing file, so without this the reply is a size-0 "success" the
+            # caller opens as a real screenshot and reads as a blank screen.
+            # pull already refuses the same size-0 outcome; keep the two capture
+            # paths symmetric rather than pass an empty file off as a shot.
+            with suppress(OSError):
+                out_path.unlink()
+            raise AdbError(
+                "backend_error",
+                "screenshot produced no image file",
+                path=str(out_path),
             )
         return {
             "path": str(out_path),

@@ -55,6 +55,16 @@ class _Sync:
         self.pushed = (local, remote)
 
 
+class _Image:
+    """A fake adbutils screenshot whose save writes a caller-chosen byte count."""
+
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def save(self, path: str) -> None:
+        Path(path).write_bytes(self._payload)
+
+
 class _FakeDev:
     """Routes install/uninstall/shell/sync for the lifecycle and transfer tests."""
 
@@ -64,12 +74,20 @@ class _FakeDev:
         pm_path_output: str = "",
         pm_path_raises: bool = False,
         sync: _Sync | None = None,
+        image: _Image | None = None,
     ) -> None:
         self._pm_path_output = pm_path_output
         self._pm_path_raises = pm_path_raises
         self.sync = sync
+        self._image = image
         self.installed: str | None = None
         self.uninstalled: str | None = None
+
+    def screenshot(self, timeout: float | None = None) -> _Image:
+        del timeout
+        if self._image is None:
+            raise RuntimeError("screenshot unavailable")
+        return self._image
 
     def install(self, path: str, timeout: float | None = None, **kwargs: Any) -> None:
         del timeout, kwargs
@@ -287,3 +305,30 @@ def test_push_returns_the_size_on_success(tmp_path: Path) -> None:
     assert payload["size"] == 5
     assert payload["remote"] == "/sdcard/small.bin"
     assert sync.pushed == (str(small), "/sdcard/small.bin")
+
+
+def test_screenshot_returns_the_size_on_success(tmp_path: Path) -> None:
+    """A capture that saved real bytes reports its size as a normal success."""
+    dev = _FakeDev(image=_Image(b"\x89PNG\r\n\x1a\n" + b"x" * 64))
+    out = tmp_path / "shot.png"
+    payload = _backend_with(dev).screenshot("emulator-5554", out)
+    assert payload["size"] == 72
+    assert payload["path"] == str(out)
+    assert out.is_file()
+
+
+def test_screenshot_refuses_an_empty_capture(tmp_path: Path) -> None:
+    """image.save writing zero bytes must not read as a size-0 success.
+
+    A size-0 payload is a capture that produced no usable PNG; returned as a
+    successful path the caller opens it and sees a blank screen. The backend
+    must delete the empty file and raise instead, the same refusal pull makes
+    for a size-0 transfer.
+    """
+    dev = _FakeDev(image=_Image(b""))
+    out = tmp_path / "empty.png"
+    with pytest.raises(AdbError) as excinfo:
+        _backend_with(dev).screenshot("emulator-5554", out)
+    assert excinfo.value.code == "backend_error"
+    assert "no image file" in str(excinfo.value)
+    assert not out.exists()
