@@ -506,23 +506,27 @@ class AdbBackend:
         text = str(raw)
         if _is_host_error_output(text):
             raise AdbError("backend_error", "pm list failed", output=text[:800])
-        pkgs: list[str] = []
-        has_more = False
+        names: list[str] = []
         for line in text.splitlines():
             if not line.startswith("package:"):
                 continue
             name = line.split(":", 1)[1].strip()
-            if not name:
-                continue
-            if len(pkgs) >= capped:
-                has_more = True
-                break
-            pkgs.append(name)
-        pkgs.sort()
+            if name:
+                names.append(name)
+        # Sort the whole list before cutting, so the page is the alphabetically
+        # first `capped` names -- a real sorted prefix. Sorting the collected
+        # page instead (break at the cap, then sort) only reorders whichever
+        # names pm happened to print first: on a device holding more packages
+        # than the limit that page looks like a sorted prefix but is an
+        # arbitrary subset, and the caller has no way to tell which packages it
+        # never saw. The raw dump is already fully in memory, so collecting
+        # every name adds no unbounded cost over the splitlines above.
+        names.sort()
+        page = names[:capped]
         return {
-            "packages": pkgs,
-            "count": len(pkgs),
-            "has_more": has_more,
+            "packages": page,
+            "count": len(page),
+            "has_more": len(names) > capped,
             "third_party_only": third_party_only,
         }
 

@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（device.packages 在超出上限时返回的是伪装成有序前缀的任意子集）
+
+- `backends/adb/client.py` 的 `packages()` 此前是「先按 pm 打印顺序收集到 `capped` 个就
+  停，再对这一页排序」。pm 的输出顺序是任意的，于是当设备上的包数超过调用方给的
+  `limit`（默认 500，很多设备都会超）时，返回的这一页看起来像有序前缀、实则是 pm 恰好
+  先打印出来的那批包重新排了个序——调用方既拿不到真正字母序靠前的那些包，也无从得知自己
+  漏掉了哪些（有 `has_more` 但无 offset 分页）。
+- 改法：先把全部包名收集齐、整体排序，再切出前 `capped` 个作为这一页，`has_more` 按总数是否
+  超过 `capped` 计算。这样这一页永远是「字母序最靠前的 `capped` 个」这一真正的有序前缀，超出
+  上限时的取舍也变得确定、可复现。原始 dump 本就已全量读进内存（`text.splitlines()`），因此
+  收齐全部包名不引入新的无界开销。
+- 加固既有用例 `test_packages_reports_has_more_and_returns_the_sorted_prefix`
+  （原 `..._and_sorts_the_page`）：旧断言只检查这一页「已排序且是五个包的某个子集」，对
+  bug 免疫（sort-after-cap 也能通过）；现钉死 `packages == ["com.a", "com.b", "com.c"]`。
+  非空验证：临时改回 sort-after-cap 后该用例失败，返回 `["com.c", "com.d", "com.e"]`（即 pm
+  先打印的前三个重排序），与预期前缀不符。`properties`/`logcat` 等既有上限用例不受影响。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

@@ -98,8 +98,18 @@ def test_logcat_clamps_the_requested_line_count() -> None:
     assert dev.calls == [["logcat", "-d", "-t", "5000"]]
 
 
-def test_packages_reports_has_more_and_sorts_the_page() -> None:
-    """A list longer than the cap says has_more and comes back sorted."""
+def test_packages_reports_has_more_and_returns_the_sorted_prefix() -> None:
+    """A list longer than the cap says has_more and returns the sorted prefix.
+
+    The device prints packages in an arbitrary order (here reverse-sorted). A
+    caller asking for fewer packages than the device holds must get the
+    alphabetically first ``limit`` of them -- a real sorted prefix -- not
+    whichever ``limit`` pm happened to print first, reordered for display. The
+    latter looks like a sorted prefix but is an arbitrary subset, so the
+    packages the caller never sees are undefined. Pinning the exact prefix is
+    what makes this non-vacuous: sorting only the collected page would return
+    ``com.c/com.d/com.e`` here (the first three printed) and fail this.
+    """
     listing = "\n".join(
         f"package:{name}" for name in ("com.e", "com.d", "com.c", "com.b", "com.a")
     )
@@ -108,8 +118,7 @@ def test_packages_reports_has_more_and_sorts_the_page() -> None:
     assert payload["count"] == 3
     assert payload["has_more"] is True
     assert payload["third_party_only"] is False
-    assert payload["packages"] == sorted(payload["packages"])
-    assert set(payload["packages"]) <= {"com.a", "com.b", "com.c", "com.d", "com.e"}
+    assert payload["packages"] == ["com.a", "com.b", "com.c"]
 
 
 def test_packages_complete_list_is_not_labelled_partial() -> None:
