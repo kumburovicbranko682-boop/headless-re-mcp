@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Android 静态门：让 androguard 的事实断言只靠 `[android]` extra 就能跑，新增 APK 夹具兜底）
+
+`test_android_static_re_gate` 的 androguard 用例此前把待测 APK 卡在 **apktool + aapt2** 构建链后面（要用它们
+在测试时现建一个 APK），于是就算装了 androguard，没有 aapt2/apktool 也跑不了这条——而 androguard 是 pip
+`[android]` 就能装的，aapt2/apktool 通常没有。结果：这条最容易具备的 Android 静态覆盖，实际几乎总是 skip。
+
+- 新增 `fixtures/android/static_sample.apk`：一个**真实、已签名**的最小 APK（Android SDK 一次性构建：aapt 打
+  包的二进制清单 + d8 的 DEX + apksigner v1+v2 签名；配方见 `fixtures/android/README.md`），刻意做成与门里既有
+  常量**完全一致**（包 `com.example.headless`、类 `com.example.MainActivity`、方法 `compute`/`run`、权限
+  `INTERNET`、`run`→`compute` 的 xref），像 `fixtures/upx/*.exe`、`fixtures/dotnet/minimal_clr_hint.exe` 一样
+  以二进制夹具入库。
+- `test_androguard_extracts_real_apk_facts` 改为：有 apktool+aapt2 时照旧现建 APK（真构建路径仍被走到），否则
+  **兜底到该夹具**——两条路径的断言完全相同（包名/启动 Activity/权限/类/方法/xref）。skip 收窄为「androguard 未
+  装、且夹具也不在」才 skip。jadx / apktool 两条用例一字未改，仍在测试时自建目标、缺工具则干净 skip。
+
+净效果：只装 androguard（无 aapt2/apktool）时，这条 androguard 用例从「必然 skip」变成「真跑并断言真内容」。
+已实测：androguard 4.1.4、无 apktool/aapt2 环境下，androguard 用例经夹具兜底通过（jadx/apktool 用例照常 skip）。
+
 ### 测试（WASM 静态 wabt 稳健性门：魔数校验 + 损坏模块的错误契约（两条分支）+ 输入大小上界）
 
 `test_web_re_gate` 覆盖了 wabt 的顺风路径（`wasm.wat` 反汇编真实模块、`wasm.info` 列举 section），但三件事

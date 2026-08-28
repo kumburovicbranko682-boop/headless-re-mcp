@@ -23,16 +23,21 @@ the product clients over it:
   methods, and the caller cross-reference of one method -- the metadata backbone
   the apk.* tools expose.
 
-The real APK is assembled here with apktool's own bundled smali assembler plus
-aapt2, from a hand-written manifest and smali class -- no committed binary
-fixture, matching how the PE line builds its fixture rather than tracking one.
+The jadx and apktool tests assemble their target at test time (jadx from a
+JDK-built JAR; apktool from a hand-written manifest + smali via its bundled
+assembler and aapt2), so they need no tracked binary. The androguard test builds
+the same way when apktool+aapt2 are present, but otherwise falls back to a small
+committed APK (``fixtures/android/static_sample.apk``, carrying the exact same
+package/class/methods/permission -- see ``fixtures/android/README.md``): androguard
+is a pip ``[android]`` install while aapt2/apktool usually are not, so this is what
+lets the androguard facts stay verifiable without the heavier build chain.
 
 skip != pass: each test skips only when the tool it needs is genuinely absent
 (jadx / apktool / androguard not configured, no JDK to compile the JAR, no aapt2
-to link the APK), and never silently. The arithmetic the class computes
-(a * b + 7) and the run->compute call are asserted in the recovered Java, smali
-and xrefs, so a pass means the tool actually reconstructed the code, not merely
-emitted some file.
+to link the APK, and no committed fixture for the androguard fallback), and never
+silently. The arithmetic the class computes (a * b + 7) and the run->compute call
+are asserted in the recovered Java, smali and xrefs, so a pass means the tool
+actually reconstructed the code, not merely emitted some file.
 """
 
 from __future__ import annotations
@@ -58,6 +63,10 @@ _PERMISSION = "android.permission.INTERNET"
 # ``run`` calls ``compute``; androguard should recover that caller as an xref.
 _CALLEE = "compute"
 _CALLER = "run"
+# The committed real APK the androguard test falls back to when apktool+aapt2 are
+# not available to build one. It is built to carry exactly the constants above, so
+# every assertion below holds whether the APK was built here or read from disk.
+_FIXTURE_APK = Path(__file__).resolve().parents[2] / "fixtures" / "android" / "static_sample.apk"
 
 # One class, one method computing a * b + 7. Trivial but distinctive: the
 # multiply-then-add-7 survives both the .class->Java and the smali->dex->Java
@@ -282,12 +291,15 @@ def test_apktool_decodes_a_real_apk(tmp_path: Path) -> None:
 def test_androguard_extracts_real_apk_facts(tmp_path: Path) -> None:
     if not ApkClient().available:
         pytest.skip("androguard not installed (android extra) — not run (skip≠pass)")
+    # Build a fresh APK when the apktool+aapt2 chain is present, so the real build
+    # path is exercised too; otherwise fall back to the committed fixture so the
+    # androguard facts stay verifiable with just the [android] extra.
     apktool = getattr(Settings.load(), "apktool", None)
-    if apktool is None:
-        pytest.skip("apktool not configured; cannot build a test APK — skip≠pass")
-    apk = _build_real_apk(tmp_path, apktool)
+    apk = _build_real_apk(tmp_path, apktool) if apktool is not None else None
+    if apk is None and _FIXTURE_APK.is_file():
+        apk = _FIXTURE_APK
     if apk is None:
-        pytest.skip("could not build a test APK (needs aapt2 for apktool build) — skip≠pass")
+        pytest.skip("no APK: need apktool+aapt2 to build one, or the committed fixture — skip≠pass")
 
     # A real APK must classify as one; the synthetic gate proves the fake zip
     # does too, so this pins that the genuine article is not mis-routed.
