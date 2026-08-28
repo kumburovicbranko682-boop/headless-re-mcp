@@ -179,6 +179,50 @@ def test_report_cell_carriage_returns_cannot_break_a_table_row() -> None:
     assert not lines[row_index + 1].startswith("| injected")
 
 
+def test_report_finding_value_says_when_it_dropped_keys() -> None:
+    """A value dict wider than the 4-key summary must disclose the drop.
+
+    _summarize_value shows the first four key=value pairs of a finding value.
+    A finding recorded with more (say name/address/signature/callers/notes)
+    otherwise rendered a cell that read as the whole value while silently
+    dropping the rest -- the same "reads as complete and was not" gap the
+    section notes close, one level down. A value with four or fewer keys still
+    gets no suffix.
+    """
+    exactly_four = render_markdown_report(
+        session=_SESSION,
+        knowledge={
+            "entries": [
+                {
+                    "kind": "function",
+                    "key": "f",
+                    "value": {"a": 1, "b": 2, "c": 3, "d": 4},
+                    "updated_at": "t",
+                }
+            ]
+        },
+        generated_at="t",
+    )
+    assert "more)" not in exactly_four
+
+    six_keys = render_markdown_report(
+        session=_SESSION,
+        knowledge={
+            "entries": [
+                {
+                    "kind": "function",
+                    "key": "f",
+                    "value": {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6},
+                    "updated_at": "t",
+                }
+            ]
+        },
+        generated_at="t",
+    )
+    # Two keys past the four shown are disclosed rather than dropped in silence.
+    assert "… (+2 more)" in six_keys
+
+
 def test_report_states_empty_sections_explicitly() -> None:
 
     markdown = render_markdown_report(session=_SESSION, generated_at="t")

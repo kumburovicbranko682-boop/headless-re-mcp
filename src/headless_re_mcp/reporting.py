@@ -99,7 +99,23 @@ def _summarize_value(value: object) -> str:
 
             return "—"
 
-        return ", ".join(f"{key}={_cell(item)}" for key, item in list(value.items())[:4])
+        items = list(value.items())
+
+        shown = ", ".join(f"{key}={_cell(item)}" for key, item in items[:4])
+
+        # Say when the value held more keys than the four this summary shows.
+        # Without it the cell reads as the whole finding value, and a dropped
+        # key is a detail the report never mentions -- the same silent
+        # truncation the section notes disclose, one level down at the value
+        # cell. (The outer _cell still clips the joined line to _MAX_CELL, so a
+        # long four-key summary keeps its own "…"; this covers the short-values,
+        # many-keys case where nothing otherwise signalled the drop.)
+
+        if len(items) > 4:
+
+            shown += f", … (+{len(items) - 4} more)"
+
+        return shown
 
     return _cell(value)
 
