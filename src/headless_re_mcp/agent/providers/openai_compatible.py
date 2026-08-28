@@ -125,6 +125,28 @@ def _sse_payload(line: str) -> str | None:
     return None
 
 
+def _tool_call_index(raw_call: dict[str, Any], position: int) -> int:
+    """The fragment slot for one tool call: its streamed ``index`` or its position.
+
+    Streaming deltas carry an integer ``index`` that ties every fragment of one
+    call together, so accumulation must key on it. A non-streaming ``message.
+    tool_calls`` snapshot carries no ``index`` at all, and defaulting the whole
+    list to 0 concatenated the id, name and arguments of every parallel call
+    into one fragment whose JSON then failed to parse -- rejecting the entire
+    turn. Falling back to the position within this batch keeps each snapshot
+    call in its own slot while a single streamed call (position 0 on every
+    delta) still accumulates. A null or non-numeric ``index`` (a malformed
+    provider) is treated as missing rather than raising TypeError/ValueError.
+    """
+    raw_index = raw_call.get("index")
+    if isinstance(raw_index, bool) or raw_index is None:
+        return position
+    try:
+        return int(raw_index)
+    except (TypeError, ValueError):
+        return position
+
+
 def _ingest_tool_calls(
     calls: Any,
     tool_fragments: dict[int, dict[str, str]],
@@ -134,10 +156,10 @@ def _ingest_tool_calls(
     if not isinstance(calls, list):
         return tool_buffer_bytes, []
     pieces: list[str] = []
-    for raw_call in calls:
+    for position, raw_call in enumerate(calls):
         if not isinstance(raw_call, dict):
             continue
-        index = int(raw_call.get("index", 0))
+        index = _tool_call_index(raw_call, position)
         if index not in tool_fragments and len(tool_fragments) >= _MAX_TOOL_CALLS:
             raise ValueError(
                 "provider tool-call count exceeded "

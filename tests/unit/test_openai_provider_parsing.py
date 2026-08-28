@@ -225,6 +225,61 @@ def test_ingest_defaults_a_missing_index_to_zero() -> None:
     assert frags[0]["name"] == "n"
 
 
+def test_ingest_gives_parallel_snapshot_calls_their_own_slots() -> None:
+    # A non-streaming message.tool_calls snapshot carries no per-call index.
+    # Defaulting them all to 0 concatenated every call's id/name/arguments into
+    # one fragment whose JSON then failed to parse, rejecting the whole turn.
+    # Each parallel call must land in its own slot instead.
+    frags: dict[int, dict[str, str]] = {}
+    oc._ingest_tool_calls(
+        [
+            {"id": "call_a", "function": {"name": "read", "arguments": '{"p":"a"}'}},
+            {"id": "call_b", "function": {"name": "list", "arguments": '{"p":"b"}'}},
+        ],
+        frags,
+        0,
+    )
+    assert set(frags) == {0, 1}
+    assert (frags[0]["id"], frags[0]["name"], frags[0]["arguments"]) == (
+        "call_a",
+        "read",
+        '{"p":"a"}',
+    )
+    assert (frags[1]["id"], frags[1]["name"], frags[1]["arguments"]) == (
+        "call_b",
+        "list",
+        '{"p":"b"}',
+    )
+
+
+def test_ingest_tolerates_a_null_or_non_numeric_index() -> None:
+    # A malformed provider that sends index=null (or a non-numeric value) must
+    # not crash the stream with a raw TypeError/ValueError; treat it as missing
+    # and fall back to the call's position, the same as an absent index.
+    frags: dict[int, dict[str, str]] = {}
+    oc._ingest_tool_calls(
+        [
+            {"index": None, "function": {"name": "a", "arguments": "{}"}},
+            {"index": "bogus", "function": {"name": "b", "arguments": "{}"}},
+        ],
+        frags,
+        0,
+    )
+    assert set(frags) == {0, 1}
+    assert frags[0]["name"] == "a"
+    assert frags[1]["name"] == "b"
+
+
+def test_ingest_accumulates_one_streamed_call_across_indexless_deltas() -> None:
+    # Streaming a single call whose deltas omit index must still accumulate into
+    # one fragment (position 0 on every delta), not fan out into new slots.
+    frags: dict[int, dict[str, str]] = {}
+    oc._ingest_tool_calls([{"id": "c", "function": {"name": "do", "arguments": '{"a":'}}], frags, 0)
+    oc._ingest_tool_calls([{"function": {"arguments": "1}"}}], frags, 0)
+    assert set(frags) == {0}
+    assert frags[0]["arguments"] == '{"a":1}'
+
+
 def test_ingest_does_not_duplicate_an_id_or_name_already_seen() -> None:
     frags = {0: {"id": "call-a", "name": "session.get", "arguments": ""}}
     total, pieces = oc._ingest_tool_calls(
