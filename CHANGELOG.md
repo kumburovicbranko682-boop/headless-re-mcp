@@ -10,6 +10,8 @@ Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；�
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
+状态跨真实服务重启的持久化新增经两进程 MCP stdio 服务的端到端 Gate（`tests/integration/test_session_persistence_restart_gate.py`）。无人值守部署会重启——有意的或崩溃后的——起来干活的进程已不是当初那个,故什么能越过这道边界是承重面:到达新进程的运维者(或 Agent)必须能盘点它启动前发生过什么,而一次已完成分析产出的制品必须仍是分毫不差的那份字节。存储是 artifact root 下的 SQLite 加文件,故指向同一 root 的第二个进程继承这份记录。既有 M12 persist gate 是 Windows-only;本 gate 纯 Python、任意平台,顺序跑两个真实 serve 进程验两条路径(干净结束与崩溃留痕在服务端处理方式本就不同):**干净结束**的会话(开→干活→关)在重启后从活视图消失——既不在 `session.list` 也不在 `sessions.unclean`——但其记录持久:`audit.list` 仍见 create 与 close、`timeline.list` 仍见痕迹、它生成的报告仍被列出且可按第一个进程报的同一 sha256 逐字节读回(内容寻址若不跨重启幸存便是毁诺);活态作用域的读诚实交代断层——对已死会话 `knowledge.query` 答 `session_not_found` 而非假装。**崩溃遗弃**的会话(开着、从未关闭)在新 registry 里被 hydrate 成休眠会话,故同时出现在 `session.list` 与 `sessions.unclean` 且存储身份完好——这正是重启后的机器暴露待清理工作的方式;其健康被诚实上报:实无任何后端附着,`session.health` 答 `healthy=None` 而非假的全清。纯 stdlib、stdio 回环、无后端、任意平台。
+
 新增 Linux x86_64 核心支持：wheel/sdist 与 `scripts/install-linux.sh` 可安装，`doctor --strict` 以平台动态必需项判断就绪，`serve` / `serve-web`、会话、制品和可移植后端可在 Linux 加载。doctor 与 `/readyz` 现在报告 `full`（Windows）或 `core`（Linux）支持级别。
 
 x64dbg、WinDbg/cdb、Win32 UI/UIA/SendInput/Windows OCR、hidden desktop、MSI/WiX 及现有 Windows 专用 unpacker 适配在 Linux 明确报告 `unsupported_on_platform`，不再伪装 ready，也不阻塞 Linux 核心就绪。Windows 的原有 required 探针与 MSI/PowerShell 路径保留；IDA 探测同时识别 Windows `idalib.dll` 与 Linux `libidalib.so`。
