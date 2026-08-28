@@ -15,6 +15,7 @@ import os
 import shutil
 import tempfile
 from contextlib import suppress
+from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
@@ -432,6 +433,27 @@ class DynamicInspectMixin:
                         "max_dump_bytes": MAX_MODULE_DUMP_BYTES,
                     },
                 ),
+            )
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not isfinite(timeout)
+            or timeout <= 0
+        ):
+            # Unlike its DynamicInspectMixin siblings, modules.dump drives
+            # worker.request directly (it interleaves modules.list before and
+            # after the dump), so it never passes through _dynamic_request and
+            # its timeout guard. The tool schema bounds timeout gt=0, but the
+            # agent transport invokes the handler from raw model arguments, so a
+            # non-numeric value would reach min(timeout, 30.0) and raise a
+            # TypeError -- which the except BaseException below files as an
+            # internal_error incident -- a NaN would pass min() through to
+            # worker.request(timeout=nan) and wedge the call, and a negative one
+            # would be a deadline that returns at once. Reject it here the same
+            # way _dynamic_request does.
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(code="invalid_params", message="timeout must be a positive number"),
             )
         output_path: Path | None = None
         try:

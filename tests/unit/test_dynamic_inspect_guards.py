@@ -145,6 +145,22 @@ def test_modules_dump_rejects_a_non_positive_size(service: Any, session_id: str)
     assert _code(service.modules_dump(session_id, 0x140000000, size=0)) == "invalid_params"
 
 
+@pytest.mark.parametrize(
+    "bad_timeout",
+    ["soon", None, {}, True, float("nan"), float("inf"), 0, -1.0],
+    ids=["str", "none", "dict", "bool", "nan", "inf", "zero", "negative"],
+)
+def test_modules_dump_rejects_a_bad_timeout(
+    service: Any, session_id: str, bad_timeout: Any
+) -> None:
+    # modules.dump drives worker.request directly instead of _dynamic_request,
+    # so its timeout needs its own guard: a bad value would otherwise reach
+    # min(timeout, 30.0) and file an internal_error incident (or wedge on NaN)
+    # rather than the invalid_params it should be.
+    result = service.modules_dump(session_id, 0x140000000, size=0x100, timeout=bad_timeout)
+    assert _code(result) == "invalid_params"
+
+
 def test_imports_scan_rejects_an_unknown_mode(service: Any, session_id: str) -> None:
     assert _code(service.imports_scan(session_id, 0x140000000, mode="sideways")) == "invalid_params"
 
