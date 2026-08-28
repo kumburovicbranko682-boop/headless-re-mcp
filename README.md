@@ -136,7 +136,7 @@ OpenAI 不允许函数名带点，导出会做安全名转换并附 `name_map` �
 - Android 改包：`apk.decode/repack/sign`（apktool + apksigner；`apk.sign` 缺省用 Android debug keystore）
 - Android 设备：`device.list/connect/info/properties/packages/install/uninstall/launch/force_stop/current_activity/logcat/screenshot/pull/push/forward`
 - Android 动态：`frida.devices/device.connect/server.ensure/applications/spawn/java.classes/java.methods`；hook 复用 `frida.hook.template`（含 `android_ssl_unpin` / `android_crypto_monitor` / `android_root_bypass`）
-- Web 静态：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）；WASM 反编译复用 `ghidra.*` + ghidra-wasm-plugin
+- Web 静态：`js.deobfuscate/beautify/unpack_bundle`（webcrack）、`wasm.info/wat`（wabt）；WASM 反编译复用 `ghidra.*`——把 ghidra-wasm-plugin 的 WebAssembly 扩展装进 `<ghidra_home>/Ghidra/Extensions` 后，对 `.wasm` 会话直接 `ghidra.analyze/functions/decompile`（Ghidra 无内建 wasm loader，未装扩展则不可用；`doctor` 的 `ghidra_wasm` 探针会报是否就绪）
 - Web 动态：`web.open/navigate/close/network.list/network.get/console/scripts/script.source/wasm.list/dom.snapshot/screenshot/har.export`（Playwright 驱动 CDP）
 - 抓包（Web 与 Android 共用）：`proxy.start/stop/status/flows/flow.get/replay/export_har/ca.install_android`（mitmproxy 进程内）
 - 工作方向：`workspace.mode.get/set`（`full|pe|android|web`）

@@ -36,6 +36,7 @@ from headless_re_mcp.doctor import (
     probe_die,
     probe_exeinfope,
     probe_ghidra,
+    probe_ghidra_wasm,
     probe_ida,
     probe_native_toolchain,
     probe_net_reactor_slayer,
@@ -621,3 +622,30 @@ def test_probe_ghidra_ready_with_java(tmp_path: Path, monkeypatch: pytest.Monkey
     probe = probe_ghidra(_settings(tmp_path, ghidra_home=tmp_path / "ghidra"))
     assert probe.status == ProbeStatus.READY
     assert probe.details["java"] == "/usr/bin/java"
+
+
+def test_probe_ghidra_wasm_missing_without_home(tmp_path: Path) -> None:
+    probe = probe_ghidra_wasm(_settings(tmp_path, ghidra_home=None))
+    assert probe.status == ProbeStatus.MISSING
+    assert probe.name == "ghidra_wasm"
+    # The dead config field finally has a remediation hint attached to it.
+    assert probe.remediation and "HEADLESS_RE_GHIDRA_WASM_PLUGIN" in probe.remediation
+
+
+def test_probe_ghidra_wasm_missing_when_extension_absent(tmp_path: Path) -> None:
+    (tmp_path / "ghidra" / "Ghidra" / "Extensions").mkdir(parents=True)
+    probe = probe_ghidra_wasm(_settings(tmp_path, ghidra_home=tmp_path / "ghidra"))
+    assert probe.status == ProbeStatus.MISSING
+    assert "not installed" in probe.summary
+
+
+def test_probe_ghidra_wasm_ready_when_extension_installed(tmp_path: Path) -> None:
+    # An extension is recognised by its name=WebAssembly marker, not its dir name.
+    ext = tmp_path / "ghidra" / "Ghidra" / "Extensions" / "some-wasm-dir"
+    ext.mkdir(parents=True)
+    (ext / "extension.properties").write_text(
+        "name=WebAssembly\nversion=12.0\n", encoding="utf-8"
+    )
+    probe = probe_ghidra_wasm(_settings(tmp_path, ghidra_home=tmp_path / "ghidra"))
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["extension"] == str(ext)

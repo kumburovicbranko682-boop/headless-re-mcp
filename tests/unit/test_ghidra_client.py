@@ -453,3 +453,29 @@ def test_ghidra_keeps_a_genuinely_empty_listing_on_a_clean_exit(
     listed = client.functions(_binary(tmp_path), tmp_path / "project")
 
     assert listed["items"] == []
+
+
+def test_wasm_plugin_installed_none_when_home_missing() -> None:
+    assert ghidra_client.wasm_plugin_installed(None) is None
+
+
+def test_wasm_plugin_installed_ignores_non_wasm_extensions(tmp_path: Path) -> None:
+    extensions = tmp_path / "Ghidra" / "Extensions"
+    other = extensions / "SomethingElse"
+    other.mkdir(parents=True)
+    (other / "extension.properties").write_text("name=SomethingElse\n", encoding="utf-8")
+    # No WebAssembly extension present, and a dir without a properties file must
+    # be skipped rather than raising.
+    (extensions / "bare").mkdir()
+    assert ghidra_client.wasm_plugin_installed(tmp_path) is None
+
+
+def test_wasm_plugin_installed_finds_the_webassembly_extension(tmp_path: Path) -> None:
+    extensions = tmp_path / "Ghidra" / "Extensions"
+    wasm = extensions / "ghidra-wasm-plugin"
+    wasm.mkdir(parents=True)
+    # Recognised by the name marker, not the directory name.
+    (wasm / "extension.properties").write_text(
+        "name=WebAssembly\nversion=12.0\n", encoding="utf-8"
+    )
+    assert ghidra_client.wasm_plugin_installed(tmp_path) == wasm

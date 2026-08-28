@@ -188,6 +188,7 @@ def run_doctor(settings: Settings | None = None) -> DoctorReport:
         ),
         probe_optional_tool("radare2", current, "r2", ("r2", "rizin")),
         probe_ghidra(current),
+        probe_ghidra_wasm(current),
         probe_python_module("frida", "frida"),
         probe_command("java", ("java",)),
         (
@@ -1231,5 +1232,50 @@ def probe_ghidra(settings: Settings) -> Probe:
         ProbeStatus.READY,
         "Ghidra analyzeHeadless is available",
         {"home": str(home), "analyze_headless": str(analyze), "java": java},
+        None,
+    )
+
+
+def probe_ghidra_wasm(settings: Settings) -> Probe:
+    """Report whether ghidra.* can analyse a .wasm (the ghidra-wasm-plugin).
+
+    The capability is documented (Web static: "WASM 反编译复用 ghidra.* +
+    ghidra-wasm-plugin") but Ghidra ships no WebAssembly loader, so it works only
+    when the extension is installed under the Ghidra home. Without this probe the
+    ``ghidra_wasm_plugin`` config field carried no status at all and a caller had
+    no way to know, short of a failed analysis, whether .wasm decompilation was
+    available.
+    """
+    home = getattr(settings, "ghidra_home", None)
+    remediation = (
+        "Install the ghidra-wasm-plugin WebAssembly extension into "
+        "<ghidra_home>/Ghidra/Extensions (see the ghidra-wasm-plugin releases for a "
+        "build matching your Ghidra version); HEADLESS_RE_GHIDRA_WASM_PLUGIN records "
+        "where you keep it."
+    )
+    if home is None:
+        return Probe(
+            "ghidra_wasm",
+            ProbeStatus.MISSING,
+            "Ghidra home is not configured, so .wasm decompilation is unavailable",
+            {},
+            remediation,
+        )
+    from headless_re_mcp.backends.ghidra.client import wasm_plugin_installed
+
+    extension = wasm_plugin_installed(home)
+    if extension is None:
+        return Probe(
+            "ghidra_wasm",
+            ProbeStatus.MISSING,
+            "ghidra-wasm-plugin is not installed under ghidra_home",
+            {"home": str(home)},
+            remediation,
+        )
+    return Probe(
+        "ghidra_wasm",
+        ProbeStatus.READY,
+        "ghidra-wasm-plugin is installed; ghidra.* can decompile a .wasm",
+        {"home": str(home), "extension": str(extension)},
         None,
     )

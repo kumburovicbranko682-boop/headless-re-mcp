@@ -5,6 +5,25 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复/测试（把「WASM 反编译复用 ghidra.*」从纸面变成可验证：新增 `ghidra_wasm` 探针 + 活体门）
+
+README 一直写着「WASM 反编译复用 `ghidra.*` + ghidra-wasm-plugin」，`config` 里也有个
+`ghidra_wasm_plugin` 字段——但这条能力**从没被验证过、字段也从没被任何代码消费**：Ghidra 没有内建
+wasm loader，`ghidra.*` 能不能碰 `.wasm` 完全取决于扩展是否装进了 Ghidra；而 `doctor` 也没有任何探针
+报告这件事，调用方只能等一次失败的分析才知道不可用。
+
+- **`ghidra_wasm` 探针**：`doctor` 新增 `probe_ghidra_wasm`，扫 `<ghidra_home>/Ghidra/Extensions` 下是否
+  有声明 `name=WebAssembly` 的扩展（认标记而非目录名），READY/MISSING 一目了然，remediation 里指明该把
+  扩展装哪、并说明 `HEADLESS_RE_GHIDRA_WASM_PLUGIN` 用来记录它的位置——那个此前完全悬空的配置字段终于有了
+  意义。探测逻辑抽成 `ghidra` 客户端的 `wasm_plugin_installed()`，门与探针共用同一判断。
+- **活体门** `tests/integration/test_ghidra_wasm_gate.py`：把一个真实的、导出 `add(i32,i32)->i32`（带真正
+  函数体）的最小 wasm 模块（原始字节内嵌，无需 wabt）经 `session.create`（`.wasm`→`web` 目标但仍是本地
+  文件）交给 `ghidra.analyze/functions/decompile`，断言恢复出 `add` 函数、且反编译体确实是两参数相加
+  （含 `return`/`+`/`param`）。已实测：Ghidra 12.0 + 官方 v2.4.0 wasm 扩展 + JDK 21 下 ~17s 通过，反编译
+  出 `int export::add(int param1,int param2){ return param1 + param2; }`。
+- skip ≠ pass：Ghidra/Java 未配、`<ghidra_home>` 下没装 wasm 扩展、或所用 Ghidra 跑不了 Jython 版
+  ExportJson（12.1 起 Jython 转为可选扩展）时，均干净 skip。
+
 ### 测试 + 文档（radare2 稳健性门：stripped ELF 靠分析恢复 + 敌意输入的错误契约；README 补上 `binary` 目标类型）
 
 `test_r2_service_gate` 走的是**未 strip** 的 ELF，r2 直接读符号表拿名字；两件它没覆盖的事：

@@ -353,6 +353,40 @@ def _which(name: str) -> Path | None:
     return Path(found) if found else None
 
 
+# The ghidra-wasm-plugin declares this in its extension.properties. Ghidra has
+# no built-in loader for a .wasm; without this extension installed, analyzeHeadless
+# cannot import a WebAssembly module and ghidra.* cannot analyse one.
+_WASM_EXTENSION_NAME = "WebAssembly"
+
+
+def wasm_plugin_installed(home: Path | None) -> Path | None:
+    """Return the installed WebAssembly extension directory under ``home``, or None.
+
+    analyzeHeadless auto-loads any extension found in ``<home>/Ghidra/Extensions``,
+    so an installed ghidra-wasm-plugin is exactly what makes ``ghidra.*`` able to
+    decompile a ``.wasm``. Detection reads the same ``name=WebAssembly`` marker the
+    extension ships, rather than trusting a directory name. Never raises: a missing
+    or unreadable Extensions tree just means "not installed".
+    """
+    if home is None:
+        return None
+    ext_root = Path(home) / "Ghidra" / "Extensions"
+    try:
+        entries = sorted(ext_root.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        try:
+            text = (entry / "extension.properties").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            continue
+        if any(line.strip() == f"name={_WASM_EXTENSION_NAME}" for line in text.splitlines()):
+            return entry
+    return None
+
+
 def _find_analyze_headless(home: Path | None) -> Path | None:
     if home is None:
         return None
