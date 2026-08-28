@@ -5,6 +5,21 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复+测试（apk.xrefs 去重调用方：同一调用方不再因多次调用点/同名方法而重复刷屏并挤占分页）
+
+- `apk.xrefs("callers of every method named X")` 直接把 androguard 的 `get_xref_from()` 逐条摊平成
+  `{class, method}`。但 `get_xref_from()` 是**按调用点**产出的：某调用方在一个循环里调 3 次 `decrypt`，
+  就落 3 条完全相同的行；而 "every method named X" 可能匹配到两个同名方法，共同的调用方会被再数一遍。
+- 后果有二：其一，`count` 名义是"调用方数量"，却被调用点重复灌水，读起来是假的；其二更糟——去重前这些
+  重复条目**照样吃分页上限**（`_MAX_XREFS_PAGE=1000`）。一个从十几处调用点被调到的方法，能用同一个调用方
+  把整页塞满并触发 `has_more`，把其余所有真实调用方全部挤掉，调用方据此判断"这就是全部调用方"时会漏掉。
+- 修复：按 `(class, method)` 去重，只有**新出现**的调用方才消耗分页额度；`has_more` 仅在一个不同的调用方
+  确实被留在页外时才置真（尾部全是重复不会伪造 `has_more`）。与 `apk.classes`/`apk.strings` 先去重再分页
+  的姿态一致。工具与客户端 docstring 同步改为"distinct callers / count of distinct callers"。
+- 单测三条钉死：重复调用点折叠成一条、同名方法共享的调用方只记一次、分页额度按不同调用方计（上限设 2 时，
+  某调用方的 5 个重复调用点 + 另两个不同调用方 → 得到那两个不同调用方且 `has_more`，而非两份重复噪声）。
+  变异验证承重：去掉去重跳过这三条立即失败，原有两条 xrefs 测试仍绿。纯单测，不需要 androguard。
+
 ### 修复+测试（adb 包名读回：AXML 命名空间 URI 主机名不再被误当成 app 包名）
 
 - 承接上一条 UTF-8 池修复：`_scan_decoded_for_package` 先在 "package" 标记后 400 字符的窗口里找点分标识

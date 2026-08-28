@@ -471,22 +471,31 @@ class ApkClient:
             raise ApkError("invalid_params", "method_name is required")
         _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
         callers: list[JsonObject] = []
+        # get_xref_from() yields one tuple per callsite, so a caller that invokes
+        # the target from a loop returns the same (class, method) many times, and
+        # two same-named methods (the "every method named" match below) can share
+        # a caller. Without dedup those repeats inflated count -- which reads as
+        # "distinct callers" -- and, worse, consumed the page cap: a method called
+        # from a dozen sites in one method could fill the whole page with that one
+        # caller and set has_more, dropping every other caller. Collapse to the
+        # distinct callers and spend the cap only on new ones, like classes/strings.
+        seen: set[tuple[str, str]] = set()
         has_more = False
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
                 continue
             for _, call, _ in method.get_xref_from():
+                key = (str(call.class_name), str(call.name))
+                if key in seen:
+                    continue
                 if len(callers) >= cap:
-                    # Only set once something was actually left out, so a result
-                    # that happens to fill the page is not reported as partial.
+                    # Only set once a distinct caller was actually left out, so a
+                    # result that happens to fill the page is not reported as
+                    # partial and a tail of pure duplicates does not fake it.
                     has_more = True
                     break
-                callers.append(
-                    {
-                        "class": str(call.class_name),
-                        "method": str(call.name),
-                    }
-                )
+                seen.add(key)
+                callers.append({"class": key[0], "method": key[1]})
             if has_more:
                 break
         return {

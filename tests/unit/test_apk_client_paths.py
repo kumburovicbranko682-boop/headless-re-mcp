@@ -394,6 +394,120 @@ def test_xrefs_ignore_external_and_mismatched_methods(
     assert payload["callers"][0]["class"] == "Lcom/app/Caller;"
 
 
+class _ConfigurableXrefMethod:
+    """A matching method whose callsites the test supplies verbatim."""
+
+    def __init__(self, name: str, callsites: list[tuple[str, str]]) -> None:
+        self.name = name
+        self._callsites = callsites
+
+    def is_external(self) -> bool:
+        return False
+
+    def get_xref_from(self) -> list[tuple[object, object, int]]:
+        return [
+            (None, SimpleNamespace(class_name=cls, name=meth), idx)
+            for idx, (cls, meth) in enumerate(self._callsites)
+        ]
+
+
+def test_xrefs_collapse_repeated_callsites_of_the_same_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One caller that invokes the target from several sites appears once.
+
+    get_xref_from() yields a tuple per callsite, so a caller with a loop body
+    calling decrypt three times used to land three identical rows -- inflating
+    count, which reads as the number of distinct callers.
+    """
+    parsed = _XrefAnalysis(
+        [
+            _ConfigurableXrefMethod(
+                "decrypt",
+                [
+                    ("Lcom/app/Loop;", "run"),
+                    ("Lcom/app/Loop;", "run"),
+                    ("Lcom/app/Loop;", "run"),
+                    ("Lcom/app/Other;", "go"),
+                ],
+            )
+        ]
+    )
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: parsed)
+
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt")
+
+    assert payload["count"] == 2
+    assert payload["callers"] == [
+        {"class": "Lcom/app/Loop;", "method": "run"},
+        {"class": "Lcom/app/Other;", "method": "go"},
+    ]
+    assert payload["has_more"] is False
+
+
+def test_xrefs_dedupe_a_caller_shared_by_two_same_named_methods(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """"Every method named X" can match two methods; a shared caller is one row."""
+    shared = ("Lcom/app/Caller;", "run")
+    parsed = _XrefAnalysis(
+        [
+            _ConfigurableXrefMethod("decrypt", [shared]),
+            _ConfigurableXrefMethod("decrypt", [shared]),
+        ]
+    )
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: parsed)
+
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt")
+
+    assert payload["count"] == 1
+    assert payload["callers"] == [{"class": "Lcom/app/Caller;", "method": "run"}]
+
+
+def test_xrefs_cap_counts_distinct_callers_not_callsites(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller with many callsites must not crowd genuine callers off the page.
+
+    With the cap at two, five duplicate callsites of one caller plus two more
+    distinct callers must yield the two distinct callers and has_more -- not two
+    copies of the noisy one. Pins that the page budget is spent per distinct
+    caller, the way classes/strings dedupe before paginating.
+    """
+    import headless_re_mcp.backends.apk.client as apk_client
+
+    monkeypatch.setattr(apk_client, "_MAX_XREFS_PAGE", 2)
+    parsed = _XrefAnalysis(
+        [
+            _ConfigurableXrefMethod(
+                "decrypt",
+                [
+                    ("Lcom/app/Loop;", "run"),
+                    ("Lcom/app/Loop;", "run"),
+                    ("Lcom/app/Loop;", "run"),
+                    ("Lcom/app/Loop;", "run"),
+                    ("Lcom/app/Loop;", "run"),
+                    ("Lcom/app/B;", "b"),
+                    ("Lcom/app/C;", "c"),
+                ],
+            )
+        ]
+    )
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: parsed)
+
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt", limit=1000)
+
+    assert payload["callers"] == [
+        {"class": "Lcom/app/Loop;", "method": "run"},
+        {"class": "Lcom/app/B;", "method": "b"},
+    ]
+    assert payload["count"] == 2
+    assert payload["has_more"] is True
+
+
 def test_dotted_to_smali_leaves_smali_form_untouched() -> None:
     assert _dotted_to_smali("Lcom/example/Foo;") == "Lcom/example/Foo;"
     assert _dotted_to_smali("com.example.Foo") == "Lcom/example/Foo;"

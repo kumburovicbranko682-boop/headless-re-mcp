@@ -145,10 +145,13 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         method_name: str,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
-        """List callers of every method named method_name.
+        """List the distinct callers of every method named method_name.
 
-        Answers with callers (class and method), method_name, count, and
-        has_more so a page that filled the limit is not read as the whole list.
+        callers are deduplicated by (class, method): a caller that invokes the
+        target from several sites, or that calls two same-named methods, appears
+        once. Answers with callers (class and method), method_name, count (of
+        distinct callers), and has_more so a page that filled the limit is not
+        read as the whole list.
         """
         return _dump(analysis.apk_xrefs(session_id, method_name, limit=limit))
 
