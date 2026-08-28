@@ -29,11 +29,22 @@ _COMMITTED_FIXTURE = _PROJECT_ROOT / "fixtures" / "upx" / "console_fixture-x64.p
 # a distinctive string literal for r2.strings, and a libc call so r2.imports has
 # a named import to recover. -O0 keeps re_mcp_triple from being inlined into main.
 _ELF_MARKER = "re_mcp_marker"
+# re_mcp_branch adds a conditional chain and a loop so the CFG gate has a
+# function with real branch structure (multiple blocks, jump/fail edges, a loop
+# back-edge) to read; -O0 keeps it and re_mcp_triple un-inlined and named.
 _ELF_SOURCE = (
     "#include <stdio.h>\n"
     "int re_mcp_triple(int x) { return x * 3 + 1; }\n"
+    "int re_mcp_branch(int x) {\n"
+    "  int r = 0;\n"
+    "  if (x > 100) { r = 3; }\n"
+    "  else if (x > 10) { r = 2; }\n"
+    "  else { r = 1; }\n"
+    "  for (int i = 0; i < x; i++) { r += i; }\n"
+    "  return r;\n"
+    "}\n"
     "int main(void) {\n"
-    "  int v = re_mcp_triple(7);\n"
+    "  int v = re_mcp_triple(7) + re_mcp_branch(42);\n"
     f'  printf("{_ELF_MARKER} %d\\n", v);\n'
     "  return v;\n"
     "}\n"
@@ -627,6 +638,46 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
             (e.get("name") or "").endswith("main")
             for e in triple_callees.data.get("edges", [])
         ), triple_callees.data
+
+        # r2.cfg reads a function's shape where r2.disasm_function reads its ops.
+        # re_mcp_branch has a conditional chain and a loop, so its graph must have
+        # several blocks, at least one conditional (a block with both a jump and a
+        # fail edge), and a loop back-edge (an edge pointing to an earlier block).
+        # Every node and edge endpoint must carry the architecture.
+        branch_name = next((n for n in by_name if "re_mcp_branch" in (n or "")), None)
+        assert branch_name is not None, sorted(by_name)
+        branch_addr = int(by_name[branch_name]["offset"])
+        cfg = service.r2_cfg(session_id, branch_addr, timeout=60.0)
+        assert cfg.ok and cfg.data is not None, cfg.error
+        assert cfg.data.get("parsed") is True
+        assert cfg.data.get("architecture") == expect_arch
+        cnode = cfg.data.get("function")
+        assert cnode is not None and "re_mcp_branch" in (cnode.get("name") or ""), cnode
+        nodes = cfg.data.get("nodes") or []
+        edges = cfg.data.get("edges") or []
+        assert len(nodes) >= 4, nodes
+        assert cfg.data.get("node_count") == len(nodes)
+        assert cfg.data.get("edge_count") == len(edges)
+        for node in nodes:
+            _assert_mapped(node.get("address"))
+            assert node["address"].get("architecture") == expect_arch, node
+            assert isinstance(node.get("size"), int), node
+            assert node.get("end") == node["addr"] + node["size"], node
+        node_starts = {node["addr"] for node in nodes}
+        for edge in edges:
+            assert edge.get("kind") in {"jump", "fail", "switch", "switch_default"}, edge
+            _assert_mapped(edge.get("src_address"))
+            _assert_mapped(edge.get("dst_address"))
+            assert edge["dst_address"].get("architecture") == expect_arch, edge
+        # A conditional: some block branches two ways (a jump and a fail from it).
+        cond_srcs = {e["src"] for e in edges if e["kind"] == "jump"} & {
+            e["src"] for e in edges if e["kind"] == "fail"
+        }
+        assert cond_srcs, edges
+        # A loop: some edge points back to an earlier (<=) block start.
+        assert any(
+            e["dst"] <= e["src"] and e["dst"] in node_starts for e in edges
+        ), edges
     finally:
         service.close_session(session_id)
 
