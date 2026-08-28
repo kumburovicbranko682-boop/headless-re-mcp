@@ -5,6 +5,27 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Agent 工作台把同一 thread 的多个 run 事件按 seq 交织）
+
+- 前端 reducer（`webui/src/agent/state.ts`）每收到一个 SSE 事件就把整份事件表
+  `[...state.events, action.event].sort((a, b) => a.seq - b.seq)` **仅按 seq** 重排。
+  但 agent 存储里 `seq` 是每个 run 内从 1 起自增的（`store.py`：
+  `SELECT COALESCE(MAX(seq),0)+1 ... WHERE run_id=?`），于是同一 thread 上第二个 run
+  的 `seq=1` 会排到第一个 run 的 `seq=2` 前面——两个 run 的事件被交织。服务端本以
+  `ORDER BY run_created, seq`（`list_thread_events`）把 thread 历史正确排好交给前端，
+  可只要之后再来一个 SSE 事件，这次重排就把跨 run 的先后彻底打乱。后果落在
+  `RunProgress`（`computeRunMetrics` 按遍历顺序配对 llm/tool 的开始与结束区间）：
+  交织后 run B 的 `llm.started` 会插到 run A 的 `tool.completed` 之前，区间配对错位，
+  轮数/步数/LLM 与工具耗时/首 token 全部算歪；任何按顺序渲染事件的地方也一起错位。
+  这在正常多轮对话（同一 thread 连发多条消息）里必然触发，且 reducer 现有测试
+  「不因新 run 丢弃旧 run 事件」恰恰确认多 run 事件本就共存于 `state.events`。
+  修法：抽出 `orderRunEvents`——按 run 首次出现的次序给 run 定级（与服务端
+  `run_created` 次序、以及新 run 追加在后的行为一致），仅在同一 run 内按 seq 排序；
+  这样既修好跨 run 交织，又保留 replay 路径依赖的「run 内乱序到达仍按 seq 归位」
+  （用后到的 r1/seq1 夹在 r2 事件之后仍归到 r1/seq2 前的用例钉住）。新增两条回归
+  用例，修前均红、修后连同既有 7 条全绿；全量 vitest 65 例通过，`tsc --noEmit` 干净。
+  已用 CI 同版 node 24 重建并提交 SPA（bundle 内容哈希不变，stale-SPA 门放行）。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对

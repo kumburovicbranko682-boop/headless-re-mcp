@@ -49,6 +49,25 @@ function capEvents(events: RunEvent[]): RunEvent[] {
   return events.length <= MAX_RETAINED_EVENTS ? events : events.slice(-MAX_RETAINED_EVENTS);
 }
 
+// seq restarts at 1 for every run (agent store: MAX(seq)+1 scoped WHERE
+// run_id=?), so a plain sort by seq interleaves the runs on a multi-run
+// thread: run r2's seq 1 sorts ahead of run r1's seq 2. The server hands the
+// thread's history back ordered by (run_created, seq); this keeps that order
+// as new SSE events arrive by ranking runs in the order they first appear and
+// ordering by seq only within a run. Interleaving here scrambled RunProgress,
+// which pairs llm/tool spans by iteration order.
+export function orderRunEvents(events: RunEvent[]): RunEvent[] {
+  const runRank = new Map<string, number>();
+  for (const event of events) {
+    if (!runRank.has(event.run_id)) runRank.set(event.run_id, runRank.size);
+  }
+  return [...events].sort((a, b) => {
+    const ra = runRank.get(a.run_id) ?? 0;
+    const rb = runRank.get(b.run_id) ?? 0;
+    return ra !== rb ? ra - rb : a.seq - b.seq;
+  });
+}
+
 export function reducer(state: AgentState, action: AgentAction): AgentState {
   switch (action.type) {
     case "threads": return { ...state, threads: action.threads };
@@ -79,7 +98,7 @@ export function reducer(state: AgentState, action: AgentAction): AgentState {
     case "approval_done": return { ...state, approvals: state.approvals.filter((item) => item.tool_call_id !== action.toolCallId) };
     case "event": {
       if (state.events.some((item) => item.seq === action.event.seq && item.run_id === action.event.run_id)) return state;
-      const events = capEvents([...state.events, action.event].sort((a, b) => a.seq - b.seq));
+      const events = capEvents(orderRunEvents([...state.events, action.event]));
       if (action.event.type === "message.delta") {
         return { ...state, events, streamingText: state.streamingText + String(action.event.data.delta ?? "") };
       }
