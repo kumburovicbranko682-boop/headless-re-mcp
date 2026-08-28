@@ -120,6 +120,28 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_sections(session_id, timeout=timeout))
 
+    @tools.tool(name="r2.symbols")
+    def r2_symbols(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """The binary's full symbol table, the superset r2.imports/exports sample.
+
+        r2.imports lists only the relocations pulled from other libraries and
+        r2.exports only the dynamic export table; this is the whole symbol table
+        (is), so on a non-stripped ELF/Mach-O it also surfaces the local and
+        internal symbols neither of those shows -- named local functions, data
+        objects, debug symbols -- which is the function/name inventory to reach
+        for when analysis-derived r2.functions (aflj) leaves you with unnamed
+        blobs. Answers with items, each carrying name (and realname when r2
+        demangled it), type (FUNC/OBJ/SECTION/...), bind (GLOBAL/LOCAL/WEAK),
+        size, is_imported, vaddr and address (va/rva/module), plus count. There
+        is no integer address field. Read items_truncated, items_total and
+        items_limit when the list filled the cap (4096). There is no symbols,
+        truncated or has_more field. Read-only; reopens the binary one-shot like
+        the other r2 tools.
+        """
+        return _dump(analysis.r2_symbols(session_id, timeout=timeout))
+
     @tools.tool(name="r2.disasm")
     def r2_disasm(
         session_id: str,

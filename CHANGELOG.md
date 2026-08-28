@@ -294,6 +294,14 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **r2.imports 只列从其他库拉来的重定位、r2.exports 只列动态导出表，两者都看不到非 strip 二进制里带名字的
+  本地/内部符号**。新增只读工具 `r2.symbols`（走白名单命令 `isj`）：完整符号表，是 imports/exports 的超集。
+  在非 strip 的 ELF/Mach-O 上它还能暴露那两者看不到的本地函数、数据对象、调试符号——当分析派生的
+  r2.functions（aflj）只给出一堆无名块时，这就是要伸手去拿的「函数/名字清单」。答复 `items`——每项带 `name`
+  （r2 反修饰成功时另带 `realname`）、`type`（FUNC/OBJ/SECTION/...）、`bind`（GLOBAL/LOCAL/WEAK）、`size`、
+  `is_imported`、`vaddr` 与 `address`（va/rva/module），另带 `count`；无整数地址字段。列表触及 4096 上限时置
+  `items_truncated`/`items_total`/`items_limit`；无 `symbols`/`truncated`/`has_more` 字段。只读，一次性重开二进制。
+  工具总数 303→304（184 只读 / 120 写）。
 - **radare2 这条跨平台二进制逆向线（ELF/Mach-O 等非 PE）有 info/functions/strings/imports/exports/disasm/xrefs，
   却缺最基础的一层：段/节表**。新增只读工具 `r2.sections`（走白名单命令 `iSj`）：frida.memory.ranges（映射活进程）
   的静态对应物，也是 PE 节表在 ELF/Mach-O 上的等价物。答复 `items`——每项带 `name`、`size`（虚拟大小）、`vsize`、
