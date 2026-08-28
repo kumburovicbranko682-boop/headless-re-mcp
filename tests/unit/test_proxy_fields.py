@@ -110,6 +110,78 @@ def test_proxy_flows_filters_by_url_substring(monkeypatch: Any) -> None:
     assert "url_filter" in doc
 
 
+def test_proxy_flows_filters_by_content_type_substring(monkeypatch: Any) -> None:
+    """content_type_filter pulls API traffic out from under asset noise.
+
+    Substring, not exact match: the row keeps the raw header, so "json" matches
+    "application/json; charset=utf-8". Case-insensitive, applied before paging,
+    and combined with url_filter with AND.
+    """
+    recorder = _FlowRecorder(capacity=50)
+    rows = [
+        ("http://x/api/a", "application/json; charset=utf-8"),
+        ("http://x/app.js", "application/javascript"),
+        ("http://x/api/b", "APPLICATION/JSON"),
+        ("http://x/logo.png", "image/png"),
+    ]
+    for index, (url, ctype) in enumerate(rows):
+        request = SimpleNamespace(method="GET", pretty_url=url, host="x")
+        response = SimpleNamespace(status_code=200, headers={"content-type": ctype})
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder)
+    )
+    payload = backend.flows("s", content_type_filter="json")
+    assert payload["total"] == 2
+    assert {row["url"] for row in payload["flows"]} == {
+        "http://x/api/a",
+        "http://x/api/b",
+    }
+    # AND with url_filter: only the json flow under /api/b.
+    both = backend.flows("s", url_filter="/api/b", content_type_filter="json")
+    assert both["total"] == 1
+    assert both["flows"][0]["url"] == "http://x/api/b"
+    # A blank filter returns the whole capture unchanged.
+    assert backend.flows("s", content_type_filter="  ")["total"] == 4
+    doc = _tool_docstring("proxy.flows")
+    assert "content_type_filter" in doc
+
+
+def test_proxy_flows_failed_only_surfaces_the_failed_connections(
+    monkeypatch: Any,
+) -> None:
+    """failed_only isolates the reset/TLS-handshake failures error() records.
+
+    Two responded flows and one error flow -> failed_only keeps just the one
+    with failed true; total is the match count and dropped is unchanged.
+    """
+    recorder = _FlowRecorder(capacity=50)
+    for index in range(2):
+        request = SimpleNamespace(method="GET", pretty_url=f"http://x/{index}", host="x")
+        response = SimpleNamespace(status_code=200, headers={"content-type": "text/html"})
+        recorder.response(
+            SimpleNamespace(id=str(index), request=request, response=response)
+        )
+    recorder.error(_make_error_flow(flow_id="boom", url="http://x/pinned"))
+
+    backend = ProxyBackend()
+    monkeypatch.setattr(
+        backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder)
+    )
+    payload = backend.flows("s", failed_only=True)
+    assert payload["total"] == 1
+    row = payload["flows"][0]
+    assert row["failed"] is True
+    assert row["url"] == "http://x/pinned"
+    # Off by default: the whole capture, failures and all.
+    assert backend.flows("s")["total"] == 3
+    doc = _tool_docstring("proxy.flows")
+    assert "failed_only" in doc
+
+
 def test_proxy_flows_row_carries_the_server_endpoint(monkeypatch: Any) -> None:
     """proxy.flows shows the upstream IP:port at a glance, like web.network.list.
 

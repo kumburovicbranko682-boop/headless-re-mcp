@@ -662,12 +662,19 @@ class ProxyBackend:
         }
 
     def flows(
-        self, session_id: str, *, offset: int = 0, limit: int = 100, url_filter: str = ""
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        url_filter: str = "",
+        content_type_filter: str = "",
+        failed_only: bool = False,
     ) -> JsonObject:
         inst = self._get(session_id)
         items = inst.recorder.snapshot()
         # dropped reflects ring eviction across the whole capture, so compute it
-        # from the unfiltered snapshot before any url_filter narrows the view.
+        # from the unfiltered snapshot before any filter narrows the view.
         dropped = 0
         if items:
             dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
@@ -677,6 +684,30 @@ class ProxyBackend:
         needle = url_filter.strip().lower() if isinstance(url_filter, str) else ""
         if needle:
             items = [item for item in items if needle in str(item.get("url", "")).lower()]
+        # A case-insensitive content-type substring, the way to pull API traffic
+        # (json/xml/form) out of a capture buried under image/script/css
+        # responses. Substring, not exact match, because the row keeps the raw
+        # header ("application/json; charset=utf-8"), so "json" is the useful
+        # needle. Combines with the others -- all filters must pass -- and runs
+        # before paging so total stays the match count.
+        type_needle = (
+            content_type_filter.strip().lower()
+            if isinstance(content_type_filter, str)
+            else ""
+        )
+        if type_needle:
+            items = [
+                item
+                for item in items
+                if type_needle in str(item.get("content_type", "") or "").lower()
+            ]
+        # Only flows that never got a response -- upstream reset, TLS handshake
+        # failure (the usual pinned-mobile-app case), timeout -- which the
+        # recorder marks failed. These are the reason error() records failures at
+        # all, yet were reachable only by paging the whole capture and reading
+        # each row's failed field.
+        if failed_only:
+            items = [item for item in items if bool(item.get("failed"))]
         start = max(0, int(offset))
         cap = max(1, min(int(limit), 1000))
         window = items[start : start + cap]

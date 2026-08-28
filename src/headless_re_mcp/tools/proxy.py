@@ -59,6 +59,8 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=1000)] = 100,
         url_filter: str = "",
+        content_type_filter: str = "",
+        failed_only: bool = False,
     ) -> dict[str, Any]:
         """List captured HTTP flows (method, url, status, content type).
 
@@ -75,12 +77,27 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         field is flows, not items or requests, and the type column is
         content_type. dropped is how many the capture ring already evicted;
         a page that filled the limit is not the whole log. metadata_truncated
-        marks bounded oversized summary fields. url_filter keeps only flows
-        whose url contains that substring (case-insensitive), applied before
-        paging so total is the match count; dropped still counts every eviction.
+        marks bounded oversized summary fields. Three filters narrow a busy
+        capture, all applied before paging (so total is the match count) and
+        combined with AND; dropped still counts every eviction. url_filter keeps
+        only flows whose url contains that substring (case-insensitive).
+        content_type_filter keeps only flows whose content_type contains that
+        substring (case-insensitive) -- pass json to pull API traffic out from
+        under image/script/css responses (substring, since the value is the raw
+        header like "application/json; charset=utf-8"). failed_only true keeps
+        only flows that failed before any response, the fastest way to surface
+        the TLS-handshake/reset failures a pinned mobile app produces behind the
+        proxy instead of reading each row's failed field.
         """
         return _dump(
-            analysis.proxy_flows(session_id, offset=offset, limit=limit, url_filter=url_filter)
+            analysis.proxy_flows(
+                session_id,
+                offset=offset,
+                limit=limit,
+                url_filter=url_filter,
+                content_type_filter=content_type_filter,
+                failed_only=failed_only,
+            )
         )
 
     @tools.tool(name="proxy.flow.get")

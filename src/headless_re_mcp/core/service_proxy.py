@@ -103,10 +103,23 @@ class ProxyAnalysisMixin:
         return self._proxy_wrap(session_id, "status", session_id)
 
     def proxy_flows(
-        self, session_id: str, offset: int = 0, limit: int = 100, url_filter: str = ""
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        url_filter: str = "",
+        content_type_filter: str = "",
+        failed_only: bool = False,
     ) -> Result[JsonObject]:
         return self._proxy_wrap(
-            session_id, "flows", session_id, offset=offset, limit=limit, url_filter=url_filter
+            session_id,
+            "flows",
+            session_id,
+            offset=offset,
+            limit=limit,
+            url_filter=url_filter,
+            content_type_filter=content_type_filter,
+            failed_only=failed_only,
         )
 
     def proxy_flow_get(self, session_id: str, flow_id: str) -> Result[JsonObject]:

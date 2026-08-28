@@ -296,6 +296,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   条请求，绝大多数是静态资源；分析者最常要的下一步是「只看 XHR/Fetch」以聚焦接口调用。行里本就有 `resourceType`，故给
   `web.network.list` 加上 `type_filter`：对 `resourceType` 做大小写不敏感的精确匹配（如 `XHR`/`Fetch`），与 `url_filter` 同处
   分页之前、两者需同时满足，于是能把 API 流量从资源噪声里单独拉出来，`total` 即过滤后的匹配数，`dropped` 仍为环形缓冲淘汰计数。
+- **`proxy.flows` 只能按 URL 过滤，繁忙抓包里 API 流量与失败连接都挑不出**。`proxy.flows` 此前只有 `url_filter`，而 `error()`
+  钩子专门记录连接失败（上游 reset、TLS 握手失败——正是 pinned 移动 App 挂到代理后最常见的证据）却只能靠逐页翻看每行的
+  `failed` 字段才找得到，API 流量也埋在 image/script/css 响应里。延续 `web.network.list` 的思路，给 `proxy.flows` 加两个过滤：
+  `content_type_filter` 对行上的 `content_type` 做大小写不敏感的**子串**匹配（不同于 `web.network.list` 对 `resourceType` 的精确
+  匹配——代理行保留的是原始头 `application/json; charset=utf-8`，故 `json` 才是有用的针），把 JSON/XML/表单等接口流量从静态资源里
+  拉出来；`failed_only` 为真时只留 `failed` 为真的流，一步捞出那些握手/重置失败。两者与 `url_filter` 一样在分页之前应用、以 AND
+  组合，故 `total` 为过滤后的匹配数，`dropped` 仍是全量环形缓冲淘汰计数。无新增工具，仅 `proxy.flows` 多两个可选参数。
 - **`apk.components` 的导出组件不带 intent-filter，看不到具体调用面**。知道某组件被导出后，分析者下一步要问的是"什么 intent
   能触发它"——`BOOT_COMPLETED`（持久化）、`SMS_RECEIVED`（拦截短信）这类 action，或 `BROWSABLE` 这类 category，正是导出组件的
   实际调用面。既然已在遍历清单树，就顺带用新增的 `_intent_filter_names` 收集每个导出组件各 `<intent-filter>` 的
