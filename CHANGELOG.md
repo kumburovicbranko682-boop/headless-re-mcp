@@ -110,7 +110,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `AttributeError`——被测代码从未跑到。产品代码本身无恙（Windows 走
   `GlobalMemoryStatusEx`，POSIX 分支也捕获 `AttributeError`），纯属测试脚手架在
   非 POSIX 宿主上搭不起来。三处补丁改为 `raising=False`，让 monkeypatch 在属性缺席时
-  创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+    创建它（用后照常清理），Linux 行为不变，Windows 上这三条测试恢复检验既定语义。
+
+### 测试（地址同步层补齐失败关闭分支）
+
+- `core/addressing.py` 把 x64dbg 的模块快照和磁盘上的 PE 头翻译成静态/运行时地址映射，
+  三处输入都受攻击者影响（模块列表走 RPC、selector 来自模型、PE 字节来自被调试进程映射
+  的任意文件）。既有测试覆盖了主路径与常见拒绝，新增
+  `tests/unit/test_addressing_hostile_input.py` 钉住其余失败关闭分支：模块结果不是对象 /
+  没有 modules 数组 / 条目既无名也无路径一律 `module_list_invalid`；selector 命中某模块后
+  附带的 path/name 约束不符报 `module_identity_mismatch`（两处不符都如实回报）、命不中报
+  `module_not_found`、`\??\` 设备前缀被规整后仍可匹配；`ModuleAddressSpace` 的 RVA 越界报
+  `address_out_of_range`、负地址在做任何运算前即 `invalid_address`；运行时元数据架构非字符串
+  或不受支持报 `runtime_metadata_invalid`、同一会话路径命中多个模块报 `module_ambiguous`；
+  运行时模块无路径 / 指向目录报 `module_file_unavailable`、`\??\` 前缀路径能被解析读出；
+  非 PE / 截断的 COFF 头 / 截断的可选头 / 可选头 magic 不符 / 镜像基址为 0 分别报
+  `module_file_invalid`；并补 `RuntimeModuleCatalog` 与 `RebasedModuleMapping` 的 `to_dict`
+  序列化。模块覆盖率 88% → 99%。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
