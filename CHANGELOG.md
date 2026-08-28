@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 基建（CHANGELOG.md 启用 union 合并驱动，消除分支间的顶部条目伪冲突）
+
+- 现状：每个分支都在 `## [Unreleased]` 标题下方头部插入自己的条目，于是任意两个
+  分支在同一个文件顶部 hunk 上互相冲突——哪怕条目内容完全独立。仓库当前有数百个
+  待合分支，维护者按序合并时几乎每合一支就要手解一次 CHANGELOG，而人工消解的动作
+  永远是同一个：两边条目都保留。
+- 改法：新增 `.gitattributes`，对 `CHANGELOG.md` 声明 `merge=union`。union 是 git
+  内建驱动，对冲突 hunk 直接保留双方行（先 ours 后 theirs）、不产生冲突标记——
+  git 官方文档明说这个驱动就是给 ChangeLog 类文件用的。属性从执行合并的检出树里
+  读取，落到 main 后所有后续向 main 的合并自动受益。
+- 边界与取舍：union 是静默消解，如果两支真的改写了**同一条既有条目**的同一行，
+  结果会是两个版本并排出现在文件里（评审可见）而不是冲突。对 changelog 这可见且
+  低风险；对代码则不可接受——所以驱动只给 `CHANGELOG.md`，不给任何其他文件。
+- 实测：五个已知在 CHANGELOG 顶部互相冲突（对 main 各自干净）的分支，启用 union
+  后按序全部自动合并，逐支核对五条 `###` 标题与正文在合并结果中完整保留、结构
+  无损；合并树全量单测 6058 通过 0 失败。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

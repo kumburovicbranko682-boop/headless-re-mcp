@@ -1,0 +1,11 @@
+# CHANGELOG.md accumulates one prepended entry per branch under the
+# "## [Unreleased]" heading, so any two branches conflict on the same
+# top-of-file hunk even though their entries are independent blocks. The
+# built-in union merge driver resolves that hunk by keeping both sides'
+# lines -- exactly what the manual resolution always is here -- and is the
+# driver git's own documentation names for ChangeLog-style files. Caveat:
+# union resolves silently, so a genuine same-line rewrite of an existing
+# entry would surface as both versions side by side in review rather than
+# as a conflict; for a changelog that is visible and low-stakes, for code
+# it would not be, which is why only CHANGELOG.md gets the driver.
+CHANGELOG.md merge=union
