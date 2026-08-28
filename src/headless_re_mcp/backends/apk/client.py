@@ -56,6 +56,30 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _lib_abi(name: str) -> str | None:
+    """The ABI directory of a ``lib/<abi>/<file>`` entry, or None when it has none.
+
+    androguard's ``get_files()`` returns raw zip member names, so a hostile APK
+    can carry ``lib//x.so`` (an empty segment) or ``lib/../x.so`` (a
+    path-traversal segment) -- neither names a real ABI, yet the old
+    ``name.split("/")[1]`` surfaced ``""`` and ``".."`` into the abis list, where
+    an unattended agent read them as target architectures (a traversal artifact
+    leaking into structured output). Only ``lib/<nonempty>/<file>`` yields an
+    ABI, and ``.``/``..`` are rejected. A bare ``lib/<file>`` (two segments, e.g.
+    ``lib/notice.txt``) has no ABI and returns None -- it stays a listed member
+    but never invents an ABI, exactly as before.
+    """
+    if not name.startswith("lib/"):
+        return None
+    parts = name.split("/")
+    if len(parts) < 3:
+        return None
+    abi = parts[1]
+    if not abi or abi in {".", ".."}:
+        return None
+    return abi
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -212,11 +236,7 @@ class ApkClient:
             "main_activity": apk.get_main_activity(),
             "permission_count": len(apk.get_permissions()),
             "native_abis": sorted(
-                {
-                    name.split("/")[1]
-                    for name in apk.get_files()
-                    if name.startswith("lib/") and len(name.split("/")) >= 3
-                }
+                {abi for name in apk.get_files() if (abi := _lib_abi(str(name))) is not None}
             ),
         }
 
@@ -311,9 +331,9 @@ class ApkClient:
             text = str(name)
             if not text.startswith("lib/"):
                 continue
-            parts = text.split("/")
-            if len(parts) >= 3:
-                abis.add(parts[1])
+            abi = _lib_abi(text)
+            if abi is not None:
+                abis.add(abi)
             if len(libs) >= _MAX_NATIVE_LIBS:
                 has_more = True
                 continue

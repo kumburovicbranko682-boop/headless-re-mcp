@@ -509,3 +509,81 @@ def test_native_libs_ignore_lib_paths_without_an_abi_segment(
     assert payload["abis"] == ["arm64-v8a"]
     assert payload["native_libs"] == ["lib/arm64-v8a/libnative.so", "lib/toplevel.so"]
     assert payload["has_more"] is False
+
+
+def test_native_libs_reject_empty_and_traversal_abi_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hostile lib/ segments must not surface as ABIs.
+
+    androguard's get_files() returns raw zip names, so a crafted APK can carry
+    ``lib//x.so`` (an empty segment) and ``lib/../x.so`` (a path-traversal
+    segment). Measured against androguard 4.1.4, ``name.split("/")[1]`` turned
+    these into abis ``""`` and ``".."`` -- a traversal artifact leaking into the
+    architecture list an unattended agent reads. Only real ABI directories may
+    appear; the members are still listed (the listing is "every lib/ entry"),
+    but neither ``""`` nor ``".."`` is ever a phantom ABI.
+    """
+    apk = _NativeLibApk(
+        [
+            "lib/arm64-v8a/libok.so",  # valid -> arm64-v8a
+            "lib//weird.so",  # empty abi segment
+            "lib/../evil.so",  # path-traversal segment
+        ]
+    )
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: apk)
+
+    payload = client.native_libs(tmp_path / "app.apk")
+
+    assert payload["abis"] == ["arm64-v8a"]
+    assert "" not in payload["abis"]
+    assert ".." not in payload["abis"]
+    # The members are still listed; only the ABI derivation is hardened.
+    assert "lib//weird.so" in payload["native_libs"]
+    assert "lib/../evil.so" in payload["native_libs"]
+
+
+def test_open_native_abis_reject_empty_and_traversal_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """open()'s native_abis shares the hardened derivation, not the old split.
+
+    open() derived native_abis with the same ``split("/")[1]`` that native_libs
+    used, so it leaked the same ``""`` / ``".."`` junk. Both now route through
+    _lib_abi, so a hostile APK's open() reports only real ABIs.
+    """
+
+    class _Apk:
+        def get_package(self) -> str:
+            return "com.example.app"
+
+        def get_androidversion_name(self) -> str:
+            return "1.0"
+
+        def get_androidversion_code(self) -> str:
+            return "1"
+
+        def get_min_sdk_version(self) -> str:
+            return "21"
+
+        def get_target_sdk_version(self) -> str:
+            return "34"
+
+        def get_main_activity(self) -> str:
+            return "com.example.Main"
+
+        def get_permissions(self) -> list[str]:
+            return []
+
+        def get_files(self) -> list[str]:
+            return ["lib/x86_64/libok.so", "lib//weird.so", "lib/../evil.so"]
+
+    client = ApkClient()
+    monkeypatch.setattr(ApkClient, "_apk", lambda self, path: _Apk())
+
+    payload = client.open(tmp_path / "app.apk")
+
+    assert payload["native_abis"] == ["x86_64"]
+    assert "" not in payload["native_abis"]
+    assert ".." not in payload["native_abis"]

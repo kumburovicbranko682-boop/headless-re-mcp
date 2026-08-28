@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk 的 native_abis 会把畸形 lib 路径的空段/穿越段当成 ABI）
+
+- 真机复现（androguard 4.1.4）：`apk.native_libs` 与 `apk.open` 用
+  `name.split("/")[1]` 从 `lib/<abi>/<file>` 取 ABI，但 androguard 的
+  `get_files()` 返回的是原始 zip 成员名。构造 APK 携带 `lib//weird.so`（空段）
+  与 `lib/../evil.so`（路径穿越段）时，两者分别把 `""` 和 `".."` 塞进 abis
+  列表——无人值守 agent 会把它们读成目标架构，等于让一个路径穿越残片泄漏进
+  结构化输出。
+- 改法：新增 `_lib_abi(name)`，只有 `lib/<非空且非 "."/".." 段>/<file>` 才产出
+  ABI，`open()` 与 `native_libs()` 都改走它（顺带消除两处重复的派生逻辑）。
+  两段式的 `lib/notice.txt` 依旧不产出 ABI、仍作为成员列出，行为不变；成员
+  列表（"每个 lib/ 条目"）也不变，只收紧 ABI 派生。
+- 真机验证：`lib//weird.so`+`lib/../evil.so`+合法 `lib/arm64-v8a/*`+`lib/x86_64/*`
+  的 APK，修前 abis=`['', '..', 'arm64-v8a', 'x86_64']`，修后
+  `['arm64-v8a', 'x86_64']`；`open().native_abis` 同样。新增两个回归单测（native_libs
+  与 open 各一）钉死空段/穿越段被拒、而成员仍列出。既有 `apk-native-libs-filter-and-abis`
+  分支只测了合法路径与 bare `lib/` 文件、未触及恶意段，本条与其互补、不重叠。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
