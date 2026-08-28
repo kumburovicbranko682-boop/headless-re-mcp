@@ -13,7 +13,8 @@
 #   - webcrack (npm) for JS deobfuscation, wabt (wasm2wat) for WASM disassembly
 #   - radare2 plus the aarch64 / arm32 cross-compilers for native ELF, Mach-O
 #     and ARM analysis (the fixtures are built from C during the run)
-#   - androguard (a pip extra) for APK classification
+#   - androguard (a pip extra) for APK classification, and jadx for the APK
+#     static decompile gate (its fixture is a jar built from Java at run time)
 #
 # Gates whose backend is absent skip with an explicit "skip != pass" message,
 # and -rs prints every reason so a skip can never read as a pass. The Windows /
@@ -58,17 +59,25 @@ jobs:
           sudo apt-get update
           # wabt -> wasm2wat (WASM gate); radare2 (native ELF / Mach-O gates);
           # the cross-compilers build the aarch64 / arm32 fixtures the r2 gates
-          # compile at runtime.
+          # compile at runtime; the JDK runs jadx and compiles its jar fixture.
           sudo apt-get install -y \
             wabt \
             radare2 \
             gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabihf
+            gcc-arm-linux-gnueabihf \
+            openjdk-21-jdk
           # webcrack (JS deobfuscation gate) is discovered on PATH.
           npm install -g webcrack
           # Chromium for the headless web / CDP and browser-agent gates; the
           # --with-deps flag pulls the system libraries a headless browser needs.
           python -m playwright install --with-deps chromium
+          # jadx (APK static decompile gate); the adapter resolves it from
+          # HEADLESS_RE_JADX, exported here for the pytest step.
+          curl -fsSL -o /tmp/jadx.zip \
+            https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip
+          mkdir -p "$HOME/jadx"
+          unzip -q /tmp/jadx.zip -d "$HOME/jadx"
+          echo "HEADLESS_RE_JADX=$HOME/jadx/bin/jadx" >> "$GITHUB_ENV"
 
       - name: Non-PE integration gates
         # Run the whole suite: a gate whose backend is missing skips itself, so
