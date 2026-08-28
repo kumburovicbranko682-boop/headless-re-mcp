@@ -418,6 +418,8 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 
 Gate 会从 `config.json` 读取后端路径（`tests/integration/conftest.py` 负责桥接），所以配置好的机器不会因为"没设环境变量"而假跳过。**skip 仍然不等于 pass**：换一台缺后端的机器，对应 Gate 会如实跳过。
 
+补充证据（在托管 Linux 上按与 `linux-integration` 作业完全一致的方式实测：一次性 `pip install -e ".[test,dev,web,android,browser,proxy]"`——pip 解析到 pydantic 2.11.10 与 typing-extensions 4.14.0，同时满足 mitmproxy 的 `<=4.14` 上限，安装步骤本身不冲突；CLI 后端也对齐 CI 版本：webcrack 2.16.0、wabt 1.0.34、apktool 2.7.0、apksigner、jadx 1.5.0、androguard 4.1.4、mitmproxy 12.2.3、Playwright 1.62.0 / Chromium 151）：`pytest tests/integration` 得 **23 passed / 71 skipped / 0 failed**。可移植的非 PE Gate——Web（CDP、CDP 抓取、JS/WASM、webpack 包解包、浏览器生命周期含 fd 句柄泄漏检查、Agent 工作台端到端）、proxy（起停+端口释放+真流量捕获+HAR）、Android 静态（androguard 解析真签名 APK、apktool 解包重打包、apksigner 重签验签、jadx 反编译）——**全部真跑通过**；剩余 skip 只有 Windows-only（x64dbg/IDA/Win32）与本轮未配置的 de4dot(.NET)/radare2 这些非本域可选后端，均带原因。这坐实了 `linux-integration` 每次推送真绿，而非"装了工具却仍旧 skip"。
+
 无人值守的机制已经具备（自动批准策略、持久目标与调度、进程守护、看门狗、隔离钩子、provider 退避），
 但这不等于本项目替你承担了 SLA。仍然成立的限制：可移植的 Web/proxy/Android 静态 Gate 现在每次推送
 都在托管 Linux CI 上真跑，但依赖 x64dbg/IDA/Win32/真机设备的 Gate 仍只在配好后端的机器上手动跑过，
