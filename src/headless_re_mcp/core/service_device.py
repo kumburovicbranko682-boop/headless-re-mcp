@@ -78,6 +78,15 @@ def refuse_oversized_device_file(
     bytes. The transfer itself cannot be stopped mid-stream -- adbutils
     writes the whole file -- so this is after the fact: the bytes hit disk,
     then they are removed and the caller is told.
+
+    The code is ``too_large`` -- the one the whole non-PE surface uses for an
+    oversized result (results.py taxonomy; web/proxy HAR, apk/jadx/apktool
+    trees, jsre inputs, and the adb backend's own *pre*-transfer stat refusal
+    all raise it). A single ``device.pull`` reaches this post-transfer branch
+    only when the device stat could not run before the copy; reporting the same
+    ``too_large`` here means one tool never answers the same "file is too big"
+    outcome with two different codes depending on whether that stat happened to
+    succeed.
     """
     try:
         size = path.stat().st_size
@@ -90,7 +99,7 @@ def refuse_oversized_device_file(
     return Result[JsonObject](
         ok=False,
         error=RpcError(
-            code="output_too_large",
+            code="too_large",
             message=(
                 f"device file is {size} bytes, over the {limit} byte limit; "
                 "pull a smaller path"

@@ -105,7 +105,7 @@ class TestRefuseOversized:
         target.write_bytes(b"x" * 64)
         result = refuse_oversized_device_file(target, limit=8)
         assert result is not None and result.ok is False
-        assert result.error is not None and result.error.code == "output_too_large"
+        assert result.error is not None and result.error.code == "too_large"
         assert not target.exists()
 
 
@@ -215,12 +215,12 @@ class TestCaptures:
     ) -> None:
         _use(service, monkeypatch, _FakeAdb())
         too_big = Result[dict[str, Any]](
-            ok=False, error=RpcError(code="output_too_large", message="too big")
+            ok=False, error=RpcError(code="too_large", message="too big")
         )
         monkeypatch.setattr(service_device, "refuse_oversized_device_file", lambda out: too_big)
         result = service.device_screenshot("emulator-5554")
         assert result.ok is False and result.error is not None
-        assert result.error.code == "output_too_large"
+        assert result.error.code == "too_large"
 
     def test_screenshot_passes_a_backend_error_through(
         self, service: AnalysisService, monkeypatch: MP
@@ -273,9 +273,9 @@ class TestCaptures:
     ) -> None:
         _use(service, monkeypatch, _FakeAdb())
         too_big = Result[dict[str, Any]](
-            ok=False, error=RpcError(code="output_too_large", message="too big")
+            ok=False, error=RpcError(code="too_large", message="too big")
         )
         monkeypatch.setattr(service_device, "refuse_oversized_device_file", lambda out: too_big)
         result = service.device_pull("emulator-5554", "/sdcard/big.bin")
         assert result.ok is False and result.error is not None
-        assert result.error.code == "output_too_large"
+        assert result.error.code == "too_large"

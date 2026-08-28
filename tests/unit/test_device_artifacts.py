@@ -109,14 +109,21 @@ def test_device_capture_descriptions_do_not_call_the_file_an_artifact() -> None:
 
 
 def test_a_device_file_over_the_byte_cap_is_deleted_and_refused(tmp_path: Path) -> None:
-    """The count cap left each file unbounded. 32 huge pulls is still unbounded bytes."""
+    """The count cap left each file unbounded. 32 huge pulls is still unbounded bytes.
+
+    The code is the canonical ``too_large`` that every other non-PE oversized
+    refusal uses (results.py taxonomy; the adb backend's own pre-transfer stat
+    refusal, web/proxy HAR, apk/jadx/apktool trees, jsre inputs). Pinning the
+    literal here guards against reintroducing a device-only ``output_too_large``
+    that would make one tool answer the same outcome with two codes.
+    """
     path = tmp_path / "pull.bin"
     path.write_bytes(b"x" * 2048)
     refused = refuse_oversized_device_file(path, limit=1024)
     assert refused is not None
     assert refused.ok is False
     assert refused.error is not None
-    assert refused.error.code == "output_too_large"
+    assert refused.error.code == "too_large"
     assert path.exists() is False
 
 
