@@ -128,4 +128,29 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_summary(path))
 
+    @tools.tool(name="wasm.strings")
+    def wasm_strings(
+        path: str,
+        min_length: Annotated[int, Field(ge=1, le=64)] = 4,
+    ) -> dict[str, Any]:
+        """Extract printable string constants from a .wasm module (no wabt needed).
+
+        Compiled WebAssembly keeps its string literals -- URLs, error text,
+        format strings, sometimes embedded keys -- in the data section, so this
+        is the quickest triage of a stripped module. Pure Python: it reads the
+        data segments directly and needs no external tool.
+
+        Answers with items, each carrying text, segment (the data-segment
+        index), offset (byte offset within that segment) and length, plus
+        count. Read items_total, items_limit and items_truncated when the list
+        filled the cap (4096); there is no strings, truncated or has_more field.
+        min_length (default 4, 1..64) sets the shortest run kept. has_data_section
+        is false when the module carries no data section, and malformed is true
+        if the data section could not be split.
+
+        A file that is not a WebAssembly module is refused as invalid_params and
+        one over 16 MiB as too_large.
+        """
+        return _dump(analysis.wasm_strings(path, min_length=min_length))
+
     return tools.bindings

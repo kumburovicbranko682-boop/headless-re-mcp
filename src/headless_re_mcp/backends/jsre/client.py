@@ -19,7 +19,10 @@ from headless_re_mcp.backends.common.bounded_run import (
     clamp_cli_timeout,
     run_bounded,
 )
-from headless_re_mcp.backends.jsre.wasm_summary import summarize_wasm
+from headless_re_mcp.backends.jsre.wasm_summary import (
+    extract_wasm_strings,
+    summarize_wasm,
+)
 
 JsonObject = dict[str, Any]
 _MAX_INLINE = 400_000
@@ -303,6 +306,27 @@ class WasmClient:
                 "backend_error", f"input unreadable: {exc}", path=str(resolved)
             ) from exc
         return summarize_wasm(data)
+
+    def strings(self, path: Path, *, min_length: int = 4) -> JsonObject:
+        """Extract printable string constants from data segments (no wabt).
+
+        Same guards as summary: not_found / too_large / invalid_params on a bad
+        file, and the shared size cap bounds the read.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        return extract_wasm_strings(data, min_length=min_length)
 
 
 def _discover_webcrack() -> Path | None:

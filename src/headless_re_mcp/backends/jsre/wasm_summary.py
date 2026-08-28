@@ -67,6 +67,12 @@ _MAX_MEMORIES = 64
 _MAX_CUSTOM = 128
 _MAX_NAME_CHARS = 512
 
+# wasm.strings caps: a data section can hold megabytes of blob, so the printable
+# run list is capped and each run is length-limited, exactly like the wabt-free
+# summary caps above.
+_MAX_STRINGS = 4096
+_MAX_STRING_CHARS = 2048
+
 
 class _WasmTruncated(Exception):
     """The declared structure ran past the end of the available bytes."""
@@ -97,6 +103,25 @@ def _uleb(data: bytes, pos: int) -> tuple[int, int]:
         shift += 7
         # 64-bit is the widest index/size the format uses; a longer run is a
         # corrupt or adversarial encoding, not a value we should keep shifting.
+        if shift > 63:
+            raise _WasmMalformed
+
+
+def _sleb(data: bytes, pos: int) -> tuple[int, int]:
+    """Decode one LEB128 signed integer (used inside i32/i64.const offsets)."""
+    result = 0
+    shift = 0
+    while True:
+        if pos >= len(data):
+            raise _WasmTruncated
+        byte = data[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if (byte & 0x80) == 0:
+            if shift < 64 and (byte & 0x40):
+                result |= -(1 << shift)
+            return result, pos
         if shift > 63:
             raise _WasmMalformed
 
@@ -391,4 +416,150 @@ def summarize_wasm(data: bytes) -> JsonObject:
     result["sections"] = sections
     result["section_count"] = len(sections)
     result["custom_sections"] = custom_names
+    return result
+
+
+def _skip_const_expr(data: bytes, pos: int) -> int:
+    """Advance past a constant init expression, up to and including its end (0x0b).
+
+    Data-segment offsets are constant expressions; we do not evaluate them, we
+    only need to step over them to reach the bytes. An opcode we do not model
+    is a malformed (to us) expression -- raising rather than guessing keeps the
+    offset from desyncing the rest of the vector.
+    """
+    while True:
+        op, pos = _u8(data, pos)
+        if op == 0x0B:  # end
+            return pos
+        if op in (0x41, 0x42):  # i32.const / i64.const
+            _, pos = _sleb(data, pos)
+        elif op == 0x43:  # f32.const
+            pos += 4
+        elif op == 0x44:  # f64.const
+            pos += 8
+        elif op == 0x23:  # global.get
+            _, pos = _uleb(data, pos)
+        elif op == 0xD0:  # ref.null <heaptype>
+            _, pos = _u8(data, pos)
+        elif op == 0xD2:  # ref.func <funcidx>
+            _, pos = _uleb(data, pos)
+        else:
+            raise _WasmMalformed
+        if pos > len(data):
+            raise _WasmTruncated
+
+
+def _data_section_payload(data: bytes) -> bytes | None:
+    """Return the raw payload of the data section (id 11), or None if absent."""
+    if data[:4] != _WASM_MAGIC or len(data) < 8:
+        return None
+    pos = 8
+    while pos < len(data):
+        try:
+            section_id, pos = _u8(data, pos)
+            size, pos = _uleb(data, pos)
+        except (_WasmTruncated, _WasmMalformed):
+            return None
+        end = pos + size
+        if end > len(data):
+            return None
+        if section_id == 11:
+            return data[pos:end]
+        pos = end
+    return None
+
+
+def _data_segments(payload: bytes) -> list[tuple[int, bytes]]:
+    """Split the data section into (segment_index, raw_bytes) pairs."""
+    count, pos = _uleb(payload, 0)
+    segments: list[tuple[int, bytes]] = []
+    for index in range(count):
+        flag, pos = _uleb(payload, pos)
+        if flag == 0:  # active, memory 0: offset expr then bytes
+            pos = _skip_const_expr(payload, pos)
+        elif flag == 1:  # passive: bytes only
+            pass
+        elif flag == 2:  # active, explicit memory index: memidx, offset, bytes
+            _, pos = _uleb(payload, pos)
+            pos = _skip_const_expr(payload, pos)
+        else:
+            raise _WasmMalformed
+        length, pos = _uleb(payload, pos)
+        end = pos + length
+        if end > len(payload):
+            raise _WasmTruncated
+        segments.append((index, payload[pos:end]))
+        pos = end
+    return segments
+
+
+def _printable_runs(blob: bytes, min_length: int) -> list[tuple[int, str]]:
+    """Find runs of >= min_length printable ASCII bytes, as classic ``strings`` does."""
+    runs: list[tuple[int, str]] = []
+    start: int | None = None
+    for i, byte in enumerate(blob):
+        printable = 0x20 <= byte <= 0x7E or byte == 0x09
+        if printable:
+            if start is None:
+                start = i
+        elif start is not None:
+            if i - start >= min_length:
+                runs.append((start, blob[start:i].decode("ascii", "replace")))
+            start = None
+    if start is not None and len(blob) - start >= min_length:
+        runs.append((start, blob[start:].decode("ascii", "replace")))
+    return runs
+
+
+def extract_wasm_strings(data: bytes, *, min_length: int = 4) -> JsonObject:
+    """Pull printable string constants out of a module's data segments.
+
+    Compiled WebAssembly keeps its string literals -- URLs, error text,
+    format strings, sometimes keys -- in the data section, so this is the
+    quickest triage of a stripped module. Malformed input never raises: a data
+    section that cannot be split is reported as malformed and yields no items.
+    """
+    result: JsonObject = {
+        "items": [],
+        "count": 0,
+        "items_total": 0,
+        "items_limit": _MAX_STRINGS,
+        "items_truncated": False,
+        "min_length": min_length,
+        "data_segment_count": 0,
+        "malformed": False,
+        "has_data_section": False,
+    }
+    payload = _data_section_payload(data)
+    if payload is None:
+        return result
+    result["has_data_section"] = True
+    try:
+        segments = _data_segments(payload)
+    except (_WasmTruncated, _WasmMalformed):
+        result["malformed"] = True
+        return result
+
+    result["data_segment_count"] = len(segments)
+    items: list[JsonObject] = []
+    total = 0
+    truncated = False
+    for seg_index, blob in segments:
+        for offset, text in _printable_runs(blob, min_length):
+            total += 1
+            if len(items) < _MAX_STRINGS:
+                items.append(
+                    {
+                        "text": text[:_MAX_STRING_CHARS],
+                        "segment": seg_index,
+                        "offset": offset,
+                        "length": len(text),
+                    }
+                )
+            else:
+                truncated = True
+    result["items"] = items
+    result["count"] = len(items)
+    result["items_total"] = total
+    result["items_truncated"] = truncated
     return result

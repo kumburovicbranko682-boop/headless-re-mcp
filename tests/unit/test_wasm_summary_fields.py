@@ -8,7 +8,10 @@ from pathlib import Path
 import pytest
 
 from headless_re_mcp.backends.jsre.client import JsReError, WasmClient
-from headless_re_mcp.backends.jsre.wasm_summary import summarize_wasm
+from headless_re_mcp.backends.jsre.wasm_summary import (
+    extract_wasm_strings,
+    summarize_wasm,
+)
 from headless_re_mcp.tools.js_wasm import build_js_wasm_tools
 
 
@@ -82,6 +85,27 @@ def _sample_module() -> bytes:
         + custom_name
         + custom_producers
     )
+
+
+def _sample_module_without_data() -> bytes:
+    """A valid module carrying a type section but no data section."""
+    functype = b"\x60" + _vec([]) + _vec([])
+    return b"\x00asm\x01\x00\x00\x00" + _section(1, _vec([functype]))
+
+
+def _bytes_vec(raw: bytes) -> bytes:
+    return _uleb(len(raw)) + raw
+
+
+def _module_with_strings() -> bytes:
+    """A module whose data section carries recognisable string constants."""
+    # segment 0: active in memory 0, offset i32.const 1024, mixed content.
+    seg0_bytes = b"https://evil.example/api\x00GET\x00secret_token_here"
+    seg0 = b"\x00" + b"\x41\x80\x08\x0b" + _bytes_vec(seg0_bytes)  # i32.const 1024 end
+    # segment 1: passive (no offset expr).
+    seg1 = b"\x01" + _bytes_vec(b"KEY=abcdef1234")
+    data_sec = _section(11, _vec([seg0, seg1]))
+    return b"\x00asm\x01\x00\x00\x00" + data_sec
 
 
 def _tool_docstring(name: str) -> str:
@@ -231,6 +255,120 @@ def test_wasm_client_summary_refuses_oversized(
     with pytest.raises(JsReError) as caught:
         WasmClient(None).summary(module)
     assert caught.value.code == "too_large"
+
+
+def test_strings_extracts_data_segment_constants() -> None:
+    result = extract_wasm_strings(_module_with_strings(), min_length=4)
+
+    assert result["has_data_section"] is True
+    assert result["malformed"] is False
+    assert result["data_segment_count"] == 2
+    assert result["min_length"] == 4
+
+    by_text = {item["text"]: item for item in result["items"]}
+    assert "https://evil.example/api" in by_text
+    assert "secret_token_here" in by_text
+    assert "KEY=abcdef1234" in by_text
+    # "GET" is only 3 chars, below the default min_length of 4.
+    assert "GET" not in by_text
+
+    # Offsets are relative to each segment's payload, and the segment index is
+    # carried so a caller can tell active from passive data.
+    assert by_text["https://evil.example/api"]["offset"] == 0
+    assert by_text["https://evil.example/api"]["segment"] == 0
+    assert by_text["secret_token_here"]["offset"] == 29
+    assert by_text["KEY=abcdef1234"]["segment"] == 1
+    assert by_text["KEY=abcdef1234"]["offset"] == 0
+
+
+def test_strings_min_length_admits_shorter_runs() -> None:
+    result = extract_wasm_strings(_module_with_strings(), min_length=3)
+    texts = {item["text"] for item in result["items"]}
+    assert "GET" in texts
+    assert result["min_length"] == 3
+
+
+def test_strings_reports_a_module_with_no_data_section() -> None:
+    result = extract_wasm_strings(_sample_module_without_data(), min_length=4)
+    assert result["has_data_section"] is False
+    assert result["count"] == 0
+    assert result["items"] == []
+
+
+def test_strings_flags_a_malformed_data_section() -> None:
+    """A data section whose vector cannot be satisfied is reported, not fatal."""
+    bad = _section(11, b"\x05")  # says 5 segments, provides none
+    module = b"\x00asm\x01\x00\x00\x00" + bad
+    result = extract_wasm_strings(module, min_length=4)
+    assert result["has_data_section"] is True
+    assert result["malformed"] is True
+    assert result["items"] == []
+
+
+def test_strings_handles_explicit_memory_index_segments() -> None:
+    """flag 2 carries a memory index before the offset expr; strings still land."""
+    seg = b"\x02" + _uleb(0) + b"\x41\x00\x0b" + _bytes_vec(b"flag2_marker_value")
+    module = b"\x00asm\x01\x00\x00\x00" + _section(11, _vec([seg]))
+    result = extract_wasm_strings(module, min_length=4)
+    texts = {item["text"] for item in result["items"]}
+    assert "flag2_marker_value" in texts
+
+
+def test_strings_caps_the_item_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    from headless_re_mcp.backends.jsre import wasm_summary as mod
+
+    monkeypatch.setattr(mod, "_MAX_STRINGS", 2)
+    # Three distinct runs separated by NULs in one passive segment.
+    blob = b"aaaa\x00bbbb\x00cccc"
+    seg = b"\x01" + _bytes_vec(blob)
+    module = b"\x00asm\x01\x00\x00\x00" + _section(11, _vec([seg]))
+    result = mod.extract_wasm_strings(module, min_length=4)
+    assert result["items_total"] == 3
+    assert result["count"] == 2
+    assert result["items_truncated"] is True
+    assert result["items_limit"] == 2
+
+
+def test_wasm_client_strings_needs_no_wabt(tmp_path: Path) -> None:
+    module = tmp_path / "m.wasm"
+    module.write_bytes(_module_with_strings())
+    payload = WasmClient(None).strings(module, min_length=4)
+    texts = {item["text"] for item in payload["items"]}
+    assert "https://evil.example/api" in texts
+
+
+def test_wasm_client_strings_rejects_non_wasm(tmp_path: Path) -> None:
+    bad = tmp_path / "n.wasm"
+    bad.write_bytes(b"MZ not a module")
+    with pytest.raises(JsReError) as caught:
+        WasmClient(None).strings(bad)
+    assert caught.value.code == "invalid_params"
+
+
+def test_wasm_strings_docstring_names_the_shape() -> None:
+    doc = _tool_docstring("wasm.strings")
+    assert "items" in doc
+    assert "segment" in doc
+    assert "min_length" in doc
+    assert "items_truncated" in doc
+    assert "too_large" in doc
+
+
+def test_wasm_strings_service_reports_the_pure_python_backend(tmp_path: Path) -> None:
+    from headless_re_mcp.core.service import AnalysisService
+
+    module = tmp_path / "m.wasm"
+    module.write_bytes(_module_with_strings())
+    service = AnalysisService()
+    try:
+        result = service.wasm_strings(str(module), min_length=4)
+    finally:
+        service.close_all()
+    payload = result.model_dump(mode="json")
+    assert payload["ok"] is True
+    assert payload["meta"]["backend"] == "wasm-parser"
+    texts = {item["text"] for item in payload["data"]["items"]}
+    assert "KEY=abcdef1234" in texts
 
 
 def test_wasm_summary_docstring_names_the_shape() -> None:
