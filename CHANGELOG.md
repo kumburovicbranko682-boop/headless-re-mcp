@@ -41,6 +41,21 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   与 `module.loaded.name` 整批解析成功、代理项被替换、事件经 SQLite 持久日志
   往返完好;超长文本(替换后仍超限)保持设计化拒绝。
 
+### 修复（核心 SQLite 存储的孤立代理项加固）
+
+- 敌意样本文件名或其二进制串中的孤立代理项不再把会话簿记炸成编码器事故。NTFS
+  文件名是任意 UTF-16、`json.loads` 接受 `\ud800` 转义,于是会话的 `binary`
+  路径(客户端参数)、审计单元的参数/结果摘要(工具参数与后端输出)、knowledge
+  的 kind/key/value(客户端提供、常引用二进制内容)都可能携带未配对代理项;
+  SQLite 的 TEXT 绑定遇之即抛 `UnicodeEncodeError`——Python 明明能正常打开并
+  哈希该文件,`session.open` 却以事故号失败;审计/knowledge 写入亦在其记录的
+  操作已成功之后同样炸掉。现于存储边界新增 `utf8_text`(与传输层字节解码同一
+  replace 策略,有损但存活),应用于 `upsert_session.binary`、`encode_audit_json`、
+  `encode_knowledge_value` 及 `record_knowledge` 的 kind/key;JSON 单元内的替换
+  落在字符串字面量中,单元仍是合法 JSON。时间线 JSONL 写盘已有序列化降级路径,
+  制品路径为内部构造,均不动。回归测试覆盖 insert/update 两分支与三类写入的
+  往返读取。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
