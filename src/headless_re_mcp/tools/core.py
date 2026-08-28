@@ -109,8 +109,8 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     def static_functions(
         session_id: str,
-        offset: int = 0,
-        limit: int = 100,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
     ) -> dict[str, Any]:
         """List analyzed functions.
 
@@ -121,9 +121,9 @@ def build_static_core_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
     def static_strings(
         session_id: str,
-        offset: int = 0,
-        limit: int = 100,
-        max_length: int = 4096,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        max_length: Annotated[int, Field(ge=1, le=65536)] = 4096,
     ) -> dict[str, Any]:
         """List analyzed strings.
 

@@ -127,6 +127,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`static.functions` / `static.strings` 分页越界要跑一趟 idalib 子进程才被拒）
+
+- 两个高频 static 读工具把 `offset` / `limit`（以及 `static.strings` 的 `max_length`）声明成裸
+  `int`，schema 只说“任意整数”。服务层 `service_static` 不夹取、原样转发给 idalib worker，而
+  worker 的 `_paging` 拒绝 `offset < 0` 与 `1..1000` 之外的 `limit`、`_strings` 拒绝 `1..65536`
+  之外的 `max_length`。于是 `limit=100000` 或 `offset=-1` 这类明显越界的调用要先付一整趟隔离
+  子进程往返，才在 worker 侧收到 `invalid_argument`，schema 也从没提示过真实上界。现按 worker
+  合同把边界写进工具签名（`offset` `ge=0`、`limit` `ge=1 le=1000`、`max_length` `ge=1 le=65536`），
+  与 `artifacts.list`、`knowledge.query`、`audit.list` 等兄弟分页工具一致：越界值在派发前即被拒，
+  上界也对 agent 可见。`session.list` 的 `offset` 由服务层 `max(0, offset)` 夹取、不经 worker，未改。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`
