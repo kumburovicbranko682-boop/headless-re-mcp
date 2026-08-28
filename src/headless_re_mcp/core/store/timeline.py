@@ -164,6 +164,15 @@ def _page(raw: bytes, offset: int, limit: int) -> tuple[int, list[str]]:
 
     Entries are newline-terminated, so counting separators gives the total
     without building a list of every line in the file.
+
+    The window is split on the ``\\n`` byte alone, not with ``str.splitlines``.
+    ``json.dumps(..., ensure_ascii=False)`` escapes an in-string ``\\n`` but
+    emits U+2028, U+2029 and NEL (U+0085) raw, and ``str.splitlines`` treats all
+    three -- plus a lone ``\\r`` -- as line boundaries. So an entry whose message
+    or details held one of those was torn into fragments that each failed to
+    parse and vanished from the page, while ``total`` (counted by ``\\n``) still
+    counted it: a diagnostic log silently dropped its own rows. A real newline
+    never appears inside an entry, so ``\\n`` is the only true boundary.
     """
     total = raw.count(b"\n") + (1 if raw and not raw.endswith(b"\n") else 0)
     start = 0
@@ -180,7 +189,10 @@ def _page(raw: bytes, offset: int, limit: int) -> tuple[int, list[str]]:
             end = len(raw)
             break
         end = nxt + 1
-    return total, raw[start:end].decode("utf-8", errors="replace").splitlines()
+    window = raw[start:end].decode("utf-8", errors="replace")
+    # The slice stops on a newline (or EOF), so the terminator leaves a trailing
+    # empty segment; drop empties rather than feed "" to json.loads.
+    return total, [line for line in window.split("\n") if line]
 
 
 def list_session_timeline(path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:

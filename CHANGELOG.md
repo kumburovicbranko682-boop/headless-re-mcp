@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（会话时间线读取用 str.splitlines 拆页，含 Unicode 行分隔符的条目被静默丢弃）
+
+- `core/store/timeline.py::_page` 先按 `\n` 字节切出请求的窗口，再 `decode(...).splitlines()`。
+  `json.dumps(..., ensure_ascii=False)` 会转义串内的 `\n`，却把 U+2028（行分隔符）、
+  U+2029（段分隔符）与 U+0085（NEL）原样写出，而 `str.splitlines()` 把这三者（外加孤立
+  `\r`）都当行界。于是 `message`/`details` 里带这类字符的条目（在被记录的工具输出里很常见）
+  在读取时被拆成多个片段，各自 `json.loads` 失败而消失，`total`（按 `\n` 字节计）却仍数了它：
+  一条诊断日志静默丢掉了自己的行，`count` 偏低、`has_more`/分页也因 `len(chunk)` 被拆片抬高而错位。
+- 改为对解码后的窗口只按 `\n` 切分并过滤空段（切片总以换行/EOF 收尾，末尾会留一个空段）。
+  条目内的真实换行早已被 JSON 转义，故 `\n` 是唯一的条目边界，Unicode 分隔符作为内容原样保留。
+  `_trim_timeline` 在字节上 `splitlines`（`bytes.splitlines()` 不识别这些多字节 UTF-8 分隔符），
+  本就安全，不动。
+- 新增用例（改前红、改后绿，非空洞）：`test_timeline_store.py` 的
+  `test_an_entry_with_a_unicode_line_separator_survives_a_read`（三条里中间一条含
+  U+2028/U+2029/NEL，断言三条全在、内容完整）与
+  `test_paging_counts_a_unicode_separator_entry_as_one_row`（分隔符条目算一行，offset/limit
+  与 has_more 不错位）。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

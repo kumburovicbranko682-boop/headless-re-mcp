@@ -141,6 +141,60 @@ def test_a_torn_final_line_does_not_corrupt_the_next_append(tmp_path: Path) -> N
     assert [item["event"] for item in listed["events"]] == ["e0000", "e0001"]
 
 
+def test_an_entry_with_a_unicode_line_separator_survives_a_read(tmp_path: Path) -> None:
+    """A U+2028/U+2029/NEL inside an entry must not tear it into fragments.
+
+    ``json.dumps(..., ensure_ascii=False)`` escapes an in-string ``\\n`` but
+    emits U+2028 (line separator), U+2029 (paragraph separator) and U+0085 (NEL)
+    raw. The reader used to decode the page and split it with ``str.splitlines``,
+    which treats all three as line boundaries, so an entry whose message or
+    details carried one -- ordinary in tool output an agent records -- was split
+    into pieces that each failed ``json.loads`` and vanished, while ``total``
+    (counted by the ``\\n`` byte) still counted it. A diagnostic log that
+    silently drops its own rows is worse than useless, so the separators must
+    ride through as entry content.
+    """
+    path = tmp_path / "timeline.jsonl"
+    store.append_session_timeline(path, event="before", message="ok")
+    hostile_message = "line\u2028sep\u2029para\x85nel"
+    store.append_session_timeline(
+        path,
+        event="separators",
+        message=hostile_message,
+        details={"blob": "a\u2028b\u2029c"},
+    )
+    store.append_session_timeline(path, event="after", message="ok")
+
+    listed = store.list_session_timeline(path)
+
+    assert listed["total"] == 3
+    assert listed["count"] == 3
+    assert [item["event"] for item in listed["events"]] == ["before", "separators", "after"]
+    # The entry is one row with its content intact, not a scattered set of
+    # unparseable fragments.
+    middle = listed["events"][1]
+    assert middle["message"] == hostile_message
+    assert middle["details"] == {"blob": "a\u2028b\u2029c"}
+
+
+def test_paging_counts_a_unicode_separator_entry_as_one_row(tmp_path: Path) -> None:
+    """has_more and the page window must count ``\\n``-delimited rows, not
+    ``str.splitlines`` fragments, or a separator entry shifts every later page.
+    """
+    path = tmp_path / "timeline.jsonl"
+    store.append_session_timeline(path, event="first", message="ok")
+    store.append_session_timeline(path, event="sep", message="x\u2028y\u2029z")
+    store.append_session_timeline(path, event="last", message="ok")
+
+    first_page = store.list_session_timeline(path, offset=0, limit=2)
+    assert [item["event"] for item in first_page["events"]] == ["first", "sep"]
+    assert first_page["has_more"] is True
+
+    second_page = store.list_session_timeline(path, offset=2, limit=2)
+    assert [item["event"] for item in second_page["events"]] == ["last"]
+    assert second_page["has_more"] is False
+
+
 def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
