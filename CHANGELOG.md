@@ -19,6 +19,11 @@ until 1.0 the tool surface may still change between minor versions.
   断言慢响应落地后选中对话仍是后点的那个。旧代码下如实失败
   （`expected 'slow' to be 'fast'`）。与既有分支 `webui-abort-stream-on-thread-switch`
   互补：那个分支停掉切换时的旧 SSE 流，本修复挡住选择请求本身的过期响应。
+- 同族第二处：`consume` 在事件流结束后回读当时选中对话的消息以落定最终记录，但落地前
+  不校验用户是否已经切走——切换发生在该回读在途时，旧对话的消息会整段顶掉用户正在看的
+  新对话记录。改法：落地前比对 `selectedThreadRef.current` 与发起时捕获的 threadId，
+  不一致即丢弃。配套测试让运行结束后的回读悬置、切到新对话再放行旧响应，断言新对话的
+  记录不被顶掉；旧代码下如实失败（`expected ['t1-final'] to deeply equal ['t2']`）。
 
 ### 修复（audit trim 测试假设时钟每次调用严格递增）
 
