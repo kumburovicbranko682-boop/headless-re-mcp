@@ -172,6 +172,50 @@ def build_frida_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="frida.strings")
+    def frida_strings(
+        session_id: str,
+        protection: Annotated[str, Field(pattern="^[r-][w-][x-]$")] = "r--",
+        min_length: Annotated[int, Field(ge=1, le=64)] = 4,
+        limit: Annotated[int, Field(ge=1, le=5000)] = 200,
+        name_filter: str = "",
+    ) -> dict[str, Any]:
+        """Harvest printable strings from the target's live memory via a Frida probe.
+
+        The runtime counterpart to r2.strings / apk.strings: those read a file on
+        disk, this walks the ranges a protection mask selects and pulls every
+        printable ASCII run out of the live process -- so a string that only
+        exists decrypted at runtime (an unpacked C2 URL, a key material blob, a
+        deobfuscated log line) is recoverable where a static scan of the packed
+        binary sees only ciphertext. Where frida.memory.scan needs a needle you
+        already know, this is the discovery step that tells you what is there.
+
+        Answers with strings, each carrying address (where the run starts, ready
+        for frida.memory.read) and value (the printable run, cut at 512 chars with
+        value_truncated set when longer), plus count, scanned_ranges (how many
+        regions were visited) and truncated (the string, range, or per-range byte
+        ceiling was hit, so there may be more -- narrow with name_filter/protection
+        or raise limit up to 5000). min_length drops runs shorter than it (default
+        4, the strings(1) floor; raise it to cut noise). protection is the same
+        three-character r/w/x mask as frida.memory.ranges: the default 'r--'
+        harvests readable regions, 'rw-' narrows to writable ones where decrypted
+        data usually lands. name_filter keeps only runs containing that substring
+        (case-sensitive), applied in-agent before the cap so a target token is
+        reached rather than buried; there is no offset. The target is the
+        connected device's authorized pid when this session has one
+        (frida.device.connect + frida.spawn); otherwise the local debuggee. The
+        list field is strings. Read-only: it reads memory, it does not write it.
+        """
+        return _dump(
+            analysis.frida_strings(
+                session_id,
+                protection=protection,
+                min_length=min_length,
+                limit=limit,
+                name_filter=name_filter,
+            )
+        )
+
     @tools.tool(name="frida.memory.read")
     def frida_memory_read(
         session_id: str, address: int, size: Annotated[int, Field(ge=1, le=262144)] = 16

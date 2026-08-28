@@ -294,6 +294,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **Frida 原生线只能按已知 needle 搜内存，无法发现未知字符串**：`frida.memory.scan` 要你先知道要找什么，而 r2.strings /
+  apk.strings 那种"把所有可打印字符串抓出来"的发现步骤在活进程上没有——偏偏运行时才解密的 C2 URL、密钥料、脱混淆
+  日志行只存在于活内存里，静态扫壳后的二进制只看得到密文。新增只读工具 `frida.strings`：按 protection 掩码遍历内存段，
+  逐段（有每段字节上限）抓取可打印 ASCII 串。返回 strings（每项 {address（串起始处，可直接喂给 frida.memory.read）、
+  value（可打印串，超 512 字符截断并置 value_truncated）}）加 count、scanned_ranges、truncated（命中串数/段数/每段字节
+  上限，可能还有更多）。min_length 丢弃过短串（默认 4，即 strings(1) 下限；调高降噪）；protection 同 frida.memory.ranges
+  的 r/w/x 掩码（默认 'r--' 抓可读段，'rw-' 收窄到解密数据常驻的可写段）；name_filter 在封顶前于 agent 内按子串过滤
+  （目标 token 可直达）；无 offset。目标为本会话已授权设备 pid（frida.device.connect + frida.spawn），否则本地被调试
+  进程。是 frida.memory.scan（已知 needle）之外的发现步骤，也是每条静态线都有的 strings 提取在活进程上的对应物。
+  只读，工具总数 316→317（197 只读 / 120 写）。
 - **Frida Java 线读不到无实例的静态常量**：`frida.java.instances` 需要堆上存在活实例才能反射字段，而应用常把硬编码
   API key、base URL、加密密钥、功能开关放在从不实例化的工具/配置/加密类的 static final 字段里——这类类 instances
   够不到。新增只读工具 `frida.java.static_fields`：直接在 Class 上反射静态字段（`f.get(null)`），无需实例。返回 fields

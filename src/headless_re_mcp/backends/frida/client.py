@@ -214,6 +214,51 @@ rpc.exports = {
     }
     return {matches: matches, scanned_ranges: scannedRanges, truncated: truncated};
   },
+  strings: function (protection, minLen, maxN, maxRanges, maxBytes, maxVal, filter) {
+    var ranges = Process.enumerateRanges(protection || 'r--');
+    var out = [];
+    var scannedRanges = 0;
+    var truncated = false;
+    function flush(base, startOff, s, clipped) {
+      if (s.length < minLen) { return; }
+      if (filter && s.indexOf(filter) === -1) { return; }
+      var rec = { address: base.add(startOff).toString(), value: s };
+      if (clipped) { rec.value_truncated = true; }
+      out.push(rec);
+      if (out.length >= maxN) { truncated = true; }
+    }
+    for (var i = 0; i < ranges.length && !truncated; i++) {
+      if (scannedRanges >= maxRanges) { truncated = true; break; }
+      var r = ranges[i];
+      scannedRanges++;
+      var size = r.size;
+      if (maxBytes > 0 && size > maxBytes) { size = maxBytes; }
+      var bytes;
+      try {
+        bytes = new Uint8Array(Memory.readByteArray(r.base, size));
+      } catch (e) {
+        // Unreadable between enumeration and read: skip, do not abort the walk.
+        continue;
+      }
+      var cur = '';
+      var startOff = 0;
+      var clipped = false;
+      for (var j = 0; j < bytes.length; j++) {
+        var b = bytes[j];
+        if (b >= 0x20 && b <= 0x7e) {
+          if (cur.length === 0) { startOff = j; clipped = false; }
+          if (cur.length < maxVal) { cur += String.fromCharCode(b); }
+          else { clipped = true; }
+        } else {
+          flush(r.base, startOff, cur, clipped);
+          cur = '';
+          if (truncated) { break; }
+        }
+      }
+      if (!truncated && cur.length > 0) { flush(r.base, startOff, cur, clipped); }
+    }
+    return {strings: out, scanned_ranges: scannedRanges, truncated: truncated};
+  },
   read: function (address, size) {
     return Array.from(new Uint8Array(Memory.readByteArray(ptr(address), size)));
   }
@@ -482,6 +527,21 @@ _MAX_SCAN_BYTES_PER_RANGE = 128 * 1024 * 1024
 _MAX_SCAN_PATTERN_BYTES = 1024
 _HEX_TOKEN_RE = re.compile(r"^([0-9A-Fa-f]{2}|\?\?)$")
 
+# frida.strings walks the same ranges as frida.memory.scan but, instead of a
+# known needle, harvests every printable ASCII run -- the runtime counterpart to
+# r2.strings / apk.strings, which reaches strings that only exist decrypted in a
+# live process. The per-string value is bounded so one giant printable region
+# cannot flood the reply, and min length defaults to the usual strings(1) floor.
+_MAX_STRINGS = 5000
+_MAX_STRING_VALUE = 512
+_MAX_STRING_MIN_LEN = 64
+
+
+def _check_strings_min_len(min_length: int) -> int:
+    if type(min_length) is not int or not 1 <= min_length <= _MAX_STRING_MIN_LEN:
+        raise FridaError("invalid_params", f"min_length must be 1..{_MAX_STRING_MIN_LEN}")
+    return min_length
+
 
 def _check_scan_pattern(pattern: str, pattern_type: str) -> str:
     """Turn the caller's needle into a Frida match pattern, or reject it.
@@ -547,6 +607,30 @@ def _shape_scan(raw: Any, capped: int) -> JsonObject:
     ]
     return {
         "matches": items,
+        "count": len(items),
+        "scanned_ranges": int(raw.get("scanned_ranges") or 0),
+        "truncated": bool(raw.get("truncated")),
+    }
+
+
+def _shape_strings(raw: Any, capped: int) -> JsonObject:
+    if not isinstance(raw, dict):
+        raise FridaError("backend_error", "unexpected frida strings payload")
+    held = list(raw.get("strings") or [])
+    items: list[JsonObject] = []
+    for item in held[:capped]:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value", ""))
+        row: JsonObject = {
+            "address": str(item.get("address", "")),
+            "value": value[:_MAX_STRING_VALUE],
+        }
+        if item.get("value_truncated") or len(value) > _MAX_STRING_VALUE:
+            row["value_truncated"] = True
+        items.append(row)
+    return {
+        "strings": items,
         "count": len(items),
         "scanned_ranges": int(raw.get("scanned_ranges") or 0),
         "truncated": bool(raw.get("truncated")),
@@ -877,6 +961,33 @@ class FridaClient:
             with contextlib.suppress(Exception):
                 session.detach()
 
+    def strings(
+        self,
+        pid: int,
+        *,
+        allowed_pid: int,
+        protection: str = "r--",
+        min_length: int = 4,
+        limit: int = 200,
+        name_filter: str = "",
+    ) -> JsonObject:
+        self._require(pid, allowed_pid)
+        prot = _normalize_protection(protection)
+        min_len = _check_strings_min_len(min_length)
+        session = self._attach_local(pid)
+        try:
+            return self._run_enum(
+                session,
+                kind="strings",
+                protection=prot,
+                min_length=min_len,
+                limit=limit,
+                name_filter=name_filter,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                session.detach()
+
     def memory_read(
         self, pid: int, address: int, size: int, *, allowed_pid: int
     ) -> JsonObject:
@@ -901,6 +1012,7 @@ class FridaClient:
         name_filter: str = "",
         protection: str = "r--",
         scan_pattern: str = "",
+        min_length: int = 4,
     ) -> JsonObject:
         """Load the enumeration agent into an attached session and run one query.
 
@@ -932,6 +1044,20 @@ class FridaClient:
                     capped,
                     _MAX_SCAN_RANGES,
                     _MAX_SCAN_BYTES_PER_RANGE,
+                ),
+                capped,
+            )
+        if kind == "strings":
+            capped = max(1, min(int(limit), _MAX_STRINGS))
+            return _shape_strings(
+                script.exports_sync.strings(
+                    protection,
+                    int(min_length),
+                    capped,
+                    _MAX_SCAN_RANGES,
+                    _MAX_SCAN_BYTES_PER_RANGE,
+                    _MAX_STRING_VALUE,
+                    needle,
                 ),
                 capped,
             )
@@ -1464,6 +1590,33 @@ class FridaClient:
             timeout=timeout,
         )
 
+    def strings_device(
+        self,
+        device_id: str | None,
+        pid: int,
+        *,
+        allowed_pids: Iterable[int],
+        protection: str = "r--",
+        min_length: int = 4,
+        limit: int = 200,
+        name_filter: str = "",
+        timeout: float = _PROBE_TIMEOUT_S,
+    ) -> JsonObject:
+        self._authorize(pid, allowed_pids)
+        prot = _normalize_protection(protection)
+        min_len = _check_strings_min_len(min_length)
+        device = self._resolve_device(device_id)
+        return self._enum_on_device(
+            device,
+            pid,
+            kind="strings",
+            protection=prot,
+            min_length=min_len,
+            limit=limit,
+            name_filter=name_filter,
+            timeout=timeout,
+        )
+
     def memory_read_device(
         self,
         device_id: str | None,
@@ -1494,6 +1647,7 @@ class FridaClient:
         name_filter: str = "",
         protection: str = "r--",
         scan_pattern: str = "",
+        min_length: int = 4,
         timeout: float = _PROBE_TIMEOUT_S,
     ) -> JsonObject:
         """attach on the resolved device, run one enumeration, detach.
@@ -1524,6 +1678,7 @@ class FridaClient:
                     name_filter=name_filter,
                     protection=protection,
                     scan_pattern=scan_pattern,
+                    min_length=min_length,
                 )
             finally:
                 with contextlib.suppress(Exception):
