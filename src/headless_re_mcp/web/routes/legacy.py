@@ -63,7 +63,7 @@ def repair_encoded_token_query(query_string: bytes) -> bytes:
     lower = raw.lower()
     marker = "token%3d"
     idx = lower.find(marker)
-    if idx < 0:
+    if idx < 0:  # pragma: no cover - byte-level check above guarantees a hit
         return query_string
     prefix = raw[:idx]
     rest = raw[idx + len(marker) :]
@@ -228,7 +228,7 @@ def register_legacy_routes(
         try:
             _require_token(authorization, token_q, request.cookies.get("headless_re_bootstrap"))
         except HTTPException as exc:
-            if exc.status_code != 401:
+            if exc.status_code != 401:  # pragma: no cover - _require_token only raises 401
                 raise
             return HTMLResponse(
                 "<!doctype html><meta charset=utf-8><title>需要访问令牌</title>"
@@ -832,7 +832,8 @@ def register_legacy_routes(
         async def event_gen() -> AsyncIterator[bytes]:
             # Bound stream lifetime so clients reconnect cleanly.
             # Snapshot build is sync/blocking — run off the event loop.
-            for index in range(max_frames):
+            # max_frames >= 1 (query ge=1), so the loop always exits via break.
+            for index in range(max_frames):  # pragma: no branch
                 if await request.is_disconnected():
                     break
                 payload = await asyncio.to_thread(
