@@ -170,7 +170,7 @@ jobs:
   # webcrack deobfuscate, wasm2wat), 72 skip honestly, in ~10s of test time.
   linux-integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -215,6 +215,19 @@ jobs:
         run: |
           python -m pytest tests/integration -q -rs --tb=short --timeout=300 \
             --deselect tests/integration/test_agent_browser_smoke.py
+
+      - name: Unit tests with every optional dependency present
+        # The unit lanes install only test/dev/web, so a test that encodes
+        # "androguard/mitmproxy/radare2 is not installed" as an environment
+        # fact stays green in CI and red on any loaded workstation. Measured:
+        # seven such tests (six failures plus one order-dependent case whose
+        # unmocked path launches a real DumpMaster on port 8080) shipped to
+        # main exactly this way. This lane already has every extra and tool
+        # installed, so one loaded-env pass pins the suite from the other
+        # side: unit tests must hold whether the optional backends are absent
+        # (linux-quality) or present (here).
+        timeout-minutes: 15
+        run: python -m pytest tests/unit -q -rs --tb=short --timeout=120
 
   webui:
     runs-on: windows-latest
