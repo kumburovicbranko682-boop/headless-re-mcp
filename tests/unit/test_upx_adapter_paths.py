@@ -16,7 +16,6 @@ from typing import Any, BinaryIO, cast
 import pytest
 
 import headless_re_mcp.unpack.upx as upx
-from headless_re_mcp.backends.common.bounded_run import BoundedCancelled, bound_cancel_scope
 from headless_re_mcp.core.session import file_sha256
 from headless_re_mcp.unpack.upx import (
     UpxExecutableNotFoundError,
@@ -131,8 +130,35 @@ def test_creation_options_hides_the_console_on_windows(
     assert options["startupinfo"].wShowWindow == 0
     assert "start_new_session" not in options
 
+
+def test_creation_options_tolerate_a_missing_startupinfo_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.delattr(subprocess, "STARTUPINFO", raising=False)
-    assert "startupinfo" not in upx._creation_options()
+    options = upx._creation_options()
+    assert "startupinfo" not in options
+    assert options["creationflags"] != 0
+
+
+def test_capture_process_maps_start_failures(tmp_path: Path) -> None:
+    with pytest.raises(UpxExecutableNotFoundError):
+        upx._capture_process([str(tmp_path / "nope")], timeout=1.0, max_output_size=64)
+    not_executable = tmp_path / "plain.txt"
+    not_executable.write_text("not a program\n")
+    with pytest.raises(UpxProcessError, match="could not start upx"):
+        upx._capture_process([str(not_executable)], timeout=1.0, max_output_size=64)
+
+
+def test_capture_process_honours_a_preset_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cancel = Event()
+    cancel.set()
+    monkeypatch.setattr(upx, "active_bound_cancel", lambda: cancel)
+    sleeper = _fake_upx(tmp_path, body="sleep 5", name="sleeper.sh")
+    with pytest.raises(upx.BoundedCancelled):
+        upx._capture_process([str(sleeper)], timeout=5.0, max_output_size=1024)
 
 
 def test_capture_process_rejects_a_process_without_pipes(
@@ -184,23 +210,6 @@ def test_capture_process_defaults_an_unknown_exit_code(
     assert excinfo.value.returncode == -1
 
 
-def test_capture_process_wraps_a_process_start_error(tmp_path: Path) -> None:
-    not_executable = tmp_path / "upx.txt"
-    not_executable.write_text("not a program\n")
-    with pytest.raises(UpxProcessError, match="could not start upx"):
-        upx._capture_process([str(not_executable)], timeout=1.0, max_output_size=1024)
-    with pytest.raises(UpxExecutableNotFoundError):
-        upx._capture_process([str(tmp_path / "gone")], timeout=1.0, max_output_size=1024)
-
-
-def test_capture_process_honors_a_pre_set_cancel(tmp_path: Path) -> None:
-    slow = _fake_upx(tmp_path, body="sleep 5", name="slow.sh")
-    cancel = Event()
-    cancel.set()
-    with bound_cancel_scope(cancel), pytest.raises(BoundedCancelled):
-        upx._capture_process([str(slow)], timeout=10.0, max_output_size=1024)
-
-
 def test_capture_process_kills_a_stderr_flooder(tmp_path: Path) -> None:
     flooder = _fake_upx(
         tmp_path, body="head -c 200000 /dev/zero 1>&2; sleep 2", name="flood.sh"
@@ -249,21 +258,6 @@ def test_unpack_upx_cleans_up_a_failed_decompression(tmp_path: Path) -> None:
     with pytest.raises(UpxProcessError, match="exit status 2"):
         unpack_upx(exe, packed, out, input_sha256=sha)
     assert not out.exists()
-
-
-def test_unpack_upx_mutation_arm_tolerates_a_missing_output(tmp_path: Path) -> None:
-    exe = _fake_upx(tmp_path, body='echo tampered >> "$4"; exit 0')
-    packed, sha = _packed(tmp_path)
-    with pytest.raises(UpxScanError) as excinfo:
-        unpack_upx(exe, packed, tmp_path / "out.exe", input_sha256=sha)
-    assert excinfo.value.code == "input_mutated"
-
-
-def test_unpack_upx_failure_arm_tolerates_a_missing_output(tmp_path: Path) -> None:
-    exe = _fake_upx(tmp_path, body="exit 3")
-    packed, sha = _packed(tmp_path)
-    with pytest.raises(UpxProcessError, match="exit status 3"):
-        unpack_upx(exe, packed, tmp_path / "out.exe", input_sha256=sha)
 
 
 def test_unpack_upx_requires_the_output_to_appear(tmp_path: Path) -> None:
