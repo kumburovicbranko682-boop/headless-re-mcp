@@ -32,22 +32,29 @@ _MAX_COUNTED_FILES = 50_000
 def _capped_java_listing(root: Path, *, cap: int) -> tuple[list[str], int, bool]:
     names: list[str] = []
     total = 0
-    has_more = False
+    scan_capped = False
     if not root.is_dir():
         return [], 0, False
     for path in root.rglob("*.java"):
         if not path.is_file():
             continue
         total += 1
-        if len(names) < cap:
-            names.append(str(path.relative_to(root)))
-        else:
-            has_more = True
+        names.append(str(path.relative_to(root)))
         if total >= _MAX_COUNTED_FILES:
-            has_more = True
+            scan_capped = True
             break
+    # Sort the whole scanned set before cutting to `cap`, so the listing is the
+    # alphabetically first `cap` files -- a real sorted prefix. Sorting only the
+    # first `cap` files the walk happened to yield reordered an arbitrary subset
+    # (rglob order is filesystem-dependent, not alphabetical): the page looked
+    # like a sorted prefix but was not one, and a decompiled APK routinely holds
+    # more .java files than the list cap, so the caller could neither trust the
+    # prefix nor tell which files it never saw. The walk is already bounded by
+    # _MAX_COUNTED_FILES, so the collected set stays bounded too.
     names.sort()
-    return names, total, has_more
+    page = names[:cap]
+    has_more = scan_capped or len(names) > cap
+    return page, total, has_more
 
 
 class JadxError(RuntimeError):

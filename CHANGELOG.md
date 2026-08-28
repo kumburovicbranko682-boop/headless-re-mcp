@@ -5,6 +5,24 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（apk.export_sources 的 java_files 在超出列表上限时也是伪装成有序前缀的任意子集）
+
+- `backends/jadx/client.py` 的 `_capped_java_listing()` 与 device.packages 是同一类问题：
+  它先按 `rglob` 遍历顺序收集到列表上限（`_MAX_LISTED_FILES`，2000）就不再存，仍继续数到
+  `_MAX_COUNTED_FILES`（50000），最后才对这已经截断的 2000 个排序。`rglob` 的遍历顺序依赖
+  文件系统、并非字母序，而反编译出来的 APK 常常有远超 2000 个 `.java` 文件，于是
+  `export_sources` 返回的 `java_files` 看起来是有序前缀、实则是遍历恰好先给出的那 2000 个
+  重新排了个序；调用方既信不过这个前缀，也无从得知漏了哪些（有 `has_more`/`java_file_count`
+  但无 offset 分页）。
+- 改法：先把整个已扫描集合（受 `_MAX_COUNTED_FILES` 约束，仍有界）收集齐并整体排序，再切出前
+  `cap` 个作为这一页；`has_more` 由「扫描触顶」或「总数超过 cap」决定。这样 `java_files`
+  永远是「字母序最靠前的 `cap` 个」这一真正的有序前缀。`java_file_count`（总数）与既有的
+  触顶语义保持不变。
+- 新增用例 `test_listing_returns_the_alphabetical_prefix_not_an_arbitrary_subset`：把遍历
+  强制成逆字母序后，钉死 `cap=3` 时返回 `["C0.java", "C1.java", "C2.java"]`。非空验证：临时
+  改回 sort-after-cap 后该用例失败，返回 `["C3.java", "C4.java", "C5.java"]`（即遍历先给出的
+  后三个重排序）。既有的缺失根、非文件项、计数触顶、超上限披露等用例只钉计数，不受影响。
+
 ### 修复（device.packages 在超出上限时返回的是伪装成有序前缀的任意子集）
 
 - `backends/adb/client.py` 的 `packages()` 此前是「先按 pm 打印顺序收集到 `capped` 个就

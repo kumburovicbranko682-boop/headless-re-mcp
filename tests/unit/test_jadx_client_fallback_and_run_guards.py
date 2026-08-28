@@ -84,6 +84,35 @@ def test_listing_stops_counting_at_the_file_ceiling(
     assert has_more is True
 
 
+def test_listing_returns_the_alphabetical_prefix_not_an_arbitrary_subset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capped listing must be the alphabetically first ``cap`` files.
+
+    The walk order (rglob) is filesystem-dependent, so a caller asking for
+    fewer files than the tree holds must still get a real sorted prefix -- the
+    alphabetically first ``cap`` -- not whichever ``cap`` the walk happened to
+    yield, reordered for display. Here the walk is forced to yield the files
+    reverse-sorted; sorting only the collected page would return the last three
+    (``C3/C4/C5``) and fail this. Pinning the exact prefix is what makes the
+    guard non-vacuous.
+    """
+    for name in ("C5", "C4", "C3", "C2", "C1", "C0"):
+        (tmp_path / f"{name}.java").write_text("class C {}", encoding="utf-8")
+    real_rglob = Path.rglob
+
+    def reverse_rglob(self: Path, pattern: str) -> list[Path]:
+        return sorted(real_rglob(self, pattern), reverse=True)
+
+    monkeypatch.setattr(Path, "rglob", reverse_rglob)
+
+    names, total, has_more = _capped_java_listing(tmp_path, cap=3)
+
+    assert total == 6
+    assert has_more is True
+    assert names == ["C0.java", "C1.java", "C2.java"]
+
+
 def test_decompile_rejects_a_blank_class_name(tmp_path: Path) -> None:
     client, apk, out = _jadx(tmp_path)
 
