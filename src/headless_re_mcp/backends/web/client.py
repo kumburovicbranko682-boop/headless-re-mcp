@@ -77,6 +77,12 @@ _MAX_DOM_ATTRS = 50
 _MAX_DOM_ATTR_CHARS = 1024
 _MAX_DOM_TEXT = 2048
 _MAX_DOM_HTML = 512
+# web.network.headers captures the request/response header maps per request.
+# Bound the header count, each value, and the whole map so a hostile response
+# cannot balloon the per-request entry held in the ring.
+_MAX_HEADERS = 100
+_MAX_HEADER_VALUE_BYTES = 2048
+_MAX_HEADER_MAP_BYTES = 16 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -120,6 +126,36 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _bounded_header_map(value: object) -> tuple[dict[str, str], bool]:
+    """Copy a CDP header map into a bounded dict, reporting whether it was cut.
+
+    CDP hands the request/response headers as a name->value object (repeated
+    headers already folded, joined by newlines). Bound the header count, each
+    value, and the total bytes so a page that returns thousands of headers or a
+    megabyte-long value cannot grow the per-request entry that lives in the ring.
+    """
+    if not isinstance(value, dict):
+        return {}, False
+    out: dict[str, str] = {}
+    truncated = False
+    budget = _MAX_HEADER_MAP_BYTES
+    for name, raw in value.items():
+        if len(out) >= _MAX_HEADERS:
+            truncated = True
+            break
+        name_s = str(name)
+        val, cut = _bounded_metadata(raw, _MAX_HEADER_VALUE_BYTES)
+        cost = len(name_s.encode("utf-8", "replace")) + len(val.encode("utf-8", "replace"))
+        if cost > budget:
+            truncated = True
+            break
+        budget -= cost
+        out[name_s] = val
+        if cut:
+            truncated = True
+    return out, truncated
 
 
 # Read both Web Storage areas in one page hop. Each area is dumped defensively:
@@ -911,6 +947,10 @@ class _WebSession:
         # this dictionary for as long as the session is open.
         self.scripts: OrderedDict[str, JsonObject] = OrderedDict()
         self.scripts_dropped = 0
+        # Per-request header maps for web.network.headers, kept out of the
+        # `requests` rows so web.network.list/failed stay lean. Bounded in
+        # lockstep with the request ring.
+        self.headers: OrderedDict[str, JsonObject] = OrderedDict()
         self.lock = threading.RLock()
         # Set right after construction: the runner is what built these objects,
         # and it is the only thread allowed to touch them again.
@@ -1061,6 +1101,9 @@ class WebBackend:
 
     def _wire_events(self, handle: _WebSession) -> None:
         cdp = handle.cdp
+        if not hasattr(handle, "headers"):
+            # Real sessions declare this buffer; a bare test handle may not.
+            handle.headers = OrderedDict()
         cdp.send("Network.enable")
         cdp.send("Runtime.enable")
         cdp.send("Debugger.enable")
@@ -1085,24 +1128,40 @@ class WebBackend:
             }
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
+            req_headers, headers_truncated = _bounded_header_map(req.get("headers"))
+            rid = str(params.get("requestId"))
             with handle.lock:
-                handle.requests[str(params.get("requestId"))] = entry
+                handle.requests[rid] = entry
                 while len(handle.requests) > _MAX_REQUESTS:
                     handle.requests.popitem(last=False)
                     handle.requests_dropped += 1
+                handle.headers[rid] = {
+                    "request": req_headers,
+                    "response": {},
+                    "truncated": headers_truncated,
+                }
+                while len(handle.headers) > _MAX_REQUESTS:
+                    handle.headers.popitem(last=False)
 
         def on_response(params: JsonObject) -> None:
             resp = params.get("response") or {}
             mime_type, mime_truncated = _bounded_metadata(
                 resp.get("mimeType"), _MAX_METADATA_BYTES
             )
+            resp_headers, headers_truncated = _bounded_header_map(resp.get("headers"))
+            rid = str(params.get("requestId"))
             with handle.lock:
-                entry = handle.requests.get(str(params.get("requestId")))
+                entry = handle.requests.get(rid)
                 if entry is not None:
                     entry["status"] = resp.get("status")
                     entry["mimeType"] = mime_type
                     if mime_truncated:
                         entry["metadata_truncated"] = True
+                slot = handle.headers.get(rid)
+                if slot is not None:
+                    slot["response"] = resp_headers
+                    if headers_truncated:
+                        slot["truncated"] = True
 
         def on_failed(params: JsonObject) -> None:
             error_text, error_truncated = _bounded_metadata(
@@ -1260,6 +1319,27 @@ class WebBackend:
             "offset": start,
             "has_more": start + len(window) < len(failed),
             "dropped": dropped,
+        }
+
+    def network_headers(self, session_id: str, request_id: str) -> JsonObject:
+        handle = self._get(session_id)
+        with handle.lock:
+            entry = handle.requests.get(request_id)
+            slot = getattr(handle, "headers", {}).get(request_id)
+        if entry is None:
+            raise WebError("not_found", "unknown request id", request_id=request_id)
+        request_headers = dict((slot or {}).get("request") or {})
+        response_headers = dict((slot or {}).get("response") or {})
+        return {
+            "request_id": request_id,
+            "url": entry.get("url"),
+            "method": entry.get("method"),
+            "status": entry.get("status"),
+            "request_headers": request_headers,
+            "request_header_count": len(request_headers),
+            "response_headers": response_headers,
+            "response_header_count": len(response_headers),
+            "headers_truncated": bool((slot or {}).get("truncated")),
         }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:

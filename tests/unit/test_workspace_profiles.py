@@ -26,7 +26,7 @@ async def test_full_profile_exposes_every_tool(tmp_path) -> None:
     finally:
         analysis.close_all()
     names = {tool.name for tool in tools}
-    assert len(names) == 312
+    assert len(names) == 313
     assert "apk.open" in names
     assert "web.open" in names
 

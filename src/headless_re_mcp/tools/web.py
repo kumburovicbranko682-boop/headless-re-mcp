@@ -130,6 +130,28 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_network_failed(session_id, offset=offset, limit=limit))
 
+    @tools.tool(name="web.network.headers")
+    def web_network_headers(session_id: str, request_id: str) -> dict[str, Any]:
+        """Read one request's captured request and response headers.
+
+        web.network.list/failed keep the rows lean (url, method, status); this
+        is where the headers live. The in-browser view proxy.security_headers /
+        proxy.cookies cannot give you when traffic never crossed the proxy (a
+        service worker, a WebSocket handshake, an HTTP/2 push): the Authorization
+        or Cookie a request carried, the Set-Cookie, Content-Type, Location or
+        Content-Security-Policy a response returned. Captured live off CDP for
+        every request the page made.
+
+        Answers with request_id, url, method, status, request_headers and
+        response_headers (each a name->value map, repeated headers already folded
+        by CDP), request_header_count, response_header_count, and
+        headers_truncated (true when the header count, a value, or the whole map
+        hit its bound). response_headers is empty for a request that never got a
+        response (still in flight, or failed -- see web.network.failed). An
+        unknown request_id is not_found.
+        """
+        return _dump(analysis.web_network_headers(session_id, request_id))
+
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
         """Fetch one request's response body (large or binary bodies spill).

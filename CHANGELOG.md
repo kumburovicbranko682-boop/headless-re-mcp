@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **312（194 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **313（195 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -677,6 +677,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `top_mime_types`(排序后各取前 `top` 条,默认 10,上限 50)及其背后的 `host_count` /
   `mime_type_count`。host 由每条 url 解析,`mime_type` 剥掉 `; charset=...` 只留裸媒体类型;
   聚合逻辑抽成纯函数 `summarize_requests`,不依赖运行中的浏览器,可独立单测。
+- 新增 `web.network.headers`:读回单个请求被捕获的请求头与响应头。`web.network.list`/`failed` 只保留精简行
+  (url、method、status),头就存在这。这是 traffic 从未经过代理(service worker、WebSocket 握手、HTTP/2 推送)
+  时 `proxy.security_headers`/`proxy.cookies` 给不了的浏览器内视图:请求带的 Authorization 或 Cookie、响应回的
+  Set-Cookie、Content-Type、Location 或 Content-Security-Policy。对页面发起的每个请求都从 CDP 实时捕获。回
+  `request_id`、`url`、`method`、`status`、`request_headers` 与 `response_headers`(各为 name->value 映射,重复头
+  已由 CDP 折叠)、`request_header_count`、`response_header_count` 与 `headers_truncated`(头数、某个值或整张映射触
+  边界时为 true)。从未收到响应的请求(仍在途或已失败——见 `web.network.failed`)其 `response_headers` 为空。未知
+  `request_id` 报 `not_found`。头存在与请求行分开的独立环里,故 `web.network.list`/`failed` 输出保持精简;二者按
+  请求环同步淘汰。
 - 新增 `web.network.failed`:列出浏览器报告为失败/被拦的请求——`web.network.list` 埋着、`web.network.stats`
   只计数的那一刀分诊:从未完成的请求。CDP 对某请求发 `Network.loadingFailed` 时它落到这里——DNS/TLS 错误、
   连接重置、CORS 或混合内容拦截、被扩展杀掉的广告/追踪器,或用户中止的导航。直接读失败项,是不翻完整段日志就
