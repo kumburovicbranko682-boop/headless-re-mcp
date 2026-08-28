@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import sys
 import types
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -27,7 +28,7 @@ from headless_re_mcp.backends.apk.client import (
 
 
 @pytest.fixture
-def fake_androguard(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+def fake_androguard(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     """Inject a fake androguard package so the client reports itself available.
 
     Each test assigns ``core_apk.APK`` / ``misc.AnalyzeAPK`` to control what the
@@ -440,7 +441,7 @@ def test_methods_report_when_the_scan_hit_the_collect_cap(
 
     monkeypatch.setattr(apk_client, "_MAX_METHODS_COLLECT", 1)
     parsed = _ClassAnalysis([])  # only needs get_classes
-    parsed._classes = [_MethodClass("Lcom/app/A;", ["one", "two"])]  # type: ignore[assignment]
+    parsed._classes = cast(Any, [_MethodClass("Lcom/app/A;", ["one", "two"])])
     client = ApkClient()
     monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: parsed)
 
