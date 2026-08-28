@@ -1103,6 +1103,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **`pe_preferred_base` 的 PE / 非-PE 分叉与畸形头健壮性钉死**：每个 r2 工具载荷都经
+  `enrich_r2_payload` 向 `pe_preferred_base` 问一次首选 ImageBase——问到真实基址,调用方看到的每个
+  地址就被穿成 `{module, rva, va}`(读作“属于*这个*映像、在*这个*文件相对地址”);问到 `None`,同样的
+  偏移只保留裸 `{va}`。也就是说,这一个头解析器替 r2 刚打开的文件决定了分析者拿到的是模块相对坐标
+  还是原始虚拟地址。既有用例只走干净 PE 的那条腿(以及邻接分支上新加的干净 ELF),分叉的另一条腿全是
+  死代码:一个敌意或仅仅非-PE 的输入——畸形/截断的头、只有 `MZ` 却没有 `PE\0\0` 签名的存根、
+  合法但 ImageBase 为 0 的 PE、把 `e_lfanew` 指到 64 KiB 首读窗口之外的巨型 DOS 存根——都必须落到裸 VA
+  (对零基址 PE 则是有架构、无基址),而绝不能凭空造出指向文件并非其所属映像的 `rva`/`module` 字段。
+  新增 10 个用例逐条钉住:未知的 optional-header magic(既非 0x10B 也非 0x20B)读作无基址;ImageBase 为 0
+  时保留架构、丢弃基址(两个返回值各自独立移动);`SizeOfOptionalHeader` 短于 ImageBase 所在偏移(48 < 60)
+  的截断头被拒而非越界读;有 `MZ`、`e_lfanew` 在范围内却无 `PE\0\0` 签名的文件不是 PE;`e_lfanew` 越过
+  首读窗口的巨型存根仍能经 seek-重读回路找回架构与真实基址(这条回路正是为它而存在),而同样越窗却在该
+  偏移无签名的存根照旧报无基址(重读不得轻信);`_needed_header_bytes` 对越过 1 MiB 上限的 `e_lfanew`
+  返回 `None` 以中止回路(不按攻击者选定的字段发起数兆字节的整块读取)、对越窗但在上限内的偏移只索要
+  “够到文件头”的 `e_lfanew + 24`;`address_dict` 在有 rva 却无模块名时把地址丢弃(`None`)而非放出一个
+  无从归属的 rva、也不让 `ValueError` 冒出富化流程,无基址时则原样留作裸 VA。
 - **只读部署的写拦截由全工具面契约固定**：每个写工具在 `local_full_access=false` 时返回
   `write_disabled` 并短路、读工具不受影响、被 guard 包裹的集合恒等于按 `tools/catalog.py`
   分级判定的写集合——分级与执行不再各走各的（此前只在一个合成探针上验证机制）。
