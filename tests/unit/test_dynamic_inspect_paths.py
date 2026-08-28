@@ -11,6 +11,7 @@ bare service so no runtime is needed.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +66,7 @@ def test_atomic_write_cleans_up_the_temp_file_when_replace_fails(
     def boom(src: Any, dst: Any) -> None:
         raise OSError("replace failed")
 
-    monkeypatch.setattr(sdi.os, "replace", boom)
+    monkeypatch.setattr(os, "replace", boom)
     with pytest.raises(OSError, match="replace failed"):
         sdi._atomic_write_bytes(destination, b"data")
     assert not destination.exists()
