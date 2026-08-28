@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import types
 from collections import OrderedDict, deque
 from concurrent.futures import Future
 from pathlib import Path
@@ -862,11 +863,16 @@ def test_wire_events_records_console_and_counts_drops() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_check_available_caches_a_successful_import() -> None:
+def test_check_available_caches_a_successful_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    # CI quality jobs run without the browser extra, so fake the import instead
+    # of requiring a real playwright installation.
     backend = WebBackend()
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", types.ModuleType("playwright.sync_api"))
     backend._check_available()
     assert backend._available is True
-    # Cached: a second call takes the fast path.
+    # Cached: a second call takes the fast path and never re-imports.
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
     backend._check_available()
 
 
