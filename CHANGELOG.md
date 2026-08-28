@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **295（178 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **296（179 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -607,6 +607,15 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `permission_count`、`components`(activities/services/receivers/providers 的**数量**,名字用
   `apk.components`)、`native_abis`、`native_lib_count`、`certificate_count` 与 `v1_signed`。只给计数、
   不给清单;要完整列表时再用对应分项工具。读不出包名的 zip 报 backend error、而非当作已打开的包。
+- **`apk.exported_components`**：`apk.components` 缺的安全视角——后者列出全部组件名,本工具走一遍
+  AndroidManifest.xml,只报**解析为 exported** 的 activity/activity-alias/service/receiver/provider,
+  即别的应用或 shell 能触达的入口,是找"无防护启动、可注入的 provider、泄露状态的广播"的第一站。
+  规则:`android:exported="true"` 即导出;未声明该属性时,activity/service/receiver 有 intent-filter 即
+  导出,provider 按 API-17 默认(targetSdk<17 导出、>=17 私有)。清单级解析、**不需要 DEX 分析**。每行含
+  `name`(全限定)、`type`、`permission`(守护它的 `android:permission`,或 null——带签名权限的导出组件暴露
+  面小得多)、`exported_declared`(原始 "true"/"false" 或 null,让推断结论可审计)与 `has_intent_filter`。
+  输出 `exported`、`counts`(各类型导出数)、`count`/`total`/`offset`/`has_more`;`total` 上限 2000、越限置
+  `scan_capped`;清单 XML 解析失败时 `truncated` 为真。与其余分项工具共用清单解析。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
 - **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、

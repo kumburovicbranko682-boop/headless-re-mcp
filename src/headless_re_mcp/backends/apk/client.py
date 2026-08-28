@@ -12,8 +12,27 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
+from xml.etree import ElementTree as ET
 
 JsonObject = dict[str, Any]
+
+# The manifest namespace every android:* attribute lives under; ElementTree
+# surfaces those attributes as "{uri}name", so exported-component parsing reads
+# them through this URI rather than the "android:" prefix.
+_ANDROID_NS = "http://schemas.android.com/apk/res/android"
+# Android made providers private by default in API 17; below it an unset
+# android:exported still meant exported, which is why the derivation needs the
+# target SDK to resolve a provider that never declared the attribute.
+_PROVIDER_DEFAULT_EXPORT_SDK = 17
+# The four component tags plus activity-alias (an activity entry point in its
+# own right), mapped to the type each row reports.
+_COMPONENT_TAGS = {
+    "activity": "activity",
+    "activity-alias": "activity",
+    "service": "service",
+    "receiver": "receiver",
+    "provider": "provider",
+}
 
 # DEX analysis of a large app can take seconds and tens of MB; keep only a few
 # parsed apps resident and evict the oldest.
@@ -34,6 +53,8 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+_MAX_COMPONENTS_PAGE = 1000
+_MAX_EXPORTED_COLLECT = 2000
 
 
 class ApkError(RuntimeError):
@@ -376,6 +397,70 @@ class ApkClient:
             "v1_signed": bool(signature_files),
         }
 
+    def exported_components(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
+        """List the components reachable by other apps (the Android attack surface).
+
+        Manifest-level (uses the cheap _apk parse, no DEX analysis): it walks
+        AndroidManifest.xml and reports each activity, activity-alias, service,
+        receiver or provider that resolves to exported, the way another app or
+        the shell can reach it. See _effective_exported for the rule; every row
+        also carries the raw evidence so the derivation is auditable.
+        """
+        apk = self._apk(path)
+        package = apk.get_package() or ""
+        target_sdk = _int_or_none(apk.get_target_sdk_version())
+        try:
+            xml_bytes = apk.get_android_manifest_axml().get_xml()
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
+
+        rows: list[JsonObject] = []
+        counts = {"activity": 0, "service": 0, "receiver": 0, "provider": 0}
+        scan_more = False
+        truncated = False
+        try:
+            root = ET.fromstring(xml_bytes)
+        except ET.ParseError:
+            root = None
+            truncated = True
+        application = root.find("application") if root is not None else None
+        if application is not None:
+            for element in application:
+                tag = element.tag if isinstance(element.tag, str) else ""
+                comp_type = _COMPONENT_TAGS.get(tag)
+                if comp_type is None:
+                    continue
+                if len(rows) >= _MAX_EXPORTED_COLLECT:
+                    scan_more = True
+                    break
+                declared = element.get(f"{{{_ANDROID_NS}}}exported")
+                has_intent_filter = element.find("intent-filter") is not None
+                if not _effective_exported(comp_type, declared, has_intent_filter, target_sdk):
+                    continue
+                name = element.get(f"{{{_ANDROID_NS}}}name", "")
+                counts[comp_type] += 1
+                rows.append(
+                    {
+                        "name": _resolve_component_name(package, name),
+                        "type": comp_type,
+                        "exported_declared": declared,
+                        "has_intent_filter": has_intent_filter,
+                        "permission": element.get(f"{{{_ANDROID_NS}}}permission"),
+                    }
+                )
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_COMPONENTS_PAGE)
+        window = rows[start : start + cap]
+        return {
+            "exported": window,
+            "counts": counts,
+            "count": len(window),
+            "total": len(rows),
+            "offset": start,
+            "has_more": start + len(window) < len(rows),
+            "scan_capped": scan_more,
+            "truncated": truncated,
+        }
+
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
@@ -623,6 +708,46 @@ class ApkClient:
             "count": len(accesses),
             "has_more": has_more,
         }
+
+
+def _resolve_component_name(package: str, name: str) -> str:
+    """Expand a manifest android:name to a fully qualified class name.
+
+    Android reads a name that begins with a dot as relative to the package
+    (".Main" under "com.x" is "com.x.Main"); anything else is taken as already
+    qualified. A bare single segment (no dot at all) is also package-relative.
+    """
+    if not name:
+        return name
+    if name.startswith("."):
+        return package + name
+    if "." not in name:
+        return f"{package}.{name}"
+    return name
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _effective_exported(
+    comp_type: str, declared: str | None, has_intent_filter: bool, target_sdk: int | None
+) -> bool:
+    """Resolve whether a component is reachable by other apps (best-effort).
+
+    An explicit android:exported wins. With it unset, an activity, service or
+    receiver is exported exactly when it declares an intent filter, while a
+    provider falls back to the API-17 default: exported below 17, private at or
+    above it (and, when the target SDK is unknown, treated as private).
+    """
+    if declared is not None:
+        return declared.strip().lower() == "true"
+    if comp_type == "provider":
+        return target_sdk is not None and target_sdk < _PROVIDER_DEFAULT_EXPORT_SDK
+    return has_intent_filter
 
 
 def _dotted_to_smali(name: str) -> str:

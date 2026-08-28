@@ -100,6 +100,36 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_summary(session_id))
 
+    @tools.tool(name="apk.exported_components")
+    def apk_exported_components(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        """List the components other apps can reach (the Android attack surface).
+
+        The security lens apk.components lacks: where that lists every
+        component name, this walks AndroidManifest.xml and reports only the
+        activities, activity-aliases, services, receivers and providers that
+        resolve to exported -- the entry points another app or the shell can
+        invoke, and the first place to look for an unguarded launch, a
+        SQL-injectable provider or a broadcast that leaks state. A component
+        counts as exported when android:exported="true"; when the attribute is
+        unset, an activity/service/receiver is exported if it declares an
+        intent-filter and a provider by the API-17 default (exported below a
+        target SDK of 17, private at or above it). Manifest-level, so it needs
+        no DEX analysis. Each row is name (fully qualified), type, permission
+        (the android:permission guarding it, or null -- an exported component
+        behind a signature permission is far less exposed), exported_declared
+        (the raw "true"/"false" or null so an inferred verdict is auditable)
+        and has_intent_filter. Answers with exported, counts (the exported
+        total per type), count, total, offset and has_more so a filled page is
+        not read as the whole surface; total is capped at 2000 with scan_capped
+        when more may exist, and truncated is true when the manifest XML could
+        not be parsed.
+        """
+        return _dump(analysis.apk_exported_components(session_id, offset=offset, limit=limit))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
