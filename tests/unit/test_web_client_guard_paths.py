@@ -680,6 +680,101 @@ def test_dom_snapshot_maps_an_evaluate_failure_to_backend_error(
         runner.shutdown()
 
 
+def test_dom_snapshot_reports_the_full_size_as_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A small DOM carries bytes and is not flagged truncated.
+
+    bytes is the full pre-clip UTF-8 size the in-browser probe measured, so a
+    caller reads the DOM's true scale even though html is only ever the clip --
+    the same size signal web.script.source and wasm.* carry.
+    """
+    backend = WebBackend()
+    runner = _Runner("test-dom-bytes")
+    try:
+
+        class _Page:
+            url = "https://x/"
+
+            def evaluate(self, script: str, arg: Any) -> Any:
+                return {"html": "<html>hi</html>", "truncated": False, "bytes": 15}
+
+            def title(self) -> str:
+                return "t"
+
+        handle = SimpleNamespace(page=_Page(), runner=runner)
+        monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+
+        result = backend.dom_snapshot("s")
+        assert result["html"] == "<html>hi</html>"
+        assert result["bytes"] == 15
+        assert result["truncated"] is False
+    finally:
+        runner.shutdown()
+
+
+def test_dom_snapshot_reports_full_bytes_when_the_html_is_clipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clipped DOM still says how large it really was.
+
+    The probe clips html in-browser so a huge DOM never crosses into this
+    process, but reports the full byte count so truncated is actionable: without
+    bytes a clipped snapshot gave no scale at all.
+    """
+    backend = WebBackend()
+    runner = _Runner("test-dom-bytes-cut")
+    try:
+
+        class _Page:
+            url = "https://x/"
+
+            def evaluate(self, script: str, arg: Any) -> Any:
+                return {"html": "A" * 100, "truncated": True, "bytes": 500_000}
+
+            def title(self) -> str:
+                return "t"
+
+        handle = SimpleNamespace(page=_Page(), runner=runner)
+        monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+
+        result = backend.dom_snapshot("s")
+        assert result["truncated"] is True
+        assert result["bytes"] == 500_000
+        assert len(result["html"]) == 100
+    finally:
+        runner.shutdown()
+
+
+def test_dom_snapshot_falls_back_to_the_returned_text_size_without_a_bytes_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An older probe shape (no bytes) is tolerated: size comes from the text.
+
+    The real probe always reports bytes; this keeps the reader from omitting the
+    field if the browser returns the pre-bytes shape.
+    """
+    backend = WebBackend()
+    runner = _Runner("test-dom-bytes-fallback")
+    try:
+
+        class _Page:
+            url = "https://x/"
+
+            def evaluate(self, script: str, arg: Any) -> Any:
+                return {"html": "hello", "truncated": False}
+
+            def title(self) -> str:
+                return "t"
+
+        handle = SimpleNamespace(page=_Page(), runner=runner)
+        monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+
+        result = backend.dom_snapshot("s")
+        assert result["bytes"] == 5
+        assert result["truncated"] is False
+    finally:
+        runner.shutdown()
+
+
 def test_dom_snapshot_rejects_a_non_dict_result(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = WebBackend()
     runner = _Runner("test-dom-nondict")

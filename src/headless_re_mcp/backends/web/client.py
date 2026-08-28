@@ -775,9 +775,18 @@ class WebBackend:
                           ? document.documentElement.outerHTML
                           : (document.body ? document.body.outerHTML : "");
                         const text = typeof html === "string" ? html : "";
+                        // bytes is the full pre-clip UTF-8 size so truncated is
+                        // actionable: a caller that sees the DOM was cut learns
+                        // how large it really is, the same signal script_source
+                        // and wasm.* carry. The clip stays in-browser so a huge
+                        // DOM never crosses into this process.
+                        const bytes = (typeof TextEncoder !== "undefined")
+                          ? new TextEncoder().encode(text).length
+                          : text.length;
                         return {
                           html: text.length > cap ? text.slice(0, cap) : text,
-                          truncated: text.length > cap
+                          truncated: text.length > cap,
+                          bytes: bytes
                         };
                     }""",
                     _MAX_INLINE_BODY,
@@ -788,10 +797,17 @@ class WebBackend:
                 raise WebError("backend_error", "dom snapshot returned no document")
             html = clipped.get("html")
             text = html if isinstance(html, str) else ""
+            raw_bytes = clipped.get("bytes")
+            full_bytes = (
+                int(raw_bytes)
+                if isinstance(raw_bytes, (int, float))
+                else len(text.encode("utf-8", errors="replace"))
+            )
             return {
                 "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
                 "title": _safe_title(handle.page),
                 "html": text[:_MAX_INLINE_BODY],
+                "bytes": full_bytes,
                 "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
             }
 

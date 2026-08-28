@@ -164,8 +164,11 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_dom_snapshot(session_id: str) -> dict[str, Any]:
         """Return the current page HTML, URL, and title.
 
-        Answers with url, title and html, plus truncated when the HTML was
-        cut at the buffer. There is no content, dom or body field.
+        Answers with url, title and html, plus bytes (the full pre-clip size)
+        and truncated when the HTML was cut at the buffer -- bytes tells you how
+        large the DOM really is even when html is clipped. There is no content,
+        dom or body field. The clip is intentional and not spilled; to pull one
+        script's full source use web.script.source (which spills to an artifact).
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 

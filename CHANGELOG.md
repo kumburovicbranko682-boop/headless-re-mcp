@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web.dom.snapshot 截断 HTML 却不报完整大小,和 web.script.source/wasm.* 不一致)
+
+- `web.dom.snapshot` 在浏览器内把 outerHTML 截到 200 KB 并置 `truncated`,却不回带完整大小,调用方看到被截断也无从判断这页
+  DOM 到底多大——一小段完整页面和一个巨型页面的头部长得一模一样。而同一条 web 线的 `web.script.source` 截断时回带 `bytes`
+  (完整字节数)、`wasm.wat`/`wasm.info` 也刚统一回带 `bytes`,同是"截断了就说清楚有多大"的信号。这里在浏览器内探针里用
+  `TextEncoder` 量出完整 UTF-8 字节数一并返回、Python 侧作为 `bytes` 透出:截断仍然发生在浏览器内(巨型 DOM 不进本进程,
+  保留原有内存上限),但调用方现在能据 `bytes` 判断缺了多大一块。有意不像 `script_source` 那样把整段 DOM 落盘——那会翻转
+  这里"永远返回一段裁剪结果、绝不因过大而报错"的既有行为、并去掉浏览器内的内存上限;要取某个脚本的完整源码用会落盘的
+  `web.script.source`。工具文档同步写明 `bytes` 与该裁剪是有意为之。旧探针形状(无 `bytes`)兜底为按返回文本估算,真实探针
+  总会带上。新增测试:小 DOM 回带 `bytes` 且不判截断、被裁剪时 `bytes` 报完整大小而 html 仍为裁剪段、无 `bytes` 字段时兜底、
+  以及 `web.dom.snapshot` 文档点名 `bytes`。纯附加字段,不改任何既有字段含义。
+
 ### 修复（wasm.info 的 objdump 文本被截断却不报大小,和同族文本工具不一致)
 
 - `wasm.info`(wasm-objdump)与 `wasm.wat`、`js.deobfuscate`/`beautify` 共用 `_bounded_output` 把工具文本封顶到 400 KB 并置
