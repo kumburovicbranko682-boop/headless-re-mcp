@@ -13,6 +13,7 @@ server -- where the real handling lives.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import socket
 import sys
@@ -30,6 +31,7 @@ from headless_re_mcp.backends.proxy.client import (
     _OMITTED_BODY,
     ProxyBackend,
     ProxyError,
+    _bind_probe,
     _bounded_headers,
     _bounded_metadata,
     _content_len,
@@ -39,7 +41,6 @@ from headless_re_mcp.backends.proxy.client import (
     _FlowRecorder,
     _headers_len,
     _port_accepts,
-    _port_bindable,
     _ProxyInstance,
     _raw_body,
     _shutdown_loop,
@@ -171,20 +172,21 @@ def test_bounded_headers_reports_total_and_read_failures(
 # --------------------------------------------------------------------------- #
 
 
-def test_port_bindable_and_accepts_agree_with_a_real_listener() -> None:
+def test_bind_probe_and_accepts_agree_with_a_real_listener() -> None:
     listener = socket.socket()
     try:
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
         host, port = listener.getsockname()
         assert _port_accepts(host, port) is True
-        # A live listener holds the port, so a second bind must fail.
-        assert _port_bindable(host, port) is False
+        # A live listener holds the port, so a second bind must fail: the probe
+        # returns the OSError that stopped it rather than None.
+        assert _bind_probe(host, port) is not None
     finally:
         listener.close()
     # Once closed, nothing accepts and the port is bindable again.
     assert _port_accepts(host, port) is False
-    assert _port_bindable(host, port) is True
+    assert _bind_probe(host, port) is None
 
 
 def test_port_accepts_swallows_resolution_failures() -> None:
@@ -401,7 +403,10 @@ def test_instance_start_refuses_a_taken_port(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_instance_start_refuses_an_unbindable_port(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(proxy_client, "_port_accepts", lambda host, port, timeout=0.25: False)
-    monkeypatch.setattr(proxy_client, "_port_bindable", lambda host, port: False)
+    # EADDRINUSE is the "port is taken" fault start() reports as invalid_state.
+    monkeypatch.setattr(
+        proxy_client, "_bind_probe", lambda host, port: OSError(errno.EADDRINUSE, "in use")
+    )
     inst = _ProxyInstance("127.0.0.1", 8080)
     with pytest.raises(ProxyError) as exc:
         inst.start()
@@ -414,7 +419,7 @@ def test_instance_start_reports_a_thread_that_fails_to_launch_mitmproxy(
     # mitmproxy is absent, so the real _run raises ImportError, sets _error, and
     # start() surfaces it as backend_error -- exercising _run's except/finally.
     monkeypatch.setattr(proxy_client, "_port_accepts", lambda host, port, timeout=0.25: False)
-    monkeypatch.setattr(proxy_client, "_port_bindable", lambda host, port: True)
+    monkeypatch.setattr(proxy_client, "_bind_probe", lambda host, port: None)
     inst = _ProxyInstance("127.0.0.1", 8080)
     with pytest.raises(ProxyError) as exc:
         inst.start(timeout=1.0)
@@ -431,7 +436,7 @@ def test_instance_start_returns_once_the_port_accepts(
         return probes["n"] > 1  # the up-front guard sees a free port; the loop sees it bound
 
     monkeypatch.setattr(proxy_client, "_port_accepts", fake_accepts)
-    monkeypatch.setattr(proxy_client, "_port_bindable", lambda host, port: True)
+    monkeypatch.setattr(proxy_client, "_bind_probe", lambda host, port: None)
     release = threading.Event()
     inst = _ProxyInstance("127.0.0.1", 8080)
 
@@ -455,7 +460,7 @@ def test_instance_start_reports_a_thread_that_exits_before_listening(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(proxy_client, "_port_accepts", lambda host, port, timeout=0.25: False)
-    monkeypatch.setattr(proxy_client, "_port_bindable", lambda host, port: True)
+    monkeypatch.setattr(proxy_client, "_bind_probe", lambda host, port: None)
     inst = _ProxyInstance("127.0.0.1", 8080)
     inst._run = lambda: None  # type: ignore[method-assign]
     with pytest.raises(ProxyError) as exc:
@@ -468,7 +473,7 @@ def test_instance_start_times_out_when_the_port_never_accepts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(proxy_client, "_port_accepts", lambda host, port, timeout=0.25: False)
-    monkeypatch.setattr(proxy_client, "_port_bindable", lambda host, port: True)
+    monkeypatch.setattr(proxy_client, "_bind_probe", lambda host, port: None)
     inst = _ProxyInstance("127.0.0.1", 8080)
     inst._run = lambda: time.sleep(1.4)  # type: ignore[method-assign]
     with pytest.raises(ProxyError) as exc:

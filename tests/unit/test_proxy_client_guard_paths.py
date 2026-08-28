@@ -3,7 +3,7 @@
 The field-shape, bounds, and reservation tests elsewhere drive a proxy through
 its recorder; this file drives the edges they do not reach -- the asyncio
 teardown helpers (``_shutdown_loop``, ``_drain_proxy_servers``), the socket
-probes (``_port_accepts`` name-resolution failure, ``_port_bindable`` on the
+probes (``_port_accepts`` name-resolution failure, ``_bind_probe`` on the
 Windows path), the leaked-handler sweep (``_uninstall_master_logging``), the
 byte-accounting helpers' defensive returns, the ``_FlowRecorder`` omit/eviction
 lockstep, the ``_ProxyInstance`` lifecycle (``start`` error/exit/accept/timeout
@@ -30,6 +30,7 @@ from headless_re_mcp.backends.proxy.client import (
     _OMITTED_BODY,
     ProxyBackend,
     ProxyError,
+    _bind_probe,
     _bounded_headers,
     _content_len,
     _drain_proxy_servers,
@@ -37,7 +38,6 @@ from headless_re_mcp.backends.proxy.client import (
     _FlowRecorder,
     _headers_len,
     _port_accepts,
-    _port_bindable,
     _ProxyInstance,
     _raw_body,
     _shutdown_loop,
@@ -184,7 +184,7 @@ def test_shutdown_loop_closes_an_idle_loop() -> None:
 
 
 # --------------------------------------------------------------------------
-# _port_accepts / _port_bindable
+# _port_accepts / _bind_probe
 # --------------------------------------------------------------------------
 
 
@@ -193,12 +193,12 @@ def test_port_accepts_is_false_on_a_name_resolution_error() -> None:
     assert _port_accepts("proxy-guard-nonexistent.invalid", 9) is False
 
 
-def test_port_bindable_skips_reuseaddr_on_the_windows_path(
+def test_bind_probe_skips_reuseaddr_on_the_windows_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """On Windows the probe binds without SO_REUSEADDR and still answers."""
     monkeypatch.setattr("headless_re_mcp.backends.proxy.client.os.name", "nt")
-    assert _port_bindable("127.0.0.1", 0) is True
+    assert _bind_probe("127.0.0.1", 0) is None
 
 
 # --------------------------------------------------------------------------
@@ -358,7 +358,7 @@ def _free_instance() -> _ProxyInstance:
 def test_instance_start_reports_a_thread_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """A run thread that records an error surfaces as backend_error."""
     monkeypatch.setattr(proxy_client, "_port_accepts", lambda *a, **k: False)
-    monkeypatch.setattr(proxy_client, "_port_bindable", lambda *a, **k: True)
+    monkeypatch.setattr(proxy_client, "_bind_probe", lambda *a, **k: None)
     inst = _free_instance()
     inst._run = lambda: setattr(inst, "_error", RuntimeError("mitmproxy blew up"))  # type: ignore[method-assign]
     with pytest.raises(ProxyError) as excinfo:
@@ -369,7 +369,7 @@ def test_instance_start_reports_a_thread_error(monkeypatch: pytest.MonkeyPatch) 
 def test_instance_start_reports_a_thread_that_exits(monkeypatch: pytest.MonkeyPatch) -> None:
     """A run thread that exits without listening is reported as an exit."""
     monkeypatch.setattr(proxy_client, "_port_accepts", lambda *a, **k: False)
-    monkeypatch.setattr(proxy_client, "_port_bindable", lambda *a, **k: True)
+    monkeypatch.setattr(proxy_client, "_bind_probe", lambda *a, **k: None)
     inst = _free_instance()
     inst._run = lambda: None  # type: ignore[method-assign]
     with pytest.raises(ProxyError) as excinfo:
@@ -388,7 +388,7 @@ def test_instance_start_returns_once_the_port_accepts(monkeypatch: pytest.Monkey
         return seen["n"] > 1
 
     monkeypatch.setattr(proxy_client, "_port_accepts", accepts)
-    monkeypatch.setattr(proxy_client, "_port_bindable", lambda *a, **k: True)
+    monkeypatch.setattr(proxy_client, "_bind_probe", lambda *a, **k: None)
     inst = _free_instance()
     inst._run = lambda: release.wait(5.0)  # type: ignore[method-assign, assignment]
     try:
@@ -406,7 +406,7 @@ def test_instance_start_times_out_when_the_port_never_accepts(
     """A port that never accepts within the deadline is a timeout, and stop runs."""
     release = threading.Event()
     monkeypatch.setattr(proxy_client, "_port_accepts", lambda *a, **k: False)
-    monkeypatch.setattr(proxy_client, "_port_bindable", lambda *a, **k: True)
+    monkeypatch.setattr(proxy_client, "_bind_probe", lambda *a, **k: None)
     inst = _free_instance()
     inst._run = lambda: release.wait(10.0)  # type: ignore[method-assign, assignment]
     inst.stop = release.set  # type: ignore[method-assign]

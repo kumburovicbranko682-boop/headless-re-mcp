@@ -37,10 +37,10 @@ from headless_re_mcp.doctor import (
     probe_exeinfope,
     probe_ghidra,
     probe_ida,
+    probe_import_backend,
     probe_native_toolchain,
     probe_net_reactor_slayer,
     probe_platform,
-    probe_python_module,
     probe_scylla,
     probe_upx,
     probe_vmp_dumper,
@@ -510,8 +510,13 @@ def test_external_cli_probes_cover_every_configuration_state(
     assert blocked.details["probe_output"] is None
 
 
-def test_probe_python_module_reports_a_missing_module() -> None:
-    probe = probe_python_module("nope", "headless_re_mcp_definitely_absent")
+def test_probe_import_backend_reports_a_missing_module() -> None:
+    probe = probe_import_backend(
+        "nope",
+        "headless_re_mcp_definitely_absent",
+        install_hint="pip install nope",
+        blocked_hint="reinstall nope",
+    )
     assert probe.status == ProbeStatus.MISSING
 
 
