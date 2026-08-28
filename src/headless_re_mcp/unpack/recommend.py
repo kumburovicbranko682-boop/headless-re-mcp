@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Final
+from typing import Any, Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,9 +23,13 @@ _VMP_SECTION = re.compile(r"(^|\.)vmp|vmprotect", re.IGNORECASE)
 _PACKER_CATEGORIES: Final[frozenset[str]] = frozenset(
     {"packer", "protector", "obfuscator"}
 )
-_ALLOWED_FORCE_ROUTES: Final[frozenset[str]] = frozenset(
-    {"upx", "dotnet", "bounded_dynamic", "generic_dynamic", "none"}
-)
+
+# The routes a caller may pin with force_route. Kept as a Literal so tool
+# schemas can advertise the exact set (and reject anything else before a
+# worker starts), with the runtime allowlist derived from it so the two can
+# never drift apart.
+ForceRoute = Literal["upx", "dotnet", "bounded_dynamic", "generic_dynamic", "none"]
+_ALLOWED_FORCE_ROUTES: Final[frozenset[str]] = frozenset(get_args(ForceRoute))
 
 
 class UnpackRecommendation(BaseModel):

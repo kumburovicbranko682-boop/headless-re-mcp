@@ -24,6 +24,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`unpack.plan` / `unpack.start` 的 `force_route` 越界要跑进服务层才被拒）
+
+- 两个工具把 `force_route` 声明成裸 `str | None`，schema 只说“任意字符串”，可同一函数里
+  的兄弟参数 `mode` 早已是 `ScanMode` 枚举。服务层 `recommend_unpack_route` 只认
+  `_ALLOWED_FORCE_ROUTES`（`upx` / `dotnet` / `bounded_dynamic` / `generic_dynamic` /
+  `none`）这五个路由名，其余一律抛 `ValueError`。于是 agent 猜的 `"dynamic"`、
+  `"upx_unpack"` 这类值能过 schema 校验、一路走到服务层才被拒，真正的路由名也从没对
+  agent 可见。现按服务合同把 `force_route` 收紧成 `ForceRoute` 字面量枚举，与
+  `imports.scan` 的 `mode`、`memory.protection` 的 `rights` 等兄弟工具一致：越界值在派发
+  前即被拒，选项也可见。枚举本身即真源，运行期允许集 `_ALLOWED_FORCE_ROUTES` 由它
+  `get_args` 派生，二者不会再各写一份而漂移。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

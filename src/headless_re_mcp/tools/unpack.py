@@ -9,6 +9,7 @@ from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.detection.models import ScanMode
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
 from headless_re_mcp.tools.limits import ExternalToolTimeout, RunControlTimeout
+from headless_re_mcp.unpack.recommend import ForceRoute
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -143,7 +144,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         mode: ScanMode = ScanMode.NORMAL,
         use_die: bool = True,
         timeout: Annotated[float, Field(gt=0, le=300.0)] = 30.0,
-        force_route: str | None = None,
+        force_route: ForceRoute | None = None,
     ) -> dict[str, Any]:
         """Build a non-authoritative unpack plan without executing side effects.
 
@@ -169,7 +170,7 @@ def build_unpack_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         open_ida: bool = False,
         execute_upx: bool = True,
         replace: bool = False,
-        force_route: str | None = None,
+        force_route: ForceRoute | None = None,
     ) -> dict[str, Any]:
         """Start unpack orchestration (UPX executes; dynamic routes wait for OEP confirm).
 
