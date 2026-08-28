@@ -1077,7 +1077,12 @@ def probe_command(name: str, candidates: tuple[str, ...]) -> Probe:
     found = {candidate: path for candidate, path in found.items() if path}
     if found:
         return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
-    return Probe(name, ProbeStatus.MISSING, f"Optional {name} backend is not installed")
+    return Probe(
+        name,
+        ProbeStatus.MISSING,
+        f"Optional {name} backend is not installed",
+        remediation=f"Install {name} and ensure one of {', '.join(candidates)} is on PATH.",
+    )
 
 
 def probe_optional_tool(
@@ -1094,13 +1099,42 @@ def probe_optional_tool(
     found = {candidate: path for candidate, path in found.items() if path}
     if found:
         return Probe(name, ProbeStatus.DETECTED, f"{name} command detected", found)
-    return Probe(name, ProbeStatus.MISSING, f"Optional {name} tool is not installed")
+    # config.py resolves every optional-tool settings field from the
+    # HEADLESS_RE_<FIELD> environment variable before falling back to PATH,
+    # so the knob name can be derived rather than plumbed by every caller.
+    return Probe(
+        name,
+        ProbeStatus.MISSING,
+        f"Optional {name} tool is not installed",
+        remediation=(
+            f"Install {name} and ensure one of {', '.join(commands)} is on PATH, "
+            f"or set HEADLESS_RE_{settings_attr.upper()} to the executable."
+        ),
+    )
+
+
+# The distribution extra that provides each optional Python module doctor
+# probes for. MISSING probes for unmapped modules keep remediation=None
+# rather than guessing a pip package name that may not match the module name.
+_MODULE_EXTRAS = {
+    "frida": "android",
+    "adbutils": "android",
+    "androguard": "android",
+    "playwright": "browser",
+    "mitmproxy": "proxy",
+}
 
 
 def probe_python_module(name: str, module: str) -> Probe:
     spec = importlib.util.find_spec(module)
     if spec is None:
-        return Probe(name, ProbeStatus.MISSING, f"Optional Python module {module} is not installed")
+        extra = _MODULE_EXTRAS.get(module)
+        return Probe(
+            name,
+            ProbeStatus.MISSING,
+            f"Optional Python module {module} is not installed",
+            remediation=(f'pip install "headless-re-mcp[{extra}]"' if extra else None),
+        )
     return Probe(
         name,
         ProbeStatus.DETECTED,

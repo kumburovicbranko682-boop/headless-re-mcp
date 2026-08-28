@@ -31,6 +31,17 @@ until 1.0 the tool surface may still change between minor versions.
   提取为模块常量。r2 消息补上第一批漏掉的 `HEADLESS_RE_R2`（settings.r2 确实喂给
   R2Client，PATH 不是唯一旋钮）。这些消息在 src/tests 中零钉死，无测试翻修；
   测试文件新增 6 例参数化用例钉死每条消息含对应旋钮名。全量单测 5085 通过。
+- 第三批：doctor 的同款差距。`Probe` 有一等 `remediation` 字段且 IDA/x64dbg/Scylla
+  探针早已使用，但三个通用 helper（`probe_command`/`probe_optional_tool`/
+  `probe_python_module`）的 MISSING 全部 `remediation=null`。只改 helper 函数体、
+  不动 run_doctor 调用点：`probe_python_module` 从模块→extra 映射（frida/adbutils/
+  androguard→android、playwright→browser、mitmproxy→proxy）派生 pip 命令，未映射
+  模块保持 null（模块名≠发行名，错误的 pip 提示比没有更糟）；`probe_optional_tool`
+  按 config.py 的 `HEADLESS_RE_<FIELD>` 规则（对现有全部 7 个调用点成立）派生
+  PATH+旋钮提示；`probe_command` 给出 PATH 提示。已用 `git merge-tree` 验证与待
+  合并的 `doctor-nonpe-probes` 分支（在这些 helper 之后追加专用探针）零冲突；
+  live doctor 实跑确认 8 个 MISSING 探针全部带上可操作 remediation。新增 4 例
+  hermetic 测试（monkeypatch find_spec/which）。全量单测 5089 通过。
 
 ### 修复（audit trim 测试假设时钟每次调用严格递增）
 

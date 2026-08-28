@@ -171,3 +171,76 @@ def test_not_configured_error_names_the_operator_knob(trigger: object, knob: str
         f"the not-configured message must name the {knob} knob so the caller "
         f"knows where to point the tool; got: {message}"
     )
+
+
+# ---------------------------------------------------------------------------
+# doctor is the readiness surface for the same dependencies; its MISSING
+# probes carry the same remediation in the first-class Probe.remediation
+# field (the IDA / x64dbg / Scylla probes set the house style).
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_missing_python_module_probe_names_the_pip_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    from headless_re_mcp import doctor
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda module: None)
+    for module, extra in (
+        ("frida", "android"),
+        ("adbutils", "android"),
+        ("androguard", "android"),
+        ("playwright", "browser"),
+        ("mitmproxy", "proxy"),
+    ):
+        probe = doctor.probe_python_module(module, module)
+        assert probe.status == doctor.ProbeStatus.MISSING
+        assert probe.remediation == f'pip install "headless-re-mcp[{extra}]"'
+
+
+def test_doctor_missing_unmapped_module_does_not_guess_a_package_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A module name is not a distribution name; a wrong pip hint is worse than none."""
+    import importlib.util
+
+    from headless_re_mcp import doctor
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda module: None)
+    probe = doctor.probe_python_module("nope", "some_unmapped_module")
+    assert probe.status == doctor.ProbeStatus.MISSING
+    assert probe.remediation is None
+
+
+def test_doctor_missing_tool_probe_names_path_and_knob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from headless_re_mcp import doctor
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    probe = doctor.probe_optional_tool(
+        "adb",
+        SimpleNamespace(adb=None),  # type: ignore[arg-type]
+        "adb",
+        ("adb",),
+    )
+    assert probe.status == doctor.ProbeStatus.MISSING
+    assert probe.remediation is not None
+    assert "PATH" in probe.remediation
+    assert "HEADLESS_RE_ADB" in probe.remediation
+
+
+def test_doctor_missing_command_probe_says_to_put_it_on_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from headless_re_mcp import doctor
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    probe = doctor.probe_command("java", ("java",))
+    assert probe.status == doctor.ProbeStatus.MISSING
+    assert probe.remediation is not None
+    assert "PATH" in probe.remediation
