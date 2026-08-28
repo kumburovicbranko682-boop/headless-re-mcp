@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（native_app 包级 run_native_gui 的惰性 GUI 导入）
+
+- `native_app/__init__.py` 的包级 `run_native_gui()` 把 `native_app.gui`（依赖 PySide6）
+  的导入推迟到函数体内，好让 `from headless_re_mcp.native_app import bootstrap` 在从不安装
+  native extra 的托管质量任务上仍可被收集。`__main__` 入口走自己的一条 `gui` 导入路径，因此
+  整个测试套件从未触达这个包级封装——它的惰性导入与返回值都没被覆盖，一旦有人把 `gui` 改回
+  在包加载时就导入（破坏收集）或丢掉返回码，都不会被发现。新增
+  `tests/unit/test_native_app_package_run_gui.py`：用假的 `gui` 子模块（Linux 上无 PySide6）
+  钉住封装会转发到子模块并回传其退出码，以及“仅导入本包不会连带导入 gui 子模块”。
+  `native_app/__init__.py` 行覆盖 67% → 100%，只加测试、不改源码。
+
 ### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
