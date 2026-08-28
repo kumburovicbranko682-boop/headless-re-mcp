@@ -120,6 +120,67 @@ def test_apk_certificates_reports_a_v2_v3_only_apk_as_signed() -> None:
     assert len(payload["certificates"]) == 1
 
 
+class _RaisingSchemeApk:
+    """A parsed APK where one scheme probe raises on a malformed signing block.
+
+    androguard re-parses the APK Signing Block inside is_signed_v2/is_signed_v3,
+    and a hostile or unusual block makes one of them raise rather than return a
+    bool. get_certificates() still hands back the signers it could decode, so a
+    single scheme probe blowing up must degrade that one flag -- not sink the
+    whole certificates read and not fabricate the sibling scheme.
+    """
+
+    def __init__(self, raising: str) -> None:
+        self._raising = raising
+
+    def get_signature_names(self) -> list[str]:
+        return ["META-INF/CERT.RSA"]
+
+    def get_certificates(self) -> list[_Cert]:
+        return [_Cert(0)]
+
+    def is_signed_v2(self) -> bool:
+        if self._raising == "is_signed_v2":
+            raise ValueError("apk signing block: truncated v2 block")
+        return True
+
+    def is_signed_v3(self) -> bool:
+        if self._raising == "is_signed_v3":
+            raise ValueError("apk signing block: truncated v3 block")
+        return True
+
+
+@pytest.mark.parametrize(
+    ("raising_method", "raising_field", "other_field"),
+    [
+        ("is_signed_v2", "v2_signed", "v3_signed"),
+        ("is_signed_v3", "v3_signed", "v2_signed"),
+    ],
+)
+def test_apk_certificates_degrades_a_raising_scheme_probe_without_sinking_the_read(
+    raising_method: str, raising_field: str, other_field: str
+) -> None:
+    """One scheme probe raising degrades that flag; it must not fail the read.
+
+    is_signed_v2/is_signed_v3 each re-parse the APK Signing Block, and a hostile
+    block makes one raise. Without _scheme_flag swallowing that raise, the
+    exception propagates out of certificates() and a still-readable, validly
+    signed APK reads as a backend_error. The contract: the scheme that raised
+    reads False, the sibling scheme still reports honestly, and the v1 evidence
+    plus the aggregate signed survive intact.
+    """
+    client = ApkClient()
+    client._apk = lambda _path: _RaisingSchemeApk(raising_method)  # type: ignore[method-assign]
+
+    payload = client.certificates(Path("dummy.apk"))
+
+    assert payload[raising_field] is False
+    assert payload[other_field] is True
+    assert payload["v1_signed"] is True
+    assert payload["signed"] is True
+    assert len(payload["certificates"]) == 1
+
+
 class _UnparsableCertApk:
     """A parsed APK whose signature block androguard cannot decode.
 
