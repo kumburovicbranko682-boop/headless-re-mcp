@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（`dynamic.wait` 的 `state` 越界要跑进服务层才被拒）
+
+- `dynamic.wait` 把 `state` 声明成裸 `str`，schema 只说“任意字符串”，可服务层
+  `AnalysisService.dynamic_wait` 只认 `idle` / `running` / `paused` 三个调试器状态，其余一律
+  返回 `ValueError("state must be idle, running, or paused")`。于是 agent 猜的 `"stopped"`、
+  `"suspended"`、`"break"` 这类值能过 schema 校验、一路走到服务层才被拒，三个真实状态也从没
+  对 agent 可见。现按服务合同把 `state` 收紧成 `WaitState` 字面量枚举，与 `imports.scan` 的
+  `mode`、`memory.protection` 的 `rights`、`unpack.plan` 的 `force_route` 等兄弟工具一致：越界值
+  在派发前即被拒，选项也可见。回归测试从 `service.py` 源码解析出真实允许集并与工具 schema
+  对齐，避免二者日后各改一处而漂移。
+
 ### 修复（de4dot 输出别名测试的 Windows-only 路径炸裂）
 
 - main 新落的 `test_dotnet_de4dot_run_paths.py::test_run_rejects_an_output_path_aliasing_the_input`

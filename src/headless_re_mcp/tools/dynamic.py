@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -9,6 +9,12 @@ from headless_re_mcp.core.models import Result
 from headless_re_mcp.core.service import AnalysisService, JsonObject
 from headless_re_mcp.tools.binding import BoundTool, ToolSetBuilder
 from headless_re_mcp.tools.limits import RunControlTimeout
+
+# The debugger states dynamic.wait may block on. AnalysisService.dynamic_wait
+# rejects anything else, so pinning the parameter to a Literal turns the schema
+# into an enum: bad values (e.g. "stopped", "suspended") are refused before a
+# request is dispatched, and the three real choices are visible to the caller.
+WaitState = Literal["idle", "running", "paused"]
 
 
 def _dump(result: Result[JsonObject]) -> dict[str, Any]:
@@ -56,7 +62,7 @@ def build_dynamic_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     @tools.tool(name="dynamic.wait")
     def dynamic_wait(
         session_id: str,
-        state: str,
+        state: WaitState,
         timeout: RunControlTimeout = 30.0,
     ) -> dict[str, Any]:
         """Wait with a bound until the debugger reaches idle, running, or paused.
