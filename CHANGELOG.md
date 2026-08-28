@@ -127,6 +127,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（`sync.resolve_runtime_address` 的 source 暴露为枚举）
+
+- `sync.resolve_runtime_address` 的 `source` 过去标注为裸 `str = "static"`，schema 里只是
+  一个不带取值提示的字符串——尽管 docstring 已写明它只接受 `static`（IDA 地址）/`rva`
+  （模块偏移）/`runtime` 三种坐标系。服务层 `AnalysisService.resolve_runtime_address` 也会
+  以 “source must be one of: static, rva, runtime” 拒掉其余值。于是 agent 只能读散文去猜，
+  像 `virtual`/`abs` 这种自然猜测会通过 schema、跑到服务边界才失败。现把 `source` 收窄为
+  `Literal["static","rva","runtime"]`，schema 直接给出这三个取值的枚举，默认仍是 `static`；
+  服务层对非工具调用方保留 casefold/strip 容错，故只收紧这一工具面是安全的。新增回归测试
+  断言该枚举与服务层 allowlist 逐项相等，防止两边漂移。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

@@ -125,3 +125,39 @@ def test_sync_schemas_match_the_non_negative_address_the_service_requires() -> N
         props = input_schema_for(named[name])["properties"]
         assert props["address"]["minimum"] == 0, name
 
+
+def _service_address_sources() -> set[str]:
+    import re
+
+    from headless_re_mcp.core import service
+
+    source = Path(service.__file__).read_text(encoding="utf-8")
+    start = source.index("def resolve_runtime_address")
+    # The guard reads: normalized not in {"static", "rva", "runtime"}.
+    brace = source.index("normalized not in {", start) + len("normalized not in ")
+    literal = source[brace : source.index("}", brace) + 1]
+    return set(re.findall(r'"([a-z]+)"', literal))
+
+
+def test_resolve_runtime_address_source_is_the_service_enum() -> None:
+    """source was a bare str, so the schema advertised no coordinate vocabulary.
+
+    resolve_runtime_address accepts exactly static|rva|runtime and the service
+    rejects anything else with "source must be one of: static, rva, runtime",
+    yet the tool typed source as ``str`` -- the schema said only "string", so an
+    agent's natural guess ("virtual", "abs") passed the schema and failed one
+    layer down. The schema must expose exactly the service's set as an enum, and
+    stay in lockstep with it.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    handler = next(
+        binding.handler
+        for binding in build_meta_tools(object())  # type: ignore[arg-type]
+        if binding.name == "sync.resolve_runtime_address"
+    )
+    source = input_schema_for(handler)["properties"]["source"]
+
+    assert set(source["enum"]) == _service_address_sources()
+    assert source["default"] == "static"
+
