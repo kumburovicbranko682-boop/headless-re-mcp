@@ -667,10 +667,16 @@ class AdbBackend:
             _device_shell(
                 dev, ["monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"]
             )
-        except AdbError:
+        except AdbError as exc:
+            # _device_shell already classified the shell failure (timeout vs
+            # backend_error) and is the only thing it lets through, so the old
+            # `except Exception -> AdbError("launch failed")` arm here was dead
+            # and its package context never reached the caller. Attach the
+            # target to the classified error and re-raise it unchanged, so the
+            # code survives -- a launch timeout stays code="timeout" (retryable)
+            # rather than being flattened back into backend_error.
+            exc.details.setdefault("package", pkg)
             raise
-        except Exception as exc:  # noqa: BLE001
-            raise AdbError("backend_error", f"launch failed: {exc}", package=pkg) from exc
         try:
             current = _call(dev.app_current, timeout=_ADB_PROBE_TIMEOUT_S)
             foreground = getattr(current, "package", None)
@@ -691,10 +697,12 @@ class AdbBackend:
         pkg = _check_package(package)
         try:
             _device_shell(dev, ["am", "force-stop", pkg])
-        except AdbError:
+        except AdbError as exc:
+            # Same as launch: _device_shell owns the timeout/backend_error split
+            # and lets nothing else through, so the old generic arm was dead.
+            # Carry the target on the classified error, code intact.
+            exc.details.setdefault("package", pkg)
             raise
-        except Exception as exc:  # noqa: BLE001
-            raise AdbError("backend_error", f"force-stop failed: {exc}", package=pkg) from exc
         pids = _pids_for_package(dev, pkg)
         if pids is None:
             return {

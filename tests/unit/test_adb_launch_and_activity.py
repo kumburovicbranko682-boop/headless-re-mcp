@@ -104,11 +104,32 @@ def test_launch_is_null_when_the_foreground_cannot_be_read() -> None:
 
 
 def test_launch_maps_a_monkey_failure_to_backend_error() -> None:
-    """A monkey shell that fails is a backend_error, not a silent non-launch."""
+    """A monkey shell that fails is a backend_error naming the target package.
+
+    _device_shell classifies the shell failure; launch carries the package onto
+    that classified error (the context its old dead except-arm meant to add but
+    never reached), so an agent sees which app's launch failed without parsing
+    the message.
+    """
     dev = _AppDev(shell_raises=True)
     with pytest.raises(AdbError) as caught:
         _backend_with(dev).launch("emulator-5554", _PACKAGE)
     assert caught.value.code == "backend_error"
+    assert caught.value.details.get("package") == _PACKAGE
+
+
+def test_force_stop_maps_a_shell_failure_to_backend_error_naming_the_package() -> None:
+    """An am force-stop that fails is a backend_error carrying the package.
+
+    Mirrors launch: the failure is classified by _device_shell and the package
+    is attached on the way out, so the previously dead generic arm's intent --
+    naming the target -- is now actually delivered.
+    """
+    dev = _AppDev(shell_raises=True)
+    with pytest.raises(AdbError) as caught:
+        _backend_with(dev).force_stop("emulator-5554", _PACKAGE)
+    assert caught.value.code == "backend_error"
+    assert caught.value.details.get("package") == _PACKAGE
 
 
 def test_current_activity_returns_the_package_and_activity() -> None:

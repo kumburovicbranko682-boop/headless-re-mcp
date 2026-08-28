@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（adb launch/force_stop 的失败信息带上目标包名，并清掉误导的死代码）
+
+- 顺着超时归类这条线复查 adb,发现 `launch` 与 `force_stop` 各有一段永不触发的死代码:两者把
+  `_device_shell(...)` 包在 `try/except AdbError: raise / except Exception -> AdbError("launch failed", package=pkg)`
+  里,可 `_device_shell` 的契约是"任何异常都就地归类成 AdbError(timeout 或 backend_error),只放 AdbError 出去",
+  于是那条 `except Exception`(本想补上 package 上下文并改写成"launch failed"）从来跑不到——失败信息里始终没有
+  它意图携带的包名。相较之下 `current_activity` 走的是 `_call`(只转超时、原样重抛其余),它的同款 `except Exception`
+  是活的。
+- 现在把 `except AdbError as exc:` 变成有用的一环:给已归类的错误补 `package=pkg`(`setdefault` 不覆盖既有),
+  再原样重抛——**保留 code**,所以 launch/force_stop 的超时仍是 `code="timeout"`(经收敛点后可重试),不会被压回
+  backend_error。既消除了死代码,又让失败像 `current_activity` 一样自带定位上下文。
+- `test_launch_maps_a_monkey_failure_to_backend_error` 加断言 `details["package"]`;新增
+  `test_force_stop_maps_a_shell_failure_to_backend_error_naming_the_package`。mutation 验证(去掉 setdefault 两处
+  即双双失败)。逐一核对文件内其余 15 处 `except Exception` 均可达(包裹 `_call`/原始 adbutils 调用,或 frida-server
+  那处"超时常意味着已启动"的有意捕获),仅此两处为死。adb/device 单测 497 passed。
+
 ### 修复（web 导航超时归类为 timeout，而非笼统的 backend_error）
 
 - 承接上一条:上一条让 `code="timeout"` 变可重试后,顺藤查证"web 会话超时也受益"这一说法,发现 `web.open`
