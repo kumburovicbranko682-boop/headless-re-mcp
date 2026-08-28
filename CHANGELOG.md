@@ -5,6 +5,26 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Web 动态导航门：HTTP 状态码回传的错误契约 + 跨文档导航 + console 类型 + DOM 正文）
+
+Web 动态这条线此前的活体门覆盖了抓包（`test_web_network_gate`）、生命周期/句柄泄漏
+（`test_web_lifecycle_gate`）、WASM 源码（`test_web_wasm_gate`），但有两处关键行为**从没被活体验证过**：
+
+- **HTTP 状态码回传**——`page.goto` 对 4xx/5xx 主文档**不抛异常**（照常 resolve），`_response_status`
+  存在的全部意义就是把这个状态暴露出来；否则「导航到错误页」和「导航到真实页」会报同样的成功。此前没有任何
+  门导航到真实 404 并断言 `status==404`，这是个悬空的错误契约。
+- **跨文档导航**——`test_web_lifecycle_gate` 只对**同一个** `data:` URL 反复 `navigate`，从没证明
+  `web.navigate` 真的落到了**另一个**文档；`web.console` 也只断言过 `ok`，从没断言抓到某条具体日志、更没验证
+  `console.error` 会映射成 `type="error"` 而非泛化的 `log`；`web.dom.snapshot` 也只查过 `title`。
+
+新增 `tests/integration/test_web_navigation_gate.py`：起一个本地 HTTP 源（`/` 200、`/second` 200、
+`/missing` 真 404，各有独立 title/正文标记），全程经产品面 `session.create(web)` → `web.open`/`web.navigate`/
+`web.console`/`web.dom.snapshot` 驱动真实 headless Chromium，断言：`web.open` 对真实源回传 `status==200`；
+console 同时抓到 `log`/`error` 两条且类型区分正确；`web.navigate` 到 `/second` 时 URL/title/status 都变了
+（证明真落到新文档）；`web.dom.snapshot` 带回新文档的**正文标记**（非仅 title）且小页面 `truncated=False`；
+最后导航到真 404 时 Result 仍 `ok` 但 `status==404`——这条错误契约是本门的核心。已实测：headless
+Chromium 下通过。skip ≠ pass：仅在 Playwright 或可启动的 Chromium 确实缺失时干净 skip。
+
 ### 修复/测试（把「WASM 反编译复用 ghidra.*」从纸面变成可验证：新增 `ghidra_wasm` 探针 + 活体门）
 
 README 一直写着「WASM 反编译复用 `ghidra.*` + ghidra-wasm-plugin」，`config` 里也有个
