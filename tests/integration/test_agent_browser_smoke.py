@@ -12,12 +12,26 @@ from typing import Any
 
 import pytest
 import uvicorn
-from playwright.sync_api import Response, expect, sync_playwright
 
 from headless_re_mcp.agent.providers.base import ProviderEvent, ProviderToolCall
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 from headless_re_mcp.web.app import create_app
+
+# Import playwright through importorskip, not a top-level `from playwright...`.
+# The hard import raised ImportError at *collection* when playwright was absent,
+# and a collection error interrupts the entire tests/integration run -- so one
+# missing browser dep took down every unrelated integration Gate. This gate's
+# own _launch_chromium already skips (skip != pass) when no browser can launch;
+# match that intent for the package itself so an absent playwright skips this
+# module cleanly instead of aborting the suite.
+playwright_sync = pytest.importorskip(
+    "playwright.sync_api",
+    reason="playwright not installed — browser agent smoke Gate not run (skip != pass)",
+)
+Response = playwright_sync.Response
+expect = playwright_sync.expect
+sync_playwright = playwright_sync.sync_playwright
 
 JsonObject = dict[str, Any]
 

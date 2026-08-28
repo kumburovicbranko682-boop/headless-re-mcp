@@ -17,6 +17,7 @@ that a few dozen lines produce something androguard validates as a real app.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import struct
 import subprocess
 import zipfile
@@ -33,6 +34,21 @@ from headless_re_mcp.core.session import classify_target
 
 _PACKAGE = "com.example.gate"
 _CLASS_SMALI = "Lcom/example/Gate;"
+
+
+def _require_androguard() -> None:
+    """Skip the androguard-backed part of a Gate when androguard is absent.
+
+    androguard is the optional ``android`` extra; the apk backend degrades to
+    capability_unavailable without it. CI's linux-integration installs that
+    extra, so the Gate executes there -- but a bare checkout used to *fail* these
+    asserts on a missing optional dependency instead of skipping, the one place
+    this file broke the skip-not-pass discipline its jadx/apktool/apksigner
+    sub-gates already keep. find_spec avoids importing the heavy package just to
+    decide.
+    """
+    if importlib.util.find_spec("androguard") is None:
+        pytest.skip("androguard not installed — apk backend Gate not run (skip != pass)")
 
 
 def _uleb128(value: int) -> bytes:
@@ -305,6 +321,11 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
 
         session_id = session["id"]
 
+        # The classification and stdlib metadata above need no androguard; the
+        # rest drives the real androguard backend, so skip here (not at the top)
+        # to keep that stdlib coverage when the optional extra is absent.
+        _require_androguard()
+
         # Real androguard manifest parse: the package comes from the AXML we
         # compiled, and the native ABIs from the committed lib/ entries.
         opened = service.apk_open(session_id)
@@ -564,6 +585,10 @@ def test_android_apk_xrefs_finds_the_real_caller(tmp_path: Path) -> None:
         created = service.create_session(str(apk))
         assert created.ok, created.error
         session_id = created.data["session"]["id"]
+
+        # Every assertion below is androguard DEX analysis; skip honestly when
+        # the optional extra is absent rather than failing on capability_unavailable.
+        _require_androguard()
 
         methods = service.apk_methods(session_id, _CLASS_SMALI)
         assert methods.ok, methods.error

@@ -5,6 +5,33 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（集成门禁诚实性：缺 playwright 不再让整个 tests/integration 收集阶段崩掉）
+
+- `test_agent_browser_smoke.py` 在模块顶层 `from playwright.sync_api import ...`。playwright 是可选的
+  浏览器依赖（`browser` extra），一旦缺失，这行在 pytest **收集阶段**就抛 ImportError——而收集错误会
+  `Interrupted` 整个 `tests/integration` 运行，于是一个缺失的浏览器依赖把**所有**无关的集成门禁一起拖垮
+  （实测：裸环境下 `pytest tests/integration` 收集 0 个用例、直接中断）。这条门禁自己的 `_launch_chromium`
+  本就会在浏览器起不来时诚实 skip（skip != pass），顶层硬导入却先一步破坏了这个约定。
+- 修复：改用 `pytest.importorskip("playwright.sync_api")`，缺失时**只**把该模块干净地 skip 掉，其余集成门禁
+  照常收集运行。`from __future__ import annotations` 已让 `Response` 类型注解成为字符串、运行期不求值，故只
+  需绑定运行期真正用到的 `sync_playwright`/`expect`。CI 的 linux-integration 装了 `browser` extra，门禁在
+  那里照常执行。
+- 实测：修复前裸环境 `pytest tests/integration --collect-only` 因该文件中断（0 用例）；修复后收集到 111 个
+  用例，该门禁报告为 skip（"playwright not installed — skip != pass"），其余门禁正常运行。
+
+### 修复（集成门禁诚实性：缺 androguard 时 Android 门禁 skip 而非硬失败）
+
+- `test_android_re_gate.py` 的 `test_android_session_classification_and_metadata` 与
+  `test_android_apk_xrefs_finds_the_real_caller` 直接对 androguard 支撑的调用断言 `.ok`。androguard 是可选的
+  `android` extra，apk 后端缺它时降级为 `capability_unavailable`——于是这两条在裸环境里**硬失败**，而同文件的
+  jadx/apktool/apksigner 子门禁都是缺工具即 skip（skip != pass）。这是该文件唯一破坏 skip-not-pass 纪律的地方。
+- 修复：加 `_require_androguard()`（用 `importlib.util.find_spec` 轻量探测，不导入重包），在真正走 androguard
+  之前调用。classification 与 stdlib 元数据断言不需要 androguard，故对第一条把探测点放在这些断言**之后**、
+  `apk_open` 之前，缺 androguard 时仍能覆盖 stdlib 路径再 skip。CI 的 linux-integration 装了 `android` extra，
+  门禁在那里照常执行。
+- 实测：裸环境两条从 FAILED 变为 SKIPPED（"androguard not installed — skip != pass"）；装上 androguard 后两条
+  均 PASSED——`apk.xrefs` 去重对真实 androguard 调用图仍报告 callee 的唯一调用方为 caller、count==1。
+
 ### 修复+测试（apk.xrefs 去重调用方：同一调用方不再因多次调用点/同名方法而重复刷屏并挤占分页）
 
 - `apk.xrefs("callers of every method named X")` 直接把 androguard 的 `get_xref_from()` 逐条摊平成
