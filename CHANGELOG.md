@@ -102,6 +102,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   横幅、usage+容忍退出码、无标记但有输出的兜底、不可执行文件的 OSError 兜底。行覆盖
   60% → 97%(余量为两处实践中不可达的防御分支)。
 
+### 测试（adb.forward 刷新失败不误删已持有的转发槽）
+
+- `backends/adb/client.py` 的 `forward` 只在**本次调用**预留了槽位时才回滚(`reserved` 为真)。
+  对已在册的端点再次 forward 会复用槽位(`reserved` 保持 False),因此这次“刷新”若绑定失败,
+  必须原样保留旧记录——adb 那边转发还活着,丢掉记录会让下次 `release_forwards` 忘记去拆一个
+  adb 仍持有的转发。既有泄漏用例只覆盖 `reserved=True`(首次绑定失败要释放槽位),而
+  `reserved=False`+失败这一角,在“首次 forward”的同质夹具下从不触及(`client.py` 的
+  `899->903` 与 `905->909` 分支)。在 `test_adb_forward_bookkeeping.py` 新增两例:通用异常臂
+  (`RuntimeError` → 包装成 `backend_error`)与 `AdbError` 臂(原样上抛、保留原 `not_found` 码,
+  以区分 `except AdbError: raise` 与 `except Exception` 的包装),两者都断言已持有的
+  `(serial, local)` 槽位在失败后仍在册。变异验证:把两处 `if reserved:` 改成无条件删除后,
+  恰好这两例失败(其余 8 例仍过)。仅测试与 CHANGELOG,未改动产品代码。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

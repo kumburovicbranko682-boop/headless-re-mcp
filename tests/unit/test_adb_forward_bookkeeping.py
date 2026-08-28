@@ -116,6 +116,45 @@ def test_reforwarding_at_the_cap_is_allowed_for_a_held_slot() -> None:
     assert len(backend._forwards) == _MAX_FORWARDS
 
 
+def test_a_failed_refresh_of_a_held_slot_keeps_the_surviving_forward() -> None:
+    """The reserved=False failure corner: a repeat forward that fails must not
+    evict the slot it did not reserve.
+
+    ``forward`` only rolls a slot back when *this* call reserved it. Re-forwarding
+    an endpoint already tracked reuses the slot (``reserved`` stays False), so a
+    transient bind failure on that refresh must leave the original record intact --
+    adb still holds the live forward, and dropping our record would forget a
+    forward the next ``release_forwards`` still needs to tear down. The existing
+    leak test only covers reserved=True (a first bind that fails); this pins the
+    complementary corner that homogeneous "first forward" fixtures never reach."""
+    dev = _ForwardDev(forward_fails=True)
+    backend = _backend_returning(dev)
+    backend._forwards = [("emulator-5554", "tcp:5000")]
+    with pytest.raises(AdbError) as caught:
+        backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
+    assert caught.value.code == "backend_error"
+    assert backend._forwards == [("emulator-5554", "tcp:5000")]
+
+
+def test_a_failed_refresh_raising_adb_error_keeps_the_slot_and_its_code() -> None:
+    """The AdbError arm of the same corner: an already-typed failure propagates
+    unchanged (not re-wrapped as backend_error) and still leaves the held slot in
+    place, distinguishing the ``except AdbError: raise`` arm from the generic
+    ``except Exception`` arm that wraps into backend_error."""
+
+    class _AdbErrorDev:
+        def forward(self, local: str, remote: str, timeout: float | None = None) -> None:
+            del local, remote, timeout
+            raise AdbError("not_found", "device went away mid-refresh")
+
+    backend = _backend_returning(_AdbErrorDev())
+    backend._forwards = [("emulator-5554", "tcp:5000")]
+    with pytest.raises(AdbError) as caught:
+        backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
+    assert caught.value.code == "not_found"
+    assert backend._forwards == [("emulator-5554", "tcp:5000")]
+
+
 def test_release_forwards_removes_and_reports_each() -> None:
     dev = _ForwardDev()
     backend = _backend_returning(dev)
