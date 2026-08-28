@@ -3743,7 +3743,15 @@ class TestAdbHostCallsAreBounded:
         backend._adbutils = FakeAdb
         result = backend.list_devices()
         assert result["count"] == 2
-        assert result["devices"][0]["state"] == "offline"
+        # Assert inclusion by serial, not by position: list_devices now sorts by
+        # serial before capping (so a capped farm returns a real alphabetical
+        # prefix), and "ZY223KDTM7" sorts ahead of "emulator-5554". The point of
+        # this test is that the offline device is *present* with its real state
+        # and that no per-device get_state probe was needed to learn it -- both
+        # hold regardless of the row order.
+        states = {row["serial"]: row["state"] for row in result["devices"]}
+        assert states["emulator-5554"] == "offline"
+        assert states["ZY223KDTM7"] == "device"
         assert result["has_more"] is False
 
     def test_open_transport_default_is_not_ten_minutes(self) -> None:

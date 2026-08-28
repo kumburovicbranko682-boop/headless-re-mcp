@@ -95,6 +95,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   尾 `d{cap-1}`、越过 cap 的高位 serial 缺席)。既有 cap 用例喂的是升序 `emulator-0..`,排不排序都过,只钉溢出旗标;
   逆序用例才真正钉住排序。以“临时删掉 `items.sort`”验证非空过:三条依赖排序的用例(含两条整形)齐失败
   (溢出用例首元素变成逆序头 `d073`),恢复后 144 条 adb/device 用例全绿。
+- 随此排序改动落下一处过时的位置断言:`test_unattended_resource_bounds.py` 的
+  `test_list_includes_offline_devices_and_does_not_probe_get_state` 喂 `emulator-5554`(offline)/`ZY223KDTM7`(device),
+  排序后 `ZY223KDTM7` 因大写 `Z`(0x5A)< 小写 `e`(0x65)排到首位,原 `devices[0]["state"] == "offline"` 遂失败。
+  该用例本意是“offline 设备被*包含*且无需逐台 get_state 探测”,与顺序无关——改为按 serial 建映射断言两台各自的
+  state,既修红又如实钉住其真实意图。
 
 ### 测试（超大解压树 backstop 的三个调用点，apk.decompile 一直没被任何测试驱动——补钉该第三站，把守卫 docstring “去掉任一处都会静默回归” 的承诺真正落成强制）
 
