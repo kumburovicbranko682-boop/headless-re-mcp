@@ -390,9 +390,16 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 81 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、
+  Frida 线离线诚实经真实 MCP 端到端(裸机无 frida/adbutils、跨主机确定性)：live Frida gate 要真机
+  故裸机整体 skip，本 gate 反而在裸机上跑起来钉住三层「说不」的分界(且 PE/APK 会话表现一致、层级
+  由工具与状态而非目标决定)——真正需要后端的操作报 capability_unavailable 并点名可修复的依赖:
+  frida.devices/device.connect 点名 frida 模块、而 frida.server.ensure 点名 adbutils(它自身依赖、
+  不是 frida);设备级读(applications/spawn/java.classes/java.methods)报 invalid_state 并让你先
+  frida.device.connect(是工作流步骤、不是装东西);调试对象探针(attach/modules/exports/memory.read/
+  hook.template)也报 invalid_state(需要活目标、不是缺安装)——绝不把「还没到该状态」说成「去装个后端」）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
