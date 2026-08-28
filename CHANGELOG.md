@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（Web 静态线 live gate：wabt 真模块往返 + webcrack 真代码）
+
+- `test_web_re_gate` 对 web 静态工具只浅测（`js.deobfuscate` 只验非空串，`wasm.wat` 只跑空模块）。
+  新增 `tests/integration/test_web_static_re_gate.py`，让真实工具跑在真实产物上：
+  - wabt：测试期用 wat2wasm 现装一个带导出 `add` 函数的真模块（不落二进制），断言 `wasm.wat`
+    往返出 `(export "add"` 与 `i32.add`，`wasm.info`（wasm-objdump）报出 Type/Function/Export/Code
+    段与 `add` 符号；
+  - wasm 守卫：无 `\0asm` 魔数的文件在启动 wabt 前即被拒 `invalid_params`，超限输入被拒 `too_large`；
+  - webcrack：压缩成一行的脚本被还原成多行，`console["log"]("\x68...")` 反混淆成
+    `console.log("hello")`；
+  - 回归护栏：`js.unpack_bundle` 解包脚本会落地 `deobfuscated.js`，在集成层守住上面的预建目录修复。
+- 各半在缺 wabt/webcrack（或用于装配模块的 wat2wasm）时按 skip≠pass 跳过。只加测试、不改源码。
+
 ### 修复（js.unpack_bundle 预建 -o 目录导致 webcrack 2.x 直接失败）
 
 - `JsClient.unpack_bundle` 先 `out_dir.mkdir(parents=True, exist_ok=True)`，再把该目录作为
