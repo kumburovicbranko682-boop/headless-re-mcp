@@ -472,6 +472,32 @@ def test_zerofall_import_requires_explicit_confirmation(app_client: Any) -> None
     assert reply.json()["detail"] == "confirm_required"
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("contextCompressionThresholdPercent", None),
+        ("contextCompressionThresholdPercent", [1, 2]),
+        ("knownModels", None),
+        ("modelCatalogs", 5),
+    ],
+)
+def test_zerofall_import_rejects_a_wrongly_typed_field_with_a_400(
+    app_client: Any, field: str, value: Any
+) -> None:
+    """A pasted config with a wrong field type is the client's error, not ours.
+
+    import_zerofall coerces these fields (int() on the threshold, iteration on
+    the model lists), so a null or scalar raises TypeError rather than
+    ValueError -- and the route used to let that escape as a 500.
+    """
+    client, _ = app_client
+    reply = client.post(
+        "/api/providers/zerofall/import",
+        json={"config": {"apiKey": "k", field: value}, "confirm": True},
+    )
+    assert reply.status_code == 400
+
+
 def test_zerofall_import_saves_a_confirmed_profile(app_client: Any) -> None:
     client, _ = app_client
     reply = client.post(

@@ -622,6 +622,11 @@ def register_agent_routes(
             raise HTTPException(status_code=400, detail="config_required")
         try:
             profile = configs.import_zerofall(source, confirm=body.get("confirm") is True, profile_id=str(body.get("profile_id") or "zerofall"))
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
+            # A pasted config coerces its fields (int(threshold), iterate
+            # knownModels/modelCatalogs), so a wrong type is a TypeError, not a
+            # ValueError. Caught only ValueError, those reached the client as a
+            # 500 with a stack trace over user input; save_provider and
+            # create_mission already treat both as the same 400.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse({"ok": True, "profile": profile})
