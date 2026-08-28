@@ -459,6 +459,95 @@ def _classify_content_type(media: str) -> tuple[str, bool]:
     return "other", False
 
 
+# proxy.timings: fold the captured wall-clock timestamps into per-flow latency.
+_MAX_TIMING_ROWS = 200
+
+
+def _ts(value: object) -> float | None:
+    """Coerce a mitmproxy timestamp (epoch seconds float) to float, else None."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _ms(later: float | None, earlier: float | None) -> int | None:
+    """Milliseconds between two epoch timestamps, or None when either is absent."""
+    if later is None or earlier is None:
+        return None
+    delta = (later - earlier) * 1000.0
+    if delta < 0:
+        return None
+    return int(round(delta))
+
+
+def fold_timings(
+    rows: list[JsonObject],
+    timings: dict[str, JsonObject],
+    *,
+    limit: int = 100,
+) -> JsonObject:
+    """Fold captured per-flow timestamps into a slowest-first latency view.
+
+    Joins each summary row to its wall-clock timestamps by flow id and derives
+    the phase durations mitmproxy records: total_ms (request sent to response
+    fully received), waiting_ms (the time-to-first-byte gap between the request
+    finishing and the response starting), request_ms and response_ms. Flows with
+    no recorded timing (an errored flow that never got a response) are counted
+    but carry null durations. Sorted slowest-first so a beacon that stalls or an
+    exfil upload that drags is the first thing seen; aggregates report the count
+    timed and the slowest/fastest/average total.
+    """
+    out_rows: list[JsonObject] = []
+    totals: list[int] = []
+    timed = 0
+    for row in rows:
+        flow_id = str(row.get("id"))
+        timing = timings.get(flow_id)
+        total_ms = waiting_ms = request_ms = response_ms = None
+        if timing is not None:
+            req_start = timing.get("req_start")
+            req_end = timing.get("req_end")
+            resp_start = timing.get("resp_start")
+            resp_end = timing.get("resp_end")
+            total_ms = _ms(resp_end, req_start)
+            waiting_ms = _ms(resp_start, req_end)
+            request_ms = _ms(req_end, req_start)
+            response_ms = _ms(resp_end, resp_start)
+            if total_ms is not None:
+                timed += 1
+                totals.append(total_ms)
+        out_rows.append(
+            {
+                "id": row.get("id"),
+                "method": row.get("method"),
+                "url": row.get("url"),
+                "host": row.get("host"),
+                "status": row.get("status"),
+                "total_ms": total_ms,
+                "waiting_ms": waiting_ms,
+                "request_ms": request_ms,
+                "response_ms": response_ms,
+            }
+        )
+
+    out_rows.sort(key=lambda r: (r["total_ms"] is not None, r["total_ms"] or 0), reverse=True)
+    cap = max(1, min(int(limit), _MAX_TIMING_ROWS))
+    window = out_rows[:cap]
+    aggregate: JsonObject = {
+        "timed": timed,
+        "slowest_ms": max(totals) if totals else None,
+        "fastest_ms": min(totals) if totals else None,
+        "average_ms": int(round(sum(totals) / len(totals))) if totals else None,
+    }
+    return {
+        "flows": window,
+        "count": len(window),
+        "total": len(out_rows),
+        "has_more": len(out_rows) > len(window),
+        "aggregate": aggregate,
+    }
+
+
 def fold_content_types(rows: list[JsonObject], *, limit: int = 100) -> JsonObject:
     """Fold a flow snapshot into a served-content inventory, flagging payloads.
 
@@ -1037,6 +1126,9 @@ class _FlowRecorder:
         self._raw: OrderedDict[str, Any] = OrderedDict()
         self._raw_sizes: dict[str, int] = {}
         self._retained_bytes = 0
+        # Per-flow wall-clock timestamps for proxy.timings, kept off the summary
+        # rows (so proxy.flows stays lean) and evicted in lockstep with the ring.
+        self._timings: OrderedDict[str, JsonObject] = OrderedDict()
         self._lock = threading.RLock()
 
     def _omit_retained(self, flow_id: str) -> None:
@@ -1135,6 +1227,16 @@ class _FlowRecorder:
             ):
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
+            timing = {
+                "req_start": _ts(getattr(req, "timestamp_start", None)),
+                "req_end": _ts(getattr(req, "timestamp_end", None)),
+                "resp_start": _ts(getattr(resp, "timestamp_start", None)),
+                "resp_end": _ts(getattr(resp, "timestamp_end", None)),
+            }
+            if any(value is not None for value in timing.values()):
+                self._timings[flow_id] = timing
+                while len(self._timings) > self._capacity:
+                    self._timings.popitem(last=False)
 
     def snapshot(self) -> list[JsonObject]:
         with self._lock:
@@ -1143,6 +1245,10 @@ class _FlowRecorder:
     def raw(self, flow_id: str) -> Any | None:
         with self._lock:
             return self._raw.get(flow_id)
+
+    def timings_snapshot(self) -> dict[str, JsonObject]:
+        with self._lock:
+            return {flow_id: dict(value) for flow_id, value in self._timings.items()}
 
     def count(self) -> int:
         with self._lock:
@@ -1164,6 +1270,7 @@ class _FlowRecorder:
             self.flows.clear()
             self._raw.clear()
             self._raw_sizes.clear()
+            self._timings.clear()
             self._retained_bytes = 0
             self._seq = 0
             return cleared
@@ -1404,6 +1511,12 @@ class ProxyBackend:
     def content_types(self, session_id: str, *, limit: int = 100) -> JsonObject:
         inst = self._get(session_id)
         return fold_content_types(inst.recorder.snapshot(), limit=limit)
+
+    def timings(self, session_id: str, *, limit: int = 100) -> JsonObject:
+        inst = self._get(session_id)
+        return fold_timings(
+            inst.recorder.snapshot(), inst.recorder.timings_snapshot(), limit=limit
+        )
 
     def cookies(self, session_id: str, *, limit: int = 200) -> JsonObject:
         inst = self._get(session_id)

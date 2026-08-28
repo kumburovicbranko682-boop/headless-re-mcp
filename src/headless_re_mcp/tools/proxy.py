@@ -226,6 +226,32 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.proxy_content_types(session_id, limit=limit))
 
+    @tools.tool(name="proxy.timings")
+    def proxy_timings(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=200)] = 100,
+    ) -> dict[str, Any]:
+        """Rank captured flows by latency, from mitmproxy's own timestamps.
+
+        The timing cut of a capture: proxy.stats counts, this measures. Each flow
+        is broken into the phases mitmproxy records -- total (request sent to
+        response fully received), waiting (time-to-first-byte, the gap between the
+        request finishing and the response starting), request and response -- and
+        the flows are returned slowest-first. The point: a beacon that stalls, a
+        C2 poll that waits seconds for a reply, or an exfil upload that drags is a
+        behavioural tell that a status/size view alone hides. Timestamps are kept
+        off the summary rows, so proxy.flows stays lean; this joins them back by
+        flow id.
+
+        Answers with flows (slowest-first, capped), count, total, has_more, and
+        aggregate (timed -- flows with a measurable total, plus slowest_ms /
+        fastest_ms / average_ms over those). Each flow carries id, method, url,
+        host, status and the durations total_ms, waiting_ms, request_ms and
+        response_ms -- null on a flow with no recorded timing (an errored flow
+        that never got a response). Milliseconds throughout.
+        """
+        return _dump(analysis.proxy_timings(session_id, limit=limit))
+
     @tools.tool(name="proxy.search")
     def proxy_search(
         session_id: str,

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **320（202 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **321（203 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -765,6 +765,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   (累加解码后响应大小);该列表的 `type_count`/`count`/`truncated`;`total_flows`、`typed_flows`(有内容类型的
   行数)与 `total_bytes`;以及 `flagged`——那些可疑流本身,各带 id/method/url/host/status/content_type/category/
   response_size——外加 `flagged_count` 与 `flagged_truncated`。把某可疑流的 id 喂给 `proxy.flow.get` 即可拉载荷。
+- 新增 `proxy.timings`:按延迟给抓到的流排序,取自 mitmproxy 自己的时间戳。`proxy.stats` 计数,这个测量。每个流拆成
+  mitmproxy 记录的各阶段——total(请求发出到响应收全)、waiting(首字节延迟,请求结束到响应开始的间隔)、request 与
+  response——并最慢在前返回。要点:一个信标卡顿、一次 C2 轮询等回复等了数秒、或一次外泄上传拖沓,是仅看状态/大小
+  会漏掉的行为线索。时间戳存在摘要行之外,故 `proxy.flows` 保持精简;这里按流 id 把它们接回来。回 `flows`(最慢在前,
+  封顶)、`count`/`total`/`has_more` 与 `aggregate`(timed——有可测 total 的流数,外加这些流的
+  `slowest_ms`/`fastest_ms`/`average_ms`)。每个流带 id/method/url/host/status 与时长 `total_ms`/`waiting_ms`/
+  `request_ms`/`response_ms`——无记录时序的流(从未收到响应的错误流)为 null。全程以毫秒计。
 - 新增 `proxy.security_headers`:审计每个被服务文档的响应安全头——在途一侧的安全姿态。对抓到的每个
   文档(凡 text/html 的响应,加上任何带受追踪头的响应)按 `(host, path)` 归并,报告哪些标准防护头在、
   哪些缺——发现往往是"缺":一个页面既没 CSP 也没 HSTS。受追踪的头有 csp(Content-Security-Policy)、
