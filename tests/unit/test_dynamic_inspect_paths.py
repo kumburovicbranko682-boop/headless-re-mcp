@@ -104,6 +104,9 @@ def test_parameter_guards_reject_bad_arguments(tmp_path: Path) -> None:
         service.breakpoints_condition_set("s1", 0x1000, ""),
         service.breakpoints_condition_set("s1", 0x1000, "a;b"),
         service.patches_apply("s1", 0x1000, ""),
+        service.threads_context_write("s1", 1, "", 0),
+        service.threads_context_write("s1", 1, "r" * 17, 0),
+        service.threads_context_write("s1", 1, "rax", -1),
     ]
     for result in cases:
         assert result.ok is False and result.error is not None

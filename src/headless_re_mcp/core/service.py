@@ -1916,6 +1916,28 @@ class AnalysisService(
         name: str,
         value: int,
     ) -> Result[JsonObject]:
+        # The schema caps name at 1..16 chars and types value as an int, but this
+        # handler forwarded both raw. On the agent transport, which passes raw
+        # model arguments, an over-long name would reach the worker whole and a
+        # non-integer value would ride a round-trip only to be rejected there. The
+        # worker still owns the register allowlist and the unsigned range; this
+        # just holds the shape the schema promises.
+        if not isinstance(name, str) or not 1 <= len(name) <= 16:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="name must be a register name of 1 to 16 characters",
+                ),
+            )
+        if type(value) is not int:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="value must be an integer",
+                ),
+            )
         return self._dynamic_request(
             session_id,
             "registers.write",

@@ -278,6 +278,28 @@ class DynamicInspectMixin:
                 ok=False,
                 error=RpcError(code="invalid_params", message="tid must be a positive integer"),
             )
+        # The schema caps name at 1..16 chars and value at ge=0, but tid was the
+        # only argument this handler screened. The agent transport hands it raw
+        # model arguments, so without this an over-long register name would be
+        # forwarded whole to the worker and a non-integer value would ride a
+        # round-trip only to be rejected there. The worker still owns the register
+        # allowlist; this just holds the shape the schema promises.
+        if not isinstance(name, str) or not 1 <= len(name) <= 16:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="name must be a register name of 1 to 16 characters",
+                ),
+            )
+        if type(value) is not int or value < 0:
+            return Result[JsonObject](
+                ok=False,
+                error=RpcError(
+                    code="invalid_params",
+                    message="value must be a non-negative integer",
+                ),
+            )
         return self._dynamic_request(
             session_id,
             "threads.context.write",

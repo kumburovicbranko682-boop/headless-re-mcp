@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections import deque
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -1912,6 +1913,39 @@ def test_breakpoint_set_rebases_static_and_rva_coordinates(tmp_path: Path) -> No
     rejected = service.dynamic_breakpoint_set(session_id, 0x1000, address_space="bogus")
     assert not rejected.ok and rejected.error is not None
     assert rejected.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("", 0),
+        ("r" * 17, 0),
+        (123, 0),
+        ("rax", "1"),
+        ("rax", 1.5),
+        ("rax", None),
+    ],
+)
+def test_register_write_rejects_bad_name_or_value_before_the_worker(
+    tmp_path: Path, name: object, value: object
+) -> None:
+    """registers.write holds the schema's name/value shape at the service layer.
+
+    The schema caps name at 1..16 chars and types value as an int, but the
+    handler forwarded both raw, so on the agent transport an over-long name
+    reached the worker whole and a non-integer value rode a round-trip only to be
+    rejected there. Both now fail as a structured invalid_params, untouched by
+    the worker.
+    """
+    service, session_id, dynamic = _rebased_service(tmp_path, 0x7FF700000000)
+
+    rejected = service.dynamic_register_write(
+        session_id, cast(str, name), cast(int, value)
+    )
+
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_params"
+    assert not [command for command, _ in dynamic.requests if command == "registers.write"]
 
 
 def test_analyze_function_dynamic_reports_stop_on_its_breakpoint(tmp_path: Path) -> None:
