@@ -92,6 +92,28 @@ JsonObject = dict[str, Any]
 _OEP_REGION_SNAPSHOT_LIMIT = 512
 
 
+def _well_formed_stub_ranges(ranges: Any) -> list[tuple[int, int]]:
+    """Keep only well-formed (start, size) integer pairs from client stub ranges.
+
+    stub_rva_ranges is schema-typed as an array of [start, size] integer pairs,
+    but the agent and OpenAI-bridge transports bind it from model output with no
+    pydantic coercion. A malformed entry -- not a 2-item pair, or a non-int
+    start/size -- was unpacked as ``start, size`` both inside the scorer's range
+    check and again when building the response snapshot, raising a ValueError or
+    TypeError the service filed as an internal_error incident. Drop a bad entry
+    the way the scorer already drops a bad-shaped observation, so every consumer
+    of the normalized list sees only real ranges (``type is int`` sheds bool).
+    """
+    result: list[tuple[int, int]] = []
+    for entry in ranges or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        start, size = entry
+        if type(start) is int and type(size) is int:
+            result.append((start, size))
+    return result
+
+
 def _refuse_rebuild_that_will_not_fit(
     path: Path, *, observed_size: int | None = None
 ) -> Result[JsonObject] | None:
@@ -1533,7 +1555,7 @@ class UnpackMixin:
 
             collected_note: str | None = None
             auto_collected = False
-            effective_stub = list(stub_rva_ranges or ())
+            effective_stub = _well_formed_stub_ranges(stub_rva_ranges)
             effective_observations = list(observations or [])
             entry_point_rva: int | None = None
 

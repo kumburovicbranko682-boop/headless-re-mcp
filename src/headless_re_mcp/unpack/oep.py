@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Any
 
 JsonObject = dict[str, Any]
@@ -174,7 +175,22 @@ def _as_rva(item: JsonObject, module_base: int) -> int | None:
 
 
 def _in_ranges(rva: int, ranges: list[tuple[int, int]] | tuple[tuple[int, int], ...]) -> bool:
-    return any(start <= rva < start + size for start, size in ranges)
+    # Internal callers build well-formed (start, size) int pairs, but
+    # unpack.score_oep forwards stub_rva_ranges straight from client input on
+    # the pydantic-free agent transport. A malformed entry -- not a 2-item pair,
+    # or a non-int start/size -- crashed the ``start, size`` unpack (ValueError)
+    # or the ``<=`` compare (TypeError) and was filed as an internal_error
+    # incident, even though observations with a bad shape are already skipped.
+    # Skip a bad range the same way (``type is not int`` also rejects bool).
+    for entry in ranges:
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        start, size = entry
+        if type(start) is not int or type(size) is not int:
+            continue
+        if start <= rva < start + size:
+            return True
+    return False
 
 
 def _signal_for(kind: str, item: JsonObject, index: int) -> OepSignal | None:
@@ -197,9 +213,25 @@ def _signal_for(kind: str, item: JsonObject, index: int) -> OepSignal | None:
         if key not in {"kind", "description", "oep_rva", "address", "rip", "role"}
     }
     details["observation_index"] = index
+    # weight is an optional per-observation override that reaches here straight
+    # from client input on the pydantic-free agent transport. A str/list/dict
+    # crashed float() (ValueError/TypeError) and was filed as an internal_error
+    # incident, and a NaN/inf poisoned the additive score with a value that is
+    # never a real confidence. Fall back to the kind's default weight for any
+    # non-finite or non-numeric override (a bool is never a real weight), the
+    # same tolerance the loop already gives a bad-shaped observation.
+    raw_weight = item.get("weight", weights[kind])
+    if (
+        isinstance(raw_weight, bool)
+        or not isinstance(raw_weight, (int, float))
+        or not isfinite(raw_weight)
+    ):
+        weight = weights[kind]
+    else:
+        weight = float(raw_weight)
     return OepSignal(
         kind=kind,
-        weight=float(item.get("weight", weights[kind])),
+        weight=weight,
         description=description,
         details=details,
     )

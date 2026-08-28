@@ -821,6 +821,75 @@ def test_score_oep_transitions_a_running_session(tmp_path: Path) -> None:
     assert "stub_rva_ranges" in result.data
 
 
+@pytest.mark.parametrize(
+    "stub_rva_ranges",
+    [[1, 2], [(0x2000, 0x100, 0x9)], [("0x2000", "0x100")], [{"start": 1}], [(0x2000,)]],
+)
+def test_score_oep_tolerates_malformed_stub_ranges(
+    tmp_path: Path, stub_rva_ranges: list[Any]
+) -> None:
+    """stub_rva_ranges is client input on the pydantic-free agent transport.
+
+    A malformed element -- not a 2-item int pair -- was unpacked as
+    ``start, size`` both in the scorer's range check and again when building the
+    response snapshot, each raising a ValueError/TypeError the service filed as
+    an internal_error incident. Bad entries are now dropped, leaving a scored ok
+    reply with no stub snapshot when every entry was malformed.
+    """
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+
+    result = service.unpack_score_oep(
+        session_id,
+        module_base=_MODULE_BASE,
+        module_size=_MODULE_SIZE,
+        observations=[{"kind": "left_stub_region", "oep_rva": 0x1000}],
+        stub_rva_ranges=stub_rva_ranges,
+    )
+
+    assert result.ok and result.data is not None
+    assert "stub_rva_ranges" not in result.data
+
+
+def test_score_oep_keeps_valid_stub_ranges_and_drops_bad_ones(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+
+    result = service.unpack_score_oep(
+        session_id,
+        module_base=_MODULE_BASE,
+        module_size=_MODULE_SIZE,
+        observations=[{"kind": "left_stub_region", "oep_rva": 0x1000}],
+        stub_rva_ranges=[(0x2000, 0x100), [1, 2, 3]],
+    )
+
+    assert result.ok and result.data is not None
+    assert result.data["stub_rva_ranges"] == [{"rva": 0x2000, "size": 0x100}]
+
+
+def test_score_oep_tolerates_a_malformed_observation_weight(tmp_path: Path) -> None:
+    """A per-observation weight override is client input; a non-numeric one used
+    to crash float() as an internal_error. It falls back to the kind default."""
+    service = _service(tmp_path)
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    session_id = _new_session(service, binary)
+
+    result = service.unpack_score_oep(
+        session_id,
+        module_base=_MODULE_BASE,
+        module_size=_MODULE_SIZE,
+        observations=[{"kind": "write_to_execute", "oep_rva": 0x1000, "weight": "heavy"}],
+    )
+
+    assert result.ok and result.data is not None
+    assert result.data["candidate_count"] == 1
+
+
 def test_score_oep_appends_timeline_for_a_non_running_session(tmp_path: Path) -> None:
     service = _service(tmp_path)
     binary = tmp_path / "sample.exe"

@@ -123,6 +123,52 @@ def test_stub_region_signals_are_down_weighted() -> None:
     assert rip["role"] == "packed_ep"
 
 
+@pytest.mark.parametrize(
+    "bad_range",
+    [
+        [1, 2],
+        [(0x5000, 0x1000, 0x9)],
+        [("0x5000", "0x1000")],
+        [{"start": 0x5000, "size": 0x1000}],
+        [(0x5000,)],
+        [(0x5000, True)],
+    ],
+)
+def test_malformed_stub_ranges_are_skipped_not_crashed(bad_range: list[Any]) -> None:
+    """stub_rva_ranges is client input on the pydantic-free agent transport.
+
+    A malformed entry -- not a 2-item pair, or a non-int start/size -- used to
+    crash the ``start, size`` unpack (ValueError) or the ``<=`` compare
+    (TypeError) inside _in_ranges, even though a bad-shaped observation is
+    already skipped. It must be skipped the same way, still scoring the
+    observation (just without the stub down-weight).
+    """
+    observations: list[Any] = [{"kind": "left_stub_region", "oep_rva": 0x5500}]
+
+    out = _score(observations, stub_rva_ranges=bad_range)
+
+    assert len(out) == 1
+    # The stub down-weight never applied, so the full left_stub_region weight
+    # stands rather than the 0.05 an in-range hit would clamp it to.
+    assert out[0]["signals"][0]["weight"] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("bad_weight", ["heavy", [1], None, {"a": 1}, float("nan"), float("inf")])
+def test_malformed_observation_weight_falls_back_to_default(bad_weight: Any) -> None:
+    """A per-observation weight override is client input; a non-finite or
+    non-numeric one used to crash float() (ValueError/TypeError) or poison the
+    additive score with NaN/inf. Fall back to the kind's default weight."""
+    observations: list[Any] = [
+        {"kind": "write_to_execute", "oep_rva": 0x1000, "weight": bad_weight}
+    ]
+
+    out = _score(observations)
+
+    assert len(out) == 1
+    # write_to_execute default weight is 0.3 (single-signal, under the 0.45 clamp).
+    assert out[0]["score"] == pytest.approx(0.3)
+
+
 def test_truncates_to_max_candidates_by_score() -> None:
     observations: list[Any] = [
         {"kind": "write_to_execute", "oep_rva": 0x1000},
