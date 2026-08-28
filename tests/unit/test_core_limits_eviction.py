@@ -298,6 +298,81 @@ def test_dir_size_returns_what_it_counted_when_the_walk_itself_raises() -> None:
     assert limits._dir_size(_DirWhoseWalkRaises()) == 0  # type: ignore[arg-type]
 
 
+# --------------------------------------------------------------------------- #
+# dir_size_over_cap (the size backstop's measurement)                          #
+# --------------------------------------------------------------------------- #
+def test_dir_size_over_cap_short_circuits_on_a_single_fat_file(tmp_path: Path) -> None:
+    """A tree past the cap is reported over without walking to the last byte."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "big.bin").write_bytes(b"x" * 500)
+    measured, over = limits.dir_size_over_cap(tree, 100)
+    assert over is True
+    assert measured >= 500
+
+
+def test_dir_size_over_cap_walks_a_small_tree_in_full(tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    (tree / "nested").mkdir(parents=True)
+    (tree / "a.bin").write_bytes(b"x" * 10)
+    (tree / "nested" / "b.bin").write_bytes(b"x" * 20)
+    measured, over = limits.dir_size_over_cap(tree, 1000)
+    assert over is False
+    assert measured == 30
+
+
+def test_dir_size_over_cap_catches_a_many_small_files_tree(tmp_path: Path) -> None:
+    """The gap ``_dir_size`` left: bytes past its file cap were never counted.
+
+    ``_dir_size`` stops after ``_DIR_SIZE_FILE_CAP`` (4096) files and returns the
+    partial sum, which the backstop read as "under cap" -- so a tree whose first
+    4096 files are small but whose *total* is over the cap survived. That is the
+    real apktool/jadx shape: one dex disassembles to hundreds of thousands of
+    tiny per-class files. Here 5000 one-byte files sum to 5000 bytes; with the
+    cap at 4096 the total genuinely exceeds it, but only because every file past
+    the 4096th is counted. ``_dir_size`` would have returned exactly 4096 and
+    called it safe.
+    """
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for index in range(5000):
+        (tree / f"f{index}.smali").write_bytes(b"x")
+    # _dir_size caps out at its file limit and under-reports the tree as safe.
+    assert limits._dir_size(tree) == limits._DIR_SIZE_FILE_CAP
+    # The short-circuiting backstop measurement sees the real overflow.
+    measured, over = limits.dir_size_over_cap(tree, 4096)
+    assert over is True
+    assert measured > 4096
+
+
+def test_dir_size_over_cap_fails_closed_past_the_file_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file-count flood is refused even when the bytes never cross the cap.
+
+    Empty (or near-empty) files never move the byte total, so without a file
+    ceiling the walk would stat() every one of millions of inodes before
+    answering "small". The ceiling turns that into a fail-closed refusal: a tree
+    with that many files is not a legitimate capture. Shrink the ceiling so the
+    test needs only a handful of zero-byte files rather than millions.
+    """
+    monkeypatch.setattr(limits, "_TREE_SIZE_FILE_CEILING", 3)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for index in range(5):
+        (tree / f"empty{index}").write_bytes(b"")
+    measured, over = limits.dir_size_over_cap(tree, 1_000_000_000)
+    assert over is True
+    assert measured == 0
+
+
+def test_dir_size_over_cap_survives_a_walk_that_raises(tmp_path: Path) -> None:
+    """A directory torn down mid-measure answers from what it counted, never crashes."""
+    measured, over = limits.dir_size_over_cap(_DirWhoseWalkRaises(), 100)  # type: ignore[arg-type]
+    assert measured == 0
+    assert over is False
+
+
 def test_remove_entry_deletes_a_file(tmp_path: Path) -> None:
     target = tmp_path / "f.bin"
     target.write_bytes(b"x")

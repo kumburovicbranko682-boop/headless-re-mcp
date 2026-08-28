@@ -17,7 +17,7 @@ from headless_re_mcp.backends.apktool import ApktoolClient, ApktoolError
 from headless_re_mcp.backends.jadx import JadxClient, JadxError
 from headless_re_mcp.backends.x64dbg.client import XdbgRpcError
 from headless_re_mcp.config import Settings
-from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, _dir_size
+from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES, dir_size_over_cap
 from headless_re_mcp.core.models import Result, SessionState, TargetKind
 from headless_re_mcp.core.results import _failure, _success, backend_error_as_rpc
 from headless_re_mcp.core.service_ext import (
@@ -34,10 +34,14 @@ def _refuse_oversized_tree(path: Path, *, kind: str, error_type: type) -> None:
     if not path.exists():
         return
     try:
-        size = _dir_size(path) if path.is_dir() else int(path.stat().st_size)
+        if path.is_dir():
+            size, over_cap = dir_size_over_cap(path, UNREGISTERED_CAPTURE_MAX_BYTES)
+        else:
+            size = int(path.stat().st_size)
+            over_cap = size > UNREGISTERED_CAPTURE_MAX_BYTES
     except OSError:
         return
-    if size <= UNREGISTERED_CAPTURE_MAX_BYTES:
+    if not over_cap:
         return
     with suppress(OSError):
         if path.is_dir():

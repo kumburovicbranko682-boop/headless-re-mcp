@@ -173,6 +173,56 @@ def _dir_size(directory: Path) -> int:
     return total
 
 
+# A decode/decompile tree with more files than this is refused outright rather
+# than measured to the last byte. Even the largest real apps disassemble to a
+# few hundred thousand files, so a tree past this many is not a legitimate
+# capture -- and measuring one takes a stat() per file, which is the very cost
+# the byte short-circuit below exists to avoid. Well above any real app so a
+# genuine decode is never refused for its file count alone.
+_TREE_SIZE_FILE_CEILING = 2_000_000
+
+
+def dir_size_over_cap(directory: Path, cap: int) -> tuple[int, bool]:
+    """Whether ``directory`` holds more than ``cap`` bytes, stopping once it does.
+
+    Unlike ``_dir_size`` -- which bails after ``_DIR_SIZE_FILE_CAP`` files and
+    returns the partial sum a caller reads as "small" -- this is for the size
+    *backstop*, where under-reporting a giant tree is a fail-*open* bug. A single
+    ``classes.dex`` can disassemble into hundreds of thousands of tiny ``.smali``
+    files (one per class), so a hostile APK that declares an honest central
+    directory still inflates far past the cap in file *count* while each file
+    stays small; ``_dir_size`` would tally only its first 4096 files, land under
+    the cap, and let the multi-hundred-MB tree survive.
+
+    This short-circuits on the only fact the backstop needs -- ``total > cap`` --
+    so the bomb is caught after roughly ``cap`` bytes of walking instead of
+    slipping through, and a tree that never crosses the cap is walked in full,
+    which is what proving "small" honestly requires. A tree with more than
+    ``_TREE_SIZE_FILE_CEILING`` files is treated as over-cap (fail-closed) so the
+    walk itself cannot be turned into a stat() storm by an empty-file flood.
+    Returns ``(measured_bytes, over_cap)``; when ``over_cap`` is true the byte
+    count is a floor, not the true total.
+    """
+    total = 0
+    seen = 0
+    try:
+        for child in directory.rglob("*"):
+            try:
+                if not child.is_file():
+                    continue
+                total += child.stat().st_size
+                if total > cap:
+                    return total, True
+                seen += 1
+                if seen >= _TREE_SIZE_FILE_CEILING:
+                    return total, True
+            except OSError:
+                continue
+    except OSError:
+        return total, total > cap
+    return total, total > cap
+
+
 def _remove_entry(path: Path) -> bool:
     try:
         if path.is_dir() and not path.is_symlink():

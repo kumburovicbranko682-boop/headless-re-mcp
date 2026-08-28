@@ -64,6 +64,31 @@ def test_the_helper_deletes_and_refuses_a_tree_over_the_cap(
     assert not tree.exists()
 
 
+def test_the_helper_refuses_a_many_small_files_tree_over_the_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The backstop must catch the real apktool/jadx bomb shape, not just fat files.
+
+    A hostile ``classes.dex`` disassembles to hundreds of thousands of tiny
+    per-class files: each one small, the tree enormous. The old measurement
+    (``_dir_size``) stopped after its first 4096 files and reported the partial
+    sum, so a multi-hundred-MB tree of tiny files read as "under cap" and
+    survived -- exactly the "densely generated smali" case this file's module
+    docstring names. Here 5000 one-byte files exceed a 4096-byte cap only because
+    every file past the 4096th counts; the helper must delete and refuse.
+    """
+    monkeypatch.setattr(service_apk, "UNREGISTERED_CAPTURE_MAX_BYTES", 4096)
+    tree = tmp_path / "decoded"
+    tree.mkdir()
+    for index in range(5000):
+        (tree / f"c{index}.smali").write_bytes(b"x")
+    with pytest.raises(ApktoolError) as caught:
+        _refuse_oversized_tree(tree, kind="apktool", error_type=ApktoolError)
+    assert caught.value.code == "too_large"
+    assert caught.value.details["size"] > 4096
+    assert not tree.exists()
+
+
 def test_the_helper_leaves_a_tree_within_the_cap_untouched(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
