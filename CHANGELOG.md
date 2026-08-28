@@ -18,6 +18,8 @@ CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服�
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
+畸形 .NET 输入新增经真实 MCP stdio 服务的零事故 Gate（`tests/integration/test_malformed_dotnet_no_incident_gate.py`）。`dotnet.inspect`/`enumerate`/`il` 是纯 Python 的 ECMA-335 读取器，无外部依赖、任何盒子都跑——而它啃的是攻击者控制的字节。这类解析器的契约是:每个畸形输入都变成一个点名问题所在的结构化裁决，绝不是 `internal_error` 事故（那是本进程自身缺陷的收容所），也绝不挂起;元数据表尽可以声称二十亿行，读取器不许信。本 gate 以 stdlib 在一个已知有效的最小 CLR PE 上只损坏 CLR 层来端到端钉住（PE 本身仍可解析、真正走进托管读取器而非在上游被挡）:COM 描述目录为空诚实是 `not_dotnet` 且 enumerate 如实说;声明了 CLR 目录但元数据缺失、非 `BSJB` 或被截断者 inspect 为目录*线索*（`clr_directory_hint`）、enumerate 为 `clr_unverified`——读取器不假装表在那里;一个在 48 字节表体后声称 0x7fffffff 行的 `#~` 表流被限到流真正能放下的行数（total=3）而非 materialise 二十亿行（即文档记载的那条守卫:一个 60KB 文件曾以此吃掉 1.2GB 堆与二十五秒）;`dotnet.il` 对非 MethodDef 令牌与 rid 0 报 `invalid_argument`、对越界 rid 报 `not_found`。另附一个有效空 CLR 壳作锚，证明 gate 不是靠上游全拒来空洞通过。纯 stdlib 夹具、stdio 回环、无真后端、任意平台。
+
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
 
 die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛：读取线程自持自闭管道、捕获线程只在读取线程已结束时才关句柄，POSIX 下工具独立成会话。de4dot（及复用它的 NETReactorSlayer）正常退出后遗留的 runner 子进程（JVM/dotnet，常被 init 收养）以前 ppid 遍历看不到而泄漏；新增 `collect_process_group` / `terminate_process_group` 按会话组枚举并逐个按各自 `pgrp` 击杀，避免组长 pid 复用误伤无关进程组。

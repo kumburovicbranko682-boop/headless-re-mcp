@@ -390,9 +390,15 @@ powershell -File .\fixtures\native\build.ps1 -Architecture all
 该机器**未**配置 IDA，所以 idalib 相关路径这一轮没有被执行）：
 
 - 单元测试 1532 passed / 4 skipped（IDA UPX 夹具 1；Windows 上 3 个 shebang 探针超时测，Linux CI 会跑）
-- 集成 Gate 78 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
+- 集成 Gate 81 passed / 9 skipped（含 x86 与 x64 双架构、UI 自动化、r2/frida/windbg 可选后端、
   隐藏桌面隔离、连接掉线自愈、crackme 端到端、浏览器 CDP、抓包起停与端口释放、浏览器生命周期、
-  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄）
+  浏览器跨线程驱动、关闭会话同时回收浏览器与抓包端口、长跑页面不按次泄漏句柄、
+  畸形 .NET 输入零事故经真实 MCP 端到端(纯 Python CLR 解析器啃敌意字节、任意平台)：以 stdlib 在
+  一个已知有效的最小 CLR PE 上只损坏 CLR 层来钉住——COM 描述目录为空诚实报 not_dotnet;声明了
+  CLR 目录但元数据缺失/非 BSJB/被截断者 inspect 为 clr_directory_hint、enumerate 为 clr_unverified;
+  一个声称 0x7fffffff 行、实际只有 48 字节表体的 #~ 表被限到流真正能放下的行数(total=3)而非materialise
+  二十亿行(那条文档记载的 60KB 文件吃掉数 GB/数十秒的守卫);dotnet.il 对非 MethodDef 令牌与 rid 0 报
+  invalid_argument、越界 rid 报 not_found——任何输入都不允许答 internal_error，另附一个有效空 CLR 壳作锚）
 - 9 个 skip 均有明确原因：缺 .NET 样本（2）、未安装 Exeinfo PE（3）、未安装 webcrack（1）与
   wabt（1）、以及 2 个有文档说明的故意跳过
 - 264 个工具（全部 265 个 MCP 工具，只排除会真删数据的 `artifacts.gc`）在敌意输入下全部返回
