@@ -1888,6 +1888,101 @@ def test_non_native_returns_empty(tmp_path: Path) -> None:
     assert describe_native(path) == {}
 
 
+_MACHO_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "native" / "minimal.macho"
+_SHT_NOBITS_TEST = 8
+
+
+class TestNativeOverlay:
+    """describe_native reports data appended past the mapped image.
+
+    The PE line has always reported its overlay -- the bytes past the last
+    section, where self-extractors and droppers park payloads. The same
+    question exists for ELF (past every segment, non-NOBITS section and header
+    table) and Mach-O (past every segment, the symbol/string tables and the
+    code signature); a native session now answers it tool-free, with absence
+    meaning "nothing appended".
+    """
+
+    def test_a_fully_covered_elf_reports_no_overlay(self, tmp_path: Path) -> None:
+        base = _elf64_with_dynsym([("frob", 1, 2, 1)])
+        facts = describe_native(_write(tmp_path, "clean.bin", base))["native"]
+        assert "overlay" not in facts
+
+    def test_appended_bytes_read_as_the_elf_overlay(self, tmp_path: Path) -> None:
+        base = _elf64_with_dynsym([("frob", 1, 2, 1)])
+        path = _write(tmp_path, "padded.bin", base + b"DROPPER")
+        facts = describe_native(path)["native"]
+        assert facts["overlay"] == {"offset": len(base), "size": 7}
+
+    def test_a_nobits_section_does_not_extend_the_image(self, tmp_path: Path) -> None:
+        # .bss claims a huge in-memory size at the end of the file; those bytes
+        # exist only at run time, so appended data must still be the overlay --
+        # a reader that counted NOBITS sizes would swallow it.
+        shoff = 64
+        sections = _shdr64_full(0) + _shdr64_full(
+            _SHT_NOBITS_TEST, sh_offset=shoff + 128, sh_size=1 << 30
+        )
+        base = _ehdr64(3, phoff=0, phnum=0, shoff=shoff, shnum=2) + sections
+        path = _write(tmp_path, "bss.bin", base + b"PAYLOAD-X!")
+        facts = describe_native(path)["native"]
+        assert facts["overlay"] == {"offset": len(base), "size": 10}
+
+    def test_a_lying_section_offset_cannot_invent_an_overlay(self, tmp_path: Path) -> None:
+        # A section claiming to reach past EOF clamps to the file size: the
+        # fact degrades to absent rather than reporting a negative or phantom
+        # region.
+        shoff = 64
+        sections = _shdr64_full(0) + _shdr64_full(1, sh_offset=1 << 40, sh_size=64)
+        base = _ehdr64(3, phoff=0, phnum=0, shoff=shoff, shnum=2) + sections
+        facts = describe_native(_write(tmp_path, "liar.bin", base + b"tail"))["native"]
+        assert "overlay" not in facts
+
+    def test_a_header_only_elf_reports_no_overlay(self, tmp_path: Path) -> None:
+        # With no program or section table at all there is nothing to anchor an
+        # image end, so trailing bytes are unknowable, not an overlay claim.
+        path = _write(tmp_path, "bare.bin", _elf64_le() + b"\x00" * 44 + b"trailing")
+        facts = describe_native(path)["native"]
+        assert "overlay" not in facts
+
+    def test_committed_macho_fixture_reports_no_overlay(self) -> None:
+        if not _MACHO_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+        facts = describe_native(_MACHO_FIXTURE)["native"]
+        assert "overlay" not in facts
+
+    def test_appended_bytes_read_as_the_macho_overlay(self, tmp_path: Path) -> None:
+        if not _MACHO_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+        base = _MACHO_FIXTURE.read_bytes()
+        path = _write(tmp_path, "padded.macho", base + b"PAYLOAD")
+        facts = describe_native(path)["native"]
+        assert facts["overlay"] == {"offset": len(base), "size": 7}
+
+    def test_macho_header_anchors_the_overlay_without_segments(self, tmp_path: Path) -> None:
+        # The mach header itself declares its command region, so even with no
+        # segments the image end is known and trailing bytes are the overlay.
+        base = _macho64_full(filetype=2, flags=0, load_cmds=b"", ncmds=0)
+        path = _write(tmp_path, "bare.macho", base + b"XY")
+        facts = describe_native(path)["native"]
+        assert facts["overlay"] == {"offset": len(base), "size": 2}
+
+    def test_a_lying_macho_symtab_cannot_invent_an_overlay(self, tmp_path: Path) -> None:
+        # LC_SYMTAB claiming a billion symbols clamps to the file size; the
+        # trailing bytes it "covers" stop being reportable rather than the
+        # walk misfiring.
+        symtab = (
+            (2).to_bytes(4, "little")  # LC_SYMTAB
+            + (24).to_bytes(4, "little")
+            + (32 + 24).to_bytes(4, "little")  # symoff: right after the command
+            + (1 << 30).to_bytes(4, "little")  # nsyms: a lie
+            + (0).to_bytes(4, "little")
+            + (0).to_bytes(4, "little")
+        )
+        base = _macho64_full(filetype=2, flags=0, load_cmds=symtab, ncmds=1)
+        facts = describe_native(_write(tmp_path, "liar.macho", base + b"tail"))["native"]
+        assert "overlay" not in facts
+
+
 def test_session_opens_over_a_native_binary(tmp_path: Path) -> None:
     path = _write(tmp_path, "a.bin", _elf64_le())
     session = SessionRegistry().create(str(path))

@@ -41,6 +41,11 @@ Two triage themes the other native gates cannot cover from system binaries:
   name; the Mach-O fixture's external nlist entries are what llvm-nm
   --defined-only / --undefined-only --extern-only print (GNU nm cannot read
   Mach-O), and the reader must make the identical split.
+- The overlay (data appended past the mapped image), the PE line's classic
+  dropper-payload fact brought to ELF and Mach-O: the image end is re-derived
+  from readelf's header/section decode (ELF) and llvm-objdump's segment and
+  symtab decode (Mach-O), a pristine binary must report none, and a copy with
+  bytes appended must report exactly those bytes at exactly that offset.
 
 skip != pass when a tool is missing; gcc/readelf ship with the CI runner and
 llvm is installed on the Linux lane.
@@ -736,4 +741,149 @@ def test_macho_init_surface_agrees_with_llvm_objdump() -> None:
         assert native["init_funcs"] == {"mod_init": 1, "mod_term": 1}
     finally:
         if session_id is not None:
+            service.close_session(session_id)
+
+
+# readelf -h: "Start of section headers: 14032 (bytes into file)" and the
+# section-header count/size lines that place the table's end.
+_READELF_SHOFF_RE = re.compile(r"Start of section headers:\s+(\d+)")
+_READELF_SHNUM_RE = re.compile(r"Number of section headers:\s+(\d+)")
+_READELF_SHENTSIZE_RE = re.compile(r"Size of section headers:\s+(\d+)")
+# readelf -S -W rows: "[ 1] .interp PROGBITS 00...0002a8 0002a8 00001c ..." --
+# name, type, address, then the file offset and size columns this parse needs.
+_READELF_SECTION_RE = re.compile(
+    r"^\s*\[\s*\d+\]\s+\S+\s+(\S+)\s+[0-9a-fA-F]+\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)",
+    re.MULTILINE,
+)
+
+
+def _readelf_image_end(readelf: str, binary: Path) -> int:
+    """The ELF image end per readelf: headers, tables and section contents.
+
+    max(section-header-table end, every non-NOBITS section's offset + size) --
+    an independent re-derivation of the same "where does the mapped image
+    stop" answer the reader computes, from binutils' decode of the file.
+    """
+    header = subprocess.run(
+        [readelf, "-h", str(binary)], capture_output=True, text=True, timeout=60
+    )
+    assert header.returncode == 0, header.stderr
+    shoff = _READELF_SHOFF_RE.search(header.stdout)
+    shnum = _READELF_SHNUM_RE.search(header.stdout)
+    shentsize = _READELF_SHENTSIZE_RE.search(header.stdout)
+    assert shoff and shnum and shentsize, header.stdout
+    end = int(shoff.group(1)) + int(shnum.group(1)) * int(shentsize.group(1))
+    sections = subprocess.run(
+        [readelf, "-S", "-W", str(binary)], capture_output=True, text=True, timeout=60
+    )
+    assert sections.returncode == 0, sections.stderr
+    for sh_type, offset_hex, size_hex in _READELF_SECTION_RE.findall(sections.stdout):
+        if sh_type != "NOBITS":
+            end = max(end, int(offset_hex, 16) + int(size_hex, 16))
+    return end
+
+
+@pytest.mark.integration
+def test_elf_overlay_agrees_with_readelf(tmp_path: Path) -> None:
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc is None:
+        pytest.skip("no C compiler installed — overlay gate not run (skip != pass)")
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        pytest.skip("readelf (binutils) not installed — overlay gate not run (skip != pass)")
+
+    probe = _compile_probe(gcc, tmp_path, "probe_overlay")
+    image_end = _readelf_image_end(readelf, probe)
+    pristine_size = probe.stat().st_size
+    # binutils agrees the toolchain's own output maps every byte: the file
+    # ends exactly where the image does, so "no overlay" is the right answer.
+    assert image_end == pristine_size
+
+    payload = b"OVERLAY-PAYLOAD!" * 8
+    padded = tmp_path / "probe_padded"
+    padded.write_bytes(probe.read_bytes() + payload)
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        session_id, clean_facts = _session_native(service, probe)
+        sessions.append(session_id)
+        assert "overlay" not in clean_facts
+        # The reader must place the appended bytes exactly at readelf's image
+        # end -- same offset, same size, on real toolchain output.
+        session_id, padded_facts = _session_native(service, padded)
+        sessions.append(session_id)
+        assert padded_facts["overlay"] == {"offset": image_end, "size": len(payload)}
+    finally:
+        for session_id in sessions:
+            service.close_session(session_id)
+
+
+def _llvm_macho_image_end(objdump: str, binary: Path) -> int:
+    """The Mach-O image end per llvm-objdump: segments, symtab and strings.
+
+    Walks the otool-style --all-headers output, tracking which load command
+    each key/value line belongs to, and takes the furthest byte any segment
+    (fileoff + filesize) or the LC_SYMTAB tables (symoff + nsyms entries,
+    stroff + strsize) reach -- LLVM's independent answer to where the mapped
+    image stops.
+    """
+    result = subprocess.run(
+        [objdump, "--macho", "--all-headers", str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    end = 0
+    fields: dict[str, int] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        key, value = parts
+        if key == "cmd":
+            fields = {}
+            continue
+        if key in ("fileoff", "filesize", "symoff", "nsyms", "stroff", "strsize"):
+            try:
+                fields[key] = int(value)
+            except ValueError:
+                continue
+            if "fileoff" in fields and "filesize" in fields and fields["filesize"] > 0:
+                end = max(end, fields["fileoff"] + fields["filesize"])
+            if "symoff" in fields and "nsyms" in fields:
+                end = max(end, fields["symoff"] + fields["nsyms"] * 16)  # nlist_64
+            if "stroff" in fields and "strsize" in fields:
+                end = max(end, fields["stroff"] + fields["strsize"])
+    return end
+
+
+@pytest.mark.integration
+def test_macho_overlay_agrees_with_llvm_objdump(tmp_path: Path) -> None:
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None:
+        pytest.skip("llvm-objdump not installed — Mach-O overlay gate not run (skip != pass)")
+    if not _MACHO_FIXTURE.is_file():
+        pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+
+    image_end = _llvm_macho_image_end(objdump, _MACHO_FIXTURE)
+    assert image_end == _MACHO_FIXTURE.stat().st_size
+
+    payload = b"MACHO-OVERLAY!" * 4
+    padded = tmp_path / "padded.macho"
+    padded.write_bytes(_MACHO_FIXTURE.read_bytes() + payload)
+
+    service = AnalysisService()
+    sessions: list[str] = []
+    try:
+        session_id, clean_facts = _session_native(service, _MACHO_FIXTURE)
+        sessions.append(session_id)
+        assert "overlay" not in clean_facts
+        session_id, padded_facts = _session_native(service, padded)
+        sessions.append(session_id)
+        # The appended bytes land exactly at LLVM's image end, byte for byte.
+        assert padded_facts["overlay"] == {"offset": image_end, "size": len(payload)}
+    finally:
+        for session_id in sessions:
             service.close_session(session_id)

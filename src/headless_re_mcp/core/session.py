@@ -407,6 +407,7 @@ _PT_INTERP = 3
 _PT_NOTE = 4
 _SHT_SYMTAB = 2
 _SHT_DYNSYM = 11
+_SHT_NOBITS = 8  # occupies no file bytes (.bss): its size must not extend the image
 # The exported dynamic symbols -- the names a shared object (or executable)
 # offers other images, read straight off the .dynsym section and its linked
 # .dynstr. This is the native export surface: the pair to DT_NEEDED (imports),
@@ -2867,6 +2868,11 @@ def _elf_layout_facts(
         facts["exported_symbols"] = exports
     if imports:
         facts["imported_symbols"] = imports
+    # Appended data past everything the headers map -- the PE overlay analogue,
+    # where self-extractors and droppers park payloads. Absent means none.
+    overlay = _elf_overlay(stream, order, bits, phoff, phentsize, phnum, shoff, shentsize, shnum)
+    if overlay is not None:
+        facts["overlay"] = overlay
 
 
 def _elf_program_headers(
@@ -3462,6 +3468,80 @@ def _elf_dynamic_symbols(
     return sorted(exports), sorted(imports)
 
 
+def _elf_overlay(
+    stream: BinaryIO,
+    order: str,
+    bits: int,
+    phoff: int,
+    phentsize: int,
+    phnum: int,
+    shoff: int,
+    shentsize: int,
+    shnum: int,
+) -> dict[str, int] | None:
+    """Appended data past everything the ELF headers map, or None when none.
+
+    The image the loader and linker see ends at the furthest byte any program
+    header (p_offset + p_filesz), any non-NOBITS section (sh_offset + sh_size),
+    or either header table itself reaches. Whatever the file carries beyond
+    that is invisible to both -- the ELF analogue of a PE overlay, the classic
+    place a self-extractor or dropper parks its payload. Fail-closed: the fact
+    is computed only when at least one table entry anchors the layout, ends
+    are clamped to the file size (a lying offset cannot invent an overlay),
+    and any read hiccup yields None.
+    """
+    try:
+        file_size = stream.seek(0, 2)
+    except OSError:
+        return None
+    end = 64 if bits == 64 else 52  # the ELF header is always mapped
+    anchored = False
+    if phoff > 0 and 0 < phnum <= _ELF_MAX_PHNUM:
+        want = 56 if bits == 64 else 32
+        entsize = max(phentsize, want)
+        stream.seek(phoff)
+        table = stream.read(entsize * phnum)
+        for i in range(phnum):
+            entry = table[i * entsize : i * entsize + want]
+            if len(entry) < want:
+                break
+            if bits == 64:
+                p_offset = int.from_bytes(entry[8:16], order)  # type: ignore[arg-type]
+                p_filesz = int.from_bytes(entry[32:40], order)  # type: ignore[arg-type]
+            else:
+                p_offset = int.from_bytes(entry[4:8], order)  # type: ignore[arg-type]
+                p_filesz = int.from_bytes(entry[16:20], order)  # type: ignore[arg-type]
+            anchored = True
+            end = max(end, phoff + entsize * phnum, p_offset + p_filesz)
+    if shoff > 0 and 0 < shnum <= _ELF_MAX_SHNUM:
+        want = 64 if bits == 64 else 40
+        entsize = max(shentsize, want)
+        stream.seek(shoff)
+        table = stream.read(entsize * shnum)
+        for i in range(shnum):
+            entry = table[i * entsize : i * entsize + want]
+            if len(entry) < want:
+                break
+            anchored = True
+            end = max(end, shoff + entsize * shnum)
+            # SHT_NOBITS occupies no file bytes: its sh_size is memory-only.
+            if int.from_bytes(entry[4:8], order) == _SHT_NOBITS:  # type: ignore[arg-type]
+                continue
+            if bits == 64:
+                sh_offset = int.from_bytes(entry[24:32], order)  # type: ignore[arg-type]
+                sh_size = int.from_bytes(entry[32:40], order)  # type: ignore[arg-type]
+            else:
+                sh_offset = int.from_bytes(entry[16:20], order)  # type: ignore[arg-type]
+                sh_size = int.from_bytes(entry[20:24], order)  # type: ignore[arg-type]
+            end = max(end, sh_offset + sh_size)
+    if not anchored:
+        return None
+    end = min(end, file_size)
+    if end < file_size:
+        return {"offset": end, "size": file_size - end}
+    return None
+
+
 def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, Any]:
     bits, order = _MACHO_THIN_MAGICS[magic]
     facts: dict[str, Any] = {"format": "macho", "bits": bits, "endianness": order}
@@ -3527,7 +3607,49 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
             facts["exported_symbols"] = exports
         if imports:
             facts["imported_symbols"] = imports
+        # Appended data past everything the load commands map -- the PE
+        # overlay analogue for Mach-O. Absent means none.
+        overlay = _macho_overlay(stream, cmd_off + sizeofcmds, lc, bits)
+        if overlay is not None:
+            facts["overlay"] = overlay
     return facts
+
+
+def _macho_overlay(
+    stream: BinaryIO, header_end: int, lc: dict[str, Any], bits: int
+) -> dict[str, int] | None:
+    """Appended data past everything the load commands map, or None when none.
+
+    The image dyld and the linker see ends at the furthest byte any segment
+    (fileoff + filesize), the symbol/string tables (LC_SYMTAB), or the embedded
+    code signature (LC_CODE_SIGNATURE) reaches -- __LINKEDIT normally spans to
+    the end of a real file, so anything beyond is appended after the link, the
+    Mach-O analogue of a PE overlay. Fail-closed: ends are clamped to the file
+    size (a lying offset cannot invent an overlay) and a read hiccup yields
+    None.
+    """
+    try:
+        file_size = stream.seek(0, 2)
+    except OSError:
+        return None
+    end = header_end
+    for _vmaddr, fileoff, filesize in lc["segments"]:
+        if filesize > 0:
+            end = max(end, fileoff + filesize)
+    if lc["symtab"] is not None:
+        symoff, nsyms, stroff, strsize = lc["symtab"]
+        if symoff > 0 and nsyms > 0:
+            end = max(end, symoff + nsyms * (16 if bits == 64 else 12))
+        if stroff > 0 and strsize > 0:
+            end = max(end, stroff + strsize)
+    if lc["code_signature"] is not None:
+        dataoff, datasize = lc["code_signature"]
+        if dataoff > 0 and datasize > 0:
+            end = max(end, dataoff + datasize)
+    end = min(end, file_size)
+    if end < file_size:
+        return {"offset": end, "size": file_size - end}
+    return None
 
 
 def _macho_code_signature(stream: BinaryIO, dataoff: int, datasize: int) -> dict[str, Any] | None:
