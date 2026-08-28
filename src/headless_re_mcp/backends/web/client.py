@@ -83,6 +83,9 @@ _MAX_DOM_HTML = 512
 _MAX_HEADERS = 100
 _MAX_HEADER_VALUE_BYTES = 2048
 _MAX_HEADER_MAP_BYTES = 16 * 1024
+# CDP already caps the inline postData it hands out; bound it again so one large
+# upload cannot bloat the per-request buffer that lives in the ring.
+_MAX_POST_BODY_BYTES = 64 * 1024
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -951,6 +954,9 @@ class _WebSession:
         # `requests` rows so web.network.list/failed stay lean. Bounded in
         # lockstep with the request ring.
         self.headers: OrderedDict[str, JsonObject] = OrderedDict()
+        # Per-request POST bodies for web.network.post_data, likewise kept off
+        # the request rows and bounded in lockstep with the ring.
+        self.post_data: OrderedDict[str, JsonObject] = OrderedDict()
         self.lock = threading.RLock()
         # Set right after construction: the runner is what built these objects,
         # and it is the only thread allowed to touch them again.
@@ -1104,6 +1110,8 @@ class WebBackend:
         if not hasattr(handle, "headers"):
             # Real sessions declare this buffer; a bare test handle may not.
             handle.headers = OrderedDict()
+        if not hasattr(handle, "post_data"):
+            handle.post_data = OrderedDict()
         cdp.send("Network.enable")
         cdp.send("Runtime.enable")
         cdp.send("Debugger.enable")
@@ -1129,6 +1137,19 @@ class WebBackend:
             if url_truncated or method_truncated or type_truncated:
                 entry["metadata_truncated"] = True
             req_headers, headers_truncated = _bounded_header_map(req.get("headers"))
+            has_post = bool(req.get("hasPostData"))
+            post_raw = req.get("postData")
+            post_body = ""
+            post_truncated = False
+            if isinstance(post_raw, str) and post_raw:
+                post_body, post_truncated = _bounded_metadata(
+                    post_raw, _MAX_POST_BODY_BYTES
+                )
+            content_type = None
+            for name, val in req_headers.items():
+                if name.lower() == "content-type":
+                    content_type = val
+                    break
             rid = str(params.get("requestId"))
             with handle.lock:
                 handle.requests[rid] = entry
@@ -1142,6 +1163,16 @@ class WebBackend:
                 }
                 while len(handle.headers) > _MAX_REQUESTS:
                     handle.headers.popitem(last=False)
+                if has_post or post_body:
+                    handle.post_data[rid] = {
+                        "has_post_data": has_post,
+                        "data": post_body,
+                        "size": len(post_body),
+                        "truncated": post_truncated,
+                        "content_type": content_type,
+                    }
+                    while len(handle.post_data) > _MAX_REQUESTS:
+                        handle.post_data.popitem(last=False)
 
         def on_response(params: JsonObject) -> None:
             resp = params.get("response") or {}
@@ -1340,6 +1371,25 @@ class WebBackend:
             "response_headers": response_headers,
             "response_header_count": len(response_headers),
             "headers_truncated": bool((slot or {}).get("truncated")),
+        }
+
+    def network_post_data(self, session_id: str, request_id: str) -> JsonObject:
+        handle = self._get(session_id)
+        with handle.lock:
+            entry = handle.requests.get(request_id)
+            slot = getattr(handle, "post_data", {}).get(request_id)
+        if entry is None:
+            raise WebError("not_found", "unknown request id", request_id=request_id)
+        slot = slot or {}
+        return {
+            "request_id": request_id,
+            "url": entry.get("url"),
+            "method": entry.get("method"),
+            "has_post_data": bool(slot.get("has_post_data")),
+            "content_type": slot.get("content_type"),
+            "data": slot.get("data", ""),
+            "size": int(slot.get("size", 0)),
+            "truncated": bool(slot.get("truncated")),
         }
 
     def network_get(self, session_id: str, request_id: str, artifact_dir: Path) -> JsonObject:

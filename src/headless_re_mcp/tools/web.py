@@ -152,6 +152,27 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_network_headers(session_id, request_id))
 
+    @tools.tool(name="web.network.post_data")
+    def web_network_post_data(session_id: str, request_id: str) -> dict[str, Any]:
+        """Read one request's captured POST/PUT body (what the page sent up).
+
+        web.network.get fetches the response body; this is the request side --
+        the data the page uploaded, which is where credentials, telemetry and
+        exfil actually ride. Captured live off CDP as each request was sent, so
+        it sees form posts, JSON API calls and beacons even when nothing crossed
+        the proxy. The body is what CDP exposed inline: large uploads are already
+        capped by CDP and bounded again here.
+
+        Answers with request_id, url, method, has_post_data (CDP saw a body on
+        this request), content_type (from the request's Content-Type header when
+        present), data (the captured body, possibly empty when CDP kept none
+        inline even though has_post_data is true), size (bytes captured) and
+        truncated (the body hit the capture bound). A request the page made with
+        no body comes back has_post_data false with an empty data. An unknown
+        request_id is not_found.
+        """
+        return _dump(analysis.web_network_post_data(session_id, request_id))
+
     @tools.tool(name="web.network.get")
     def web_network_get(session_id: str, request_id: str) -> dict[str, Any]:
         """Fetch one request's response body (large or binary bodies spill).

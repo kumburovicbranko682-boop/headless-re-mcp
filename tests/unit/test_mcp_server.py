@@ -340,6 +340,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         "web.network.stats",
         "web.network.failed",
         "web.network.headers",
+        "web.network.post_data",
         "web.network.get",
         "web.console",
         "web.scripts",

@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **317（199 只读 / 118 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **318（200 只读 / 118 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -713,6 +713,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   边界时为 true)。从未收到响应的请求(仍在途或已失败——见 `web.network.failed`)其 `response_headers` 为空。未知
   `request_id` 报 `not_found`。头存在与请求行分开的独立环里,故 `web.network.list`/`failed` 输出保持精简;二者按
   请求环同步淘汰。
+- 新增 `web.network.post_data`:读回单个请求被捕获的 POST/PUT 请求体——页面上传的数据。`web.network.get` 取的是
+  响应体,这个是请求侧:凭据、遥测与外传数据真正搭乘之处。随每个请求发出时从 CDP 实时捕获,故即便什么都没经过代理也
+  能看到表单提交、JSON API 调用与信标。请求体是 CDP 内联暴露的那份:大上传已由 CDP 截断,这里再加一道边界。回
+  `request_id`、`url`、`method`、`has_post_data`(CDP 在此请求上看到过 body)、`content_type`(有请求 Content-Type
+  头时取之)、`data`(捕获到的 body,has_post_data 为 true 但 CDP 未留内联时可能为空)、`size`(捕获字节数)与
+  `truncated`(body 触捕获边界)。页面发起的无 body 请求回 has_post_data false 与空 data。未知 `request_id` 报
+  `not_found`。请求体存在与请求行分开的独立环里,按请求环同步淘汰。
 - 新增 `web.network.failed`:列出浏览器报告为失败/被拦的请求——`web.network.list` 埋着、`web.network.stats`
   只计数的那一刀分诊:从未完成的请求。CDP 对某请求发 `Network.loadingFailed` 时它落到这里——DNS/TLS 错误、
   连接重置、CORS 或混合内容拦截、被扩展杀掉的广告/追踪器,或用户中止的导航。直接读失败项,是不翻完整段日志就
