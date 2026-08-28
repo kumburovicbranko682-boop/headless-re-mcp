@@ -321,6 +321,75 @@ def test_proxy_stats_summarises_a_live_capture(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_proxy_search_finds_content_in_a_live_capture(tmp_path: Path) -> None:
+    """proxy.search must find a literal inside flows mitmproxy actually recorded.
+
+    The unit tests pin the search over a hand-built recorder; this proves it
+    holds over a real capture, reading the bodies and headers the ring retained.
+    Route two GETs and one POST (body x=1) through the running proxy, then:
+    searching the origin marker (present in every response body) matches every
+    flow and names response_body; searching the POST's body finds only that flow
+    and names request_body; the proxy.flows filter surface narrows the search to
+    the POST; and an absent token is a clean empty result. skip != pass without
+    mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy search Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("srch", host="127.0.0.1", port=proxy_port)
+    try:
+        with _origin_site() as origin:
+            handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+            opener = urllib.request.build_opener(handler)
+            for path in ("/alpha", "/beta"):
+                with opener.open(f"{origin}{path}", timeout=15.0) as response:
+                    response.read()
+            with opener.open(
+                urllib.request.Request(f"{origin}/submit", data=b"x=1", method="POST"),
+                timeout=15.0,
+            ) as response:
+                response.read()
+
+            _poll(
+                lambda: backend.flows("srch", limit=100),
+                lambda r: r["captured"] >= 3
+                and any(str(f.get("method")) == "POST" for f in r["flows"]),
+            )
+
+            # The origin echoes the marker in every response body, so a content
+            # search must match every flow and locate it in the response body.
+            marker = backend.search("srch", _ORIGIN_MARKER)
+            assert marker["total"] == marker["captured"] >= 3, marker
+            assert marker["body_unavailable"] == 0, marker
+            assert marker["searched"] == marker["captured"], marker
+            for match in marker["matches"]:
+                assert "response_body" in match["matched_in"], match
+                assert _ORIGIN_MARKER in match["snippet"], match
+
+            # The POST's request body (x=1) appears nowhere else, so searching it
+            # finds exactly that flow and names request_body -- the capability
+            # metadata filters cannot provide.
+            body_hit = backend.search("srch", "x=1")
+            assert body_hit["total"] == 1, body_hit
+            assert body_hit["matches"][0]["matched_in"] == ["request_body"], body_hit
+            assert str(body_hit["matches"][0]["url"]).endswith("/submit"), body_hit
+
+            # The same filter surface as proxy.flows narrows the search set.
+            posts = backend.search("srch", _ORIGIN_MARKER, method="post")
+            assert posts["total"] == 1, posts
+            assert posts["captured"] >= 3, posts
+            assert posts["filter"] == {"method": "POST"}, posts
+
+            # An absent token is a clean empty result, not the whole capture.
+            miss = backend.search("srch", "absent-token-zzz-9449")
+            assert miss["total"] == 0 and miss["matches"] == [], miss
+            assert miss["captured"] >= 3, miss
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
 def test_proxy_export_har_writes_only_the_filtered_subset(tmp_path: Path) -> None:
     """HAR export must be able to write just the flows a filter selects.
 
