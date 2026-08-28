@@ -44,6 +44,22 @@ describe("parseMarkdown", () => {
       { type: "code", lang: "js", text: "const x = 1;" },
     ]);
   });
+
+  it("keeps a fence whose language tag is not word-only", () => {
+    // A reverse-engineering reply routinely fences C/C++/C# code; \w* dropped
+    // the tag at "+"/"#"/"-" and shattered the whole block.
+    for (const lang of ["c++", "c#", "f#", "objective-c"]) {
+      expect(parseMarkdown(`\`\`\`${lang}\nint main() {}\n\`\`\``)).toEqual([
+        { type: "code", lang, text: "int main() {}" },
+      ]);
+    }
+  });
+
+  it("still parses a bare closing fence with no language", () => {
+    expect(parseMarkdown("```\nplain\n```")).toEqual([
+      { type: "code", lang: "", text: "plain" },
+    ]);
+  });
 });
 
 describe("prettyJson", () => {

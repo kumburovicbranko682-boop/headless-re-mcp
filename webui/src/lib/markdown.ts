@@ -6,7 +6,13 @@ export type MarkdownBlock =
   | { type: "quote"; text: string }
   | { type: "hr" };
 
-const FENCE = /^```(\w*)\s*$/;
+// The info string after a backtick fence is any run of non-whitespace, and a
+// language tag is regularly not word-only: c++, c#, f#, objective-c. Capturing
+// \w* dropped at the first non-word character, so ```c++ failed to match as a
+// fence at all -- the opener and its code fell through to a paragraph and the
+// closing ``` opened a stray empty code block. Backticks stay excluded because
+// a backtick fence's info string may not contain one.
+const FENCE = /^```([^\s`]*)\s*$/;
 const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
 const HR = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const QUOTE = /^>\s?(.*)$/;

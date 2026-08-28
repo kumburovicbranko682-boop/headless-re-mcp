@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Markdown 代码围栏的语言标签只认 \w，`c++`/`c#` 等围栏整块崩坏）
+
+- `webui/src/lib/markdown.ts` 的围栏正则 `^```(\w*)\s*$` 用 `\w*` 抓语言标签，
+  只匹配单词字符。可逆向分析的助手回复里，语言标签常带非单词字符——`c++`、`c#`、
+  `f#`、`objective-c`。`\w*` 在第一个 `+`/`#`/`-` 处断掉，`^```c++` 整行匹配失败，
+  于是围栏开头连同其后的代码一起掉进段落解析，而收尾的 `` ``` `` 反被当成新围栏、
+  开出一个到文末的空代码块——一段普通的 C++ 代码块在界面上彻底错乱。把捕获组改成
+  `([^\s`]*)`（除空白与反引号外的任意串，反引号排除是因为反引号围栏的 info string
+  不得含反引号），`c++`/`c#`/`objective-c` 等标签正确识别为代码块，裸围栏与收尾围栏
+  行为不变。`webui/src/lib/markdown.test.ts` 增补带非单词语言标签的围栏与裸收尾围栏两例。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
