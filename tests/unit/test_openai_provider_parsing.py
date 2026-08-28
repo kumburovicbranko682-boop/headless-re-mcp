@@ -108,6 +108,24 @@ def test_hidden_texts_ignores_extra_that_is_not_a_mapping() -> None:
     assert oc._hidden_texts({"extra": "nope", "extra_content": 5}) == []
 
 
+def test_hidden_texts_ignores_a_reasoning_object_with_no_readable_text() -> None:
+    # A reasoning dict that carries none of text/content/summary yields "" from
+    # _plain_text; the dict block must add nothing rather than an empty string.
+    assert oc._hidden_texts({"reasoning": {"meta": "no visible text here"}}) == []
+
+
+def test_hidden_texts_ignores_a_google_field_that_is_not_a_mapping() -> None:
+    # extra_content is a mapping (so the outer guard passes) but its google
+    # entry is a bare string: the google block must not try to read a thought.
+    assert oc._hidden_texts({"extra_content": {"google": "not-a-mapping"}}) == []
+
+
+def test_hidden_texts_ignores_a_google_object_with_no_thought() -> None:
+    # google is a mapping but neither thought nor thoughts carries text, so the
+    # branch that would append a piece is skipped.
+    assert oc._hidden_texts({"extra_content": {"google": {"other": "x"}}}) == []
+
+
 # ---------------------------------------------------------------------------
 # _tool_argument_fragment
 
