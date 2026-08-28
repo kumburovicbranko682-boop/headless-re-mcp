@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **299（182 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **300（183 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -646,6 +646,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `requested`、`declared`、`counts`(对全部申请权限的按类计数,不止返回行)、`package`、`target_sdk`、
   `requested_count`、`declared_count` 与 `has_more`,列表上限 256、满不当作全集;maxSdkVersion 增补所需的
   清单 XML 解析失败时 `truncated` 为真。
+- **`apk.security_flags`**：一次调用把清单审计最先看的 `<application>` 安全属性解析出来,不用手读 AXML——
+  `debuggable`(上架仍可调试的包等于允许任何人挂调试器读进程内存)、`allow_backup`(为真即默认值时 adb backup
+  可从设备拉走应用私有数据)、`uses_cleartext_traffic`(是否放行明文 HTTP/WebSocket)、`network_security_config`
+  (指向自定义信任/固定/明文策略的引用,值得单独拉出来看)、备份规则文件与 `sharedUserId`(共享 Linux UID、
+  拉宽应用间信任边界)。清单级解析、**不需要 DEX 分析**。布尔属性缺省时回落到 Android 文档默认值;
+  `uses_cleartext_traffic` 另按 API-28 默认翻转(targetSdk<28 为真、>=28 为假),并带上
+  `uses_cleartext_traffic_declared`(原始值或 null)让解析可审计——且存在 networkSecurityConfig 时(API 24+)
+  由它而非该属性决定明文放行,需拉配置为准。输出 `package`、`min_sdk`、`target_sdk`、`debuggable`、
+  `allow_backup`、`test_only`、`has_code`、`large_heap`、`uses_cleartext_traffic`、
+  `uses_cleartext_traffic_declared`、`network_security_config`、`backup_agent`、`full_backup_content`、
+  `data_extraction_rules`、`shared_user_id` 与 `install_location`;清单 XML 解析失败时 `truncated` 为真。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
 - **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、

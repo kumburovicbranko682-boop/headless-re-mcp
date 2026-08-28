@@ -72,6 +72,9 @@ _PATH_ATTRS = (("path", "literal"), ("pathPrefix", "prefix"), ("pathPattern", "p
 # The <uses-permission*> tag variants a manifest requests permissions through;
 # permission_details reads maxSdkVersion off whichever one carries the name.
 _USES_PERMISSION_TAGS = ("uses-permission", "uses-permission-sdk-23", "uses-permission-sdk-m")
+# android:usesCleartextTraffic defaulted to true until Android 9 (API 28) flipped
+# it to false, so security_flags resolves an unset attribute against this line.
+_CLEARTEXT_DEFAULT_FALSE_SDK = 28
 # The low nibble of an android:protectionLevel flags int is the base level; the
 # upper bits are modifiers (privileged, appop, ...). Declared permissions store
 # the raw AXML int, so this maps the base to the same word get_details_permissions
@@ -760,6 +763,84 @@ class ApkClient:
             "truncated": truncated,
         }
 
+    def security_flags(self, path: Path) -> JsonObject:
+        """Read the security-relevant <application> flags in one call (triage).
+
+        Manifest-level (uses the cheap _apk parse, no DEX analysis): it resolves
+        the <application> and <manifest> attributes a review checks first --
+        debuggable (a shipped debuggable build lets anyone attach a debugger and
+        read process memory), allow_backup (adb backup can pull private data off
+        the device when true, the default), uses_cleartext_traffic (plaintext
+        HTTP/WebSocket allowed), the network_security_config reference (a custom
+        trust/pinning/cleartext policy worth pulling), the backup rule files and
+        sharedUserId (a shared Linux UID widening the trust boundary). Booleans
+        fall back to Android's documented default when unset; uses_cleartext_
+        traffic additionally follows the API-28 default flip (true below 28, false
+        at or above), and its raw declared value is carried so the resolution is
+        auditable. When a networkSecurityConfig is present it, not this attribute,
+        governs cleartext on API 24+, so treat the flag as the manifest default
+        and pull the referenced config to be sure. Answers with package, min_sdk,
+        target_sdk, debuggable, allow_backup, test_only, has_code, large_heap,
+        uses_cleartext_traffic, uses_cleartext_traffic_declared,
+        network_security_config, backup_agent, full_backup_content,
+        data_extraction_rules, shared_user_id and install_location; truncated is
+        true when the manifest XML could not be parsed.
+        """
+        apk = self._apk(path)
+        package = apk.get_package() or ""
+        min_sdk = _int_or_none(apk.get_min_sdk_version())
+        target_sdk = _int_or_none(apk.get_target_sdk_version())
+        try:
+            xml_bytes = apk.get_android_manifest_axml().get_xml()
+        except Exception as exc:  # noqa: BLE001 - androguard raises many types
+            raise ApkError("backend_error", f"failed to decode manifest: {exc}") from exc
+
+        truncated = False
+        try:
+            root: Any = ET.fromstring(xml_bytes)
+        except ET.ParseError:
+            root = None
+            truncated = True
+
+        if root is not None:
+            shared_user_id = _str_or_none(_android_attr(root, "sharedUserId"))
+            install_location = _str_or_none(_android_attr(root, "installLocation"))
+            application = root.find("application")
+        else:
+            shared_user_id = None
+            install_location = None
+            application = None
+        cleartext_declared = (
+            _android_attr(application, "usesCleartextTraffic") if application is not None else None
+        )
+        if cleartext_declared is not None:
+            uses_cleartext = _manifest_bool(cleartext_declared, True)
+        else:
+            uses_cleartext = target_sdk is None or target_sdk < _CLEARTEXT_DEFAULT_FALSE_SDK
+
+        def app_attr(name: str) -> str | None:
+            return _android_attr(application, name) if application is not None else None
+
+        return {
+            "package": package,
+            "min_sdk": min_sdk,
+            "target_sdk": target_sdk,
+            "debuggable": _manifest_bool(app_attr("debuggable"), False),
+            "allow_backup": _manifest_bool(app_attr("allowBackup"), True),
+            "test_only": _manifest_bool(app_attr("testOnly"), False),
+            "has_code": _manifest_bool(app_attr("hasCode"), True),
+            "large_heap": _manifest_bool(app_attr("largeHeap"), False),
+            "uses_cleartext_traffic": uses_cleartext,
+            "uses_cleartext_traffic_declared": _str_or_none(cleartext_declared),
+            "network_security_config": _str_or_none(app_attr("networkSecurityConfig")),
+            "backup_agent": _str_or_none(app_attr("backupAgent")),
+            "full_backup_content": _str_or_none(app_attr("fullBackupContent")),
+            "data_extraction_rules": _str_or_none(app_attr("dataExtractionRules")),
+            "shared_user_id": shared_user_id,
+            "install_location": install_location,
+            "truncated": truncated,
+        }
+
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
@@ -1036,6 +1117,37 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _manifest_bool(value: Any, default: bool) -> bool:
+    """Read a manifest boolean attribute, falling back to Android's default.
+
+    androguard's decoded AXML renders boolean attributes as "true"/"false", but a
+    hand-decompiled or odd manifest can leave the raw int (-1/0xffffffff for true,
+    0 for false); parse both and fall back to the attribute's documented default
+    when it is absent or unreadable.
+    """
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text == "true":
+        return True
+    if text in ("false", ""):
+        return False
+    try:
+        return int(text, 0) != 0
+    except ValueError:
+        return default
+
+
+def _str_or_none(value: Any) -> str | None:
+    """Normalise a manifest attribute to a non-empty string, else None."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "none":
+        return None
+    return text
 
 
 def _protection_level_label(raw: Any) -> str | None:

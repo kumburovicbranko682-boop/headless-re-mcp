@@ -217,6 +217,34 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_permission_details(session_id))
 
+    @tools.tool(name="apk.security_flags")
+    def apk_security_flags(session_id: str) -> dict[str, Any]:
+        """Read the security-relevant manifest flags in one call (triage roll-up).
+
+        The checklist a manifest review runs first, resolved so you do not read
+        raw AXML by hand: debuggable (a shipped debuggable build lets anyone
+        attach and read process memory -- a release-blocker if true), allow_backup
+        (adb backup can pull private app data off a device when true, which is the
+        default), uses_cleartext_traffic (plaintext HTTP/WebSocket permitted),
+        network_security_config (a reference to a custom trust/pinning/cleartext
+        policy worth pulling separately), the backup rule files, and sharedUserId
+        (a shared Linux UID that widens the trust boundary between apps).
+        Manifest-level, so it needs no DEX analysis. Booleans fall back to
+        Android's documented default when unset; uses_cleartext_traffic also
+        follows the API-28 default flip (true below a target SDK of 28, false at
+        or above) and carries uses_cleartext_traffic_declared (the raw value or
+        null) so the resolution is auditable -- and when a networkSecurityConfig
+        is set it, not this flag, governs cleartext on API 24+, so pull that
+        config to be certain. Answers with package, min_sdk, target_sdk,
+        debuggable, allow_backup, test_only, has_code, large_heap,
+        uses_cleartext_traffic, uses_cleartext_traffic_declared,
+        network_security_config, backup_agent, full_backup_content,
+        data_extraction_rules, shared_user_id and install_location; truncated is
+        true when the manifest XML could not be parsed. There is no flags or
+        findings field -- it reports the resolved attributes, not a verdict.
+        """
+        return _dump(analysis.apk_security_flags(session_id))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
