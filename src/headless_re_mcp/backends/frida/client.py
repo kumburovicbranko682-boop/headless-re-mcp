@@ -228,6 +228,27 @@ def _timeout_error(timeout: float) -> FridaError:
     return FridaError("timeout", f"frida did not respond within {timeout:g}s")
 
 
+def _clamp_limit(limit: object, maximum: int) -> int:
+    """Clamp a caller page limit, refusing a value that cannot be an int.
+
+    modules/exports/applications took ``max(1, min(int(limit), max))``: a
+    negative or huge limit clamps cleanly, but the tool schemas type limit as an
+    integer while the agent and OpenAI-bridge transports call the handler with no
+    pydantic coercion, so a float (inf from a JSON 1e400), nan, null, or
+    non-numeric string reached ``int(limit)`` and raised
+    OverflowError/ValueError/TypeError -- none a FridaError, so the service filed
+    an internal_error incident for what is only a bad page size. A bool is an int
+    subclass but never a valid limit.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, (int, float, str)):
+        raise FridaError("invalid_params", "limit must be an integer")
+    try:
+        parsed = int(limit)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise FridaError("invalid_params", "limit must be an integer") from exc
+    return max(1, min(parsed, maximum))
+
+
 def _detach_all(sessions: list[Any]) -> None:
     while sessions:
         session = sessions.pop()
@@ -329,11 +350,11 @@ class FridaClient:
 
     def modules(self, pid: int, *, allowed_pid: int, limit: int = 64) -> JsonObject:
         self._require(pid, allowed_pid)
+        capped = _clamp_limit(limit, 256)
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
             script.load()
-            capped = max(1, min(int(limit), 256))
             raw = script.exports_sync.modules(capped)
             if isinstance(raw, dict):
                 held = list(raw.get("modules") or [])
@@ -372,7 +393,7 @@ class FridaClient:
         self._require(pid, allowed_pid)
         if not isinstance(module_name, str) or not module_name.strip():
             raise FridaError("invalid_params", "module_name is required")
-        capped = max(1, min(int(limit), 512))
+        capped = _clamp_limit(limit, 512)
         session = self._attach_local(pid)
         try:
             script = session.create_script(_ENUM_SCRIPT)
@@ -579,12 +600,12 @@ class FridaClient:
         return {"id": str(device.id), "name": str(device.name), "type": str(device.type)}
 
     def applications(self, device_id: str | None, *, limit: int = 256) -> JsonObject:
+        capped = _clamp_limit(limit, 1000)
         device = self._resolve_device(device_id)
         try:
             apps = _run_deadline(device.enumerate_applications, timeout=30.0)
         except Exception as exc:  # noqa: BLE001
             raise FridaError("backend_error", f"failed to enumerate applications: {exc}") from exc
-        capped = max(1, min(int(limit), 1000))
         items = [
             {
                 "identifier": str(app.identifier),
