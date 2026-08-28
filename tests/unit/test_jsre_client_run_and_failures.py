@@ -161,7 +161,13 @@ def test_info_raises_on_a_failed_exit_with_no_output(
 # --- capability degradation and availability --------------------------------
 
 
-def test_jsclient_without_webcrack_is_unavailable_and_degrades(tmp_path: Path) -> None:
+def test_jsclient_without_webcrack_is_unavailable_and_degrades(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Hermetic regardless of whether webcrack happens to be on this host's PATH:
+    # force discovery to find nothing, exactly as it does on a box without Node,
+    # so the degradation contract is proven unconditionally rather than skipped.
+    monkeypatch.setattr(jsre, "_discover_webcrack", lambda: None)
     client = JsClient(executable=None)
     assert client.available is False
     with pytest.raises(JsReError) as caught:
