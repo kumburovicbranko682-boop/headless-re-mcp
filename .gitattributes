@@ -1,0 +1,3 @@
+# Changelog entries are always additions; union merge keeps both sides
+# instead of forcing a manual pick every time two branches prepend entries.
+CHANGELOG.md merge=union
