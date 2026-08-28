@@ -21,16 +21,30 @@ def _entry(
     env: str,
     note_zh: str,
     note_en: str,
+    kind: str = "file",
 ) -> JsonObject:
-    present = bool(path and Path(path).is_file()) if path is not None else False
-    # Directory roots (IDA / Ghidra) — present if path is a directory.
-    if path is not None and not present:
-        present = Path(path).exists()
+    # ``present`` must mean "this dependency is usable", not merely "something
+    # exists at the configured path". The two dependency shapes verify
+    # differently: an executable (x64dbg headless, diec, upx, cdb, ...) is only
+    # usable when the path is a *file* you can run, while a directory root (IDA,
+    # Ghidra) is usable when the path is a *directory* holding the install. An
+    # earlier version checked ``is_file()`` and then fell back to ``exists()``
+    # for every entry, so a file dependency mistakenly pointed at a directory
+    # (e.g. ``HEADLESS_RE_UPX`` set to a folder) reported ``present`` and, for
+    # the required-for-core x64dbg trees, quietly shrank ``missing_core`` — the
+    # onboarding view then claimed a runnable binary that was not there.
+    if path is None:
+        present = False
+    elif kind == "dir":
+        present = Path(path).is_dir()
+    else:
+        present = Path(path).is_file()
     return {
         "id": id,
         "title": title,
         "title_zh": title_zh,
         "path": str(path) if path is not None else None,
+        "kind": kind,
         "present": present,
         "packable": packable,
         "never_bundle": not packable and id.startswith("ida"),
@@ -73,6 +87,7 @@ def build_deps_snapshot(settings: Settings) -> JsonObject:
             title="IDA Pro / idalib",
             title_zh="IDA Pro / idalib",
             path=settings.ida_home,
+            kind="dir",
             packable=False,
             required_for_core=True,
             env="HEADLESS_RE_IDA_HOME",
@@ -150,6 +165,7 @@ def build_deps_snapshot(settings: Settings) -> JsonObject:
             title="Ghidra",
             title_zh="Ghidra",
             path=settings.ghidra_home,
+            kind="dir",
             packable=False,
             required_for_core=False,
             env="HEADLESS_RE_GHIDRA_HOME",

@@ -75,6 +75,41 @@ def test_presence_tracks_files_and_directories_and_none(tmp_path: Path) -> None:
     assert "ida_home" not in missing_core_ids
 
 
+def test_a_file_dependency_pointed_at_a_directory_is_not_present(tmp_path: Path) -> None:
+    """A runnable binary that is really a directory must not read as present.
+
+    x64dbg headless is required-for-core and its setting names ``headless.exe``,
+    a file. If an operator mis-sets ``HEADLESS_RE_X64DBG_HEADLESS_X64`` to the
+    containing folder, the snapshot used to fall back from ``is_file()`` to
+    ``exists()`` and report the tool present, quietly dropping it out of
+    ``missing_core`` even though nothing there can be launched. It now stays
+    absent and in missing_core so onboarding tells the truth.
+    """
+    folder = tmp_path / "x64dbg-x64"
+    folder.mkdir()
+
+    snapshot = build_deps_snapshot(_settings(tmp_path, x64dbg_headless_x64=folder))
+    by_id = {item["id"]: item for item in snapshot["items"]}
+
+    assert by_id["x64dbg_headless_x64"]["kind"] == "file"
+    assert by_id["x64dbg_headless_x64"]["present"] is False
+    assert by_id["x64dbg_headless_x64"]["path"] == str(folder)
+    assert "x64dbg_headless_x64" in {item["id"] for item in snapshot["missing_core"]}
+
+
+def test_a_directory_root_pointed_at_a_file_is_not_present(tmp_path: Path) -> None:
+    """The mirror case: an IDA home that is a file is not a usable install."""
+    stray = tmp_path / "ida-not-a-dir"
+    stray.write_text("stub", encoding="utf-8")
+
+    snapshot = build_deps_snapshot(_settings(tmp_path, ida_home=stray))
+    by_id = {item["id"]: item for item in snapshot["items"]}
+
+    assert by_id["ida_home"]["kind"] == "dir"
+    assert by_id["ida_home"]["present"] is False
+    assert "ida_home" in {item["id"] for item in snapshot["missing_core"]}
+
+
 def test_counts_are_internally_consistent(tmp_path: Path) -> None:
     snapshot = build_deps_snapshot(_settings(tmp_path))
     items = snapshot["items"]
