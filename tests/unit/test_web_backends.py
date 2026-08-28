@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from headless_re_mcp.backends.jsre import JsClient, JsReError, WasmClient
+from headless_re_mcp.backends.jsre import client as jsre_client
 from headless_re_mcp.backends.proxy import ProxyBackend, ProxyError
 from headless_re_mcp.backends.web import WebBackend, WebError
 from headless_re_mcp.backends.web.client import (
@@ -210,22 +211,29 @@ class TestCapturesAreReachableAndReclaimable:
 
 
 class TestJsReDegradation:
-    def test_missing_webcrack_degrades(self, tmp_path: Path) -> None:
+    def test_missing_webcrack_degrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         source = tmp_path / "a.js"
         source.write_text("var a=1;", encoding="utf-8")
+        # Force discovery to find nothing so the degradation path runs whether or
+        # not webcrack is on PATH here -- previously this skipped when installed,
+        # leaving capability_unavailable unverified on a configured machine.
+        monkeypatch.setattr(jsre_client, "_discover_webcrack", lambda: None)
         client = JsClient(None)
-        if client.available:
-            pytest.skip("webcrack installed — degradation path not exercised (skip != pass)")
+        assert client.available is False
         with pytest.raises(JsReError) as info:
             client.deobfuscate(source)
         assert info.value.code == "capability_unavailable"
 
-    def test_missing_wabt_degrades(self, tmp_path: Path) -> None:
+    def test_missing_wabt_degrades(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         module = tmp_path / "m.wasm"
         module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        # Same for wabt: make every tool resolution miss so the unavailable arm
+        # is exercised regardless of whether wabt is installed in this env.
+        monkeypatch.setattr(jsre_client, "_resolve_wabt_tool", lambda wabt, tool: None)
         client = WasmClient(None)
-        if client.available:
-            pytest.skip("wabt installed — degradation path not exercised (skip != pass)")
+        assert client.available is False
         with pytest.raises(JsReError) as info:
             client.wat(module)
         assert info.value.code == "capability_unavailable"
