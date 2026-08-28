@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -152,6 +153,36 @@ def test_an_oversized_external_timeline_is_rejected_after_a_bounded_read(
 
     assert listed["events"] == []
     assert listed["read_failed"] == "timeline exceeds 64 bytes"
+
+
+def test_a_read_that_fails_after_the_existence_check_degrades_to_read_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file that exists but will not open reports read_failed, never raises.
+
+    The per-process lock cannot stop a second process sharing the artifact root
+    (or, on Windows, a trim replacing the file) from making the open fail between
+    is_file() and read. A caller asking for a diagnostic log must get that
+    reported as read_failed, not an internal error, so the open is forced to
+    raise here after the existence check has already passed.
+    """
+    path = tmp_path / "timeline.jsonl"
+    _append(path, 0)  # a real, existing, openable file
+    real_open = Path.open
+
+    def refusing_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self == path:
+            raise PermissionError("timeline is being trimmed")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", refusing_open)
+
+    listed = store.list_session_timeline(path)
+
+    assert listed["events"] == []
+    assert listed["count"] == 0
+    assert listed["read_failed"] == "PermissionError: timeline is being trimmed"
+    assert listed["path"] == str(path)
 
 
 def test_trimming_an_oversized_external_timeline_reads_only_its_tail(
