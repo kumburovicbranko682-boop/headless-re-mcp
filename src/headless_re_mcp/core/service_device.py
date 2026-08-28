@@ -171,6 +171,9 @@ class DeviceAnalysisMixin:
             "packages", serial=serial, third_party_only=third_party_only, limit=limit
         )
 
+    def device_net_snmp(self, serial: str) -> Result[JsonObject]:
+        return self._adb_wrap("net_snmp", serial=serial)
+
     def device_install(
         self, serial: str, apk_path: str, reinstall: bool = True
     ) -> Result[JsonObject]:

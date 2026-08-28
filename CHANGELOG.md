@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -151,6 +151,19 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   报 `capability_unavailable`；dump 与活体探针超时都把被杀的 pid 随 `timeout` 回报（避免
   调试器悬在活体目标上）。cdb 发现覆盖环境变量优先、`which` 的非 Store 路径、Windows Kits
   glob 布局、以及跳过不可启动的命中与全无安装时返回 None。模块覆盖率 80% → 99%。
+
+### 新增（`device.net_snmp` 从 `/proc/net/snmp` 报 IPv4 协议计数）
+
+- 新增只读工具 `device.net_snmp`，解析 `/proc/net/snmp`，给出套接字表（connections/udp）不
+  携带的内核 MIB 式协议计数——`Ip`/`Icmp`/`Tcp`/`Udp`。分诊价值具体:`Tcp.RetransSegs` /
+  `Tcp.OutRsts` / `Tcp.CurrEstab` 与 `Udp.NoPorts` / `Udp.InErrors` 能在应用被动态分析时反映
+  连接抖动、重置与无人应答的端口累积。该文件以「表头行（`Tcp: RtoAlgorithm ...`）+ 数值行
+  （`Tcp: 1 200 ...`）」成对出现:列全为整数的是数值行，否则为名字行，按协议逐一 zip;计数可为
+  负（`Tcp.MaxConn` 为 `-1`），一律按有符号整数保留。诚实边界:没有对应表头的数值行、以及重复的
+  协议块都跳过而不臆测;解析到零个协议即读取失败（文件缺失、权限拒绝、设备离线），报
+  `backend_error` 而非空结果。协议集合有界并在超过上限时置 `has_more`。新增
+  `tests/unit/test_device_net_snmp_fields.py` 覆盖表头/数值配对、负值、无表头数值行跳过、重复块
+  跳过、零协议报错等分支。工具面 265 → 266（只读 148 → 149）。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 

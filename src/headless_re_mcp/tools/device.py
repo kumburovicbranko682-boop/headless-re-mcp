@@ -89,6 +89,22 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.net_snmp")
+    def device_net_snmp(serial: str) -> dict[str, Any]:
+        """Report IPv4 network protocol counters from /proc/net/snmp.
+
+        The kernel's MIB-style totals (Ip/Icmp/Tcp/Udp) the socket tables do
+        not carry. Answers with protocols (a per-protocol map of counter name
+        to signed integer, e.g. Tcp.RetransSegs, Tcp.OutRsts, Tcp.CurrEstab,
+        Udp.NoPorts, Udp.InErrors), count, and has_more. Counters may be
+        negative (Tcp.MaxConn is -1).
+
+        Honesty: a value line with no preceding header and duplicate protocol
+        blocks are skipped, not guessed. Parsing zero protocols is a failure
+        (missing file, permission denied, offline device), not an empty result.
+        """
+        return _dump(analysis.device_net_snmp(serial))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True

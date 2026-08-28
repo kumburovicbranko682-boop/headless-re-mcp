@@ -40,6 +40,8 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_SNMP_PROTOCOLS = 32
+_MAX_SNMP_FIELDS = 128
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -525,6 +527,62 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def net_snmp(self, serial: str) -> JsonObject:
+        """Report IPv4 network protocol counters from ``/proc/net/snmp``.
+
+        The kernel's MIB-style totals -- ``Ip``, ``Icmp``, ``Tcp``, ``Udp`` --
+        the socket tables (connections/udp) do not carry. The triage value is
+        concrete: ``Tcp.RetransSegs`` / ``Tcp.OutRsts`` / ``Tcp.CurrEstab`` and
+        ``Udp.NoPorts`` / ``Udp.InErrors`` show connection churn, resets, and
+        unanswered ports building up while an app is under dynamic analysis.
+
+        The file pairs a header line (``Tcp: RtoAlgorithm RtoMin ...``) with a
+        value line (``Tcp: 1 200 ...``); a line whose columns are all integers
+        is the values, otherwise it is the names, and the two are zipped per
+        protocol. Counters may be negative (``Tcp.MaxConn`` is ``-1``) and are
+        kept as signed integers.
+
+        Honesty: a value line with no preceding header, and duplicate protocol
+        blocks, are skipped rather than guessed. Parsing zero protocols means
+        the read failed (missing file, permission denied, offline device) and
+        is a ``backend_error``, not an empty result. The protocol set is capped
+        and flags ``has_more`` when truncated.
+        """
+        dev = self._device(serial)
+        text = str(_device_shell(dev, "cat /proc/net/snmp"))
+        headers: dict[str, list[str]] = {}
+        protocols: dict[str, JsonObject] = {}
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 2 or not fields[0].endswith(":"):
+                continue
+            label = fields[0][:-1]
+            if not label:
+                continue
+            columns = fields[1:]
+            values: list[int] = []
+            is_value_line = True
+            for token in columns:
+                try:
+                    values.append(int(token))
+                except ValueError:
+                    is_value_line = False
+                    break
+            if not is_value_line:
+                headers[label] = columns[:_MAX_SNMP_FIELDS]
+                continue
+            names = headers.get(label)
+            if names is None or label in protocols:
+                continue
+            if len(protocols) >= _MAX_SNMP_PROTOCOLS:
+                has_more = True
+                break
+            protocols[label] = dict(zip(names, values, strict=False))
+        if not protocols:
+            raise AdbError("backend_error", "reading /proc/net/snmp failed", output=text[:800])
+        return {"protocols": protocols, "count": len(protocols), "has_more": has_more}
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a
