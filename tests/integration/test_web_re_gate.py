@@ -993,10 +993,13 @@ def test_web_script_source_extracts_a_live_wasm_module_for_static_analysis(
 
     CDP hands a WebAssembly script back as WAT text plus base64 module bytes;
     only the text used to be kept, so a module could be listed via web.wasm.list
-    yet never fed to wasm.wat / wasm.info / ghidra, which all take a .wasm path.
-    This instantiates a real module in the page, extracts it through
-    web.script.source, and proves the spilled bytes are a genuine module by
-    round-tripping them through wasm.wat. skip != pass without a browser.
+    yet never fed to wasm.wat / wasm.info / wasm.decompile / ghidra, which all
+    take a .wasm path. This instantiates a real module in the page, extracts it
+    through web.script.source, and proves the spilled bytes are a genuine module
+    by feeding them through the whole static WASM surface -- WAT text, the
+    section/export dump, and readable pseudo-C. That is the seam where the web
+    capture line hands a live artifact to the js/wasm static line. skip != pass
+    without a browser.
     """
     if not _browser_available():
         pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
@@ -1052,11 +1055,29 @@ def test_web_script_source_extracts_a_live_wasm_module_for_static_analysis(
                 assert read.data["data"].startswith("0061736d"), read.data
 
                 # The whole point: the extracted module round-trips through the
-                # static WASM tooling. Only assert the handoff when wabt is present.
+                # entire static WASM surface, not just one reader. This is where
+                # the web capture line hands off to the js/wasm static line -- a
+                # module seen live becomes WAT text, a section dump, and readable
+                # pseudo-C. Only assert the handoff when wabt is present.
                 if WasmClient().available:
                     wat = service.wasm_wat(module_path)
                     assert wat.ok, wat.error
                     assert "module" in (wat.data.get("wat") or ""), wat.data
+
+                    # wasm.info reads the section/export table of the same bytes.
+                    info = service.wasm_info(module_path)
+                    assert info.ok, info.error
+                    assert "add" in (info.data.get("objdump") or ""), info.data
+
+                    # wasm.decompile turns the live-extracted module into readable
+                    # pseudo-C: the fixture exports add(), so the decompilation
+                    # must name that function and carry a real return, proving the
+                    # extract -> decompile chain end to end (not just WAT text).
+                    dec = service.wasm_decompile(module_path)
+                    assert dec.ok, dec.error
+                    code = dec.data.get("code") or ""
+                    assert "function add" in code, dec.data
+                    assert "return" in code, dec.data
             finally:
                 service.web_close(session_id)
         finally:
