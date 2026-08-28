@@ -12,8 +12,10 @@ facts flowing through session creation.
 from __future__ import annotations
 
 import hashlib
+import io
 import struct
 import uuid
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -407,6 +409,9 @@ class TestPeOverlay:
         assert info["size"] == len("SELF-EXTRACT") * 4
         assert info["certificate_size"] == 0
         assert info["extra_size"] == info["size"]
+        # Prose has no magic: an unexplained tail with no format is exactly
+        # the honest None (next to the entropy facts, the encrypted shape).
+        assert info["kind"] is None
 
     def test_a_signed_pe_overlay_is_all_certificate(self, tmp_path: Path) -> None:
         raw = _sign_native_pe(payload=b"PKCS7-BODY")
@@ -418,6 +423,8 @@ class TestPeOverlay:
         assert info["offset"] == len(_native_pe())
         assert info["certificate_size"] == info["size"]
         assert info["extra_size"] == 0
+        # Nothing but the signature: there is no payload to name a kind for.
+        assert info["kind"] is None
 
     def test_a_signed_pe_with_a_stowaway_shows_the_extra_bytes(self, tmp_path: Path) -> None:
         stowaway = b"HIDDEN-PAYLOAD" * 3
@@ -428,6 +435,34 @@ class TestPeOverlay:
         # The cert share is unchanged; the appended bytes surface as extra.
         assert info["extra_size"] == len(stowaway)
         assert info["certificate_size"] == info["size"] - len(stowaway)
+        # The sniff looked past the certificate and found prose: no magic.
+        assert info["kind"] is None
+
+    def test_an_appended_archive_names_the_overlay_kind(self, tmp_path: Path) -> None:
+        # The SFX shape: a real archive glued straight after the image.
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("payload.txt", "stage two")
+        path = tmp_path / "sfx.exe"
+        path.write_bytes(_native_pe() + buffer.getvalue())
+        info = _pe_overlay(path)
+        assert info is not None
+        assert info["kind"] == "zip"
+        assert info["extra_size"] == info["size"]
+
+    def test_the_kind_sniff_skips_the_certificate(self, tmp_path: Path) -> None:
+        # A signed image with an archive stowed after the WIN_CERTIFICATE:
+        # the certificate is legitimate furniture at the overlay's start, so
+        # the sniff must name the stowaway behind it, not the cert header.
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("payload.txt", "stage two")
+        path = tmp_path / "signed-sfx.exe"
+        path.write_bytes(_sign_native_pe(payload=b"PKCS7-BODY") + buffer.getvalue())
+        info = _pe_overlay(path)
+        assert info is not None
+        assert info["extra_size"] == len(buffer.getvalue())
+        assert info["kind"] == "zip"
 
     def test_a_lying_section_size_cannot_invent_an_overlay(self, tmp_path: Path) -> None:
         # Rewrite the (zero) section count is not possible here, so forge a

@@ -11,6 +11,7 @@ raising.
 
 from __future__ import annotations
 
+import gzip
 import struct
 from pathlib import Path
 
@@ -487,7 +488,7 @@ def test_describe_wasm_is_fail_closed_on_a_malformed_tail(tmp_path: Path) -> Non
     assert info["export_count"] is None
     # The broken tail is located precisely: everything past the last section
     # that parsed (the type section) is the residue.
-    assert info["overlay"] == {"offset": len(module) - 2, "size": 2}
+    assert info["overlay"] == {"offset": len(module) - 2, "size": 2, "kind": None}
 
 
 def test_appended_bytes_read_as_the_wasm_overlay(tmp_path: Path) -> None:
@@ -499,9 +500,24 @@ def test_appended_bytes_read_as_the_wasm_overlay(tmp_path: Path) -> None:
     path = tmp_path / "padded.wasm"
     path.write_bytes(module + b"DROPPER!")
     info = describe_wasm(path)["wasm"]
-    assert info["overlay"] == {"offset": len(module), "size": 8}
+    assert info["overlay"] == {"offset": len(module), "size": 8, "kind": None}
     assert info["well_formed"] is False
     assert info["type_count"] == 1
+
+
+def test_an_appended_payload_names_the_wasm_overlay_kind(tmp_path: Path) -> None:
+    # A compressed stage glued after the last section. gzip, not zip, on
+    # purpose: the section walk is deliberately lenient about unknown section
+    # ids, and zip's opening bytes happen to parse as a few fake sections
+    # before failing -- which would shift the overlay past the payload's
+    # magic. gzip's length byte overruns the file immediately, so the walk
+    # stops exactly at the module's true end and the sniff sees the magic.
+    module = _module([_section(1, _leb(1) + b"\x00")])
+    path = tmp_path / "staged.wasm"
+    path.write_bytes(module + gzip.compress(b"stage two"))
+    info = describe_wasm(path)["wasm"]
+    assert info["overlay"]["offset"] == len(module)
+    assert info["overlay"]["kind"] == "gzip"
 
 
 def test_the_section_cap_does_not_claim_an_overlay(tmp_path: Path) -> None:

@@ -1582,7 +1582,11 @@ def test_elf_overlay_agrees_with_readelf(tmp_path: Path) -> None:
         # end -- same offset, same size, on real toolchain output.
         session_id, padded_facts = _session_native(service, padded)
         sessions.append(session_id)
-        assert padded_facts["overlay"] == {"offset": image_end, "size": len(payload)}
+        assert padded_facts["overlay"] == {
+            "offset": image_end,
+            "size": len(payload),
+            "kind": None,  # prose payload: no magic, the honest non-answer
+        }
     finally:
         for session_id in sessions:
             service.close_session(session_id)
@@ -1652,7 +1656,11 @@ def test_macho_overlay_agrees_with_llvm_objdump(tmp_path: Path) -> None:
         session_id, padded_facts = _session_native(service, padded)
         sessions.append(session_id)
         # The appended bytes land exactly at LLVM's image end, byte for byte.
-        assert padded_facts["overlay"] == {"offset": image_end, "size": len(payload)}
+        assert padded_facts["overlay"] == {
+            "offset": image_end,
+            "size": len(payload),
+            "kind": None,  # prose payload: no magic, the honest non-answer
+        }
     finally:
         for session_id in sessions:
             service.close_session(session_id)

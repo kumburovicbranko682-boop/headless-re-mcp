@@ -415,7 +415,7 @@ def test_dex_integrity_verdicts_agree_with_androguard(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="[Aa]dler32"):
         DEX(raw + b"STOWAWAY")
     entry = _verdicts(_repack("stowaway.apk", raw + b"STOWAWAY"))
-    assert entry["overlay"] == {"offset": header.file_size, "size": 8}
+    assert entry["overlay"] == {"offset": header.file_size, "size": 8, "kind": None}
     assert entry["checksum_ok"] is True
     assert entry["signature_ok"] is True
 

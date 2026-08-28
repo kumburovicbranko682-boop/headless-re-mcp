@@ -11,8 +11,11 @@ refused by the PE-only tools through require_pe.
 from __future__ import annotations
 
 import glob
+import gzip
 import hashlib
+import io
 import struct
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -2577,7 +2580,44 @@ class TestNativeOverlay:
         base = _elf64_with_dynsym([("frob", 1, 2, 1)])
         path = _write(tmp_path, "padded.bin", base + b"DROPPER")
         facts = describe_native(path)["native"]
-        assert facts["overlay"] == {"offset": len(base), "size": 7}
+        assert facts["overlay"] == {"offset": len(base), "size": 7, "kind": None}
+
+    def test_an_appended_archive_names_the_elf_overlay_kind(self, tmp_path: Path) -> None:
+        # The makeself/SFX shape: a real archive glued after the image. The
+        # kind comes from the archive's own magic, not from any file name.
+        base = _elf64_with_dynsym([("frob", 1, 2, 1)])
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("payload.txt", "stage two")
+        path = _write(tmp_path, "sfx.bin", base + buffer.getvalue())
+        facts = describe_native(path)["native"]
+        assert facts["overlay"]["kind"] == "zip"
+
+    def test_a_gzip_tail_names_its_compression(self, tmp_path: Path) -> None:
+        base = _elf64_with_dynsym([("frob", 1, 2, 1)])
+        path = _write(tmp_path, "gz.bin", base + gzip.compress(b"stage two"))
+        facts = describe_native(path)["native"]
+        assert facts["overlay"]["kind"] == "gzip"
+
+    def test_a_two_letter_mz_tail_is_not_a_pe(self, tmp_path: Path) -> None:
+        # "MZ" only counts with a DOS-header-sized head behind it: two
+        # trailing prose letters must not read as an appended executable,
+        # while a real-length DOS stub does.
+        base = _elf64_with_dynsym([("frob", 1, 2, 1)])
+        short = _write(tmp_path, "short.bin", base + b"MZ")
+        assert describe_native(short)["native"]["overlay"]["kind"] is None
+        full = _write(tmp_path, "full.bin", base + b"MZ" + b"\x00" * 0x3E)
+        assert describe_native(full)["native"]["overlay"]["kind"] == "pe"
+
+    def test_an_appended_elf_names_the_macho_overlay_kind(self, tmp_path: Path) -> None:
+        # The dropper shape across formats: a Mach-O trailing a raw ELF next
+        # stage. The sniff is shared, so the spelling matches the ELF line's.
+        if not _MACHO_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_MACHO_FIXTURE}")
+        base = _MACHO_FIXTURE.read_bytes()
+        path = _write(tmp_path, "dropper.macho", base + _elf64_le() + b"\x00" * 44)
+        facts = describe_native(path)["native"]
+        assert facts["overlay"]["kind"] == "elf"
 
     def test_a_nobits_section_does_not_extend_the_image(self, tmp_path: Path) -> None:
         # .bss claims a huge in-memory size at the end of the file; those bytes
@@ -2590,7 +2630,7 @@ class TestNativeOverlay:
         base = _ehdr64(3, phoff=0, phnum=0, shoff=shoff, shnum=2) + sections
         path = _write(tmp_path, "bss.bin", base + b"PAYLOAD-X!")
         facts = describe_native(path)["native"]
-        assert facts["overlay"] == {"offset": len(base), "size": 10}
+        assert facts["overlay"] == {"offset": len(base), "size": 10, "kind": None}
 
     def test_a_lying_section_offset_cannot_invent_an_overlay(self, tmp_path: Path) -> None:
         # A section claiming to reach past EOF clamps to the file size: the
@@ -2621,7 +2661,7 @@ class TestNativeOverlay:
         base = _MACHO_FIXTURE.read_bytes()
         path = _write(tmp_path, "padded.macho", base + b"PAYLOAD")
         facts = describe_native(path)["native"]
-        assert facts["overlay"] == {"offset": len(base), "size": 7}
+        assert facts["overlay"] == {"offset": len(base), "size": 7, "kind": None}
 
     def test_macho_header_anchors_the_overlay_without_segments(self, tmp_path: Path) -> None:
         # The mach header itself declares its command region, so even with no
@@ -2629,7 +2669,7 @@ class TestNativeOverlay:
         base = _macho64_full(filetype=2, flags=0, load_cmds=b"", ncmds=0)
         path = _write(tmp_path, "bare.macho", base + b"XY")
         facts = describe_native(path)["native"]
-        assert facts["overlay"] == {"offset": len(base), "size": 2}
+        assert facts["overlay"] == {"offset": len(base), "size": 2, "kind": None}
 
     def test_a_lying_macho_symtab_cannot_invent_an_overlay(self, tmp_path: Path) -> None:
         # LC_SYMTAB claiming a billion symbols clamps to the file size; the

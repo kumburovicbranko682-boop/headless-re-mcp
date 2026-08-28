@@ -1617,7 +1617,13 @@ def _dex_integrity(data: bytes, header: dict[str, Any], complete: bool) -> dict[
     body = data[:declared]
     overlay = None
     if declared < len(data):
-        overlay = {"offset": declared, "size": len(data) - declared}
+        overlay = {
+            "offset": declared,
+            "size": len(data) - declared,
+            # What the stowaway self-declares as -- the same sniff every
+            # format's overlay runs; None means no magic (encrypted, or text).
+            "kind": _overlay_kind(data[declared : declared + 0x40]),
+        }
     return {
         "checksum_ok": (zlib.adler32(body[12:]) & 0xFFFFFFFF) == header["checksum"],
         "signature_ok": hashlib.sha1(body[32:]).hexdigest() == header["signature"],
@@ -1976,6 +1982,52 @@ def _apk_appended_size(path: Path) -> int | None:
             continue
         return len(tail) - declared_end
     return None
+
+
+# What appended data self-declares as. An overlay carries different traffic
+# than an embedded section: a self-extracting installer glues a whole archive
+# after its stub (zip is the classic shape -- makeself, NSIS data, SFX
+# archives), a dropper appends its next stage raw or compressed, and an honest
+# binary trails nothing (Authenticode aside). So beyond the executable magics
+# the payload censuses already flag, this table names the container and
+# compression formats overlays actually arrive in. MZ additionally requires a
+# DOS-header-sized head so two trailing prose letters cannot read as a Windows
+# executable. No match is an honest None: an encrypted stage has no magic at
+# all, and next to the entropy facts that silence is itself the signal.
+_OVERLAY_KINDS: tuple[tuple[bytes, str], ...] = (
+    (b"\x7fELF", "elf"),
+    (b"dex\n", "dex"),
+    (b"\x00asm", "wasm"),
+    (b"PK\x03\x04", "zip"),
+    (b"7z\xbc\xaf\x27\x1c", "7z"),
+    (b"\x1f\x8b", "gzip"),
+    (b"\xfd7zXZ\x00", "xz"),
+    (b"BZh", "bzip2"),
+    (b"\x28\xb5\x2f\xfd", "zstd"),
+    (b"Rar!\x1a\x07", "rar"),
+    (b"MSCF", "cab"),
+    (b"\xcf\xfa\xed\xfe", "macho"),
+    (b"\xce\xfa\xed\xfe", "macho"),
+    (b"\xfe\xed\xfa\xcf", "macho"),
+    (b"\xfe\xed\xfa\xce", "macho"),
+    (b"#!", "script"),
+    (b"MZ", "pe"),
+)
+
+
+def _overlay_kind(head: bytes) -> str | None:
+    """What the first overlay bytes self-declare as, or None for no magic.
+
+    ``head`` is the overlay's opening bytes (0x40 is enough for every magic
+    in the table plus the MZ length rule). Every format's overlay fact runs
+    the same sniff, so "the ELF trails a zip" and "the PE trails a zip" are
+    the same fact with the same spelling -- and None is a real answer, not a
+    parse failure: payloads without magic are exactly the encrypted ones.
+    """
+    kind = next((k for magic, k in _OVERLAY_KINDS if head.startswith(magic)), None)
+    if kind == "pe" and len(head) < 0x40:
+        return None
+    return kind
 
 
 # Executable/container magic worth flagging when found outside its canonical
@@ -2866,9 +2918,15 @@ def describe_wasm(path: Path) -> dict[str, Any]:
     # the engine sees. Reported only when the whole file was read and the walk
     # stopped on the data, not on its own section cap, so a bounded stop cannot
     # masquerade as appended payload.
-    overlay: dict[str, int] | None = None
+    overlay: dict[str, Any] | None = None
     if not truncated and walked < _WASM_MAX_SECTIONS and parsed_end < len(data):
-        overlay = {"offset": parsed_end, "size": len(data) - parsed_end}
+        overlay = {
+            "offset": parsed_end,
+            "size": len(data) - parsed_end,
+            # The residue's self-declared format -- the same sniff every
+            # format's overlay runs; None means no magic (encrypted, or text).
+            "kind": _overlay_kind(data[parsed_end : parsed_end + 0x40]),
+        }
     # The module's whole linear-memory footprint: imported memories (which come
     # first in the index space) then the ones the Memory section defines. Each
     # is min/max pages of 64 KiB, whether the host must supply it or the module
@@ -4597,6 +4655,9 @@ def _pe_overlay(path: Path) -> dict[str, Any] | None:
     unexplained remainder that a self-extractor or a smuggled payload would
     occupy. ``extra_size`` of 0 with a non-zero ``certificate_size`` is a
     normally-signed image; ``extra_size`` above 0 is the triage signal.
+    ``kind`` sniffs what the unexplained bytes self-declare as (zip is the
+    self-extractor classic), skipping the certificate when it opens the
+    trailing region; None means no magic, or nothing but the signature.
 
     Fail-closed: the image end is clamped to the file size (a lying section
     size cannot invent an overlay) and None is returned when nothing trails the
@@ -4641,6 +4702,15 @@ def _pe_overlay(path: Path) -> dict[str, Any] | None:
                     if entry + 8 <= len(optional):
                         cert_offset = int.from_bytes(optional[entry : entry + 4], "little")
                         cert_size = int.from_bytes(optional[entry + 4 : entry + 8], "little")
+            # Sniff where the *unexplained* bytes start: when the signature
+            # opens the trailing region the WIN_CERTIFICATE is legitimate
+            # furniture, not payload, so the sniff skips past it; otherwise
+            # the overlay's own first bytes are the payload's first bytes.
+            sniff_at = image_end
+            if cert_offset and cert_size and cert_offset <= image_end < cert_offset + cert_size:
+                sniff_at = min(cert_offset + cert_size, file_size)
+            stream.seek(sniff_at)
+            sniff_head = stream.read(0x40)
     except OSError:
         return None
     total = file_size - image_end
@@ -4657,6 +4727,11 @@ def _pe_overlay(path: Path) -> dict[str, Any] | None:
         "size": total,
         "certificate_size": certificate_size,
         "extra_size": total - certificate_size,
+        # What the unexplained bytes self-declare as -- the same sniff every
+        # format's overlay runs. None with extra bytes means no magic (the
+        # encrypted-stage shape); None with extra_size 0 means nothing to
+        # sniff: the whole overlay is the signature.
+        "kind": _overlay_kind(sniff_head) if total > certificate_size else None,
     }
 
 
@@ -8691,17 +8766,18 @@ def _elf_overlay(
     shoff: int,
     shentsize: int,
     shnum: int,
-) -> dict[str, int] | None:
+) -> dict[str, Any] | None:
     """Appended data past everything the ELF headers map, or None when none.
 
     The image the loader and linker see ends at the furthest byte any program
     header (p_offset + p_filesz), any non-NOBITS section (sh_offset + sh_size),
     or either header table itself reaches. Whatever the file carries beyond
     that is invisible to both -- the ELF analogue of a PE overlay, the classic
-    place a self-extractor or dropper parks its payload. Fail-closed: the fact
-    is computed only when at least one table entry anchors the layout, ends
-    are clamped to the file size (a lying offset cannot invent an overlay),
-    and any read hiccup yields None.
+    place a self-extractor or dropper parks its payload. ``kind`` names what
+    the appendage self-declares as (zip is the makeself/SFX classic); None
+    means no magic. Fail-closed: the fact is computed only when at least one
+    table entry anchors the layout, ends are clamped to the file size (a
+    lying offset cannot invent an overlay), and any read hiccup yields None.
     """
     try:
         file_size = stream.seek(0, 2)
@@ -8751,7 +8827,14 @@ def _elf_overlay(
         return None
     end = min(end, file_size)
     if end < file_size:
-        return {"offset": end, "size": file_size - end}
+        try:
+            stream.seek(end)
+            head = stream.read(0x40)
+        except OSError:
+            head = b""
+        # The appendage's self-declared format -- the same sniff every
+        # format's overlay runs; None means no magic (encrypted, or text).
+        return {"offset": end, "size": file_size - end, "kind": _overlay_kind(head)}
     return None
 
 
@@ -8927,16 +9010,17 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
 
 def _macho_overlay(
     stream: BinaryIO, header_end: int, lc: dict[str, Any], bits: int
-) -> dict[str, int] | None:
+) -> dict[str, Any] | None:
     """Appended data past everything the load commands map, or None when none.
 
     The image dyld and the linker see ends at the furthest byte any segment
     (fileoff + filesize), the symbol/string tables (LC_SYMTAB), or the embedded
     code signature (LC_CODE_SIGNATURE) reaches -- __LINKEDIT normally spans to
     the end of a real file, so anything beyond is appended after the link, the
-    Mach-O analogue of a PE overlay. Fail-closed: ends are clamped to the file
-    size (a lying offset cannot invent an overlay) and a read hiccup yields
-    None.
+    Mach-O analogue of a PE overlay. ``kind`` names what the appendage
+    self-declares as; None means no magic. Fail-closed: ends are clamped to
+    the file size (a lying offset cannot invent an overlay) and a read hiccup
+    yields None.
     """
     try:
         file_size = stream.seek(0, 2)
@@ -8958,7 +9042,14 @@ def _macho_overlay(
             end = max(end, dataoff + datasize)
     end = min(end, file_size)
     if end < file_size:
-        return {"offset": end, "size": file_size - end}
+        try:
+            stream.seek(end)
+            head = stream.read(0x40)
+        except OSError:
+            head = b""
+        # The appendage's self-declared format -- the same sniff every
+        # format's overlay runs; None means no magic (encrypted, or text).
+        return {"offset": end, "size": file_size - end, "kind": _overlay_kind(head)}
     return None
 
 

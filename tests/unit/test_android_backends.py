@@ -7,6 +7,7 @@ happy paths (which need a real device and live in the integration gates).
 from __future__ import annotations
 
 import hashlib
+import io
 import struct
 import zipfile
 import zlib
@@ -1211,7 +1212,19 @@ class TestDexIntegrity:
         (entry,) = _apk_with_dex(tmp_path, self._SEALED + b"STOWAWAY")["signatures"]
         assert entry["checksum_ok"] is True
         assert entry["signature_ok"] is True
-        assert entry["overlay"] == {"offset": len(self._SEALED), "size": 8}
+        assert entry["overlay"] == {"offset": len(self._SEALED), "size": 8, "kind": None}
+
+    def test_an_archive_stowaway_names_the_dex_overlay_kind(self, tmp_path: Path) -> None:
+        # The stage-two-in-the-stowaway shape: a real archive appended past
+        # file_size. The kind comes from the same sniff every format's
+        # overlay runs, so "the DEX trails a zip" spells like the PE case.
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("payload.txt", "stage two")
+        (entry,) = _apk_with_dex(tmp_path, self._SEALED + buffer.getvalue())["signatures"]
+        assert entry["checksum_ok"] is True
+        assert entry["overlay"]["offset"] == len(self._SEALED)
+        assert entry["overlay"]["kind"] == "zip"
 
     def test_a_lying_file_size_is_unmeasured(self, tmp_path: Path) -> None:
         # file_size claims more bytes than the member holds: nothing can be

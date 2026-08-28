@@ -24,7 +24,9 @@ is absent.
 
 from __future__ import annotations
 
+import io
 import struct
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -169,6 +171,8 @@ def test_pe_overlay_offset_agrees_with_pefile(tmp_path: Path) -> None:
     assert overlay["size"] == len(payload)
     assert overlay["certificate_size"] == 0
     assert overlay["extra_size"] == len(payload)
+    # The stub text carries no magic: the kind is honest None.
+    assert overlay["kind"] is None
 
     # Signed, then a stowaway glued after the certificate: pefile still marks
     # the overlay at the last section end, the reader attributes the cert's
@@ -187,3 +191,19 @@ def test_pe_overlay_offset_agrees_with_pefile(tmp_path: Path) -> None:
     assert overlay["offset"] == boundary
     assert overlay["certificate_size"] == cert_size
     assert overlay["extra_size"] == len(stowaway)
+    # Prose behind the certificate carries no magic: the kind is honest None.
+    assert overlay["kind"] is None
+
+    # An *archive* stowed behind the certificate: the kind sniff must skip
+    # the WIN_CERTIFICATE furniture (whose own header carries no magic) and
+    # name the zip behind it -- a sniff that read the overlay's first bytes
+    # instead of the unexplained region's would answer None here.
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("payload.txt", "stage two")
+    archive_stowaway = tmp_path / "signed-sfx.exe"
+    archive_stowaway.write_bytes(_sign(_FIXTURE.read_bytes()) + buffer.getvalue())
+    overlay = _session_pe_overlay(archive_stowaway)
+    assert overlay is not None
+    assert overlay["extra_size"] == len(buffer.getvalue())
+    assert overlay["kind"] == "zip"
