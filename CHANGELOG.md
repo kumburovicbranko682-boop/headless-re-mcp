@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（运行进度条把同一对话里更早的运行也算进本轮 harness）
+
+- `webui` 的 reducer 在开始新运行时（`run` action）只清空流式文本与待批准项，不清事件缓冲，
+  于是 `computeRunMetrics` 会把整条对话里所有历史运行的事件一起统计：一个只花了 22s 的运行，
+  harness 却显示 "LLM 67s"（叠加了上一轮的 45s），工具耗时、步数同理虚高。而 harness 本是
+  单轮视图——「轮」是单次运行的计数、「首 token 平均」按该次运行的各轮取平均、活动行描述当前调用——
+  所以口径自相矛盾。修法：`computeRunMetrics` 先按事件时间戳挑出最新一轮运行（当前或刚结束的那次），
+  只对该 `run_id` 的事件求和；单运行场景不受影响。新增回归用例（缓冲里 r1 40s LLM + 20s 工具、
+  r2 5s LLM），旧代码得 `llmMs=45000` 失败，修复后 `llmMs=5000`、`toolMs=0`、`steps=1`；
+  webui 全套 64 测试与 `tsc --noEmit` 通过。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
