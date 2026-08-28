@@ -97,7 +97,9 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with installed (true/false, or null when it could not be
         verified), path and serial, plus package when the APK's id was
-        readable. A return from adb is not by itself a successful install.
+        readable and note when the outcome was not a verified success (the
+        reason installed is null or false). A return from adb is not by itself
+        a successful install.
         """
         return _dump(analysis.device_install(serial, apk_path, reinstall=reinstall))
 
@@ -106,7 +108,9 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Uninstall a package from the device.
 
         Answers with uninstalled (true/false, or null when it could not be
-        verified) and package. A return from adb is not by itself removal.
+        verified), package, and note when the outcome was not a verified
+        removal (the reason uninstalled is null or false). A return from adb is
+        not by itself removal.
         """
         return _dump(analysis.device_uninstall(serial, package))
 
@@ -115,7 +119,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Launch a package's main launcher activity.
 
         Answers with launched (true/false, or null when the foreground could
-        not be read), package, and foreground when known.
+        not be read), package, foreground when known, and note when the
+        foreground could not be read (the reason launched is null).
         """
         return _dump(analysis.device_launch(serial, package))
 
@@ -124,7 +129,8 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Force-stop a running package.
 
         Answers with stopped (true/false, or null when the process list could
-        not be read), package, and remaining_pids when known.
+        not be read), package, remaining_pids when known, and note when the
+        process list could not be read (the reason stopped is null).
         """
         return _dump(analysis.device_force_stop(serial, package))
 

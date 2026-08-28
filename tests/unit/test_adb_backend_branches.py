@@ -11,6 +11,7 @@ forward table with its reservation-release-on-failure.
 
 from __future__ import annotations
 
+import ast
 import sys
 import zipfile
 from pathlib import Path
@@ -179,6 +180,28 @@ def _backend_with_dev(dev: _FakeDev, monkeypatch: MP) -> AdbBackend:
     backend._adbutils = object()
     monkeypatch.setattr(backend, "_device", lambda serial: dev)
     return backend
+
+
+def _device_tool_docstring(name: str) -> str:
+    """The docstring the device.* tool named ``name`` advertises to an agent."""
+    from headless_re_mcp.tools.device import build_device_tools
+
+    source = Path(build_device_tools.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            for keyword in decorator.keywords:
+                if (
+                    keyword.arg == "name"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == name
+                ):
+                    return ast.get_docstring(node) or ""
+    return ""
 
 
 # ----------------------------------------------------------------------------
@@ -651,6 +674,62 @@ class TestInstallLifecycle:
         assert info.value.code == "backend_error"
         assert "force-stop failed" in info.value.message
         assert info.value.details["package"] == "com.example.app"
+
+
+class TestVerificationNoteDocstrings:
+    """install/uninstall/launch/force_stop return a note explaining a null or
+
+    negative outcome, but their docstrings named only the primary fields --
+    the same "answer-shape map drops a field the backend sends" class as the
+    web.har.export size gap. The backend behaviour is pinned in
+    TestInstallLifecycle (result["note"] on every unverifiable branch); this
+    pins that the tool docstring, the agent's one map of the reply, actually
+    names note, and for the reachable branches that every returned key is named.
+    """
+
+    def _assert_every_key_named(self, payload: dict[str, Any], name: str) -> None:
+        doc = _device_tool_docstring(name)
+        for key in payload:
+            assert key in doc, f"{name} returns {key!r} but the docstring never names it"
+
+    def test_install_unverifiable_keys_are_all_named(
+        self, monkeypatch: MP, tmp_path: Path
+    ) -> None:
+        apk = _apk_file(tmp_path / "app.apk")
+        dev = _FakeDev(shell_map={"pm path com.example.app": "error: device offline"})
+        backend = _backend_with_dev(dev, monkeypatch)
+        result = backend.install("emulator-5554", str(apk))
+        assert "note" in result
+        self._assert_every_key_named(result, "device.install")
+
+    def test_uninstall_unverifiable_keys_are_all_named(self, monkeypatch: MP) -> None:
+        dev = _FakeDev(shell_map={"pm path com.example.app": "error: device offline"})
+        backend = _backend_with_dev(dev, monkeypatch)
+        result = backend.uninstall("emulator-5554", "com.example.app")
+        assert "note" in result
+        self._assert_every_key_named(result, "device.uninstall")
+
+    def test_launch_unreadable_keys_are_all_named(self, monkeypatch: MP) -> None:
+        dev = _FakeDev(app_current_error=RuntimeError("no window"))
+        backend = _backend_with_dev(dev, monkeypatch)
+        result = backend.launch("emulator-5554", "com.example.app")
+        assert "note" in result
+        self._assert_every_key_named(result, "device.launch")
+
+    def test_force_stop_survivor_keys_are_all_named(self, monkeypatch: MP) -> None:
+        dev = _FakeDev(shell_map={"pidof com.example.app": "1201 1202"})
+        backend = _backend_with_dev(dev, monkeypatch)
+        result = backend.force_stop("emulator-5554", "com.example.app")
+        self._assert_every_key_named(result, "device.force_stop")
+
+    def test_all_four_verification_docstrings_name_note(self) -> None:
+        for name in (
+            "device.install",
+            "device.uninstall",
+            "device.launch",
+            "device.force_stop",
+        ):
+            assert "note" in _device_tool_docstring(name), name
 
 
 # ----------------------------------------------------------------------------
