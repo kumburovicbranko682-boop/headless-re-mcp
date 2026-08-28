@@ -25,6 +25,7 @@ from headless_re_mcp.core.session import (
     _pe_capability_surface,
     _pe_debug_fingerprint,
     _pe_hardening_facts,
+    _pe_high_entropy_sections,
     _pe_overlay,
     _pe_resource_payloads,
     _pe_rich_header,
@@ -1236,6 +1237,77 @@ def _pe_with_section_flags(sections: list[tuple[bytes, int]]) -> bytes:
     return bytes(dos) + coff + bytes(optional) + bytes(table)
 
 
+def _pe_with_section_data(sections: list[tuple[bytes, bytes]]) -> bytes:
+    """A minimal PE32 whose sections carry the given (name, raw bytes)."""
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    dos[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x014C, len(sections), 0, 0, 0, 0xE0, 0)
+    optional = bytearray(0xE0)
+    optional[0:2] = (0x10B).to_bytes(2, "little")  # PE32
+    optional[92:96] = (16).to_bytes(4, "little")  # NumberOfRvaAndSizes
+    table = bytearray()
+    payloads = bytearray()
+    data_off = 0x40 + len(coff) + len(optional) + 40 * len(sections)
+    for index, (name, payload) in enumerate(sections):
+        sect = bytearray(40)
+        sect[0 : len(name)] = name
+        struct.pack_into("<I", sect, 8, len(payload))  # VirtualSize
+        struct.pack_into("<I", sect, 12, 0x1000 * (index + 1))  # VirtualAddress
+        struct.pack_into("<I", sect, 16, len(payload))  # SizeOfRawData
+        struct.pack_into("<I", sect, 20, data_off + len(payloads))  # PointerToRawData
+        table += sect
+        payloads += payload
+    return bytes(dos) + coff + bytes(optional) + bytes(table) + bytes(payloads)
+
+
+class TestPeHighEntropySections:
+    """_pe_high_entropy_sections flags near-random sections -- UPX1's shape.
+
+    The PE arm of the entropy census: the packed payload the resource and
+    section magic censuses cannot see when it ships compressed or encrypted.
+    Measured over each section's raw file bytes, the same bytes pefile's
+    get_entropy reads; an empty list is a real "nothing packed here" answer.
+    """
+
+    def test_a_planted_uniform_section_flags_at_eight(self, tmp_path: Path) -> None:
+        path = tmp_path / "packed.exe"
+        path.write_bytes(
+            _pe_with_section_data(
+                [(b".text", b"\x90" * 512), (b"UPX1", bytes(range(256)) * 4)]
+            )
+        )
+        assert _pe_high_entropy_sections(path) == {
+            "high_entropy_sections": [{"section": "UPX1", "entropy": 8.0, "size": 1024}]
+        }
+
+    def test_ordinary_sections_stay_unflagged(self, tmp_path: Path) -> None:
+        path = tmp_path / "plain.exe"
+        path.write_bytes(
+            _pe_with_section_data(
+                [(b".text", b"\x90\x55\x8b\xec\xc3" * 200), (b".rdata", b"version 1.0 " * 60)]
+            )
+        )
+        assert _pe_high_entropy_sections(path) == {"high_entropy_sections": []}
+
+    def test_a_sectionless_pe_lists_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_high_entropy_sections(path) == {"high_entropy_sections": []}
+
+    def test_a_non_pe_reports_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "not.exe"
+        path.write_bytes(b"\x7fELF" + bytes(0x100))
+        assert _pe_high_entropy_sections(path) == {}
+
+    def test_session_over_a_packed_shape_carries_the_flags(self, tmp_path: Path) -> None:
+        path = tmp_path / "packed.exe"
+        path.write_bytes(_pe_with_section_data([(b"UPX1", bytes(range(256)) * 4)]))
+        session = SessionRegistry().create(str(path))
+        flags = session.metadata["pe"]["high_entropy_sections"]
+        assert flags == [{"section": "UPX1", "entropy": 8.0, "size": 1024}]
+
+
 class TestPeWxSections:
     """_pe_wx_sections names sections mapped writable and executable at once.
 
@@ -1566,6 +1638,7 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "cfg": False,
             "tls": {"present": False, "callbacks": 0},
             "wx_sections": [],
+            "high_entropy_sections": [],
         }
     }
 

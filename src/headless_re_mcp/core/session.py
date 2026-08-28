@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import io
 import json
+import math
 import re
 import uuid
 import zipfile
@@ -179,6 +180,9 @@ class SessionRegistry:
                 # W^X violation, the pair to the native wx_segments counts;
                 # an empty list is a real answer.
                 metadata["pe"].update(_pe_wx_sections(path))
+                # Near-random sections -- the packed-payload flags the magic
+                # censuses cannot raise; empty is a real answer.
+                metadata["pe"].update(_pe_high_entropy_sections(path))
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -495,6 +499,16 @@ _NATIVE_SECTION_KINDS: tuple[tuple[bytes, str], ...] = (
 )
 _NATIVE_SECTION_SNIFF = 0x40
 _NATIVE_MAX_SECTION_PAYLOADS = 64
+# Shannon entropy flags packed or encrypted bytes: compressed and ciphered
+# data measure near 8 bits/byte while code, tables and text sit well below 7.
+# A section at or past the threshold (and big enough for the measure to mean
+# anything) is the stashed-payload shape the magic-byte census cannot see --
+# an encrypted stage two has no magic. radare2's `iS entropy` and pefile's
+# get_entropy compute the same measure, so the gates cross-check the numbers.
+_ENTROPY_THRESHOLD = 7.2
+_ENTROPY_MIN_SIZE = 256
+_ENTROPY_MAX_READ = 4 * 1024 * 1024
+_ENTROPY_MAX_FLAGGED = 32
 _NATIVE_MAX_MACHO_SECTIONS = 4096
 _SHT_NULL = 0
 _SHT_PROGBITS = 1
@@ -4448,6 +4462,47 @@ def _pe_wx_sections(path: Path) -> dict[str, Any]:
     return {"wx_sections": names}
 
 
+def _pe_high_entropy_sections(path: Path) -> dict[str, Any]:
+    """Near-random PE sections -- as ``{"high_entropy_sections": [flags]}``.
+
+    The PE arm of the entropy census, the pair to the ELF and Mach-O flags:
+    a packed executable's stub is ordinary code, but the payload it inflates
+    lives in a section whose bytes measure near 8 bits per byte (UPX1's
+    shape) -- the stash the resource and section magic censuses cannot see
+    when the payload is compressed or encrypted. Measured over each
+    section's raw file bytes, exactly what pefile's get_entropy reads, so
+    the gate can compare number for number.
+
+    Reported for every PE whose section table parses -- an empty list is a
+    real "nothing packed here" answer -- and absent only when the headers
+    are malformed. Bounds and thresholds are the shared census ones.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return {}
+        raw = path.read_bytes()
+    except OSError:
+        return {}
+    if len(raw) < 0x40 or raw[:2] != b"MZ":
+        return {}
+    e_lfanew = int.from_bytes(raw[0x3C:0x40], "little")
+    if e_lfanew < 0 or e_lfanew + 24 > len(raw) or raw[e_lfanew : e_lfanew + 4] != b"PE\x00\x00":
+        return {}
+    num_sections = min(int.from_bytes(raw[e_lfanew + 6 : e_lfanew + 8], "little"), _PE_MAX_SECTIONS)
+    opt_size = int.from_bytes(raw[e_lfanew + 20 : e_lfanew + 22], "little")
+    table = e_lfanew + 24 + opt_size
+    sections: list[tuple[str, int, int]] = []
+    for index in range(num_sections):
+        base = table + index * 40
+        if base + 40 > len(raw):
+            break
+        name = raw[base : base + 8].rstrip(b"\x00").decode("ascii", errors="replace")
+        raw_size = int.from_bytes(raw[base + 16 : base + 20], "little")
+        raw_ptr = int.from_bytes(raw[base + 20 : base + 24], "little")
+        sections.append((name, raw_ptr, raw_size))
+    return {"high_entropy_sections": _entropy_flags(io.BytesIO(raw), sections)}
+
+
 def _pe_rich_header(path: Path) -> dict[str, Any]:
     """The Rich header -- MSVC's toolchain census -- as ``{"rich_header": ...}``.
 
@@ -5028,6 +5083,16 @@ def _elf_layout_facts(
         toolchain = _elf_toolchain(stream, sections)
         if toolchain:
             facts["toolchain"] = toolchain
+        # Sections whose bytes measure near-random -- the packed-payload
+        # flags the magic-byte census cannot raise. Empty is a real answer.
+        facts["high_entropy_sections"] = _entropy_flags(
+            stream,
+            [
+                (name, off, size)
+                for name, stype, off, size in sections
+                if stype not in (_SHT_NULL, _SHT_NOBITS)
+            ],
+        )
 
 
 def _elf_program_headers(
@@ -5713,6 +5778,56 @@ def _elf_named_sections(
     return sections
 
 
+def _shannon_entropy(data: bytes) -> float:
+    """Shannon entropy in bits per byte: 0.0 for a constant run, 8.0 for uniform."""
+    if not data:
+        return 0.0
+    total = len(data)
+    entropy = 0.0
+    for value in range(256):
+        count = data.count(value)
+        if count:
+            probability = count / total
+            entropy -= probability * math.log2(probability)
+    return entropy
+
+
+def _entropy_flags(
+    stream: BinaryIO,
+    sections: list[tuple[str, int, int]],
+) -> list[dict[str, Any]]:
+    """Sections whose bytes measure near-random -- the packed-payload flags.
+
+    ``sections`` are (name, file offset, size). Compressed or encrypted bytes
+    sit near 8 bits per byte; code and tables sit well below the threshold, so
+    a flagged section is where a packer parked the payload the magic-byte
+    census cannot see (an encrypted stage two opens with no magic at all).
+    A flag names the section, its measured entropy (rounded, over at most
+    _ENTROPY_MAX_READ bytes) and its size. Bounded and fail-closed: sections
+    too small for the measure to mean anything are skipped, the flag list is
+    capped, and an unreadable section contributes nothing.
+    """
+    flagged: list[dict[str, Any]] = []
+    try:
+        file_size = stream.seek(0, 2)
+    except OSError:
+        return flagged
+    for name, offset, size in sections:
+        if size < _ENTROPY_MIN_SIZE or offset <= 0 or offset >= file_size:
+            continue
+        try:
+            stream.seek(offset)
+            data = stream.read(min(size, _ENTROPY_MAX_READ))
+        except OSError:
+            continue
+        entropy = _shannon_entropy(data)
+        if entropy >= _ENTROPY_THRESHOLD:
+            flagged.append({"section": name, "entropy": round(entropy, 2), "size": size})
+            if len(flagged) >= _ENTROPY_MAX_FLAGGED:
+                break
+    return flagged
+
+
 def _elf_toolchain(
     stream: BinaryIO,
     sections: list[tuple[str, int, int, int]],
@@ -5967,6 +6082,9 @@ def _macho_thin_facts(head: bytes, magic: bytes, stream: BinaryIO) -> dict[str, 
         section_payloads, section_count = _macho_section_payloads(stream, lc["sections"])
         facts["section_payloads"] = section_payloads
         facts["section_payload_count"] = section_count
+        # Near-random sections -- the packed-payload flags, the Mach-O pair
+        # to the ELF and PE entropy censuses. Empty is a real answer.
+        facts["high_entropy_sections"] = _entropy_flags(stream, lc["sections"])
     return facts
 
 

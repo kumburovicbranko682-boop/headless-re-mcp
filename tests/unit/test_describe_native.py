@@ -2334,6 +2334,76 @@ class TestElfSectionPayloads:
         assert "section_payload_count" not in facts
 
 
+class TestHighEntropySections:
+    """describe_native flags near-random sections -- the packed-payload tell.
+
+    Compressed or encrypted bytes measure near 8 bits per byte; code and text
+    sit well below. The flag is what the magic-byte payload census cannot
+    raise: an encrypted stage two opens with no magic at all. Sections too
+    small for the measure to mean anything are skipped, and an empty list is
+    a real "nothing packed here" answer.
+    """
+
+    def test_a_uniform_byte_spread_measures_eight_and_flags(self, tmp_path: Path) -> None:
+        # Every byte value equally often: exactly 8.0 bits per byte, the
+        # deterministic stand-in for an encrypted payload.
+        data = _elf64_with_sections(
+            [(".text", 1, b"\x90" * 512), (".blob", 1, bytes(range(256)) * 4)]
+        )
+        facts = describe_native(_write(tmp_path, "packed.elf", data))["native"]
+        assert facts["high_entropy_sections"] == [
+            {"section": ".blob", "entropy": 8.0, "size": 1024}
+        ]
+
+    def test_a_compressed_payload_flags_like_an_encrypted_one(self, tmp_path: Path) -> None:
+        import zlib
+
+        # A real deflate stream big enough for the measure to settle: what a
+        # packer's compressed payload actually looks like on disk.
+        corpus = " ".join(f"record {i} value {i * i}" for i in range(20000)).encode()
+        payload = zlib.compress(corpus, level=9)
+        data = _elf64_with_sections([(".stash", 1, payload)])
+        facts = describe_native(_write(tmp_path, "stash.elf", data))["native"]
+        (flag,) = facts["high_entropy_sections"]
+        assert flag["section"] == ".stash"
+        assert flag["entropy"] >= 7.2
+
+    def test_ordinary_code_and_text_stay_unflagged(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections(
+            [(".text", 1, b"\x90\x48\x89\xe5\xc3" * 200), (".rodata", 1, b"hello world " * 100)]
+        )
+        facts = describe_native(_write(tmp_path, "plain.elf", data))["native"]
+        assert facts["high_entropy_sections"] == []
+
+    def test_a_section_below_the_size_floor_is_not_measured(self, tmp_path: Path) -> None:
+        # 128 near-random bytes: too few samples for the measure to mean
+        # anything, so no flag regardless of the spread.
+        data = _elf64_with_sections([(".tiny", 1, bytes(range(128)))])
+        facts = describe_native(_write(tmp_path, "tiny.elf", data))["native"]
+        assert facts["high_entropy_sections"] == []
+
+    def test_a_nobits_section_is_not_measured(self, tmp_path: Path) -> None:
+        data = _elf64_with_sections(
+            [(".bss", 1, bytes(range(256)) * 4)], nobits_names=frozenset({".bss"})
+        )
+        facts = describe_native(_write(tmp_path, "bss.elf", data))["native"]
+        assert facts["high_entropy_sections"] == []
+
+    def test_macho_flags_its_near_random_section(self, tmp_path: Path) -> None:
+        data = _macho64_with_section_payloads(
+            [("__text", b"\x90" * 512), ("__blob", bytes(range(256)) * 4)]
+        )
+        facts = describe_native(_write(tmp_path, "packed.macho", data))["native"]
+        assert facts["high_entropy_sections"] == [
+            {"section": "__blob", "entropy": 8.0, "size": 1024}
+        ]
+
+    def test_macho_ordinary_sections_stay_unflagged(self, tmp_path: Path) -> None:
+        data = _macho64_with_section_payloads([("__text", b"\x90\x48\x89\xe5\xc3" * 200)])
+        facts = describe_native(_write(tmp_path, "plain.macho", data))["native"]
+        assert facts["high_entropy_sections"] == []
+
+
 class TestElfToolchain:
     """describe_native reports .comment compiler records -- the ELF toolchain.
 
