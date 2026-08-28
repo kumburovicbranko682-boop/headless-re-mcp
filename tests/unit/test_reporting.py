@@ -120,6 +120,30 @@ def test_report_blank_title_falls_back_to_the_default_heading() -> None:
     assert markdown.startswith("# Analysis report — C:\\samples\\fixture.exe")
 
 
+def test_report_finding_kind_newlines_cannot_inject_a_section_heading() -> None:
+    """The `### {kind}` section heading is the other field that skips _cell. A
+    finding kind carrying a newline would otherwise split it into an injected
+    heading; it must be collapsed to one line like the title and table cells."""
+    knowledge = {
+        "entries": [
+            {
+                "kind": "note\n## Injected Section",
+                "key": "k",
+                "value": {"a": "b"},
+                "updated_at": "t",
+            }
+        ]
+    }
+    markdown = render_markdown_report(session=_SESSION, knowledge=knowledge, generated_at="t")
+    heading = next(line for line in markdown.splitlines() if line.startswith("### "))
+    assert heading == "### note ## Injected Section (1)"
+    # The injected text stayed on the one section-heading line rather than
+    # becoming its own `##` heading.
+    assert "## Injected Section" not in [
+        line for line in markdown.splitlines() if line.startswith("## ")
+    ]
+
+
 def test_report_states_empty_sections_explicitly() -> None:
 
     markdown = render_markdown_report(session=_SESSION, generated_at="t")

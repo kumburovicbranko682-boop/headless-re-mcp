@@ -25,6 +25,21 @@ _MAX_CELL = 120
 _MAX_TITLE = 200
 
 
+def _inline(value: object, *, limit: int = _MAX_CELL) -> str:
+    """Collapse a value to a single clipped line for use in a heading.
+
+    Headings are the fields that skip ``_cell``, so a value carrying a newline
+    would split the ``#``/``###`` line and inject arbitrary document structure
+    after it. Match ``_cell``'s newline-to-space and length handling (a heading
+    has no columns, so pipe-escaping is not needed) so every dynamic heading is
+    one bounded line regardless of what the finding or caller put in it.
+    """
+    text = str(value).replace("\n", " ").replace("\r", " ").strip()
+    if len(text) > limit:
+        text = text[: limit - 1] + "…"
+    return text
+
+
 def _heading(title: object, subject: object) -> str:
     """Bound the report title the way ``_cell`` bounds every other value.
 
@@ -39,10 +54,7 @@ def _heading(title: object, subject: object) -> str:
     default = f"Analysis report — {subject}"
     if title is None:
         return default
-    text = str(title).replace("\n", " ").replace("\r", " ").strip()
-    if len(text) > _MAX_TITLE:
-        text = text[: _MAX_TITLE - 1] + "…"
-    return text or default
+    return _inline(title, limit=_MAX_TITLE) or default
 
 
 def _cell(value: object) -> str:
@@ -197,7 +209,7 @@ def render_markdown_report(
 
             items = grouped[kind]
 
-            lines.append(f"### {kind} ({len(items)})")
+            lines.append(f"### {_inline(kind)} ({len(items)})")
 
             lines.append("")
 

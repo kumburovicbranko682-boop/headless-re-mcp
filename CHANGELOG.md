@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（报告里的发现分组标题 `### {kind}` 与上一条标题同类,也绕过 `_cell`:`knowledge_record` 只 `strip` 了 `kind`,内部换行会存活,于是 `kind="note\n## 注入段"` 在报告里渲染成 `### note` 后跟一行独立的 `## 注入段`——又一处标题注入。此前的标题修复只堵了 H1,分组标题 `### {kind}` 仍直出)
+
+- 抽出共享的 `_inline(value, *, limit)`(把 `\n`/`\r` 换空格、按 limit 裁剪加省略号——与 `_cell` 同法,但标题无列故不转义 `|`),`_heading` 改为复用它,`### {kind}` 也改走 `_inline(kind)`。至此纯渲染器里所有动态标题(H1 标题、发现分组 `###`)都统一折成一行有界文本,无论 finding/caller 塞了什么。
+- 测试:`test_reporting.py` 新增“kind 里的换行不能注入分组标题”(断言注入文本留在同一 `### ` 行、未成为独立 `##` 段)。带外验证:把 `### {kind}` 回退成直出后该例如期失败(失败 diff 里可见旧码把 `## 注入段`另起一行)——证明有牙。
+
 ### 修复（`report.generate` 的 `title` 此前不限长、也不中和换行:Markdown 报告里每个取值都过 `_cell`(裁到 120 字、`|` 转义、`\n`→空格),唯独标题作为 H1(`# {heading}`)绕过 `_cell` 直出。于是一个兆字节 `title` 会把整份报告——落盘为 artifact 且内联回显——撑到无界;带换行的 `title`(`"X\n## 注入段\n..."`)更会从 `# ` 那行“逃逸”,在标题后注入任意文档结构。与报告自身的裁剪纪律、`_note_if_partial` 的诚实上限,以及 agent 线程库对 title 一贯裁到 200 字(注释记载“10 万字 id 曾把库撑到 163 KB”)都不一致）
 
 - 在纯渲染器 `reporting.py` 里给标题上界:新增 `_MAX_TITLE=200` 与 `_heading(title, subject)`——把 `\n`/`\r` 换成空格(与 `_cell` 一致,标题保持单行)、超 200 字裁剪并接省略号、裁空后回退到默认 `Analysis report — {subject}`;渲染主体改调 `_heading`。放在纯函数里,无需数据库/文件即可单测(模块本身的设计目标)。落盘文件与内联回显都随之被界住。
