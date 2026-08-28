@@ -307,6 +307,35 @@ def test_hydrate_restores_unclean_rows_as_created(tmp_path: Path) -> None:
         registry.get("cd" * 16)
 
 
+def test_hydrate_restores_an_elf_session_as_elf(tmp_path: Path) -> None:
+    """A persisted ELF row must come back an ELF, not a PE.
+
+    Rehydration re-derives the target from the file rather than a stored
+    column, and classify_target keys an extensionless native binary off its
+    magic bytes. ELF is a first-class target now, so the realistic restore
+    path -- unclean shutdown, file still on disk -- must reclassify \\x7fELF as
+    ELF and keep the architecture the store held, exactly as the PE row above
+    does. A regression that dropped the ELF magic branch would silently
+    restore every Linux session as a PE.
+    """
+    binary = tmp_path / "a.out"
+    _write_minimal_elf(binary, 62)
+    session = session_from_store_row(
+        {
+            "id": "e1" * 16,
+            "binary": str(binary),
+            "sha256": "b" * 64,
+            "architecture": "x64",
+            "state": "running",
+        }
+    )
+    assert session is not None
+    assert session.target == TargetKind.ELF
+    assert session.architecture == Architecture.X64
+    assert session.binary is not None
+    assert session.metadata.get("missing_file") is not True
+
+
 def test_store_row_survives_a_missing_file(tmp_path: Path) -> None:
     missing = tmp_path / "gone.exe"
     session = session_from_store_row(
