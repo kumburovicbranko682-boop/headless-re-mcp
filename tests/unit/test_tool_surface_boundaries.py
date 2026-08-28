@@ -10,6 +10,7 @@ command/eval surface, or ships without the metadata clients route on, fails.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from headless_re_mcp.tools.catalog import (
@@ -221,15 +222,55 @@ def test_every_non_pe_write_tool_declares_an_observability_trace() -> None:
         assert mechanism in {"audit", "timeline"}, (name, mechanism)
 
 
+# How each mechanism actually reaches disk in the service layer. The event
+# literal is passed either straight into ``append_audit(action=...)`` /
+# ``append_session_timeline(event=...)`` or through a thin per-line helper
+# (``_audit_device`` / ``_audit_frida`` for durable rows, ``_timeline_append`` /
+# ``_note_web_action`` for session entries) that forwards to those. ``[^()]*?``
+# lets the literal sit anywhere in a possibly multi-line argument list up to the
+# first nested call -- the event is always an early positional, ahead of any
+# ``kwarg=f(...)`` -- and ``[^()]``/``\s`` both match newlines, so a call split
+# across lines is still found.
+def _emits_audit(source: str, event: str) -> bool:
+    literal = re.escape(event)
+    return any(
+        re.search(pattern, source) is not None
+        for pattern in (
+            rf'action\s*=\s*"{literal}"',
+            rf'_audit_device\([^()]*?"{literal}"',
+            rf'_audit_frida\([^()]*?"{literal}"',
+        )
+    )
+
+
+def _emits_timeline(source: str, event: str) -> bool:
+    literal = re.escape(event)
+    return any(
+        re.search(pattern, source) is not None
+        for pattern in (
+            rf'event\s*=\s*"{literal}"',
+            rf'_timeline_append\([^()]*?"{literal}"',
+            rf'_note_web_action\([^()]*?"{literal}"',
+        )
+    )
+
+
 def test_declared_observability_traces_are_actually_wired() -> None:
-    """The declared trace is real: its event/action literal exists in the service.
+    """The declared trace is real *and of the declared kind*: an audit tool emits
+    an audit row, a timeline tool emits a timeline entry.
 
     The map above is only bookkeeping unless the promised call site exists, so
-    this reads the service layer's source and asserts each declared event/action
-    string appears as a literal. It catches the two ways the wiring rots: a tool
-    added to the map but never instrumented, and instrumentation removed from a
-    tool during a refactor while the map still claims it. Both leave an operator
-    with a silent state change, which is exactly what the map is meant to prevent.
+    this reads the service layer's source and asserts each declared event reaches
+    disk through the mechanism it claims -- not merely that the literal appears
+    somewhere. That distinction is the point: several tools carry both an audit
+    row and a timeline entry (frida.hook.template, frida.spawn, frida.server.ensure,
+    proxy.ca.install_android) and are declared by the durable audit, the stronger
+    cross-session guarantee. A refactor that dropped the audit call but kept the
+    timeline one would leave the literal in the source, so a bare substring check
+    would still pass while an operator quietly lost the row that survives session
+    trimming. Requiring the audit emit specifically catches that downgrade, along
+    with the two coarser rots: a tool added to the map but never instrumented, and
+    instrumentation removed while the map still claims it.
     """
     import headless_re_mcp.core as core_pkg
 
@@ -239,9 +280,9 @@ def test_declared_observability_traces_are_actually_wired() -> None:
     )
     assert source, "no service source found to check trace wiring against"
 
-    missing = [
-        name
-        for name, (_mechanism, event) in _NON_PE_WRITE_TRACES.items()
-        if f'"{event}"' not in source
-    ]
-    assert missing == [], f"declared traces with no call site in the service layer: {missing}"
+    wrong: list[str] = []
+    for name, (mechanism, event) in _NON_PE_WRITE_TRACES.items():
+        emits = _emits_audit if mechanism == "audit" else _emits_timeline
+        if not emits(source, event):
+            wrong.append(f"{name}: declares {mechanism} but no {mechanism} emit for {event!r}")
+    assert wrong == [], f"declared traces not wired to their mechanism: {wrong}"

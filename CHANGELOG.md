@@ -88,6 +88,17 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   为假;methods 路径独立钉住同一 limit+1 纪律;越过 schema 上限的 `limit=10000` 被后端重钳到 2000,故向脚本请求\
   2001——证明是后端在重新收口枚举,而不仅是 schema。
 
+### 测试（非 PE 写工具的可观测性守卫改为“按声明的机制”校验，能抓住把持久审计悄悄降级为纯时间线的重构）
+
+- `test_declared_observability_traces_are_actually_wired` 过去只断言事件字面量在 service 层“某处出现”。可\
+  `frida.hook.template` / `frida.spawn` / `frida.server.ensure` / `proxy.ca.install_android` 都同时写审计行与\
+  时间线条目,并以更强的跨会话审计作声明;一次只删掉 `append_audit` 调用、留下 `_timeline_append` 的重构会让字面量\
+  仍在源码里,裸子串检查照过,运维却悄悄失去那条能挺过会话裁剪的持久行。现改为按声明的机制校验:审计声明必须命中\
+  一处审计写入(`action="…"`、`_audit_device(…)`、`_audit_frida(…)`),时间线声明必须命中一处时间线写入\
+  (`event="…"`、`_timeline_append(…)`、`_note_web_action(…)`),`[^()]` 与 `\s` 跨行匹配以容纳多行调用。这样上述\
+  降级会让审计侧命中失败而报错;并用一组正反例证明该检查确实按机制区分(device.install 只算审计、不算时间线,\
+  web.click 反之),而非恒真。
+
 
 
 - `timeline.list` 是无人值守跑完后运维要看的可观测性面，一旦某条时间线 `details` 里进了密钥就是一次持久泄漏。\
