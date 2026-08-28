@@ -1365,6 +1365,107 @@ def test_web_meta_reads_the_head_off_a_real_page() -> None:
             service.close_all()
 
 
+_LINKS_PAGE = (
+    b"<!doctype html><html><head><title>links-gate</title>"
+    b'<link rel="stylesheet" href="/app.css">'
+    b'<script src="//cdn.example/lib.js"></script>'
+    b"</head><body>"
+    b'<a href="/home">Home</a>'
+    b'<a href="page2.html">Relative</a>'
+    b'<a href="https://evil.test/steal" target="_blank" rel="noopener">Claim prize</a>'
+    b'<a href="mailto:abuse@site.test">Contact</a>'
+    b'<img src="https://img.example/logo.png">'
+    b'<iframe src="https://frame.evil.test/track"></iframe>'
+    b"</body></html>"
+)
+
+
+@contextmanager
+def _links_site() -> Iterator[str]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(_LINKS_PAGE)))
+            self.end_headers()
+            self.wfile.write(_LINKS_PAGE)
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.integration
+def test_web_links_maps_outbound_refs_off_a_real_page() -> None:
+    """The outbound reference map was not reconstructible from dom.query alone.
+
+    dom.query returns raw, unresolved attributes; a relative href stayed
+    relative and no origin roll-up existed. Drive a page mixing same-origin
+    links, a relative link, a cross-origin link (target=_blank), a mailto, and
+    cross-origin subresources (a protocol-relative script, an image, an iframe),
+    then assert web.links resolves each to an absolute URL, flags the off-site
+    ones external, and rolls the distinct origins up.
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web links Gate not run (skip != pass)")
+    with _links_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=40.0)
+            if not opened.ok:
+                pytest.skip(
+                    f"chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+
+            res = service.web_links(session_id)
+            assert res.ok, res.error
+            data = res.data
+            page_origin = data["page_origin"]
+            assert page_origin.startswith("http://127.0.0.1")
+
+            by_text = {link["text"]: link for link in data["links"]}
+            # A relative href resolves against the page: absolute and same-origin.
+            rel = by_text["Relative"]
+            assert rel["href"] == urllib.parse.urljoin(url, "page2.html")
+            assert rel["external"] is False
+            assert by_text["Home"]["external"] is False
+            # The cross-origin phishing link is flagged external with its attrs.
+            steal = by_text["Claim prize"]
+            assert steal["href"] == "https://evil.test/steal"
+            assert steal["external"] is True
+            assert steal["target"] == "_blank"
+            assert by_text["Contact"]["external"] is True  # mailto is off-origin
+
+            res_by_kind = {(r["kind"], r["url"]) for r in data["resources"]}
+            # The protocol-relative script resolves to https against this origin.
+            assert ("script", "https://cdn.example/lib.js") in res_by_kind
+            assert ("image", "https://img.example/logo.png") in res_by_kind
+            assert ("iframe", "https://frame.evil.test/track") in res_by_kind
+
+            origins = {row["origin"] for row in data["origins"]}
+            assert "https://evil.test" in origins
+            assert "https://frame.evil.test" in origins
+            assert page_origin in origins
+            # evil.test, frame.evil.test, cdn.example, img.example, mailto: are
+            # all off the page origin.
+            assert data["external_count"] >= 5
+        finally:
+            service.close_all()
+
+
 @pytest.mark.integration
 def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:

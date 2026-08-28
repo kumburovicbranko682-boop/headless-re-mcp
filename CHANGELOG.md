@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **299（179 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **300（180 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -666,6 +666,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不移动函数索引空间，故转导出的导入在索引 0 仍解析为导入函数类型）、内部名挂接与非函数导出无签名字段，并另有 wat2wasm
   交叉校验（缺 wabt 时 skip≠pass）；单测另覆盖过滤、`signature_unknown`、空导出、4096 截断与非模块拒绝。该工具计入读效果，
   工具面因此 292→293。
+- **看不清「这页把人往哪送、又从哪些源头拉代码和内容」**。`web.dom.query` 回的是没解析的生属性（相对 href 还是相对的），
+  `web.scripts` 只列已加载脚本的 URL、`web.frames` 只列 iframe，谁都答不上钓鱼/外泄三查的第一问——出站引用图。新增只读的
+  `web.links`：把 DOM 走一遍，每个引用都对文档解析，故相对 href 或协议相对的 script src 回来时就是浏览器真会去取的绝对
+  URL，再把去重后的源头卷起来，跨源目标一眼可见。回 `links`（可导航锚点，每条 href/text/target/rel/external）与 `resources`
+  （已加载子资源，每条 url、kind 为 script/stylesheet/image/media/iframe/embed/object、external），`external` 在引用源与页面
+  源不同时为真。外加 `origins`（每个去重源头带命中次数，最忙的在前——mailto:/tel:/javascript: 按其 scheme 归桶）、
+  `page_origin`，以及两段各自的 count/total/truncated 与 `origin_count`、`external_count`（有多少个去重源头在站外）。锚点带真
+  `link_total`、子资源整段走完计真 `resource_total`（收集封顶 500，超出照数），故截断旗标如实。没有生 HTML——要生标记去
+  `web.dom.snapshot`。活体门起本地页面混排同源链接、相对链接、跨源钓鱼链接（target=_blank）、mailto，加协议相对脚本、图片、
+  iframe 三种跨源子资源，断言相对 href 解析成绝对、站外的标 external、源头卷积与 external_count；单测另覆盖 external 判定、
+  源头计数按锚点+资源合并、资源溢出、空页、非 dict 载荷、evaluate 崩溃映射 `backend_error`、上限透传与 docstring 形状。该
+  工具计入读效果，工具面因此 299→300。
 - **看得到模块导入/导出的全局，看不到它自己定义的全局**。`wasm.imports` 解导入的全局、`wasm.exports` 只报导出全局的名字，
   可模块自有的全局（section 6）——链接器放影子栈指针、堆基址、功能旗标的地方——连同它们的初始值谁都不列。种子常量恰恰是
   分析者最想要的那个数（栈指针的 `i32.const 0x100000`、旗标的 `i32.const 1`）。新增只读的 `wasm.globals`：直接解 global 段

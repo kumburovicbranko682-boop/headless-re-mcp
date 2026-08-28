@@ -386,6 +386,31 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_meta(session_id))
 
+    @tools.tool(name="web.links")
+    def web_links(session_id: str) -> dict[str, Any]:
+        """The page's outbound reference map: anchors and loaded subresources.
+
+        web.dom.query hands back raw, unresolved attributes; web.scripts lists
+        only script URLs and web.frames only iframes. Neither answers "where does
+        this page send a user, and what origins does it pull code and content
+        from?" -- the first question in phishing/exfil triage. This walks the DOM
+        once and resolves every reference against the document, so a relative
+        href or a protocol-relative script src comes back as the absolute URL the
+        browser would fetch, then rolls the distinct origins up so a cross-origin
+        target stands out.
+
+        Answers with links (navigable anchors, each href/text/target/rel/
+        external) and resources (loaded subresources, each url/kind of script/
+        stylesheet/image/media/iframe/embed/object/external), where external is
+        true when the reference's origin differs from the page origin. Also
+        origins (each distinct origin with its hit count, busiest first -- a
+        mailto:/tel:/javascript: reference buckets under its scheme), page_origin,
+        and per-section count/total/truncated plus origin_count and
+        external_count (how many distinct origins are off-site). There is no raw
+        HTML -- use web.dom.snapshot for that.
+        """
+        return _dump(analysis.web_links(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.

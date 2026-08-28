@@ -83,6 +83,12 @@ _MAX_FORM_FIELDS = 200
 # capped and each value is bounded like other metadata.
 _MAX_META_ITEMS = 200
 _MAX_LINK_ITEMS = 200
+# The page's outbound reference map: navigable anchors and loaded subresources.
+# A link-farm or ad-heavy page carries thousands of each, so both lists and the
+# distinct-origin roll-up are capped, with each cut announced.
+_MAX_ANCHORS = 500
+_MAX_SUBRESOURCES = 500
+_MAX_LINK_ORIGINS = 200
 # Kept in the per-request entry but stripped from network.list rows so a page of
 # the list stays cheap; network.get returns them in full.
 _HEADER_KEYS = ("request_headers", "response_headers")
@@ -1741,6 +1747,187 @@ class WebBackend:
                 "link_count": len(links),
                 "link_total": link_total,
                 "links_truncated": link_total > len(links),
+            }
+
+        return self._runner(handle).call(work)
+
+    def links(self, session_id: str) -> JsonObject:
+        """The page's outbound reference map: anchors and loaded subresources.
+
+        dom.query hands back raw, unresolved attributes; scripts lists only
+        script URLs and frames only iframes. Neither answers "where does this
+        page send a user, and what origins does it pull code and content from?"
+        -- the first question in phishing/exfil triage. This walks the DOM once
+        and resolves every reference against the document, so a relative href or
+        a protocol-relative script src comes back as the absolute URL the
+        browser would fetch, then rolls the distinct origins up so a cross-origin
+        target stands out.
+
+        Returns links (navigable anchors -- href, text, target, rel, external)
+        and resources (loaded subresources -- url, kind of script/stylesheet/
+        image/media/iframe/embed/object, external), each external flag true when
+        the reference's origin differs from the page origin. Also origins (each
+        distinct origin with its hit count, busiest first -- a mailto:/tel:/
+        javascript: reference buckets under its scheme), page_origin, and per
+        section count/total/truncated plus origin_count and external_count (how
+        many distinct origins are off-site).
+        """
+        handle = self._get(session_id)
+
+        # Resolve every reference in-page against the document so a relative or
+        # protocol-relative URL comes back absolute (the .href/.src DOM
+        # properties already do this), and classify each by the page origin. The
+        # lists are sliced in-page so a link farm never floods the bridge.
+        script = """
+        (cfg) => {
+          const pageOrigin = (() => {
+            try { return String(location.origin || ""); } catch (e) { return ""; }
+          })();
+          const originOf = (u) => {
+            try {
+              const url = new URL(u);
+              if (url.origin && url.origin !== "null") return url.origin;
+              return String(url.protocol || "");
+            } catch (e) { return ""; }
+          };
+          const attr = (el, name) => {
+            try { const v = el.getAttribute(name); return v == null ? null : String(v); }
+            catch (e) { return null; }
+          };
+          const anchorEls = document.querySelectorAll("a[href], area[href]");
+          const anchors = [];
+          const na = Math.min(anchorEls.length, cfg.maxAnchors);
+          for (let i = 0; i < na; i++) {
+            const el = anchorEls[i];
+            let href = "";
+            try { href = String(el.href || ""); } catch (e) { href = attr(el, "href") || ""; }
+            let text = "";
+            try { text = String(el.textContent || "").trim().slice(0, cfg.maxValueChars); }
+            catch (e) { text = ""; }
+            anchors.push({
+              href: href,
+              text: text,
+              target: attr(el, "target"),
+              rel: attr(el, "rel"),
+              origin: originOf(href),
+            });
+          }
+          // (selector, kind, urlProp, urlAttr) for each subresource-bearing tag.
+          const resSpecs = [
+            ["script[src]", "script", "src"],
+            ["link[href]", "stylesheet", "href"],
+            ["img[src]", "image", "src"],
+            ["source[src]", "media", "src"],
+            ["video[src]", "media", "src"],
+            ["audio[src]", "media", "src"],
+            ["iframe[src]", "iframe", "src"],
+            ["embed[src]", "embed", "src"],
+            ["object[data]", "object", "data"],
+          ];
+          const resources = [];
+          let resourceTotal = 0;
+          for (const spec of resSpecs) {
+            const els = document.querySelectorAll(spec[0]);
+            for (let i = 0; i < els.length; i++) {
+              const el = els[i];
+              let url = "";
+              try { url = String(el[spec[2]] || ""); } catch (e) { url = attr(el, spec[2]) || ""; }
+              if (!url) continue;
+              resourceTotal++;
+              if (resources.length < cfg.maxResources) {
+                resources.push({ url: url, kind: spec[1], origin: originOf(url) });
+              }
+            }
+          }
+          return {
+            page_origin: pageOrigin,
+            anchors: anchors,
+            anchor_total: anchorEls.length,
+            resources: resources,
+            resource_total: resourceTotal,
+          };
+        }
+        """
+
+        def work() -> JsonObject:
+            try:
+                raw = handle.page.evaluate(
+                    script,
+                    {
+                        "maxAnchors": _MAX_ANCHORS,
+                        "maxResources": _MAX_SUBRESOURCES,
+                        "maxValueChars": _MAX_DOM_VALUE_CHARS,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"links read failed: {exc}") from exc
+            if not isinstance(raw, dict):
+                raw = {}
+
+            page_origin = _bounded_metadata(raw.get("page_origin"), _MAX_METADATA_BYTES)[0]
+            origin_counts: dict[str, int] = {}
+            external_origins: set[str] = set()
+
+            def _note_origin(origin: str) -> None:
+                if not origin:
+                    return
+                origin_counts[origin] = origin_counts.get(origin, 0) + 1
+                if origin != page_origin:
+                    external_origins.add(origin)
+
+            anchors_in = raw.get("anchors")
+            links: list[JsonObject] = []
+            for item in anchors_in if isinstance(anchors_in, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                origin = str(item.get("origin") or "")
+                _note_origin(origin)
+                entry: JsonObject = {
+                    "href": _bounded_metadata(item.get("href"), _MAX_URL_BYTES)[0],
+                    "text": _bounded_metadata(item.get("text"), _MAX_DOM_VALUE_BYTES)[0],
+                    "external": bool(origin) and origin != page_origin,
+                }
+                for key in ("target", "rel"):
+                    value = item.get(key)
+                    if value is not None:
+                        entry[key] = _bounded_metadata(value, _MAX_METADATA_BYTES)[0]
+                links.append(entry)
+
+            resources_in = raw.get("resources")
+            resources: list[JsonObject] = []
+            for item in resources_in if isinstance(resources_in, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                origin = str(item.get("origin") or "")
+                _note_origin(origin)
+                resources.append(
+                    {
+                        "url": _bounded_metadata(item.get("url"), _MAX_URL_BYTES)[0],
+                        "kind": _bounded_metadata(item.get("kind"), _MAX_METADATA_BYTES)[0],
+                        "external": bool(origin) and origin != page_origin,
+                    }
+                )
+
+            ranked = sorted(origin_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            origins = [
+                {"origin": origin, "count": count}
+                for origin, count in ranked[:_MAX_LINK_ORIGINS]
+            ]
+            anchor_total = int(raw.get("anchor_total") or 0)
+            resource_total = int(raw.get("resource_total") or 0)
+            return {
+                "page_origin": page_origin,
+                "links": links,
+                "link_count": len(links),
+                "link_total": anchor_total,
+                "links_truncated": anchor_total > len(links),
+                "resources": resources,
+                "resource_count": len(resources),
+                "resource_total": resource_total,
+                "resources_truncated": resource_total > len(resources),
+                "origins": origins,
+                "origin_count": len(origin_counts),
+                "external_count": len(external_origins),
             }
 
         return self._runner(handle).call(work)
