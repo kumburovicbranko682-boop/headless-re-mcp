@@ -121,10 +121,26 @@ class JsReAnalysisMixin:
             if out_dir is not None:
                 prune_jsre_unpack_dirs(out_dir.parent)
 
+    def _jsre_spill_path(self, stem: str, suffix: str) -> Path:
+        """A unique jsre-area path for a WASM tool's full (untruncated) output.
+
+        The file lands beside the unpack trees in artifact_root/jsre so the same
+        prune_capped_dir sweep bounds it -- it is written only when the inline
+        text was cut, and is session-less like the rest of this backend.
+        """
+        root = self.settings.artifact_root.expanduser().resolve() / "jsre"
+        return root / f"{stem}-{uuid4().hex}{suffix}"
+
     def wasm_wat(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            spill_path = self._jsre_spill_path("wat", ".wat")
             data = WasmClient(getattr(self.settings, "wabt", None)).wat(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_path=spill_path
+            )
+            prune_capped_dir(
+                spill_path.parent,
+                max_entries=JSRE_UNPACK_MAX_ENTRIES,
+                max_bytes=JSRE_UNPACK_MAX_BYTES,
             )
             return _success(data, backend="wabt")
         except JsReError as exc:
@@ -134,8 +150,14 @@ class JsReAnalysisMixin:
 
     def wasm_info(self, path: str, timeout: float = 120.0) -> Result[JsonObject]:
         try:
+            spill_path = self._jsre_spill_path("objdump", ".txt")
             data = WasmClient(getattr(self.settings, "wabt", None)).info(
-                Path(path), timeout=timeout
+                Path(path), timeout=timeout, spill_path=spill_path
+            )
+            prune_capped_dir(
+                spill_path.parent,
+                max_entries=JSRE_UNPACK_MAX_ENTRIES,
+                max_bytes=JSRE_UNPACK_MAX_BYTES,
             )
             return _success(data, backend="wabt")
         except JsReError as exc:

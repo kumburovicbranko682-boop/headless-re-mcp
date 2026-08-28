@@ -84,9 +84,11 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with wat and bytes, plus truncated when the text was cut at
         the buffer, and exit_code / tool_failed / stderr when wasm2wat exits
-        non-zero but still emitted text. An input over 16 MiB is refused as
-        too_large, and a file that is not a WebAssembly module as
-        invalid_params, rather than handed to wasm2wat.
+        non-zero but still emitted text. When truncated is set the complete WAT
+        is written to output_path (the wat field holds only the leading buffer),
+        so a large module's later functions are recoverable rather than lost. An
+        input over 16 MiB is refused as too_large, and a file that is not a
+        WebAssembly module as invalid_params, rather than handed to wasm2wat.
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
@@ -99,9 +101,11 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with objdump holding that text, not a sections list, plus
         truncated when the text was cut at the buffer, and exit_code /
         tool_failed / stderr when wasm-objdump exits non-zero but still
-        emitted text. An input over 16 MiB is refused as too_large, and a file
-        that is not a WebAssembly module as invalid_params, rather than handed
-        to wasm-objdump.
+        emitted text. When truncated is set the complete dump is written to
+        output_path (the objdump field holds only the leading buffer), so the
+        sections past the cut are recoverable. An input over 16 MiB is refused
+        as too_large, and a file that is not a WebAssembly module as
+        invalid_params, rather than handed to wasm-objdump.
         """
         return _dump(analysis.wasm_info(path, timeout=timeout))
 

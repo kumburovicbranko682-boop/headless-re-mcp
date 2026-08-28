@@ -140,6 +140,95 @@ def test_js_deobfuscate_applies_inline_limit_to_encoded_bytes(
     assert len(str(payload["code"]).encode("utf-8")) <= 5
 
 
+def test_wasm_wat_spills_the_full_text_when_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A WAT past the inline buffer must be recoverable in full on disk.
+
+    wasm.wat caps the inline wat at the buffer with truncated set; unlike
+    js.deobfuscate it has no unpack_bundle to fall back on, so before this the
+    tail of a large module's disassembly was simply gone. Feed a body over a
+    tiny cap and assert the reply is truncated, the inline text is capped, and
+    output_path holds every byte wasm2wat emitted.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 8)
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "(module (func $f))\n" * 50
+    spill = tmp_path / "spill" / "wat-x.wat"
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).wat(module, spill_path=spill)
+
+    assert payload["truncated"] is True
+    assert len(str(payload["wat"]).encode("utf-8")) <= 8
+    assert payload["output_path"] == str(spill)
+    assert spill.read_bytes() == body.encode("utf-8")
+    assert payload["bytes"] == len(body.encode("utf-8"))
+
+
+def test_wasm_wat_does_not_spill_when_the_text_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Output that fits the buffer must not leave a file or an output_path.
+
+    The spill is a recovery path for a cut result, not an always-on write:
+    a small module should return inline with no output_path and no file on
+    disk, so retention is not fed a file per call.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 4096)
+    tool = tmp_path / "wasm2wat.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "(module)"
+    spill = tmp_path / "spill" / "wat-x.wat"
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).wat(module, spill_path=spill)
+
+    assert payload["truncated"] is False
+    assert "output_path" not in payload
+    assert not spill.exists()
+
+
+def test_wasm_info_spills_the_full_dump_when_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wasm.info shares the spill path; a cut objdump is recoverable too."""
+    from headless_re_mcp.backends.jsre import client as mod
+
+    monkeypatch.setattr(mod, "_MAX_INLINE", 8)
+    tool = tmp_path / "wasm-objdump.exe"
+    tool.write_bytes(b"")
+    module = tmp_path / "m.wasm"
+    module.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    body = "Section Details:\n" * 40
+    spill = tmp_path / "spill" / "objdump-x.txt"
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, body.encode("utf-8"), b"")
+
+    with patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run):
+        payload = WasmClient(tool).info(module, spill_path=spill)
+
+    assert payload["truncated"] is True
+    assert payload["output_path"] == str(spill)
+    assert spill.read_bytes() == body.encode("utf-8")
+
+
 def test_js_beautify_names_bytes_not_size(tmp_path: Path) -> None:
     """The catalog repeated code/truncated and never named bytes.
 
@@ -185,6 +274,10 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "Answers with wat" in _tool_docstring("wasm.wat")
     assert "bytes" in _tool_docstring("wasm.wat")
     assert "truncated" in _tool_docstring("wasm.info")
+    # The WASM tools have no unpack_bundle to fall back on, so a truncated
+    # result must name where the full text landed or the tail is a dead end.
+    assert "output_path" in _tool_docstring("wasm.wat")
+    assert "output_path" in _tool_docstring("wasm.info")
     assert "too_large" in _tool_docstring("js.deobfuscate")
     assert "too_large" in _tool_docstring("js.unpack_bundle")
     assert "too_large" in _tool_docstring("wasm.info")

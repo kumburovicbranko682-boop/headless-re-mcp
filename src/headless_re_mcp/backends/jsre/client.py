@@ -124,14 +124,31 @@ def _run(
     return stdout, stderr, int(completed.returncode)
 
 
-def _bounded_output(text: str, key: str, *, include_bytes: bool) -> JsonObject:
+def _bounded_output(
+    text: str, key: str, *, include_bytes: bool, spill_path: Path | None = None
+) -> JsonObject:
     payload = text.encode("utf-8", errors="replace")
+    truncated = len(payload) > _MAX_INLINE
     result: JsonObject = {
         key: payload[:_MAX_INLINE].decode("utf-8", errors="ignore"),
-        "truncated": len(payload) > _MAX_INLINE,
+        "truncated": truncated,
     }
     if include_bytes:
         result["bytes"] = len(payload)
+    # The inline text is capped, and unlike js.unpack_bundle these WASM tools
+    # have no companion that writes the whole thing to disk -- so a truncated
+    # WAT dropped every function past the buffer with no way to get it back.
+    # When the caller offers a spill path, persist the full output there and
+    # name it so the tail is recoverable. Best-effort: a failed write leaves the
+    # truncated text in place rather than turning a large module into an error.
+    if truncated and spill_path is not None:
+        try:
+            spill_path.parent.mkdir(parents=True, exist_ok=True)
+            spill_path.write_bytes(payload)
+        except OSError:
+            pass
+        else:
+            result["output_path"] = str(spill_path)
     return result
 
 
@@ -259,7 +276,9 @@ class WasmClient:
             )
         return resolved
 
-    def wat(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def wat(
+        self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path, self._wasm2wat, "wasm2wat")
         assert self._wasm2wat is not None
         stdout, stderr, code = _run([str(self._wasm2wat), str(resolved)], timeout=timeout)
@@ -268,10 +287,14 @@ class WasmClient:
                 "backend_error", "wasm2wat failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "wat", include_bytes=True), code=code, stderr=stderr
+            _bounded_output(stdout, "wat", include_bytes=True, spill_path=spill_path),
+            code=code,
+            stderr=stderr,
         )
 
-    def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
+    def info(
+        self, path: Path, *, timeout: float = 120.0, spill_path: Path | None = None
+    ) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
         assert self._objdump is not None
         stdout, stderr, code = _run(
@@ -282,7 +305,9 @@ class WasmClient:
                 "backend_error", "wasm-objdump failed", exit_code=code, stderr=stderr[:_MAX_STDERR]
             )
         return _note_nonzero_exit(
-            _bounded_output(stdout, "objdump", include_bytes=False), code=code, stderr=stderr
+            _bounded_output(stdout, "objdump", include_bytes=False, spill_path=spill_path),
+            code=code,
+            stderr=stderr,
         )
 
 

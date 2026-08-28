@@ -142,6 +142,35 @@ def test_wasm_info_wraps_the_payload_under_the_wabt_backend(
     assert result.data["objdump"] == dump.decode("utf-8")
 
 
+def test_wasm_wat_over_the_buffer_spills_the_full_text_under_the_jsre_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated WAT must land its full text in the session-less jsre area.
+
+    Drives the whole service -> client path: a wasm2wat stdout past the inline
+    cap comes back truncated, and output_path must name a real file under
+    artifact_root/jsre holding every byte, so a large module's tail is
+    recoverable exactly as the docstring promises.
+    """
+    body = b"(module (func $f (result i32) i32.const 42))\n" * 60
+    monkeypatch.setattr(jsre_client, "_MAX_INLINE", 16)
+    monkeypatch.setattr(jsre_client, "run_bounded", _stub_run(body))
+    service = _service(tmp_path)
+    try:
+        result = service.wasm_wat(str(_wasm_input(tmp_path)))
+    finally:
+        service.close_all()
+
+    assert result.ok, result.error
+    assert result.data is not None
+    assert result.data["truncated"] is True
+    spilled = Path(result.data["output_path"])
+    assert spilled.is_file()
+    jsre_root = (tmp_path / "artifacts" / "jsre").resolve()
+    assert jsre_root in spilled.resolve().parents
+    assert spilled.read_bytes() == body
+
+
 def test_an_unexpected_backend_exception_is_contained_as_a_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
