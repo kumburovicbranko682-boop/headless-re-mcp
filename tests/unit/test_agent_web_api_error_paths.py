@@ -358,6 +358,50 @@ def test_cancel_a_missing_mission_is_a_404(app_client: Any) -> None:
     assert reply.json()["detail"] == "mission_not_found"
 
 
+def test_create_mission_rejects_an_overflowing_max_runs_as_a_400(app_client: Any) -> None:
+    """A JSON 1e400 parses to float('inf'); int(inf) raises OverflowError, not a
+    ValueError, so before the guard this bad max_runs became a 500 with a logged
+    incident instead of the 400 every other malformed value already got."""
+    client, _ = app_client
+    # Sent as raw text: the client-side JSON encoder refuses to serialize a
+    # Python inf, but the server's json.loads parses the 1e400 token to inf,
+    # which is exactly what a hostile client does.
+    reply = client.post(
+        "/api/agent/missions",
+        content='{"objective": "recover key", "max_runs": 1e400}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert reply.status_code == 400, reply.text
+
+
+def test_create_mission_clamps_a_huge_but_valid_max_runs(app_client: Any) -> None:
+    """The guard must reject only what int() cannot convert; a real integer over
+    the ceiling still succeeds, clamped by validate_mission."""
+    client, _ = app_client
+    reply = client.post(
+        "/api/agent/missions",
+        json={"objective": "recover key", "max_runs": 10**9},
+    )
+    assert reply.status_code == 201, reply.text
+    assert reply.json()["mission"]["max_runs"] == 128
+
+
+def test_save_provider_rejects_an_overflowing_threshold_as_a_400(app_client: Any) -> None:
+    """The provider route has the same int(body.get(...)) coercion; a 1e400
+    context_compression_threshold_percent raised OverflowError past the
+    (TypeError, ValueError) handler and 500'd before the guard."""
+    client, _ = app_client
+    reply = client.put(
+        "/api/providers/p1",
+        content=(
+            '{"base_url": "https://example/v1", "model": "gpt-x", '
+            '"context_compression_threshold_percent": 1e400}'
+        ),
+        headers={"Content-Type": "application/json"},
+    )
+    assert reply.status_code == 400, reply.text
+
+
 # --- watchdog & autonomy ----------------------------------------------------
 
 
