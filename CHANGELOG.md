@@ -5,6 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（proxy 客户端降级测试假设 mitmproxy 未安装）
+
+- `test_proxy_client_paths.py` 与 `test_proxy_client_guard_paths.py` 三个用例用"环境里恰好没装
+  mitmproxy"来验证缺席弧：`test_instance_start_reports_a_thread_that_fails_to_launch_mitmproxy`
+  与 `test_backend_check_available_reports_and_caches` 断言 `_run`/`start()` 把导入失败
+  surfacing 成 `backend_error`/`capability_unavailable`，`test_instance_run_records_an_import_failure`
+  更直接 `assert "mitmproxy" not in sys.modules`。这在 CI（无 `[proxy]` extra）成立，但只要装了
+  extra，导入就成功——`_run` 会去起一个真代理、`start()` 走正常路径、那句 `not in sys.modules`
+  当场失败。改法与 apk/web 降级测试一致：`monkeypatch.setitem(sys.modules, "mitmproxy", None)`
+  让 `import mitmproxy` 与 `from mitmproxy import ...` 都必抛 `ImportError`（父模块置 None 即可，
+  已验证对惰性子模块导入同样生效），无论 extra 是否安装都确定性地走缺席路径。只改测试、不动源码。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
