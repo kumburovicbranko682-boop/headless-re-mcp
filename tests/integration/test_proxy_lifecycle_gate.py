@@ -306,11 +306,11 @@ def test_proxy_records_a_real_request_and_exports_it_to_har(tmp_path: Path) -> N
         assert recorded, f"the captured flow list does not contain {target}: {flows['flows']}"
         assert recorded[0]["method"] == "GET"
         assert recorded[0]["status"] == 200
-        # The recorder computes each flow's decoded response body length up front
-        # so the summary keeps it even for a flow whose body was later dropped
-        # from the retain ring. The upstream serves a fixed 19-byte body with an
-        # explicit Content-Length and no content-encoding, so raw_content is
-        # exactly those bytes -- the same length flow.get reports below. Pin it:
+        # The recorder computes each flow's on-wire (raw) response body length up
+        # front so the summary keeps it even for a flow whose body was later
+        # dropped from the retain ring. The upstream serves a fixed 19-byte body
+        # with an explicit Content-Length and no content-encoding, so raw_content
+        # is exactly those bytes -- the same length flow.get reports below. Pin it:
         # a regression that stopped recording response_size would otherwise pass
         # every url/status assertion while silently feeding the HAR nothing.
         body_size = len(b"hello-through-proxy")

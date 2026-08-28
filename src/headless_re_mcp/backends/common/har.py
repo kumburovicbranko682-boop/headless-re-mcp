@@ -127,8 +127,13 @@ def har_entry(
     -- empty cookie/header arrays, -1 sizes, unknown timings -- because omitting
     them makes a strict consumer reject the entire log rather than the one
     absent field. ``queryString`` is parsed from the URL, and when the capture
-    knows the decoded response body length (``response_body_size``) it fills
-    ``content.size`` and ``response.bodySize`` instead of the -1 sentinel.
+    knows the received (on-wire) response body length (``response_body_size``)
+    it fills ``content.size`` and ``response.bodySize`` instead of the -1
+    sentinel. That on-wire length is exactly ``bodySize``; the capture holds no
+    separate decoded length, so a compressed response's ``content.size`` (which
+    the spec defines as the uncompressed size) carries the same on-wire figure
+    rather than a -1 -- accurate for the uncompressed common case and a floor
+    otherwise.
     ``resource_type`` rides along as Chrome's ``_resourceType`` extension so the
     browser capture keeps that hint. ``timings_ms`` carries whichever of the
     send/wait/receive phases the capture measured (milliseconds); measured

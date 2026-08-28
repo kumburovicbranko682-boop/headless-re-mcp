@@ -198,7 +198,7 @@ def test_a_url_the_parser_rejects_does_not_sink_the_whole_export() -> None:
 
 
 def test_har_entry_reports_a_known_response_body_size() -> None:
-    """When the capture knows the decoded body length it must not emit -1."""
+    """When the capture knows the received (on-wire) body length it must not emit -1."""
     known = har_entry(
         method="GET",
         url="https://x/1",
@@ -732,12 +732,12 @@ def test_proxy_export_har_writes_a_valid_har(tmp_path: Path) -> None:
 
 
 def test_proxy_export_har_carries_the_captured_response_body_size(tmp_path: Path) -> None:
-    """The proxy knows each decoded body length; the HAR must report it.
+    """The proxy knows each on-wire body length; the HAR must report it.
 
-    The recorder computes the response body length when the flow arrives, even
-    for a flow whose body is later dropped from the retain ring, so the export
-    can fill content.size and bodySize with a real number instead of -1. The
-    same number surfaces on proxy.flows as response_size.
+    The recorder computes the received (raw) response body length when the flow
+    arrives, even for a flow whose body is later dropped from the retain ring, so
+    the export can fill content.size and bodySize with a real number instead of
+    -1. The same number surfaces on proxy.flows as response_size.
     """
     backend = _proxy_backend_with_flows(3, body_len=512)
     flows = backend.flows("s", offset=0, limit=10)

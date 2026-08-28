@@ -259,11 +259,13 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
 
 
 def _raw_body(part: Any) -> bytes:
-    """The raw bytes of a request/response, or empty when there is no body.
+    """The raw, on-wire bytes of a request/response, or empty when there is none.
 
-    mitmproxy decodes ``raw_content`` lazily and can raise while doing so; a
-    failure there is not a reason to fail the whole fetch, so it reads as an
-    empty body the same way a bodyless message does.
+    ``raw_content`` is the body as it crossed the wire (still ``Content-Encoding``
+    compressed if it was), not the decoded ``content`` -- so no decompression
+    happens here and the length matches ``response_size``. The access is guarded
+    only defensively: a broken message object must read as an empty body rather
+    than fail the whole fetch.
     """
     if part is None:
         return b""
@@ -407,10 +409,11 @@ class _FlowRecorder:
             resp.headers.get("content-type", "") if resp else "",
             _MAX_METADATA_BYTES,
         )
-        # The decoded response body length is known here, before the flow may be
-        # dropped from the retain ring, so the summary keeps it even for a flow
-        # whose body was not retained -- and the HAR export can report a real
-        # content size instead of the -1 "unknown" sentinel.
+        # The on-wire (raw) response body length is known here, before the flow
+        # may be dropped from the retain ring, so the summary keeps it even for a
+        # flow whose body was not retained -- and the HAR export can report a real
+        # body size instead of the -1 "unknown" sentinel. It is the raw,
+        # still-encoded length, consistent with the bytes proxy.flow.get returns.
         response_size = _content_len(resp)
         # When the request began, as mitmproxy timestamped it. Kept so the HAR
         # export can report a real per-flow startedDateTime instead of stamping

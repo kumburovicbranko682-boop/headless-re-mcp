@@ -60,8 +60,10 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with flows (id, seq, method, url, host, status, content_type,
         response_size), count, total, offset, has_more, and dropped.
-        response_size is the decoded response body length in bytes (0 when the
-        response had no body). started_at, when present, is the unix epoch
+        response_size is the response body length in bytes as received on the
+        wire -- the raw, still-encoded body (so a gzip'd response reports its
+        compressed size), the same bytes and length proxy.flow.get returns
+        (0 when the response had no body). started_at, when present, is the unix epoch
         (seconds) when mitmproxy saw the request begin -- the same instant the
         HAR export uses for each entry's startedDateTime. timings, when
         present, holds the measured send/wait/receive durations in

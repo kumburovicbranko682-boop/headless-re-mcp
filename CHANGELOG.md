@@ -5,6 +5,20 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（契约诚实性：proxy 的 response_size / HAR body size 是"在网线上"的长度，不是"解码后"）
+
+- `proxy.flows` 的 docstring 称 `response_size` 是"decoded response body length"，HAR 构造器也说 fill
+  `content.size`/`bodySize` 用的是"decoded"长度。但实现走的是 `_content_len(resp)` → `len(resp.raw_content)`，
+  即 mitmproxy 的**原始在网线字节**（仍带 `Content-Encoding` 压缩）。对一个 gzip 响应，`response_size` 报的是
+  **压缩后**的大小——而 agent 按 docstring 会以为拿到的是解码后大小。这是个真实的假契约。
+- 整条代理链其实是自洽地建立在**原始字节**上的：`proxy.flow.get` 返回的 body 也是 `raw_content`、其 `size` 也是
+  原始长度，与 `response_size` 完全一致。所以正确且低风险的修复是**把文档改成实情**（在网线/编码后长度），而不是
+  去改实现（改成解码会强制解压、与 flow.get 的原始 body 不一致，且改动面更大）。
+- 同步修正 `_raw_body` 的一处误解注释（`raw_content` 是原始字节、不做惰性解码、不会因解码抛错）与 `response_size`
+  计算处的"decoded"注释；并对齐 HAR/代理门禁里同样说"decoded"的测试注释/docstring。纯文档/注释改动，行为不变。
+  按 HAR 规范这个在网线长度恰好就是 `bodySize`；`content.size`(规范定义为解压后大小)在压缩时退化为同一在网线值
+  （未压缩的常见情形精确，压缩时是下界），因为抓取侧本就不单独持有解码后长度。
+
 ### 修复（集成门禁诚实性：缺 playwright 不再让整个 tests/integration 收集阶段崩掉）
 
 - `test_agent_browser_smoke.py` 在模块顶层 `from playwright.sync_api import ...`。playwright 是可选的
