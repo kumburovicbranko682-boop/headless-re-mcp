@@ -654,6 +654,17 @@ def test_knowledge_query_maps_an_unknown_session(tmp_path: Path) -> None:
     assert result.error.code == "session_not_found"
 
 
+@pytest.mark.parametrize("bad", _NON_INTEGER_PAGES)
+def test_knowledge_query_rejects_a_non_integer_limit(tmp_path: Path, bad: object) -> None:
+    service = _Service(tmp_path)
+    service.pe_session()
+
+    result = service.knowledge_query("sid", limit=cast(int, bad))
+
+    assert not result.ok and result.error is not None
+    assert result.error.code == "invalid_request"
+
+
 # --- report_generate ----------------------------------------------------------
 
 

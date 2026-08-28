@@ -992,8 +992,8 @@ class ExtAnalysisMixin(UiDriveMixin):
                 self.services.artifacts.list_knowledge(
                     session_id,
                     kind=(kind or None),
-                    offset=offset,
-                    limit=limit,
+                    offset=_page_int(offset, "offset"),
+                    limit=_page_int(limit, "limit"),
                 ),
                 session_id=session_id,
             )
