@@ -284,6 +284,27 @@ def _device_info_row(info: Any) -> JsonObject:
     return {"serial": serial, "state": state or "unknown"}
 
 
+def _scan_decoded_for_package(decoded: str) -> str | None:
+    """Pull a package-shaped id out of one decoding of the manifest bytes.
+
+    Prefer the id right after the ``package`` marker (a 400-char window), then
+    fall back to the first non-framework dotted id anywhere. The android/
+    com.android skip keeps a framework string -- the namespace URI, an
+    ``android.permission.*`` value -- from being named as the app's package.
+    """
+    window = decoded
+    marker = decoded.find("package")
+    if marker >= 0:
+        window = decoded[marker : marker + 400]
+    for blob in (window, decoded):
+        for candidate in _PACKAGE_IN_TEXT.findall(blob):
+            if candidate.startswith("android.") or candidate.startswith("com.android."):
+                continue
+            if _PACKAGE_RE.match(candidate):
+                return str(candidate)
+    return None
+
+
 def _apk_package_name(path: Path) -> str | None:
     """Best-effort package id from the APK, without pulling androguard in."""
     try:
@@ -303,17 +324,18 @@ def _apk_package_name(path: Path) -> str | None:
             return match.group(1)
     except Exception:  # noqa: BLE001
         pass
-    decoded = data.decode("utf-16-le", errors="ignore")
-    window = decoded
-    marker = decoded.find("package")
-    if marker >= 0:
-        window = decoded[marker : marker + 400]
-    for blob in (window, decoded):
-        for candidate in _PACKAGE_IN_TEXT.findall(blob):
-            if candidate.startswith("android.") or candidate.startswith("com.android."):
-                continue
-            if _PACKAGE_RE.match(candidate):
-                return str(candidate)
+    # A compiled AXML keeps its strings in a pool that is UTF-16-LE on older
+    # aapt but UTF-8 on modern aapt2 (the pool's UTF8 flag, set by default for
+    # years). Scan both decodings: the wrong one turns the pool into isolated
+    # code units or CJK garbage the dotted-id heuristic rejects, so only the
+    # matching one exposes the "package" marker and the id. Scanning UTF-16-LE
+    # alone -- as this did -- read a modern aapt2 manifest, the common case, as
+    # garbage and found nothing, so install/uninstall's package readback quietly
+    # gave up on every current APK and could never report installed true/false.
+    for encoding in ("utf-16-le", "utf-8"):
+        found = _scan_decoded_for_package(data.decode(encoding, errors="ignore"))
+        if found is not None:
+            return found
     return None
 
 

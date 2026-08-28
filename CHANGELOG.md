@@ -5,6 +5,28 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复+测试（adb 的 APK 包名读回支持 UTF-8 字符串池：现代 aapt2 产物不再读不出包名）
+
+- `device.install` / `device.uninstall` 装完后要把包名从会话 APK 里读回来核对安装结果，这一步走的是
+  adb 自带的、不依赖 androguard 的 `_apk_package_name`。它先试 utf-8 严解 + `package="..."` 正则（对应
+  未编译的源码型 manifest），失败后只用 **utf-16-le** 解一遍二进制 AXML 再扫包名。但编译后的 AXML 字符
+  串池在老 aapt 上才是 UTF-16-LE，现代 aapt2 默认发的是 **UTF-8 池**（池头 UTF8 标志位，已是多年的默认）
+  ——一个现代 APK（最常见的情形）用 utf-16-le 一解就成了 CJK 区乱码，`package` 标记不出现、没有任何点分
+  标识符能存活，扫描返回 None。后果：install/uninstall 对每一个现代 APK 都读不出包名，`installed` /
+  `uninstalled` 永远回落成 None（"package name not readable"），这道读回核对在常见情形下形同虚设（好在
+  它是诚实降级而非报错答案）。
+- 用独立 oracle 实证钉死：android RE gate 手搓的那份 `_build_axml_manifest` 正是 UTF-8 池（androguard 认它、
+  报出 `com.example.gate`）。实测 `_apk_package_name` 对同一文件返回 None，而 androguard 返回真包名——这就
+  是被 UTF-16-only 扫描漏掉的那一类。
+- 修复：把扫描抽成 `_scan_decoded_for_package`，对 **utf-16-le 与 utf-8 两种解码各扫一遍**——解错的那种把
+  池变成孤立码元或 CJK 乱码、被点分标识符启发式挡掉，只有对的那种露出 `package` 标记和真 id。老 aapt 的
+  UTF-16 池、现代 aapt2 的 UTF-8 池都能读回，android/com.android 框架串跳过逻辑不变。
+- 两处测试承重：单测 `test_reads_the_package_from_a_utf8_string_pool` 直接建一份 UTF-8 池 AXML（含
+  namespace URI 与 android.permission 框架串，逼它跨过去够到真 id），每次提交都跑、不需要 androguard；
+  android gate 里加一句 `_apk_package_name(apk) == opened.data["package"]`，用 androguard 当独立 oracle 在
+  真实有效的 aapt2 型 AXML 上核对，跑在 linux-integration。
+- 变异验证承重：把扫描回退成只解 utf-16-le，单测与 gate 断言同时失败（包名变 None）；改回后两者复绿。
+
 ### 测试（给 elf_preferred_base 补一条独立 oracle gate：真实 gcc 产物 base 必须与 readelf 一致）
 
 - `elf_preferred_base` 是手写的 ELF 二进制解析，而它现有的两处证明有同一个盲区：合成单测夹具

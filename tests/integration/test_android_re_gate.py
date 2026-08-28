@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from headless_re_mcp.backends.adb.client import _apk_package_name
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.models import TargetKind
 from headless_re_mcp.core.service import AnalysisService
@@ -310,6 +311,14 @@ def test_android_session_classification_and_metadata(tmp_path: Path) -> None:
         assert opened.ok, opened.error
         assert opened.data["package"] == _PACKAGE
         assert set(opened.data["native_abis"]) == {"arm64-v8a", "x86_64"}
+
+        # Independent-oracle cross-check for the dependency-free readback that
+        # device.install/uninstall use to verify a package: androguard (a full
+        # AXML parser) and adb's own _apk_package_name must agree on the same
+        # file. _build_axml_manifest emits a UTF-8 string pool, exactly what
+        # modern aapt2 produces, so this is the case the UTF-16-only scan used
+        # to miss -- androguard reads the package, and the readback must too.
+        assert _apk_package_name(apk) == opened.data["package"]
 
         manifest = service.apk_manifest(session_id)
         assert manifest.ok, manifest.error

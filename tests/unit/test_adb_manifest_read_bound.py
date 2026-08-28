@@ -107,3 +107,40 @@ def test_reads_the_package_from_a_compiled_binary_manifest(tmp_path: Path) -> No
     _write_apk(apk, manifest)
 
     assert _apk_package_name(apk) == "com.example.app"
+
+
+def test_reads_the_package_from_a_utf8_string_pool(tmp_path: Path) -> None:
+    """Modern aapt2 emits a UTF-8 string pool, which the UTF-16 scan misses.
+
+    An AXML string pool is UTF-16-LE on older aapt but UTF-8 on aapt2 (the
+    pool's UTF8 flag, default for years) -- so a current APK, the common case,
+    stores ``package`` and the id as UTF-8. The readback used to decode only as
+    UTF-16-LE, which turns those UTF-8 bytes into CJK-range garbage: the
+    ``package`` marker never appears and no dotted id survives, so the scan
+    returned None and device.install/uninstall could never verify a modern APK
+    (installed/uninstalled came back None, "package name not readable"). The
+    android RE gate cross-checks this against androguard on a genuinely valid
+    aapt2-shaped AXML; here the same UTF-8 pool is modelled directly, including
+    the framework strings (the namespace URI, an android.permission value) the
+    android-skip must step over to reach the real id.
+
+    The chunk begins with binary header bytes that make a strict UTF-8 decode
+    raise (0xA8 is not a valid start byte), the same hazard the compiled UTF-16
+    case presents, so the fallback must decode with errors ignored and still
+    recover the id.
+    """
+    pool_strings = [
+        "manifest",
+        "http://schemas.android.com/apk/res/android",
+        "versionCode",
+        "package",
+        "android.permission.INTERNET",
+        "com.example.app",
+    ]
+    # A byte that is not a valid UTF-8 start byte, standing in for the binary
+    # AXML chunk header a real manifest opens with, then the UTF-8 pool run.
+    manifest = b"\x03\x00\x08\x00\xa8\xff" + "\x00".join(pool_strings).encode("utf-8")
+    apk = tmp_path / "aapt2.apk"
+    _write_apk(apk, manifest)
+
+    assert _apk_package_name(apk) == "com.example.app"
