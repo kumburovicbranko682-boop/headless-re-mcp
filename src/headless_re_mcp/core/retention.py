@@ -136,7 +136,17 @@ class ArtifactRetention:
             return None
         if self._failing:
             self._failing = False
-            record_alert("artifact_collection_recovered", fields={"detail": "collection succeeded"})
+            # Recovery is a fact to record, not a page: reported at info like
+            # every other *_recovered alert (backend_recovered,
+            # artifact_usage_measurement_recovered, event_drain_recovered). The
+            # failure above keeps the default warning; only the good news is
+            # info, so an operator alerting on warnings is not woken when
+            # collection starts working again.
+            record_alert(
+                "artifact_collection_recovered",
+                severity="info",
+                fields={"detail": "collection succeeded"},
+            )
         return collected
 
 

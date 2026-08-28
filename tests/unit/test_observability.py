@@ -231,9 +231,11 @@ def test_a_collector_that_has_stopped_working_says_so(
     """
     from headless_re_mcp.core import retention as retention_module
 
-    alerts: list[str] = []
+    alerts: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        retention_module, "record_alert", lambda kind, **kwargs: alerts.append(kind)
+        retention_module,
+        "record_alert",
+        lambda kind, *, severity="warning", **kwargs: alerts.append((kind, severity)),
     )
 
     class Broken:
@@ -250,11 +252,17 @@ def test_a_collector_that_has_stopped_working_says_so(
 
     assert policy.maybe_collect(collector) is None
     assert policy.maybe_collect(collector) is None
-    assert alerts == ["artifact_collection_failing"], f"once, not per call: {alerts}"
+    # The failure is a warning -- the budget has silently stopped being enforced.
+    assert alerts == [("artifact_collection_failing", "warning")], f"once, not per call: {alerts}"
 
     collector.works = True
     assert policy.maybe_collect(collector) is not None
-    assert alerts[-1] == "artifact_collection_recovered", "and says when it is working again"
+    # Recovery is good news: reported at info, not warning, so it matches every
+    # other *_recovered alert and does not page an operator watching warnings.
+    assert alerts[-1] == ("artifact_collection_recovered", "info"), (
+        "recovery must be recorded at info, like backend_recovered / "
+        "artifact_usage_measurement_recovered / event_drain_recovered"
+    )
 
 
 def test_routine_stdio_logs_do_not_go_on_the_pipe_a_client_may_not_read(

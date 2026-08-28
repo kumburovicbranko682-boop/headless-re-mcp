@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（`artifact_collection_recovered` 是全代码库唯一一条以默认 `warning` 发出的“恢复”告警——其余每条恢复告警都按既定约定用 `severity="info"`(`backend_recovered`、`session_health_recovered`、`artifact_usage_measurement_recovered`、`event_drain_recovered`,`test_watchdog.py` 明写“恢复是要记录的事实,不是要叫醒人的呼叫”)。于是运维若按 `severity>=warning` 布告警,唯独“制品回收恢复正常”这条好消息会误触呼叫)
+
+- `ArtifactRetention.maybe_collect` 的恢复告警补 `severity="info"`,与其余四条 `*_recovered` 对齐;失败告警仍保持默认 `warning`(预算已静默停止执行,是该叫醒人的坏消息)。这条离群之所以能潜入,是因为既有测试只断言告警 `kind`、从不看 `severity`。
+- 测试:`test_a_collector_that_has_stopped_working_says_so` 由只捕获 `kind` 改为捕获 `(kind, severity)`,钉住“失败=warning、恢复=info”两级。带外验证:回退 `severity="info"` → 该测试如期失败(`'warning' != 'info'`),复原后转绿。
+
 ### 测试（钉住遥测 `TelemetryRing` 两条从未被断言、却支撑运维观测的行为:①“采样窗口 vs 终身计数”在环滚动后必须分道——窗口只答延迟(会驱逐),终身计数答速率/错误预算(不得回落);②延迟分位 p50/p95/max 的取值)
 
 - `TelemetryRing` 把“最近调用环”(evicting,答 `calls`/`failures`/分位)与“终身计数”(`ToolTotals`,答 `calls_total`/`failures_total`)分开存,正是为了当一次会话跑满环后,`calls_total` 仍持续累加、而采样 `calls` 只饱和在窗口保留的尾部。此前无一测试跑到驱逐点:若哪次重构把 `calls_total`/`failures_total` 改回从窗口现算(最显然的“简化”),环一滚动,建立在其上的每条速率/错误预算就会静默低估——正是这道分离设计存在的意义。新增 `test_totals_survive_window_eviction_while_sampled_counts_do_not`:单工具十次调用灌进四槽窗口,且仅有的三次失败全落在最旧的、已被驱逐的头部——窗口失败数掉到 0,终身失败计数却必须仍读 3;窗口 `calls` 饱和为 4,终身 `calls_total` 必须仍读 10(工具级与进程级两处都断言)。
