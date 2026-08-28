@@ -364,6 +364,48 @@ def test_event_stream_emits_a_heartbeat_while_idle(
     assert "event: heartbeat" in streamed.text
 
 
+def test_event_stream_stops_when_the_client_has_disconnected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disconnected client breaks the loop before draining the store.
+
+    monitor_stream checks request.is_disconnected() each iteration, but the agent
+    event loop is unbounded -- it only ends when the run reaches a terminal
+    status -- so without the same check a client that closed its tab mid-run
+    leaves the generator polling list_events / get_run every 0.25s for the rest
+    of a possibly long run. Starlette 1.6 on ASGI spec >= 2.4 only surfaces a
+    disconnect when a send() raises, so an idle-but-active run would lean on the
+    heartbeat send alone; the explicit check makes termination prompt and
+    server-version-independent. Here the run is already terminal and carries two
+    events, so the loop is finite either way (a regression cannot hang this
+    test): with the check the backlog is never drained and the body is empty;
+    without it, the two events would be emitted before the terminal break.
+    """
+
+    async def always_disconnected(_self: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "starlette.requests.Request.is_disconnected", always_disconnected
+    )
+    app, client = _build(tmp_path, monkeypatch)
+    store = app.state.agent_store
+
+    thread_id = store.create_thread(title="gone").id
+    run = store.create_run(
+        thread_id, provider_profile="default", model="m", deadline_seconds=30
+    )
+    store.append_event(run.id, "llm.started", {"round": 1})
+    store.append_event(run.id, "llm.completed", {"round": 1})
+    store.transition(run.id, RunStatus.FAILED, error="boom")
+
+    streamed = client.get(f"/api/agent/runs/{run.id}/events", headers=HEADERS)
+    assert streamed.status_code == 200
+    assert "event: llm.started" not in streamed.text
+    assert "event: llm.completed" not in streamed.text
+    assert "event: heartbeat" not in streamed.text
+
+
 # ---------------------------------------------------------------------------
 # missions extra arms
 # ---------------------------------------------------------------------------

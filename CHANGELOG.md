@@ -5,6 +5,10 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Agent 事件 SSE 流 `/api/agent/runs/{id}/events` 的无界 `while True` 轮询循环不查客户端是否已断开——浏览器关掉标签页后,仍会为一个可能长时间运行的 run 每 0.25s 打一次 `list_events`/`get_run`,直到 run 进入终态)
+
+- 该端点的生成器是无界的:只有 run 到达终态(且积压事件排空)才 `break`,其余时候每 0.25s 轮询一次存储。姊妹端点 `monitor_stream` 每轮都 `await request.is_disconnected()` 提前收摊,这个循环却完全不查,连 `request` 都没进签名。Starlette 1.6 的 `StreamingResponse` 在 ASGI spec ≥ 2.4 下只在某次 `send()` 抛错时才察觉断开(见其 `stream_response`),于是一个活着但空闲的 run 只能靠约每 2.5s 一次的心跳 `send` 来触发断开感知;若服务器把断开后的 `send` 静默吞掉,循环会一直转到 run 终态为止,期间每 0.25s 空耗两次线程池存储调用。改法与 `monitor_stream` 对齐:给 `events` 加 `request: Request`,并在循环顶部(存储往返之前)`await request.is_disconnected()` 命中即 `break`,使断开后的收尾即时且不依赖服务器/心跳时序。注意 `agent.py` 用了 `from __future__ import annotations`,故 `Request` 必须在模块级可见(FastAPI 按模块全局解析字符串注解)——原先只在注册函数内惰性 `import` 会让 FastAPI 把 `request` 当成缺失的查询参数返回 422;改为在既有的模块级 `from fastapi import FastAPI` 上补进 `Request`。带外验证:抽掉断开检查 → 新用例失败(终态 run 的两条积压事件仍被排空并写进响应体),复原后全绿;既有 `test_event_history_and_terminal_stream` 与 `test_event_stream_emits_a_heartbeat_while_idle` 仍过。补 `test_event_stream_stops_when_the_client_has_disconnected`(打桩 `Request.is_disconnected` 恒真、run 取终态使两条路径都有限、断言响应体既无事件也无心跳)。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

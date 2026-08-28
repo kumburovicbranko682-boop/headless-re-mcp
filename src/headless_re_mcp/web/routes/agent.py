@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from headless_re_mcp.agent import (
     AgentOrchestrator,
@@ -364,6 +364,7 @@ def register_agent_routes(
 
     @app.get("/api/agent/runs/{run_id}/events")
     async def events(
+        request: Request,
         run_id: str,
         authorization: str | None = Header(default=None),
         after: int = Query(default=0, ge=0),
@@ -376,6 +377,18 @@ def register_agent_routes(
             cursor = after
             idle = 0
             while True:
+                # Stop as soon as the client is gone, before spending a
+                # thread-pool round trip on the store. Unlike monitor_stream this
+                # loop is unbounded -- it only ends when the run reaches a
+                # terminal status -- so a run that stays active for minutes after
+                # the browser tab closed would otherwise keep polling list_events
+                # / get_run every 0.25s. Starlette 1.6's StreamingResponse only
+                # notices a disconnect when a send() raises (ASGI spec >= 2.4), so
+                # an idle-but-active run leans entirely on the heartbeat send to
+                # surface it; an explicit check makes termination prompt and
+                # server-version-independent, matching monitor_stream.
+                if await request.is_disconnected():
+                    break
                 batch = await asyncio.to_thread(store.list_events, run_id, after=cursor)
                 for event in batch:
                     cursor = event.seq
