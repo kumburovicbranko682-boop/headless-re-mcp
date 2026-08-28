@@ -2035,6 +2035,17 @@ class AnalysisService(
         address_space: str,
     ) -> int:
         """Translate a caller coordinate into the live runtime VA."""
+        # address_space is schema-typed as a string, but the agent and OpenAI-bridge
+        # transports bind it straight from model output with no pydantic coercion, so a
+        # non-string reaches here unchanged. ``(address_space or "runtime")`` only
+        # rescues the falsy cases (None, 0, "", []) by defaulting; a truthy non-string
+        # (5, [1], b"runtime") flows into ``.strip().casefold()`` and raises a raw
+        # AttributeError that _failure files as a logged internal_error incident rather
+        # than the invalid_request an unknown *value* like "bogus" already earns. Reject
+        # the wrong type up front so a malformed argument stays a caller fault; None is
+        # still allowed so the documented default-to-runtime behaviour survives.
+        if address_space is not None and not isinstance(address_space, str):
+            raise ValueError("address_space must be a string")
         normalized = (address_space or "runtime").strip().casefold()
         if normalized == "runtime":
             return address
@@ -2086,6 +2097,15 @@ class AnalysisService(
         try:
             if isinstance(address, bool) or type(address) is not int or address < 0:
                 raise ValueError("address must be a non-negative integer")
+            # See _runtime_breakpoint_address: source is schema-typed as a string but
+            # arrives uncoerced on the agent/OpenAI-bridge transports. ``(source or
+            # "static")`` defaults the falsy cases, so only a truthy non-string
+            # (5, [1], b"static") slips into ``.strip().casefold()`` and raises a raw
+            # AttributeError that _failure files as an internal_error incident instead
+            # of the invalid_request an unknown value already earns. Reject the wrong
+            # type here; None stays valid so the default-to-static contract holds.
+            if source is not None and not isinstance(source, str):
+                raise ValueError("source must be a string")
             normalized = (source or "static").strip().casefold()
             if normalized not in {"static", "rva", "runtime"}:
                 raise ValueError("source must be one of: static, rva, runtime")

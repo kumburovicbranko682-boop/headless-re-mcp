@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections import deque
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -1886,6 +1887,40 @@ def test_resolve_runtime_address_rejects_unknown_source(tmp_path: Path) -> None:
     assert rejected.error.code == "invalid_request"
 
 
+@pytest.mark.parametrize(
+    "source",
+    [5, 5.0, ["static"], {"source": "static"}, b"static", True],
+)
+def test_resolve_runtime_address_rejects_non_string_source(
+    tmp_path: Path, source: object
+) -> None:
+    """A non-string source is a caller fault, not an internal_error incident.
+
+    ``(source or "static")`` rescues only the falsy non-strings; a truthy one
+    reaches ``.strip().casefold()`` and used to raise a raw AttributeError that
+    _failure logged as internal_error. It should read like the unknown-value case.
+    """
+    service, session_id, _ = _rebased_service(tmp_path, 0x7FF700000000)
+
+    rejected = service.resolve_runtime_address(
+        session_id, 0x1000, source=cast(Any, source)
+    )
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+
+
+def test_resolve_runtime_address_allows_none_source(tmp_path: Path) -> None:
+    """source=None keeps the documented default-to-static behaviour."""
+    runtime_base = 0x7FF700000000
+    service, session_id, _ = _rebased_service(tmp_path, runtime_base)
+
+    resolved = service.resolve_runtime_address(
+        session_id, 0x140001234, source=cast(Any, None)
+    )
+    assert resolved.ok and resolved.data is not None
+    assert resolved.data["runtime_address"] == runtime_base + 0x1234
+
+
 def test_breakpoint_set_rebases_static_and_rva_coordinates(tmp_path: Path) -> None:
     runtime_base = 0x7FF700000000
     service, session_id, dynamic = _rebased_service(tmp_path, runtime_base)
@@ -1912,6 +1947,44 @@ def test_breakpoint_set_rebases_static_and_rva_coordinates(tmp_path: Path) -> No
     rejected = service.dynamic_breakpoint_set(session_id, 0x1000, address_space="bogus")
     assert not rejected.ok and rejected.error is not None
     assert rejected.error.code == "invalid_request"
+
+
+@pytest.mark.parametrize(
+    "address_space",
+    [5, 5.0, ["runtime"], {"space": "runtime"}, b"runtime", True],
+)
+def test_breakpoint_set_rejects_non_string_address_space(
+    tmp_path: Path, address_space: object
+) -> None:
+    """A non-string address_space is a caller fault, not an internal_error incident.
+
+    _runtime_breakpoint_address defaults falsy values but let a truthy non-string
+    reach ``.strip().casefold()``, raising a raw AttributeError that _failure logged
+    as internal_error. It should read like the unknown-value ("bogus") case.
+    """
+    service, session_id, _ = _rebased_service(tmp_path, 0x7FF700000000)
+
+    rejected = service.dynamic_breakpoint_set(
+        session_id, 0x1000, address_space=cast(Any, address_space)
+    )
+    assert not rejected.ok and rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+
+
+def test_breakpoint_set_allows_none_address_space(tmp_path: Path) -> None:
+    """address_space=None keeps the documented default-to-runtime behaviour."""
+    runtime_base = 0x7FF700000000
+    service, session_id, dynamic = _rebased_service(tmp_path, runtime_base)
+
+    assert service.dynamic_breakpoint_set(
+        session_id, runtime_base + 0x40, address_space=cast(Any, None)
+    ).ok
+    requested = [
+        int(params["address"])
+        for command, params in dynamic.requests
+        if command == "breakpoints.set"
+    ]
+    assert requested == [runtime_base + 0x40]
 
 
 def test_analyze_function_dynamic_reports_stop_on_its_breakpoint(tmp_path: Path) -> None:
