@@ -173,6 +173,7 @@ def test_js_wasm_descriptions_name_the_payload_fields() -> None:
     assert "bytes" in _tool_docstring("js.beautify")
     assert "output_dir" in _tool_docstring("js.unpack_bundle")
     assert "has_more" in _tool_docstring("js.unpack_bundle")
+    assert "listing_truncated" in _tool_docstring("js.unpack_bundle")
     assert "Answers with wat" in _tool_docstring("wasm.wat")
     assert "bytes" in _tool_docstring("wasm.wat")
     assert "truncated" in _tool_docstring("wasm.info")
@@ -214,6 +215,47 @@ def test_unpack_bundle_says_when_the_file_list_was_cut(tmp_path: Path) -> None:
     assert len(payload["files"]) == 3
     assert payload["has_more"] is True
     assert "has_more" in _tool_docstring("js.unpack_bundle")
+
+
+def test_unpack_bundle_flags_listing_truncated_past_the_count_ceiling(tmp_path: Path) -> None:
+    """listing_truncated marks total as a floor when the count ceiling is hit.
+
+    Two caps guard the listing: _MAX_LISTED_FILES limits a page (covered above),
+    while _MAX_COUNTED_FILES stops the enumeration itself to bound memory. Once
+    the second cap is hit, file_count/total are a floor and has_more is computed
+    against that floor -- so has_more can read false while more files exist on
+    disk, the same "total is a floor" trap as frida.java.classes' scan_capped.
+    Only listing_truncated tells them apart, and this ceiling path (distinct from
+    the page cap) had no test and the docstring did not name the field.
+    """
+    from headless_re_mcp.backends.jsre import client as mod
+
+    tool = tmp_path / "webcrack.exe"
+    tool.write_bytes(b"")
+    src = tmp_path / "app.js"
+    src.write_text("x", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    for index in range(5):
+        (out / f"m{index}.js").write_text("1", encoding="utf-8")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Completed:
+        return Completed(0, b"", b"")
+
+    with (
+        patch("headless_re_mcp.backends.jsre.client.run_bounded", fake_run),
+        patch("headless_re_mcp.backends.jsre.client._MAX_COUNTED_FILES", 2),
+    ):
+        payload = mod.JsClient(tool).unpack_bundle(src, out, offset=0, limit=100)
+
+    assert payload["listing_truncated"] is True
+    assert payload["file_count"] == 2
+    assert payload["total"] == 2
+    assert payload["count"] == 2
+    # has_more reads False against the capped floor though 5 files exist on disk;
+    # listing_truncated is the only field that says the count is not the whole set.
+    assert payload["has_more"] is False
+    assert "listing_truncated" in _tool_docstring("js.unpack_bundle")
 
 
 def test_js_deobfuscate_refuses_an_oversized_input(

@@ -5,6 +5,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 文档 / 测试（js.unpack_bundle 的 listing_truncated 未在工具文档里说明,且计数上限那条路径没有测试）
+
+- `js.unpack_bundle` 的分页有两道闸:`_MAX_LISTED_FILES` 限单页大小(已有测试覆盖),而 `_MAX_COUNTED_FILES`
+  (5 万)会直接停止枚举以约束内存。一旦命中第二道闸,`file_count`/`total` 就只是下界、`listing_truncated` 置真,
+  而 `has_more` 是拿这个下界算出来的——于是磁盘上明明还有更多文件,`has_more` 却可能读成 False,和
+  `frida.java.classes` 的 `scan_capped` 是同一个"total 只是下界"的坑。可当时工具文档只列了
+  output_dir/file_count/files/count/total/offset/has_more,唯独没提 `listing_truncated`,调用方无从区分"就这么多"
+  与"截断了"。现在给 `js.unpack_bundle` 文档补上 `listing_truncated` 的说明(命中 5 万上限时 total 是下界、
+  has_more 可能为假),并新增
+  `test_unpack_bundle_flags_listing_truncated_past_the_count_ceiling`:把 `_MAX_COUNTED_FILES` 打成 2、放 5 个文件,
+  断言 `listing_truncated is True`、`file_count`/`total` 为下界 2、且 `has_more is False`(尽管盘上有 5 个);
+  同时把 `listing_truncated` 加进既有的字段文档守卫。旧文档下这两条守卫会失败(已验证),补上后通过。
+
 ### 清理（移除 adb.launch / adb.force_stop 里两段不可达的死防御分支）
 
 - `_device_shell` 早已把底层 `dev.shell` 抛出的任何非 AdbError 归一化成 `AdbError`（`timeout` 或
