@@ -293,3 +293,47 @@ def test_numeric_settings_fall_back_instead_of_crashing_startup() -> None:
     assert _as_int("not-a-number", "also-bad", fallback=7) == 7
     assert _as_int(None, "12") == 12
     assert _as_int("-5", None) == 0
+
+
+def test_an_unresolvable_tilde_tool_path_keeps_its_literal_value() -> None:
+    """expanduser raises RuntimeError for ~nosuchuser; startup must survive it."""
+    kept = config._optional_path("~nosuchuser-headless-re/ida")
+
+    assert kept == Path("~nosuchuser-headless-re/ida")
+    assert kept.is_dir() is False
+
+
+def test_an_embedded_nul_tool_path_keeps_its_literal_value() -> None:
+    """resolve raises ValueError for a NUL byte; existence checks answer False."""
+    kept = config._optional_path("ida\x00home")
+
+    assert kept == Path("ida\x00home")
+    assert kept.is_file() is False
+
+
+def test_settings_load_survives_a_tilde_tool_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One bad optional tool path must not stop the whole server from starting."""
+    monkeypatch.setenv("HEADLESS_RE_IDA_HOME", "~nosuchuser-headless-re/ida")
+
+    settings = config.Settings.load(config_path=tmp_path / "config.json")
+
+    assert settings.ida_home == Path("~nosuchuser-headless-re/ida")
+
+
+def test_settings_load_names_an_unexpandable_artifact_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The artifact root gets created, so a bad tilde must refuse loudly by name."""
+    monkeypatch.setenv("HEADLESS_RE_ARTIFACT_ROOT", "~nosuchuser-headless-re/artifacts")
+
+    with pytest.raises(ValueError, match="artifact_root"):
+        config.Settings.load(config_path=tmp_path / "config.json")
+
+
+def test_validate_ida_home_answers_a_tilde_path_with_a_structured_reply() -> None:
+    checked = validate_ida_home("~nosuchuser-headless-re/ida")
+
+    assert checked["ok"] is False
+    assert checked["code"] == "not_a_directory"

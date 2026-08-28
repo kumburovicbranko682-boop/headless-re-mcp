@@ -112,11 +112,22 @@ class Settings:
             or data.get("x64dbg_source")
             or discover_x64dbg_source()
         )
-        artifact_root = Path(
-            os.environ.get("HEADLESS_RE_ARTIFACT_ROOT")
-            or data.get("artifact_root")
-            or default_data_path() / "artifacts"
-        ).expanduser()
+        try:
+            artifact_root = Path(
+                os.environ.get("HEADLESS_RE_ARTIFACT_ROOT")
+                or data.get("artifact_root")
+                or default_data_path() / "artifacts"
+            ).expanduser()
+        except RuntimeError as exc:
+            # Unlike the optional tool paths, the artifact root gets created,
+            # so falling back to the unexpanded value would mkdir a directory
+            # literally named "~user" in the working directory. Refuse loudly
+            # instead, naming the setting; bare pathlib says only "Could not
+            # determine home directory", which points at nothing.
+            raise ValueError(
+                "artifact_root cannot be expanded; set HEADLESS_RE_ARTIFACT_ROOT "
+                "/ artifact_root to a path whose user exists, or drop the tilde"
+            ) from exc
 
         return cls(
             ida_home=ida_home,
@@ -557,7 +568,21 @@ def _as_profile(value: object) -> str:
 def _optional_path(value: object) -> Path | None:
     if value in (None, ""):
         return None
-    return Path(str(value)).expanduser().resolve()
+    candidate = Path(str(value))
+    try:
+        return candidate.expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        # expanduser raises RuntimeError for a tilde it cannot resolve
+        # (~nosuchuser, or a service account with no home); resolve raises
+        # ValueError for an embedded NUL. These values arrive from env vars,
+        # config.json and the setup wizard's ida_home field, and a raise here
+        # took Settings.load -- and with it server startup -- down over one
+        # optional tool path. The raw path is returned rather than None so the
+        # doctor and validate_ida_home report "not a directory: <literal>"
+        # instead of pretending nothing was configured; is_dir()/is_file()
+        # answer False for such paths rather than raising, so every existence
+        # gate downstream fails closed.
+        return candidate
 
 
 def _as_bool(raw: str | None, default: object) -> bool:

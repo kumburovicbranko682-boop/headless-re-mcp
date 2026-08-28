@@ -332,6 +332,32 @@ def test_setup_ida_with_an_invalid_home_skips_the_settings_reload(tmp_path: Path
         service.close_all()
 
 
+def test_setup_ida_with_an_unexpandable_home_is_a_validation_reply_not_a_500(
+    tmp_path: Path,
+) -> None:
+    """A tilde no one can resolve, or a NUL byte, used to escape as a 500 incident.
+
+    ``Path.expanduser`` raises RuntimeError for ``~nosuchuser`` and ``resolve``
+    raises ValueError for an embedded NUL; the wizard must answer both with the
+    same structured validation reply it gives any other unusable directory.
+    """
+    client, service = _client(tmp_path)
+    try:
+        for hostile in ("~nosuchuser-headless-re/ida", "ida\x00home"):
+            response = client.post(
+                "/api/setup/ida",
+                headers=HEADERS,
+                json={"confirm": True, "ida_home": hostile},
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["ok"] is False
+            assert body["saved"] is False
+            assert body["validation"]["code"] == "not_a_directory"
+    finally:
+        service.close_all()
+
+
 def test_setup_run_configure_ida_hot_reloads_settings_with_the_new_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
