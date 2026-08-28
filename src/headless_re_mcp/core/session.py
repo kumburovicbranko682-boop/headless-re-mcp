@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import re
+import uuid
 import zipfile
 import zlib
 from collections import deque
@@ -164,6 +165,9 @@ class SessionRegistry:
                 # TLS callbacks -- the PE's code-before-main, the pair to the
                 # ELF/Mach-O init_funcs facts and the packer's anti-debug home.
                 metadata["pe"].update(_pe_tls_facts(path))
+                # The CodeView RSDS record -- the PE build fingerprint, the
+                # pair to an ELF build-id / Mach-O UUID; absent is an answer.
+                metadata["pe"].update(_pe_debug_fingerprint(path))
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -3450,6 +3454,18 @@ _PE_MAX_IMPORTS_PER_DLL = 4096
 _PE_MAX_EXPORTS = 8192
 _PE_MAX_SYMBOL_NAME = 512
 _PE_MAX_IMPORT_FILE = 128 * 1024 * 1024
+# The debug data directory (index 6) carries the CodeView RSDS record -- the
+# native PE build fingerprint, the pair to an ELF build-id and a Mach-O UUID:
+# a per-build PDB GUID plus age (together the symbol-server key) and the PDB
+# path the linker baked in, which routinely leaks user and project names.
+_PE_DEBUG_DIR = 6
+_PE_DEBUG_ENTRY_SIZE = 28
+_PE_MAX_DEBUG_ENTRIES = 32
+_PE_DEBUG_TYPE_CODEVIEW = 2
+# RSDS sig (4) + GUID (16) + age (4) + at least a NUL for the path, up to a
+# bounded path length.
+_PE_MIN_RSDS = 25
+_PE_MAX_RSDS = 1024 + 24
 # The TLS data directory (index 9) carries the PE's code-before-main: the
 # loader runs every AddressOfCallBacks entry before the entry point -- the pair
 # to an ELF DT_INIT_ARRAY and a Mach-O __mod_init_func section, and the classic
@@ -4230,6 +4246,78 @@ def _pe_tls_facts(path: Path) -> dict[str, Any]:
         count += 1
     facts["callbacks"] = count
     return {"tls": facts}
+
+
+def _pe_debug_fingerprint(path: Path) -> dict[str, Any]:
+    """The CodeView RSDS record off the debug directory, as ``{"pdb": ...}``.
+
+    The native PE build fingerprint -- the pair to an ELF build-id and a Mach-O
+    UUID, and the same fact ``dotnet.inspect`` reports for managed assemblies,
+    now tool-free for every PE: the per-build PDB GUID and age (``signature``
+    is their concatenation, the exact string symstore and every symbol server
+    index the PDB by) and the PDB path the linker baked in, which routinely
+    leaks user and project names. Walks the IMAGE_DEBUG_DIRECTORY entries (data
+    directory 6) for the first CodeView (type 2) record, preferring the entry's
+    file pointer and falling back to its RVA when a linker left the pointer 0.
+
+    Bounded and fail-closed: the whole read is capped, the entry walk and the
+    declared blob size are bounded, and an absent directory, a foreign
+    (non-RSDS) record or a truncated blob yields ``{}`` -- no fingerprint is a
+    real answer -- rather than a guess or an exception.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return {}
+        with path.open("rb") as stream:
+            raw = stream.read(_PE_MAX_IMPORT_FILE)
+    except OSError:
+        return {}
+    view = _pe_header_view(raw)
+    if view is None:
+        return {}
+    _magic, dir_count, dir_off, sections = view
+    entry = dir_off + _PE_DEBUG_DIR * 8
+    if dir_count <= _PE_DEBUG_DIR or entry + 8 > len(raw):
+        return {}
+    table_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    table_size = int.from_bytes(raw[entry + 4 : entry + 8], "little")
+    if table_rva == 0 or table_size < _PE_DEBUG_ENTRY_SIZE:
+        return {}
+    table_off = _pe_rva_to_offset(sections, table_rva)
+    if table_off is None:
+        return {}
+    for i in range(min(table_size // _PE_DEBUG_ENTRY_SIZE, _PE_MAX_DEBUG_ENTRIES)):
+        rec = raw[table_off + i * _PE_DEBUG_ENTRY_SIZE : table_off + (i + 1) * _PE_DEBUG_ENTRY_SIZE]
+        if len(rec) < _PE_DEBUG_ENTRY_SIZE:
+            break
+        if int.from_bytes(rec[12:16], "little") != _PE_DEBUG_TYPE_CODEVIEW:
+            continue
+        size = int.from_bytes(rec[16:20], "little")
+        addr_rva = int.from_bytes(rec[20:24], "little")
+        ptr_raw = int.from_bytes(rec[24:28], "little")
+        if size < _PE_MIN_RSDS or size > _PE_MAX_RSDS:
+            continue
+        # The record's raw data is addressed both ways; the file pointer is
+        # authoritative on disk, the RVA the fallback when it is 0.
+        offsets = (ptr_raw or None, _pe_rva_to_offset(sections, addr_rva) if addr_rva else None)
+        for off in offsets:
+            if off is None or off + size > len(raw):
+                continue
+            blob = raw[off : off + size]
+            if blob[:4] != b"RSDS":
+                continue
+            guid = uuid.UUID(bytes_le=blob[4:20])
+            age = int.from_bytes(blob[20:24], "little")
+            pdb_path = blob[24:].split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+            return {
+                "pdb": {
+                    "guid": str(guid),
+                    "age": age,
+                    "path": pdb_path or None,
+                    "signature": f"{guid.hex.upper()}{age:X}",
+                }
+            }
+    return {}
 
 
 def _pe_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:

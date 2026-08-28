@@ -12,6 +12,7 @@ facts flowing through session creation.
 from __future__ import annotations
 
 import struct
+import uuid
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from headless_re_mcp.core.session import (
     _dotnet_resource_payloads,
     _pe_authenticode,
     _pe_capability_surface,
+    _pe_debug_fingerprint,
     _pe_hardening_facts,
     _pe_overlay,
     _pe_resource_payloads,
@@ -859,6 +861,169 @@ class TestPeTlsFacts:
         path.write_bytes(_pe_with_tls(callback_count=2))
         session = SessionRegistry().create(str(path))
         assert session.metadata["pe"]["tls"] == {"present": True, "callbacks": 2}
+
+
+_GUID = "a1b2c3d4-e5f6-4788-99aa-bbccddeeff00"
+
+
+def _rsds_blob(guid: str, age: int, path: str) -> bytes:
+    """An RSDS CodeView blob: sig, mixed-endian GUID, age, NUL-terminated path."""
+    return b"RSDS" + uuid.UUID(guid).bytes_le + age.to_bytes(4, "little") + path.encode() + b"\x00"
+
+
+def _pe_with_debug(
+    records: list[tuple[int, bytes]],
+    *,
+    zero_file_pointer: bool = False,
+    declared_size: int | None = None,
+) -> bytes:
+    """A minimal one-section PE whose debug directory (index 6) holds ``records``.
+
+    Each record is ``(type, blob)``; the IMAGE_DEBUG_DIRECTORY table sits at
+    the section start with the blobs behind it, each entry carrying both the
+    blob's RVA and its file pointer. ``zero_file_pointer`` leaves every
+    PointerToRawData 0 so the reader must fall back to the RVA;
+    ``declared_size`` overrides each entry's SizeOfData.
+    """
+    sect_rva = 0x1000
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x40)
+    opt_size = 0xF0
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, opt_size, 0)
+    raw_off = 0x40 + len(coff) + opt_size + 40
+    if raw_off % 0x200:
+        raw_off += 0x200 - (raw_off % 0x200)
+
+    table_size = len(records) * 28
+    sec = bytearray(table_size)
+    placed: list[tuple[int, int, int]] = []
+    for dbg_type, blob in records:
+        off = len(sec)
+        sec.extend(blob)
+        placed.append((dbg_type, off, len(blob)))
+    for i, (dbg_type, off, size) in enumerate(placed):
+        struct.pack_into(
+            "<IIHHIIII",
+            sec,
+            i * 28,
+            0,
+            0,
+            0,
+            0,
+            dbg_type,
+            declared_size if declared_size is not None else size,
+            sect_rva + off,
+            0 if zero_file_pointer else raw_off + off,
+        )
+
+    opt = bytearray(opt_size)
+    struct.pack_into("<H", opt, 0, 0x20B)
+    struct.pack_into("<Q", opt, 24, 0x1_4000_0000)
+    struct.pack_into("<I", opt, 32, 0x1000)  # SectionAlignment
+    struct.pack_into("<I", opt, 36, 0x200)  # FileAlignment
+    struct.pack_into("<I", opt, 56, sect_rva + 0x1000)  # SizeOfImage
+    struct.pack_into("<I", opt, 60, raw_off)  # SizeOfHeaders
+    struct.pack_into("<I", opt, 108, 16)  # NumberOfRvaAndSizes
+    struct.pack_into("<II", opt, 112 + 6 * 8, sect_rva, table_size)  # debug dir
+
+    sect = bytearray(40)
+    sect[0:6] = b".rdata"
+    struct.pack_into("<I", sect, 8, len(sec))
+    struct.pack_into("<I", sect, 12, sect_rva)
+    struct.pack_into("<I", sect, 16, (len(sec) + 0x1FF) & ~0x1FF)
+    struct.pack_into("<I", sect, 20, raw_off)
+    struct.pack_into("<I", sect, 36, 0x40000040)
+
+    out = bytearray(dos + coff + opt + sect)
+    if len(out) < raw_off:
+        out += b"\x00" * (raw_off - len(out))
+    return bytes(out + sec)
+
+
+class TestPeDebugFingerprint:
+    """_pe_debug_fingerprint reads the CodeView RSDS record -- the PE build id.
+
+    The pair to an ELF build-id and a Mach-O UUID, now tool-free for every PE:
+    the per-build PDB GUID and age (whose concatenation is the symbol-server
+    key) and the PDB path the linker baked in, which routinely leaks user and
+    project names. No fingerprint is a real answer, so a debug-less PE simply
+    carries no ``pdb`` fact.
+    """
+
+    def test_a_pe_without_a_debug_directory_has_no_fingerprint(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_debug_fingerprint(path) == {}
+
+    def test_the_rsds_record_reads_guid_age_path_and_symbol_key(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(_pe_with_debug([(2, _rsds_blob(_GUID, 3, r"C:\build\app.pdb"))]))
+        assert _pe_debug_fingerprint(path) == {
+            "pdb": {
+                "guid": _GUID,
+                "age": 3,
+                "path": r"C:\build\app.pdb",
+                # The symbol-server key: 32 upper-case GUID hex digits with the
+                # age appended in hex -- what symstore names the directory.
+                "signature": "A1B2C3D4E5F6478899AABBCCDDEEFF003",
+            }
+        }
+
+    def test_non_codeview_records_are_stepped_over(self, tmp_path: Path) -> None:
+        # A repro record (type 16) first, the CodeView record second: the walk
+        # must key on the Type field, not assume the first entry.
+        path = tmp_path / "repro.exe"
+        path.write_bytes(
+            _pe_with_debug(
+                [(16, b"\x00" * 32), (2, _rsds_blob(_GUID, 1, "out.pdb"))]
+            )
+        )
+        assert _pe_debug_fingerprint(path)["pdb"]["age"] == 1
+
+    def test_a_foreign_codeview_signature_is_not_a_fingerprint(self, tmp_path: Path) -> None:
+        # NB10 is the ancient PDB 2.0 shape; misreading its layout as RSDS
+        # would fabricate a GUID from path bytes.
+        path = tmp_path / "nb10.exe"
+        path.write_bytes(_pe_with_debug([(2, b"NB10" + b"\x00" * 24)]))
+        assert _pe_debug_fingerprint(path) == {}
+
+    def test_a_zero_file_pointer_falls_back_to_the_rva(self, tmp_path: Path) -> None:
+        # Some linkers leave PointerToRawData 0 and address the blob only by
+        # RVA; the fingerprint must still resolve through the section table.
+        path = tmp_path / "rva_only.exe"
+        path.write_bytes(
+            _pe_with_debug([(2, _rsds_blob(_GUID, 2, "a.pdb"))], zero_file_pointer=True)
+        )
+        assert _pe_debug_fingerprint(path)["pdb"]["age"] == 2
+
+    def test_a_truncated_declared_size_is_skipped(self, tmp_path: Path) -> None:
+        # SizeOfData smaller than sig+GUID+age cannot hold an RSDS record.
+        path = tmp_path / "tiny.exe"
+        path.write_bytes(
+            _pe_with_debug([(2, _rsds_blob(_GUID, 1, "a.pdb"))], declared_size=10)
+        )
+        assert _pe_debug_fingerprint(path) == {}
+
+    def test_a_non_pe_has_no_fingerprint(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_debug_fingerprint(path) == {}
+
+    def test_session_over_a_pe_carries_the_fingerprint(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(_pe_with_debug([(2, _rsds_blob(_GUID, 3, r"C:\build\app.pdb"))]))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["pdb"]["signature"] == "A1B2C3D4E5F6478899AABBCCDDEEFF003"
+
+    def test_the_committed_fixture_fingerprint_matches_the_deep_reader(self) -> None:
+        # The managed fixture bakes in a known RSDS record that dotnet.inspect
+        # already reports; the session-level fact must read the same bytes.
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        pdb = _pe_debug_fingerprint(_DOTNET_FIXTURE)["pdb"]
+        assert pdb["guid"] == _GUID
+        assert pdb["path"] == r"C:\build\headless\MyAssembly.pdb"
 
 
 class TestPeResourcePayloads:
