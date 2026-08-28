@@ -48,7 +48,10 @@ Windows 上执行：Linux 侧要么因缺后端而 skip、要么因测试自身�
   改为确定性地模拟缺失：`sys.modules` 里钉一个 `None`（`import` 即抛 ImportError）、或把
   `_discover` 打桩成返回 `None`，使降级路径无论本机是否装了后端都照跑。其中
   `test_instance_start_reports_a_thread_that_fails_to_launch_mitmproxy` 此前还会随端口/加载
-  顺序在 `backend_error` 与 `timeout` 之间飘，一并钉死。
+  顺序在 `backend_error` 与 `timeout` 之间飘，一并钉死。`test_web_backends.py` 里 webcrack /
+  wabt 两个降级用例过去在装了工具的机器上直接 skip（又一处 skip ≠ pass），同样改成把
+  `_discover_webcrack` / `_resolve_wabt_tool` 打桩成找不到，让 capability_unavailable 契约在
+  配好 JS/WASM 工具链的机器上也照验。
 
 在一台配好上述后端的 Linux x86_64 上，`tests/integration` 由 2 passed / 84 skipped 变为
 18 passed / 70 skipped；新跑通的 18 项即 Web（CDP/webcrack/wabt、浏览器生命周期与句柄/fd
