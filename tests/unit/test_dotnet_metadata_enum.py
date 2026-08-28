@@ -92,6 +92,25 @@ def test_il_branch_and_constant_operands_are_signed() -> None:
     assert partial is False
 
 
+def test_an_opcode_outside_the_subset_desyncs_and_must_read_partial() -> None:
+    """An unmodelled opcode makes every later instruction fiction, not fact.
+
+    The disassembler decodes a subset; ``ldc.i4.s`` (0x1F) is not in it. On the
+    old path it emitted ``op_1f`` and advanced a single byte, so the opcode's
+    own one-byte operand was then read as the *next* opcode -- and everything
+    after desynchronised into instructions that are not in the method. The
+    reply still carried ``partial: False``, so a single non-subset opcode was a
+    cheap way to feed the tool a decode it would vouch for but that is wrong.
+    Encountering an opcode it cannot size is exactly when it can no longer
+    stand behind the alignment, so the honest answer is the flag.
+    """
+    il = bytes([0x00, 0x1F, 0x0A, 0x2A])  # nop; ldc.i4.s 10 (unmodelled); ret
+
+    _instructions, partial = _disassemble_il(il, max_insns=16)
+
+    assert partial is True
+
+
 def test_service_enumerate_and_xrefs_surface(tmp_path: Path) -> None:
     binary = tmp_path / "empty_tables.exe"
     _write_minimal_clr(binary)

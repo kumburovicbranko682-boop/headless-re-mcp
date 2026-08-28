@@ -236,6 +236,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   drain-先于-shutdown 的接线与旧版 mitmproxy 无 Servers API 时的退化路径；真 gate 在装了
   mitmproxy 的机器上验证端口确实释放。
 
+### 修复（`dotnet.il` 遇到子集外操作码后静默错位却仍报 `partial: False`）
+
+- `_disassemble_il` 只解码一个操作码子集,遇到子集外的操作码时输出 `op_XX` 并只前进 1 字节。
+  但该操作码若自带操作数(真实 .NET 方法里俯拾皆是:`ldc.i4.s`/`ldc.r8`/`ldarg.s`……),
+  它的操作数字节就会被当作下一个操作码来读,自此**整段反汇编错位**成方法里根本不存在的指令——
+  而结果仍标 `partial: False`,声称是一次可信的完整解码。这与本工具既有的诚实性约定相悖
+  (见 `dotnet.il` EOF 截断按 partial 上报):一个子集外操作码就是把错误解码喂给「本该展示真相
+  的工具」的廉价手法,读到回复的 agent 没有任何其它信号。现在只要遇到无法确定长度的操作码就置
+  `partial = True`——那正是它无法再为后续对齐背书的时刻,唯一诚实的答复就是这面旗。已知子集内
+  的混合 IL(分支/常量/token)仍照常报 `partial: False`,不受影响。新增直测:`nop; ldc.i4.s;
+  ret` 这种夹了一个子集外操作码的 IL 必须解出 `partial: True`。
+
 ### 修复（`dotnet.il` 长分支与常量操作数按无符号解码）
 
 - `_disassemble_il` 只把 1 字节短分支(`br.s`/`brfalse.s`/`brtrue.s`)当有符号读,4 字节
