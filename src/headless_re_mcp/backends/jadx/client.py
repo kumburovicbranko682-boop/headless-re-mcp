@@ -222,8 +222,20 @@ class JadxClient:
             timeout = clamp_cli_timeout(timeout, maximum=_MAX_TIMEOUT_S)
         except InvalidTimeout as exc:
             raise JadxError("invalid_params", str(exc)) from exc
-        if not self.available or self.executable is None:
-            raise JadxError("capability_unavailable", "jadx is not configured")
+        # Validate the caller's apk before the capability gate, the same order
+        # decompile's class_name check settled on just above (and web.open /
+        # adb._device / jsre): a missing apk (not_found) or a declared zip bomb
+        # (too_large) is the caller's mistake with or without jadx installed, and
+        # capability_unavailable would send an agent to install a tool when the
+        # real fix is the path. Both checks are pure file reads, and the bomb
+        # check still lands before the JVM -- its whole purpose.
+        # Validate the caller's apk before the capability gate, the same order
+        # decompile's class_name check settled on just above (and web.open /
+        # adb._device / jsre): a missing apk (not_found) or a declared zip bomb
+        # (too_large) is the caller's mistake with or without jadx installed, and
+        # capability_unavailable would send an agent to install a tool when the
+        # real fix is the path. Both checks are pure file reads, and the bomb
+        # check still lands before the JVM -- its whole purpose.
         if not apk.is_file():
             raise JadxError("not_found", "apk not found", path=str(apk))
         # jadx extracts resources and writes decompiled sources with only the
@@ -233,6 +245,8 @@ class JadxClient:
             check_zip_expansion(apk)
         except ZipExpansionError as exc:
             raise JadxError(exc.code, exc.message, **exc.details) from exc
+        if not self.available or self.executable is None:
+            raise JadxError("capability_unavailable", "jadx is not configured")
         out_dir.mkdir(parents=True, exist_ok=True)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         cmd = [str(self.executable), *extra, str(apk)]

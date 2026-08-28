@@ -118,8 +118,18 @@ class ApktoolClient:
         no_resources: bool = False,
     ) -> JsonObject:
         """Decode an APK into smali + resources for editing."""
-        if not self.available or self.apktool is None:
-            raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
+        # Validate the caller's apk before the capability gate, matching web.open,
+        # adb._device, jsre and jadx: a missing apk (not_found), a non-zip
+        # (invalid_params) or a declared bomb (too_large) is the caller's mistake
+        # with or without a JRE, and capability_unavailable would send an agent to
+        # install a tool when the real fix is the path. All three are pure file
+        # reads, and the bomb check still lands before the JVM starts.
+        # Validate the caller's apk before the capability gate, matching web.open,
+        # adb._device, jsre and jadx: a missing apk (not_found), a non-zip
+        # (invalid_params) or a declared bomb (too_large) is the caller's mistake
+        # with or without a JRE, and capability_unavailable would send an agent to
+        # install a tool when the real fix is the path. All three are pure file
+        # reads, and the bomb check still lands before the JVM starts.
         if not apk.is_file():
             raise ApktoolError("not_found", "apk not found", path=str(apk))
         _require_apk_zip(apk)
@@ -130,6 +140,8 @@ class ApktoolClient:
             check_zip_expansion(apk)
         except ZipExpansionError as exc:
             raise ApktoolError(exc.code, exc.message, **exc.details) from exc
+        if not self.available or self.apktool is None:
+            raise ApktoolError("capability_unavailable", "apktool is not configured (needs a JRE)")
         out_dir.parent.mkdir(parents=True, exist_ok=True)
         args = [str(self.apktool), "d", str(apk), "-o", str(out_dir), "-f"]
         if no_resources:
@@ -206,13 +218,21 @@ class ApktoolClient:
         timeout: float = 300.0,
     ) -> JsonObject:
         """Sign an APK, defaulting to the standard Android debug keystore."""
+        # Validate the caller's apk before the capability gate, matching decode
+        # above and the rest of the non-PE line: a missing apk (not_found) or a
+        # non-zip (invalid_params) is the caller's mistake with or without a JRE,
+        # and must not be masked as capability_unavailable. Both are pure reads.
+        # Validate the caller's apk before the capability gate, matching decode
+        # above and the rest of the non-PE line: a missing apk (not_found) or a
+        # non-zip (invalid_params) is the caller's mistake with or without a JRE,
+        # and must not be masked as capability_unavailable. Both are pure reads.
+        if not apk.is_file():
+            raise ApktoolError("not_found", "apk not found", path=str(apk))
+        _require_apk_zip(apk)
         if not self.signer_available or self.apksigner is None:
             raise ApktoolError(
                 "capability_unavailable", "apksigner is not configured (needs a JRE)"
             )
-        if not apk.is_file():
-            raise ApktoolError("not_found", "apk not found", path=str(apk))
-        _require_apk_zip(apk)
         store = keystore or _DEBUG_KEYSTORE
         if not store.is_file():
             raise ApktoolError(
