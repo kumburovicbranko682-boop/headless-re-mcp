@@ -86,6 +86,27 @@ def _check_package(package: str) -> str:
     return value
 
 
+def _clamp_count(value: object, maximum: int, *, name: str) -> int:
+    """Clamp a caller count/limit, refusing a value that cannot be an int.
+
+    properties/packages/logcat took ``max(1, min(int(value), max))``: a negative
+    or huge value clamps cleanly, but the tool schemas type these as integers
+    while the agent and OpenAI-bridge transports call the handler with no
+    pydantic coercion, so a float (inf from a JSON 1e400), nan, null, or
+    non-numeric string reached ``int(value)`` and raised
+    OverflowError/ValueError/TypeError -- none an AdbError, so the service filed
+    an internal_error incident for what is only a bad page size. A bool is an int
+    subclass but never a valid count.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise AdbError("invalid_params", f"{name} must be an integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise AdbError("invalid_params", f"{name} must be an integer") from exc
+    return max(1, min(parsed, maximum))
+
+
 def _require_apk_zip(path: Path) -> None:
     """Refuse a non-APK before pushing it to the device.
 
@@ -478,8 +499,8 @@ class AdbBackend:
             raise AdbError("backend_error", f"failed to read device info: {exc}") from exc
 
     def properties(self, serial: str, *, limit: int = 500) -> JsonObject:
+        capped = _clamp_count(limit, _MAX_PROPERTIES, name="limit")
         dev = self._device(serial)
-        capped = max(1, min(int(limit), _MAX_PROPERTIES))
         raw = _device_shell(dev, "getprop")
         text = str(raw)
         if _is_host_error_output(text):
@@ -499,8 +520,8 @@ class AdbBackend:
     def packages(
         self, serial: str, *, third_party_only: bool = False, limit: int = 500
     ) -> JsonObject:
+        capped = _clamp_count(limit, _MAX_PACKAGES, name="limit")
         dev = self._device(serial)
-        capped = max(1, min(int(limit), _MAX_PACKAGES))
         args = "pm list packages -3" if third_party_only else "pm list packages"
         raw = _device_shell(dev, args)
         text = str(raw)
@@ -668,8 +689,8 @@ class AdbBackend:
         return {"package": package, "activity": activity}
 
     def logcat(self, serial: str, *, lines: int = 200) -> JsonObject:
+        capped = _clamp_count(lines, _MAX_LOGCAT_LINES, name="lines")
         dev = self._device(serial)
-        capped = max(1, min(int(lines), _MAX_LOGCAT_LINES))
         raw = _device_shell(dev, ["logcat", "-d", "-t", str(capped)])
         text = str(raw)
         if _is_host_error_output(text):
