@@ -1,0 +1,14 @@
+version: 2.7.0
+apkFileName: fixture.apk
+isFrameworkApk: false
+usesFramework:
+  ids:
+  - 1
+sdkInfo:
+  minSdkVersion: '21'
+  targetSdkVersion: '33'
+packageInfo:
+  forcedPackageId: '127'
+versionInfo:
+  versionCode: '1'
+  versionName: '1.0'
