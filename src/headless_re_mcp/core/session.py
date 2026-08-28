@@ -161,6 +161,9 @@ class SessionRegistry:
                 # header -- the native PE build posture, the pair to the ELF
                 # nx/relro/canary/pie and Mach-O nx/pie facts.
                 metadata["pe"].update(_pe_hardening_facts(path))
+                # TLS callbacks -- the PE's code-before-main, the pair to the
+                # ELF/Mach-O init_funcs facts and the packer's anti-debug home.
+                metadata["pe"].update(_pe_tls_facts(path))
                 # Managed resources are a separate store from the PE resource
                 # tree: the ManifestResource census covers the Assembly.Load
                 # packer pattern.
@@ -3447,6 +3450,13 @@ _PE_MAX_IMPORTS_PER_DLL = 4096
 _PE_MAX_EXPORTS = 8192
 _PE_MAX_SYMBOL_NAME = 512
 _PE_MAX_IMPORT_FILE = 128 * 1024 * 1024
+# The TLS data directory (index 9) carries the PE's code-before-main: the
+# loader runs every AddressOfCallBacks entry before the entry point -- the pair
+# to an ELF DT_INIT_ARRAY and a Mach-O __mod_init_func section, and the classic
+# home for a packer's anti-debug checks. The callback walk is bounded so a
+# hostile array degrades to a shorter count rather than an unbounded read.
+_PE_TLS_DIR = 9
+_PE_MAX_TLS_CALLBACKS = 64
 # Subsystem and DllCharacteristics sit at the same optional-header offsets for
 # PE32 and PE32+ (the layouts only diverge at ImageBase and the tail); together
 # they are the native PE build posture -- the pair to ELF nx/relro/canary/pie
@@ -4141,6 +4151,85 @@ def _pe_hardening_facts(path: Path) -> dict[str, Any]:
         image_base = int.from_bytes(optional[base_off : base_off + base_len], "little")
         facts["entry"] = image_base + entry_rva
     return facts
+
+
+def _pe_image_base(raw: bytes, magic: int, dir_off: int) -> int | None:
+    """The preferred ImageBase, located back from the data-directory offset.
+
+    ``_pe_header_view`` hands back where the directory array starts; the
+    NumberOfRvaAndSizes field sits 4 bytes before it at a magic-dependent
+    offset into the optional header, which pins down where ImageBase lives
+    (32-bit at +28 for PE32, 64-bit at +24 for PE32+).
+    """
+    opt_start = dir_off - 4 - (108 if magic == 0x20B else 92)
+    lo = opt_start + (24 if magic == 0x20B else 28)
+    hi = opt_start + 32
+    if lo < 0 or hi > len(raw):
+        return None
+    return int.from_bytes(raw[lo:hi], "little")
+
+
+def _pe_tls_facts(path: Path) -> dict[str, Any]:
+    """The TLS-callback surface -- the PE's code-before-main -- as ``{"tls": ...}``.
+
+    The pair to the ELF ``init_funcs`` (DT_INIT/init-array counts), the Mach-O
+    ``init_funcs`` (mod-init pointer counts), the .NET module initializer and
+    the Android custom Application class: the loader runs every TLS callback
+    before the entry point, which is where packers put anti-debug checks and
+    droppers their first-stage logic. Reports whether a TLS directory exists at
+    all and how many callbacks its AddressOfCallBacks array holds -- a present
+    directory with zero callbacks is ordinary thread-local data, a nonzero
+    count is code the entry-point-first analyst would miss.
+
+    AddressOfCallBacks and the callback entries are VAs, not RVAs, so the walk
+    rebases them off the preferred ImageBase before mapping through the section
+    table. Bounded and fail-closed: the whole read is capped, the array walk is
+    capped, and a VA below the image base or outside every section yields the
+    presence bit with a zero count rather than a guess; only a non-PE yields
+    ``{}``.
+    """
+    try:
+        if path.stat().st_size > _PE_MAX_IMPORT_FILE:
+            return {}
+        with path.open("rb") as stream:
+            raw = stream.read(_PE_MAX_IMPORT_FILE)
+    except OSError:
+        return {}
+    view = _pe_header_view(raw)
+    if view is None:
+        return {}
+    magic, dir_count, dir_off, sections = view
+    facts: dict[str, Any] = {"present": False, "callbacks": 0}
+    entry = dir_off + _PE_TLS_DIR * 8
+    if dir_count <= _PE_TLS_DIR or entry + 8 > len(raw):
+        return {"tls": facts}
+    tls_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if tls_rva == 0:
+        return {"tls": facts}
+    facts["present"] = True
+    ptr = 8 if magic == 0x20B else 4
+    tls_off = _pe_rva_to_offset(sections, tls_rva)
+    # IMAGE_TLS_DIRECTORY: four pointer-wide fields (raw-data start/end, index,
+    # AddressOfCallBacks) then two DWORDs; only the callbacks field matters.
+    if tls_off is None or tls_off + 4 * ptr > len(raw):
+        return {"tls": facts}
+    callbacks_va = int.from_bytes(raw[tls_off + 3 * ptr : tls_off + 4 * ptr], "little")
+    image_base = _pe_image_base(raw, magic, dir_off)
+    if callbacks_va == 0 or image_base is None or callbacks_va < image_base:
+        return {"tls": facts}
+    array_off = _pe_rva_to_offset(sections, callbacks_va - image_base)
+    if array_off is None:
+        return {"tls": facts}
+    count = 0
+    for i in range(_PE_MAX_TLS_CALLBACKS):
+        slot = array_off + i * ptr
+        if slot + ptr > len(raw):
+            break
+        if int.from_bytes(raw[slot : slot + ptr], "little") == 0:
+            break  # the zero pointer terminates the callback array
+        count += 1
+    facts["callbacks"] = count
+    return {"tls": facts}
 
 
 def _pe_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:

@@ -25,6 +25,7 @@ from headless_re_mcp.core.session import (
     _pe_hardening_facts,
     _pe_overlay,
     _pe_resource_payloads,
+    _pe_tls_facts,
     describe_pe_clr,
 )
 
@@ -732,6 +733,134 @@ class TestPeHardeningFacts:
         assert pe["entry"] == 0x1_4000_2000
 
 
+def _pe_with_tls(
+    *,
+    callback_count: int = 0,
+    magic: int = 0x20B,
+    callbacks_va: int | None = None,
+) -> bytes:
+    """A minimal one-section PE whose TLS directory (index 9) carries callbacks.
+
+    The section holds the IMAGE_TLS_DIRECTORY at its start and the
+    AddressOfCallBacks array at +0x100; both the array field and each callback
+    entry are VAs off the preferred image base, the layout the loader expects.
+    ``callbacks_va`` overrides the AddressOfCallBacks field (0 declares no
+    array; a below-base value makes it bogus).
+    """
+    image_base = 0x1_4000_0000 if magic == 0x20B else 0x40_0000
+    ptr = 8 if magic == 0x20B else 4
+    fmt = "<Q" if magic == 0x20B else "<I"
+    sect_rva = 0x1000
+
+    size = 0x100 + (callback_count + 1) * ptr
+    sec = bytearray((max(size, 0x200) + 0x1FF) & ~0x1FF)
+    for i in range(callback_count):
+        struct.pack_into(fmt, sec, 0x100 + i * ptr, image_base + 0x2000 + i * 0x10)
+    resolved_va = image_base + sect_rva + 0x100 if callbacks_va is None else callbacks_va
+    dir_fmt = "<QQQQII" if magic == 0x20B else "<IIIIII"
+    struct.pack_into(dir_fmt, sec, 0, 0, 0, 0, resolved_va, 0, 0)
+
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x40)
+    machine = 0x8664 if magic == 0x20B else 0x14C
+    opt_size = 0xF0 if magic == 0x20B else 0xE0
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", machine, 1, 0, 0, 0, opt_size, 0)
+    opt = bytearray(opt_size)
+    struct.pack_into("<H", opt, 0, magic)
+    if magic == 0x20B:
+        struct.pack_into("<Q", opt, 24, image_base)
+    else:
+        struct.pack_into("<I", opt, 28, image_base)
+    struct.pack_into("<I", opt, 32, 0x1000)  # SectionAlignment
+    struct.pack_into("<I", opt, 36, 0x200)  # FileAlignment
+    struct.pack_into("<I", opt, 56, sect_rva + len(sec))  # SizeOfImage
+    dir_count_off = 108 if magic == 0x20B else 92
+    struct.pack_into("<I", opt, dir_count_off, 16)
+    tls_dir_size = 40 if magic == 0x20B else 24
+    struct.pack_into("<II", opt, dir_count_off + 4 + 9 * 8, sect_rva, tls_dir_size)
+
+    raw_off = 0x40 + len(coff) + opt_size + 40
+    if raw_off % 0x200:
+        raw_off += 0x200 - (raw_off % 0x200)
+    struct.pack_into("<I", opt, 60, raw_off)  # SizeOfHeaders
+
+    sect = bytearray(40)
+    sect[0:4] = b".tls"
+    struct.pack_into("<I", sect, 8, len(sec))
+    struct.pack_into("<I", sect, 12, sect_rva)
+    struct.pack_into("<I", sect, 16, len(sec))
+    struct.pack_into("<I", sect, 20, raw_off)
+    struct.pack_into("<I", sect, 36, 0xC0000040)
+
+    out = bytearray(dos + coff + opt + sect)
+    if len(out) < raw_off:
+        out += b"\x00" * (raw_off - len(out))
+    return bytes(out + sec)
+
+
+class TestPeTlsFacts:
+    """_pe_tls_facts reads the TLS-callback surface -- the PE's code-before-main.
+
+    The pair to the ELF/Mach-O init_funcs facts, the .NET module initializer
+    and the Android custom Application class: the loader runs every TLS
+    callback before the entry point, which is where a packer puts anti-debug
+    checks. A present directory with zero callbacks is ordinary thread-local
+    data; a nonzero count is code an entry-point-first analyst would miss.
+    """
+
+    def test_a_pe_without_a_tls_directory_reads_absent(self, tmp_path: Path) -> None:
+        path = tmp_path / "bare.exe"
+        path.write_bytes(_native_pe())
+        assert _pe_tls_facts(path) == {"tls": {"present": False, "callbacks": 0}}
+
+    def test_callbacks_count_off_a_pe32_plus_array(self, tmp_path: Path) -> None:
+        path = tmp_path / "tls3.exe"
+        path.write_bytes(_pe_with_tls(callback_count=3))
+        assert _pe_tls_facts(path) == {"tls": {"present": True, "callbacks": 3}}
+
+    def test_a_pe32_array_walks_at_the_narrow_pointer_width(self, tmp_path: Path) -> None:
+        # PE32 TLS fields and callbacks are 4 bytes; a reader assuming PE32+
+        # 8-byte slots would read the AddressOfCallBacks from the wrong field
+        # and pair adjacent callbacks into one bogus pointer.
+        path = tmp_path / "tls_x86.exe"
+        path.write_bytes(_pe_with_tls(callback_count=2, magic=0x10B))
+        assert _pe_tls_facts(path) == {"tls": {"present": True, "callbacks": 2}}
+
+    def test_a_directory_declaring_no_array_reads_present_but_zero(
+        self, tmp_path: Path
+    ) -> None:
+        # AddressOfCallBacks 0 is how plain thread-local data ships: TLS is
+        # present, but there is no code-before-main to count.
+        path = tmp_path / "tls_data.exe"
+        path.write_bytes(_pe_with_tls(callbacks_va=0))
+        assert _pe_tls_facts(path) == {"tls": {"present": True, "callbacks": 0}}
+
+    def test_a_callbacks_va_below_the_image_base_reads_zero(self, tmp_path: Path) -> None:
+        # A VA that cannot be rebased is a lying directory; fail closed to the
+        # presence bit rather than mapping a negative RVA.
+        path = tmp_path / "tls_bogus.exe"
+        path.write_bytes(_pe_with_tls(callback_count=3, callbacks_va=0x1000))
+        assert _pe_tls_facts(path) == {"tls": {"present": True, "callbacks": 0}}
+
+    def test_the_callback_walk_is_bounded(self, tmp_path: Path) -> None:
+        path = tmp_path / "tls_many.exe"
+        path.write_bytes(_pe_with_tls(callback_count=80))
+        facts = _pe_tls_facts(path)
+        assert facts["tls"]["callbacks"] == 64  # _PE_MAX_TLS_CALLBACKS
+
+    def test_a_non_pe_reads_no_facts(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _pe_tls_facts(path) == {}
+
+    def test_session_over_a_pe_carries_the_tls_surface(self, tmp_path: Path) -> None:
+        path = tmp_path / "app.exe"
+        path.write_bytes(_pe_with_tls(callback_count=2))
+        session = SessionRegistry().create(str(path))
+        assert session.metadata["pe"]["tls"] == {"present": True, "callbacks": 2}
+
+
 class TestPeResourcePayloads:
     """_pe_resource_payloads lists executable magic hidden in the resources.
 
@@ -909,9 +1038,9 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
     assert session.architecture is Architecture.X86
     # A native PE has no .NET block, but it does now carry the whole-PE
     # Authenticode verdict -- unsigned here, a real answer rather than empty --
-    # an (empty) resource-payload census, an (empty) import/export surface, and
-    # the optional-header posture (all-zero fields: unknown subsystem, no
-    # mitigations, no declared entry).
+    # an (empty) resource-payload census, an (empty) import/export surface, the
+    # optional-header posture (all-zero fields: unknown subsystem, no
+    # mitigations, no declared entry) and the (absent) TLS-callback surface.
     assert session.metadata == {
         "pe": {
             "authenticode": {"signed": False},
@@ -927,6 +1056,7 @@ def test_session_over_a_native_pe_carries_only_the_authenticode_verdict(tmp_path
             "no_seh": False,
             "appcontainer": False,
             "cfg": False,
+            "tls": {"present": False, "callbacks": 0},
         }
     }
 
