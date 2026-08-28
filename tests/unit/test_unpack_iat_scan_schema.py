@@ -43,3 +43,39 @@ def test_unpack_iat_scan_schema_caps_max_candidates() -> None:
     assert props["max_candidates"]["minimum"] == 1
     assert props["max_candidates"]["maximum"] == 32
     assert props["max_candidates"]["default"] == 8
+
+
+def test_unpack_iat_scan_schema_exposes_mode_as_an_enum() -> None:
+    """mode delegates to imports_scan yet the tool typed it as a bare str.
+
+    unpack.iat.scan forwards mode to AnalysisService.imports_scan, whose guard
+    (and the native ScanImports guard) accept only all|consecutive|sparse|
+    call_site. Typed as ``str`` the schema offered the agent no hint, so a wrong
+    mode reached the service only to come back invalid_params. The schema must
+    advertise the closed set as an enum, identical to imports.scan since both
+    share tools.limits.ImportScanMode.
+    """
+    from typing import get_args
+
+    from headless_re_mcp.tools.dynamic_analysis import build_dynamic_analysis_tools
+    from headless_re_mcp.tools.limits import ImportScanMode
+
+    handler = next(
+        binding.handler
+        for binding in build_unpack_tools(object())  # type: ignore[arg-type]
+        if binding.name == "unpack.iat.scan"
+    )
+    mode = input_schema_for(handler)["properties"]["mode"]
+
+    assert set(mode["enum"]) == set(get_args(ImportScanMode))
+    assert mode["default"] == "all"
+
+    # The two IAT-scan surfaces must not drift: same enum on both.
+    imports_scan = next(
+        binding.handler
+        for binding in build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+        if binding.name == "imports.scan"
+    )
+    assert (
+        input_schema_for(imports_scan)["properties"]["mode"]["enum"] == mode["enum"]
+    )

@@ -222,6 +222,43 @@ def test_imports_scan_schema_matches_native_candidate_cap() -> None:
     assert props["max_candidates"]["minimum"] == 1
     assert props["max_candidates"]["maximum"] == cap
 
+
+def _native_import_scan_modes() -> set[str]:
+    import re
+
+    native = (
+        Path(__file__).resolve().parents[2]
+        / "native"
+        / "xdbg-headless-rpc"
+        / "rpc_methods.cpp"
+    ).read_text(encoding="utf-8")
+    # ScanImports guards with: mode != "all" && mode != "consecutive" && ...
+    return set(re.findall(r'mode != "([a-z_]+)"', native))
+
+
+def test_imports_scan_schema_exposes_mode_as_the_native_enum() -> None:
+    """mode was a bare str, so the schema advertised no vocabulary at all.
+
+    Native ScanImports accepts only all|consecutive|sparse|call_site and the
+    service AnalysisService.imports_scan rejects anything else with
+    invalid_params, yet the tool typed mode as ``str`` -- the generated schema
+    said only "string", so an agent's natural guess ("linear", "full") sailed
+    past the schema and failed one layer down. The schema must expose exactly
+    the native enum, and stay in lockstep with it.
+    """
+    from headless_re_mcp.tools.binding import input_schema_for
+
+    handler = next(
+        binding.handler
+        for binding in build_dynamic_analysis_tools(object())  # type: ignore[arg-type]
+        if binding.name == "imports.scan"
+    )
+    mode = input_schema_for(handler)["properties"]["mode"]
+
+    assert set(mode["enum"]) == _native_import_scan_modes()
+    assert mode["default"] == "all"
+
+
 def test_modules_dump_schema_matches_native_dump_cap() -> None:
     """The catalog accepted an unbounded dump size.
 
