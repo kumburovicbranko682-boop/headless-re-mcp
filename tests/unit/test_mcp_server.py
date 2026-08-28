@@ -275,6 +275,7 @@ async def test_minimal_mcp_tool_surface() -> None:
         # Native ELF triage (elf.*)
         "elf.dynamic",
         "elf.segments",
+        "elf.strings",
         "elf.summary",
         "elf.symbols",
         # Native Mach-O triage (macho.*)

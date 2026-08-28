@@ -9,7 +9,8 @@ elf.dynamic are advertised, the summary returns the class, machine, section list
 and shared-library dependencies, the symbol page classifies imports and exports,
 the segment list carries the program headers with the interp/nx/relro posture,
 the dynamic decode names every tag with the DT_FLAGS/DT_FLAGS_1 words and the
-pie/bind_now/relro verdicts, and a file that is not an ELF fails with
+pie/bind_now/relro verdicts, the string extraction pulls printable literals
+labelled by the section they came from, and a file that is not an ELF fails with
 invalid_params rather than an internal fault. It needs no analysis backend, so
 it always runs.
 """
@@ -174,6 +175,7 @@ async def test_mcp_stdio_elf_summary(tmp_path: Path) -> None:
         assert "elf.symbols" in tools
         assert "elf.segments" in tools
         assert "elf.dynamic" in tools
+        assert "elf.strings" in tools
 
         full = await _call(client, "elf.summary", {"path": str(binary)})
         assert full["ok"] is True, full
@@ -229,6 +231,16 @@ async def test_mcp_stdio_elf_summary(tmp_path: Path) -> None:
         tags = [e["tag"] for e in dyn_data["entries"]]
         assert {"NEEDED", "SONAME", "FLAGS", "FLAGS_1"} <= set(tags)
 
+        strings = await _call(
+            client, "elf.strings", {"path": str(binary), "min_length": 4, "section": ".dynstr"}
+        )
+        assert strings["ok"] is True, strings
+        str_data = strings["data"]
+        assert str_data["sections_scanned"] == [".dynstr"]
+        by_value = {s["value"]: s for s in str_data["strings"]}
+        assert "libc.so.6" in by_value  # the dependency name, from .dynstr
+        assert by_value["libc.so.6"]["section"] == ".dynstr"
+
         bad = await _call(client, "elf.summary", {"path": str(junk)})
         assert bad["ok"] is False
         assert bad["error"]["code"] == "invalid_params"
@@ -244,3 +256,7 @@ async def test_mcp_stdio_elf_summary(tmp_path: Path) -> None:
         bad_dynamic = await _call(client, "elf.dynamic", {"path": str(junk)})
         assert bad_dynamic["ok"] is False
         assert bad_dynamic["error"]["code"] == "invalid_params"
+
+        bad_strings = await _call(client, "elf.strings", {"path": str(junk)})
+        assert bad_strings["ok"] is False
+        assert bad_strings["error"]["code"] == "invalid_params"

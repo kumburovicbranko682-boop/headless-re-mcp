@@ -63,6 +63,19 @@ until 1.0 the tool surface may still change between minor versions.
 
 ### 新增（原生 ELF 离线速览，无需 r2/Ghidra）
 
+- 新增 `elf.strings`：纯 stdlib 抽取可打印字符串，但**保留来源**——裸 `strings` 把整个文件压成一串匿名列表，
+  这里给每条串标注它所在的**节**：`.rodata` 里是真正的常量、`.comment` 是编译器指纹（GCC/Clang 版本）、
+  `.dynstr`/`.strtab` 是符号名、`.data` 是初始化全局量——加上文件偏移与（可分配节的）虚拟地址 `vaddr`。
+  这层「这串来自哪」的语义正是分析者推理时用的：过滤器 `section` 可只扫某一节；`min_length`（默认 4）设长度
+  下限。扫描覆盖每个有文件内容的节（`.bss` 等 SHT_NOBITS 无内容，跳过）；**节表被剥离**时回退按 PT_LOAD 段
+  扫描，每条串标注所在段序号——恶意样本删了节头照样能抽。`strings_total` 有硬上限（`truncated` 标记触顶）
+  并用 `offset`/`limit` 诚实分页，`sections_scanned` 报实际扫了哪些节，节内容越界记 warning 跳过而非抛异常。
+  已对真实二进制验证：`/usr/bin/ls` 抽出 864 条,**逐条偏移自校验 864/864 全中**(报告的文件偏移处确实是报告
+  的字节),`.rodata` 的 vaddr 由「节地址 + 节内相对偏移」算得且与 `readelf -S` 一致,某常量偏移 103913 与
+  `strings -a -t d` 逐字匹配;`.dynstr` 过滤只出符号名。工具为**核心、按路径、只读**,各工作方向均可见。新增
+  可移植的手工汇编夹具单测(按节标注、偏移/vaddr 精确、min_length 过滤、节过滤命中与未命中、诚实分页、段回退、
+  节内容越界、非 ELF 拒绝、服务三类信封);ELF MCP stdio Gate 扩到同时打 `elf.strings`(断言从 `.dynstr` 抽出
+  依赖名并标注来源)。
 - 新增 `elf.dynamic`：纯 stdlib 完整解码 `.dynamic` 数组——即离线 `readelf -d` 加上分析者要自己下的结论。
   `elf.summary` 只从 `.dynamic` 里抽链接基本面（NEEDED/SONAME/RPATH/RUNPATH），这里读**全部**：每个 tag 具名
   （STRTAB/SYMTAB/INIT/FINI 数组/PLTGOT/GNU_HASH/VERNEED/DEBUG/RELACOUNT…）带原始值，字符串型 tag 就地经动态
@@ -185,7 +198,7 @@ until 1.0 the tool surface may still change between minor versions.
   先例：去掉 POSIX-only 前置断言，只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **275（158 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **276（159 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 

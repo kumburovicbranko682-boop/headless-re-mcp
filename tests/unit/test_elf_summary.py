@@ -10,9 +10,11 @@ the stripped flag, the 32-bit and big-endian header paths, the .dynsym page with
 its imported/exported classification and honest pagination, the full .dynamic
 decode (every tag named, DT_FLAGS/DT_FLAGS_1 spelled out, the pie/bind_now/
 textrel verdicts, relro as full/partial/none, and the PT_DYNAMIC fallback for a
-section-stripped binary), resilience to corrupt section and symbol offsets,
-refusal of a non-ELF, and the service routing that turns a bad file into a
-precise envelope rather than a fault.
+section-stripped binary), the printable-string extraction (labelled by section,
+with exact offset/vaddr, the min_length floor, a section filter, honest
+pagination and the PT_LOAD-segment fallback when stripped), resilience to
+corrupt section and symbol offsets, refusal of a non-ELF, and the service
+routing that turns a bad file into a precise envelope rather than a fault.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from headless_re_mcp.backends.common.elf import (
     ElfParseError,
     list_elf_dynamic,
     list_elf_segments,
+    list_elf_strings,
     list_elf_symbols,
     summarize_elf,
 )
@@ -748,6 +751,186 @@ def test_list_dynamic_rejects_non_elf() -> None:
         list_elf_dynamic(b"MZ\x00\x00" + b"\x00" * 60)
 
 
+# --- printable strings ----------------------------------------------------------
+
+
+def _build_elf_strings_sections(specs: list[tuple[str, int, int, bytes]]) -> bytes:
+    """A 64-bit LE ELF whose sections carry the given (name, type, addr, bytes).
+
+    A null section is prepended and a .shstrtab appended automatically; a
+    SHT_NOBITS section's bytes are recorded as its declared size but nothing is
+    written to the file (so the scanner must skip it).
+    """
+    sections: list[tuple[str, int, int, bytes]] = [("", 0, 0, b""), *specs]
+    shstr = bytearray(b"\x00")
+    name_off: dict[str, int] = {}
+    for name, _t, _a, _c in [*sections, (".shstrtab", 3, 0, b"")]:
+        if name and name not in name_off:
+            name_off[name] = len(shstr)
+            shstr.extend(name.encode("ascii") + b"\x00")
+    sections.append((".shstrtab", 3, 0, bytes(shstr)))
+
+    offset = 64
+    placed: list[tuple[str, int, int, int, int, int]] = []
+    contents = bytearray()
+    for name, stype, addr, content in sections:
+        if stype == 0:
+            placed.append((name, stype, addr, 0, 0, 0))
+            continue
+        if stype == 8:  # SHT_NOBITS: declared size, no file bytes
+            placed.append((name, stype, addr, 0, len(content), 0))
+            continue
+        placed.append((name, stype, addr, offset, len(content), 0))
+        contents.extend(content)
+        offset += len(content)
+    shoff = offset
+
+    sht = b"".join(
+        struct.pack(
+            "<IIQQQQIIQQ",
+            name_off.get(name, 0) if name else 0,
+            stype,
+            0,
+            addr,
+            off,
+            size,
+            0,
+            0,
+            1,
+            entsize,
+        )
+        for name, stype, addr, off, size, entsize in placed
+    )
+    shstrndx = next(i for i, entry in enumerate(placed) if entry[0] == ".shstrtab")
+    ehdr = struct.pack(
+        "<HHIQQQIHHHHHH", 3, 62, 1, 0x1000, 0, shoff, 0, 64, 0, 0, 64, len(placed), shstrndx
+    )
+    return _elf_ident(64, "<") + ehdr + bytes(contents) + sht
+
+
+def _build_elf_strings_segments(content: bytes, *, vaddr: int = 0x400000) -> bytes:
+    """A section-less ELF64 with one PT_LOAD segment carrying ``content``."""
+    phoff, phentsize, phnum = 64, 56, 1
+    content_off = phoff + phnum * phentsize
+    phdr = struct.pack(
+        "<IIQQQQQQ", 1, 5, content_off, vaddr, vaddr, len(content), len(content), 0x1000
+    )
+    ehdr = struct.pack(
+        "<HHIQQQIHHHHHH", 2, 62, 1, 0x1000, phoff, 0, 0, 64, phentsize, phnum, 0, 0, 0
+    )
+    return _elf_ident(64, "<") + ehdr + phdr + content
+
+
+_RODATA = b"\x00hello_world\x00xy\x00second_string\x00"
+_COMMENT = b"GCC: (Debian) 12.2.0\x00"
+_DATA = b"\x01\x02config=enabled\x00"
+
+
+def _strings_fixture() -> bytes:
+    return _build_elf_strings_sections(
+        [
+            (".rodata", 1, 0x4000, _RODATA),
+            (".comment", 1, 0, _COMMENT),
+            (".data", 1, 0x4800, _DATA),
+            (".bss", 8, 0x5000, b"\x00" * 0x100),
+        ]
+    )
+
+
+def test_strings_are_labelled_by_section() -> None:
+    out = list_elf_strings(_strings_fixture(), min_length=4, limit=1000)
+    assert out["class"] == "ELF64"
+    assert out["source"] == "sections"
+    assert ".bss" not in out["sections_scanned"]  # SHT_NOBITS has no file content
+    by_value = {s["value"]: s for s in out["strings"]}
+    assert "hello_world" in by_value
+    assert "second_string" in by_value
+    assert "config=enabled" in by_value
+    assert "GCC: (Debian) 12.2.0" in by_value
+    assert "xy" not in by_value  # length 2, below min_length
+    assert by_value["hello_world"]["section"] == ".rodata"
+    assert by_value["config=enabled"]["section"] == ".data"
+    assert by_value["GCC: (Debian) 12.2.0"]["section"] == ".comment"
+
+
+def test_string_offset_and_vaddr_are_exact() -> None:
+    data = _strings_fixture()
+    out = list_elf_strings(data, min_length=4, limit=1000)
+    hello = next(s for s in out["strings"] if s["value"] == "hello_world")
+    # The file offset must actually hold the reported bytes.
+    assert data[hello["offset"] : hello["offset"] + 11] == b"hello_world"
+    # .rodata sits at addr 0x4000; "hello_world" starts one NUL in.
+    assert hello["vaddr"] == "0x4001"
+    # A non-allocated section (.comment addr 0) reports no virtual address.
+    comment = next(s for s in out["strings"] if s["section"] == ".comment")
+    assert comment["vaddr"] is None
+
+
+def test_min_length_filters_shorter_runs() -> None:
+    long_only = list_elf_strings(_strings_fixture(), min_length=12, limit=1000)
+    values = {s["value"] for s in long_only["strings"]}
+    assert "second_string" in values  # 13 chars
+    assert "GCC: (Debian) 12.2.0" in values
+    assert "hello_world" not in values  # 11 chars, now below the floor
+
+
+def test_section_filter_scans_one_section() -> None:
+    out = list_elf_strings(_strings_fixture(), section=".rodata", min_length=4, limit=1000)
+    assert out["sections_scanned"] == [".rodata"]
+    assert {s["section"] for s in out["strings"]} == {".rodata"}
+    assert {s["value"] for s in out["strings"]} == {"hello_world", "second_string"}
+
+
+def test_section_filter_miss_warns() -> None:
+    out = list_elf_strings(_strings_fixture(), section=".nope")
+    assert out["strings_total"] == 0
+    assert any("no section named" in w for w in out["warnings"])
+
+
+def test_strings_paginate_honestly() -> None:
+    data = _strings_fixture()
+    full = list_elf_strings(data, min_length=4, limit=1000)
+    total = full["strings_total"]
+    assert total >= 4
+    page = list_elf_strings(data, min_length=4, offset=0, limit=2)
+    assert page["strings_listed"] == 2
+    assert page["has_more"] is True
+    assert page["strings_total"] == total
+    tail = list_elf_strings(data, min_length=4, offset=total - 1, limit=10)
+    assert tail["strings_listed"] == 1
+    assert tail["has_more"] is False
+
+
+def test_strings_fall_back_to_segments_when_stripped() -> None:
+    data = _build_elf_strings_segments(b"\x00segment_str\x00hi\x00abcd\x00")
+    out = list_elf_strings(data, min_length=4, limit=1000)
+    assert out["source"] == "segments"
+    assert out["sections_scanned"] == ["segment 0"]
+    by_value = {s["value"]: s for s in out["strings"]}
+    assert "segment_str" in by_value
+    assert "abcd" in by_value
+    assert "hi" not in by_value
+    # vaddr = segment vaddr (0x400000) + offset of the run inside the segment.
+    assert by_value["segment_str"]["vaddr"] == "0x400001"
+
+
+def test_a_section_content_past_eof_is_a_warning() -> None:
+    data = bytearray(_strings_fixture())
+    (shoff,) = struct.unpack_from("<Q", data, 40)
+    names = [s["name"] for s in summarize_elf(bytes(data))["sections"]]
+    rodata_index = names.index(".rodata")
+    # sh_offset lives 24 bytes into an Elf64_Shdr.
+    struct.pack_into("<Q", data, shoff + rodata_index * 64 + 24, 0xFFFFFF00)
+    out = list_elf_strings(bytes(data), min_length=4, limit=1000)
+    assert ".rodata" not in out["sections_scanned"]
+    assert any("past end of file" in w for w in out["warnings"])
+
+
+def test_list_strings_rejects_non_elf() -> None:
+    with pytest.raises(ElfParseError):
+        list_elf_strings(b"MZ\x00\x00" + b"\x00" * 60)
+
+
 # --- service routing ----------------------------------------------------------
 
 
@@ -860,5 +1043,27 @@ def test_service_dynamic_refuses_a_non_elf(tmp_path: Path) -> None:
 
 def test_service_dynamic_reports_missing_file(tmp_path: Path) -> None:
     result = _service(tmp_path).elf_dynamic(str(tmp_path / "nope.so"))
+    assert not result.ok
+    assert result.error.code == "not_found"
+
+
+def test_service_extracts_strings(tmp_path: Path) -> None:
+    binary = tmp_path / "prog"
+    binary.write_bytes(_strings_fixture())
+    result = _service(tmp_path).elf_strings(str(binary), min_length=4, section=".rodata")
+    assert result.ok, result.model_dump(mode="json")
+    assert {s["value"] for s in result.data["strings"]} == {"hello_world", "second_string"}
+
+
+def test_service_strings_refuses_a_non_elf(tmp_path: Path) -> None:
+    junk = tmp_path / "not.so"
+    junk.write_bytes(b"this is not an ELF binary")
+    result = _service(tmp_path).elf_strings(str(junk))
+    assert not result.ok
+    assert result.error.code == "invalid_params"
+
+
+def test_service_strings_reports_missing_file(tmp_path: Path) -> None:
+    result = _service(tmp_path).elf_strings(str(tmp_path / "nope.so"))
     assert not result.ok
     assert result.error.code == "not_found"
