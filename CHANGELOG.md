@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **294（177 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **295（178 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -600,6 +600,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   字段的类）、`field_name`、`matched_fields`（该名解析到多少个不同字段）、`found`（是否匹配到任一
   字段，借此把"未被访问"与"根本不存在"区分开）、`count` 与仅在真丢行时才为真的 `has_more`。
   与 `apk.xrefs` 共用 1000 的分页上限。
+- **`apk.summary`**：`wasm.summary`/`js.summary` 的 Android 对应物，一次调用给出 APK 全貌。把
+  `apk.open`/`apk.components`/`apk.permissions`/`apk.certificates`/`apk.native_libs` 五次调用的清单级
+  事实汇成一个答案,且用便宜的清单解析(共享 `_apk`),跳过类/字符串/xref 工具才需要的昂贵全量 DEX 分析。
+  输出 `opened`、`package`、`version_name`、`version_code`、`min_sdk`、`target_sdk`、`main_activity`、
+  `permission_count`、`components`(activities/services/receivers/providers 的**数量**,名字用
+  `apk.components`)、`native_abis`、`native_lib_count`、`certificate_count` 与 `v1_signed`。只给计数、
+  不给清单;要完整列表时再用对应分项工具。读不出包名的 zip 报 backend error、而非当作已打开的包。
 - **改包**：`apk.decode/repack/sign`，apktool 解包回编 + apksigner 重签，缺省用 Android
   debug keystore；签名失败时 stderr 里的口令会被抹掉再进错误信封。
 - **设备**：`device.*` 15 个工具（adbutils），覆盖模拟器/真机连接、装包卸包、启动停止、

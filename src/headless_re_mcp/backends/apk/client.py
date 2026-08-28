@@ -326,6 +326,56 @@ class ApkClient:
             "has_more": has_more,
         }
 
+    def summary(self, path: Path) -> JsonObject:
+        """Roll the manifest-level facts into one triage profile (no DEX analysis).
+
+        Uses the cheap _apk (manifest-only) parse the identity and listing tools
+        share, so it rolls up apk.open, apk.components, apk.permissions,
+        apk.certificates and apk.native_libs -- five calls -- into one without
+        the expensive full DEX analysis apk.classes/strings/xrefs need.
+        """
+        apk = self._apk(path)
+        package = apk.get_package()
+        if not package:
+            raise ApkError(
+                "backend_error",
+                "failed to read package name",
+                opened=False,
+                package=None,
+            )
+        native_libs = [
+            text for name in apk.get_files() or [] if (text := str(name)).startswith("lib/")
+        ]
+        abis = sorted({parts[1] for lib in native_libs if len(parts := lib.split("/")) >= 3})
+        try:
+            signature_files = apk.get_signature_names() or []
+        except Exception:  # noqa: BLE001 - older androguard variants
+            signature_files = []
+        try:
+            certificate_count = len(apk.get_certificates())
+        except Exception:  # noqa: BLE001 - certificate objects vary by version
+            certificate_count = 0
+        return {
+            "opened": True,
+            "package": package,
+            "version_name": apk.get_androidversion_name(),
+            "version_code": apk.get_androidversion_code(),
+            "min_sdk": apk.get_min_sdk_version(),
+            "target_sdk": apk.get_target_sdk_version(),
+            "main_activity": apk.get_main_activity(),
+            "permission_count": len(apk.get_permissions()),
+            "components": {
+                "activities": len(apk.get_activities() or []),
+                "services": len(apk.get_services() or []),
+                "receivers": len(apk.get_receivers() or []),
+                "providers": len(apk.get_providers() or []),
+            },
+            "native_abis": abis,
+            "native_lib_count": len(native_libs),
+            "certificate_count": certificate_count,
+            "v1_signed": bool(signature_files),
+        }
+
     def classes(self, path: Path, *, offset: int = 0, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         names: list[str] = []
@@ -523,9 +573,7 @@ class ApkClient:
             "has_more": has_more,
         }
 
-    def field_xrefs(
-        self, path: Path, field_name: str, *, limit: int = 100
-    ) -> JsonObject:
+    def field_xrefs(self, path: Path, field_name: str, *, limit: int = 100) -> JsonObject:
         parsed = self._parsed(path)
         # A field name is an identifier, so -- like a method name and unlike a
         # string constant -- it is stripped and a blank query rejected.

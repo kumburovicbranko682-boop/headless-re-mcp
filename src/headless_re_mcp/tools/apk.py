@@ -81,6 +81,25 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.summary")
+    def apk_summary(session_id: str) -> dict[str, Any]:
+        """Profile an APK in one call -- its identity and shape at a glance.
+
+        The Android counterpart to wasm.summary and js.summary: it rolls the
+        manifest-level facts that apk.open, apk.components, apk.permissions,
+        apk.certificates and apk.native_libs each return -- five calls -- into
+        one, using the cheap manifest parse so it skips the expensive DEX
+        analysis the class/string/xref tools need. Answers with opened,
+        package, version_name, version_code, min_sdk, target_sdk,
+        main_activity, permission_count, components (the activities, services,
+        receivers and providers counts, not their names -- use apk.components
+        for those), native_abis, native_lib_count, certificate_count and
+        v1_signed. It reports counts, not lists; reach for the per-aspect tool
+        when a full listing is needed. A zip with no readable package name is a
+        backend error, not an opened package.
+        """
+        return _dump(analysis.apk_summary(session_id))
+
     @tools.tool(name="apk.classes")
     def apk_classes(
         session_id: str,
@@ -112,9 +131,7 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         capped at 2000; scan_capped is true when more methods may exist.
         has_more only means a larger offset still has collected rows.
         """
-        return _dump(
-            analysis.apk_methods(session_id, class_name, offset=offset, limit=limit)
-        )
+        return _dump(analysis.apk_methods(session_id, class_name, offset=offset, limit=limit))
 
     @tools.tool(name="apk.strings")
     def apk_strings(

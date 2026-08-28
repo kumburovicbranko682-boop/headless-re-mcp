@@ -65,9 +65,7 @@ class ApkAnalysisMixin:
             SessionState.CLOSED,
             SessionState.FAILED,
         }:
-            raise InvalidStateTransition(
-                f"apk tools cannot run in {session.state.value} state"
-            )
+            raise InvalidStateTransition(f"apk tools cannot run in {session.state.value} state")
         return session.require_target(TargetKind.APK)
 
     def _jadx_out_dir(self, session_id: str) -> Path:
@@ -88,9 +86,7 @@ class ApkAnalysisMixin:
                 SessionState.CLOSED,
                 SessionState.FAILED,
             }:
-                raise InvalidStateTransition(
-                    f"apk.open cannot run in {session.state.value} state"
-                )
+                raise InvalidStateTransition(f"apk.open cannot run in {session.state.value} state")
             _record_backend(self, session_id, "apk", endpoint="androguard")
             _timeline_append(
                 self, session_id, "apk.open", "apk parsed", package=data.get("package")
@@ -115,6 +111,9 @@ class ApkAnalysisMixin:
 
     def apk_native_libs(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "native_libs")
+
+    def apk_summary(self, session_id: str) -> Result[JsonObject]:
+        return self._apk_call(session_id, "summary")
 
     def apk_classes(self, session_id: str, offset: int = 0, limit: int = 100) -> Result[JsonObject]:
         try:
@@ -170,9 +169,7 @@ class ApkAnalysisMixin:
         except BaseException as exc:
             return _failure(exc, session_id=session_id)
 
-    def apk_string_xrefs(
-        self, session_id: str, value: str, limit: int = 100
-    ) -> Result[JsonObject]:
+    def apk_string_xrefs(self, session_id: str, value: str, limit: int = 100) -> Result[JsonObject]:
         try:
             binary = self._apk_binary(session_id)
             data = ApkClient().string_xrefs(binary, value, limit=limit)
@@ -411,18 +408,14 @@ class ApkAnalysisMixin:
                 SessionState.CLOSED,
                 SessionState.FAILED,
             }:
-                raise InvalidStateTransition(
-                    f"apk.sign cannot run in {session.state.value} state"
-                )
+                raise InvalidStateTransition(f"apk.sign cannot run in {session.state.value} state")
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
             source = Path(apk_path).expanduser() if apk_path.strip() else root / "repacked.apk"
             source = self._require_session_path(session_id, source, what="apk_path")
             out_apk = root / "signed.apk"
             keystore_path = (
-                self._require_session_path(
-                    session_id, Path(keystore).expanduser(), what="keystore"
-                )
+                self._require_session_path(session_id, Path(keystore).expanduser(), what="keystore")
                 if keystore.strip()
                 else None
             )
