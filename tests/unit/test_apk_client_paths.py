@@ -63,8 +63,14 @@ def _apk_file(tmp_path: Path, name: str = "app.apk") -> Path:
 # --- availability + require -----------------------------------------------------
 
 
-def test_without_androguard_the_client_is_unavailable(tmp_path: Path) -> None:
-    client = ApkClient()  # androguard genuinely absent in this environment
+def test_without_androguard_the_client_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Force the lazy ``import androguard`` to fail so the unavailable path runs
+    # whether or not androguard is installed. The android extra is a documented,
+    # supported configuration, so this test must not assume its absence.
+    monkeypatch.setitem(sys.modules, "androguard", None)
+    client = ApkClient()
 
     assert client.available is False
     with pytest.raises(ApkError) as caught:

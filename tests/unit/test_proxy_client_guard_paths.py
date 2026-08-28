@@ -454,9 +454,13 @@ def test_instance_run_falls_back_when_the_constructor_signature_differs(
     assert calls["dumpmaster"] == 2
 
 
-def test_instance_run_records_an_import_failure() -> None:
+def test_instance_run_records_an_import_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """With mitmproxy absent, the run thread records the import error."""
-    assert "mitmproxy" not in sys.modules
+    # Force the lazy ``from mitmproxy import ...`` in ``_run`` to fail so the
+    # error-recording path runs whether or not mitmproxy is installed. With a
+    # real mitmproxy present ``_run`` would instead spin up a live proxy event
+    # loop that never returns, hanging the join inside ``_run_in_thread``.
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
     inst = _free_instance()
     _run_in_thread(inst)
     assert inst._error is not None
