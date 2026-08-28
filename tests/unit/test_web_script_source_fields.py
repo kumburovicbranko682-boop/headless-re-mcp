@@ -81,3 +81,6 @@ def test_web_script_source_documents_the_spill_artifact() -> None:
     doc = _tool_docstring("web.script.source")
     assert "artifact_id" in doc
     assert "artifacts.read" in doc
+    # Registration can fail (full/locked store); the doc must name the
+    # artifact_error fallback so an agent expecting an id knows to read source_path.
+    assert "artifact_error" in doc

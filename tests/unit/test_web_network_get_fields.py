@@ -124,3 +124,6 @@ def test_web_network_get_documents_the_spill_artifact() -> None:
     doc = _tool_docstring("web.network.get")
     assert "artifact_id" in doc
     assert "artifacts.read" in doc
+    # Registration can fail (full/locked store); the doc must name the
+    # artifact_error fallback so an agent expecting an id knows to read body_path.
+    assert "artifact_error" in doc

@@ -110,7 +110,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         why, while body, base64_encoded and body_truncated stay present. A
         body over the capture cap is refused rather than written to disk.
         A spilled body (body_path set) is registered as an artifact and
-        artifact_id names it, so artifacts.read can page the full bytes.
+        artifact_id names it, so artifacts.read can page the full bytes; if
+        registering it failed (a full or locked artifact store) artifact_error
+        is set instead and body_path still points at the file.
         """
         return _dump(analysis.web_network_get(session_id, request_id))
 
@@ -159,7 +161,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         or text field. A source over the capture cap is refused rather
         than written to disk. A spilled source (source_path set) is
         registered as an artifact and artifact_id names it, so
-        artifacts.read can page the full text.
+        artifacts.read can page the full text; if registering it failed
+        (a full or locked artifact store) artifact_error is set instead and
+        source_path still points at the file.
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 
@@ -192,8 +196,9 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Capture a screenshot of the current page to a PNG artifact.
 
         Answers with path and size, plus artifact_id when the PNG was
-        registered. There is no screenshot or png field. A full-page capture
-        over the cap is refused rather than left on disk.
+        registered (or artifact_error if that registration failed, with path
+        still naming the file). There is no screenshot or png field. A full-page
+        capture over the cap is refused rather than left on disk.
         """
         return _dump(analysis.web_screenshot(session_id, full_page=full_page))
 
@@ -202,9 +207,10 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """Export captured network activity to a spec-valid HAR 1.2 artifact.
 
         Answers with path, entry_count, truncated and size, plus artifact_id
-        when the HAR was registered. truncated is true when the oldest entries
-        were dropped to keep the file under the capture cap; size is the HAR
-        file's byte length. There is no har, entries or artifact field.
+        when the HAR was registered (or artifact_error if that registration
+        failed, with path still naming the file). truncated is true when the
+        oldest entries were dropped to keep the file under the capture cap; size
+        is the HAR file's byte length. There is no har, entries or artifact field.
         """
         return _dump(analysis.web_har_export(session_id))
 

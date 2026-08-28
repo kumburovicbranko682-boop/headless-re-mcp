@@ -23,6 +23,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
@@ -180,5 +182,45 @@ def test_a_spill_path_whose_file_vanished_passes_through_unregistered(tmp_path: 
         assert result.data["body_path"] == str(gone)
         assert "artifact_id" not in result.data
         assert "artifact_error" not in result.data
+    finally:
+        service.close_all()
+
+
+def test_a_body_that_cannot_be_registered_degrades_to_an_error_not_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store hiccup while registering a spilled body must not sink the fetch.
+
+    Registering writes to the artifact store, which can fail on a full or locked
+    database. _register_capture reports that in the payload rather than raising,
+    so web.network.get still returns the body and carries artifact_error instead
+    of artifact_id while keeping body_path -- the capture degrades, it is not
+    lost, and the caller learns the spill is not reopenable via artifacts.read.
+    The other tests here pin the happy id, the no-spill case, and the
+    vanished-file case (file gone, so neither key); none proved the service
+    surfaces artifact_error when the file is present but registration itself
+    fails. Force _record_artifact to raise with the spill on disk and prove the
+    fetch still succeeds, marked.
+    """
+    from headless_re_mcp.core import service_ext
+
+    service = _service(tmp_path)
+    try:
+        session_id = _web_session(service)
+        service._web_backend = _FakeWeb()  # type: ignore[assignment]
+
+        def _boom(*args: Any, **kwargs: Any) -> JsonObject:
+            raise RuntimeError("artifact store is locked")
+
+        monkeypatch.setattr(service_ext, "_record_artifact", _boom)
+
+        result = service.web_network_get(session_id, "r1")
+
+        assert result.ok and result.data is not None, result.error
+        assert "artifact_id" not in result.data, "a failed registration must not mint an id"
+        assert "artifact store is locked" in str(result.data.get("artifact_error")), result.data
+        # The body is still on disk (body_path survives) even though it never
+        # became a registered artifact: the fetch degraded, it did not drop data.
+        assert str(result.data.get("body_path", "")).endswith("body-r1.bin")
     finally:
         service.close_all()
