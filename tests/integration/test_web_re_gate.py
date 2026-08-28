@@ -1455,6 +1455,63 @@ def test_wasm_readers_fault_soft_on_a_malformed_module(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_js_imports_maps_the_dependency_surface_without_webcrack(tmp_path: Path) -> None:
+    """The module-graph view must come straight from the source, no webcrack.
+
+    The JS twin of r2.imports: a written ES module carries every mechanism --
+    a static default+named import, an `export ... from` re-export, a dynamic
+    import() and a CommonJS require() -- and js.imports has to recover each edge
+    with the right kind, specifier and bindings. The obfuscated fixture, which
+    is heavy with bracket member access like ["push"] and ["split"] but has no
+    imports, must yield zero edges: the scanner may not hallucinate a dependency
+    out of ordinary code.
+    """
+    module = tmp_path / "app.mjs"
+    module.write_text(
+        'import React, { useState } from "react";\n'
+        'export { Button } from "./ui/button.js";\n'
+        'const cfg = await import("./config.js");\n'
+        'const crypto = require("node:crypto");\n'
+        '// import Decoy from "not-real"  <- in a comment\n'
+        'const s = "require(\'also-not-real\')";\n',
+        encoding="utf-8",
+    )
+    service = AnalysisService()
+    try:
+        result = service.js_imports(str(module))
+        assert result.ok and result.data is not None, result.error
+        data = result.data
+        assert data["kind_counts"] == {
+            "dynamic_import": 1,
+            "export_from": 1,
+            "import": 1,
+            "require": 1,
+        }
+        assert data["specifiers"] == [
+            "./config.js",
+            "./ui/button.js",
+            "node:crypto",
+            "react",
+        ]
+        by_spec = {e["specifier"]: e for e in data["imports"]}
+        assert by_spec["react"]["default"] == "React"
+        assert by_spec["react"]["names"] == ["useState"]
+        assert by_spec["./ui/button.js"]["kind"] == "export_from"
+        assert by_spec["./ui/button.js"]["names"] == ["Button"]
+        assert by_spec["./config.js"]["kind"] == "dynamic_import"
+        assert by_spec["node:crypto"]["kind"] == "require"
+
+        # A real obfuscated bundle with no imports must produce no edges.
+        assert _JS_FIXTURE.is_file(), f"fixture missing: {_JS_FIXTURE}"
+        obf = service.js_imports(str(_JS_FIXTURE))
+        assert obf.ok and obf.data is not None, obf.error
+        assert obf.data["distinct"] == 0
+        assert obf.data["total"] == 0
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_wasm_summary_reads_the_module_surface_without_wabt() -> None:
     """The structured import/export surface must come straight from the bytes.
 
