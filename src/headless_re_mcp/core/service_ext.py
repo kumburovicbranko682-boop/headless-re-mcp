@@ -855,7 +855,10 @@ class ExtAnalysisMixin(UiDriveMixin):
 
         Each entry succeeds or fails on its own so a single bad sample cannot
         abort the batch. Parallelism is capped because every static backend is a
-        real analyser process, not a coroutine.
+        real analyser process, not a coroutine. open_static drives the PE/IDA
+        static backend, which does not apply to APK or web targets: those are
+        still created and identified, so they stay ok with
+        static_open_applicable false instead of being reported as failures.
         """
         try:
             paths = [str(item).strip() for item in binaries if str(item).strip()]
@@ -885,12 +888,24 @@ class ExtAnalysisMixin(UiDriveMixin):
                 entry["session_id"] = session_id
                 entry["ok"] = True
                 if open_static:
-                    opened = self.open_static(session_id)
-                    entry["static_open"] = bool(opened.ok)
-                    if not opened.ok:
-                        entry["ok"] = False
-                        if opened.error is not None:
-                            entry["error"] = opened.error.model_dump(mode="json")
+                    target = str(session.get("target") or "")
+                    if target and target != "pe":
+                        # open_static is the PE/IDA backend. A non-PE sample was
+                        # still created and identified, so the PE static backend
+                        # is not applicable to it rather than a failure -- and
+                        # attempting it would only spin up a worker to be told
+                        # target_mismatch. Without this, every APK or web target
+                        # in a mixed batch is reported as a failed sample.
+                        entry["static_open"] = False
+                        entry["static_open_applicable"] = False
+                    else:
+                        opened = self.open_static(session_id)
+                        entry["static_open"] = bool(opened.ok)
+                        entry["static_open_applicable"] = True
+                        if not opened.ok:
+                            entry["ok"] = False
+                            if opened.error is not None:
+                                entry["error"] = opened.error.model_dump(mode="json")
                 return entry
 
             with ThreadPoolExecutor(max_workers=max_workers) as pool:

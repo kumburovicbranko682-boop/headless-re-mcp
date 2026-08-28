@@ -262,7 +262,11 @@ def build_meta_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Answers with entries (each: binary, ok, session_id, and error when that
         sample failed), plus count, succeeded, failed and max_workers. One
         unreadable sample cannot abort the batch; parallelism is capped because
-        each static backend is a process.
+        each static backend is a process. With open_static, entries also carry
+        static_open and static_open_applicable: the PE static backend does not
+        apply to an APK or web target, so such a sample stays ok (created and
+        identified) with static_open_applicable false rather than counting as
+        failed.
         """
         return _dump(
             analysis.batch_analyze(
