@@ -13,6 +13,8 @@ a failure into a classified error instead of an incident.
 
 from __future__ import annotations
 
+import sys
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -237,3 +239,78 @@ def test_navigate_failure_is_a_backend_error_naming_the_url(
         assert runner.wedged is False
     finally:
         runner.shutdown()
+
+
+def test_a_hung_call_times_out_and_wedges_the_runner_against_further_work() -> None:
+    """A browser call that never returns is bounded, and poisons only its session.
+
+    Playwright's own timeouts live in the driver process, so a driver that hangs
+    blocks the worker thread with no ceiling of its own. The runner's outer
+    deadline is the ceiling: the call raises timeout, the runner marks itself
+    wedged, and every later call is refused up front (backend_error, never
+    queued) rather than stacking behind a call that will never complete. The
+    blocked worker is a daemon; releasing it lets shutdown finish cleanly.
+    """
+    runner = _Runner("test-wedged-runner")
+    release = threading.Event()
+    try:
+        with pytest.raises(WebError) as first:
+            runner.call(lambda: release.wait(5.0), timeout=0.05)
+        assert first.value.code == "timeout"
+        assert runner.wedged is True
+
+        # A wedged runner refuses further work without queueing it behind the
+        # stuck call -- otherwise the whole session would hang on the dead one.
+        with pytest.raises(WebError) as second:
+            runner.call(lambda: "unreachable", timeout=0.05)
+        assert second.value.code == "backend_error"
+        assert "unresponsive" in second.value.message
+    finally:
+        release.set()
+        runner.shutdown()
+
+
+def test_check_available_reports_capability_unavailable_without_playwright(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No Playwright import means the web tools degrade, not crash.
+
+    Setting the module to None in sys.modules makes ``import playwright.sync_api``
+    raise the way an absent install does; _check_available must catch that, cache
+    the negative, and raise capability_unavailable so the doctor and caller see
+    "install Playwright" rather than an ImportError surfacing as an incident.
+    """
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+    backend = WebBackend()
+    assert backend._available is None
+    with pytest.raises(WebError) as info:
+        backend._check_available()
+    assert info.value.code == "capability_unavailable"
+    assert backend._available is False
+
+
+def test_close_all_closes_every_session_and_swallows_a_close_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutting the backend down must attempt every session and tolerate a failure.
+
+    close_all runs at service teardown; one session whose close raises a WebError
+    (a wedged browser, say) must not strand the others still open. Every id is
+    attempted and the WebError is suppressed.
+    """
+    backend = WebBackend()
+    attempted: list[str] = []
+
+    def fake_close(session_id: str) -> Any:
+        attempted.append(session_id)
+        if session_id == "bad":
+            raise WebError("backend_error", "close blew up")
+        return {"closed": True}
+
+    monkeypatch.setattr(backend, "close", fake_close)
+    backend._sessions["good"] = object()  # type: ignore[assignment]
+    backend._sessions["bad"] = object()  # type: ignore[assignment]
+
+    backend.close_all()
+
+    assert set(attempted) == {"good", "bad"}
