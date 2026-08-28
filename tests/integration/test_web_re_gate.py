@@ -29,6 +29,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
 _WASM_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "add_module.wasm"
 _WASM_GLOBALS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "globals_module.wasm"
+_WASM_TABLE_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "table_module.wasm"
 
 _DATA_URL = (
     "data:text/html,"
@@ -1713,6 +1714,48 @@ def test_wasm_disasm_function_decodes_a_body_without_wabt() -> None:
         offsets = [op["offset"] for op in data["ops"]]
         assert offsets == sorted(offsets)
         assert all(op.get("bytes") for op in data["ops"])
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_wasm_elements_resolves_the_table_to_call_targets_without_wabt() -> None:
+    """The indirect-call target map must come straight from the bytes too.
+
+    The fixture is a real wabt artifact (table_module.wat compiled with
+    --debug-names): three functions (inc/dec/sq) and a funcref table filled by
+    two active element segments -- one at offset 1 holding inc,dec and one at
+    offset 5 holding sq. wasm.elements parses the element section itself, so it
+    must recover the table declaration, both segments, and the flattened
+    slot->function map (table[1]=inc, table[2]=dec, table[5]=sq) with each
+    target's name resolved from the name section -- no wabt in the loop.
+    """
+    assert _WASM_TABLE_FIXTURE.is_file(), f"fixture missing: {_WASM_TABLE_FIXTURE}"
+    service = AnalysisService()
+    try:
+        result = service.wasm_elements(str(_WASM_TABLE_FIXTURE))
+        assert result.ok and result.data is not None, result.error
+        data = result.data
+        assert data["table_count"] == 1
+        (tbl,) = data["tables"]
+        assert tbl["element_type"] == "funcref"
+        assert tbl["min"] == 8
+        assert tbl["imported"] is False
+        assert data["segment_count"] == 2
+        assert data["has_name_section"] is True
+        assert data["total"] == 3
+        assert data["has_more"] is False
+        # The flattened slot->function map is the resolved indirect-call target set.
+        resolved = {e["slot"]: e.get("func_name") for e in data["elements"]}
+        assert resolved == {1: "inc", 2: "dec", 5: "sq"}
+        by_slot = {e["slot"]: e for e in data["elements"]}
+        assert by_slot[1]["func"] == 0  # inc is function index 0
+        assert by_slot[1]["table_index"] == 0
+        assert by_slot[1]["segment"] == 0
+        assert by_slot[5]["segment"] == 1  # the second segment holds sq
+        # Every active segment reports its base offset in the segment map.
+        offsets = sorted(seg["offset"] for seg in data["segments"])
+        assert offsets == [1, 5]
     finally:
         service.close_all()
 
