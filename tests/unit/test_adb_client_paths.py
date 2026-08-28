@@ -13,6 +13,7 @@ where the real error handling lives.
 from __future__ import annotations
 
 import stat
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any, cast
@@ -307,8 +308,29 @@ def _backend_with_adbutils(client_cls: type, *, adb_path: Path | None = None) ->
     return backend
 
 
+def test_backend_reports_unavailable_when_adbutils_cannot_be_imported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The constructor's import guard degrades instead of raising.
+
+    adbutils is optional, but the ``.[android]`` extra installs it, so a test
+    that keys off it merely being uninstalled never runs the except arm the
+    moment a developer (or a full-extras CI job) actually has it -- skip != pass,
+    and neither does "happens to be uninstalled". A ``None`` sentinel in
+    ``sys.modules`` forces the lazy ``import adbutils`` to raise ImportError, so
+    the degradation branch (available False, no module retained) is exercised on
+    every host.
+    """
+    monkeypatch.setitem(sys.modules, "adbutils", None)
+    backend = AdbBackend()
+    assert backend.available is False
+    assert backend._adbutils is None
+
+
 def test_client_is_unavailable_without_adbutils() -> None:
-    backend = AdbBackend()  # real import failed: not installed
+    # adbutils may well be installed here; force the unavailable state directly
+    # so this pins _client()'s capability check, not the ambient environment.
+    backend = AdbBackend()
     backend._available = False
     with pytest.raises(AdbError) as exc:
         backend._client()

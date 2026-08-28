@@ -121,6 +121,26 @@ def test_har_entry_parses_the_query_string_from_the_url() -> None:
     assert params == [("q", "hello world"), ("tag", "a"), ("tag", "b"), ("flag", "")]
 
 
+def test_har_entry_tolerates_a_url_the_parser_rejects() -> None:
+    """A URL urlsplit refuses must not sink the whole export.
+
+    urlsplit raises ValueError on an unterminated IPv6 literal, and a real proxy
+    records whatever the client actually sent, malformed or not. The entry still
+    has to be spec-valid, so queryString falls back to empty rather than letting
+    the exception abort the HAR the analyst asked for -- one bad flow drops its
+    params, not the log.
+    """
+    entry = har_entry(
+        method="GET",
+        url="http://[::1/path?q=1",
+        status=200,
+        mime_type="text/html",
+    )
+    _assert_valid_har(json.dumps(build_har([entry])))
+    assert entry["request"]["queryString"] == []
+    assert entry["request"]["url"] == "http://[::1/path?q=1"
+
+
 def test_har_entry_reports_a_known_response_body_size() -> None:
     """When the capture knows the decoded body length it must not emit -1."""
     known = har_entry(
