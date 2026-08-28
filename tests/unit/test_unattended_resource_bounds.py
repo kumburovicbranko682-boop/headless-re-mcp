@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from headless_re_mcp.backends.proxy.client import _FlowRecorder, _port_accepts
-from headless_re_mcp.backends.web.client import _MAX_SCRIPTS, _WebSession
+from headless_re_mcp.backends.web.client import _MAX_CONSOLE, _MAX_SCRIPTS, _WebSession
 from headless_re_mcp.core.service_frida import _MAX_AUTHORIZED, _append_recent
 
 
@@ -833,6 +833,56 @@ class TestWebScriptBufferIsBounded:
         assert result["count"] == 3
         assert result["has_more"] is False
         assert result["dropped"] == 0
+
+    def test_maxing_the_limit_reaches_the_whole_full_ring_so_no_tail_is_stranded(
+        self,
+    ) -> None:
+        """A full console ring, read at its cap, comes back whole with has_more False.
+
+        console is the one non-PE has_more reader that takes no offset, and the
+        paging guard's allowlist permits that on a stated invariant: "the max limit
+        spans the whole ring, so the newest-N page already reaches every retained
+        message -- there is no tail past the cap to offset to." That is sound only
+        while the reader's own limit clamp (``min(limit, _MAX_CONSOLE)``) stays equal
+        to the ring's capacity (``deque(maxlen=_MAX_CONSOLE)``). Today both sites
+        share ``_MAX_CONSOLE``, but nothing structural forces them to; if the clamp
+        were ever lowered below the ring size, a full ring would report has_more True
+        with no offset to advance -- the exact stranded-tail bug the whole paging
+        guard exists to catch -- and the allowlist, which only records that console
+        is offset-less, would not notice. This pins the invariant behaviourally,
+        through the public reader: fill the ring completely and confirm that a read
+        at the cap (and one well above it) returns every retained message and clears
+        has_more, so the offset-less exception cannot silently become a real gap.
+        """
+        from headless_re_mcp.backends.web.client import WebBackend
+
+        backend = WebBackend()
+        handle = _WebSession(object(), object(), object(), object(), object())
+        # Overflow the ring so it is exactly full and holding only its newest slice.
+        handle.console.extend({"text": str(index)} for index in range(_MAX_CONSOLE * 2))
+        backend._sessions["s"] = handle
+        assert len(handle.console) == _MAX_CONSOLE
+
+        at_cap = backend.console("s", limit=_MAX_CONSOLE)
+        assert at_cap["count"] == _MAX_CONSOLE
+        assert at_cap["total"] == _MAX_CONSOLE
+        assert at_cap["has_more"] is False
+        # The whole retained ring came back -- newest tail, oldest-retained first.
+        assert at_cap["console"][0]["text"] == str(_MAX_CONSOLE)
+        assert at_cap["console"][-1]["text"] == str(_MAX_CONSOLE * 2 - 1)
+
+        # A limit far above the cap clamps back down to the ring and still reaches
+        # every message: there is no page size that leaves a retained tail behind.
+        over_cap = backend.console("s", limit=_MAX_CONSOLE * 10)
+        assert over_cap["count"] == _MAX_CONSOLE
+        assert over_cap["has_more"] is False
+
+        # The boundary is exact: one below the cap on a full ring is the only way to
+        # see has_more, and that shortfall is reachable by raising the limit -- not
+        # stranded behind a missing offset.
+        just_under = backend.console("s", limit=_MAX_CONSOLE - 1)
+        assert just_under["count"] == _MAX_CONSOLE - 1
+        assert just_under["has_more"] is True
 
     def test_a_huge_console_line_is_cut_in_the_ring(self) -> None:
         from headless_re_mcp.backends.web.client import _MAX_CONSOLE_TEXT, WebBackend

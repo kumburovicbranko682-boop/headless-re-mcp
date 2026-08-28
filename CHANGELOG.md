@@ -24,6 +24,11 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（`web.console` 是唯一“报 `has_more` 却不收 `offset`”的非 PE 读取器,分页守卫允许它靠的是一条只写在白名单注释里的不变量:读取器自身的上限钳制 `min(limit, _MAX_CONSOLE)` 恰等于环形缓冲容量 `deque(maxlen=_MAX_CONSOLE)`,故把 `limit` 拉满即可取回整环、清掉 `has_more`。今天两处共用 `_MAX_CONSOLE`,但没有任何结构强制它们保持相等——若钳制一旦低于环容,满环就会永远报 `has_more=True` 而无 `offset` 可推进,正是整套分页守卫要防的“尾部搁浅”,而只记录“console 无 offset”的白名单不会察觉。此前的 console 用例只覆盖了驱逐与小环 `has_more`,从未固定这条边界不变量）
+
+- 新增 `test_maxing_the_limit_reaches_the_whole_full_ring_so_no_tail_is_stranded`:经公共读取器把环填满(灌入 `_MAX_CONSOLE * 2` 条,只留最新一半),断言在上限处读取取回全部保留消息且 `has_more=False`(并校验最新尾序:首条为第 `_MAX_CONSOLE` 条、末条为第 `_MAX_CONSOLE*2-1` 条),`limit` 远超上限时钳回环容仍取全环,恰好低于上限一格才是满环唯一能看到 `has_more` 的情形——而这一缺口靠抬高 `limit` 即可触达,不需 `offset`。
+- 带外验证:把钳制临时降为 `_MAX_CONSOLE // 2` → 分页守卫仍绿(它只认白名单、不校验该不变量,正说明这条测试补的正是那道缝),而本用例如期失败(`assert 1000 == 2000`,满环搁浅 1000 条且无 offset 可达)——两者对照证明这条不变量此前无人守、现已有牙。
+
 ### 测试（报告标题脱敏漂移守卫:同一“把 caller/finding 文本直插进 ATX 标题、绕过 `_cell`”的注入类先后修了两处——H1 标题与发现分组 `### {kind}`。既已复发两次,冻结该面以防第三处再直出）
 
 - 新增 `test_report_heading_sanitization_guard.py`:AST 解析 `reporting.py`,对每个“字面量以 Markdown `#` 起头”的 f-string 标题,要求其每个插值槽要么是 `_inline`/`_heading`(脱敏器)调用、要么是 `len(...)`(计数,恒为 int)——可直接写出,也可经局部 `name = _heading(...)` 一次赋值解析(覆盖 `f"# {heading}"` 这种间接)。标题槽里出现裸名/属性/下标——正是两处旧 bug 的形状——即在报告渲染层报错。
