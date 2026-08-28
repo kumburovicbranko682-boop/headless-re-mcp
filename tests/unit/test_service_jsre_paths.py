@@ -49,10 +49,14 @@ class _FakeClient:
     ) -> JsonObject:
         return self._reply()
 
-    def wat(self, path: Path, *, timeout: float) -> JsonObject:
+    def wat(
+        self, path: Path, *, timeout: float, spill_path: Path | None = None
+    ) -> JsonObject:
         return self._reply()
 
-    def info(self, path: Path, *, timeout: float) -> JsonObject:
+    def info(
+        self, path: Path, *, timeout: float, spill_path: Path | None = None
+    ) -> JsonObject:
         return self._reply()
 
 

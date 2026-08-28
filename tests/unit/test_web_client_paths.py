@@ -340,6 +340,7 @@ def _handle(**over: Any) -> Any:
     handle = SimpleNamespace(
         lock=threading.RLock(),
         requests=OrderedDict(),
+        receive_anchors={},
         console=deque(maxlen=_MAX_CONSOLE),
         scripts=OrderedDict(),
         requests_dropped=0,

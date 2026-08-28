@@ -90,7 +90,7 @@ def test_xrefs_enriches_run_payload(tmp_path: Path) -> None:
     binary = _pe64(tmp_path / "s.exe")
 
     def _fake_run(_binary: Path, commands: list[str], *, timeout: float) -> dict[str, Any]:
-        assert commands == ["aa", "axj @ 8192"]
+        assert commands == ["aa", "aac", "axtj @ 8192"]
         return {"raw": json.dumps([{"from": 0x140002000}]), "commands": commands}
 
     client.run = _fake_run  # type: ignore[assignment]

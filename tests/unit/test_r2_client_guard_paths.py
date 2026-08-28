@@ -8,13 +8,13 @@ branches nothing exercised:
   without a usable executable (``capability_unavailable``).
 * ``disasm`` / ``xrefs`` input validation -- a bool or string address, a
   negative address, a count outside 1..512 -- and, on the happy path, the
-  exact ``pdj``/``axj`` script handed to the process plus the echoed
+  exact ``pdj``/``axtj`` script handed to the process plus the echoed
   address/count fields.
 * ``_discover`` returning the first radare2 binary name found on PATH.
 
 The disasm/xrefs commands matter because they are built from caller input and
 must stay inside the allow-list ``run`` enforces: a change to the format
-string that stops matching ``_PDJ_COMMAND``/``_AXJ_COMMAND`` would reject
+string that stops matching ``_PDJ_COMMAND``/``_AXTJ_COMMAND`` would reject
 every disasm call at runtime, which these tests would catch immediately.
 """
 
@@ -152,7 +152,7 @@ def test_xrefs_rejects_a_non_int_or_negative_address(tmp_path: Path) -> None:
         assert caught.value.code == "invalid_params"
 
 
-def test_xrefs_builds_the_whitelisted_axj_script_and_echoes_the_address(
+def test_xrefs_builds_the_whitelisted_axtj_script_and_echoes_the_address(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -163,7 +163,7 @@ def test_xrefs_builds_the_whitelisted_axj_script_and_echoes_the_address(
     payload = client.xrefs(_target(tmp_path), 0x20)
 
     assert len(recorded) == 1
-    assert _script_lines(recorded[0]) == ["aa", "axj @ 32", "q"]
+    assert _script_lines(recorded[0]) == ["aa", "aac", "axtj @ 32", "q"]
     assert payload["address_va"] == 0x20
     assert payload["parsed"] is True
 
