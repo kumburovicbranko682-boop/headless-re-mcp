@@ -5,6 +5,32 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Agent 浏览器 smoke 测试硬编码 Windows Chrome 路径 → 非 Windows 上必崩；并按现行中文 UI 全面翻修选择器）
+
+- 缺陷：`test_agent_browser_smoke.py` 自诞生（统一 Agent/WebUI 架构那次提交）起就把浏览器
+  写死成 `playwright.chromium.launch(executable_path=r"C:\\Program Files\\Google\\Chrome\\...")`
+  ——一个 Windows 系统 Chrome 的绝对路径。于是在 Linux/macOS（以及任何 Chrome 不在该路径、
+  或压根没装的 Windows 机器）上，它不是跳过而是**硬失败**于 "executable doesn't exist"；且它
+  测的是系统 Chrome，而不是产品真正 `pw.chromium.launch(headless=...)` 发货的自带 Chromium。
+  因为集成套件当前不在 CI 跑、且它在启动阶段就先崩，这个缺陷一直没人看见。
+- 改法：改用自带 Chromium（与 `WebBackend.open` 完全一致，去掉 `executable_path`），自带浏览器
+  缺席时按 skip != pass 惯例显式跳过。修好启动后又暴露出测试的 UI 选择器整体停留在早已被重写
+  的旧英文界面：落地页标题 `你想逆向什么？`→`开始一段分析`、消息框 aria-label `Message`→`消息`、
+  发送 `Send`→`发送`、`Provider & setup`→`设置`、`Base URL/Model/API key`→`接口地址/模型/API 密钥`、
+  `Save server-side`→`保存模型`、`Approve once`→`批准一次`、`Reject`→`拒绝`。逐一对照已发货 SPA
+  修正，并顺带修正三处行为漂移：（a）保存模型后弹窗不再自动关闭而是显示成功提示，改为断言提示
+  再点 × 关闭；（b）原始运行事件（`tool.completed`/`run.rejected`）渲染在检查器「事件」标签页而非
+  默认「监视」页，需先切标签；（c）`workflow.cancel`（state_change）已被现行 packed-analysis 默认
+  预设自动批准、无法再驱动审批 UI，改用 `report.generate`（file_write，默认仍需人工）来触发审批卡。
+- 实测（真 Playwright 1.62 + Chromium 151 headless shell，Linux）：修后连续五轮全过（每轮约 3.3s）。
+  审批「批准」链路（工具入审批→批准→执行→续跑到下一轮助手输出）与「拒绝」链路（跨一次页面
+  刷新：待批准项必须挺过刷新、SSE 以 `after=<seq>` 断点续传、`/reject` 返回 200、终态 `run.rejected`）
+  均通过。仅改测试、不动源码。
+- 附带发现（本分支不处理，仅记录）：在审批**待决**时刷新页面、随后**批准**，续跑的助手轮次没有
+  流回到刷新后的客户端（转录区为空）——刷新后 `useWorkbench` 只恢复运行事件并从 `runSeq` 续订
+  SSE、并不重载线程消息。拒绝链路走 POST、不依赖刷新后再来一轮助手流，故 smoke 的刷新覆盖落在
+  拒绝一侧；「刷新后批准是否应把续跑内容流回」需要 orchestrator/SSE 侧单独排查。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
