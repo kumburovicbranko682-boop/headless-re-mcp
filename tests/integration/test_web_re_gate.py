@@ -1084,6 +1084,133 @@ def test_web_script_source_extracts_a_live_wasm_module_for_static_analysis(
             service.close_all()
 
 
+# A minified JS bundle large enough (> the 200 KB inline cap) that
+# web.script.source must spill it to source_path rather than inline it. That
+# path is the handle js.deobfuscate consumes -- a small inlined script has no
+# path to hand off, so proving the chain needs a real bundle. The marker string
+# is what proves the same code survived the extract -> deobfuscate round trip.
+_JS_BUNDLE_MARKER = "js-chain-marker-9449"
+_JS_BUNDLE_PATH = "/bundle.js"
+
+
+def _build_js_bundle() -> str:
+    body = ";".join(
+        f"function f{i}(a,b){{if(a>b){{return a*{i}+b}}else{{return b-a+{i}}}}}"
+        for i in range(9000)
+    )
+    return f'var __marker="{_JS_BUNDLE_MARKER}";{body};window.__bundle=f0;'
+
+
+_JS_BUNDLE = _build_js_bundle()
+_JS_BUNDLE_HTML = (
+    "<!doctype html><html><head><title>js-bundle</title>"
+    f'<script src="{_JS_BUNDLE_PATH}"></script></head><body>js-bundle</body></html>'
+)
+
+
+class _JsBundleHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args: Any) -> None:  # silence per-request logging
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path == _JS_BUNDLE_PATH:
+            body, ctype = _JS_BUNDLE.encode("utf-8"), "application/javascript"
+        else:
+            body, ctype = _JS_BUNDLE_HTML.encode("utf-8"), "text/html"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextlib.contextmanager
+def _js_bundle_site() -> Iterator[str]:
+    """Serve a >200 KB minified JS bundle so web.script.source spills a path."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _JsBundleHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+        server.server_close()
+
+
+@pytest.mark.integration
+def test_web_script_source_extracts_a_live_js_bundle_for_deobfuscation() -> None:
+    """A large JS bundle seen live must come out as a path the deobfuscator eats.
+
+    web.script.source inlines a small script but spills a large one to
+    source_path -- and js.deobfuscate takes a path, not inline text, so a small
+    script has nothing to hand off. A real (>200 KB) bundle instantiated in the
+    page must therefore extract to a file that webcrack then unpacks, with the
+    embedded marker string surviving the whole extract -> deobfuscate chain.
+    This is the js-side twin of the wasm handoff: the web capture line feeding
+    the js/wasm static line. skip != pass without a browser (or webcrack for the
+    final leg).
+    """
+    if not _browser_available():
+        pytest.skip("playwright not installed — Web CDP Gate not run (skip != pass)")
+    with _js_bundle_site() as url:
+        service = AnalysisService()
+        try:
+            created = service.create_session(url, target="web")
+            assert created.ok, created.error
+            session_id = created.data["session"]["id"]
+
+            opened = service.web_open(session_id, headless=True, timeout=30.0)
+            if not opened.ok:
+                pytest.skip(
+                    "chromium could not launch (browser not installed?): "
+                    f"{opened.error.code if opened.error else 'unknown'} — skip != pass"
+                )
+            try:
+                scripts = _poll(
+                    lambda: service.web_scripts(session_id, limit=500),
+                    lambda r: r.ok
+                    and any(
+                        str(s.get("url", "")).endswith(_JS_BUNDLE_PATH)
+                        for s in r.data["scripts"]
+                    ),
+                    tries=80,
+                )
+                assert scripts.ok, scripts.error
+                bundle = next(
+                    s
+                    for s in scripts.data["scripts"]
+                    if str(s.get("url", "")).endswith(_JS_BUNDLE_PATH)
+                )
+
+                source = service.web_script_source(session_id, str(bundle["scriptId"]))
+                assert source.ok, source.error
+                data = source.data
+                # A JS script, not WASM: it must have spilled to a path because it
+                # is over the inline cap, and that path is what the chain needs.
+                assert data.get("language") != "WebAssembly", data
+                bundle_path = data.get("source_path")
+                assert bundle_path, f"large bundle did not spill to a path: {data}"
+                on_disk = Path(bundle_path).read_text(encoding="utf-8")
+                assert len(on_disk.encode("utf-8")) > 200_000, len(on_disk)
+                assert _JS_BUNDLE_MARKER in on_disk, "marker missing from extracted bundle"
+
+                # The seam: the live-extracted path feeds js.deobfuscate, and the
+                # marker string survives webcrack's unpacking -- proving the web
+                # capture line hands a real JS artifact to the static JS line.
+                if JsClient().available:
+                    deob = service.js_deobfuscate(bundle_path)
+                    assert deob.ok, deob.error
+                    code = deob.data.get("code") or ""
+                    assert _JS_BUNDLE_MARKER in code, "marker lost through deobfuscation"
+                    assert deob.data.get("bytes", 0) > 0, deob.data
+            finally:
+                service.web_close(session_id)
+        finally:
+            service.close_all()
+
+
 @pytest.mark.integration
 def test_js_deobfuscate_when_webcrack_present() -> None:
     if not JsClient().available:
