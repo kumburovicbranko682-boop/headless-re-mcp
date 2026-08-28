@@ -530,13 +530,26 @@ class TestConcurrentStartDoesNotLeakABackend:
         holder.bind(("127.0.0.1", 0))
         port = holder.getsockname()[1]
         backend = ProxyBackend()
+        # Force the capability gate open so the refusal path under test runs
+        # whether or not the [proxy] extra is installed. Left to check the real
+        # import, the whole point of this test evaporates in CI (which installs
+        # only [test,dev,web], so mitmproxy is absent): start() would stop at
+        # _check_available with capability_unavailable, never reaching
+        # _ProxyInstance.start's port-in-use refusal, and the residue assertions
+        # below would be guarding a no-op. The refusal itself is pure socket
+        # code -- the held port fails _port_bindable up front, so no thread is
+        # spawned and no mitmproxy import is ever attempted.
+        backend._available = True
         started = time.monotonic()
         try:
-            # Eight is enough to show nothing accumulates per refusal; each one
-            # spends the port probe's timeout, so more only costs suite time.
+            # Eight is enough to show nothing accumulates per refusal. Each start
+            # is refused immediately -- the held port fails the bindable probe
+            # before any readiness wait -- so more iterations only cost suite
+            # time without exercising anything new.
             for _ in range(8):
-                with pytest.raises(ProxyError):
+                with pytest.raises(ProxyError) as caught:
                     backend.start("session", port=port)
+                assert caught.value.code == "invalid_state"
             assert len(logging.getLogger().handlers) == handlers_before
             assert threading.active_count() == threads_before
             assert time.monotonic() - started < 8.0

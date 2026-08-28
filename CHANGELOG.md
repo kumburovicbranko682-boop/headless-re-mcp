@@ -49,6 +49,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 测试（`proxy` 拒绝启动"零残留"用例在 CI 里其实空转）
+
+- `test_unattended_resource_bounds.py::test_repeated_refused_starts_leave_no_residue`
+  号称"连续 8 次被拒的启动不给进程留下任何残留"（不多出 root 日志 handler、不多出线程、
+  总耗时有界），但它靠真实 `import mitmproxy` 走能力闸门：CI 只装 `.[test,dev,web]`，
+  `mitmproxy`（`[proxy]` extra）恰好缺席，`ProxyBackend.start` 在 `_check_available`
+  就以 `capability_unavailable` 抛出，**根本到不了** `_ProxyInstance.start` 里"端口已被占用"
+  的拒绝分支——三条残留断言守的是一条空路径，等于没测。本机装齐 `[proxy]` 时它才偶然覆盖到
+  真实拒绝路径，于是这条用例的有效性随环境漂移：装了 extra 才真测、CI 里长期空转。
+  改法与同文件既有用例一致（`backend._check_available = lambda: None` / 直接置
+  `backend._available = True`）：显式把能力闸门打开，让被测的拒绝路径无论是否安装 `[proxy]`
+  都确定性执行。拒绝本身是纯 socket 逻辑——被占用的端口在 `_port_bindable` 探测处即被拒，
+  既不会起线程也不会尝试 `import mitmproxy`，因此无需真安装 `mitmproxy`。同时补一条
+  `caught.value.code == "invalid_state"` 断言把用例钉死在真正的"端口占用"拒绝码上：修前
+  在 CI（mitmproxy 缺席）拿到的是 `capability_unavailable`，这条断言会直接把此前的空转暴露成
+  红。本机验证：强制 `mitmproxy` 缺席时，旧写法拿到 `capability_unavailable`（残留检查空转）、
+  新写法拿到 `invalid_state`（真实端口占用拒绝被执行）；固定序与随机序（seed 1 / 4586）下
+  该文件 173 passed；每次拒绝立即返回（被占端口先失败于 bindable 探测），8 次循环远在 8s 界内。
+  只动这一条测试，不碰生产代码。
+
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
 - `device.install` / `device.uninstall` 用 `pm path` 复核安装/卸载结果，返回 true/false/null
