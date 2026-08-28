@@ -7,19 +7,27 @@ when Chrome / webcrack / wabt are present.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from headless_re_mcp.backends.jsre import JsClient, WasmClient
 from headless_re_mcp.backends.web import WebBackend
+from headless_re_mcp.config import Settings
 from headless_re_mcp.core.service import AnalysisService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _JS_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "obfuscated_sample.js"
 _WAT_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "sample.wat"
+_BUNDLE_FIXTURE = _PROJECT_ROOT / "fixtures" / "web" / "webpack_bundle.js"
+# Only module 2 of the bundle carries this literal, so finding it in an
+# isolated per-module file proves that module's body was extracted, not the
+# runtime or the entry.
+_BUNDLE_MARKER = "unpack-fixture-2718"
 # The fixture stores this string hex-escaped ("\x48\x33..."), so it is absent
 # from the raw source; webcrack recovering it as readable text is the signal
 # that real string decoding happened, not just a whitespace re-format.
@@ -147,5 +155,61 @@ def test_wasm_wat_and_info_on_a_real_module(tmp_path: Path) -> None:
         assert "<add>" in objdump
         assert '-> "add"' in objdump
         assert "Code" in objdump
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_js_unpack_bundle_splits_a_real_bundle(tmp_path: Path) -> None:
+    if not JsClient().available:
+        pytest.skip("webcrack not installed — JS unpack Gate not run (skip != pass)")
+    assert _BUNDLE_FIXTURE.is_file(), f"fixture missing: {_BUNDLE_FIXTURE}"
+    raw = _BUNDLE_FIXTURE.read_text(encoding="utf-8")
+    # Premise guards: the bundle is one file wiring its modules together with
+    # numeric __webpack_require__ calls, with no per-module require("./…") edges
+    # yet. If either stops holding the assertions below would pass trivially.
+    assert "__webpack_require__" in raw, "fixture must be a webpack bundle"
+    assert 'require("./' not in raw, "fixture must not already carry split-out require edges"
+
+    settings = replace(Settings.load(), artifact_root=tmp_path / "artifacts")
+    service = AnalysisService(settings=settings)
+    try:
+        result = service.js_unpack_bundle(str(_BUNDLE_FIXTURE))
+        assert result.ok, result.error
+        data = result.data
+
+        out_dir = Path(data["output_dir"])
+        assert out_dir.is_dir(), out_dir
+        # The one-file bundle became several files: the three modules plus
+        # webcrack's bundle.json map and re-emitted deobfuscated.js.
+        assert data["file_count"] >= 4, data
+        names = set(data["files"])
+        assert "bundle.json" in names, names
+        js_modules = {n for n in names if n.endswith(".js") and n != "deobfuscated.js"}
+        assert len(js_modules) >= 3, names
+
+        contents = {n: (out_dir / n).read_text(encoding="utf-8") for n in names}
+
+        # webcrack read the bundle as webpack and listed at least the three modules.
+        bundle_map = json.loads(contents["bundle.json"])
+        assert bundle_map["type"] == "webpack", bundle_map
+        assert len(bundle_map["modules"]) >= 3, bundle_map
+
+        # Module 2 was extracted into its own file: it carries the marker but
+        # not the webpack runtime that wrapped it in the bundle.
+        isolated = [
+            text
+            for name, text in contents.items()
+            if name in js_modules
+            and _BUNDLE_MARKER in text
+            and "__webpack_require__" not in text
+        ]
+        assert isolated, "marker module was not extracted as a standalone file"
+
+        # The numeric __webpack_require__(1/2) calls were rewritten into real
+        # require("./…") edges between the split files -- the actual unpacking,
+        # not a copy of the input.
+        rewired = [text for text in contents.values() if 'require("./' in text]
+        assert rewired, "webcrack did not rewrite module edges into require('./…')"
     finally:
         service.close_all()

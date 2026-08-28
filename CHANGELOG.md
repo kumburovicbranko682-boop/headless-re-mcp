@@ -53,6 +53,18 @@ until 1.0 the tool surface may still change between minor versions.
   `web.wasm_list` 列出页面实例化的 WebAssembly 模块；再加 `web.screenshot` 出图与 `web.har_export`
   至少三条 HAR。全程明文 HTTP 打 127.0.0.1，不需外网；缺 Playwright/Chromium 如实跳过，
   `linux-integration` 已装 Chromium 故真跑。托管 Linux 上真跑的 Gate 由此到 22 个。
+- JS 逆向线的 `js.unpack_bundle`（webpack/browserify 拆包）此前一个集成 Gate 都没有，只有对着 mock
+  subprocess 的单测。新增 `tests/integration/test_web_re_gate.py::test_js_unpack_bundle_splits_a_real_bundle`
+  与固定 fixture `fixtures/web/webpack_bundle.js`（一个把三个模块内联进 webpack 运行时、用数字
+  `__webpack_require__` 相互引用的单文件包）：驱动 `js.unpack_bundle` 后断言 webcrack **返回并落盘的值**
+  ——`bundle.json` 认出 webpack 且列出 ≥3 个模块；带标记串 `unpack-fixture-2718` 的那个模块被拆成
+  不含 webpack 运行时的独立文件；数字 `__webpack_require__(1/2)` 被改写成真正的 `require("./…")` 边，
+  证明是真拆包而非原样拷贝。缺 webcrack 如实跳过，`linux-integration` 已装 webcrack 故真跑。
+- 这个新 Gate 顺带逮到一个真 bug：`js.unpack_bundle` 在当前 webcrack（2.16）下 **每次都失败**。服务端
+  `_jsre_out_dir` 造了个唯一的 `unpack-<uuid>` 目录并 `mkdir` 出来，而 webcrack 没有 `-f/--force` 时会
+  拒绝写入已存在目录（`output directory already exists`），于是每次解包都退成 `backend_error`。mock 掉
+  subprocess 的单测永远看不到这条。`backends/jsre/client.py` 的 unpack 命令补上 `--force`（目录本就是我们
+  刚建的空目录，覆盖安全），解包恢复可用。托管 Linux 上真跑的 Gate 由此到 23 个。
 - 修 `tests/integration/test_agent_browser_smoke.py` 三处长期漂移（这条 Gate 从未在 Linux 跑过，也就
   没人发现它已经烂了）：
   - 顶层 `from playwright.sync_api import ...` 会让缺 browser extra 的机器在收集阶段直接 ImportError、
