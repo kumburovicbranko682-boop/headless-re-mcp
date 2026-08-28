@@ -18,7 +18,7 @@ CI 增加 Ubuntu/Python 3.11、3.12 的 lint、mypy、unit、doctor、核心服�
 
 托管 quality job 只装 `.[test,dev,web]`：没有 PySide6 / winsdk 时 mypy 仍能过；导入 `native_app.bootstrap` 不再顺带加载 Qt GUI；没有编好的 PE 夹具时单元测试也能收集完。监控台 `webui/src/agent/state.ts` 的改动已重新打进提交的 SPA。UPX/XVLKC/Scylla/VMPDump/de4dot 在会话不是 PE 时先报 `target_mismatch`，不再因为本机没装 CLI 就说成 `capability_unavailable`。
 
-`knowledge.query` 的 `kinds` 面板现在描述整个会话，而非碰巧落在本页的那些 kind。此前 `kinds` 是当前页行的计数:knowledge 行按 kind 排序，于是一页可能整页同一 kind，一个仅按页统计的 `kinds` 就会给一个还含 `bbb` 的会话报 `{"aaa": 3}`——把「后页才有的整个 kind」藏了起来，正是 `total` 所要防的「把局部当全部」。SQLite 与内存两个后端都改为对整个（可带 kind 过滤的）会话做 `GROUP BY kind` 计数:`kinds` 与 `total` 一致（无过滤时其值之和等于 `total`）、逐页不变、带 `kind` 过滤时只列该 kind。
+`knowledge.query` 的 `kinds` 面板现在描述整个会话，而非碰巧落在本页的那些 kind。此前 `kinds` 是当前页行的计数:knowledge 行按 kind 排序，于是一页可能整页同一 kind，一个仅按页统计的 `kinds` 就会给一个还含 `bbb` 的会话报 `{"aaa": 3}`——把「后页才有的整个 kind」藏了起来，正是 `total` 所要防的「把局部当全部」。SQLite 与内存两个后端都改为对整个（可带 kind 过滤的）会话做 `GROUP BY kind` 计数:`kinds` 与 `total` 一致（无过滤时其值之和等于 `total`）、逐页不变、带 `kind` 过滤时只列该 kind。除按 store fixture 参数化的双后端单测外，另新增经真实 MCP stdio 服务的端到端 Gate（`tests/integration/test_knowledge_kinds_facet_gate.py`）在工具面钉住该契约:记两个 kind、令首页因排序而整页同一 kind，`knowledge.query` 仍在 `kinds` 里报出会话的每个 kind 且计数之和等于 `total`，后页报同一面板，带 `kind` 过滤时只列该 kind。纯 stdlib 夹具、stdio 回环、无真后端、任意平台。
 
 CLI 工具超时不再可能卡死或漏杀孤儿进程。`run_bounded` 过去在 `with subprocess.Popen(...)` 里跑工具，其 `__exit__` 会在调用线程上关闭 stdout/stderr——当被启动进程派生的孙进程继承了这对管道并存活时，读取线程仍阻塞在 `read()` 上持有缓冲区锁，`close()` 便永久阻塞，有界超时变成永久挂起。现不再用上下文管理器：每个读取线程自持其流并在 `read()` 返回后关闭，主线程只回收进程、绝不碰管道。POSIX 下还让工具独立成会话，超时/取消时按进程组整体发信号（限组长，避免误杀服务自身的进程组），从而杀掉 ppid 遍历看不到、已被 init 收养的孙进程（如残留的 JVM/helper）。
 
