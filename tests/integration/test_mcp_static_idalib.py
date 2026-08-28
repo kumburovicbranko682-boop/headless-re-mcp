@@ -19,12 +19,30 @@ def _session_id(data: JsonObject | None) -> str:
     return str(session["id"])
 
 
-@pytest.mark.integration
-@pytest.mark.headless
-def test_mcp_static_idalib_session_round_trip() -> None:
+def _require_ida_gate_binary() -> str:
+    """Return the gate binary, or skip when either precondition is missing.
+
+    The binary path and IDA are independent: conftest's _default_ida_gate_binary
+    points HEADLESS_RE_IDA_GATE_BINARY at the native fixture whenever that fixture
+    exists (built for the r2/other gates), which says nothing about whether IDA is
+    installed. Guarding on the path alone let these two gates proceed to
+    static.open on any machine that has the fixtures but no IDA, where the service
+    returns backend_unavailable ("IDA home is not configured") and the round trip
+    fails -- a missing backend read as a failure, the skip-as-failure inversion
+    this suite forbids.
+    """
     binary = os.environ.get("HEADLESS_RE_IDA_GATE_BINARY")
     if not binary:
         pytest.skip("HEADLESS_RE_IDA_GATE_BINARY is not configured")
+    if Settings.load().ida_home is None:
+        pytest.skip("IDA home is not configured — idalib Gate not run (skip != pass)")
+    return binary
+
+
+@pytest.mark.integration
+@pytest.mark.headless
+def test_mcp_static_idalib_session_round_trip() -> None:
+    binary = _require_ida_gate_binary()
 
     service = AnalysisService(Settings.load())
     created = service.create_session(binary)
@@ -63,9 +81,7 @@ def _structured(result: object) -> JsonObject:
 @pytest.mark.headless
 @pytest.mark.asyncio
 async def test_mcp_stdio_protocol_round_trip() -> None:
-    binary = os.environ.get("HEADLESS_RE_IDA_GATE_BINARY")
-    if not binary:
-        pytest.skip("HEADLESS_RE_IDA_GATE_BINARY is not configured")
+    binary = _require_ida_gate_binary()
 
     project_root = Path(__file__).resolve().parents[2]
     parameters = StdioServerParameters(

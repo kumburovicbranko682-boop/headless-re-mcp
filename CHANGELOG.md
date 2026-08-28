@@ -1458,6 +1458,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   使判定落在认证而非 schema 上;同时钉死三个刻意的未认证例外(`/healthz` 活性、
   `/readyz`/`/metrics` 监督探针,设计上免 token 以免把控制台 token 交给 supervisor),
   并断言三者的响应体都不含 token。
+- **idalib 三条 gate 在"有夹具、无 IDA"的机器上把缺后端读成失败**：
+  `test_idalib_gate.py::test_idalib_opens_fixture_without_analyzer_window` 与
+  `test_mcp_static_idalib.py` 的 `test_mcp_static_idalib_session_round_trip` /
+  `test_mcp_stdio_protocol_round_trip` 只用 `HEADLESS_RE_IDA_GATE_BINARY` 是否存在来决定
+  skip，但"待分析的二进制在不在"与"IDA 装没装"是两个彼此独立的前提：`conftest.py` 的
+  `_default_ida_gate_binary` 只要 `artifacts/fixtures-x64/headless_fixture.exe` 这个原生
+  夹具存在（为 r2 等 gate 编译出来的，与 IDA 无关）就把该 env 指过去。于是在"夹具已编译、
+  但没配 IDA"的机器上，三条 gate 越过唯一的路径守卫径直往下跑：`run_idalib_gate` 在
+  `ida_home is None` 处抛 `RuntimeError("IDA home is not configured")`、service 侧
+  `static.open` 回 `backend_unavailable`，gate 由此**报红**——把"后端缺席"读成"行为错误"，
+  正是本套件反复强调、`conftest.py` 头注专门要防的 skip 伪装成 fail。（本轮为跑 r2 live gate
+  交叉编译出该夹具时正好触发，说明这不是纸面隐患：任何在 Linux/mac 上编好原生夹具再不带 IDA
+  跑集成套件的人都会撞上一堆看不懂的红。）修法与 gate/backend 内部判定口径一致
+  （`run_idalib_gate` 与 `IdaClient` 都以 `settings.ida_home is None` 判缺席）：在路径守卫之后
+  补一条"IDA 未配置就 skip"的守卫，钉在真正的前提——IDA 可用——上，无论 binary 路径来自
+  conftest 默认还是调用方显式 env 都生效；`ida_home` 已配置时守卫放行、gate 照常真跑（Windows
+  runner 无回归）。本机验证：夹具在场且无 IDA 时，修前 4 failed（3 IDA + 已在别的分支修好的
+  浏览器冒烟），修后三条 IDA gate 从 fail 转为诚实 skip（`skipped` 68→71），集成目录只剩浏览器
+  冒烟一条已知失败（其修复在 `cursor/agent-browser-smoke-portable-launch-4586`，尚未并入 main）。
+  只动这三条集成测试，不碰生产代码与 conftest。
 
 ### 变更（Android 后端清理）
 
