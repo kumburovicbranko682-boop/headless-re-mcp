@@ -12,6 +12,7 @@ wabt tool resolution through a ``bin/`` directory.
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,10 @@ from headless_re_mcp.backends.jsre.client import (
 
 _RUN_BOUNDED = "headless_re_mcp.backends.jsre.client.run_bounded"
 
+# _resolve_wabt_tool looks for "<tool>.exe" on Windows, so the fake wabt
+# binaries must carry the platform suffix or resolution returns None there.
+_EXE = ".exe" if os.name == "nt" else ""
+
 
 def _js_client(tmp_path: Path) -> tuple[JsClient, Path]:
     tool = tmp_path / "webcrack"
@@ -44,8 +49,8 @@ def _js_client(tmp_path: Path) -> tuple[JsClient, Path]:
 def _wasm_client(tmp_path: Path) -> tuple[WasmClient, Path]:
     wabt = tmp_path / "wabt"
     wabt.mkdir()
-    (wabt / "wasm2wat").write_text("#!/bin/sh\n", encoding="utf-8")
-    (wabt / "wasm-objdump").write_text("#!/bin/sh\n", encoding="utf-8")
+    (wabt / f"wasm2wat{_EXE}").write_text("#!/bin/sh\n", encoding="utf-8")
+    (wabt / f"wasm-objdump{_EXE}").write_text("#!/bin/sh\n", encoding="utf-8")
     module = tmp_path / "module.wasm"
     module.write_bytes(b"\x00asm\x01\x00\x00\x00")
     return WasmClient(wabt), module
@@ -177,7 +182,7 @@ def test_info_that_failed_with_no_output_raises(tmp_path: Path) -> None:
 def test_wabt_tool_resolves_through_a_bin_directory(tmp_path: Path) -> None:
     wabt = tmp_path / "wabt"
     (wabt / "bin").mkdir(parents=True)
-    tool = wabt / "bin" / "wasm2wat"
+    tool = wabt / "bin" / f"wasm2wat{_EXE}"
     tool.write_text("#!/bin/sh\n", encoding="utf-8")
 
     assert _resolve_wabt_tool(wabt, "wasm2wat") == tool
