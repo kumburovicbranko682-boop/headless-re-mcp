@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（adb force_stop 校验把同名前缀的兄弟进程误判为未停止）
+
+- `backends/adb/client.py` 的 `_pids_for_package` 在 `pidof` 不可用而回退到 `ps -A`
+  时，用 `package in line`（整行子串匹配）判断某行是否属于目标包。这会把进程名只是
+  “包含”目标包名的兄弟包也算进来：查 `com.example.app` 会连带命中
+  `com.example.app.helper`、`com.example.application`，甚至任何在别的列里恰好提到该串的
+  行。`force_stop` 用 `stopped = pids == []` 汇报结果，于是一个已经被干净停止的应用会因为
+  另一个无关进程的 pid 被报成“仍在运行”，`remaining_pids` 里还塞进了不属于它的 pid。
+- 改为只匹配进程名列（`ps -A` 行的最后一个字段）：Android 把包的主进程命名为包名本身、
+  私有进程命名为 `<package>:<suffix>`，因此只有 `name == package` 或
+  `name.startswith(package + ":")` 才算数。`pidof` 主路径本就是精确匹配，只有这个回退路径
+  （老版本 Android 上才会走到）有问题。
+- 新增 `tests/unit/test_adb_client_paths.py::test_pids_for_package_matches_the_process_name_not_a_substring`：
+  在 `ps -A` 输出里同时放主进程、私有进程与两个兄弟包，断言只返回主进程与私有进程的 pid。
+  去掉修复后该用例会返回四个 pid（含两个误报）而失败，因此非空。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

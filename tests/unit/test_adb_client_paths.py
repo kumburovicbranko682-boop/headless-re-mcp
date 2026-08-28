@@ -289,6 +289,29 @@ def test_pids_for_package_is_none_for_unparseable_nonempty_output() -> None:
     assert _pids_for_package(dev, "com.example.app") is None
 
 
+def test_pids_for_package_matches_the_process_name_not_a_substring() -> None:
+    """The ps fallback must match the process-name column, not the whole line.
+
+    `package in line` also matched a sibling whose name merely contains this
+    package -- com.example.app against com.example.app.helper or
+    com.example.application -- so force_stop, which reports stopped=pids==[],
+    called a cleanly stopped app still running under an unrelated pid. Only the
+    package's own main process and its <package>:<suffix> private processes
+    count.
+    """
+    rows = "\n".join(
+        [
+            "USER PID PPID NAME",  # header row: not this package, skipped
+            "u0_a10 1000 1 com.example.app",  # exact main process -> counts
+            "u0_a11 1001 1 com.example.app:remote",  # private process -> counts
+            "u0_a12 2000 1 com.example.app.helper",  # sibling package -> excluded
+            "u0_a13 2001 1 com.example.application",  # different package -> excluded
+        ]
+    )
+    dev = _PidsDev({"pidof": "pidof: not found", "ps": rows})
+    assert _pids_for_package(dev, "com.example.app") == [1000, 1001]
+
+
 # --------------------------------------------------------------------------- #
 # _client / _device construction arms (fake adbutils module)
 # --------------------------------------------------------------------------- #

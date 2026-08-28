@@ -324,9 +324,21 @@ def _pids_for_package(dev: Any, package: str) -> list[int] | None:
             return None
         pids: list[int] = []
         for line in str(ps).splitlines():
-            if package not in line:
+            fields = line.split()
+            if not fields:
                 continue
-            for token in line.split()[:3]:
+            # Match the process-name column, not the whole line. Android names a
+            # package's main process after the package and its private processes
+            # <package>:<suffix>, so those are the only rows that belong to it.
+            # `package in line` also matched a sibling whose name merely contains
+            # this one (com.example.app against com.example.app.helper or
+            # com.example.application) and any row that happened to mention it in
+            # another column -- so force_stop, which reports stopped=pids==[],
+            # called a cleanly stopped app still running under an unrelated pid.
+            name = fields[-1]
+            if name != package and not name.startswith(package + ":"):
+                continue
+            for token in fields[:3]:
                 if token.isdigit():
                     pids.append(int(token))
                     break
