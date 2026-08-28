@@ -89,6 +89,22 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.sockstat6")
+    def device_sockstat6(serial: str) -> dict[str, Any]:
+        """Report the IPv6 socket-allocation summary from /proc/net/sockstat6.
+
+        The IPv6 companion to device.sockstat. Answers with stats (a per-label
+        map of counter to integer: TCP6 inuse, UDP6 inuse, RAW6, FRAG6), count,
+        has_more, and available -- the aggregate view that catches an IPv6
+        socket leak a per-socket snapshot can miss.
+
+        Honesty mirrors device.ipv6_addrs: a dead/offline device is an error; a
+        kernel with IPv6 disabled (or the file locked down) is available=false
+        with no labels -- not a failure and not an empty success; a readable
+        file is available=true with the labels.
+        """
+        return _dump(analysis.device_sockstat6(serial))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True
