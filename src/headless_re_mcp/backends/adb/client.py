@@ -40,6 +40,7 @@ _MAX_LOGCAT_CHARS = 200_000
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PACKAGES = 2000
 _MAX_PROPERTIES = 2000
+_MAX_SNMP6_COUNTERS = 512
 _MAX_DEVICES = 64
 # adb forwards live on the adb server until removed. A loop that binds a new
 # local port every call would otherwise accumulate until the server refuses.
@@ -525,6 +526,62 @@ class AdbBackend:
             "has_more": has_more,
             "third_party_only": third_party_only,
         }
+
+    def net_snmp6(self, serial: str) -> JsonObject:
+        """Report IPv6 network protocol counters from ``/proc/net/snmp6``.
+
+        The IPv6 companion to the IPv4 protocol counters. Where the IPv4 file is
+        laid out as paired header/value blocks, ``snmp6`` is a flat table of
+        ``Name Value`` lines (``Ip6InReceives``, ``Icmp6InMsgs``,
+        ``Udp6NoPorts``, ...), so it is decoded as a single counter map rather
+        than per-protocol blocks -- each read reflects its file's real shape.
+
+        Honesty mirrors ``device.ipv6_addrs``: three outcomes stay distinct. A
+        dead or offline device (an adb host-error reply) is a ``backend_error``.
+        A kernel with IPv6 disabled (or the file locked down) answers with a
+        "No such file" / "Permission denied" line and no counters -- reported as
+        a real ``available: false`` state, not a failure and not an empty
+        success. A readable file yields the counters with ``available: true``.
+        Unrecognized non-error output is a ``backend_error`` rather than a
+        guessed-empty result. The map is capped and flags ``has_more`` when
+        truncated.
+        """
+        dev = self._device(serial)
+        text = str(_device_shell(dev, "cat /proc/net/snmp6"))
+        counters: dict[str, int] = {}
+        has_more = False
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                continue
+            name, raw = fields
+            try:
+                value = int(raw)
+            except ValueError:
+                continue
+            if name in counters:
+                continue
+            if len(counters) >= _MAX_SNMP6_COUNTERS:
+                has_more = True
+                break
+            counters[name] = value
+        if counters:
+            return {
+                "counters": counters,
+                "count": len(counters),
+                "has_more": has_more,
+                "available": True,
+            }
+        if _is_host_error_output(text):
+            raise AdbError("backend_error", "reading /proc/net/snmp6 failed", output=text[:800])
+        lowered = text.lower()
+        if not text.strip():
+            return {"counters": {}, "count": 0, "has_more": False, "available": True}
+        if any(marker in lowered for marker in ("no such file", "permission denied", "not found")):
+            return {"counters": {}, "count": 0, "has_more": False, "available": False}
+        raise AdbError(
+            "backend_error", "unrecognized /proc/net/snmp6 output", output=text[:800]
+        )
 
     def install(self, serial: str, apk_path: str, *, reinstall: bool = True) -> JsonObject:
         # Check the local APK before resolving the device: a missing file is a

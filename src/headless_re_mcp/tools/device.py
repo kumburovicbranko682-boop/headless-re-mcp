@@ -89,6 +89,22 @@ def build_device_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="device.net_snmp6")
+    def device_net_snmp6(serial: str) -> dict[str, Any]:
+        """Report IPv6 network protocol counters from /proc/net/snmp6.
+
+        The IPv6 companion to device.net_snmp. Where the IPv4 file is paired
+        header/value blocks, snmp6 is a flat Name Value table (Ip6InReceives,
+        Icmp6InMsgs, Udp6NoPorts, ...), so it is answered as a single counters
+        map with count, has_more, and available.
+
+        Honesty mirrors device.ipv6_addrs: a dead/offline device is an error; a
+        kernel with IPv6 disabled (or the file locked down) is available=false
+        with no counters -- not a failure and not an empty success; a readable
+        file is available=true with the counters.
+        """
+        return _dump(analysis.device_net_snmp6(serial))
+
     @tools.tool(name="device.install")
     def device_install(
         serial: str, apk_path: str, reinstall: bool = True

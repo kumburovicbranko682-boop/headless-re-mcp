@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **265（148 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **266（149 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -151,6 +151,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   报 `capability_unavailable`；dump 与活体探针超时都把被杀的 pid 随 `timeout` 回报（避免
   调试器悬在活体目标上）。cdb 发现覆盖环境变量优先、`which` 的非 Store 路径、Windows Kits
   glob 布局、以及跳过不可启动的命中与全无安装时返回 None。模块覆盖率 80% → 99%。
+
+### 新增（`device.net_snmp6` 从 `/proc/net/snmp6` 报 IPv6 协议计数）
+
+- 新增只读工具 `device.net_snmp6`，是 IPv4 协议计数（`device.net_snmp`）的 IPv6 搭档。IPv4 文件
+  以「表头+数值」成对分块，而 `snmp6` 是扁平的 `Name Value` 表（`Ip6InReceives`、`Icmp6InMsgs`、
+  `Udp6NoPorts` ……），故解析为单一 counters 映射而非按协议分块——每个读取都忠实反映其文件的真实
+  形状。诚实边界与 `device.ipv6_addrs` 一致:三种结局严格区分——设备离线（adb 主机错误回包）报
+  `backend_error`;内核关闭 IPv6 或文件被限制（回 "No such file" / "Permission denied" 且无计数）
+  如实报 `available: false`，既非失败也非空的成功;可读文件则 `available: true` 并给出计数。无法识别
+  的非错误输出报 `backend_error` 而不臆测为空。映射有界并在超过上限时置 `has_more`。新增
+  `tests/unit/test_device_net_snmp6_fields.py` 覆盖扁平键值解析、非法/非两列行跳过、离线报错、
+  IPv6 关闭的 available=false 与无法识别输出报错等分支。工具面 265 → 266（只读 148 → 149）。
 
 ### 修复（device.install/uninstall 把无法核实误报成明确成败）
 
