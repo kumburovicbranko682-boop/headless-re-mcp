@@ -24,6 +24,10 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 测试（把“恢复告警一律 info”这条约定收成一处 AST 漂移哨兵——上一条修好了 `artifact_collection_recovered` 这个离群点,但没有任何东西拦住下一个恢复告警再取默认 `warning`。全库五条 `*_recovered` 现都显式 `severity="info"`,`test_watchdog` 明写“恢复是要记录的事实,不是要叫醒人的呼叫”)
+
+- 新增 `test_recovery_alert_severity_guard.py`:扫描整个包里每一处 `record_alert(...)` / `self._alert(...)` 调用,凡首个字面 kind 以 `_recovered` 结尾者,必须显式传 `severity="info"`,否则计为违规(缺省即 `warning`,正是原 bug 形状)。约定是单向的——非恢复告警仍可合法为 info(`provider_retry` 就是),故只管 `*_recovered`。非空判定:断言扫描确实见到五条已知恢复告警(`backend_recovered`/`session_health_recovered`/`artifact_collection_recovered`/`artifact_usage_measurement_recovered`/`event_drain_recovered`),避免“匹配为空也全绿”。带外验证:临时抽掉 retention 那处 `severity="info"` → 哨兵精确点名 `('retention','artifact_collection_recovered',行号,None)`,复原转绿。源码级扫描(非行为测试):这些告警散落在 core/、agent/ 与顶层模块、且从难以驱动的失败路径发出,在源头钉住形状才能在下一个恢复告警落地时立刻拦住。
+
 ### 修复（`artifact_collection_recovered` 是全代码库唯一一条以默认 `warning` 发出的“恢复”告警——其余每条恢复告警都按既定约定用 `severity="info"`(`backend_recovered`、`session_health_recovered`、`artifact_usage_measurement_recovered`、`event_drain_recovered`,`test_watchdog.py` 明写“恢复是要记录的事实,不是要叫醒人的呼叫”)。于是运维若按 `severity>=warning` 布告警,唯独“制品回收恢复正常”这条好消息会误触呼叫)
 
 - `ArtifactRetention.maybe_collect` 的恢复告警补 `severity="info"`,与其余四条 `*_recovered` 对齐;失败告警仍保持默认 `warning`(预算已静默停止执行,是该叫醒人的坏消息)。这条离群之所以能潜入,是因为既有测试只断言告警 `kind`、从不看 `severity`。
