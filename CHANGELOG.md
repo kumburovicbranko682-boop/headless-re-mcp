@@ -1119,6 +1119,20 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 ### 测试（契约护栏）
 
+- **`artifacts.read` 的越根路径拒绝与字节 limit 下限被钉死**：`_artifacts_read` 按 id 交回已注册
+  制品的原始字节,其两道护栏都很吃重却在既有套件下失效——既有用例只读根内、正 limit 的合法制品。
+  其一是**路径围栏**:`register_artifact` 原样存下给它的路径、并不做围栏,故读取器是最后一道防线——
+  开文件前它先 `resolve()` 路径,凡文件不在 `artifact_root` 之下者一律以 `permission_denied` 拒绝。
+  一条被投毒或崩溃损坏、指向 `/etc/passwd`(或沙箱外任意文件)的制品行绝不能被 hex 吐回调用方;此前
+  无任何用例触及这条分支——每个夹具都把文件注册在根内,拒绝成了变异可以悄悄删掉的死代码(变异实测:
+  关掉护栏后越根文件的字节 `746f702d...`=“top-secret-bytes”被原样吐出)。其二是**字节 limit 下限**:
+  agent 与 OpenAI 桥传输直接以模型参数调处理器、跳过 schema,非正 limit 会原样抵达 `stream.read(limit)`
+  ——`read(-5)` 读到 EOF(对一份可能数 GB 的 dump 是一页无界读取)、`read(0)` 读空;
+  `limit = max(1, min(int(limit), 256 * 1024))` 把任何非正请求收敛成 1 字节、把超大请求封顶。既有读取
+  全传正的范围内 limit,故下限与上限都未被钉。新增 5 个用例:注册一个越根制品并断言拒绝、注册根内制品
+  作对照(证明护栏是围栏而非墙、不误拒合法读取)、并经回显的 `limit` 字段与实际交回的字节钉住 limit 的
+  下限(负/零→1 字节)与上限(超大→256 KiB)。四处变异(关护栏、反护栏、去下限、去上限)分别被对应用例
+  逐一逮住,源文件 `core/service_ext.py` 未改。
 - **会话层对敌意与降级输入的 fail-closed 契约成套固定**（`core/session.py` 85%→99%）：
   崩溃残留的 SQLite 行——带路径分隔符的 id(遍历企图)、空 locator、未知 state 列、
   非法 architecture、天真/垃圾时间戳、`resolve()` 抛 OSError 的死挂载——一律安静跳过或
