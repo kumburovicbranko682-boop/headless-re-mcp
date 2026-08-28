@@ -37,6 +37,11 @@ _MAX_COMPONENT_NAMES = 256
 _MAX_PERMISSIONS = 256
 _MAX_CERTIFICATES = 32
 _MAX_MANIFEST_CHARS = 200_000
+# <meta-data> elements a manifest carries. A benign app ships a handful (SDK
+# app-ids, feature flags); the cap only bites an obfuscated manifest that pads
+# the tree, and each value is bounded like the other metadata strings.
+_MAX_META_DATA = 512
+_MAX_META_DATA_VALUE = 4096
 # A page of the archive's file listing. An APK can hold thousands of resource
 # entries, so the listing is paginated and each entry name is bounded.
 _MAX_FILES_PAGE = 5000
@@ -574,6 +579,103 @@ class ApkClient:
             "min_sdk": _to_int_or_none(apk.get_min_sdk_version()),
             "target_sdk": _to_int_or_none(apk.get_target_sdk_version()),
         }
+
+    @staticmethod
+    def _manifest_root(apk: Any) -> Any | None:
+        """The parsed manifest lxml tree, or ``None`` when it cannot be had.
+
+        Best-effort exactly like ``_application_element``/``_component_elements``:
+        an old build lacking the getter, or a manifest androguard cannot re-parse,
+        yields ``None`` so the caller reports an empty result rather than failing.
+        """
+        getter = getattr(apk, "get_android_manifest_xml", None)
+        if getter is None:
+            return None
+        try:
+            root = getter()
+        except Exception:  # noqa: BLE001 - androguard raises raw types on bad AXML
+            return None
+        return root
+
+    @_guard_androguard
+    def meta_data(self, path: Path) -> JsonObject:
+        """Every ``<meta-data>`` in the manifest, with the element that holds it.
+
+        apk.manifest hands back the raw XML and apk.security reads the fixed
+        ``<application>`` flags, but neither surfaces the ``<meta-data>``
+        name/value pairs where an app stashes its third-party SDK configuration:
+        the Google Maps / AdMob / Firebase app-ids and API keys, the analytics
+        opt-outs, the feature flags a build ships enabled. These are a first-stop
+        triage signal -- an embedded API key is a finding, and the SDK ids
+        fingerprint what the app links -- and were previously reachable only by
+        grepping the decoded manifest by hand.
+
+        Answers with meta_data, each entry carrying name plus whichever of value
+        (a literal string/number/bool) or resource (an ``@`` reference into the
+        resource table) the element set, and scope/component: scope is the
+        enclosing tag (application, activity, service, receiver, provider) and
+        component is that element's android:name (null directly under
+        ``<application>``). Entries keep manifest order. Also count, total and
+        has_more, since the list is capped. A manifest androguard cannot re-parse
+        yields an empty list rather than an error.
+        """
+        apk = self._apk(path)
+        root = self._manifest_root(apk)
+        entries: list[JsonObject] = []
+        total = 0
+        if root is not None:
+            try:
+                found = list(root.iter("meta-data"))
+            except Exception:  # noqa: BLE001 - defensive against non-lxml stand-ins
+                found = []
+            for element in found:
+                name = _android_attr(element, "name")
+                if name is None:
+                    continue
+                total += 1
+                if len(entries) >= _MAX_META_DATA:
+                    continue
+                entry: JsonObject = {"name": name[:_MAX_META_DATA_VALUE]}
+                value = _android_attr(element, "value")
+                resource = _android_attr(element, "resource")
+                if value is not None:
+                    entry["value"] = value[:_MAX_META_DATA_VALUE]
+                if resource is not None:
+                    entry["resource"] = resource[:_MAX_META_DATA_VALUE]
+                scope, component = self._meta_data_scope(element)
+                entry["scope"] = scope
+                entry["component"] = component
+                entries.append(entry)
+        return {
+            "meta_data": entries,
+            "count": len(entries),
+            "total": total,
+            "has_more": total > len(entries),
+        }
+
+    @staticmethod
+    def _meta_data_scope(element: Any) -> tuple[str, str | None]:
+        """The tag and android:name of a ``<meta-data>``'s enclosing element.
+
+        A meta-data directly under ``<application>`` reports scope "application"
+        and a null component; one inside a component reports that component's tag
+        and its android:name, so a reader can tell an app-wide SDK key from one
+        scoped to a single exported component. A tree stand-in without getparent
+        degrades to ("unknown", None) rather than raising.
+        """
+        getparent = getattr(element, "getparent", None)
+        if getparent is None:
+            return "unknown", None
+        try:
+            parent = getparent()
+        except Exception:  # noqa: BLE001 - defensive against odd tree stand-ins
+            return "unknown", None
+        if parent is None:
+            return "unknown", None
+        tag = getattr(parent, "tag", None)
+        scope = str(tag) if isinstance(tag, str) and tag else "unknown"
+        component = _android_attr(parent, "name") if scope != "application" else None
+        return scope, component
 
     @staticmethod
     def _component_elements(apk: Any, tag: str) -> dict[str, Any]:

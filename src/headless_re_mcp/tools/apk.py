@@ -113,6 +113,30 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_security(session_id))
 
+    @tools.tool(name="apk.meta_data")
+    def apk_meta_data(session_id: str) -> dict[str, Any]:
+        """Every <meta-data> in the manifest, with the element that holds it.
+
+        apk.manifest returns the raw XML and apk.security the fixed
+        <application> flags; neither surfaces the <meta-data> name/value pairs
+        where an app stashes third-party SDK config -- the Google Maps / AdMob /
+        Firebase app-ids and API keys, analytics opt-outs, feature flags. An
+        embedded API key is a finding and the SDK ids fingerprint what the app
+        links, so this lifts them out instead of leaving them to a hand-grep of
+        the decoded manifest.
+
+        Answers with meta_data, each entry carrying name plus whichever of value
+        (a literal string/number/bool) or resource (an @ reference into the
+        resource table) the element set, and scope/component: scope is the
+        enclosing tag (application, activity, service, receiver, provider) and
+        component is that element's android:name (null directly under
+        <application>), so an app-wide key reads apart from one scoped to a
+        single exported component. Entries keep manifest order. Also count, total
+        and has_more (the list is capped). A manifest that cannot be parsed
+        yields an empty list, not an error.
+        """
+        return _dump(analysis.apk_meta_data(session_id))
+
     @tools.tool(name="apk.native_libs")
     def apk_native_libs(session_id: str) -> dict[str, Any]:
         """List bundled native libraries and their ABIs.

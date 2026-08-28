@@ -99,6 +99,18 @@ def _build_manifest_axml() -> bytes:
             (android, "usesCleartextTraffic", "true"),
             (android, "networkSecurityConfig", "@xml/network_security_config"),
         ]),
+        # An app-wide SDK key (a classic embedded-secret finding) and a
+        # resource-referencing meta-data, both directly under <application>.
+        ("start", "meta-data", [
+            (android, "name", "com.google.android.geo.API_KEY"),
+            (android, "value", "AIzaSyFIXTURE-maps-key"),
+        ]),
+        ("end", "meta-data", []),
+        ("start", "meta-data", [
+            (android, "name", "com.example.sdk.CONFIG"),
+            (android, "resource", "@xml/sdk_config"),
+        ]),
+        ("end", "meta-data", []),
         ("start", "activity", [(android, "name", "com.example.headlessre.MainActivity")]),
         ("start", "intent-filter", []),
         ("start", "action", [(android, "name", "android.intent.action.MAIN")]),
@@ -106,6 +118,13 @@ def _build_manifest_axml() -> bytes:
         ("start", "category", [(android, "name", "android.intent.category.LAUNCHER")]),
         ("end", "category", []),
         ("end", "intent-filter", []),
+        # A component-scoped meta-data, so the gate proves scope/component
+        # attribution off a real binary manifest, not just app-level pairs.
+        ("start", "meta-data", [
+            (android, "name", "com.example.headlessre.activity.flag"),
+            (android, "value", "true"),
+        ]),
+        ("end", "meta-data", []),
         ("end", "activity", []),
         ("start", "service", [(android, "name", "com.example.headlessre.SyncService")]),
         ("end", "service", []),
@@ -449,6 +468,26 @@ def test_apk_static_pipeline_parses_a_real_manifest(tmp_path: Path) -> None:
         assert security.data["uses_cleartext_traffic"] is True
         assert security.data["network_security_config"] == "@xml/network_security_config"
         assert security.data["application_class"] == "com.example.headlessre.App"
+
+        # apk.meta_data lifts the <meta-data> pairs off the real binary manifest:
+        # the app-wide Maps key (an embedded-secret finding), a resource-ref, and
+        # one scoped to the launcher activity -- each with where it sits, so an
+        # app-wide key reads apart from a component-scoped flag.
+        meta = service.apk_meta_data(session_id)
+        assert meta.ok, meta.error
+        by_name = {row["name"]: row for row in meta.data["meta_data"]}
+        assert meta.data["total"] == meta.data["count"] == 3
+        maps_key = by_name["com.google.android.geo.API_KEY"]
+        assert maps_key["value"] == "AIzaSyFIXTURE-maps-key"
+        assert maps_key["scope"] == "application"
+        assert maps_key["component"] is None
+        sdk_cfg = by_name["com.example.sdk.CONFIG"]
+        assert sdk_cfg["resource"] == "@xml/sdk_config"
+        assert "value" not in sdk_cfg
+        activity_flag = by_name["com.example.headlessre.activity.flag"]
+        assert activity_flag["value"] == "true"
+        assert activity_flag["scope"] == "activity"
+        assert activity_flag["component"] == "com.example.headlessre.MainActivity"
 
         libs = service.apk_native_libs(session_id)
         assert libs.ok, libs.error

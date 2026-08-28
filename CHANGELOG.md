@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **297（177 只读 / 120 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **298（178 只读 / 120 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -666,6 +666,18 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   不移动函数索引空间，故转导出的导入在索引 0 仍解析为导入函数类型）、内部名挂接与非函数导出无签名字段，并另有 wat2wasm
   交叉校验（缺 wabt 时 skip≠pass）；单测另覆盖过滤、`signature_unknown`、空导出、4096 截断与非模块拒绝。该工具计入读效果，
   工具面因此 292→293。
+- **manifest 里的 `<meta-data>` 只能靠手 grep 解码后的 XML**。`apk.manifest` 只回生 XML、`apk.security` 只读固定的
+  `<application>` 旗标，谁都不解 `<meta-data>` 那些 name/value 对——而 app 恰恰把第三方 SDK 配置塞在这里：Google Maps /
+  AdMob / Firebase 的 app-id 与 API key、分析 SDK 的开关、随包发的功能旗标。内嵌 API key 本身就是一条发现，SDK id 又能指纹
+  出 app 链了哪些库，所以这是首站三查信号。新增只读的 `apk.meta_data`：把全 manifest 的 `<meta-data>` 连同承载它的元素一并
+  抽出。回 `meta_data`，每条带 `name`，加它实际设置的 `value`（字面 string/number/bool）或 `resource`（`@` 引用进资源表）
+  之一，再带 `scope`/`component`：`scope` 是外层标签（application/activity/service/receiver/provider），`component` 是那个
+  元素的 android:name（直接挂在 `<application>` 下时为 null）——好让 app 级的 key 与只作用于某个导出组件的旗标区分开。条目
+  保持 manifest 顺序。外加 `count`、`total` 与 `has_more`（列表按 512 截断）。无 name 的 `<meta-data>` 连 total 都不计，故
+  调用方绝不会拿到不可用的条目；manifest 解析不出时回空列表而非报错。活体门给手搓的二进制 manifest 埋了三个 `<meta-data>`
+  （app 级的 Maps key、资源引用的 SDK 配置、挂在启动 activity 上的旗标），断言各自的 value/resource 与 scope/component 都从真
+  AXML 里回来；单测另覆盖 value/resource/scope 三形、无 name 跳过、空 manifest、512 截断、解析失败降级与 docstring 形状。
+  该工具计入读效果，工具面因此 297→298。
 - **抓包里的 cookie 只能靠 flow.get 一条条翻、靠 proxy.search 找个名字**。`web.cookies` 读的是浏览器的 jar，可代理看的是
   线上的东西——cookie 在这里是 Set-Cookie 响应头（服务器在铸造它，连同 HttpOnly/Secure/SameSite 旗标）或 Cookie 请求头
   （客户端在回传），`proxy.search` 能找到名字却卷不起旗标姿态。新增只读的 `proxy.cookies`：把整条 ring 折叠成按 name+domain

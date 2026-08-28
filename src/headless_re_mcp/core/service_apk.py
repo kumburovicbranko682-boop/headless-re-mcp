@@ -118,6 +118,9 @@ class ApkAnalysisMixin:
     def apk_security(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "security")
 
+    def apk_meta_data(self, session_id: str) -> Result[JsonObject]:
+        return self._apk_call(session_id, "meta_data")
+
     def apk_native_libs(self, session_id: str) -> Result[JsonObject]:
         return self._apk_call(session_id, "native_libs")
 
