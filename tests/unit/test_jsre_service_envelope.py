@@ -17,6 +17,7 @@ These drive the real AnalysisService with dummy tool paths and a stubbed
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -31,13 +32,24 @@ from headless_re_mcp.core.service_jsre import prune_jsre_unpack_dirs
 
 
 def _service(tmp_path: Path) -> AnalysisService:
-    """A service whose webcrack and wabt paths resolve to (empty) dummy tools."""
-    webcrack = tmp_path / "webcrack"
+    """A service whose webcrack and wabt paths resolve to (empty) dummy tools.
+
+    The wabt setting names a directory, and _resolve_wabt_tool looks inside it
+    for ``wasm2wat``/``wasm-objdump`` with a ``.exe`` suffix on Windows (that is
+    how a real wabt install ships). Extensionless stubs therefore resolved on
+    Linux but not on the Windows quality runner, where the two wasm.* tests
+    failed with capability_unavailable while Linux stayed green -- the same
+    optional-tool CI-honesty gap the apk/proxy suites had, only platform-hidden.
+    Name the stubs with the platform's executable suffix, the way the sibling
+    test_js_wasm_fields helpers already do, so both runners resolve them.
+    """
+    exe = ".exe" if os.name == "nt" else ""
+    webcrack = tmp_path / f"webcrack{exe}"
     webcrack.write_bytes(b"")
     wabt = tmp_path / "wabt"
     wabt.mkdir()
-    (wabt / "wasm2wat").write_bytes(b"")
-    (wabt / "wasm-objdump").write_bytes(b"")
+    (wabt / f"wasm2wat{exe}").write_bytes(b"")
+    (wabt / f"wasm-objdump{exe}").write_bytes(b"")
     settings = replace(
         Settings.load(),
         webcrack=webcrack,
