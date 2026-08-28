@@ -14,8 +14,11 @@ and jsre list backends already do.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from headless_re_mcp.backends.apk.client import (
     _MAX_CLASSES_PAGE,
@@ -23,6 +26,7 @@ from headless_re_mcp.backends.apk.client import (
     _MAX_STRINGS_PAGE,
     _MAX_XREFS_PAGE,
     ApkClient,
+    ApkError,
 )
 from headless_re_mcp.tools.apk import build_apk_tools
 from headless_re_mcp.tools.binding import input_schema_for
@@ -209,6 +213,92 @@ def test_xrefs_limit_is_capped_at_the_schema_maximum(
     payload = client.xrefs(tmp_path / "app.apk", "decrypt", limit=10**9)
     assert payload["count"] == _MAX_XREFS_PAGE
     assert payload["has_more"] is True
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        math.inf,
+        -math.inf,
+        math.nan,
+        None,
+        "abc",
+        "",
+        {},
+        [],
+        True,
+        False,
+    ],
+)
+def test_hostile_offset_is_invalid_params_not_an_incident(
+    tmp_path: Path, monkeypatch: Any, bad: object
+) -> None:
+    """A non-integer offset used to reach ``int(offset)`` and escape as an incident.
+
+    The agent and OpenAI-bridge transports skip the schema, so a float (inf from
+    a JSON 1e400), nan, null, a non-numeric string, a container, or a bool
+    reached ``int(...)`` inside ``_clamp_page`` and raised
+    OverflowError/ValueError/TypeError. None is an ApkError, so the service's
+    ``except BaseException`` filed an internal_error incident for a bad page.
+    """
+    client = _classes_client(monkeypatch, 10)
+    with pytest.raises(ApkError) as excinfo:
+        client.classes(tmp_path / "app.apk", offset=bad, limit=10)  # type: ignore[arg-type]
+    assert excinfo.value.code == "invalid_params"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        math.inf,
+        -math.inf,
+        math.nan,
+        None,
+        "abc",
+        "",
+        {},
+        [],
+        True,
+        False,
+    ],
+)
+def test_hostile_limit_is_invalid_params_not_an_incident(
+    tmp_path: Path, monkeypatch: Any, bad: object
+) -> None:
+    """Same guard for the limit half of the page window."""
+    client = _classes_client(monkeypatch, 10)
+    with pytest.raises(ApkError) as excinfo:
+        client.classes(tmp_path / "app.apk", offset=0, limit=bad)  # type: ignore[arg-type]
+    assert excinfo.value.code == "invalid_params"
+
+
+def test_methods_and_strings_share_the_page_int_guard(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The guard lives in the shared ``_clamp_page``, so every reader inherits it."""
+    monkeypatch.setattr(ApkClient, "_parsed", lambda self, path: _FakeMethodParsed(10))
+    client = ApkClient()
+    with pytest.raises(ApkError) as methods_err:
+        client.methods(tmp_path / "app.apk", "com.example.Foo", offset=math.inf, limit=5)  # type: ignore[arg-type]
+    assert methods_err.value.code == "invalid_params"
+
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeStringParsed([f"s{i:04d}" for i in range(10)]),
+    )
+    client = ApkClient()
+    with pytest.raises(ApkError) as strings_err:
+        client.strings(tmp_path / "app.apk", offset=0, limit=None)  # type: ignore[arg-type]
+    assert strings_err.value.code == "invalid_params"
+
+
+def test_numeric_string_page_bounds_still_parse(tmp_path: Path, monkeypatch: Any) -> None:
+    """An int-like string is a valid bound (int("5") == 5), not a rejection."""
+    client = _classes_client(monkeypatch, 10)
+    payload = client.classes(tmp_path / "app.apk", offset="0", limit="3")  # type: ignore[arg-type]
+    assert payload["offset"] == 0
+    assert payload["count"] == 3
 
 
 def _limit_schema(name: str) -> dict[str, object]:

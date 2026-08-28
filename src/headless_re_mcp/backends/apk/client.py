@@ -56,6 +56,26 @@ def _cap_names(values: Any, limit: int) -> tuple[list[str], bool]:
     return items, has_more
 
 
+def _page_int(value: object, name: str) -> int:
+    """Coerce a paging argument to int, or raise a structured invalid_params.
+
+    ``_clamp_page`` fed ``offset``/``limit`` straight to ``int(...)``. The apk.*
+    schemas type both as integers, but the agent and OpenAI-bridge transports
+    call the handler with no pydantic coercion, so a float (inf from a JSON
+    1e400), nan, null, or non-numeric string reached ``int(...)`` and raised
+    OverflowError/ValueError/TypeError. None of those is an ApkError, so the
+    service's ``except BaseException`` filed an internal_error incident for what
+    is only a bad page window. A bool is an int subclass but never a valid page
+    bound.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ApkError("invalid_params", f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ApkError("invalid_params", f"{name} must be an integer") from exc
+
+
 def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     """Clamp a page window at the source, not only at the tool schema.
 
@@ -68,8 +88,8 @@ def _clamp_page(offset: int, limit: int, *, max_limit: int) -> tuple[int, int]:
     contract holds on every path, the way the web, proxy and jsre list backends
     already do; ``xrefs`` already clamped its limit and now shares the ceiling.
     """
-    start = max(0, int(offset))
-    cap = max(1, min(int(limit), max_limit))
+    start = max(0, _page_int(offset, "offset"))
+    cap = max(1, min(_page_int(limit, "limit"), max_limit))
     return start, cap
 
 
