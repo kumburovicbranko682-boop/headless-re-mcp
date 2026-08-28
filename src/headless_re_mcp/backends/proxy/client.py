@@ -777,6 +777,23 @@ def _flow_filter(
     return active
 
 
+# Cap the ranked stats groups (hosts, content types, status codes) so a capture
+# that saw thousands of distinct hosts cannot make one stats reply unbounded; the
+# omission is disclosed with a *_truncated flag.
+_MAX_STATS_GROUPS = 50
+
+
+def _ranked(counts: dict[str, int], key_name: str, cap: int) -> tuple[list[JsonObject], bool]:
+    """A count-descending, key-ascending ranked list plus a truncated flag.
+
+    Ties break on the key so the ranking is stable across calls, and the list is
+    capped so an unbounded dimension (hosts, content types) cannot blow the reply.
+    """
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    rows = [{key_name: key, "count": value} for key, value in ordered[:cap]]
+    return rows, len(ordered) > cap
+
+
 def _flow_matches(row: JsonObject, active: JsonObject) -> bool:
     """True when one summary row satisfies every field of an active filter.
 
@@ -927,6 +944,94 @@ class ProxyBackend:
             # capture.
             "captured": captured,
         }
+        if active:
+            result["filter"] = active
+        return result
+
+    def stats(
+        self,
+        session_id: str,
+        *,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: int = 0,
+    ) -> JsonObject:
+        """Aggregate the capture ring into a triage summary.
+
+        proxy.flows lists individual exchanges; on a capture of thousands this
+        answers the first triage question instead -- what is in here -- by
+        counting flows across the dimensions that decide where to look: HTTP
+        method, response status (both the exact codes and the 2xx/4xx/... class),
+        the hosts contacted and the content types returned, plus how many flows
+        are WebSockets or had their body omitted. Hosts, content types and status
+        codes come back as count-descending ranked lists (capped, with a
+        *_truncated flag); methods and status classes as small maps. It accepts
+        the same filter surface as proxy.flows, so a caller can profile just one
+        host or method. captured is the whole ring and total the counted subset,
+        so a filter narrows captured -> total visibly.
+        """
+        inst = self._get(session_id)
+        items = inst.recorder.snapshot()
+        captured = len(items)
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        active = _flow_filter(method, host, url_contains, content_type, status)
+        rows = [row for row in items if _flow_matches(row, active)] if active else items
+        methods: dict[str, int] = {}
+        status_classes: dict[str, int] = {}
+        statuses: dict[int, int] = {}
+        hosts: dict[str, int] = {}
+        content_types: dict[str, int] = {}
+        websocket_flows = 0
+        body_omitted = 0
+        for row in rows:
+            verb = str(row.get("method") or "").upper()
+            if verb:
+                methods[verb] = methods.get(verb, 0) + 1
+            code = row.get("status")
+            if isinstance(code, int):
+                statuses[code] = statuses.get(code, 0) + 1
+                cls = f"{code // 100}xx"
+            else:
+                cls = "pending"
+            status_classes[cls] = status_classes.get(cls, 0) + 1
+            hostname = str(row.get("host") or "")
+            hosts[hostname] = hosts.get(hostname, 0) + 1
+            # Normalise "application/json; charset=utf-8" down to the media type so
+            # the same payload kind does not split across charset variants.
+            ctype = str(row.get("content_type") or "").split(";", 1)[0].strip().lower()
+            content_types[ctype] = content_types.get(ctype, 0) + 1
+            if row.get("websocket"):
+                websocket_flows += 1
+            if row.get("body_omitted"):
+                body_omitted += 1
+        host_rows, hosts_truncated = _ranked(hosts, "host", _MAX_STATS_GROUPS)
+        ctype_rows, ctypes_truncated = _ranked(content_types, "content_type", _MAX_STATS_GROUPS)
+        status_ordered = sorted(statuses.items(), key=lambda kv: (-kv[1], kv[0]))
+        status_rows = [
+            {"status": code, "count": count} for code, count in status_ordered[:_MAX_STATS_GROUPS]
+        ]
+        result: JsonObject = {
+            "captured": captured,
+            "dropped": dropped,
+            "total": len(rows),
+            "methods": methods,
+            "status_classes": status_classes,
+            "statuses": status_rows,
+            "hosts": host_rows,
+            "content_types": ctype_rows,
+            "websocket_flows": websocket_flows,
+            "body_omitted": body_omitted,
+        }
+        if hosts_truncated:
+            result["hosts_truncated"] = True
+        if ctypes_truncated:
+            result["content_types_truncated"] = True
+        if len(status_ordered) > _MAX_STATS_GROUPS:
+            result["statuses_truncated"] = True
         if active:
             result["filter"] = active
         return result

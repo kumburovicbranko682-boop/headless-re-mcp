@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from headless_re_mcp.backends.proxy import client as proxy_client
 from headless_re_mcp.backends.proxy.client import (
     _MAX_FLOWS,
     ProxyBackend,
@@ -224,6 +225,91 @@ def test_proxy_flows_filter_paginates_over_matches(monkeypatch: Any) -> None:
 def test_proxy_flows_docstring_names_the_filter_fields() -> None:
     doc = _tool_docstring("proxy.flows")
     for token in ("captured", "url_contains", "content_type", "status", "filter"):
+        assert token in doc, token
+
+
+def test_proxy_stats_aggregates_the_capture(monkeypatch: Any) -> None:
+    """proxy.stats must profile the ring across every triage dimension."""
+    backend = _filterable_backend(monkeypatch)
+
+    stats = backend.stats("s")
+
+    assert stats["captured"] == 4
+    assert stats["total"] == 4
+    assert stats["dropped"] == 0
+    assert stats["methods"] == {"GET": 3, "POST": 1}
+    assert stats["status_classes"] == {"2xx": 2, "4xx": 1, "5xx": 1}
+    # Ranked count-desc, ties broken by key asc.
+    assert stats["statuses"] == [
+        {"status": 200, "count": 2},
+        {"status": 401, "count": 1},
+        {"status": 500, "count": 1},
+    ]
+    assert stats["hosts"] == [
+        {"host": "api.example.com", "count": 3},
+        {"host": "cdn.other.com", "count": 1},
+    ]
+    assert stats["content_types"] == [
+        {"content_type": "application/json", "count": 2},
+        {"content_type": "application/javascript", "count": 1},
+        {"content_type": "text/plain", "count": 1},
+    ]
+    assert stats["websocket_flows"] == 0
+    assert stats["body_omitted"] == 0
+    assert "filter" not in stats
+
+
+def test_proxy_stats_respects_the_flow_filters(monkeypatch: Any) -> None:
+    """The same filter surface as proxy.flows profiles just one slice."""
+    backend = _filterable_backend(monkeypatch)
+
+    api = backend.stats("s", host="api.example.com")
+
+    assert api["captured"] == 4  # the whole ring is still disclosed
+    assert api["total"] == 3  # but only the matching subset is counted
+    assert api["methods"] == {"GET": 2, "POST": 1}
+    assert api["status_classes"] == {"2xx": 1, "4xx": 1, "5xx": 1}
+    assert api["hosts"] == [{"host": "api.example.com", "count": 3}]
+    assert api["filter"] == {"host": "api.example.com"}
+
+
+def test_proxy_stats_normalises_content_type_charset(monkeypatch: Any) -> None:
+    """A charset parameter must not split one media type into two groups."""
+    recorder = _FlowRecorder(capacity=50)
+    _record(recorder, method="GET", url="http://x/1", host="x", status=200,
+            ctype="application/json; charset=utf-8", flow_id="1")
+    _record(recorder, method="GET", url="http://x/2", host="x", status=200,
+            ctype="application/json", flow_id="2")
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder))
+
+    stats = backend.stats("s")
+    assert stats["content_types"] == [{"content_type": "application/json", "count": 2}]
+
+
+def test_proxy_stats_ranks_and_caps_unbounded_dimensions(monkeypatch: Any) -> None:
+    """A capture of many hosts must cap the ranked list and disclose it."""
+    monkeypatch.setattr(proxy_client, "_MAX_STATS_GROUPS", 2)
+    recorder = _FlowRecorder(capacity=50)
+    # host "a" gets 3 flows, "b" gets 2, "c" gets 1 -- the top two survive the cap.
+    for host, hits in (("a", 3), ("b", 2), ("c", 1)):
+        for index in range(hits):
+            _record(recorder, method="GET", url=f"http://{host}/{index}", host=host,
+                    status=200, ctype="text/plain", flow_id=f"{host}{index}")
+    backend = ProxyBackend()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(recorder=recorder))
+
+    stats = backend.stats("s")
+    assert stats["hosts"] == [
+        {"host": "a", "count": 3},
+        {"host": "b", "count": 2},
+    ]
+    assert stats["hosts_truncated"] is True
+
+
+def test_proxy_stats_docstring_names_the_fields() -> None:
+    doc = _tool_docstring("proxy.stats")
+    for token in ("methods", "status_classes", "hosts", "content_types", "captured"):
         assert token in doc, token
 
 

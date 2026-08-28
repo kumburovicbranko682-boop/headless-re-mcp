@@ -265,6 +265,62 @@ def test_proxy_flows_filter_narrows_a_live_capture(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_proxy_stats_summarises_a_live_capture(tmp_path: Path) -> None:
+    """proxy.stats must aggregate flows mitmproxy actually recorded.
+
+    The unit tests pin the aggregation over a hand-built recorder; this proves it
+    holds over a real capture. Route two GETs and one POST through the proxy, then
+    assert the stats count the verbs, status class, host and content type, and
+    that the same filter surface as proxy.flows narrows the profile to one verb.
+    skip != pass without mitmproxy.
+    """
+    if not _mitmproxy_available():
+        pytest.skip("mitmproxy not installed — proxy stats Gate not run (skip != pass)")
+    backend = ProxyBackend()
+    proxy_port = _free_port()
+    backend.start("stats", host="127.0.0.1", port=proxy_port)
+    try:
+        with _origin_site() as origin:
+            handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{proxy_port}"})
+            opener = urllib.request.build_opener(handler)
+            for path in ("/alpha", "/beta"):
+                with opener.open(f"{origin}{path}", timeout=15.0) as response:
+                    response.read()
+            with opener.open(
+                urllib.request.Request(f"{origin}/submit", data=b"x=1", method="POST"),
+                timeout=15.0,
+            ) as response:
+                response.read()
+
+            _poll(
+                lambda: backend.flows("stats", limit=100),
+                lambda r: r["captured"] >= 3
+                and any(str(f.get("method")) == "POST" for f in r["flows"]),
+            )
+
+            stats = backend.stats("stats")
+            assert stats["captured"] >= 3, stats
+            assert stats["total"] == stats["captured"], stats
+            assert stats["methods"].get("GET") == 2, stats
+            assert stats["methods"].get("POST") == 1, stats
+            # The origin site answers 200, so every flow is one 2xx.
+            assert stats["status_classes"].get("2xx") == stats["total"], stats
+            assert stats["statuses"][0]["status"] == 200, stats
+            # All three flows hit the one origin host, so it tops the ranking.
+            assert stats["hosts"][0]["count"] == stats["total"], stats
+            assert "filter" not in stats
+
+            # The same filter surface as proxy.flows profiles just the POST.
+            posts = backend.stats("stats", method="post")
+            assert posts["total"] == 1, posts
+            assert posts["methods"] == {"POST": 1}, posts
+            assert posts["captured"] >= 3, posts
+            assert posts["filter"] == {"method": "POST"}, posts
+    finally:
+        backend.close_all()
+
+
+@pytest.mark.integration
 def test_proxy_export_har_writes_only_the_filtered_subset(tmp_path: Path) -> None:
     """HAR export must be able to write just the flows a filter selects.
 

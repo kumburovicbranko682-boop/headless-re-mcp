@@ -45,10 +45,47 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
 
         Answers with running, and when running also host, port, flow_count
         retained_max, retained_bytes and retained_bytes_max. There is no
-        count or flows field. A session with no proxy answers running false
+        count or flows field.         A session with no proxy answers running false
         and nothing else, which is not an empty capture.
         """
         return _dump(analysis.proxy_status(session_id))
+
+    @tools.tool(name="proxy.stats")
+    def proxy_stats(
+        session_id: str,
+        method: str = "",
+        host: str = "",
+        url_contains: str = "",
+        content_type: str = "",
+        status: Annotated[int, Field(ge=0, le=599)] = 0,
+    ) -> dict[str, Any]:
+        """Aggregate the capture into a triage summary instead of listing flows.
+
+        Where proxy.flows lists individual exchanges, this answers "what is in
+        this capture" on a busy target: it counts flows by HTTP method (methods),
+        response status class 2xx/4xx/... (status_classes) and exact code
+        (statuses), by host (hosts) and by media type (content_types, with the
+        charset stripped so json does not split). hosts, content_types and
+        statuses are count-descending ranked lists capped at 50, each with a
+        matching hosts_truncated / content_types_truncated / statuses_truncated
+        flag; methods and status_classes are small maps. Also answers with
+        websocket_flows and body_omitted counts. captured is every flow in the
+        ring, total is the counted subset and dropped is how many the ring already
+        evicted. The same filters as proxy.flows (method exact verb; host,
+        url_contains, content_type case-insensitive substrings; status exact code,
+        0 means any; combined with AND) profile just one slice, echoed back as
+        filter, so a filter narrows captured -> total visibly.
+        """
+        return _dump(
+            analysis.proxy_stats(
+                session_id,
+                method=method,
+                host=host,
+                url_contains=url_contains,
+                content_type=content_type,
+                status=status,
+            )
+        )
 
     @tools.tool(name="proxy.flows")
     def proxy_flows(
