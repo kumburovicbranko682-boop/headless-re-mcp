@@ -152,3 +152,85 @@ def test_release_forwards_retains_a_slot_when_the_device_has_no_remove_api() -> 
     assert len(report["failed"]) == 1
     assert "forward-remove" in report["failed"][0]["error"]
     assert backend._forwards == [("emulator-5554", "tcp:5000")]
+
+
+# --- races: the slot set changes under the bind/release while the lock is free --
+#
+# forward() and release_forwards() both drop _forward_lock while they talk to
+# the adb server, so a second thread can add or remove the same (serial, local)
+# in between. The membership checks in the error and retry arms exist purely to
+# survive that; without them a concurrent change turns into a ValueError from
+# list.remove or a duplicated slot. These pin that the checks actually hold.
+
+
+class _SlotDroppingDev:
+    """A device whose forward() clears the tracked slot before it fails.
+
+    That models a concurrent release_forwards() emptying the set during the
+    bind, so the error arm meets a key that is no longer present.
+    """
+
+    def __init__(self, backend: AdbBackend, error: BaseException) -> None:
+        self._backend = backend
+        self._error = error
+
+    def forward(self, local: str, remote: str, timeout: float | None = None) -> None:
+        del local, remote, timeout
+        self._backend._forwards.clear()
+        raise self._error
+
+
+def test_an_adberror_after_the_slot_was_concurrently_dropped_reraises_cleanly() -> None:
+    """The domain-error arm must not choke removing a slot already gone."""
+    backend = AdbBackend()
+    backend._available = True
+    dev = _SlotDroppingDev(backend, AdbError("device_offline", "adb dropped the device"))
+    backend._device = lambda serial: dev  # type: ignore[method-assign]
+
+    with pytest.raises(AdbError) as caught:
+        backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
+
+    # The original AdbError is re-raised untouched, and the missing-key cleanup
+    # did not raise a ValueError of its own.
+    assert caught.value.code == "device_offline"
+    assert backend._forwards == []
+
+
+def test_a_generic_error_after_the_slot_was_concurrently_dropped_wraps_cleanly() -> None:
+    """The catch-all arm has the same guard, ending in a wrapped backend_error."""
+    backend = AdbBackend()
+    backend._available = True
+    dev = _SlotDroppingDev(backend, RuntimeError("usb yanked"))
+    backend._device = lambda serial: dev  # type: ignore[method-assign]
+
+    with pytest.raises(AdbError) as caught:
+        backend.forward("emulator-5554", "tcp:5000", "tcp:27042")
+
+    assert caught.value.code == "backend_error"
+    assert "usb yanked" in caught.value.message
+    assert backend._forwards == []
+
+
+def test_release_does_not_double_track_a_slot_reforwarded_during_the_sweep() -> None:
+    """A slot re-created mid-release is retried once, not appended twice."""
+    backend = AdbBackend()
+    backend._available = True
+    key = ("emulator-5554", "tcp:5000")
+    backend._forwards = [key]
+
+    class _ReaddingDev:
+        def forward_remove(self, local: str, timeout: float | None = None) -> None:
+            del local, timeout
+            # Stand in for a concurrent forward() that re-reserved the same slot
+            # after release_forwards cleared the set but before it recorded the
+            # retry: the retry pass must notice the key is already back.
+            if key not in backend._forwards:
+                backend._forwards.append(key)
+            raise RuntimeError("removal raced a re-forward")
+
+    backend._device = lambda serial: _ReaddingDev()  # type: ignore[method-assign]
+
+    report = backend.release_forwards()
+
+    assert report["failed"][0]["local"] == "tcp:5000"
+    assert backend._forwards == [key]
