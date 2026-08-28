@@ -73,7 +73,15 @@ class JsReError(RuntimeError):
 
 def _require_existing_file(path: Path, *, missing: str) -> Path:
     """Resolve a regular file, or refuse one that would bind the child unbounded."""
-    resolved = path.expanduser()
+    try:
+        resolved = path.expanduser()
+    except (RuntimeError, ValueError) as exc:
+        # "~unknownuser" (or "~" with no resolvable home) raises RuntimeError and
+        # an embedded NUL raises ValueError -- both describe a path the caller
+        # handed us, not a backend fault. Reporting them as invalid_params keeps
+        # a malformed path from surfacing as an unexpected internal error, the
+        # same shape the missing/oversized checks below already give.
+        raise JsReError("invalid_params", f"invalid path: {exc}", path=str(path)) from exc
     if not resolved.is_file():
         raise JsReError("not_found", missing, path=str(resolved))
     try:

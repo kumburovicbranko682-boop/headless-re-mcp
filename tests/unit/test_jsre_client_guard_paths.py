@@ -95,6 +95,20 @@ def test_a_missing_input_file_is_not_found(tmp_path: Path) -> None:
     assert caught.value.details["path"] == str(tmp_path / "ghost.js")
 
 
+def test_an_unresolvable_user_path_is_invalid_params(tmp_path: Path) -> None:
+    # "~unknownuser" has no home to expand to, so Path.expanduser() raises a
+    # bare RuntimeError. The chokepoint must report that as a parameter mistake
+    # rather than let it escape as an unexpected internal error, the same way
+    # the missing/oversized cases below answer with a JsReError.
+    with pytest.raises(JsReError) as caught:
+        _require_existing_file(
+            Path("~nosuchuser_xyz/app.js"), missing="input file not found"
+        )
+
+    assert caught.value.code == "invalid_params"
+    assert caught.value.details["path"] == "~nosuchuser_xyz/app.js"
+
+
 def test_an_unstatable_input_is_a_backend_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
