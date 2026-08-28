@@ -21,7 +21,17 @@ from headless_re_mcp.backends.common.bounded_run import (
 )
 
 JsonObject = dict[str, Any]
-_MAX_INLINE = 400_000
+# The inline text cap for js.deobfuscate/beautify and wasm.wat/info. It must stay
+# under the transport's result budget (ResourcePolicy.max_result_bytes, 262_144):
+# both the agent and MCP transports run every reply through bounded_tool_result,
+# which replaces an over-budget result *wholesale* with a ~16 KB text summary --
+# so an inline field larger than the budget is not merely trimmed, the entire
+# structured reply (the `code`/`wat`/`objdump` field included) is destroyed. At
+# 400 KB this left a dead zone: output between 262 KB and 400 KB passed jsre's own
+# cap with truncated=False, then the transport summarised the whole thing away.
+# 200 KB matches the web/proxy backends' _MAX_INLINE_BODY and leaves headroom for
+# JSON escaping plus the envelope, so jsre's own honest truncation fires first.
+_MAX_INLINE = 200_000
 # Per the tool schema: js.deobfuscate / js.beautify / wasm.* declare le=600,
 # js.unpack_bundle le=1200. Each caller passes its own ceiling into _run.
 _MAX_TIMEOUT_S = 600.0
