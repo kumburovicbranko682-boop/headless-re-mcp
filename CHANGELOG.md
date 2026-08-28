@@ -5,6 +5,28 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（radare2 live gate 在 Linux 上因 Windows-only PE fixture 而永远跳过）
+
+- `tests/integration/test_m11_r2_live_gate.py` 只认 `artifacts/fixtures-x64/headless_fixture.exe`
+  （在 Windows 上构建的 PE），于是即便装了 radare2，Linux 上这条可移植后端的 live gate 也只会
+  跳过——一条声称支持 Linux 的线在其目标平台上从未被验证。改为：优先用存在的 Windows PE
+  （继续断言 PE 的 rva/module 地址映射），否则用 cc/gcc/clang 现编一个标准 C 的小 ELF 到
+  （被 gitignore 的）`artifacts/fixtures-linux/`，再对它跑同样的 `aa`/`aflj` 地址映射路径。
+  没有编译器则诚实跳过而非假过。radare2 5.5.0 上 ELF 路径实测通过（count≥1、address={'va':…}）。
+
+### 修复（agent 浏览器冒烟 gate 钉死 Windows Chrome 路径、且 SPA 文案已漂移）
+
+- `tests/integration/test_agent_browser_smoke.py` 用
+  `executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe"` 启动 Chromium，
+  于是只能在装了该路径 Chrome 的 Windows 上跑——尽管它并非 Windows-only gate，其同侧的
+  web gate 都能在 Linux 上跑。改用 Playwright 自带的 Chromium，与生产 `WebBackend`
+  （`backends/web/client.py` 的 `pw.chromium.launch`）一致。
+- 其余流程与已发布 SPA 脱节：现网 UI 是中文，原始运行事件挪到了检查器的「事件」页签。相应
+  更新落地页/输入框/设置/审批选择器；并显式钉住 fail-closed（request）审批档——`Settings.load()`
+  默认会套用 packed-analysis 预设自动批准 state_change，`workflow.cancel` 会被自动放行，
+  approve/reject 路径整条走不到。reload 后运行按 run id 恢复而非重新选中会话，故改为断言事件流
+  里的终止事件而非已持久化的消息。Linux + 自带 Chromium 实测通过。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：
