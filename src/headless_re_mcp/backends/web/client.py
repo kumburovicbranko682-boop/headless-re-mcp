@@ -59,6 +59,26 @@ class WebError(RuntimeError):
         self.details = details
 
 
+def _page_int(value: object, name: str) -> int:
+    """Coerce a paging argument to int, or raise a structured invalid_params.
+
+    network_list/console/scripts fed ``offset``/``limit`` straight to
+    ``int(...)``. The web.* schemas type both as integers, but the agent and
+    OpenAI-bridge transports call the handler with no pydantic coercion, so a
+    float (inf from a JSON 1e400), nan, null, or a non-numeric string reached
+    ``int(...)`` and raised OverflowError/ValueError/TypeError. None is a
+    WebError, so the service's ``except BaseException`` filed an internal_error
+    incident for what is only a bad page window. A bool is an int subclass but
+    never a valid page bound.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise WebError("invalid_params", f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise WebError("invalid_params", f"{name} must be an integer") from exc
+
+
 def _bound_nav_timeout(timeout: float) -> float:
     """Clamp a caller navigation timeout at the backend boundary.
 
@@ -595,8 +615,8 @@ class WebBackend:
         with handle.lock:
             items = list(handle.requests.values())
             dropped = handle.requests_dropped
-        start = max(0, int(offset))
-        cap = max(1, min(int(limit), 1000))
+        start = max(0, _page_int(offset, "offset"))
+        cap = max(1, min(_page_int(limit, "limit"), 1000))
         window = items[start : start + cap]
         return {
             "requests": window,
@@ -675,7 +695,7 @@ class WebBackend:
 
     def console(self, session_id: str, *, limit: int = 200) -> JsonObject:
         handle = self._get(session_id)
-        capped = max(1, min(int(limit), _MAX_CONSOLE))
+        capped = max(1, min(_page_int(limit, "limit"), _MAX_CONSOLE))
         with handle.lock:
             held = list(handle.console)
             dropped = handle.console_dropped
@@ -706,8 +726,8 @@ class WebBackend:
             values = list(handle.scripts.values())
         if wasm_only:
             values = [s for s in values if str(s.get("language")).lower() == "webassembly"]
-        start = max(0, int(offset))
-        cap = max(1, min(int(limit), 1000))
+        start = max(0, _page_int(offset, "offset"))
+        cap = max(1, min(_page_int(limit, "limit"), 1000))
         window = values[start : start + cap]
         return {
             "scripts": window,
