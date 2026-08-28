@@ -442,3 +442,34 @@ def test_apk_sign_succeeds_and_maps_errors(tmp_path: Path, monkeypatch: Any) -> 
         assert failed.error.code == "sign_failed"
     finally:
         service.close_all()
+
+
+def test_apk_repack_maps_an_unresolvable_home_decoded_dir_to_invalid_params(
+    tmp_path: Path,
+) -> None:
+    """A ~user decoded_dir whose home cannot be resolved makes Path.expanduser()
+    raise RuntimeError -- not the ApkError the mixin maps -- so before the guard
+    a path the caller fully controls filed an internal_error incident instead of
+    the invalid_params a path outside the session tree already gets."""
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        result = service.apk_repack(session_id, decoded_dir="~nosuchuser_zzz/decoded")
+        assert result.ok is False and result.error is not None
+        assert result.error.code == "invalid_params"
+    finally:
+        service.close_all()
+
+
+def test_apk_sign_maps_an_unresolvable_home_keystore_to_invalid_params(
+    tmp_path: Path,
+) -> None:
+    """Same guard on the keystore path apk.sign accepts from the caller."""
+    service = _service(tmp_path)
+    try:
+        session_id = _apk_session(service, tmp_path)
+        result = service.apk_sign(session_id, keystore="~nosuchuser_zzz/keystore.jks")
+        assert result.ok is False and result.error is not None
+        assert result.error.code == "invalid_params"
+    finally:
+        service.close_all()

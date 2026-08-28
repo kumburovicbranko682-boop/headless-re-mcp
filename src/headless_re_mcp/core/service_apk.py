@@ -308,7 +308,20 @@ class ApkAnalysisMixin:
     def _require_session_path(self, session_id: str, path: Path, *, what: str) -> Path:
         from headless_re_mcp.core.service import _session_owns_artifact_path
 
-        resolved = path.expanduser().resolve()
+        try:
+            resolved = path.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            # expanduser() raises RuntimeError for a ~user whose home cannot be
+            # resolved, and resolve() raises ValueError on an embedded NUL --
+            # neither is the ApkError the apk mixin maps, so a caller path
+            # (decoded_dir/apk_path/keystore) reached this shared chokepoint and
+            # filed an internal_error incident instead of the invalid_params this
+            # already raises for a path outside the session tree.
+            raise ApkError(
+                "invalid_params",
+                f"{what} could not be resolved",
+                path=str(path),
+            ) from exc
         if not _session_owns_artifact_path(self.settings.artifact_root, session_id, resolved):
             raise ApkError(
                 "invalid_params",
@@ -332,7 +345,9 @@ class ApkAnalysisMixin:
                 )
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
-            source = Path(decoded_dir).expanduser() if decoded_dir.strip() else root / "decoded"
+            # _require_session_path expands and resolves; keep the raw string so a
+            # hostile ~user is caught by its guard rather than here.
+            source = Path(decoded_dir) if decoded_dir.strip() else root / "decoded"
             source = self._require_session_path(session_id, source, what="decoded_dir")
             out_apk = root / "repacked.apk"
             data = self._apktool_client().build(source, out_apk, timeout=timeout)
@@ -380,13 +395,13 @@ class ApkAnalysisMixin:
                 )
             self._apk_binary(session_id)
             root = self._repack_dir(session_id)
-            source = Path(apk_path).expanduser() if apk_path.strip() else root / "repacked.apk"
+            # _require_session_path expands and resolves; keep the raw strings so a
+            # hostile ~user is caught by its guard rather than here.
+            source = Path(apk_path) if apk_path.strip() else root / "repacked.apk"
             source = self._require_session_path(session_id, source, what="apk_path")
             out_apk = root / "signed.apk"
             keystore_path = (
-                self._require_session_path(
-                    session_id, Path(keystore).expanduser(), what="keystore"
-                )
+                self._require_session_path(session_id, Path(keystore), what="keystore")
                 if keystore.strip()
                 else None
             )
