@@ -19,6 +19,7 @@ import pytest
 
 import headless_re_mcp.doctor as doctor
 from headless_re_mcp.config import Settings
+from headless_re_mcp.core.models import Architecture
 from headless_re_mcp.doctor import (
     DoctorReport,
     Probe,
@@ -33,11 +34,16 @@ from headless_re_mcp.doctor import (
     probe_native_toolchain,
     probe_net_reactor_slayer,
     probe_optional_tool,
+    probe_platform,
     probe_python_module,
     probe_scylla,
     probe_upx,
     probe_vmp_dumper,
+    probe_windows_feature,
+    probe_x64dbg_binaries,
+    probe_x64dbg_source,
     probe_xvlkc,
+    required_probe_names,
 )
 
 
@@ -379,9 +385,7 @@ def test_probe_native_toolchain_ready_and_blocked(monkeypatch: pytest.MonkeyPatc
 
 
 def test_probe_command_detected_and_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        shutil, "which", lambda name: "/usr/bin/tool" if name == "wanted" else None
-    )
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tool" if name == "wanted" else None)
     assert probe_command("thing", ("wanted",)).status is ProbeStatus.DETECTED
     assert probe_command("thing", ("absent",)).status is ProbeStatus.MISSING
 
@@ -458,10 +462,12 @@ def test_format_report_lists_blocking_required_backends_with_fixes() -> None:
         {},
         "Install IDA.",
     )
+    # A second blocking probe with no remediation exercises the no-fix branch.
+    blocked_no_fix = Probe("python", ProbeStatus.BLOCKED, "old python")
     optional = Probe("upx", ProbeStatus.MISSING, "no upx")
     report = DoctorReport(
-        probes=(ready, blocked, optional),
-        required_probes=frozenset({"platform", "ida_idalib"}),
+        probes=(ready, blocked, blocked_no_fix, optional),
+        required_probes=frozenset({"platform", "ida_idalib", "python"}),
     )
 
     text = format_report(report)
@@ -470,3 +476,157 @@ def test_format_report_lists_blocking_required_backends_with_fixes() -> None:
     assert "Blocking required backends" in text
     assert "fix: Install IDA." in text
     assert "Optional backends:" in text
+
+
+# ---------------------------------------------------------------------------
+# probe_platform / probe_windows_feature
+# ---------------------------------------------------------------------------
+
+
+def test_probe_platform_ready_on_this_host() -> None:
+    assert probe_platform().status is ProbeStatus.READY
+
+
+def test_probe_platform_blocked_on_an_unsupported_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        doctor,
+        "runtime_platform_report",
+        lambda: {
+            "core_supported": False,
+            "support_level": "none",
+            "system": "Plan9",
+            "machine": "sparc",
+            "architecture": "sparc",
+            "name": "other",
+        },
+    )
+    assert probe_platform().status is ProbeStatus.BLOCKED
+
+
+def test_probe_windows_feature_is_unsupported_off_windows() -> None:
+    probe = probe_windows_feature("hidden_desktop", "Hidden desktop")
+    assert probe.status is ProbeStatus.UNSUPPORTED
+
+
+# ---------------------------------------------------------------------------
+# probe_x64dbg_source (pure filesystem)
+# ---------------------------------------------------------------------------
+
+
+def _x64dbg_source_tree(root: Path, *, cmake_body: str) -> Path:
+    (root / "src" / "headless").mkdir(parents=True)
+    (root / "src" / "headless" / "headless.cpp").write_text("int main(){}\n")
+    (root / "CMakeLists.txt").write_text(cmake_body)
+    return root
+
+
+def test_probe_x64dbg_source_missing_when_unconfigured(tmp_path: Path) -> None:
+    assert probe_x64dbg_source(_settings(tmp_path)).status is ProbeStatus.MISSING
+
+
+def test_probe_x64dbg_source_blocked_without_the_headless_target_files(tmp_path: Path) -> None:
+    source = tmp_path / "x64dbg"
+    source.mkdir()
+    probe = probe_x64dbg_source(_settings(tmp_path, x64dbg_source=source))
+    assert probe.status is ProbeStatus.BLOCKED
+
+
+def test_probe_x64dbg_source_blocked_without_a_cmake_target(tmp_path: Path) -> None:
+    source = _x64dbg_source_tree(tmp_path / "x64dbg", cmake_body="project(x64dbg)\n")
+    probe = probe_x64dbg_source(_settings(tmp_path, x64dbg_source=source))
+    assert probe.status is ProbeStatus.BLOCKED
+
+
+def test_probe_x64dbg_source_ready_with_the_headless_target(tmp_path: Path) -> None:
+    source = _x64dbg_source_tree(tmp_path / "x64dbg", cmake_body="add_executable(headless)\n")
+    probe = probe_x64dbg_source(_settings(tmp_path, x64dbg_source=source))
+    assert probe.status is ProbeStatus.READY
+
+
+# ---------------------------------------------------------------------------
+# probe_x64dbg_binaries (runtime gate seam)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_x64dbg_binaries_missing_without_both_executables(tmp_path: Path) -> None:
+    assert probe_x64dbg_binaries(_settings(tmp_path)).status is ProbeStatus.MISSING
+
+
+def _gate_result(*, ok: bool) -> object:
+    return types.SimpleNamespace(
+        executable="headless.exe",
+        exit_code=0 if ok else 1,
+        command_loop_seen=ok,
+        analyzer_windows=(),
+        stderr="",
+        ok=ok,
+    )
+
+
+def test_probe_x64dbg_binaries_ready_when_the_gate_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    x64 = _executable(tmp_path, "x64")
+    x86 = _executable(tmp_path, "x86")
+    monkeypatch.setattr(
+        doctor,
+        "run_command_loop_gate",
+        lambda path, architecture, timeout=15.0: _gate_result(ok=True),
+    )
+    probe = probe_x64dbg_binaries(
+        _settings(tmp_path, x64dbg_headless_x64=x64, x64dbg_headless_x86=x86)
+    )
+    assert probe.status is ProbeStatus.READY
+
+
+def test_probe_x64dbg_binaries_blocked_when_the_gate_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    x64 = _executable(tmp_path, "x64")
+    x86 = _executable(tmp_path, "x86")
+
+    def boom(path: Path, architecture: Architecture, timeout: float = 15.0) -> object:
+        raise OSError("gate failed to launch")
+
+    monkeypatch.setattr(doctor, "run_command_loop_gate", boom)
+    probe = probe_x64dbg_binaries(
+        _settings(tmp_path, x64dbg_headless_x64=x64, x64dbg_headless_x86=x86)
+    )
+    assert probe.status is ProbeStatus.BLOCKED
+
+
+# ---------------------------------------------------------------------------
+# small helpers
+# ---------------------------------------------------------------------------
+
+
+def test_required_probe_names_is_platform_aware() -> None:
+    assert isinstance(required_probe_names(), frozenset)
+    assert isinstance(required_probe_names("windows"), frozenset)
+
+
+def test_probe_to_dict_flags_required() -> None:
+    probe = Probe("python", ProbeStatus.READY, "ok", {"executable": "/py"})
+    payload = probe.to_dict(required=True)
+    assert payload["required"] is True
+    assert payload["status"] == "ready"
+
+
+def test_report_serialises_to_dict_and_json() -> None:
+    report = DoctorReport(
+        probes=(Probe("platform", ProbeStatus.READY, "ok"),),
+        required_probes=frozenset({"platform"}),
+    )
+    assert report.to_dict()["ready"] is True
+    assert '"ready": true' in report.to_json()
+
+
+def test_bounded_text_truncates_beyond_the_limit() -> None:
+    assert doctor._bounded_text("short") == "short"
+    truncated = doctor._bounded_text("x" * 5000, limit=16)
+    assert truncated.endswith("...[truncated]")
+
+
+def test_probe_run_executes_a_real_command() -> None:
+    output = doctor._probe_run(["true"], timeout=5)
+    assert output.returncode == 0
