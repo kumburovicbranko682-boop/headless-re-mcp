@@ -127,6 +127,26 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   打开动态，侧栏改为 URL 并创建 `target=web` 会话；关闭会话后解绑，closed / 非 PE 监控帧
   不再打 x64dbg。
 
+### 修复（OpenAI 兼容 provider 对深嵌套 JSON 不再以裸 RecursionError 崩掉运行）
+
+- `agent/providers/openai_compatible.py` 解析的是 provider 发来的不可信字节，而
+  `json.loads` 对深嵌套输入（如 `"[" * 20_000`，仅 20 KB，远低于 4 MiB 缓冲上限）抛的是
+  `RecursionError`——它是 `RuntimeError` 而非 `ValueError`，于是流式 chunk 解析
+  （`except json.JSONDecodeError`）、组装后 tool-call 参数的最终 `json.loads`、以及
+  `list_models` 的裸 `json.loads` 三处都接不住：重试包装器判为不可重试后原样上抛，
+  运行以一句指向解释器的 "maximum recursion depth exceeded" 收场，而不是命名 provider
+  的既定错误。三处 except 补上 `RecursionError` 并统一转成原有的 `ValueError` 文案。
+- 另外 `_tool_argument_fragment` 对 snapshot 形式的 dict/list 参数做 `json.dumps` 时，
+  C 编码器从比解析器更深几帧的位置起跳，贴着递归上限解析成功的值可能序列化失败——
+  静默吞掉会拼出错误的 tool call，现改为显式拒绝（`ValueError`）。回归测试
+  （流 chunk / 组装参数 / fragment 序列化 / models 两种畸形体）
+  未修复时全部以 RecursionError 失败，修复后通过。
+- 同一终结器还接受 `NaN`/`Infinity`：Python 的 json 默认把它们解析成浮点，模型发出的
+  `{"level": NaN}` 原样进入工具参数，随后 agent store 的规范化哈希以 `allow_nan=False`
+  序列化时抛 `ValueError`，被运行兜底铸成 incident——错误指向本代码库而非 provider。
+  现经 `parse_constant` 在解析处拒绝（同 `detection/die.py` 与 `backends/r2/mapping.py`
+  的约定），归入既有的 "invalid tool arguments" 错误面；回归测试未修复时失败。
+
 ### 修复（Scylla output-aliases-input 测试在 Windows 命中另一守卫）
 
 - `test_run_scylla_refuses_output_that_resolves_to_the_input` 构造 `tmp_path/nope/../input.exe`

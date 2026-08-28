@@ -69,11 +69,28 @@ def _hidden_texts(delta: dict[str, Any]) -> list[str]:
     return texts
 
 
+def _reject_json_constant(value: str) -> Any:
+    # Python's json accepts NaN/Infinity by default and hands back floats.
+    # In tool arguments those floats reach the agent store, whose canonical
+    # hashing serializes with allow_nan=False: the run then dies on an
+    # incident-labelled ValueError pointing at this codebase instead of the
+    # designed error naming the provider. Reject at the parse, like
+    # detection/die.py and backends/r2/mapping.py do.
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
 def _tool_argument_fragment(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False)
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except RecursionError as exc:
+            # The C encoder recurses per container level just like the parser
+            # that built this value, but from a few frames deeper -- a payload
+            # parsed right at the recursion limit can fail to serialize.
+            # Silently dropping it would assemble a wrong tool call, so refuse.
+            raise ValueError("provider emitted tool arguments nested too deeply") from exc
     return ""
 
 
@@ -380,7 +397,12 @@ class OpenAICompatibleProvider:
                     break
                 try:
                     chunk = _normalize_chunk(json.loads(data))
-                except json.JSONDecodeError as exc:
+                except (json.JSONDecodeError, RecursionError) as exc:
+                    # RecursionError joins JSONDecodeError because json.loads
+                    # raises it out of the C decoder on deeply nested input --
+                    # ~1 KiB of brackets, far under the SSE line cap -- and it
+                    # is a RuntimeError, so it would otherwise escape as an
+                    # opaque interpreter error instead of naming the provider.
                     raise ValueError(
                         f"provider emitted a stream chunk that is not JSON: {data[:200]}"
                     ) from exc
@@ -430,8 +452,15 @@ class OpenAICompatibleProvider:
         calls_out: list[ProviderToolCall] = []
         for index, item in sorted(tool_fragments.items()):
             try:
-                arguments = json.loads(item["arguments"] or "{}")
-            except json.JSONDecodeError as exc:
+                arguments = json.loads(
+                    item["arguments"] or "{}", parse_constant=_reject_json_constant
+                )
+            except (ValueError, RecursionError) as exc:
+                # Same trap as the chunk parse above: assembled fragments like
+                # "[" * 1001 are syntactically fine but too deep to decode, and
+                # the resulting RecursionError is not a ValueError. Plain
+                # ValueError joins the tuple because the constant rejection
+                # above raises it and JSONDecodeError is one anyway.
                 raise ValueError(f"provider emitted invalid tool arguments at index {index}") from exc
             if not isinstance(arguments, dict) or not item["name"]:
                 raise ValueError(f"provider emitted incomplete tool call at index {index}")
@@ -485,7 +514,13 @@ class OpenAICompatibleProvider:
                     raise ValueError(
                         f"provider models response exceeded {_MAX_MODELS_BODY_BYTES} bytes"
                     )
-            payload = json.loads(body)
+            try:
+                payload = json.loads(body)
+            except (json.JSONDecodeError, RecursionError) as exc:
+                # probe_models surfaces the exception type and text to the
+                # operator; a raw JSONDecodeError or RecursionError points at
+                # this code rather than at the endpoint that sent the body.
+                raise ValueError("provider models response is not JSON") from exc
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             return []
