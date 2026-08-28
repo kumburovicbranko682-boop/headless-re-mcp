@@ -5,6 +5,23 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 新增（wasm.summary：纯 Python 解析 WASM 结构，无需 wabt，工具面 265→266）
+
+- 新增只读工具 `wasm.summary`：直接走 WASM 二进制的段头解析出模块结构——`imports`（每条
+  `module`/`name`/`kind`，kind 为 func/table/memory/global）即模块的**能力面**（它调用的宿主
+  函数，如 `wasi_snapshot_preview1.fd_write`、`env.*`）；`exports`（每条 `name`/`kind`/`index`）
+  即模块对外的 API；外加 `counts`（types/functions/tables/memories/globals/imports/exports/
+  elements/data）、`imported`（导入按 kind 的细分）、`import_count`、`export_count`、`has_start`
+  与 `version`。此前 WASM 这条线只有 `wasm.wat`/`wasm.info` 两个**都依赖 wabt** 的原始文本工具，
+  想要结构化的导入/导出得自己去啃 objdump 文本；`wasm.summary` 用纯 Python 解析，**不装 wabt 也能用**，
+  给这条线补上一个零依赖的基线能力。解析为尽力而为：每段按声明长度跳过，单段解析出错只损失该段并置
+  `truncated`，不因畸形（可能是敌意）输入崩溃；导入/导出列表满 4096 时置 `imports_truncated`/
+  `exports_truncated`；非 WASM（缺 `\0asm` 魔数）报 `invalid_params`。已与真 wabt 1.0.34 交叉核验：
+  用 `wat2wasm` 现编的模块，`wasm.summary` 的导入/导出/起始函数/各段计数与 `wasm-objdump -x` 逐条
+  一致（含「导入的 memory 使 memory 段计数为 0、而 `imported.memory` 为 1」这一细节）。单测另用
+  手工构造的模块字节钉住解析、无 wabt 亦可、非 WASM 报错与畸形截断标记（均不依赖 wabt）。
+  README 与工具计数同步更新为 266（149 只读 / 117 写）。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言

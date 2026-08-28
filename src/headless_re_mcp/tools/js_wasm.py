@@ -83,6 +83,23 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.wasm_wat(path, timeout=timeout))
 
+    @tools.tool(name="wasm.summary")
+    def wasm_summary(path: str) -> dict[str, Any]:
+        """Structured shape of a .wasm module, parsed in-process (no wabt).
+
+        Answers with imports (each module, name and kind: func/table/memory/
+        global) -- the module's capability surface, the host functions it
+        calls -- and exports (each name, kind and index), its public API. Also
+        counts (types, functions, tables, memories, globals, imports, exports,
+        elements, data), imported (that same kind breakdown for imports),
+        import_count, export_count, has_start and version. Reads imports_
+        truncated / exports_truncated when a list filled the cap (4096), and
+        truncated when the module was malformed past a point. A file that is
+        not a WebAssembly module is invalid_params. Unlike wasm.wat and
+        wasm.info this needs no wabt installed.
+        """
+        return _dump(analysis.wasm_summary(path))
+
     @tools.tool(name="wasm.info")
     def wasm_info(
         path: str, timeout: Annotated[float, Field(gt=0, le=600.0)] = 120.0

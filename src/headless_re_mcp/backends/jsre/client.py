@@ -101,6 +101,174 @@ def _looks_like_wasm(path: Path) -> bool:
         return False
 
 
+# WebAssembly external kinds (import/export descriptors) and the section ids we
+# read a leading count from. Parsed straight from the binary so wasm.summary
+# needs no wabt -- the size cap above already bounds the work.
+_WASM_KIND = {0: "func", 1: "table", 2: "memory", 3: "global"}
+_MAX_WASM_ITEMS = 4096
+
+
+class _WasmParseError(Exception):
+    """A malformed or truncated WASM module; the caller stops and flags it."""
+
+
+def _read_uleb(data: bytes, pos: int, end: int) -> tuple[int, int]:
+    """Decode one unsigned LEB128 from data[pos:end]; return (value, new_pos)."""
+    result = 0
+    shift = 0
+    while True:
+        if pos >= end:
+            raise _WasmParseError("truncated LEB128")
+        byte = data[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return result, pos
+        shift += 7
+        if shift > 63:
+            raise _WasmParseError("LEB128 too long")
+
+
+def _read_name(data: bytes, pos: int, end: int) -> tuple[str, int]:
+    length, pos = _read_uleb(data, pos, end)
+    if length < 0 or pos + length > end:
+        raise _WasmParseError("name overruns section")
+    text = data[pos : pos + length].decode("utf-8", errors="replace")
+    return text, pos + length
+
+
+def _skip_limits(data: bytes, pos: int, end: int) -> int:
+    """A resizable-limits descriptor: flags, min, and (if the flag says so) max."""
+    flags, pos = _read_uleb(data, pos, end)
+    _minimum, pos = _read_uleb(data, pos, end)
+    if flags & 0x01:
+        _maximum, pos = _read_uleb(data, pos, end)
+    return pos
+
+
+def _skip_import_desc(data: bytes, pos: int, end: int, kind: int) -> int:
+    """Advance past the type-specific descriptor after an import's kind byte."""
+    if kind == 0:  # func: a type index
+        _typeidx, pos = _read_uleb(data, pos, end)
+        return pos
+    if kind == 1:  # table: reftype byte + limits
+        if pos >= end:
+            raise _WasmParseError("truncated table import")
+        return _skip_limits(data, pos + 1, end)
+    if kind == 2:  # memory: limits
+        return _skip_limits(data, pos, end)
+    if kind == 3:  # global: valtype byte + mutability byte
+        if pos + 2 > end:
+            raise _WasmParseError("truncated global import")
+        return pos + 2
+    raise _WasmParseError(f"unknown import kind {kind}")
+
+
+def _parse_wasm_summary(data: bytes) -> JsonObject:
+    """Walk a WASM module's sections into a structured, wabt-free summary.
+
+    Best-effort by design: each section is left by its declared length, so a
+    corrupt inner parse only costs that section, and anything malformed sets
+    ``truncated`` rather than raising -- these modules can be adversarial.
+    """
+    version = int.from_bytes(data[4:8], "little") if len(data) >= 8 else None
+    counts = dict.fromkeys(
+        ("types", "functions", "tables", "memories", "globals",
+         "imports", "exports", "elements", "data"),
+        0,
+    )
+    imported = dict.fromkeys(("func", "table", "memory", "global"), 0)
+    imports: list[JsonObject] = []
+    exports: list[JsonObject] = []
+    has_start = False
+    truncated = False
+    imports_truncated = False
+    exports_truncated = False
+    pos = 8
+    total = len(data)
+    try:
+        while pos < total:
+            section_id = data[pos]
+            pos += 1
+            size, pos = _read_uleb(data, pos, total)
+            body_start = pos
+            body_end = pos + size
+            if body_end > total:
+                truncated = True
+                break
+            if section_id == 1:
+                counts["types"], _ = _read_uleb(data, body_start, body_end)
+            elif section_id == 2:
+                count, cursor = _read_uleb(data, body_start, body_end)
+                counts["imports"] = count
+                for _ in range(count):
+                    module, cursor = _read_name(data, cursor, body_end)
+                    field, cursor = _read_name(data, cursor, body_end)
+                    if cursor >= body_end:
+                        raise _WasmParseError("truncated import kind")
+                    kind = data[cursor]
+                    cursor += 1
+                    cursor = _skip_import_desc(data, cursor, body_end, kind)
+                    label = _WASM_KIND.get(kind, str(kind))
+                    if label in imported:
+                        imported[label] += 1
+                    if len(imports) < _MAX_WASM_ITEMS:
+                        imports.append({"module": module, "name": field, "kind": label})
+                    else:
+                        imports_truncated = True
+            elif section_id == 3:
+                counts["functions"], _ = _read_uleb(data, body_start, body_end)
+            elif section_id == 4:
+                counts["tables"], _ = _read_uleb(data, body_start, body_end)
+            elif section_id == 5:
+                counts["memories"], _ = _read_uleb(data, body_start, body_end)
+            elif section_id == 6:
+                counts["globals"], _ = _read_uleb(data, body_start, body_end)
+            elif section_id == 7:
+                count, cursor = _read_uleb(data, body_start, body_end)
+                counts["exports"] = count
+                for _ in range(count):
+                    name, cursor = _read_name(data, cursor, body_end)
+                    if cursor >= body_end:
+                        raise _WasmParseError("truncated export kind")
+                    kind = data[cursor]
+                    cursor += 1
+                    index, cursor = _read_uleb(data, cursor, body_end)
+                    if len(exports) < _MAX_WASM_ITEMS:
+                        exports.append(
+                            {"name": name, "kind": _WASM_KIND.get(kind, str(kind)),
+                             "index": index}
+                        )
+                    else:
+                        exports_truncated = True
+            elif section_id == 8:
+                has_start = True
+            elif section_id == 9:
+                counts["elements"], _ = _read_uleb(data, body_start, body_end)
+            elif section_id == 11:
+                counts["data"], _ = _read_uleb(data, body_start, body_end)
+            pos = body_end
+    except _WasmParseError:
+        truncated = True
+    result: JsonObject = {
+        "version": version,
+        "imports": imports,
+        "exports": exports,
+        "import_count": len(imports),
+        "export_count": len(exports),
+        "imported": imported,
+        "counts": counts,
+        "has_start": has_start,
+    }
+    if imports_truncated:
+        result["imports_truncated"] = True
+    if exports_truncated:
+        result["exports_truncated"] = True
+    if truncated:
+        result["truncated"] = True
+    return result
+
+
 def _run(
     cmd: list[str], *, timeout: float, maximum: float = _MAX_TIMEOUT_S
 ) -> tuple[str, str, int]:
@@ -265,6 +433,27 @@ class WasmClient:
         return _note_nonzero_exit(
             _bounded_output(stdout, "wat", include_bytes=True), code=code, stderr=stderr
         )
+
+    def summary(self, path: Path) -> JsonObject:
+        """Structured module shape (imports/exports/counts), parsed in-process.
+
+        Unlike wat/info this needs no wabt: it walks the WASM section headers
+        directly. The size cap in _require_existing_file bounds the work.
+        """
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        if not _looks_like_wasm(resolved):
+            raise JsReError(
+                "invalid_params",
+                "not a WebAssembly module: missing the \\0asm magic",
+                path=str(resolved),
+            )
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise JsReError(
+                "backend_error", f"input unreadable: {exc}", path=str(resolved)
+            ) from exc
+        return _parse_wasm_summary(data)
 
     def info(self, path: Path, *, timeout: float = 120.0) -> JsonObject:
         resolved = self._require_input(path, self._objdump, "wasm-objdump")
