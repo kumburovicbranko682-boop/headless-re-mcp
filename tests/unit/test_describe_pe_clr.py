@@ -23,6 +23,7 @@ from headless_re_mcp.core.session import (
     SessionRegistry,
     _dotnet_assembly_refs,
     _dotnet_high_entropy_resources,
+    _dotnet_pinvokes,
     _dotnet_resource_payloads,
     _pe_authenticode,
     _pe_build_time,
@@ -2377,6 +2378,50 @@ class TestDotnetAssemblyRefs:
         session = SessionRegistry().create(str(_DOTNET_FIXTURE))
         assert session.metadata["dotnet"]["assembly_refs"] == [
             {"name": "mscorlib", "version": "4.0.0.0"}
+        ]
+
+
+class TestDotnetPinvokeImports:
+    """_dotnet_pinvokes reads the native import surface of managed code.
+
+    The other half of the dependency split next to assembly_refs -- the .NET
+    pair to a PE import table at symbol level: each ImplMap row's ImportName
+    (the native symbol, not the managed wrapper's name) and its ModuleRef
+    DLL, the same pairs monodis --implmap prints. None -- fact absent -- for
+    anything that is not a walkable managed PE.
+    """
+
+    def test_the_committed_fixture_binds_beep_in_kernel32(self) -> None:
+        # The fixture's wrapper (NativeBeep) and import (Beep) deliberately
+        # differ: echoing MethodDef names instead of ImportName cannot pass.
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        assert _dotnet_pinvokes(_DOTNET_FIXTURE) == [{"name": "Beep", "module": "kernel32.dll"}]
+
+    def test_an_assembly_with_resources_reads_the_same_pinvokes(self, tmp_path: Path) -> None:
+        # Extra ManifestResource rows (0x28) sit behind ImplMap (0x1C) in the
+        # walk, but the resource blob moves every stream: the 0x1A/0x1C
+        # offsets must survive the re-layout.
+        path = tmp_path / "resourced.exe"
+        path.write_bytes(_dotnet_with_resources([("payload.bin", b"\x00" * 64)]))
+        assert _dotnet_pinvokes(path) == [{"name": "Beep", "module": "kernel32.dll"}]
+
+    def test_a_native_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "native.exe"
+        path.write_bytes(_native_pe())
+        assert _dotnet_pinvokes(path) is None
+
+    def test_a_non_pe_reads_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.bin"
+        path.write_bytes(b"not a pe at all")
+        assert _dotnet_pinvokes(path) is None
+
+    def test_session_over_a_managed_pe_carries_the_native_import_surface(self) -> None:
+        if not _DOTNET_FIXTURE.is_file():
+            pytest.skip(f"fixture missing: {_DOTNET_FIXTURE}")
+        session = SessionRegistry().create(str(_DOTNET_FIXTURE))
+        assert session.metadata["dotnet"]["pinvoke_imports"] == [
+            {"name": "Beep", "module": "kernel32.dll"}
         ]
 
 

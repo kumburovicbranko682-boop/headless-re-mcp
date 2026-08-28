@@ -387,6 +387,106 @@ def test_session_assembly_refs_agree_with_monodis(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_session_pinvoke_imports_agree_with_monodis_implmap(tmp_path: Path) -> None:
+    """The session-level native import surface against Mono's ImplMap decode.
+
+    ``pinvoke_imports`` is the tool-free session fact -- the other half of
+    the dependency split next to ``assembly_refs``, the .NET pair to a PE
+    import table at symbol level, the same pairs the dotnet.inspect deep
+    reader lists. The row-sizing walk through ModuleRef to ImplMap is the
+    session reader's own, so Mono's independent ``--implmap`` decode
+    referees it pair for pair.
+    """
+    if not _FIXTURE.is_file():
+        pytest.skip(
+            "minimal .NET fixture missing; run fixtures/dotnet/build_minimal_dotnet.py"
+            " (skip != pass)"
+        )
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+
+    implmap_dump = _monodis("--implmap")
+    mono_imports = [
+        (name, module) for _wrapper, _flags, name, module in _IMPLMAP_ROW_RE.findall(implmap_dump)
+    ]
+    assert mono_imports == [("Beep", "kernel32.dll")], implmap_dump
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(_FIXTURE))
+        assert created.ok, created.error
+        imports = created.data["session"]["metadata"]["dotnet"]["pinvoke_imports"]
+        assert [(entry["name"], entry["module"]) for entry in imports] == mono_imports
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
+def test_session_pinvoke_imports_of_an_mcs_assembly_agree_with_monodis(tmp_path: Path) -> None:
+    """The same fact on a compiler's assembly neither builder controls.
+
+    mcs lays out ModuleRef and ImplMap itself -- more tables in front, its
+    own row order, real MemberForwarded indexes -- and one import is renamed
+    via EntryPoint so a reader echoing wrapper names cannot pass. A second
+    assembly with no DllImport at all pins the empty answer: purely managed
+    code reports an empty native import surface, not a missing fact.
+    """
+    if shutil.which("monodis") is None:
+        pytest.skip("monodis (mono-utils) not installed — .NET cross-check not run (skip != pass)")
+    mcs = shutil.which("mcs")
+    if mcs is None:
+        pytest.skip("mcs (mono-mcs) not installed — compiler assembly gate not run (skip != pass)")
+
+    source = tmp_path / "caller.cs"
+    source.write_text(
+        "using System.Runtime.InteropServices;\n"
+        "class P {\n"
+        '  [DllImport("libc", EntryPoint="getpid")] static extern int NativePid();\n'
+        '  [DllImport("user32.dll")] static extern bool MessageBeep();\n'
+        "  static void Main() { }\n"
+        "}\n"
+    )
+    binary = tmp_path / "caller.exe"
+    subprocess.run(
+        [mcs, f"-out:{binary}", str(source)], check=True, capture_output=True, timeout=120
+    )
+
+    dump = subprocess.run(
+        ["monodis", "--implmap", str(binary)], capture_output=True, text=True, timeout=60
+    )
+    assert dump.returncode == 0, dump.stderr or dump.stdout
+    mono_rows = _IMPLMAP_ROW_RE.findall(dump.stdout)
+    mono_imports = [(name, module) for _wrapper, _flags, name, module in mono_rows]
+    # Referee sanity: both bindings landed, and the renamed one reads as its
+    # native EntryPoint, not the managed wrapper.
+    assert set(mono_imports) == {("getpid", "libc"), ("MessageBeep", "user32.dll")}, dump.stdout
+    assert {wrapper for wrapper, _f, _n, _m in mono_rows} == {"NativePid", "MessageBeep"}
+
+    empty_source = tmp_path / "managed.cs"
+    empty_source.write_text("class Q { static void Main() { } }\n")
+    managed_only = tmp_path / "managed.exe"
+    subprocess.run(
+        [mcs, f"-out:{managed_only}", str(empty_source)],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+
+    service = _service(tmp_path)
+    try:
+        created = service.create_session(str(binary))
+        assert created.ok, created.error
+        imports = created.data["session"]["metadata"]["dotnet"]["pinvoke_imports"]
+        assert [(entry["name"], entry["module"]) for entry in imports] == mono_imports
+
+        created = service.create_session(str(managed_only))
+        assert created.ok, created.error
+        assert created.data["session"]["metadata"]["dotnet"]["pinvoke_imports"] == []
+    finally:
+        service.close_all()
+
+
+@pytest.mark.integration
 def test_session_assembly_refs_of_an_mcs_assembly_agree_with_monodis(tmp_path: Path) -> None:
     """The same fact on a compiler's assembly neither builder controls.
 

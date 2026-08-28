@@ -224,6 +224,12 @@ class SessionRegistry:
                     refs = _dotnet_assembly_refs(path)
                     if refs is not None:
                         metadata["dotnet"]["assembly_refs"] = refs
+                    # The other half of the dependency split: the native
+                    # import surface (ImplMap P/Invokes) -- symbol-level
+                    # capability the managed refs cannot show.
+                    pinvokes = _dotnet_pinvokes(path)
+                    if pinvokes is not None:
+                        metadata["dotnet"]["pinvoke_imports"] = pinvokes
             elif kind is TargetKind.APK:
                 metadata = describe_apk(path)
             elif kind is TargetKind.NATIVE:
@@ -4513,6 +4519,13 @@ _DOTNET_MAX_RESOURCE_PAYLOADS = 64
 # --assemblyref and the dotnet.inspect deep reader decode the same rows; the
 # cap matches the deep reader's (a real app references a few dozen at most).
 _DOTNET_ASSEMBLY_REF = 0x23
+# ModuleRef (0x1A) names the unmanaged DLLs; ImplMap (0x1C) binds each
+# P/Invoke to its native ImportName in one of them -- the managed code's
+# native import table, and where a .NET loader's real capability lives.
+_DOTNET_MODULE_REF = 0x1A
+_DOTNET_IMPL_MAP = 0x1C
+_DOTNET_MEMBER_FORWARDED_TABLES = (0x04, 0x06)
+_DOTNET_MAX_PINVOKE_ROWS = 256
 _DOTNET_MAX_ASSEMBLY_REF_ROWS = 256
 
 
@@ -4771,6 +4784,133 @@ def _dotnet_assembly_refs(path: Path) -> list[dict[str, Any]] | None:
             continue
         refs.append({"name": name, "version": version})
     return refs
+
+
+def _dotnet_pinvokes(path: Path) -> list[dict[str, Any]] | None:
+    """ImplMap rows -- the native import surface of managed code -- or ``None``.
+
+    ``assembly_refs`` above names the managed dependencies; this is the other
+    half of the split, the .NET pair to a PE import table at symbol level:
+    each P/Invoke's ImportName (the native symbol the runtime resolves, which
+    need not match the managed wrapper's name) and the ModuleRef DLL it lives
+    in -- the same pairs ``monodis --implmap`` prints and the
+    ``dotnet.inspect`` deep reader lists, now tool-free at the session level.
+    This is where a .NET loader's real capability hides (VirtualAlloc,
+    NtCreateThreadEx live here, not in AssemblyRef); an empty list is the
+    purely-managed answer most ordinary assemblies give.
+
+    ``None`` -- fact absent -- when the file is not a managed PE or its
+    metadata tables cannot be walked. Bounded and fail-closed exactly like
+    the AssemblyRef read: capped file, clamped row counts, capped row walks,
+    and a mis-sized table yields None rather than a guess.
+    """
+    from headless_re_mcp.dotnet.tables import coded_index_size, simple_index_size, table_row_size
+
+    try:
+        if path.stat().st_size > _DOTNET_MAX_FILE:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    view = _pe_header_view(raw)
+    if view is None:
+        return None
+    _magic, dir_count, dir_off, sections, _base = view
+    entry = dir_off + _PE_COM_DESCRIPTOR_DIR * 8
+    if dir_count <= _PE_COM_DESCRIPTOR_DIR or entry + 8 > len(raw):
+        return None
+    clr_rva = int.from_bytes(raw[entry : entry + 4], "little")
+    if clr_rva == 0:
+        return None
+    clr_off = _pe_rva_to_offset(sections, clr_rva)
+    if clr_off is None or clr_off + 16 > len(raw):
+        return None
+    meta_rva = int.from_bytes(raw[clr_off + 8 : clr_off + 12], "little")
+    meta_off = _pe_rva_to_offset(sections, meta_rva)
+    if meta_off is None:
+        return None
+    stream_map = _clr_stream_map(raw, meta_off)
+    tables_span = stream_map.get("#~") or stream_map.get("#-")
+    strings_span = stream_map.get("#Strings")
+    if tables_span is None:
+        return None
+    tables = raw[meta_off + tables_span[0] : meta_off + tables_span[0] + tables_span[1]]
+    strings = b""
+    if strings_span is not None:
+        strings = raw[meta_off + strings_span[0] : meta_off + strings_span[0] + strings_span[1]]
+    if len(tables) < 24:
+        return None
+    heap_sizes = tables[6]
+    string_index_size = 4 if (heap_sizes & 0x01) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+    valid = int.from_bytes(tables[8:16], "little")
+    cursor = 24
+    row_counts: dict[int, int] = {}
+    for bit in range(64):
+        if valid & (1 << bit):
+            if cursor + 4 > len(tables):
+                return None
+            row_counts[bit] = int.from_bytes(tables[cursor : cursor + 4], "little")
+            cursor += 4
+    max_rows = max((len(tables) - cursor) // 2, 0)
+    row_counts = {bit: min(count, max_rows) for bit, count in row_counts.items()}
+    if _DOTNET_IMPL_MAP not in row_counts:
+        return []  # a managed module with no ImplMap table: purely managed
+
+    def string_at(index: int) -> str:
+        if index <= 0 or index >= len(strings):
+            return ""
+        end = strings.find(b"\0", index)
+        return strings[index : (end if end >= 0 else len(strings))].decode(
+            "utf-8", errors="replace"
+        )
+
+    # One linear walk visits ModuleRef (0x1A) for the DLL names on the way to
+    # ImplMap (0x1C), whose ImportScope indexes resolve against them.
+    module_refs: list[str] = []
+    pinvokes: list[dict[str, Any]] = []
+    table_offset = cursor
+    for bit in sorted(row_counts):
+        row_size = table_row_size(
+            row_counts, string_index_size, blob_index_size, guid_index_size, bit
+        )
+        if row_size is None:
+            return None
+        if bit == _DOTNET_MODULE_REF:
+            for i in range(min(row_counts[bit], _DOTNET_MAX_PINVOKE_ROWS)):
+                at = table_offset + i * row_size
+                if at + row_size > len(tables):
+                    break
+                name_index = int.from_bytes(tables[at : at + string_index_size], "little")
+                module_refs.append(string_at(name_index))
+        elif bit == _DOTNET_IMPL_MAP:
+            # Row shape: MappingFlags(2), MemberForwarded (coded: Field/
+            # MethodDef, tag bit 1 = MethodDef -- the only tag P/Invoke
+            # uses), ImportName (#Strings), ImportScope (ModuleRef index).
+            fwd_size = coded_index_size(row_counts, _DOTNET_MEMBER_FORWARDED_TABLES, 1)
+            scope_size = simple_index_size(row_counts, _DOTNET_MODULE_REF)
+            for i in range(min(row_counts[bit], _DOTNET_MAX_PINVOKE_ROWS)):
+                at = table_offset + i * row_size
+                if at + row_size > len(tables):
+                    break
+                forwarded = int.from_bytes(tables[at + 2 : at + 2 + fwd_size], "little")
+                if forwarded & 0x1 != 1:
+                    continue
+                name_at = at + 2 + fwd_size
+                name_index = int.from_bytes(
+                    tables[name_at : name_at + string_index_size], "little"
+                )
+                scope_at = name_at + string_index_size
+                scope = int.from_bytes(tables[scope_at : scope_at + scope_size], "little")
+                name = string_at(name_index)
+                if not name:
+                    continue
+                module = module_refs[scope - 1] if 1 <= scope <= len(module_refs) else None
+                pinvokes.append({"name": name, "module": module})
+            break
+        table_offset += row_size * row_counts[bit]
+    return pinvokes
 
 
 def _dotnet_resource_payloads(path: Path) -> tuple[list[dict[str, Any]], int]:
