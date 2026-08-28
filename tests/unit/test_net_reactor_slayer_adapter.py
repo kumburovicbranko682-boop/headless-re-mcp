@@ -77,6 +77,19 @@ def test_a_directory_input_is_reported_as_not_found(tmp_path: Path) -> None:
     assert caught.value.code == NetReactorSlayerErrorCode.INPUT_NOT_FOUND
 
 
+def test_a_missing_input_is_a_structured_refusal_not_a_raw_oserror(tmp_path: Path) -> None:
+    # resolve(strict=True) used to raise FileNotFoundError before the
+    # not-a-file branch could run, so a path that does not exist escaped as a
+    # raw OSError (leaking the absolute path) instead of INPUT_NOT_FOUND.
+    exe = tmp_path / "nrs"
+    exe.write_text("", encoding="utf-8")
+    missing = tmp_path / "nope.dll"
+    with pytest.raises(NetReactorSlayerError) as caught:
+        run_net_reactor_slayer(exe, missing, tmp_path / "out.dll", input_sha256="0" * 64)
+    assert caught.value.code == NetReactorSlayerErrorCode.INPUT_NOT_FOUND
+    assert caught.value.details.get("input_path") == str(missing)
+
+
 def test_input_larger_than_the_cap_is_refused(tmp_path: Path) -> None:
     exe = tmp_path / "nrs"
     exe.write_text("", encoding="utf-8")
