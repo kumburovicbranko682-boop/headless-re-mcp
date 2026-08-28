@@ -232,4 +232,26 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         Pivot from a hit with r2.read (bytes) or r2.disasm (code) at its addr.
         """
         return _dump(analysis.r2_search(session_id, query, kind=kind, timeout=timeout))
+
+    @tools.tool(name="r2.disasm_function")
+    def r2_disasm_function(
+        session_id: str,
+        address: Annotated[int, Field(ge=0)],
+        timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Disassemble the whole function at an address, as radare2 bounds it.
+
+        Where r2.disasm reads a fixed count of instructions linearly, this reads
+        a function: r2's analysis decides where it ends, and each op's disasm
+        names its call targets and referenced data (``call sym.foo``, ``lea ...
+        str.bar``) instead of raw operands -- the r2 line's function view, the
+        seam from r2.functions (pick a function by its offset) to reading what it
+        does. Runs ``pdfj``. Answers with name, size, address (va/rva/module),
+        address_va, ops and count. Each op carries addr, opcode, disasm, bytes,
+        type, size and address (va/rva/module). invalid_count is how many ops r2
+        could not decode. An address not inside a known function comes back as a
+        clean empty ops list (count 0), not an error. Read ops_truncated,
+        ops_total and ops_limit when the function was longer than the cap (4096).
+        """
+        return _dump(analysis.r2_disasm_function(session_id, address, timeout=timeout))
     return tools.bindings

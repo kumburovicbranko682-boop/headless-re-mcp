@@ -331,6 +331,29 @@ def test_r2_service_analyzes_a_native_elf_end_to_end(tmp_path: Path) -> None:
         assert dis.data.get("invalid_count") == 0, dis.data
         assert dis.data.get("items"), "main disassembled to nothing"
 
+        # Function-level disassembly: pdfj bounds the whole of main and resolves
+        # its call targets by name, where the linear r2.disasm window above does
+        # not. The listing must name main, carry mapped ops that decode cleanly,
+        # and -- the point of the function view -- include the call to
+        # re_mcp_triple as resolved disasm text, not a bare address.
+        fdis = service.r2_disasm_function(session_id, entry, timeout=60.0)
+        assert fdis.ok and fdis.data is not None, fdis.error
+        assert fdis.data.get("parsed") is True
+        assert fdis.data.get("architecture") == expect_arch
+        assert (fdis.data.get("name") or "").endswith("main"), fdis.data.get("name")
+        fops = fdis.data.get("ops") or []
+        assert fops, "pdfj returned no ops for main"
+        assert fdis.data.get("invalid_count") == 0, fdis.data
+        for op in fops:
+            _assert_mapped(op.get("address"))
+            assert op["address"].get("architecture") == expect_arch, op
+            assert op.get("disasm"), op
+        calls = [o for o in fops if o.get("type") == "call"]
+        assert calls, "main has no call op in its function disasm"
+        assert any("re_mcp_triple" in (o.get("disasm") or "") for o in calls), [
+            o.get("disasm") for o in calls
+        ]
+
         # The whole r2 read surface must work on a native target, not just
         # functions/disasm, and every address it hands back must carry the
         # architecture an agent needs to interpret it. On ELF r2 reports

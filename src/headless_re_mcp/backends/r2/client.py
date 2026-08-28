@@ -10,6 +10,7 @@ from typing import Any
 
 from headless_re_mcp.backends.common.bounded_run import TimedOut, run_bounded
 from headless_re_mcp.backends.r2.mapping import (
+    _MAX_ITEMS,
     _item_va,
     address_dict,
     enrich_r2_payload,
@@ -55,6 +56,9 @@ _ALLOWED = frozenset(
     }
 )
 _PDJ_COMMAND = re.compile(r"pdj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
+# pdfj @ addr: disassemble the whole function at addr (respects basic-block and
+# jump boundaries, resolves call targets), unlike the linear pdj window.
+_PDFJ_COMMAND = re.compile(r"pdfj @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 # pxj <n> @ addr: read n raw bytes at a virtual address as a JSON int array.
 _PXJ_COMMAND = re.compile(r"pxj ([1-9][0-9]*) @ (?:0x[0-9a-fA-F]+|[0-9]+)\Z")
 # /xj <hexpairs>: search the mapped bytes for an exact pattern. Even-length hex
@@ -94,6 +98,8 @@ def _require_allowed_command(command: str) -> None:
         return
     pdj = _PDJ_COMMAND.fullmatch(command)
     if pdj is not None and int(pdj.group(1)) <= 512:
+        return
+    if _PDFJ_COMMAND.fullmatch(command) is not None:
         return
     pxj = _PXJ_COMMAND.fullmatch(command)
     if pxj is not None and int(pxj.group(1)) <= _MAX_READ_BYTES:
@@ -305,6 +311,100 @@ class R2Client:
         data["pattern_hex"] = hexpairs
         data["pattern_len"] = len(pattern)
         return data
+
+    def disasm_function(
+        self,
+        binary: Path,
+        address: int,
+        *,
+        timeout: float = 30.0,
+    ) -> JsonObject:
+        """Disassemble the whole function at ``address`` as radare2 analyses it.
+
+        Where ``r2.disasm`` reads a fixed count of instructions linearly from an
+        address, this disassembles a *function*: r2's analysis bounds it, so the
+        listing stops where the function ends and each op's ``disasm`` names the
+        call targets and data it references (``call sym.foo``, ``lea ... str.bar``)
+        rather than raw operands. It is the r2 line's function view, the seam from
+        ``r2.functions`` (pick a function) to reading what it actually does.
+        Runs ``pdfj``. An address that is not inside a known function comes back
+        as a clean empty op list, not an error.
+        """
+        if type(address) is not int or address < 0:
+            raise R2Error("invalid_params", "address must be a non-negative int")
+        cmd = f"pdfj @ {address}"
+        # pdfj needs the analysis pass to know function boundaries, so run ``aa``
+        # first like r2.functions/r2.disasm do.
+        data = self.run(binary, ["aa", cmd], timeout=timeout)
+        parsed = parse_r2_json(str(data.get("raw") or ""))
+        arch, image_base = pe_preferred_base(binary)
+        result: JsonObject = {
+            "commands": ["aa", cmd],
+            "module": binary.name,
+            "address_va": address,
+            "parsed": isinstance(parsed, dict),
+        }
+        if image_base is not None:
+            result["image_base"] = image_base
+        if arch is not None:
+            result["architecture"] = arch.value
+        if not isinstance(parsed, dict):
+            # pdfj at a non-function address prints nothing; report an empty
+            # function rather than raising, matching how r2.xrefs answers an
+            # address that references nothing.
+            result["ops"] = []
+            result["count"] = 0
+            result["invalid_count"] = 0
+            return result
+        func_va = parsed.get("addr")
+        if isinstance(func_va, int):
+            mapped = address_dict(
+                func_va, module=binary.name, image_base=image_base, architecture=arch
+            )
+            if mapped is not None:
+                result["address"] = mapped
+        result["name"] = parsed.get("name")
+        if isinstance(parsed.get("size"), int):
+            result["size"] = parsed["size"]
+        ops_in = parsed.get("ops")
+        ops_in = ops_in if isinstance(ops_in, list) else []
+        available = len(ops_in)
+        ops_out: list[JsonObject] = []
+        invalid = 0
+        # Keep the fields an agent reads (address, raw opcode, the symbol-resolved
+        # disasm text, the bytes, type, size) and drop r2's per-op internals
+        # (esil, family, type_num, reloc, ...) so the function listing stays
+        # legible and the envelope bounded.
+        for op in ops_in[:_MAX_ITEMS]:
+            if not isinstance(op, dict):
+                continue
+            va = _item_va(op, ("addr", "offset", "vaddr"))
+            item: JsonObject = {
+                "addr": va,
+                "opcode": op.get("opcode"),
+                "disasm": op.get("disasm"),
+                "bytes": op.get("bytes"),
+                "type": op.get("type"),
+                "size": op.get("size"),
+            }
+            mapped = address_dict(
+                va, module=binary.name, image_base=image_base, architecture=arch
+            )
+            if mapped is not None:
+                item["address"] = mapped
+            if _is_invalid_op(op):
+                invalid += 1
+            ops_out.append(item)
+        result["ops"] = ops_out
+        result["count"] = len(ops_out)
+        result["invalid_count"] = invalid
+        if available > _MAX_ITEMS:
+            # A function longer than the cap is trimmed; say so, like the other
+            # r2 readers, so "these are all the ops" is never a wrong read.
+            result["ops_truncated"] = True
+            result["ops_total"] = available
+            result["ops_limit"] = _MAX_ITEMS
+        return result
 
     def run(self, binary: Path, commands: list[str], *, timeout: float = 30.0) -> JsonObject:
         if not self.available or self.executable is None:
