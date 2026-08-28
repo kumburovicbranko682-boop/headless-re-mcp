@@ -598,3 +598,169 @@ def test_linux_hidden_desktop_setting_is_not_an_isolation_signal(tmp_path: Path)
     assert probe.status == ProbeStatus.MISSING
     assert probe.details["hidden_desktop"] is True
     assert probe.details["hidden_desktop_supported"] is False
+
+
+def test_python_module_probe_reports_installed_and_missing_modules() -> None:
+    """frida/androguard/playwright/mitmproxy probes rely on this helper."""
+    detected = doctor_module.probe_python_module("json-probe", "json")
+    missing = doctor_module.probe_python_module(
+        "ghost", "headless_re_mcp_definitely_not_a_module"
+    )
+
+    assert detected.status == ProbeStatus.DETECTED
+    assert "origin" in detected.details
+    assert missing.status == ProbeStatus.MISSING
+    assert "not installed" in missing.summary
+
+
+def test_command_probe_detects_java_on_path_and_reports_it_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda cmd: "/usr/bin/java" if cmd == "java" else None,
+    )
+    assert doctor_module.probe_command("java", ("java",)).status == ProbeStatus.DETECTED
+
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+    missing = doctor_module.probe_command("java", ("java",))
+    assert missing.status == ProbeStatus.MISSING
+
+
+def test_ghidra_probe_is_optional_when_home_is_not_configured(tmp_path: Path) -> None:
+    probe = doctor_module.probe_ghidra(_settings(None, tmp_path / "artifacts"))
+
+    assert probe.status == ProbeStatus.MISSING
+    assert "HEADLESS_RE_GHIDRA_HOME" in (probe.remediation or "")
+
+
+def test_ghidra_probe_flags_a_home_without_analyze_headless(tmp_path: Path) -> None:
+    home = tmp_path / "ghidra"
+    home.mkdir()
+    settings = replace(_settings(None, tmp_path / "artifacts"), ghidra_home=home)
+
+    probe = doctor_module.probe_ghidra(settings)
+
+    assert probe.status == ProbeStatus.MISSING
+    assert "analyzeHeadless not found" in probe.summary
+    assert probe.details["home"] == str(home)
+
+
+def _ghidra_home_with_launcher(tmp_path: Path) -> Path:
+    home = tmp_path / "ghidra"
+    (home / "support").mkdir(parents=True)
+    (home / "support" / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    return home
+
+
+def test_ghidra_probe_detects_launcher_but_warns_when_java_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _ghidra_home_with_launcher(tmp_path)
+    settings = replace(_settings(None, tmp_path / "artifacts"), ghidra_home=home)
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: None)
+
+    probe = doctor_module.probe_ghidra(settings)
+
+    assert probe.status == ProbeStatus.DETECTED
+    assert "java is not on PATH" in probe.summary
+    assert "Install a JRE" in (probe.remediation or "")
+
+
+def test_ghidra_probe_is_ready_with_launcher_and_java(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _ghidra_home_with_launcher(tmp_path)
+    settings = replace(_settings(None, tmp_path / "artifacts"), ghidra_home=home)
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _cmd: "/usr/bin/java")
+
+    probe = doctor_module.probe_ghidra(settings)
+
+    assert probe.status == ProbeStatus.READY
+    assert probe.details["java"] == "/usr/bin/java"
+    assert probe.details["analyze_headless"].endswith("analyzeHeadless")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX probe runner")
+def test_probe_run_executes_a_real_command_under_a_deadline() -> None:
+    """The unpatched seam must actually run tools; probes read decoded text."""
+    import sys
+
+    output = doctor_module._probe_run(
+        [sys.executable, "-c", "print('probe-ok')"], timeout=30.0
+    )
+
+    assert output.returncode == 0
+    assert "probe-ok" in output.stdout
+    assert output.stderr == ""
+
+
+def test_bounded_text_truncates_oversized_probe_output() -> None:
+    text = doctor_module._bounded_text("x" * 100, limit=10)
+
+    assert text.startswith("x" * 10)
+    assert text.endswith("...[truncated]")
+
+
+def test_probe_to_dict_omits_the_required_flag_when_not_asked() -> None:
+    payload = Probe("x", ProbeStatus.READY, "ok").to_dict()
+
+    assert "required" not in payload
+    assert payload["status"] == "ready"
+
+
+def test_required_probe_names_selects_the_windows_and_linux_sets() -> None:
+    assert doctor_module.required_probe_names("windows") == WINDOWS_REQUIRED_PROBES
+    assert (
+        doctor_module.required_probe_names("linux")
+        == doctor_module.LINUX_REQUIRED_PROBES
+    )
+
+
+def test_report_to_json_falls_back_to_the_live_host_without_a_platform_probe() -> None:
+    import json
+
+    report = DoctorReport(
+        (Probe("python", ProbeStatus.READY, "ok"),),
+        required_probes=frozenset({"python"}),
+    )
+    payload = json.loads(report.to_json())
+
+    assert payload["ready"] is True
+    assert payload["platform"]["name"]
+
+
+def test_platform_probe_blocks_an_unsupported_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        doctor_module,
+        "runtime_platform_report",
+        lambda: {
+            "name": "unsupported",
+            "core_supported": False,
+            "support_level": "none",
+            "system": "Haiku",
+            "architecture": "sparc",
+            "machine": "sparc64",
+        },
+    )
+
+    probe = doctor_module.probe_platform()
+
+    assert probe.status == ProbeStatus.BLOCKED
+    assert "outside the supported host matrix" in probe.summary
+
+
+def test_format_report_lists_a_blocking_probe_without_remediation() -> None:
+    required = (
+        Probe("platform", ProbeStatus.READY, "supported"),
+        Probe("python", ProbeStatus.BLOCKED, "interpreter too old"),
+    )
+    text = format_report(
+        DoctorReport(required, required_probes=frozenset({"platform", "python"}))
+    )
+
+    assert "- python (blocked)" in text
+    assert "fix:" not in text.split("Blocking required backends")[1]
