@@ -218,9 +218,14 @@ def _accepts_timeout(func: Any) -> bool:
 
 
 def _bound_timeout(timeout: float) -> float:
+    # NaN is rejected alongside non-positive values, the same guard
+    # clamp_cli_timeout applies. json.loads accepts a literal NaN by default, and
+    # NaN slips both other checks: `nan <= 0` is False, and `min(nan, cap)`
+    # returns nan, so it would reach the frida deadline math and turn a bad
+    # parameter into a spurious immediate timeout.
     value = float(timeout)
-    if value <= 0:
-        raise FridaError("invalid_params", "timeout must be positive")
+    if value != value or value <= 0:
+        raise FridaError("invalid_params", "timeout must be a positive number")
     return min(value, MAX_WORKFLOW_TIMEOUT)
 
 

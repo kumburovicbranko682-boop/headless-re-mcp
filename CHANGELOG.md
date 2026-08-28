@@ -5,6 +5,22 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（web/frida 的 timeout 边界守卫漏掉 NaN，可卡死会话）
+
+- `backends/web/client.py::_bound_nav_timeout` 与 `backends/frida/client.py::_bound_timeout`
+  只用 `value <= 0` 拒绝坏 timeout，没有像 `common/bounded_run.py::clamp_cli_timeout`
+  那样同时拒绝 NaN。`json.loads` 默认接受字面量 `NaN`，而 NaN 会同时骗过这里的两道关卡：
+  `nan <= 0` 为 False（不被拒），`min(nan, cap)` 返回 `nan`（不被夹取）。于是 NaN 原样流到
+  `Future.result(timeout=nan)`——它会立刻抛 `TimeoutError`——把 web runner 翻成 wedged，
+  直到 `web.close` 之前整个会话都不可用；frida 侧则把一次坏参数变成一次“伪超时”。这正是
+  该守卫本应挡住的结果（它已经能挡负值）。
+- 两个守卫改为 `if value != value or value <= 0:`，与 `clamp_cli_timeout` 一致地把 NaN
+  一并拒成 `invalid_params`；`Infinity` 仍按原样夹取到 schema 上限（`min(inf, cap) == cap`）。
+- 新增回归用例：`test_web_backends.py` 的 `test_bound_nav_timeout_rejects_nan` 与
+  `test_a_nan_navigate_timeout_does_not_wedge_a_live_session`（后者验证传 NaN 时会话不会被
+  卡死、goto 从未被调用），以及 `test_frida_client_paths.py::test_bound_timeout_rejects_nan`。
+  去掉 NaN 判断后三个用例都会失败（DID NOT RAISE / 会话被 wedged），因此非空。
+
 ### 测试（工作流引擎重置/刷新守卫与执行器截止时间助手）
 
 - `workflows/engine.py` 两处纯逻辑守卫此前无用例覆盖（第 123-124 行与 153->152 分支）：

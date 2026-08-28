@@ -289,6 +289,20 @@ class TestWebNavTimeoutIsBounded:
                 _bound_nav_timeout(bad)
             assert info.value.code == "invalid_params"
 
+    def test_bound_nav_timeout_rejects_nan(self) -> None:
+        """NaN must fail closed, not slip through as a doomed deadline.
+
+        json.loads accepts a literal NaN by default, and NaN passes the two other
+        checks: `nan <= 0` is False, and `min(nan, cap)` returns nan. Left
+        unrejected it flows into Future.result(timeout=nan), which returns
+        immediately and wedges the runner -- exactly what this guard prevents for
+        a negative value. Infinity, by contrast, clamps cleanly to the schema max.
+        """
+        with pytest.raises(WebError) as info:
+            _bound_nav_timeout(float("nan"))
+        assert info.value.code == "invalid_params"
+        assert _bound_nav_timeout(float("inf")) == _MAX_NAV_TIMEOUT_S
+
     def test_a_negative_navigate_timeout_does_not_wedge_a_live_session(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -303,6 +317,35 @@ class TestWebNavTimeoutIsBounded:
                 backend.navigate("s", "https://example/app", timeout=-100.0)
             assert info.value.code == "invalid_params"
             # The runner never saw the doomed wait, so the session is still usable.
+            assert runner.wedged is False
+            assert page.goto_timeouts == []
+
+            payload = backend.navigate("s", "https://example/app", timeout=30.0)
+            assert payload["url"] == "https://example/app"
+            assert runner.wedged is False
+        finally:
+            runner.shutdown()
+
+    def test_a_nan_navigate_timeout_does_not_wedge_a_live_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A NaN nav timeout must be refused before it can wedge the runner.
+
+        This is the subtle sibling of the negative-timeout case: NaN passes
+        `value <= 0` and survives `min(nan, cap)`, so before the fix it reached
+        Future.result(timeout=nan), which returns immediately and flips the runner
+        to wedged -- bricking a healthy session until web.close.
+        """
+        backend = WebBackend()
+        runner = _Runner("test-nav-nan-runner")
+        try:
+            page = _FakeNavPage()
+            handle = SimpleNamespace(page=page, runner=runner)
+            monkeypatch.setattr(backend, "_get", lambda session_id: handle)
+
+            with pytest.raises(WebError) as info:
+                backend.navigate("s", "https://example/app", timeout=float("nan"))
+            assert info.value.code == "invalid_params"
             assert runner.wedged is False
             assert page.goto_timeouts == []
 

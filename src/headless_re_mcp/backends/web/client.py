@@ -69,12 +69,19 @@ def _bound_nav_timeout(timeout: float) -> float:
     ``Future.result(timeout<=0)``, which returns immediately and flips the
     runner to ``_wedged`` -- bricking a healthy session until ``web.close`` --
     while a huge one would park the session thread and a pool worker for as long
-    as the page took. Reject the first and cap the second before any work is
+    as the page took.     Reject the first and cap the second before any work is
     queued, so a stray timeout can never wedge a live browser.
+
+    NaN is rejected too (``value != value``), the same guard
+    ``clamp_cli_timeout`` already applies. ``json.loads`` accepts a literal
+    ``NaN`` by default, and NaN defeats both checks here: ``nan <= 0`` is False
+    so it is not caught, and ``min(nan, cap)`` returns ``nan``, so it would flow
+    straight into ``Future.result(timeout=nan)`` -- which returns immediately and
+    wedges the runner, the precise outcome this guard exists to prevent.
     """
     value = float(timeout)
-    if value <= 0:
-        raise WebError("invalid_params", "timeout must be positive")
+    if value != value or value <= 0:
+        raise WebError("invalid_params", "timeout must be a positive number")
     return min(value, _MAX_NAV_TIMEOUT_S)
 
 

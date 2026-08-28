@@ -249,6 +249,18 @@ def test_bound_timeout_rejects_non_positive_and_caps() -> None:
     assert _bound_timeout(10_000.0) == MAX_WORKFLOW_TIMEOUT
 
 
+def test_bound_timeout_rejects_nan() -> None:
+    """NaN must fail closed. json.loads accepts a literal NaN by default, and NaN
+    slips both other checks -- `nan <= 0` is False and `min(nan, cap)` returns nan
+    -- so it would reach the frida deadline math and become a spurious immediate
+    timeout instead of a clean invalid_params. Infinity still clamps to the max.
+    """
+    with pytest.raises(FridaError) as exc:
+        _bound_timeout(float("nan"))
+    assert exc.value.code == "invalid_params"
+    assert _bound_timeout(float("inf")) == MAX_WORKFLOW_TIMEOUT
+
+
 def test_is_timeout_reads_name_and_message() -> None:
     assert _is_timeout(TimeoutError("x")) is True
     assert _is_timeout(RuntimeError("it timed out")) is True
