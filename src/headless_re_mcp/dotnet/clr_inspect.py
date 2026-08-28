@@ -368,40 +368,41 @@ def _parse_tables_and_names(
     assembly_name: str | None = None
     if not strings:
         return None, None, stats
-    for bit in range(64):
-        rows = row_counts.get(bit)
-        if not rows:
-            continue
-        if bit == 0x00:  # Module
-            name_idx, _ = read_string_index(tables, cursor + 2)
-            module_name = string_at(name_idx)
-            guid_index_size = 4 if (heap_sizes & 0x02) else 2
-            row_size = (
-                2
-                + string_index_size
-                + guid_index_size
-                + guid_index_size
-                + guid_index_size
+    # ``cursor`` points at the first table's first row. Module is table 0, so
+    # its row starts here; a 2-byte Generation precedes its Name index.
+    if row_counts.get(0x00):
+        name_idx, _ = read_string_index(tables, cursor + 2)
+        module_name = string_at(name_idx)
+    if row_counts.get(0x20):
+        # The Assembly table sits after every lower-numbered table, and real
+        # assemblies always carry tables between Module and Assembly (TypeRef,
+        # TypeDef, MethodDef, ...). The old walk advanced row-by-row and bailed
+        # at the first table it did not special-case, so it never reached
+        # Assembly and assembly_name came back null for every real input. Sum
+        # the preceding tables' row sizes with the enumerator's shared ECMA-335
+        # schema instead (deferred import: metadata_enum imports this module).
+        from headless_re_mcp.dotnet.metadata_enum import table_start_offset
+
+        guid_index_size = 4 if (heap_sizes & 0x02) else 2
+        blob_index_size = 4 if (heap_sizes & 0x04) else 2
+        try:
+            asm_off = table_start_offset(
+                row_counts,
+                0x20,
+                table_data_offset=cursor,
+                string_index_size=string_index_size,
+                blob_index_size=blob_index_size,
+                guid_index_size=guid_index_size,
             )
-            cursor += row_size * rows
-            continue
-        if bit == 0x20:  # Assembly
-            blob_index_size = 4 if (heap_sizes & 0x04) else 2
-            name_at = cursor + 4 + 2 + 2 + 2 + 2 + 4 + blob_index_size
+        except DotnetInspectError:
+            # A valid-mask bit we cannot size makes every following table's
+            # offset unknowable; drop the assembly name rather than read a
+            # string from a guessed offset.
+            return module_name, None, stats
+        # Assembly row: HashAlgId(4) + Major/Minor/Build/Rev(2 each) + Flags(4)
+        # + PublicKey(blob) precede Name.
+        name_at = asm_off + 16 + blob_index_size
+        if name_at + string_index_size <= len(tables):
             name_idx, _ = read_string_index(tables, name_at)
             assembly_name = string_at(name_idx)
-            row_size = (
-                4
-                + 2
-                + 2
-                + 2
-                + 2
-                + 4
-                + blob_index_size
-                + string_index_size
-                + string_index_size
-            )
-            cursor += row_size * rows
-            continue
-        break
     return module_name, assembly_name, stats

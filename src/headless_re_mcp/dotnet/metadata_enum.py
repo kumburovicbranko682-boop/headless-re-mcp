@@ -536,6 +536,41 @@ def _table_start(meta: _MetaCtx, table: int) -> int:
     return offset
 
 
+def table_start_offset(
+    row_counts: dict[int, int],
+    table: int,
+    *,
+    table_data_offset: int,
+    string_index_size: int,
+    blob_index_size: int,
+    guid_index_size: int,
+) -> int:
+    """Byte offset of ``table``'s first row inside the ``#~`` tables stream.
+
+    Sums the ECMA-335 row sizes of every present table below ``table`` so a
+    caller outside the enumerator (``clr_inspect``'s name probe) can locate a
+    table without re-deriving the row schemas -- keeping the two modules from
+    drifting apart on coded-index and heap-index widths. Raises
+    :class:`DotnetInspectError` if a present table id cannot be sized.
+    """
+    meta = _MetaCtx(
+        path=Path("."),
+        pe_data=b"",
+        layout=None,
+        meta=b"",
+        stream_map={},
+        tables=b"",
+        strings=b"",
+        heap_sizes=0,
+        string_index_size=string_index_size,
+        blob_index_size=blob_index_size,
+        guid_index_size=guid_index_size,
+        row_counts=row_counts,
+        table_data_offset=table_data_offset,
+    )
+    return _table_start(meta, table)
+
+
 def _iter_table_rows(meta: _MetaCtx, table: int) -> Iterable[tuple[int, int]]:
     rows = meta.row_counts.get(table)
     if not rows:
