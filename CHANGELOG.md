@@ -6,7 +6,7 @@ until 1.0 the tool surface may still change between minor versions.
 ## [Unreleased]
 
 本轮在既有 PE 逆向能力之外新增 Android 与 Web 两个目标域，并把监控台重做成对话居中的
-Agent 工作台。工具面从 199 增至 **272（155 只读 / 117 写）**；读写分级在
+Agent 工作台。工具面从 199 增至 **273（156 只读 / 117 写）**；读写分级在
 `tools/catalog.py` 里逐个显式声明（如 `memory.protection`、`workflow.breakpoint.put` /
 `disable` 计入写，`static.search.text`、`patches.list` 计入读）。以下按类别列出。
 
@@ -414,6 +414,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   抢先执行的落点)以及 `min_sdk` / `target_sdk`。清单里未声明的布尔位回 `null`(「未设置」,
   不等于 false),调用方据此套用对应目标 SDK 的平台默认,而不是想当然;androguard 版本差异
   以逐属性 `try` 兜底,`is_debuggable()` 不可用时退回读 `debuggable` 属性。
+
+### 新增（浏览器 Web 存储）
+
+- 新增 `web.storage`:一次读回页面的 localStorage 与 sessionStorage——SPA 常把 auth token、
+  特性开关、缓存的用户画像塞在这里。回 `url`/`origin`,两个区各回 `{key, value, value_truncated}`
+  列表加计数与 `*_truncated`:`local_storage`/`local_storage_count`/`local_storage_truncated`
+  与 session 三件套。单值超上限截断时 `value_truncated=true`;`*_truncated` 指键列表本身被截。
+  每个区防御式读取——不透明源(sandbox/`data:` 页)会让 store 抛异常,以 `local_storage_error`/
+  `session_storage_error` 带出浏览器错误名,另一区照常返回。键数上限 500、单值上限 8192 字符,
+  防止敌意页面撑爆响应。
 
 ### 新增（浏览器网络聚合）
 

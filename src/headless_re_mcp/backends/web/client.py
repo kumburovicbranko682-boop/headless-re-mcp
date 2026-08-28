@@ -45,6 +45,10 @@ _MAX_METADATA_BYTES = 1024
 # web.network.stats top-N ceiling: a page can touch hundreds of hosts, so the
 # ranked host/mime lists are capped even when the caller asks for more.
 _MAX_TOP_STATS = 50
+# web.storage caps: a page can stuff thousands of keys or a multi-megabyte value
+# into Web Storage, so both the key list and each value are bounded.
+_MAX_STORAGE_KEYS = 500
+_MAX_STORAGE_VALUE_CHARS = 8192
 # Playwright enforces its own timeouts inside the driver process, so they stop
 # existing the moment the driver does. This is the outer bound that keeps a call
 # from parking a worker thread forever when that happens.
@@ -88,6 +92,67 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     if len(payload) <= max_bytes:
         return text, False
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+# Read both Web Storage areas in one page hop. Each area is dumped defensively:
+# an opaque origin makes ``window.localStorage`` throw, so we trap per-area and
+# report the error name rather than failing the whole read. Key count and value
+# length are bounded in-page so a hostile page cannot balloon the response.
+_STORAGE_SCRIPT = """(cfg) => {
+  const dump = (store) => {
+    try {
+      const total = store.length;
+      const out = [];
+      for (let i = 0; i < total && out.length < cfg.maxKeys; i++) {
+        const k = store.key(i);
+        let v = "";
+        try { v = String(store.getItem(k) ?? ""); } catch (e) { v = ""; }
+        const cut = v.length > cfg.maxValueChars;
+        out.push({
+          key: String(k),
+          value: cut ? v.slice(0, cfg.maxValueChars) : v,
+          value_truncated: cut
+        });
+      }
+      return { entries: out, total: total, error: null };
+    } catch (e) {
+      return { entries: [], total: 0, error: String((e && e.name) || e) };
+    }
+  };
+  let origin = "";
+  try { origin = String(location.origin || ""); } catch (e) { origin = ""; }
+  return {
+    origin: origin,
+    local: dump(window.localStorage),
+    session: dump(window.sessionStorage)
+  };
+}"""
+
+
+def _fold_storage(part: object) -> tuple[list[JsonObject], int, str | None]:
+    """Normalise one Web Storage area's page-side dump into bounded rows."""
+    if not isinstance(part, dict):
+        return [], 0, None
+    error = part.get("error")
+    total = 0
+    try:
+        total = int(part.get("total") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    entries: list[JsonObject] = []
+    for item in part.get("entries") or []:
+        if not isinstance(item, dict):
+            continue
+        key = _bounded_metadata(item.get("key"), _MAX_METADATA_BYTES)[0]
+        raw_value = item.get("value")
+        value = raw_value if isinstance(raw_value, str) else ""
+        truncated = bool(item.get("value_truncated"))
+        if len(value) > _MAX_STORAGE_VALUE_CHARS:
+            value = value[:_MAX_STORAGE_VALUE_CHARS]
+            truncated = True
+        entries.append({"key": key, "value": value, "value_truncated": truncated})
+    error_text = error if isinstance(error, str) and error else None
+    return entries, total, error_text
 
 
 def summarize_requests(
@@ -851,6 +916,44 @@ class WebBackend:
                 "html": text[:_MAX_INLINE_BODY],
                 "truncated": bool(clipped.get("truncated")) or len(text) > _MAX_INLINE_BODY,
             }
+
+        return self._runner(handle).call(work)
+
+    def storage(self, session_id: str) -> JsonObject:
+        handle = self._get(session_id)
+
+        def work() -> JsonObject:
+            cfg = {
+                "maxKeys": _MAX_STORAGE_KEYS,
+                "maxValueChars": _MAX_STORAGE_VALUE_CHARS,
+            }
+            try:
+                raw = handle.page.evaluate(_STORAGE_SCRIPT, cfg)
+            except Exception as exc:  # noqa: BLE001
+                raise WebError("backend_error", f"storage read failed: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise WebError("backend_error", "storage read returned no data")
+            local_entries, local_total, local_err = _fold_storage(raw.get("local"))
+            session_entries, session_total, session_err = _fold_storage(raw.get("session"))
+            result: JsonObject = {
+                "url": _bounded_metadata(handle.page.url, _MAX_URL_BYTES)[0],
+                "origin": _bounded_metadata(raw.get("origin"), _MAX_URL_BYTES)[0],
+                "local_storage": local_entries,
+                "local_storage_count": len(local_entries),
+                "local_storage_truncated": local_total > len(local_entries),
+                "session_storage": session_entries,
+                "session_storage_count": len(session_entries),
+                "session_storage_truncated": session_total > len(session_entries),
+            }
+            if local_err:
+                result["local_storage_error"] = _bounded_metadata(
+                    local_err, _MAX_METADATA_BYTES
+                )[0]
+            if session_err:
+                result["session_storage_error"] = _bounded_metadata(
+                    session_err, _MAX_METADATA_BYTES
+                )[0]
+            return result
 
         return self._runner(handle).call(work)
 

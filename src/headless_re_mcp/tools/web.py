@@ -190,6 +190,26 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.web_dom_snapshot(session_id))
 
+    @tools.tool(name="web.storage")
+    def web_storage(session_id: str) -> dict[str, Any]:
+        """Read the page's Web Storage (localStorage and sessionStorage).
+
+        Where web.cookies reads the cookie jar, this reads the two key/value
+        stores the page script owns -- often where a SPA stashes its auth token,
+        feature flags, or a cached user profile.
+
+        Answers with url and origin, then for each area a list of {key, value,
+        value_truncated} plus a count and a *_truncated flag: local_storage /
+        local_storage_count / local_storage_truncated and the session_storage
+        trio likewise. A value clipped at the per-value cap carries
+        value_truncated true; the *_truncated flag means the key list itself was
+        capped. Each area is read defensively: an opaque origin (a sandboxed or
+        data: page) makes the store throw, and that surfaces as
+        local_storage_error / session_storage_error with the browser's error
+        name, the other area still returning its entries.
+        """
+        return _dump(analysis.web_storage(session_id))
+
     @tools.tool(name="web.screenshot")
     def web_screenshot(session_id: str, full_page: bool = False) -> dict[str, Any]:
         """Capture a screenshot of the current page to a PNG artifact.
