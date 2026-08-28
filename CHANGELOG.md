@@ -18,6 +18,17 @@ radare2 线的分析面深度首次对齐 Ghidra gate。原有 r2 live gate 只�
 本 gate 不再重复断言。新增 `linux-r2-analysis` CI job：apt 装 radare2、跑该 gate 并解析 junitxml，
 r2 已装却 skip 时判失败（skip ≠ pass）。
 
+### 修复（NETReactorSlayer 输出别名测试的同款 Windows-only 路径炸裂）
+
+- 与 de4dot 同批落地的 `test_net_reactor_slayer_paths.py::test_output_equal_to_input_is_refused`
+  是同一 dot-dot 模式的第三个实例：用 `tmp_path/nope/../managed.exe` 断言别名到输入的输出被
+  "differ from input" 拒绝。POSIX 下 `nope/` 无法遍历、exists() 为假，别名滑到 resolve 相等
+  守卫；Windows 在 stat 前词法折叠 `..`，同一拼法 stat 为已存在的 source，被更早的
+  "must not already exist" 守卫拒绝，钉死消息的断言必挂。修法与 Scylla、de4dot 两个先例
+  一致：只钉两平台共享的 `INVALID_ARGUMENT` 码并接受两个守卫任一消息。全套 dot-dot 构造
+  已排查（`rg '/ "\.\."' tests/unit/`），仅此一处残留；`test_web_console.py` 的用法断言
+  共享结果（403），不受守卫顺序影响。
+
 ### 修复（de4dot 输出别名测试的 Windows-only 路径炸裂）
 
 - main 新落的 `test_dotnet_de4dot_run_paths.py::test_run_rejects_an_output_path_aliasing_the_input`
