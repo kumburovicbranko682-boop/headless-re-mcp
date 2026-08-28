@@ -86,7 +86,9 @@ class _FakeApk:
         self._maybe_fail("strings")
         return {"strings": [], "offset": offset}
 
-    def xrefs(self, binary: Path, method_name: str, *, limit: int = 100) -> JsonObject:
+    def xrefs(
+        self, binary: Path, method_name: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
         self._maybe_fail("xrefs")
         return {"xrefs": [], "method_name": method_name}
 

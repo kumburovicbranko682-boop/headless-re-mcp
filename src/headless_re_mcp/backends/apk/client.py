@@ -37,6 +37,11 @@ _MAX_CLASSES_PAGE = 1000
 _MAX_METHODS_PAGE = 1000
 _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
+# Collect ceiling for xrefs, mirroring _MAX_CLASSES_COLLECT: a hot utility method
+# can be called from thousands of sites, so the caller list is walked up to this
+# bound (scan_capped past it) and then paged, rather than stopping at the first
+# page and leaving the rest unreachable.
+_MAX_XREFS_COLLECT = 10_000
 
 
 class ApkError(RuntimeError):
@@ -480,24 +485,23 @@ class ApkClient:
             "scan_capped": scan_more,
         }
 
-    def xrefs(self, path: Path, method_name: str, *, limit: int = 100) -> JsonObject:
+    def xrefs(
+        self, path: Path, method_name: str, *, offset: int = 0, limit: int = 100
+    ) -> JsonObject:
         # Same fail-fast as methods(): an empty method_name is rejected before
         # the expensive DEX analysis rather than after it.
         target = method_name.strip()
         if not target:
             raise ApkError("invalid_params", "method_name is required")
         parsed = self._parsed(path)
-        _, cap = _clamp_page(0, limit, max_limit=_MAX_XREFS_PAGE)
         callers: list[JsonObject] = []
-        has_more = False
+        scan_more = False
         for method in parsed.analysis.get_methods():
             if method.is_external() or method.name != target:
                 continue
             for _, call, _ in method.get_xref_from():
-                if len(callers) >= cap:
-                    # Only set once something was actually left out, so a result
-                    # that happens to fill the page is not reported as partial.
-                    has_more = True
+                if len(callers) >= _MAX_XREFS_COLLECT:
+                    scan_more = True
                     break
                 callers.append(
                     {
@@ -505,15 +509,29 @@ class ApkClient:
                         "method": str(call.name),
                     }
                 )
-            if has_more:
+            if scan_more:
                 break
+        # Sort before paging, like classes()/strings(): a page must be a real
+        # prefix of the sorted callers, not an arbitrary DEX-order slice, so a
+        # caller absent from within a page is genuinely not (among the collected)
+        # callers. Before this, xrefs offered no offset at all -- a method called
+        # from more than a page of sites returned an unpageable, unsorted first
+        # slice with has_more set and no way to reach the rest. It now pages like
+        # its sibling readers, with total and scan_capped for the same honesty.
+        callers.sort(key=lambda entry: (entry["class"], entry["method"]))
+        start, cap = _clamp_page(offset, limit, max_limit=_MAX_XREFS_PAGE)
+        window = callers[start : start + cap]
         return {
             "method_name": target,
-            "callers": callers,
-            "count": len(callers),
-            # A caller deciding "these are all the callers" has to know whether
-            # the enumeration ended or merely stopped.
-            "has_more": has_more,
+            "callers": window,
+            "count": len(window),
+            "total": len(callers),
+            "offset": start,
+            # A caller deciding "these are all the callers" has to know whether a
+            # further page still has rows (has_more) and whether the collection
+            # itself was capped before paging (scan_capped).
+            "has_more": start + len(window) < len(callers),
+            "scan_capped": scan_more,
         }
 
 

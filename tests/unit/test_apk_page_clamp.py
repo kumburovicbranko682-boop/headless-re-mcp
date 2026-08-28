@@ -211,6 +211,98 @@ def test_xrefs_limit_is_capped_at_the_schema_maximum(
     assert payload["has_more"] is True
 
 
+class _PaddedXrefCall:
+    def __init__(self, index: int) -> None:
+        self.class_name = f"Lcom/example/Caller{index:03d};"
+        self.name = "invoke"
+
+
+class _OrderedXrefMethod:
+    """Yields caller sites in a caller-controlled order, to pin sort-before-page."""
+
+    def __init__(self, name: str, order: list[int]) -> None:
+        self.name = name
+        self._order = order
+
+    def is_external(self) -> bool:
+        return False
+
+    def get_xref_from(self) -> list[tuple[object, _PaddedXrefCall, int]]:
+        return [(None, _PaddedXrefCall(index), index) for index in self._order]
+
+
+def _xrefs_client(monkeypatch: Any, order: list[int]) -> ApkClient:
+    monkeypatch.setattr(
+        ApkClient,
+        "_parsed",
+        lambda self, path: _FakeXrefParsed([_OrderedXrefMethod("decrypt", order)]),
+    )
+    return ApkClient()
+
+
+def test_xrefs_page_is_the_sorted_prefix_and_a_later_offset_reaches_the_rest(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Callers arrive reverse-ordered and overflow the page: the first page must
+    be the alphabetical prefix, and a later offset must return the tail.
+
+    That second call is the whole point of the change -- xrefs had no offset, so a
+    method called from more than a page of sites returned an unsorted first slice
+    with has_more set and the rest unreachable. Now it pages like classes/strings.
+    """
+    apk = tmp_path / "app.apk"
+    client = _xrefs_client(monkeypatch, list(reversed(range(5))))  # 4,3,2,1,0
+    first = client.xrefs(apk, "decrypt", offset=0, limit=3)
+    assert first["total"] == 5
+    assert first["offset"] == 0
+    assert first["scan_capped"] is False
+    assert [caller["class"] for caller in first["callers"]] == [
+        "Lcom/example/Caller000;",
+        "Lcom/example/Caller001;",
+        "Lcom/example/Caller002;",
+    ]
+    assert first["has_more"] is True
+    second = client.xrefs(apk, "decrypt", offset=3, limit=3)
+    assert [caller["class"] for caller in second["callers"]] == [
+        "Lcom/example/Caller003;",
+        "Lcom/example/Caller004;",
+    ]
+    assert second["has_more"] is False
+
+
+def test_xrefs_negative_offset_returns_page_zero(tmp_path: Path, monkeypatch: Any) -> None:
+    client = _xrefs_client(monkeypatch, list(range(10)))
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt", offset=-1, limit=10)
+    assert payload["offset"] == 0
+    assert payload["count"] == 10
+    assert payload["has_more"] is False
+
+
+def test_xrefs_offset_past_total_is_an_empty_final_page(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    client = _xrefs_client(monkeypatch, list(range(5)))
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt", offset=100, limit=10)
+    assert payload["count"] == 0
+    assert payload["total"] == 5
+    assert payload["has_more"] is False
+
+
+def test_xrefs_flags_scan_capped_when_the_collection_ceiling_is_hit(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """More caller sites than the collect ceiling: the walk stops and scan_capped
+    says total is a floor, not the true caller count -- the same signal
+    classes/strings give when the scan is capped before paging."""
+    monkeypatch.setattr("headless_re_mcp.backends.apk.client._MAX_XREFS_COLLECT", 2)
+    client = _xrefs_client(monkeypatch, list(range(5)))
+    payload = client.xrefs(tmp_path / "app.apk", "decrypt", offset=0, limit=10)
+    assert payload["scan_capped"] is True
+    assert payload["total"] == 2
+    assert payload["count"] == 2
+    assert payload["has_more"] is False
+
+
 def _limit_schema(name: str) -> dict[str, object]:
     handler = next(
         binding.handler

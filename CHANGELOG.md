@@ -77,6 +77,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   遍历顺序依赖文件系统,故 `tests/unit/test_jadx_pure_helpers.py` 用逆序喂给遍历,把 cap-3 页钉到 `C000..C002`——\
   cap-then-sort 会切出 `C007..C009` 而失败。
 
+### 完整性（apk.xrefs 补齐与 apk.classes / methods / strings 一致的 offset 分页、排序与 total / scan_capped，热点方法的调用者不再只有不可翻页的首页）
+
+- `apk.xrefs` 是 DEX 分页读取器里唯一的异类:兄弟三件套 `apk.classes` / `apk.methods` / `apk.strings` 都提供\
+  `offset` 分页、排序,并回 `total` / `scan_capped`,唯独 `xrefs` 只接受 `limit`,按枚举顺序收满一页就 `break`、\
+  置 `has_more`,既不排序也不给 `offset`。于是一个被上千处调用的热点方法(常见的工具/加解密函数),回来的是\
+  “枚举序的任意首 1000 个调用者”,`has_more` 虽诚实地说“还有”,却没有任何手段能翻到其余——agent 想确认\
+  “类 X 是否调用了它”只能在这不可翻页、未排序的首页里碰运气。现改为与三兄弟对齐:先把调用点收全(受新的\
+  `_MAX_XREFS_COLLECT`=10000 收集上限约束,越过即置 `scan_capped`)、按 `(class, method)` 排序、再用\
+  `_clamp_page` 按 `offset` / `limit` 切页,回包新增 `total` / `offset` / `scan_capped`。这样超限页是真正的\
+  字母序前缀,更大的 `offset` 能走完余下的调用者,`has_more` 表示后续页还有行、`scan_capped` 表示收集本身在\
+  分页前就被截。`offset` 在 schema 层 `Field(ge=0)`、后端 `_clamp_page` 再钳(与其它读取器一致),既有的\
+  `callers` / `method_name` 形状与 `has_more` 语义保持不变(纯增字段,向后兼容)。
+- `tests/unit/test_apk_page_clamp.py` 以逆序调用点钉住“首页是字母序前缀、`offset=3` 取到其余”、负 `offset` 归零页、\
+  越界 `offset` 是空的末页,以及把 `_MAX_XREFS_COLLECT` 调小后 `scan_capped` 为真;`test_apk_offset_schema.py` 把\
+  `apk.xrefs` 纳入“offset 必须 `minimum=0` 且无上限”的用例;`test_apk_service_envelopes.py` 的假后端补上 `offset` 形参。
+
 ### 测试（钉住 frida.java.classes / methods 的 has_more 全靠“向脚本多要一个”：脚本按 limit+1 枚举，回包按 limit 切页）
 
 - `frida.java.classes` / `frida.java.methods` 的 `has_more` 是否诚实,取决于后端向设备脚本请求的是\
