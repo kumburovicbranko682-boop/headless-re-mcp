@@ -413,6 +413,31 @@ def test_instance_start_refuses_an_unbindable_port(monkeypatch: pytest.MonkeyPat
     assert exc.value.code == "invalid_state"
 
 
+def test_instance_start_blames_the_host_when_a_bind_fails_for_any_other_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bind failure that is not EADDRINUSE is a bad host, not a busy port.
+
+    EADDRNOTAVAIL for an address no local interface owns, an unresolvable host,
+    a privileged bind -- all land here. The old code called every bind failure
+    "port in use" and sent the caller off to kill a listener that never existed;
+    start() must answer invalid_params and name the host it could not bind, so
+    the distinction the EADDRINUSE arm relies on is real and tested from both
+    sides.
+    """
+    monkeypatch.setattr(proxy_client, "_port_accepts", lambda host, port, timeout=0.25: False)
+    monkeypatch.setattr(
+        proxy_client,
+        "_bind_probe",
+        lambda host, port: OSError(errno.EADDRNOTAVAIL, "cannot assign requested address"),
+    )
+    inst = _ProxyInstance("10.255.255.1", 8080)
+    with pytest.raises(ProxyError) as exc:
+        inst.start()
+    assert exc.value.code == "invalid_params"
+    assert "cannot bind to host" in exc.value.message
+
+
 def test_instance_start_reports_a_thread_that_fails_to_launch_mitmproxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
