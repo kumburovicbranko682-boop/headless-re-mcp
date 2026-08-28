@@ -236,6 +236,13 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `invalid_params`。补回归测试钉住夹取函数本身，以及各适配器的非正超时在开进程前被拒（含 r2 在
   能力检查前即拒，与 jadx 一致）、巨大超时被封到各自上限；r2 一路在真 radare2 上对本地 ELF
   验过：正常分析照旧，非正/NaN 回 `invalid_params` 不再开进程，巨大值封到 120s。
+- **windbg（cdb）同样把调用方 `timeout` 直接塞进 `run_bounded`，未走上面的 `clamp_cli_timeout`。**
+  dump 类工具 schema 声明 `0 < timeout <= 300`、live 类声明 `0 < timeout <= 120`，但 Agent 传输
+  绕过 schema：非正/NaN 的 deadline 会让 cdb 先启动再于第一轮被杀、把坏参数误报成 `timeout`，
+  而超大值让一个卡住的 cdb.exe 长时间占着 dump 文件（live 路径更是全程非侵入式挂在被调试进程上）。
+  现在在 `_run_dump`（上限 300）与 `_run_process`（上限 120）两个收口处按各自 schema 上限夹取，
+  覆盖全部八个 windbg 工具（open_dump/threads/modules/disasm 与 attach/live_threads/live_modules/
+  live_disasm），越界即回 `invalid_params`，与其余 CLI 适配器一致。补直测钉住两条路径的夹取与拒绝。
 
 ### 修复（`web.open` / `web.navigate` 不报 HTTP 状态，错误页与命中难分）
 
