@@ -28,9 +28,11 @@ from typing import Any
 import pytest
 
 from headless_re_mcp.backends.jsre.client import (
+    _MAX_JS_COMMENTS_PAGE,
     _MAX_JS_ENDPOINTS_PAGE,
     _MAX_JS_IMPORTS_PAGE,
     _MAX_JS_STRINGS_PAGE,
+    scan_js_comments,
     scan_js_endpoints,
     scan_js_imports,
     scan_js_strings,
@@ -53,6 +55,10 @@ def _run_imports(path: Path, offset: int, limit: int) -> _Payload:
     return scan_js_imports(path, offset=offset, limit=limit)
 
 
+def _run_comments(path: Path, offset: int, limit: int) -> _Payload:
+    return scan_js_comments(path, offset=offset, limit=limit)
+
+
 def _src_strings(n: int) -> str:
     return ";".join(f"var s{i} = 'str_value_{i:05d}'" for i in range(n))
 
@@ -65,11 +71,16 @@ def _src_imports(n: int) -> str:
     return ";".join(f"import 'pkg{i:05d}'" for i in range(n))
 
 
+def _src_comments(n: int) -> str:
+    return "\n".join(f"// note {i:05d}" for i in range(n))
+
+
 # (id, make_source, run, list_key, page_ceiling)
 _CASES: tuple[tuple[str, _MakeSource, _Run, str, int], ...] = (
     ("strings", _src_strings, _run_strings, "strings", _MAX_JS_STRINGS_PAGE),
     ("endpoints", _src_endpoints, _run_endpoints, "endpoints", _MAX_JS_ENDPOINTS_PAGE),
     ("imports", _src_imports, _run_imports, "imports", _MAX_JS_IMPORTS_PAGE),
+    ("comments", _src_comments, _run_comments, "comments", _MAX_JS_COMMENTS_PAGE),
 )
 
 _IDS = [case[0] for case in _CASES]
