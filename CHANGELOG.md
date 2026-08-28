@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 测试（r2 live gate 补齐 ELF xrefs；本机实跑验证 gate 执行而非跳过）
+
+- 用真实 radare2 5.5.0（apt 装）在 Linux 上实跑 `test_m11_r2_live_gate.py`，两条用例
+  全绿——PE 与 ELF 地址映射 gate 确为"执行"而非"跳过"。
+- ELF gate 此前覆盖 functions/disasm/imports/exports/strings，唯独没跑 `xrefs`——正是本
+  分支把 `axj` 改为 `aac`+`axtj` 的那条路径。新增 xrefs 断言：夹具里 `main` 恰好只调用
+  `helper` 一次，故对 `helper` 取 xrefs 必得一条来自 `main` 的 CALL，且引用地址按 ELF 载入
+  基址映射（`rva == va - image_base`）。数据无关（不依赖分析恰好命名了哪些函数），是
+  ELF xrefs 路径的回归绊线。PE gate 只能证 xrefs 的空集侧（count 0），此条补上有值侧。
+- 变异验证承重：把 `axtj @ addr` 的地址打偏后该 gate 立即失败（count 变 0）。
+
 ### 测试（非-PE 共享基座与服务层的剩余退化/边界分支，只加测试、不改源码）
 
 - 继续按"退化温和、分类诚实、绝不泄漏"排查非-PE 依赖的共享基座与服务层仅剩的语句/
