@@ -36,6 +36,9 @@ _MAX_STRINGS_PAGE = 2000
 _MAX_XREFS_PAGE = 1000
 _MAX_FILES_PAGE = 2000
 _MAX_FILES_COLLECT = 50_000
+_MAX_META_DATA = 500
+_MAX_META_VALUE_CHARS = 4096
+_ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 
 
 class ApkError(RuntimeError):
@@ -346,6 +349,59 @@ class ApkClient:
             "providers": providers,
             "main_activity": apk.get_main_activity(),
             "has_more": a_more or s_more or r_more or p_more,
+        }
+
+    def meta_data(self, path: Path) -> JsonObject:
+        """Lift every <meta-data> element out of the manifest.
+
+        meta-data is where an app parks its keys and switches for the framework
+        to read at runtime: Maps/Firebase API keys, the WorkManager/GCM markers,
+        a custom SDK's app id, feature toggles. Each entry is reported with the
+        component it sits inside (application, activity, service, receiver or
+        provider) and that component's name, so a key scoped to one exported
+        activity is not mistaken for an app-wide one. value carries the literal
+        android:value; resource carries android:resource (a @resource id) when
+        the entry points at a resource instead of a literal.
+        """
+        apk = self._apk(path)
+        root = apk.get_android_manifest_xml()
+        if root is None:
+            return {"meta_data": [], "count": 0, "total": 0, "has_more": False}
+
+        def _attr(element: Any, name: str) -> str | None:
+            value = element.get(_ANDROID_NS + name)
+            if value is None or str(value) == "":
+                return None
+            return str(value)[:_MAX_META_VALUE_CHARS]
+
+        items: list[JsonObject] = []
+        total = 0
+        has_more = False
+        for element in root.iter("meta-data"):
+            total += 1
+            if len(items) >= _MAX_META_DATA:
+                has_more = True
+                continue
+            parent = element.getparent()
+            scope = None
+            scope_name = None
+            if parent is not None:
+                scope = str(getattr(parent, "tag", "")) or None
+                scope_name = _attr(parent, "name")
+            items.append(
+                {
+                    "name": _attr(element, "name"),
+                    "value": _attr(element, "value"),
+                    "resource": _attr(element, "resource"),
+                    "scope": scope,
+                    "scope_name": scope_name,
+                }
+            )
+        return {
+            "meta_data": items,
+            "count": len(items),
+            "total": total,
+            "has_more": has_more,
         }
 
     def native_libs(self, path: Path) -> JsonObject:

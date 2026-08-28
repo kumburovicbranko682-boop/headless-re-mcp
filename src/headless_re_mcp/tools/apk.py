@@ -97,6 +97,23 @@ def build_apk_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.apk_native_libs(session_id))
 
+    @tools.tool(name="apk.meta_data")
+    def apk_meta_data(session_id: str) -> dict[str, Any]:
+        """Lift every <meta-data> element from the manifest (keys, SDK markers).
+
+        meta-data is where apps stash API keys and framework switches the
+        runtime reads: Maps/Firebase keys, SDK app ids, feature toggles. Answers
+        with meta_data (a list of entries), count, total and has_more. Each entry
+        carries name, value (the literal android:value) and resource (an
+        android:resource @id, when it points at a resource rather than a
+        literal), plus scope (the enclosing element: application, activity,
+        service, receiver or provider) and scope_name (that component's name) so
+        a key scoped to one exported activity is not read as app-wide. A field
+        the element did not declare is null. Read has_more: a very large manifest
+        is capped.
+        """
+        return _dump(analysis.apk_meta_data(session_id))
+
     @tools.tool(name="apk.files")
     def apk_files(
         session_id: str,
