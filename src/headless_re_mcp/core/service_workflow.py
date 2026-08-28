@@ -499,6 +499,29 @@ class WorkflowAnalysisMixin:
         timeout: float = 30.0,
         event_budget: int = 1024,
     ) -> Result[JsonObject]:
+        # kind/fields are handler kwargs the workflow.navigate_to_event tool schema
+        # types as a string and a string-keyed mapping, but the agent and
+        # OpenAI-bridge transports bind them straight from model output with no
+        # pydantic coercion. EventPattern.create validates the field *values* as
+        # WorkflowInvariantError -> invalid_request, yet kind.strip() reaches a raw
+        # AttributeError on a non-string, (fields or {}).items() one on a non-mapping,
+        # and each key.strip()/sorted() a raw AttributeError/TypeError on a non-string
+        # key -- all filed by _failure as a logged internal_error incident rather than
+        # the invalid_request a bad pattern already earns. Reject the wrong types here
+        # so a malformed argument stays a caller fault.
+        if not isinstance(kind, str):
+            return _failure(
+                ValueError("navigation event kind must be a string"),
+                session_id=session_id,
+            )
+        if fields is not None and (
+            not isinstance(fields, Mapping)
+            or not all(isinstance(key, str) for key in fields)
+        ):
+            return _failure(
+                ValueError("navigation event fields must be a string-keyed mapping"),
+                session_id=session_id,
+            )
         try:
             pattern = EventPattern.create(kind, fields)
         except BaseException as exc:

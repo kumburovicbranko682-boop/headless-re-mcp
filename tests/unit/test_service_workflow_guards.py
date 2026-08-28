@@ -280,6 +280,42 @@ def test_navigate_to_event_rejects_a_blank_pattern_kind() -> None:
     assert result.error.code == "invalid_request"
 
 
+@pytest.mark.parametrize("kind", [123, None, ["breakpoint.hit"], {"k": "v"}, b"x"])
+def test_navigate_to_event_refuses_a_non_string_kind_as_invalid_request(kind: Any) -> None:
+    # The schema types kind as a string, but the agent transport binds it from
+    # model output with no coercion. A non-string kind reached EventPattern's
+    # kind.strip() and raised a raw AttributeError that _failure filed as a logged
+    # internal_error incident; it must read as the caller fault it is.
+    host = _Double()
+    result = host.workflow_navigate_to_event("sess", cast(Any, kind))
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    assert not host.calls
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        [("address", 1)],  # a list of pairs, not a mapping -> .items() fails
+        "address",  # a bare string, not a mapping
+        {1: "x"},  # a mapping keyed by a non-string -> key.strip() fails
+        {"ok": 1, 2: "bad"},  # mixed keys -> sorted() cannot order them
+    ],
+)
+def test_navigate_to_event_refuses_malformed_fields_as_invalid_request(fields: Any) -> None:
+    # fields is schema-typed as a string-keyed mapping. A non-mapping, or a mapping
+    # with non-string keys, reached (fields or {}).items()/sorted()/key.strip() and
+    # raised a raw AttributeError or TypeError that _failure filed as an internal
+    # incident. A malformed fields argument is a caller fault, not an incident.
+    host = _Double()
+    result = host.workflow_navigate_to_event("sess", "breakpoint.hit", fields=cast(Any, fields))
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "invalid_request"
+    assert not host.calls
+
+
 @pytest.mark.parametrize("budget", [0, -1, 10_000_000, "5", 3.0])
 def test_navigate_to_breakpoint_bounds_the_event_budget(budget: Any) -> None:
     host = _Double()
