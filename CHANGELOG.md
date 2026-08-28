@@ -66,6 +66,8 @@ Android 线的包名校验现在跨 adb 与 frida 两后端锁定一致。`devic
 
 `device.install`/`uninstall`/`launch`/`force_stop` 四个工具的 docstring 现在都点名它们在「无法核实/否定」分支里返回的 `note`——同类的又一处遗漏（这次在 Android/adb 线）。这四个操作都遵循「adb 返回本身不算成功」的诚实语义：核实不了时把主结果字段（`installed`/`uninstalled`/`launched`/`stopped`）置 null 或 false，并附一个 `note` 讲清为什么（「包名读不出」「pm path 核实失败」「前台读不出」「进程列表读不出」等）；`test_adb_backend_branches.py` 早已逐分支断言 `result["note"]` 的存在，但四个工具的 docstring 只列到主字段、从不点名承载该原因的 `note`——于是 agent 收到 `installed: null` 时并不知道还有个 `note` 能解释缘由。现四份 docstring 各补上 `note` 及其含义，并新增 `TestVerificationNoteDocstrings`：对 install/uninstall/launch 的 note 分支与 force_stop 的存活分支逐个断言「回包里每个键都在对应工具 docstring 里被点名」，再断言四份 docstring 都含 `note`。已验证非空洞——把 `device.install` docstring 里的 note 一句删掉后，install 的逐键用例与四合一用例同时转红。
 
+顺带修正 `test_r2_address_mapping.py::test_function_list_is_items_not_functions` 里一处随 `r2.functions` docstring 改写而失配的断言：旧 docstring 写「There is no functions field」，改成与兄弟工具一致的「There is no functions, truncated or has_more field」后，「no functions field」不再是连续子串（兄弟工具的「no strings/imports/exports field」同样不是），该用例遂将断言放宽为 `"no functions" in described`——被固定的诚实语义（不存在 functions 字段）不变。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、
