@@ -51,3 +51,41 @@ def test_ghidra_analyze_puts_the_log_in_stdout_excerpt_not_functions() -> None:
     assert "project_dir" in described
     assert "no functions field" in described
     assert "no analysis field" in described
+
+
+def test_ghidra_listing_tools_name_the_export_handles() -> None:
+    """functions/symbols/xrefs/decompile each return export_path, project_dir and
+
+    (near-always) artifact_id, but their docstrings named only items/count/
+    has_more (or decompiled/truncated/found) -- the same omission class as the
+    web.har.export size gap. artifact_id is the handle for reading the whole
+    export back, and ghidra.analyze already names project_dir, so leaving these
+    unnamed on the sibling tools is an inconsistency the contract should not
+    carry. analyzeHeadless is not installed here, so pin the return shape from
+    source the way the analyze test above does.
+    """
+    client_src = Path(GhidraClient.functions.__code__.co_filename).read_text(encoding="utf-8")
+    # The backend stamps both paths onto every export payload it returns.
+    assert 'payload["export_path"] = str(out_path)' in client_src
+    assert 'payload["project_dir"] = str(project_dir)' in client_src
+
+    from headless_re_mcp.core import service_ext
+
+    service_src = Path(service_ext.__file__).read_text(encoding="utf-8")
+    # The service registers the raw export and hands its id back in the payload.
+    assert 'data["artifact_id"] = art["id"]' in service_src
+
+    for name in ("ghidra.functions", "ghidra.symbols", "ghidra.xrefs", "ghidra.decompile"):
+        doc = _tool_docstring(name)
+        assert "artifact_id" in doc, name
+        assert "export_path" in doc, name
+        assert "project_dir" in doc, name
+
+    for name in ("ghidra.functions", "ghidra.symbols", "ghidra.xrefs"):
+        doc = _tool_docstring(name)
+        assert "count" in doc, name
+        assert "has_more" in doc, name
+
+    decompile = _tool_docstring("ghidra.decompile")
+    assert "decompiled" in decompile
+    assert "found" in decompile
