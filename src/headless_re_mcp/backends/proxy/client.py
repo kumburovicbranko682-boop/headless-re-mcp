@@ -63,6 +63,15 @@ _MAX_HOST_IPS = 32
 # /users/{num} row. A hostile server can still answer an unbounded variety of
 # paths, so the distinct-endpoint set is capped and endpoints_truncated flags it.
 _MAX_ENDPOINTS = 5000
+# WebSocket message ring. A live socket (a trading feed, a chat, a game) can emit
+# thousands of frames a second, so the message log is its own count-capped ring,
+# separate from the HTTP flow ring. Only a bounded, decoded preview of each frame
+# is retained (text clipped, binary rendered to a bounded hex prefix), never the
+# whole frame object, so capacity * per-message clip bounds the memory without
+# the byte-accounting the HTTP body retention needs.
+_MAX_WS_MESSAGES = 4000
+_MAX_WS_MESSAGE_TEXT = 8192
+_MAX_WS_HEX_BYTES = 2048
 _NUM_SEG_RE = re.compile(r"^\d+$")
 _HEX_SEG_RE = re.compile(r"^[0-9a-fA-F]{12,}$")
 _UUID_SEG_RE = re.compile(
@@ -384,6 +393,86 @@ def _bounded_metadata(value: object, max_bytes: int) -> tuple[str, bool]:
     return payload[:max_bytes].decode("utf-8", errors="ignore"), True
 
 
+def _ws_is_text(msg: Any) -> bool:
+    """Decide whether a WebSocket frame is a text (vs binary) frame.
+
+    mitmproxy versions expose this differently: newer ones carry an ``is_text``
+    bool, older ones an ``Opcode`` enum on ``type`` (TEXT is name "TEXT"/value 1).
+    Fall back to binary when neither is legible rather than guess text.
+    """
+    is_text = getattr(msg, "is_text", None)
+    if isinstance(is_text, bool):
+        return is_text
+    mtype = getattr(msg, "type", None)
+    name = getattr(mtype, "name", None)
+    if isinstance(name, str):
+        return name.upper() == "TEXT"
+    return mtype == 1
+
+
+def _normalize_ws_direction(value: object) -> str:
+    """Map a caller's direction filter to the stored value, or "" for no filter.
+
+    Accepts the stored terms (outgoing/incoming) plus the obvious synonyms a
+    caller reaches for (client/sent, server/received); anything unrecognised is
+    treated as no filter rather than silently matching nothing.
+    """
+    text = value.strip().lower() if isinstance(value, str) else ""
+    if text in ("outgoing", "client", "sent", "client->server", "c2s"):
+        return "outgoing"
+    if text in ("incoming", "server", "received", "server->client", "s2c"):
+        return "incoming"
+    return ""
+
+
+def _shape_ws_message(flow: Any, msg: Any) -> JsonObject:
+    """Snapshot one WebSocket frame into a bounded, searchable summary row.
+
+    Ties the frame back to its handshake flow (``flow_id``, so proxy.flow.get can
+    show the upgrade request that opened the socket) and its host/url, records the
+    direction (client->server is "outgoing"), and keeps a bounded decoded preview:
+    a text frame's UTF-8 (clipped, text_truncated when cut), a binary frame's
+    leading bytes as hex (so protobuf/msgpack payloads stay inspectable). The full
+    frame object is never retained.
+    """
+    request = getattr(flow, "request", None)
+    host, host_truncated = _bounded_metadata(
+        getattr(request, "host", "") if request is not None else "", _MAX_METADATA_BYTES
+    )
+    url, url_truncated = _bounded_metadata(
+        getattr(request, "pretty_url", "") if request is not None else "", _MAX_URL_BYTES
+    )
+    content = getattr(msg, "content", b"") or b""
+    if not isinstance(content, bytes | bytearray):
+        content = str(content).encode("utf-8", "replace")
+    content = bytes(content)
+    is_text = _ws_is_text(msg)
+    from_client = bool(getattr(msg, "from_client", False))
+    entry: JsonObject = {
+        "flow_id": str(getattr(flow, "id", None) or ""),
+        "host": host,
+        "url": url,
+        "from_client": from_client,
+        "direction": "outgoing" if from_client else "incoming",
+        "opcode": "text" if is_text else "binary",
+        "size": len(content),
+        "timestamp": float(getattr(msg, "timestamp", None) or time.time()),
+    }
+    if is_text:
+        text = content.decode("utf-8", "replace")
+        entry["text"] = text[:_MAX_WS_MESSAGE_TEXT]
+        if len(text) > _MAX_WS_MESSAGE_TEXT:
+            entry["text_truncated"] = True
+    else:
+        entry["hex"] = content[:_MAX_WS_HEX_BYTES].hex()
+        entry["binary"] = True
+        if len(content) > _MAX_WS_HEX_BYTES:
+            entry["hex_truncated"] = True
+    if host_truncated or url_truncated:
+        entry["metadata_truncated"] = True
+    return entry
+
+
 def _headers_text(part: Any) -> str:
     """A message's headers as ``name: value`` lines, bounded, for searching.
 
@@ -458,6 +547,8 @@ class _FlowRecorder:
         self._raw: OrderedDict[str, Any] = OrderedDict()
         self._raw_sizes: dict[str, int] = {}
         self._retained_bytes = 0
+        self.ws: deque[JsonObject] = deque(maxlen=_MAX_WS_MESSAGES)
+        self._ws_seq = 0
         self._lock = threading.RLock()
 
     def _omit_retained(self, flow_id: str) -> None:
@@ -594,9 +685,29 @@ class _FlowRecorder:
                 entry["metadata_truncated"] = True
             self.flows.append(entry)
 
+    def websocket_message(self, flow: Any) -> None:
+        # mitmproxy calls this after each frame is appended to the flow's message
+        # list; the newest is the last one. WebSocket traffic never reaches
+        # response()/error() (the HTTP flow is the upgrade handshake), so without
+        # this hook the real-time API layer of a modern app -- the tokens, the
+        # RPC, the live data over the socket -- is captured nowhere.
+        socket = getattr(flow, "websocket", None)
+        messages = getattr(socket, "messages", None) if socket is not None else None
+        if not messages:
+            return
+        entry = _shape_ws_message(flow, messages[-1])
+        with self._lock:
+            self._ws_seq += 1
+            entry["seq"] = self._ws_seq
+            self.ws.append(entry)
+
     def snapshot(self) -> list[JsonObject]:
         with self._lock:
             return list(self.flows)
+
+    def ws_snapshot(self) -> list[JsonObject]:
+        with self._lock:
+            return list(self.ws)
 
     def raw(self, flow_id: str) -> Any | None:
         with self._lock:
@@ -859,6 +970,58 @@ class ProxyBackend:
         window = items[start : start + cap]
         return {
             "flows": window,
+            "count": len(window),
+            "total": len(items),
+            "offset": start,
+            "has_more": start + len(window) < len(items),
+            "dropped": dropped,
+        }
+
+    def websockets(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        flow_id: str = "",
+        host_filter: str = "",
+        direction: str = "",
+        contains: str = "",
+    ) -> JsonObject:
+        """List captured WebSocket frames (direction, opcode, decoded preview).
+
+        The HTTP flow ring only holds the upgrade handshake; the frames exchanged
+        over the socket afterwards are recorded here. Filters (flow_id, host,
+        direction, content substring) are applied before paging so total is the
+        match count, and dropped reports ring eviction across the whole capture.
+        """
+        inst = self._get(session_id)
+        items = inst.recorder.ws_snapshot()
+        dropped = 0
+        if items:
+            dropped = max(0, int(items[-1].get("seq") or 0) - len(items))
+        fid = flow_id.strip() if isinstance(flow_id, str) else ""
+        if fid:
+            items = [m for m in items if str(m.get("flow_id", "")) == fid]
+        host_needle = host_filter.strip().lower() if isinstance(host_filter, str) else ""
+        if host_needle:
+            items = [m for m in items if host_needle in str(m.get("host", "")).lower()]
+        want = _normalize_ws_direction(direction)
+        if want:
+            items = [m for m in items if m.get("direction") == want]
+        needle = contains.strip().lower() if isinstance(contains, str) else ""
+        if needle:
+            items = [
+                m
+                for m in items
+                if needle in str(m.get("text", "")).lower()
+                or needle in str(m.get("hex", "")).lower()
+            ]
+        start = max(0, int(offset))
+        cap = max(1, min(int(limit), 1000))
+        window = items[start : start + cap]
+        return {
+            "messages": window,
             "count": len(window),
             "total": len(items),
             "offset": start,

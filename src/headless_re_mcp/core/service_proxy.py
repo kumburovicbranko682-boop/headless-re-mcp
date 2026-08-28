@@ -122,6 +122,28 @@ class ProxyAnalysisMixin:
             failed_only=failed_only,
         )
 
+    def proxy_websockets(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        flow_id: str = "",
+        host_filter: str = "",
+        direction: str = "",
+        contains: str = "",
+    ) -> Result[JsonObject]:
+        return self._proxy_wrap(
+            session_id,
+            "websockets",
+            session_id,
+            offset=offset,
+            limit=limit,
+            flow_id=flow_id,
+            host_filter=host_filter,
+            direction=direction,
+            contains=contains,
+        )
+
     def proxy_hosts(
         self,
         session_id: str,

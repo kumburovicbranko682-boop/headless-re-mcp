@@ -100,6 +100,56 @@ def build_proxy_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="proxy.websockets")
+    def proxy_websockets(
+        session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        flow_id: str = "",
+        host_filter: str = "",
+        direction: str = "",
+        contains: str = "",
+    ) -> dict[str, Any]:
+        """List captured WebSocket frames (direction, opcode, decoded payload).
+
+        proxy.flows shows the WebSocket upgrade as a single HTTP flow (status
+        101); the frames the app then exchanges over that socket -- the real-time
+        API layer of a modern app: the auth tokens, the RPC calls, the live push
+        data that never touches a normal request -- flow past that one row and are
+        recorded here instead. Answers with messages, each {seq, flow_id (the
+        handshake flow's id, so proxy.flow.get shows the upgrade request that
+        opened the socket), host, url, from_client, direction (outgoing =
+        client->server, incoming = server->client), opcode (text or binary), size
+        (frame bytes on the wire), timestamp}, plus a decoded preview -- text for
+        a text frame (text_truncated when it exceeded the clip) or hex for a
+        binary frame (hex is the leading bytes so protobuf/msgpack stays
+        inspectable, hex_truncated when longer, binary true). Also answers count,
+        total, offset, has_more, and dropped (how many frames the capture ring
+        already evicted -- a filled page is not the whole log). The list field is
+        messages, not flows or frames. Four filters narrow a busy socket, all
+        applied before paging (so total is the match count) and combined with AND;
+        dropped still counts every eviction. flow_id keeps only frames of one
+        socket (the id from a proxy.flows 101 row). host_filter keeps frames whose
+        host contains that substring (case-insensitive). direction keeps one
+        side: outgoing (aliases client/sent) or incoming (aliases server/
+        received). contains keeps frames whose decoded text or hex contains that
+        substring (case-insensitive) -- the way to find a token or an opcode among
+        thousands of frames. Only a bounded preview of each frame is retained, not
+        the whole frame, so a very large or fast socket cannot grow the capture
+        without bound.
+        """
+        return _dump(
+            analysis.proxy_websockets(
+                session_id,
+                offset=offset,
+                limit=limit,
+                flow_id=flow_id,
+                host_filter=host_filter,
+                direction=direction,
+                contains=contains,
+            )
+        )
+
     @tools.tool(name="proxy.hosts")
     def proxy_hosts(
         session_id: str,

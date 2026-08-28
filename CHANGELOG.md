@@ -294,6 +294,16 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
   `external` 为真标记不在本 app 内定义的框架/库目标——正是 JNI/加密/exec/网络这些一眼要找的调用面。与 `apk.xrefs` 逐调用点
   列出不同，`apk.callees` 按 `class+method+descriptor` 去重、只列去重后的目标集合，因为这里的价值是"触及了哪些 API"而非"各调用几次"。
   只读，工具总数 269→270（153 只读 / 117 写）。
+- **抓包线补上 WebSocket 帧捕获（现代应用的实时 API 层此前完全不可见）**：新增只读 `proxy.websockets`。此前录制器只挂了
+  mitmproxy 的 response()/error() 钩子，只记录 HTTP 请求/响应流——WebSocket 升级握手会作为一条 101 的 HTTP 流被记下，但握手
+  之后在这个 socket 上往返的帧（现代应用的实时 API 层：auth token、RPC 调用、live push 数据，这些从不经过普通请求）此前捕获在
+  任何地方都看不到。现在录制器加挂 websocket_message 钩子，把每一帧快照进独立的、按条数封顶的环形缓冲（只保留有界的解码预览，
+  不保留整帧对象，故 容量×每帧裁剪 就是内存上界，无需 HTTP 体保留那套字节记账）。返回 messages（每项 {seq、flow_id（握手流
+  的 id，可用 proxy.flow.get 看开 socket 的升级请求）、host、url、from_client、direction（outgoing=client→server，
+  incoming=server→client）、opcode（text|binary）、size（帧字节数）、timestamp}，文本帧带 text（超限置 text_truncated），
+  二进制帧带 hex（前若干字节的十六进制，protobuf/msgpack 仍可查，超限置 hex_truncated，并置 binary）加 count/total/offset/
+  has_more/dropped（环已淘汰的帧数）。四个过滤器（flow_id、host、direction 含 client/sent、server/received 等别名、contains
+  对解码文本或 hex 子串）在分页前施加故 total 即匹配数，AND 组合。只读，工具总数 320→321（201 只读 / 120 写）。
 - **WASM 线补上函数清单（r2.functions / ghidra.functions 的 wasm 对应物）**：新增只读 `wasm.functions`，把此前所有 wasm 工具都跳过的
   类型段、导入段、函数段、代码段拼成一张按函数索引排序的表，再叠上导出名与 name 段——依旧纯 Python、不依赖 wabt。此前 `wasm.summary`
   只给导入/导出、`wasm.names` 只给名字，二者各是这张表的一个切片；现在能看到每个函数的索引、签名、体大小并据此挑一个用 `wasm.wat`
