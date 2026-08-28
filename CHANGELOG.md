@@ -24,6 +24,23 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+### 修复（x64dbg 调试事件文本字段的孤立代理项加固）
+
+- 一个孤立 UTF-16 代理项不再终结整个会话的调试事件流。NTFS 文件名是任意 UTF-16,
+  被调试映像或模块名确实可以带未配对代理项,插件的 JSON 写出器将其以 `\ud800`
+  转义直传,而 `json.loads` 接受该转义。`core/events.py` 的 `_parse_event_data`
+  过去对文本字段(`path`/`name`/`module`)做严格 `encode("utf-8")` 长度校验,
+  遇代理项即抛出原生 `UnicodeEncodeError` 而非设计化的 `DebugEventProtocolError`:
+  工具调用读路径(`service.py` 内联 `drain_native_into_log`)直接以编码器堆栈
+  失败,后台 `EventDrainPump` 则在同一游标上永久重试同一批毒事件——单次
+  边沿告警之后环形缓冲静默覆盖,持久日志从此停摆。且"拒绝"也不是出路:drain
+  游标永远越不过被拒批次,一个恶意模块名即可 DoS 掉本会话余下的事件重放。
+  现按传输层字节解码同一策略以 `errors="replace"` 消毒后放行(有损但存活),
+  超长仍拒绝;消毒同时使下游持久日志的 SQLite TEXT 绑定(遇代理项同样抛
+  `UnicodeEncodeError`)不可达。回归测试:含代理项的 `process.created.path`
+  与 `module.loaded.name` 整批解析成功、代理项被替换、事件经 SQLite 持久日志
+  往返完好;超长文本(替换后仍超限)保持设计化拒绝。
+
 ### 测试（x64dbg RPC 客户端派发与 trace 校验）
 
 - `backends/x64dbg/client.py` 的既有测试覆盖命名管道帧、`read_events`、

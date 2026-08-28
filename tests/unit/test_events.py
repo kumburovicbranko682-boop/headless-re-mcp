@@ -227,6 +227,66 @@ def test_event_sequence_source_kind_and_data_are_defensive() -> None:
             _parse(_batch(events=deepcopy(events)))
 
 
+def test_a_lone_surrogate_in_a_module_name_does_not_end_the_event_stream(
+    tmp_path: Path,
+) -> None:
+    """NTFS names are arbitrary UTF-16, so a module really can be named with an
+    unpaired surrogate, and the plugin's JSON writer passes it through as a
+    \\ud800 escape that json.loads accepts. The validator's strict encode then
+    raised a raw UnicodeEncodeError instead of a designed refusal -- and either
+    way the drain cursor could never advance past the batch, so one hostile
+    module name ended event replay for the rest of the session and permanently
+    wedged the background drain pump against the same poisoned batch.
+    """
+    import json
+
+    from headless_re_mcp.core.event_log import PersistentDebugEventLog
+
+    payload = json.loads(
+        '{"cursor": 0, "next_cursor": 2, "oldest_sequence": 1,'
+        ' "latest_sequence": 2, "dropped": 0, "dropped_total": 0,'
+        ' "has_more": false, "capacity": 1024, "count": 2, "events": ['
+        '{"sequence": 1, "timestamp_unix_ms": 1700000000001,'
+        ' "source": "x64dbg.plugin_callback", "kind": "process.created",'
+        ' "data": {"process_id": 7, "thread_id": 8, "image_base": 4096,'
+        ' "start_address": 8192, "path": "C:\\\\evil\\ud800.exe"}},'
+        '{"sequence": 2, "timestamp_unix_ms": 1700000000002,'
+        ' "source": "x64dbg.plugin_callback", "kind": "module.loaded",'
+        ' "data": {"base": 4096, "size": 8192, "name": "evil\\ud800.dll"}}]}'
+    )
+
+    batch = _parse(payload)
+
+    for text in (batch.events[0].data["path"], batch.events[1].data["name"]):
+        assert "\ud800" not in text, "the surrogate must not survive the boundary"
+        assert "evil" in text, "the rest of the name must survive the repair"
+
+    # The second crash site: the durable log's SQLite TEXT bind raises on a
+    # surrogate too, from inside the tool-call read path. Clean parses keep it
+    # unreachable.
+    log = PersistentDebugEventLog(tmp_path / "events.sqlite3")
+    log.append_events(batch.events)
+    served = log.read_after(0, limit=10)
+    assert [event.sequence for event in served.batch.events] == [1, 2]
+    log.close()
+
+
+def test_an_oversized_text_field_is_still_refused_after_the_repair() -> None:
+    payload = _batch(
+        latest=1,
+        events=[
+            _event(
+                1,
+                "module.loaded",
+                {"base": 0x1000, "size": 0x2000, "name": "\ud800" * 600},
+            )
+        ],
+    )
+
+    with pytest.raises(DebugEventProtocolError):
+        _parse(payload)
+
+
 def test_truncation_marker_requires_present_text() -> None:
     payload = _batch(
         latest=1,
