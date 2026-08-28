@@ -24,6 +24,22 @@ die/exeinfope/upx/de4dot 各自的 `_capture_process` 采用同一范式收敛�
 
 调用方取消（`BoundedCancelled`）在各适配器间统一为“取消不是失败”：NETReactorSlayer 适配器过去把取消重映射成 `process_failed`，与 scylla/vmp_dumper/xvlkc 等兄弟适配器不一致，现改为原样上抛；`unpack.auto` 的 UPX 阶段（`unpack_upx_test` / `unpack_upx_unpack`）过去把取消经通用 `except BaseException` 吞成 `internal_error` 事故与假的 `upx_test_failed`，现先行捕获并重抛给 `unpack.auto` 的取消处理器，最终干净地记为 `unpack_cancelled`。此外 `unpack.xvlkc/vmp/scylla` 各 CLI dump 在进入取消作用域前会像 `unpack.auto` 一样先 `_reset_unpack_cancel`，避免上一次 `unpack.cancel` 遗留的取消闩让后续同会话 dump 一进来就自我取消。
 
+++ b/CHANGELOG.md
+### 修复（工具读写分级守卫真正拒绝跨集合重复分类）
+
+- `tools/catalog.py` 把每个工具的作用效果显式写在 `_READ_ONLY_NAMES` /
+  `_STATE_CHANGE_NAMES` / `_FILE_WRITE_NAMES` 三个集合里，`_declared_spec` 按“先只读、
+  再写”的顺序判定。此前模块级守卫只校验三者并集大小 `!= 265`,报错文案却自称能挡“duplicates
+  or omissions”。但并集会把同名去重:一旦某个改状态/写文件的工具被误抄进只读集合,只要顺手删掉
+  另一个只读名把总数凑回 265,并集数就仍是 265、守卫照过,而该工具会被静默降级成只读——绕过
+  `guard_write` 的只读部署拒绝与写操作确认提示,正是最危险的方向。现新增按“各集合大小之和是否等
+  于并集大小”判定的不相交守卫:一旦出现跨集合重复,导入即失败并列出冲突的工具名,让降级在启动时
+  就炸出来而不是悄悄放行;原 `!= 265` 总数守卫保留,继续挡新增/遗漏。该校验抽成纯函数
+  `_validated_tool_names`(导入时以真实三集合调用),使两条拒绝分支不再只能在导入期触发:回归测
+  试既固定三集合两两不相交且总数为 265,又直接以“把 `modules.dump` 误抄进只读”触发跨集合冲突
+  分支(报错按名字点出 `modules.dump`)、以“删掉 `audit.list`”触发总数漂移分支,两条 `raise`
+  路径都被真正执行,而不再只是用集合算术旁证。
+
 ### 新增（监控台工作台）
 
 - 监控台改成对话居中的 Agent 工作台：左侧对话/会话，右侧按 target 换皮的检查器。

@@ -341,9 +341,45 @@ _FILE_WRITE_NAMES = frozenset((
     'web.har.export',
     'web.screenshot',
 ))
-_ALL_TOOL_NAMES = _READ_ONLY_NAMES | _STATE_CHANGE_NAMES | _FILE_WRITE_NAMES
-if len(_ALL_TOOL_NAMES) != 265:
-    raise RuntimeError("tool effect policy contains duplicates or omissions")
+def _validated_tool_names(
+    read_only: frozenset[str],
+    state_change: frozenset[str],
+    file_write: frozenset[str],
+    *,
+    expected_total: int = 265,
+) -> frozenset[str]:
+    """Return the union of the three effect sets, or raise if it is not a clean partition.
+
+    Every tool carries exactly one effect classification. The union count alone
+    cannot enforce that: a name copied into two sets is deduplicated in the union,
+    so as long as some other name is dropped the total still lands on
+    ``expected_total`` while the duplicate is silently resolved to read_only --
+    the branch ``_declared_spec`` checks first -- stripping a mutating tool of its
+    write guard and confirmation prompt. That downgrade is the dangerous
+    direction, so reject any cross-set overlap outright and name the offenders
+    rather than let the count guard wave them through under a message that only
+    claims to catch "duplicates". Kept as a pure helper so both refusals are
+    exercised directly rather than only at import.
+    """
+    all_names = read_only | state_change | file_write
+    effect_total = len(read_only) + len(state_change) + len(file_write)
+    if len(all_names) != effect_total:
+        conflicting = sorted(
+            (read_only & state_change)
+            | (read_only & file_write)
+            | (state_change & file_write)
+        )
+        raise RuntimeError(
+            f"tool is classified with conflicting effects: {conflicting}"
+        )
+    if len(all_names) != expected_total:
+        raise RuntimeError("tool effect policy contains duplicates or omissions")
+    return all_names
+
+
+_ALL_TOOL_NAMES = _validated_tool_names(
+    _READ_ONLY_NAMES, _STATE_CHANGE_NAMES, _FILE_WRITE_NAMES
+)
 
 _WEB_NAMES = frozenset(['artifacts.describe', 'artifacts.gc', 'artifacts.list', 'audit.list', 'dynamic.breakpoints', 'dynamic.modules', 'dynamic.registers.read', 'dynamic.state', 'session.close', 'session.get', 'session.list', 'static.decompile', 'static.functions', 'static.strings', 'timeline.list', 'unpack.artifacts', 'unpack.cancel', 'unpack.status', 'workflow.cancel', 'workflow.status'])
 _SERVICE_OVERRIDES = {
