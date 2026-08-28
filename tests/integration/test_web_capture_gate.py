@@ -21,6 +21,7 @@ import json
 import threading
 import time
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -173,6 +174,19 @@ def test_web_capture_chain_records_real_traffic(site: str) -> None:
             assert by_url[site + "/"]["_resourceType"] == "Document"
             assert by_url[site + "/app.js"]["_resourceType"] == "Script"
             assert by_url[site + "/data.json"]["_resourceType"] in {"Fetch", "XHR"}
+
+            # startedDateTime must be the real time CDP reported (requestWillBeSent's
+            # wallTime), kept on the row as started_at -- not the single export
+            # instant that made every entry look simultaneous. The fetch row was
+            # captured seconds ago, so its epoch is recent, and the HAR stamp for
+            # that URL must equal iso_from_epoch(started_at). This catches a
+            # regression that dropped the real time on a real browser, where the
+            # unit guard's synthetic wallTime cannot reach.
+            started_at = row.get("started_at")
+            assert isinstance(started_at, (int, float)) and started_at > 0, row
+            assert 0 <= (datetime.now(UTC).timestamp() - started_at) < 3600, started_at
+            expected = datetime.fromtimestamp(started_at, UTC).isoformat()
+            assert by_url[site + "/data.json"]["startedDateTime"] == expected
 
             # screenshot must be a real PNG, not merely a file that exists.
             shot = service.web_screenshot(session_id)
