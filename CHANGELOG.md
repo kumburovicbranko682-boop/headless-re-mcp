@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（Web UI 有序列表丢起始编号，"3. 4." 渲染成 "1. 2."）
+
+- `webui/src/lib/markdown.ts` 的有序列表正则 `^\s*\d+[.)]\s+(.+)$` 只捕获条目文本，
+  把列表标记的数字丢掉了，渲染层于是永远输出裸 `<ol>`——每个列表都从 1 重新计数。
+  助手接着前文写 "3. 第三步 / 4. 第四步"（延续自己先前编号的步骤）时，界面显示成
+  "1. 2."，与正文引用的步骤编号自相矛盾。修法与 CommonMark 一致：只取首个标记的
+  数字作为 `start`（后续标记本就允许任意），解析产物在 `start !== 1` 时携带该字段，
+  `MarkdownMessage` 相应渲染 `<ol start>`；从 1 开始的常见列表块形状与标记完全不变。
+  新增两条回归（解析层钉 `start: 3`、渲染层钉 `<ol start="3">` 且 1 起始无属性），
+  旧代码下两条均失败，修复后 webui 全套 65 测试与 `tsc --noEmit` 通过。
+
 ### 修复（doctor probe 测试把 creationflags 钉死为 POSIX-only 的 0）
 
 - main 新落的 `test_doctor_probe_edges.py::test_probe_run_decodes_bounded_output` 断言
