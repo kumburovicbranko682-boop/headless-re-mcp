@@ -5,6 +5,17 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
+### 修复（单测密闭性：3 个"mitmproxy 缺席"用例不再依赖环境里真的没装 mitmproxy）
+
+- 在装齐全部可选后端（`android`+`browser`+`proxy` extras）跑全量单测时暴露出 3 个非密闭用例：
+  `test_instance_run_records_an_import_failure`（guard_paths）、
+  `test_instance_start_reports_a_thread_that_fails_to_launch_mitmproxy` 与
+  `test_backend_check_available_reports_and_caches`（paths）此前假设"本环境没装 mitmproxy"，
+  一旦装上 `proxy` extra（比如同机跑代理集成门禁）就三连失败——与刚修掉的 androguard、r2 用例同属一类。
+- 现在用 `monkeypatch.setitem(sys.modules, "mitmproxy", None)` 模拟缺席（`None` 是 import 系统的负缓存），
+  使 `_check_available` 的 `import mitmproxy` 与 `_run` 的 `from mitmproxy import ...` 都抛 ImportError，
+  装/不装 mitmproxy 都通过。两个代理测试文件合计 101 passed，已在装齐可选后端的环境全量验证。
+
 ### 修复（单测密闭性：3 个"androguard 缺席"用例不再依赖环境里真的没装 androguard）
 
 - `test_available_is_false_when_androguard_is_absent`、

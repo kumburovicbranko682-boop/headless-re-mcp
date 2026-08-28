@@ -351,6 +351,19 @@ def test_record_eviction_skips_already_omitted_entries(
 # --------------------------------------------------------------------------
 
 
+def _absent_mitmproxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every ``import mitmproxy`` fail regardless of what is installed.
+
+    A ``None`` entry in ``sys.modules`` is the import system's negative cache, so
+    ``_check_available``'s ``import mitmproxy`` and ``_run``'s ``from mitmproxy
+    import ...`` both raise ImportError -- the same state a bare install has.
+    Without it these tests assumed the environment simply lacked the ``proxy``
+    extra and failed the moment mitmproxy was installed (e.g. on a machine that
+    also runs the proxy integration gate).
+    """
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
+
+
 def _free_instance() -> _ProxyInstance:
     return _ProxyInstance("127.0.0.1", 8080)
 
@@ -454,9 +467,14 @@ def test_instance_run_falls_back_when_the_constructor_signature_differs(
     assert calls["dumpmaster"] == 2
 
 
-def test_instance_run_records_an_import_failure() -> None:
-    """With mitmproxy absent, the run thread records the import error."""
-    assert "mitmproxy" not in sys.modules
+def test_instance_run_records_an_import_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With mitmproxy absent, the run thread records the import error.
+
+    Absence is simulated (see _absent_mitmproxy) rather than assumed of the
+    environment, so _run's `from mitmproxy import ...` raises ImportError whether
+    or not the proxy extra is installed and the thread records it in _error.
+    """
+    _absent_mitmproxy(monkeypatch)
     inst = _free_instance()
     _run_in_thread(inst)
     assert inst._error is not None

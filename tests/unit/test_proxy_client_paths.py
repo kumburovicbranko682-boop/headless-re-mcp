@@ -48,6 +48,18 @@ from headless_re_mcp.backends.proxy.client import (
 )
 from headless_re_mcp.core.limits import UNREGISTERED_CAPTURE_MAX_BYTES
 
+
+def _absent_mitmproxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every ``import mitmproxy`` fail regardless of what is installed.
+
+    A ``None`` entry in ``sys.modules`` is the import system's negative cache, so
+    the backend's ``import mitmproxy`` (availability) and ``from mitmproxy import
+    ...`` (run thread) both raise ImportError -- the absence these tests need.
+    They previously assumed the environment simply lacked the ``proxy`` extra and
+    failed once mitmproxy was installed (e.g. alongside the proxy integration gate).
+    """
+    monkeypatch.setitem(sys.modules, "mitmproxy", None)
+
 # --------------------------------------------------------------------------- #
 # byte-measuring helpers
 # --------------------------------------------------------------------------- #
@@ -441,8 +453,10 @@ def test_instance_start_blames_the_host_when_a_bind_fails_for_any_other_reason(
 def test_instance_start_reports_a_thread_that_fails_to_launch_mitmproxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # mitmproxy is absent, so the real _run raises ImportError, sets _error, and
-    # start() surfaces it as backend_error -- exercising _run's except/finally.
+    # With mitmproxy simulated absent (not merely assumed of the environment),
+    # the real _run raises ImportError, sets _error, and start() surfaces it as
+    # backend_error -- exercising _run's except/finally.
+    _absent_mitmproxy(monkeypatch)
     monkeypatch.setattr(proxy_client, "_port_accepts", lambda host, port, timeout=0.25: False)
     monkeypatch.setattr(proxy_client, "_bind_probe", lambda host, port: None)
     inst = _ProxyInstance("127.0.0.1", 8080)
@@ -634,7 +648,8 @@ def test_instance_stop_drains_while_the_proxy_thread_is_alive() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_backend_check_available_reports_and_caches() -> None:
+def test_backend_check_available_reports_and_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    _absent_mitmproxy(monkeypatch)
     backend = ProxyBackend()
     with pytest.raises(ProxyError) as exc:
         backend.start("s")  # mitmproxy absent -> capability_unavailable
