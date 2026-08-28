@@ -1005,3 +1005,141 @@ def test_close_all_reports_sessions_that_failed_to_close(tmp_path: Path) -> None
     assert not result.ok and result.error is not None
     assert result.error.code == "close_all_failed"
     assert result.error.details["errors"][0]["session_id"] == session_id
+
+
+# ---------------------------------------------------------------------------
+# dynamic run-control / breakpoint / address delegating methods
+# ---------------------------------------------------------------------------
+
+
+def _both_backends(tmp_path: Path) -> tuple[AnalysisService, str]:
+    # The fake dynamic worker reports its main module as "fixture.exe", so the
+    # session binary must share that name for the module mapping to resolve.
+    binary = tmp_path / "fixture.exe"
+    _write_pe(binary)
+    service = _facade(
+        tmp_path,
+        dynamic_workers=[FakeDynamicWorker()],
+        static_factory=_static_factory(),
+    )
+    session_id = _create(service, binary)
+    assert service.open_static(session_id).ok
+    assert service.open_dynamic(session_id).ok
+    return service, session_id
+
+
+def test_dynamic_wait_rejects_an_unknown_state(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = AnalysisService(_settings(tmp_path))
+    session_id = _create(service, binary)
+
+    result = service.dynamic_wait(session_id, "bogus")
+
+    assert not result.ok and result.error is not None
+
+
+def test_dynamic_modules_validates_offset_and_limit(tmp_path: Path) -> None:
+    binary = tmp_path / "sample.exe"
+    _write_pe(binary)
+    service = AnalysisService(_settings(tmp_path))
+    session_id = _create(service, binary)
+
+    assert not service.dynamic_modules(session_id, offset=-1).ok
+    assert not service.dynamic_modules(session_id, limit=0).ok
+
+
+def test_dynamic_modules_lists_modules_and_clears_resync(tmp_path: Path) -> None:
+    service, session_id = _both_backends(tmp_path)
+    runtime = service._runtime(session_id, BackendKind.X64DBG)
+    runtime.snapshot_resync_required = True
+
+    result = service.dynamic_modules(session_id)
+
+    assert result.ok and result.data is not None
+    assert result.data["count"] == 1
+    assert runtime.snapshot_resync_required is False
+
+
+def test_dynamic_breakpoint_lifecycle_runtime_space(tmp_path: Path) -> None:
+    service, session_id = _both_backends(tmp_path)
+
+    listed = service.dynamic_breakpoints(session_id)
+    assert listed.ok and listed.data is not None
+    assert listed.data["count"] == 0
+
+    added = service.dynamic_breakpoint_set(session_id, 0x140001000)
+    assert added.ok and added.data is not None
+    assert added.data["set"] is True
+
+    removed = service.dynamic_breakpoint_remove(session_id, 0x140001000)
+    assert removed.ok
+
+
+def test_dynamic_breakpoint_set_translates_static_space(tmp_path: Path) -> None:
+    service, session_id = _both_backends(tmp_path)
+
+    result = service.dynamic_breakpoint_set(session_id, 0x140001000, address_space="static")
+
+    assert result.ok and result.data is not None
+    assert result.data["set"] is True
+
+
+def test_dynamic_breakpoint_set_rejects_an_unknown_address_space(tmp_path: Path) -> None:
+    service, session_id = _both_backends(tmp_path)
+
+    result = service.dynamic_breakpoint_set(session_id, 0x140001000, address_space="bogus")
+
+    assert not result.ok and result.error is not None
+    assert "address_space" in result.error.message
+
+
+def test_resolve_runtime_address_validates_inputs(tmp_path: Path) -> None:
+    service, session_id = _both_backends(tmp_path)
+
+    assert not service.resolve_runtime_address(session_id, -1).ok
+    assert not service.resolve_runtime_address(session_id, True).ok
+    bad_source = service.resolve_runtime_address(session_id, 0x140001000, source="bogus")
+    assert not bad_source.ok and bad_source.error is not None
+    assert "source" in bad_source.error.message
+
+
+def test_resolve_runtime_address_translates_each_source(tmp_path: Path) -> None:
+    service, session_id = _both_backends(tmp_path)
+
+    static = service.resolve_runtime_address(session_id, 0x140001000, source="static")
+    assert static.ok and static.data is not None
+    assert static.data["runtime_address"] == 0x140001000
+
+    rva = service.resolve_runtime_address(session_id, 0x1000, source="rva")
+    assert rva.ok and rva.data is not None
+    assert rva.data["static_address"] == 0x140001000
+
+    runtime = service.resolve_runtime_address(session_id, 0x140001000, source="runtime")
+    assert runtime.ok and runtime.data is not None
+
+
+def test_sync_static_and_runtime_round_trip(tmp_path: Path) -> None:
+    service, session_id = _both_backends(tmp_path)
+
+    forward = service.sync_static_to_runtime(session_id, 0x140001000)
+    assert forward.ok and forward.data is not None
+
+    backward = service.sync_runtime_to_static(session_id, 0x140001000)
+    assert backward.ok and backward.data is not None
+
+
+def test_analyze_function_dynamic_rejects_a_bad_timeout(tmp_path: Path) -> None:
+    service, session_id = _both_backends(tmp_path)
+
+    assert not service.analyze_function_dynamic(session_id, 0x140001000, timeout=0).ok
+    assert not service.analyze_function_dynamic(session_id, 0x140001000, timeout=True).ok
+
+
+def test_analyze_function_dynamic_arms_and_reports_the_stop(tmp_path: Path) -> None:
+    service, session_id = _both_backends(tmp_path)
+
+    result = service.analyze_function_dynamic(session_id, 0x140001000, decompile=False, timeout=5.0)
+
+    assert result.ok and result.data is not None
+    assert "execution" in result.data
