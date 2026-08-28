@@ -611,6 +611,22 @@ class TestInstallLifecycle:
         with pytest.raises(AdbError) as info:
             backend.launch("emulator-5554", "com.example.app")
         assert info.value.code == "backend_error"
+        # The failure names the operation and the package it acted on, rather
+        # than _device_shell's generic "adb shell failed" with no package -- the
+        # context the previously-unreachable branch meant to add.
+        assert "launch failed" in info.value.message
+        assert info.value.details["package"] == "com.example.app"
+
+    def test_launch_failure_keeps_a_timeout_code(self, monkeypatch: MP) -> None:
+        # _device_shell raises AdbError("timeout", ...) on a stall; the enrichment
+        # must preserve that code (a timeout is retryable) rather than flatten it
+        # to backend_error.
+        dev = _FakeDev(shell_error=TimeoutError("stalled"))
+        backend = _backend_with_dev(dev, monkeypatch)
+        with pytest.raises(AdbError) as info:
+            backend.launch("emulator-5554", "com.example.app")
+        assert info.value.code == "timeout"
+        assert info.value.details["package"] == "com.example.app"
 
     def test_force_stop_reads_remaining_pids(self, monkeypatch: MP) -> None:
         dev = _FakeDev(shell_map={"pidof com.example.app": ""})
@@ -632,6 +648,8 @@ class TestInstallLifecycle:
         with pytest.raises(AdbError) as info:
             backend.force_stop("emulator-5554", "com.example.app")
         assert info.value.code == "backend_error"
+        assert "force-stop failed" in info.value.message
+        assert info.value.details["package"] == "com.example.app"
 
 
 # ----------------------------------------------------------------------------
