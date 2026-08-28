@@ -454,6 +454,52 @@ def build_js_wasm_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
             )
         )
 
+    @tools.tool(name="wasm.memory")
+    def wasm_memory(
+        path: str,
+        timeout: Annotated[float, Field(gt=0, le=600.0)] = 30.0,
+    ) -> dict[str, Any]:
+        """Map a .wasm module's linear memory (declarations + data-segment placement).
+
+        Linear memory is a wasm module's single flat address space -- its heap,
+        static data and (for a C/C++/Rust module) shadow stack all live inside it
+        -- but wasm.summary only counts memories, leaving the sizes that frame
+        every wasm.data / wasm.strings / wasm.globals offset invisible. This is
+        the memory map: the declared memories plus where the Data section lands
+        in them. It reads the bytes directly, so it needs no wabt and cannot
+        drift with a wabt release.
+
+        Answers with memories, each a {index (in the memory index space), kind
+        ("imported" or "defined"), min_pages, max_pages (null for no maximum),
+        min_bytes, max_bytes (the page counts times the 64 KiB page_size, null
+        when unbounded), shared (bool, the threads proposal), index_type ("i32"
+        or "i64" for memory64)}. An imported memory also carries module and
+        import_name (its env.<name> origin); any memory carries name (from the
+        name section's memory namemap) and exported_as (the export names it is
+        reachable by) when present. memory_count (imported_count + defined_count),
+        page_size (65536) and data_count (the DataCount section's declared
+        segment count, or null when absent) round out the header.
+
+        segments is the placement map: each a {index, mode ("active" placed in
+        linear memory, or "passive"), memory_index (the memory an active segment
+        fills, else null), offset (the absolute linear-memory address its
+        i32.const placement resolves to, null when passive or an unresolved
+        global.get base), size (bytes) and end (offset + size, null when offset
+        is null)}. segment_count, active_segments and passive_segments tally them,
+        and occupied rolls the active segments up into {start, end, size} -- the
+        linear-memory span the static image covers, which typically meets
+        __heap_base from wasm.globals -- or null when nothing is placed. Read a
+        segment's bytes with wasm.data; this only maps where they sit.
+
+        segments_truncated marks a module with more than 4096 data segments and
+        memories_truncated more than 256 memories; parse_stopped marks a Data vec
+        that desynced (the segments before it still read). A module with no
+        Memory section is a clean empty map, not an error. Reads the bytes
+        directly, so it needs no wabt; a malformed module is a backend_error and
+        a missing file is not_found. An input over 16 MiB is refused as too_large.
+        """
+        return _dump(analysis.wasm_memory(path, timeout=timeout))
+
     @tools.tool(name="wasm.globals")
     def wasm_globals(
         path: str,

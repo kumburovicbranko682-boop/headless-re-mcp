@@ -3016,6 +3016,277 @@ def _parse_wasm_data(data: bytes, *, module: str) -> JsonObject:
     return {"module": module, "version": version, "segments": segments}
 
 
+# wasm.memory materialisation caps. A module declares at most a handful of linear
+# memories, but a crafted Data section could name a huge segment vec; the
+# placement map is capped and discloses the trim rather than growing unbounded.
+# 64 KiB is the fixed WebAssembly page size the byte figures scale by.
+_WASM_PAGE_SIZE = 65536
+_MAX_WASM_MEMORIES = 256
+_MAX_WASM_MEM_SEGMENTS = 4096
+
+
+def _read_wasm_memtype(data: bytes, pos: int) -> tuple[int, int | None, bool, str, int]:
+    """Read a memory type (limits flag + min + optional max), returning its fields.
+
+    The flag byte carries has_max (bit 0), shared (bit 1, the threads proposal)
+    and the 64-bit index type (bit 2, the memory64 proposal); min/max are page
+    counts. Returns (min_pages, max_pages, shared, index_type, pos_after) so the
+    caller can render both the page limits and their byte sizes.
+    """
+    flags = data[pos]
+    pos += 1
+    minimum, pos = _read_uleb128(data, pos)
+    maximum: int | None = None
+    if flags & 0x01:
+        maximum, pos = _read_uleb128(data, pos)
+    shared = bool(flags & 0x02)
+    index_type = "i64" if flags & 0x04 else "i32"
+    return minimum, maximum, shared, index_type, pos
+
+
+def _parse_wasm_memory(data: bytes, *, module: str) -> JsonObject:
+    """Map the module's linear memory: declarations plus data-segment placement.
+
+    A wasm module's linear memory is its single flat address space -- the heap,
+    static data and (for a C/C++/Rust module) the shadow stack all live inside
+    it -- but no reader here surfaced the Memory section, so the sizes that frame
+    every wasm.data / wasm.strings / wasm.globals offset were invisible. This
+    lists the declared memories (imported and defined alike), each with its page
+    limits and the byte sizes those pages scale to, the shared and 64-bit index
+    flags, and any name an export or the name section gives it. It then walks the
+    Data section into a placement map -- each segment's mode, target memory,
+    resolved ``i32.const`` offset, size and end address -- and rolls the active
+    segments up into ``occupied``, the linear-memory span the static image
+    covers (which typically meets ``__heap_base`` from wasm.globals). The
+    DataCount section, when present, is surfaced as ``data_count``. Reads the
+    bytes directly (no wabt); a structural fault becomes a clean backend_error
+    and a malformed Data vec desyncs safely rather than misreading the rest.
+    """
+    if len(data) < 8 or data[:4] != _WASM_MAGIC:
+        raise JsReError("backend_error", "not a WebAssembly module (bad magic)")
+    version = int.from_bytes(data[4:8], "little")
+    pos = 8
+    n = len(data)
+    memories: list[JsonObject] = []
+    next_index = 0
+    imported_count = 0
+    defined_count = 0
+    data_count: int | None = None
+    segments: list[JsonObject] = []
+    active_segments = 0
+    passive_segments = 0
+    occupied_start: int | None = None
+    occupied_end: int | None = None
+    segments_truncated = False
+    memories_truncated = False
+    parse_stopped = False
+    export_names: dict[int, list[str]] = {}
+    name_map: dict[int, str] = {}
+    try:
+        while pos < n:
+            sec_id = data[pos]
+            pos += 1
+            sec_size, pos = _read_uleb128(data, pos)
+            sec_end = pos + sec_size
+            if sec_size < 0 or sec_end > n:
+                raise _WasmParseError("section overruns module")
+            if sec_id == 2:  # Import: imported memories take the low memory index
+                count, p = _read_uleb128(data, pos)
+                for _ in range(count):
+                    _mod, p = _read_wasm_name(data, p, sec_end)
+                    _fld, p = _read_wasm_name(data, p, sec_end)
+                    if p >= sec_end:
+                        raise _WasmParseError("import entry truncated")
+                    kind = data[p]
+                    p += 1
+                    if kind == 0:  # func: type index
+                        _, p = _read_uleb128(data, p)
+                    elif kind == 1:  # table: elem type byte + limits
+                        p = _skip_wasm_limits(data, p + 1)
+                    elif kind == 2:  # memory: a memtype record
+                        mn, mx, shared, itype, p = _read_wasm_memtype(data, p)
+                        if len(memories) < _MAX_WASM_MEMORIES:
+                            memories.append(
+                                {
+                                    "index": next_index,
+                                    "kind": "imported",
+                                    "module": _mod,
+                                    "import_name": _fld,
+                                    "min_pages": mn,
+                                    "max_pages": mx,
+                                    "min_bytes": mn * _WASM_PAGE_SIZE,
+                                    "max_bytes": (
+                                        mx * _WASM_PAGE_SIZE if mx is not None else None
+                                    ),
+                                    "shared": shared,
+                                    "index_type": itype,
+                                }
+                            )
+                        else:
+                            memories_truncated = True
+                        imported_count += 1
+                        next_index += 1
+                    elif kind == 3:  # global: value type byte + mutability byte
+                        if p + 2 > sec_end:
+                            raise _WasmParseError("imported global truncated")
+                        p += 2
+                    else:
+                        raise _WasmParseError(f"unknown import kind {kind}")
+            elif sec_id == 5:  # Memory: the module's defined linear memories
+                count, p = _read_uleb128(data, pos)
+                for _ in range(count):
+                    mn, mx, shared, itype, p = _read_wasm_memtype(data, p)
+                    if len(memories) < _MAX_WASM_MEMORIES:
+                        memories.append(
+                            {
+                                "index": next_index,
+                                "kind": "defined",
+                                "min_pages": mn,
+                                "max_pages": mx,
+                                "min_bytes": mn * _WASM_PAGE_SIZE,
+                                "max_bytes": mx * _WASM_PAGE_SIZE if mx is not None else None,
+                                "shared": shared,
+                                "index_type": itype,
+                            }
+                        )
+                    else:
+                        memories_truncated = True
+                    defined_count += 1
+                    next_index += 1
+            elif sec_id == 12:  # DataCount: the declared data-segment count
+                data_count, _ = _read_uleb128(data, pos)
+            elif sec_id == 11:  # Data: where each segment lands in linear memory
+                count, p = _read_uleb128(data, pos)
+                try:
+                    for _ in range(count):
+                        if p >= sec_end:
+                            raise _WasmParseError("data segment truncated")
+                        flags, p = _read_uleb128(data, p)
+                        mem_index = 0
+                        base: int | None
+                        if flags == 0:  # active, memory 0, offset const-expr
+                            mode = "active"
+                            base, p = _read_wasm_const_offset(data, p, sec_end)
+                        elif flags == 1:  # passive: no placement
+                            mode = "passive"
+                            base = None
+                        elif flags == 2:  # active with explicit memory index
+                            mode = "active"
+                            mem_index, p = _read_uleb128(data, p)
+                            base, p = _read_wasm_const_offset(data, p, sec_end)
+                        else:
+                            raise _WasmParseError(f"unknown data segment flags {flags}")
+                        seg_len, p = _read_uleb128(data, p)
+                        if seg_len < 0 or p + seg_len > sec_end:
+                            raise _WasmParseError("data segment bytes overrun section")
+                        p += seg_len
+                        seg_index = active_segments + passive_segments
+                        end = base + seg_len if base is not None else None
+                        if mode == "active":
+                            active_segments += 1
+                            if base is not None:
+                                if occupied_start is None or base < occupied_start:
+                                    occupied_start = base
+                                if end is not None and (
+                                    occupied_end is None or end > occupied_end
+                                ):
+                                    occupied_end = end
+                        else:
+                            passive_segments += 1
+                        if len(segments) < _MAX_WASM_MEM_SEGMENTS:
+                            segments.append(
+                                {
+                                    "index": seg_index,
+                                    "mode": mode,
+                                    "memory_index": mem_index if mode == "active" else None,
+                                    "offset": base,
+                                    "size": seg_len,
+                                    "end": end,
+                                }
+                            )
+                        else:
+                            segments_truncated = True
+                except _WasmParseError:
+                    # A malformed segment desyncs the vec, so the rest cannot be
+                    # trusted; keep what parsed and disclose the stop.
+                    parse_stopped = True
+            elif sec_id == 7:  # Export: a memory export names one memory index
+                count, p = _read_uleb128(data, pos)
+                for _ in range(count):
+                    exp_name, p = _read_wasm_name(data, p, sec_end)
+                    if p >= sec_end:
+                        raise _WasmParseError("export entry truncated")
+                    kind = data[p]
+                    p += 1
+                    idx, p = _read_uleb128(data, p)
+                    if kind == 2:  # memory
+                        export_names.setdefault(idx, []).append(exp_name)
+            elif sec_id == 0:  # custom: maybe the name section's memory namemap
+                cust_name, cpos = _read_wasm_name(data, pos, sec_end)
+                if cust_name == "name":
+                    sp = cpos
+                    while sp < sec_end:
+                        sub_id = data[sp]
+                        sp += 1
+                        sub_size, sp = _read_uleb128(data, sp)
+                        sub_end = sp + sub_size
+                        if sub_size < 0 or sub_end > sec_end:
+                            raise _WasmParseError("name subsection overruns section")
+                        if sub_id == 6:  # memory namemap
+                            with suppress(_WasmParseError):
+                                entries, _, _ = _read_wasm_namemap(
+                                    data, sp, sub_end, _MAX_WASM_NAME_ENTRIES
+                                )
+                                for named in entries:
+                                    name_map[int(named["index"])] = str(named["name"])
+                        sp = sub_end
+            pos = sec_end
+    except _WasmParseError as exc:
+        raise JsReError("backend_error", f"malformed WebAssembly module: {exc}") from exc
+    except IndexError as exc:  # a read ran off the end despite the guards
+        raise JsReError(
+            "backend_error", "malformed WebAssembly module: unexpected end of data"
+        ) from exc
+    for mem in memories:
+        mi = int(mem["index"])
+        resolved_name = name_map.get(mi)
+        if resolved_name:
+            mem["name"] = resolved_name
+        exported = export_names.get(mi)
+        if exported:
+            mem["exported_as"] = exported
+    occupied: JsonObject | None = None
+    if occupied_start is not None and occupied_end is not None:
+        occupied = {
+            "start": occupied_start,
+            "end": occupied_end,
+            "size": occupied_end - occupied_start,
+        }
+    result: JsonObject = {
+        "module": module,
+        "version": version,
+        "page_size": _WASM_PAGE_SIZE,
+        "memories": memories,
+        "memory_count": imported_count + defined_count,
+        "imported_count": imported_count,
+        "defined_count": defined_count,
+        "data_count": data_count,
+        "segments": segments,
+        "segment_count": active_segments + passive_segments,
+        "active_segments": active_segments,
+        "passive_segments": passive_segments,
+        "occupied": occupied,
+        "has_name_section": bool(name_map),
+    }
+    if memories_truncated:
+        result["memories_truncated"] = True
+    if segments_truncated:
+        result["segments_truncated"] = True
+    if parse_stopped:
+        result["parse_stopped"] = True
+    return result
+
+
 # wasm.globals materialisation caps. A real module carries a handful of globals
 # (the memory-layout pointers a compiler emits), but a crafted vec count could
 # claim millions, so collection is bounded and the declared count disclosed.
@@ -3790,6 +4061,28 @@ class WasmClient:
         result["count"] = len(window)
         result["has_more"] = start + len(window) < chosen["size"]
         return result
+
+    def memory(self, path: Path, *, timeout: float = 30.0) -> JsonObject:
+        """Map the module's linear memory (declarations + data-segment placement).
+
+        Linear memory is a wasm module's single flat address space -- its heap,
+        static data and shadow stack all live inside it -- but wasm.summary only
+        counts memories, leaving the sizes that frame every wasm.data /
+        wasm.strings / wasm.globals offset invisible. This lists the declared
+        memories (imported and defined) with their page limits, the byte sizes
+        those pages scale to, the shared / 64-bit-index flags and any export or
+        name-section name, then rolls the Data section into a placement map
+        (each segment's mode, target memory, resolved offset, size and end) and
+        an ``occupied`` span -- the linear-memory range the static image covers,
+        which typically meets ``__heap_base`` from wasm.globals. ``data_count``
+        surfaces the DataCount section when present. Reads the bytes directly
+        (no wabt); a malformed module faults cleanly and a missing file is
+        not_found. ``timeout`` is accepted for signature symmetry but the parse
+        is a bounded in-process walk.
+        """
+        _ = timeout
+        resolved = _require_existing_file(path, missing="wasm file not found")
+        return _parse_wasm_memory(resolved.read_bytes(), module=resolved.name)
 
     def globals(
         self,
