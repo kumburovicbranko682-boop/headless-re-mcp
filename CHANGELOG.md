@@ -5,7 +5,18 @@ until 1.0 the tool surface may still change between minor versions.
 
 ## [Unreleased]
 
-### 修复（proxy 实例测试与串行化 bring-up 的语义合并冲突）
+### 新增（r2.callgraph：一次拿到整程序调用图，先鸟瞰再下钻）
+
+- 新工具 `r2.callgraph(session_id)`：先分析再执行 `agCj`，一次返回整个程序的
+  调用图——面对陌生二进制时的鸟瞰视角。`r2.function_refs` 给一个函数的被调、
+  `r2.xrefs_to` 给一个地址的调用者，而它一次给出所有函数。返回 `items`，每个
+  节点带 `name`、`size` 与 `calls`（其调用的被调函数名列表；从 r2 的 `imports`
+  改名，避免与列导入库符号的 `r2.imports` 混淆）以及每节点 `call_count`；
+  顶层还有 `count`（节点数）与 `edge_count`（返回节点间的边总数）。节点按名字
+  而非地址标识，故此处无 `address` 字段，需要偏移时用 `r2.functions` 解析名字；
+  stripped 二进制里很多名字是 `fcn.<addr>`。节点数超过 4096 上限时给
+  `items_truncated`/`items_total`/`items_limit`。命令 `agCj` 进入白名单。
+  工具总数 265→266（只读 148→149）。
 
 - main 新落的 `test_proxy_client_paths.py` 两个用例与集成分支对
   `_ProxyInstance.start()/_run()` 的串行化 bring-up 改造（`_STARTUP_LOCK` +

@@ -115,6 +115,29 @@ def build_r2_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
         """
         return _dump(analysis.r2_disasm(session_id, address, count=count, timeout=timeout))
 
+    @tools.tool(name="r2.callgraph")
+    def r2_callgraph(
+        session_id: str, timeout: Annotated[float, Field(gt=0, le=120.0)] = 30.0
+    ) -> dict[str, Any]:
+        """The whole program's call graph in one pass (agCj).
+
+        Runs analysis, then agCj: the bird's-eye view that orients you in an
+        unknown binary before you drill in. Where r2.function_refs gives one
+        function's callees and r2.xrefs_to gives one address's callers, this
+        returns every function at once. Answers with items, each a node
+        carrying name, size and calls -- the list of callee names it invokes
+        (renamed from r2's imports so it is not confused with r2.imports,
+        which lists imported library symbols) -- plus call_count per node.
+        Also top-level count (nodes) and edge_count (total edges among the
+        returned nodes). Nodes are keyed by name, not address, so there is no
+        address field here; resolve a name with r2.functions when you need its
+        offset. On a stripped binary many names are fcn.<addr>. Read
+        items_truncated, items_total and items_limit when the node list filled
+        the cap (4096). There is no imports, edges, truncated or has_more
+        field.
+        """
+        return _dump(analysis.r2_callgraph(session_id, timeout=timeout))
+
     @tools.tool(name="r2.xrefs")
     def r2_xrefs(
         session_id: str,

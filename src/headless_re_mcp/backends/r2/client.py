@@ -33,6 +33,7 @@ _ALLOWED = frozenset(
         "iEj",
         "pdj",
         "axj",
+        "agCj",
         "aa",
     }
 )
@@ -97,6 +98,44 @@ class R2Client:
         data["address"] = address
         data["count"] = count
         return enrich_r2_payload(data, binary=binary)
+
+    def callgraph(self, binary: Path, *, timeout: float = 30.0) -> JsonObject:
+        """Program-wide call graph via agCj (analysis first).
+
+        agCj nodes are keyed by name, not address -- each is
+        ``{name, size, imports:[callee names]}`` -- so the generic address
+        mapping finds nothing to map. Rename ``imports`` to ``calls`` (these
+        are callees, not the imported symbols r2.imports lists) and add the
+        per-node and total edge counts.
+        """
+        data = self.run(binary, ["aa", "agCj"], timeout=timeout)
+        raw_items = data.get("items")
+        nodes = raw_items if isinstance(raw_items, list) else []
+        out_nodes: list[JsonObject] = []
+        edge_total = 0
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            name = node.get("name")
+            calls = node.get("imports")
+            call_names = [c for c in calls if isinstance(c, str)] if isinstance(calls, list) else []
+            edge_total += len(call_names)
+            entry: JsonObject = {
+                "name": name if isinstance(name, str) else "",
+                "calls": call_names,
+                "call_count": len(call_names),
+            }
+            size = node.get("size")
+            if type(size) is int:
+                entry["size"] = size
+            out_nodes.append(entry)
+        data = dict(data)
+        data["items"] = out_nodes
+        data["count"] = len(out_nodes)
+        # Edges among the returned (possibly capped) nodes; items_truncated
+        # from enrich already says when the node list itself was cut.
+        data["edge_count"] = edge_total
+        return data
 
     def xrefs(
         self,
