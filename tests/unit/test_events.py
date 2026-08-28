@@ -257,6 +257,46 @@ def test_invalid_requested_bounds_are_rejected(cursor: object, limit: object) ->
         )
 
 
+def test_non_object_batch_is_rejected() -> None:
+    with pytest.raises(DebugEventProtocolError, match="must be an object"):
+        _parse(["not", "a", "dict"])
+
+
+def test_cursor_ahead_of_latest_is_rejected() -> None:
+    with pytest.raises(DebugEventProtocolError, match="ahead of latest_sequence"):
+        _parse(_batch(cursor=5, latest=2), cursor=5)
+
+
+def test_short_window_is_rejected() -> None:
+    """Five live events with only one returned is a silently clipped window."""
+    payload = _batch(cursor=0, latest=5, events=[_event(1)])
+
+    with pytest.raises(DebugEventProtocolError, match="expected sequence window"):
+        _parse(payload)
+
+
+def test_non_object_event_is_rejected() -> None:
+    payload = _batch(latest=1, events=[_event(1)])
+    payload["events"] = [123]
+
+    with pytest.raises(DebugEventProtocolError, match="event must be an object"):
+        _parse(payload)
+
+
+def test_negative_integer_event_field_is_rejected() -> None:
+    payload = _batch(latest=1, events=[_event(1, "process.created", {"process_id": -1})])
+
+    with pytest.raises(DebugEventProtocolError, match="non-negative"):
+        _parse(payload)
+
+
+def test_non_string_text_event_field_is_rejected() -> None:
+    payload = _batch(latest=1, events=[_event(1, "module.loaded", {"name": 123})])
+
+    with pytest.raises(DebugEventProtocolError, match="name is invalid"):
+        _parse(payload)
+
+
 def test_cursor_refuses_batch_from_another_stream_position() -> None:
     cursor = DebugEventCursor(value=8)
     batch = _parse(_batch())
