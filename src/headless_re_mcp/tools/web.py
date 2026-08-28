@@ -138,10 +138,12 @@ def build_web_tools(analysis: AnalysisService) -> tuple[BoundTool, ...]:
     def web_script_source(session_id: str, script_id: str) -> dict[str, Any]:
         """Fetch one script's source (large sources spill to an artifact).
 
-        Answers with scriptId, bytes and source, plus truncated and
-        source_path when the text was cut at the buffer. There is no code
-        or text field. A source over the capture cap is refused rather
-        than written to disk.
+        Answers with scriptId, language, bytes and source, plus truncated
+        and source_path when the text was cut at the buffer. There is no
+        code or text field. For a WebAssembly module (language webassembly)
+        the source is the WAT disassembly, since the module carries no plain
+        scriptSource. A source over the capture cap is refused rather than
+        written to disk.
         """
         return _dump(analysis.web_script_source(session_id, script_id))
 

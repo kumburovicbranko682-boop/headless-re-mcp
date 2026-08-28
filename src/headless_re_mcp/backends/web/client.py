@@ -38,6 +38,10 @@ _MAX_REQUESTS = 3000
 _MAX_CONSOLE = 2000
 _MAX_SCRIPTS = 2000
 _MAX_INLINE_BODY = 200_000
+# A pathological Wasm module could disassemble to an unbounded number of WAT
+# lines; cap the assembly so a single script.source cannot exhaust memory before
+# _spill_text's byte cap runs. Generous enough for any real module.
+_MAX_WASM_WAT_LINES = 200_000
 _MAX_CONSOLE_TEXT = 8 * 1024
 _MAX_URL_BYTES = 16 * 1024
 _MAX_METADATA_BYTES = 1024
@@ -171,6 +175,34 @@ def _spill_text(
         )
     preview = payload[:_MAX_INLINE_BODY].decode("utf-8", errors="ignore")
     return preview, out, True
+
+
+def _wasm_wat(cdp: Any, script_id: str) -> str:
+    """Disassemble a Wasm module to WAT text via CDP, bounded.
+
+    getScriptSource returns an empty scriptSource for a WebAssembly module (the
+    module lives in a `bytecode` field), so the readable disassembly must come
+    from Debugger.disassembleWasmModule, which streams the WAT in chunks. Read
+    the first chunk plus any continuation up to a line/byte bound. Must run on
+    the session runner thread, like the send that produced ``script_id``.
+    """
+    dis = cdp.send("Debugger.disassembleWasmModule", {"scriptId": script_id})
+    lines = list((dis.get("chunk") or {}).get("lines") or [])
+    total = int(dis.get("totalNumberOfLines") or len(lines))
+    stream_id = dis.get("streamId")
+    size = sum(len(line) + 1 for line in lines)
+    while (
+        stream_id
+        and len(lines) < min(total, _MAX_WASM_WAT_LINES)
+        and size < UNREGISTERED_CAPTURE_MAX_BYTES
+    ):
+        nxt = cdp.send("Debugger.nextWasmDisassemblyChunk", {"streamId": stream_id})
+        more = list((nxt.get("chunk") or {}).get("lines") or [])
+        if not more:
+            break
+        lines.extend(more)
+        size += sum(len(line) + 1 for line in more)
+    return "\n".join(lines[:_MAX_WASM_WAT_LINES])
 
 
 def _spill_bytes(
@@ -720,27 +752,41 @@ class WebBackend:
 
     def script_source(self, session_id: str, script_id: str, artifact_dir: Path) -> JsonObject:
         handle = self._get(session_id)
+
+        def work() -> tuple[str, str]:
+            resp = handle.cdp.send("Debugger.getScriptSource", {"scriptId": script_id})
+            source = resp.get("scriptSource") or ""
+            if not isinstance(source, str):
+                source = str(source)
+            # A WebAssembly module returns an empty scriptSource -- the module is
+            # in a `bytecode` field -- so web.script.source used to hand back an
+            # empty string for exactly the modules web.wasm.list surfaces.
+            # Disassemble to WAT instead so the caller gets readable text.
+            if not source and resp.get("bytecode"):
+                try:
+                    return _wasm_wat(handle.cdp, script_id), "webassembly"
+                except Exception:  # noqa: BLE001 - disassembly is best-effort
+                    return "", "webassembly"
+            return source, "javascript"
+
         try:
-            resp = self._runner(handle).call(
-                lambda: handle.cdp.send("Debugger.getScriptSource", {"scriptId": script_id})
-            )
+            source, language = self._runner(handle).call(work)
         except WebError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise WebError(
                 "not_found", f"cannot fetch script source: {exc}", script_id=script_id
             ) from exc
-        source = resp.get("scriptSource", "")
-        if not isinstance(source, str):
-            source = str(source)
+        suffix = "wat" if language == "webassembly" else "js"
         inline, spill, cut = _spill_text(
             source,
             artifact_dir=artifact_dir,
-            filename=f"script-{uuid4().hex}.js",
+            filename=f"script-{uuid4().hex}.{suffix}",
             kind="script source",
         )
         result: JsonObject = {
             "scriptId": script_id,
+            "language": language,
             "bytes": len(source.encode("utf-8", errors="replace")),
             "source": inline,
             "truncated": cut,

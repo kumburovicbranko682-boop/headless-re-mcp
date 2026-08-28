@@ -40,6 +40,49 @@ class _Cdp:
         return {"scriptSource": "y" * (_MAX_INLINE_BODY + 40)}
 
 
+class _WasmCdp:
+    """A Wasm module: getScriptSource is empty, the WAT comes from disassembly."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(method)
+        if method == "Debugger.getScriptSource":
+            return {"scriptSource": "", "bytecode": "AGFzbQE="}
+        if method == "Debugger.disassembleWasmModule":
+            return {
+                "totalNumberOfLines": 3,
+                "chunk": {"lines": ["(module", '  (func $add (export "add")', "    i32.add)"]},
+            }
+        raise AssertionError(f"unexpected CDP method {method}")
+
+
+class _ChunkedWasmCdp:
+    """A Wasm module whose WAT streams across chunks via streamId."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self._served = False
+
+    def send(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(method)
+        if method == "Debugger.getScriptSource":
+            return {"scriptSource": "", "bytecode": "AGFzbQE="}
+        if method == "Debugger.disassembleWasmModule":
+            return {
+                "totalNumberOfLines": 4,
+                "streamId": "stream-1",
+                "chunk": {"lines": ["(module", "  (func $a"]},
+            }
+        if method == "Debugger.nextWasmDisassemblyChunk":
+            if self._served:
+                return {"chunk": {"lines": []}}
+            self._served = True
+            return {"chunk": {"lines": ["    i32.add)", ")"]}}
+        raise AssertionError(f"unexpected CDP method {method}")
+
+
 def test_web_script_source_names_source_and_says_when_it_was_cut(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -60,6 +103,7 @@ def test_web_script_source_names_source_and_says_when_it_was_cut(
     assert payload["truncated"] is True
     assert payload["bytes"] == _MAX_INLINE_BODY + 40
     assert len(payload["source"]) == _MAX_INLINE_BODY
+    assert payload["language"] == "javascript"
     assert "source_path" in payload
     assert payload["source_path"] != repeated["source_path"]
     assert Path(str(payload["source_path"])).is_file()
@@ -68,3 +112,41 @@ def test_web_script_source_names_source_and_says_when_it_was_cut(
     assert "source" in doc
     assert "truncated" in doc
     assert "source_path" in doc
+
+
+def test_web_script_source_disassembles_a_wasm_module(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A Wasm module has no scriptSource; script.source must return its WAT.
+
+    getScriptSource hands back an empty scriptSource with the module in a
+    `bytecode` field, so the reader has to fall back to
+    Debugger.disassembleWasmModule. Without that, web.script.source returned an
+    empty string for exactly the modules web.wasm.list surfaces.
+    """
+    backend = WebBackend()
+    cdp = _WasmCdp()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(cdp=cdp))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.script_source("s", "9", tmp_path)
+    assert payload["language"] == "webassembly"
+    assert "i32.add" in payload["source"]
+    assert '"add"' in payload["source"]
+    assert payload["truncated"] is False
+    assert "Debugger.disassembleWasmModule" in cdp.calls
+
+
+def test_web_script_source_streams_chunked_wasm_disassembly(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """WAT longer than one chunk must be followed via the disassembly streamId."""
+    backend = WebBackend()
+    cdp = _ChunkedWasmCdp()
+    monkeypatch.setattr(backend, "_get", lambda session_id: SimpleNamespace(cdp=cdp))
+    monkeypatch.setattr(backend, "_runner", lambda handle: _Immediate())
+    payload = backend.script_source("s", "11", tmp_path)
+    assert payload["language"] == "webassembly"
+    # Lines from both the first chunk and the continuation are present.
+    assert "(module" in payload["source"]
+    assert "i32.add)" in payload["source"]
+    assert cdp.calls.count("Debugger.nextWasmDisassemblyChunk") >= 1
